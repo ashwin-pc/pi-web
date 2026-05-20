@@ -4,6 +4,7 @@
 @import "./styles/messages.css";
 @import "./styles/composer.css";
 @import "./styles/sessions.css";
+@import "./styles/repoInfoBar.css";
 @import "./styles/settings.css";
 @import "./styles/conversationTree.css";
 @import "./styles/folderPicker.css";

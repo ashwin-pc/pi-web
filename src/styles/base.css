@@ -11,7 +11,12 @@
   --user: #1e3a5f;
   --assistant: #17212d;
   --tool: #2a2336;
-  --app-height: 100vh;
+  --app-height: 100dvh;
+}
+
+/* Fallback for browsers without dvh support */
+@supports not (height: 100dvh) {
+  :root { --app-height: 100vh; }
 }
 
 * { box-sizing: border-box; }
@@ -20,7 +25,19 @@ html, body {
   max-width: 100%;
   height: var(--app-height);
   overflow: hidden;
+  /* Prevent pull-to-refresh / overscroll on iOS */
+  overscroll-behavior: none;
+  /* Disable double-tap zoom and reduce tap delay */
+  touch-action: manipulation;
 }
+
+/* Prevent iOS auto-zoom on focus: text-input elements must be >= 16px */
+@media (max-width: 700px) {
+  input, textarea, select {
+    font-size: 16px;
+  }
+}
+
 body {
   margin: 0;
   min-height: var(--app-height);
@@ -30,16 +47,19 @@ body {
 }
 
 .app {
+  position: relative;
   display: grid;
   grid-template-columns: 1fr;
-  grid-template-rows: auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto auto;
   width: 100%;
   min-width: 0;
   height: var(--app-height);
   max-width: 1100px;
   margin: 0 auto;
   padding: 0 0 16px;
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
   gap: 0;
   overflow: hidden;
 }
-

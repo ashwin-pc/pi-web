@@ -212,7 +212,7 @@
 .message.assistant { --message-bg: var(--bg); align-self: stretch; background: transparent; border: none; max-width: 100%; width: 100%; }
 .message.system { align-self: center; max-width: 100%; background: transparent; color: var(--muted); margin: 8px 0; }
 .jumpToLatestButton {
-  position: fixed;
+  position: absolute;
   left: 50%;
   bottom: 116px;
   z-index: 20;

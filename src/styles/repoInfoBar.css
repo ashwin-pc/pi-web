@@ -1,0 +1,60 @@
+.repoInfoBar {
+  grid-row: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 4px 12px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--muted, #9aa0a6);
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 97%, black);
+  overflow: hidden;
+}
+
+.repoInfoBar[hidden] {
+  display: none;
+}
+
+.repoInfoBar .repoInfoSep {
+  opacity: 0.5;
+}
+
+.repoInfoBar .repoInfoPath {
+  color: var(--text, #e6e6e6);
+  font-weight: 500;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.repoInfoBar .repoInfoBranch {
+  color: #79b8ff;
+}
+
+.repoInfoBar .repoInfoHash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  opacity: 0.75;
+}
+
+.repoInfoBar .repoInfoPr {
+  color: #d4a217;
+  text-decoration: none;
+}
+
+.repoInfoBar .repoInfoPr:hover {
+  text-decoration: underline;
+}
+
+.repoInfoBar .repoInfoPr:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.repoInfoBar.notRepo {
+  color: var(--muted, #9aa0a6);
+}

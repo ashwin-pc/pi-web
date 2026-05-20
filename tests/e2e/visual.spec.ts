@@ -173,6 +173,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`conversation-tree-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      maxDiffPixelRatio: 0.06, // Higher threshold: safe-area padding shifts layout slightly across platforms
     });
   });
 

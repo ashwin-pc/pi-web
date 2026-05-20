@@ -23,6 +23,7 @@ export type AppElements = {
   sessionNewButton: HTMLButtonElement;
   sessionListEl: HTMLDivElement;
   sessionBarEl: HTMLDivElement;
+  repoInfoBarEl: HTMLDivElement;
   queueToggle: HTMLButtonElement;
   attachButton: HTMLButtonElement;
   imageInput: HTMLInputElement;
@@ -86,6 +87,7 @@ export function getAppElements(): AppElements {
     sessionNewButton: requiredElement<HTMLButtonElement>("#sessionNewButton"),
     sessionListEl: requiredElement<HTMLDivElement>("#sessionList"),
     sessionBarEl: requiredElement<HTMLDivElement>("#sessionBar"),
+    repoInfoBarEl: requiredElement<HTMLDivElement>("#repoInfoBar"),
     queueToggle: requiredElement<HTMLButtonElement>("#queueToggle"),
     attachButton: requiredElement<HTMLButtonElement>("#attachButton"),
     imageInput: requiredElement<HTMLInputElement>("#imageInput"),
@@ -119,13 +121,40 @@ export function getAppElements(): AppElements {
 }
 
 export function syncAppHeight() {
-  const height = window.visualViewport?.height || window.innerHeight;
+  const vv = window.visualViewport;
+  const height = vv?.height || window.innerHeight;
   document.documentElement.style.setProperty("--app-height", `${height}px`);
+
+  // Detect keyboard-open state: viewport shrinks significantly AND a text input is focused.
+  // Used by CSS to hide non-essential chrome (session bar) on mobile.
+  const activeTag = document.activeElement?.tagName;
+  const inputFocused = activeTag === "TEXTAREA" || activeTag === "INPUT";
+  const keyboardOpen = vv ? (inputFocused && height < window.innerHeight * 0.75) : false;
+  document.documentElement.classList.toggle("keyboard-open", keyboardOpen);
 }
 
+let _appHeightInitialized = false;
+
 export function initAppHeightSync() {
+  if (_appHeightInitialized) return;
+  _appHeightInitialized = true;
+
   syncAppHeight();
   window.addEventListener("resize", syncAppHeight);
+  window.addEventListener("orientationchange", () => {
+    // iOS needs a short delay after orientation change for viewport to settle
+    setTimeout(syncAppHeight, 100);
+    setTimeout(syncAppHeight, 300);
+  });
   window.visualViewport?.addEventListener("resize", syncAppHeight);
   window.visualViewport?.addEventListener("scroll", syncAppHeight);
+
+  // On iOS, focusing an input can sometimes leave the page slightly scrolled
+  // horizontally (due to prior zoom). Reset scroll on focus to prevent drift.
+  document.addEventListener("focusin", (e) => {
+    const target = e.target as HTMLElement;
+    if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") {
+      window.scrollTo(0, 0);
+    }
+  });
 }

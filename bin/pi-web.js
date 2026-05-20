@@ -16,10 +16,21 @@ const child = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
   stdio: "inherit",
 });
 
+// Auto-start tunnel
+const tunnelName = process.env.PI_WEB_TUNNEL_NAME || "piweb";
+const tunnelPort = env.PORT || "8787";
+const tunnel = spawn("tunnel", ["create", tunnelPort, "--name", tunnelName], {
+  stdio: "inherit",
+});
+tunnel.on("error", (err) => {
+  console.warn(`⚠️  Tunnel failed to start: ${err.message}`);
+});
+
 const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"];
 for (const signal of forwardedSignals) {
   process.on(signal, () => {
     if (!child.killed) child.kill(signal);
+    if (!tunnel.killed) tunnel.kill(signal);
   });
 }
 

@@ -123,6 +123,7 @@ textarea {
   padding: 12px 14px;
   outline: none;
   font: inherit;
+  font-size: 16px; /* >= 16px prevents iOS Safari auto-zoom on focus */
 }
 textarea:focus { border-bottom-color: var(--accent); }
 .expandButton {

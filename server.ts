@@ -4,7 +4,7 @@ import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -372,6 +372,94 @@ async function listGitRepos() {
     await addRepo(entry.name, cwd);
   }
   return { ok: true, cwd: piCwd, depth: 1, repos };
+}
+
+type RepoPrInfo = { number: number; url: string; title?: string };
+type RepoInfo = {
+  ok: true;
+  cwd: string;
+  isRepo: boolean;
+  root?: string;
+  rootName?: string;
+  cwdRel?: string;
+  branch?: string;
+  upstream?: string;
+  shortHash?: string;
+  hash?: string;
+  pr?: RepoPrInfo | null;
+};
+
+const repoInfoCache = new Map<string, { value: RepoInfo; expiresAt: number }>();
+const repoInfoCacheTtlMs = 4_000;
+
+async function detectGithubPr(cwd: string, branch: string): Promise<RepoPrInfo | null> {
+  if (!branch) return null;
+  try {
+    const { stdout } = await execFileAsync(
+      "gh",
+      ["pr", "view", branch, "--json", "number,url,title"],
+      { cwd, timeout: 5_000, maxBuffer: 1024 * 1024 },
+    );
+    const data = JSON.parse(stdout) as { number?: number; url?: string; title?: string };
+    if (typeof data.number === "number" && typeof data.url === "string") {
+      return { number: data.number, url: data.url, title: data.title };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+async function getRepoInfo(cwd: string): Promise<RepoInfo> {
+  const now = Date.now();
+  const cached = repoInfoCache.get(cwd);
+  if (cached && cached.expiresAt > now) return cached.value;
+
+  const base: RepoInfo = { ok: true, cwd, isRepo: false };
+  if (!(await isGitRepo(cwd))) {
+    repoInfoCache.set(cwd, { value: base, expiresAt: now + repoInfoCacheTtlMs });
+    return base;
+  }
+
+  const [rootRes, branchRes, upstreamRes, hashRes, shortHashRes] = await Promise.all([
+    git(["rev-parse", "--show-toplevel"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["branch", "--show-current"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["rev-parse", "HEAD"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["rev-parse", "--short", "HEAD"], 15_000, cwd).catch(() => ({ stdout: "" })),
+  ]);
+
+  const root = rootRes.stdout.trim();
+  const branch = branchRes.stdout.trim();
+  const rel = root ? relative(root, cwd) : "";
+
+  const info: RepoInfo = {
+    ok: true,
+    cwd,
+    isRepo: true,
+    root: root || undefined,
+    rootName: root ? basename(root) : undefined,
+    cwdRel: rel.startsWith("..") ? "" : rel,
+    branch: branch || undefined,
+    upstream: upstreamRes.stdout.trim() || undefined,
+    hash: hashRes.stdout.trim() || undefined,
+    shortHash: shortHashRes.stdout.trim() || undefined,
+    pr: null,
+  };
+
+  // Cache base info briefly so concurrent renders share results
+  repoInfoCache.set(cwd, { value: info, expiresAt: now + repoInfoCacheTtlMs });
+
+  // Try to fetch PR info; update the cache once it resolves so a follow-up
+  // request returns enriched data without making the user wait now.
+  if (branch) {
+    detectGithubPr(cwd, branch).then((pr) => {
+      const enriched: RepoInfo = { ...info, pr: pr ?? null };
+      repoInfoCache.set(cwd, { value: enriched, expiresAt: Date.now() + repoInfoCacheTtlMs });
+    }).catch(() => undefined);
+  }
+
+  return info;
 }
 
 function parseCommit(entry: string) {
@@ -1367,6 +1455,14 @@ const server = createServer(async (req, res) => {
       if (method === "GET" && url.pathname === "/api/git/status") {
         try {
           return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo")), url.searchParams.get("fetch") === "1"));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/repo-info") {
+        try {
+          return sendJson(res, 200, await getRepoInfo(await gitCwdFromRepoParam(url.searchParams.get("repo"))));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
