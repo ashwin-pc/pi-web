@@ -361,6 +361,7 @@ export function createSessions(options: {
   function applySessionUiState(value: unknown) {
     const next = normalizeSessionUiState(value);
     state.pinnedSessions = next.pinnedSessions;
+    state.pinnedFolders = next.pinnedFolders;
     state.sessionMarkers = next.sessionMarkers;
     state.sessionUnreadStates = next.sessionUnreadStates;
     syncCachedUnreadFromState();
@@ -373,11 +374,12 @@ export function createSessions(options: {
     updateSessionButtonUnread();
     updateCurrentSessionPinButton();
     renderCurrentSessionBucketButton();
-    if (state.pinnedSessions.length > 0 && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
+    if ((state.pinnedSessions.length > 0 || state.pinnedFolders.length > 0) && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
   }
 
   function hasAnySessionUiState(value: SessionUiState) {
     return value.pinnedSessions.length > 0
+      || value.pinnedFolders.length > 0
       || value.sessionMarkers.length > 0
       || value.sessionUnreadStates.length > 0
       || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
@@ -408,6 +410,7 @@ export function createSessions(options: {
     const serverState = normalizeSessionUiState(data.sessionUiState);
     const localState = normalizeSessionUiState({
       pinnedSessions: state.pinnedSessions,
+      pinnedFolders: state.pinnedFolders,
       sessionMarkers: state.sessionMarkers,
       sessionUnreadStates: state.sessionUnreadStates,
       selectedMarkerColor: state.selectedMarkerColor,
@@ -901,6 +904,29 @@ export function createSessions(options: {
     else pinSession(item);
   }
 
+  function isPinnedFolder(cwd: string) {
+    return state.pinnedFolders.includes(cwd);
+  }
+
+  function pinFolder(cwd: string) {
+    if (!cwd || isPinnedFolder(cwd)) return;
+    state.pinnedFolders = [...state.pinnedFolders, cwd];
+    persistSessionUiState({ pinnedFolders: state.pinnedFolders });
+    renderSessionList(cachedSessions);
+  }
+
+  function unpinFolder(cwd: string) {
+    if (!isPinnedFolder(cwd)) return;
+    state.pinnedFolders = state.pinnedFolders.filter((value) => value !== cwd);
+    persistSessionUiState({ pinnedFolders: state.pinnedFolders });
+    renderSessionList(cachedSessions);
+  }
+
+  function toggleFolderPin(cwd: string) {
+    if (isPinnedFolder(cwd)) unpinFolder(cwd);
+    else pinFolder(cwd);
+  }
+
   function titleForSessionId(sessionId: string) {
     const live = cachedSessions.find((s) => s.id === sessionId);
     const pinned = state.pinnedSessions.find((s) => s.id === sessionId);
@@ -1245,9 +1271,24 @@ export function createSessions(options: {
       groups.set(cwd, [...(groups.get(cwd) || []), item]);
     }
 
-    for (const [cwd, items] of groups) {
+    // Partition cwds into pinned (in pin order) and rest (existing recency-based order),
+    // so pinned folders never reshuffle when the user switches sessions. Pinned folders
+    // with no sessions are still rendered as ghost rows so the user can unpin them.
+    const pinnedFolderSet = new Set(state.pinnedFolders);
+    const orderedCwds: string[] = [];
+    for (const cwd of state.pinnedFolders) {
+      if (!groups.has(cwd)) groups.set(cwd, []);
+      orderedCwds.push(cwd);
+    }
+    for (const cwd of groups.keys()) {
+      if (!pinnedFolderSet.has(cwd)) orderedCwds.push(cwd);
+    }
+
+    for (const cwd of orderedCwds) {
+      const items = groups.get(cwd) || [];
+      const folderPinned = pinnedFolderSet.has(cwd);
       const group = document.createElement("section");
-      group.className = "sessionFolderGroup";
+      group.className = `sessionFolderGroup${folderPinned ? " pinned" : ""}`;
 
       const header = document.createElement("div");
       header.className = "sessionFolderHeader";
@@ -1276,6 +1317,20 @@ export function createSessions(options: {
         renderSessionList(cachedSessions);
       });
 
+      const pinFolderButton = document.createElement("button");
+      pinFolderButton.type = "button";
+      pinFolderButton.className = `iconButton sessionFolderPinButton${folderPinned ? " pinned" : ""}`;
+      pinFolderButton.title = folderPinned
+        ? `Unpin folder ${folderName(cwd)} from the top of the drawer`
+        : `Pin folder ${folderName(cwd)} to the top of the drawer`;
+      pinFolderButton.setAttribute("aria-label", pinFolderButton.title);
+      pinFolderButton.setAttribute("aria-pressed", String(folderPinned));
+      setIcon(pinFolderButton, "pin");
+      pinFolderButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        toggleFolderPin(cwd);
+      });
+
       const newButton = document.createElement("button");
       newButton.type = "button";
       newButton.className = "iconButton sessionFolderNewButton";
@@ -1289,10 +1344,21 @@ export function createSessions(options: {
           addMessage("system", error instanceof Error ? error.message : String(error), "error");
         }
       });
-      header.append(toggle, newButton);
+      header.append(toggle, pinFolderButton, newButton);
       group.append(header);
 
       if (state.collapsedSessionFolders.has(cwd)) {
+        elements.sessionListEl.append(group);
+        continue;
+      }
+
+      // Pinned folders that no longer have any sessions still show a placeholder
+      // row so the folder header (and its unpin affordance) remains accessible.
+      if (items.length === 0) {
+        const placeholder = document.createElement("p");
+        placeholder.className = "sessionEmpty";
+        placeholder.textContent = "No sessions in this folder yet.";
+        group.append(placeholder);
         elements.sessionListEl.append(group);
         continue;
       }

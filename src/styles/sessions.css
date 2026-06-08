@@ -347,6 +347,44 @@
   width: 13px;
   height: 13px;
 }
+.sessionFolderPinButton {
+  flex: 0 0 auto;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: color-mix(in srgb, var(--muted) 70%, transparent);
+  opacity: 0.45;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.sessionFolderHeader:hover .sessionFolderPinButton {
+  opacity: 1;
+}
+.sessionFolderPinButton:hover {
+  border: none;
+  background: var(--panel-2);
+  color: var(--accent);
+  opacity: 1;
+}
+.sessionFolderPinButton svg {
+  width: 12px;
+  height: 12px;
+}
+.sessionFolderPinButton.pinned {
+  color: var(--accent);
+  opacity: 1;
+}
+.sessionFolderGroup.pinned > .sessionFolderHeader .sessionFolderName {
+  color: var(--accent);
+}
+.sessionFolderGroup.pinned + .sessionFolderGroup:not(.pinned) {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 90%, transparent);
+}
 .sessionFolderMoreButton {
   height: 28px;
   min-height: 28px;
