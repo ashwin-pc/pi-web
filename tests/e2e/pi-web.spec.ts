@@ -22,6 +22,30 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusPath")).toContainText("pi-web");
   });
 
+  test("running activity badge does not push header actions off-screen", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#activityStatus").evaluate((el) => {
+      el.hidden = false;
+      el.className = "activityStatus running";
+      el.textContent = "Running 12m 34s · tool: bash · no updates 45s";
+    });
+
+    const layout = await page.locator("#statusBar").evaluate((bar) => {
+      const rect = bar.getBoundingClientRect();
+      const settingsRect = document.querySelector("#settingsButton")?.getBoundingClientRect();
+      return {
+        scrollWidth: bar.scrollWidth,
+        clientWidth: bar.clientWidth,
+        right: rect.right,
+        settingsRight: settingsRect?.right || 0,
+        viewportWidth: window.innerWidth,
+      };
+    });
+    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+    expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth + 1);
+    expect(layout.settingsRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
+  });
+
   test("shows transient WebSocket reconnect state outside the chat", async ({ page }) => {
     let messagesRequestCount = 0;
     await page.route("**/api/messages**", async (route) => {
