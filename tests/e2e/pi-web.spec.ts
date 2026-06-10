@@ -22,28 +22,37 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusPath")).toContainText("pi-web");
   });
 
-  test("running activity badge does not push header actions off-screen", async ({ page }) => {
+  test("running activity badge keeps header actions right-aligned", async ({ page }) => {
     await page.goto("/");
+
+    const readLayout = () =>
+      page.locator("#statusBar").evaluate((bar) => {
+        const rect = bar.getBoundingClientRect();
+        const lastActionRect = bar.querySelector("#currentSessionBucketButton")?.getBoundingClientRect();
+        return {
+          scrollWidth: bar.scrollWidth,
+          clientWidth: bar.clientWidth,
+          right: rect.right,
+          lastActionRight: lastActionRect?.right || 0,
+          viewportWidth: window.innerWidth,
+        };
+      });
+    const expectActionsAtRight = (layout: Awaited<ReturnType<typeof readLayout>>) => {
+      expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
+      expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth + 1);
+      expect(layout.lastActionRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
+      expect(layout.lastActionRight).toBeGreaterThanOrEqual(layout.right - 12);
+    };
+
+    expectActionsAtRight(await readLayout());
+
     await page.locator("#activityStatus").evaluate((el) => {
       el.hidden = false;
       el.className = "activityStatus running";
       el.textContent = "Running 12m 34s · tool: bash · no updates 45s";
     });
 
-    const layout = await page.locator("#statusBar").evaluate((bar) => {
-      const rect = bar.getBoundingClientRect();
-      const settingsRect = document.querySelector("#settingsButton")?.getBoundingClientRect();
-      return {
-        scrollWidth: bar.scrollWidth,
-        clientWidth: bar.clientWidth,
-        right: rect.right,
-        settingsRight: settingsRect?.right || 0,
-        viewportWidth: window.innerWidth,
-      };
-    });
-    expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
-    expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth + 1);
-    expect(layout.settingsRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
+    expectActionsAtRight(await readLayout());
   });
 
   test("shows transient WebSocket reconnect state outside the chat", async ({ page }) => {

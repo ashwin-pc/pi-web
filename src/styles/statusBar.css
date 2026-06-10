@@ -130,7 +130,9 @@
   }
 
   .statusPath {
-    display: none;
+    color: transparent;
+    font-size: 0;
+    pointer-events: none;
   }
 
   .activityStatus {
