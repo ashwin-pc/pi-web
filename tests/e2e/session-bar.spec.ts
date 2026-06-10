@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; label: string; cwd?: string }>;
+  pinnedFolders?: string[];
   sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
 }) {
   await page.request.patch("/api/session-ui-state", { data: state });
@@ -245,6 +246,81 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionItem")).toHaveCount(1);
     await expect(page.locator(".sessionItem")).toContainText("Older mock session");
     await expect(page.locator(".sessionFolderGroup .sessionEmpty")).toHaveCount(2);
+  });
+
+  test("session drawer pins folders to the top regardless of session activity order", async ({ page }) => {
+    await page.route("**/api/sessions**", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ sessions: [
+          {
+            id: "mock-current",
+            name: "Current mock session",
+            firstMessage: "Latest activity is in folder-a",
+            modified: "2026-05-07T10:00:00.000Z",
+            messageCount: 2,
+            cwd: "/workspace/folder-a",
+            isCurrent: true,
+          },
+          {
+            id: "mock-older",
+            name: "Older mock session",
+            firstMessage: "Older activity in folder-b",
+            modified: "2026-05-06T09:00:00.000Z",
+            messageCount: 4,
+            cwd: "/workspace/folder-b",
+            isCurrent: false,
+          },
+          {
+            id: "mock-third",
+            name: "Third session",
+            firstMessage: "Even older folder-c",
+            modified: "2026-05-05T09:00:00.000Z",
+            messageCount: 1,
+            cwd: "/workspace/folder-c",
+            isCurrent: false,
+          },
+        ] }),
+      });
+    });
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    // Default order is by recency: folder-a, folder-b, folder-c.
+    await expect(page.locator(".sessionFolderName")).toContainText(["folder-a", "folder-b", "folder-c"]);
+
+    // Pin folder-c. It should jump to the top and stay there.
+    const folderCGroup = page.locator(".sessionFolderGroup", { has: page.locator(".sessionFolderName", { hasText: "folder-c" }) });
+    await folderCGroup.locator(".sessionFolderPinButton").click();
+    await expect(folderCGroup).toHaveClass(/\bpinned\b/);
+    await expect(page.locator(".sessionFolderName")).toContainText(["folder-c", "folder-a", "folder-b"]);
+
+    // Pin folder-b too — pinned region appends in pin order.
+    const folderBGroup = page.locator(".sessionFolderGroup", { has: page.locator(".sessionFolderName", { hasText: "folder-b" }) });
+    await folderBGroup.locator(".sessionFolderPinButton").click();
+    await expect(page.locator(".sessionFolderName")).toContainText(["folder-c", "folder-b", "folder-a"]);
+
+    // Persisted server-side.
+    const stored = await (await page.request.get("/api/session-ui-state")).json();
+    expect(stored.sessionUiState.pinnedFolders).toEqual(["/workspace/folder-c", "/workspace/folder-b"]);
+
+    // Pin survives a marker-color filter that hides every session in the pinned folder.
+    await seedServerSessionUiState(page, {
+      sessionMarkers: [{ sessionId: "mock-current", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.locator(".sessionColorFilterButton").click();
+    await page.locator(".sessionColorFilterMenuItem.marker-green").click();
+    await expect(page.locator(".sessionFolderName")).toContainText(["folder-c", "folder-b", "folder-a"]);
+
+    // Unpin folder-c, ordering reverts to recency for that folder.
+    await page.locator(".sessionColorFilterButton").click();
+    await page.locator(".sessionColorFilterMenuItem.all").click();
+    await page.locator(".sessionColorFilterButton").click({ force: true });
+    // Close any lingering menu by pressing Escape.
+    await page.keyboard.press("Escape");
+    await folderCGroup.locator(".sessionFolderPinButton").click();
+    await expect(page.locator(".sessionFolderName")).toContainText(["folder-b", "folder-a", "folder-c"]);
   });
 
   test("session drawer uses selected marker colors and one-line marker actions", async ({ page }) => {

@@ -199,6 +199,7 @@ describe("pi-web mock API", () => {
   it("persists and returns server session UI state", async () => {
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(initial.sessionUiState.pinnedSessions).toEqual([]);
+    expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
 
     const patchedRes = await fetch(`${baseUrl}/api/session-ui-state`, {
@@ -206,6 +207,7 @@ describe("pi-web mock API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+        pinnedFolders: ["/work/repo-a", "/work/repo-b", "/work/repo-a", "", "  "],
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
         selectedMarkerColor: "green",
       }),
@@ -214,12 +216,21 @@ describe("pi-web mock API", () => {
     const patched = await patchedRes.json();
     expect(patched.sessionUiState).toMatchObject({
       pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+      pinnedFolders: ["/work/repo-a", "/work/repo-b"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       selectedMarkerColor: "green",
     });
 
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
+    expect(current.sessionUiState.pinnedFolders).toEqual(["/work/repo-a", "/work/repo-b"]);
+
+    // Reset for downstream tests.
+    await fetch(`${baseUrl}/api/session-ui-state`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ pinnedFolders: [] }),
+    });
   });
 
   it("applies saved defaults to new sessions", async () => {
