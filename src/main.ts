@@ -108,6 +108,7 @@ async function refreshState() {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
+  if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   composer.updatePrimaryAction();
 }
 

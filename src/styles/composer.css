@@ -54,17 +54,31 @@
 .contextMeter.warning .contextMeterFill { background: #f59e0b; }
 .contextMeter.danger .contextMeterFill { background: var(--danger); }
 .contextMeter.unknown .contextMeterTrack { background: color-mix(in srgb, var(--muted) 8%, transparent); }
+.runtimeStatus,
 .contextMeterLabel {
   position: absolute;
-  right: 0;
   top: -13px;
-  display: none;
   color: var(--muted);
   font-size: 10px;
   font-weight: 800;
   line-height: 11px;
   letter-spacing: .02em;
   pointer-events: none;
+}
+.runtimeStatus {
+  left: 0;
+  max-width: min(58vw, 420px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runtimeStatus[hidden] { display: none; }
+.runtimeStatus.running { color: var(--accent); }
+.runtimeStatus.quiet { color: #facc15; }
+.runtimeStatus.stale { color: #fb923c; }
+.contextMeterLabel {
+  right: 0;
+  display: none;
 }
 .contextMeter.warning .contextMeterLabel,
 .contextMeter.danger .contextMeterLabel,

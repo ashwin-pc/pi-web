@@ -31,12 +31,12 @@ test("records activity and tool timers after switching session tabs", async ({ p
   await expect(liveCard.locator(".toolCardPartialBody")).toContainText("Opening /some/file");
 
   await page.waitForTimeout(2300);
-  await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
+  await expect(page.locator("#runtimeStatus")).toContainText(/Running [2-9]s|Running \d+m/);
   await expect(liveCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
 
   await page.reload();
   await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-  await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
+  await expect(page.locator("#runtimeStatus")).toContainText(/Running [2-9]s|Running \d+m/);
   await expect(page.locator(".toolCard.toolCard--running", { hasText: "read" }).last().locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
   await page.waitForTimeout(600);
 
@@ -48,7 +48,7 @@ test("records activity and tool timers after switching session tabs", async ({ p
   await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
 
   const restoredCard = page.locator(".toolCard.toolCard--running", { hasText: "read" }).last();
-  await expect(page.locator("#activityStatus")).toContainText(/Running [2-9]s|Running \d+m/);
+  await expect(page.locator("#runtimeStatus")).toContainText(/Running [2-9]s|Running \d+m/);
   await expect(restoredCard).toBeVisible();
   await expect(restoredCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
   await page.waitForTimeout(1200);

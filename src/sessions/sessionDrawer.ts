@@ -15,6 +15,7 @@ export type SessionsController = {
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
+  markSessionRead: (sessionId?: string) => Promise<void>;
 };
 
 function formatRelativeTime(value: string) {
@@ -361,12 +362,15 @@ export function createSessions(options: {
     const next = normalizeSessionUiState(value);
     state.pinnedSessions = next.pinnedSessions;
     state.sessionMarkers = next.sessionMarkers;
+    state.sessionUnreadStates = next.sessionUnreadStates;
+    syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
     if (selectedSessionRowTool !== "pin") selectedSessionRowTool = next.selectedMarkerColor;
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
     renderMarkerPalette();
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
+    updateSessionButtonUnread();
     updateCurrentSessionPinButton();
     renderCurrentSessionBucketButton();
     if (state.pinnedSessions.length > 0 && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
@@ -375,6 +379,7 @@ export function createSessions(options: {
   function hasAnySessionUiState(value: SessionUiState) {
     return value.pinnedSessions.length > 0
       || value.sessionMarkers.length > 0
+      || value.sessionUnreadStates.length > 0
       || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
   }
 
@@ -404,6 +409,7 @@ export function createSessions(options: {
     const localState = normalizeSessionUiState({
       pinnedSessions: state.pinnedSessions,
       sessionMarkers: state.sessionMarkers,
+      sessionUnreadStates: state.sessionUnreadStates,
       selectedMarkerColor: state.selectedMarkerColor,
     });
     if (!hasAnySessionUiState(serverState) && hasAnySessionUiState(localState)) {
@@ -411,6 +417,77 @@ export function createSessions(options: {
       return;
     }
     applySessionUiState(serverState);
+  }
+
+  function unreadStateForSession(sessionId: string) {
+    return state.sessionUnreadStates.find((item) => item.sessionId === sessionId);
+  }
+
+  function syncCachedUnreadFromState() {
+    cachedSessions = cachedSessions.map((session) => {
+      const unread = unreadStateForSession(session.id);
+      return { ...session, unread: Boolean(unread), unreadAt: unread?.unreadAt };
+    });
+  }
+
+  function sessionRuntime(sessionId: string) {
+    const pinnedRuntime = pinnedRuntimes.get(sessionId);
+    if (pinnedRuntime?.isRunning) return pinnedRuntime;
+    return cachedSessions.find((session) => session.id === sessionId)?.runtime ?? pinnedRuntime;
+  }
+
+  function isSessionRunning(sessionId: string, fallbackRunning = false) {
+    return Boolean(fallbackRunning || sessionRuntime(sessionId)?.isRunning);
+  }
+
+  function isSessionUnread(sessionId: string, fallbackUnread = false, fallbackRunning = false) {
+    return Boolean(
+      sessionId
+      && sessionId !== state.currentSessionId
+      && !isSessionRunning(sessionId, fallbackRunning)
+      && (fallbackUnread || unreadStateForSession(sessionId)),
+    );
+  }
+
+  function hasVisibleUnreadSessions() {
+    return state.sessionUnreadStates.some((item) => item.sessionId !== state.currentSessionId && !isSessionRunning(item.sessionId));
+  }
+
+  function updateSessionButtonUnread() {
+    const unread = hasVisibleUnreadSessions();
+    elements.sessionButton.classList.toggle("unread", unread);
+    const title = unread ? "Sessions · unread activity" : "Sessions";
+    elements.sessionButton.title = title;
+    elements.sessionButton.setAttribute("aria-label", title);
+  }
+
+  function clearLocalUnread(sessionId: string) {
+    const next = state.sessionUnreadStates.filter((item) => item.sessionId !== sessionId);
+    if (next.length === state.sessionUnreadStates.length) return;
+    state.sessionUnreadStates = next;
+    syncCachedUnreadFromState();
+    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
+    renderSessionBar();
+    updateSessionButtonUnread();
+  }
+
+  async function markSessionRead(sessionId = state.currentSessionId) {
+    const id = sessionId.trim();
+    if (!id) return;
+    clearLocalUnread(id);
+    const res = await fetch("/api/session-ui-state/read", {
+      method: "POST",
+      headers: api.headers(),
+      body: JSON.stringify({ sessionId: id }),
+    });
+    if (res.status === 401) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    applySessionUiState(data.sessionUiState);
+  }
+
+  function markSessionReadBestEffort(sessionId?: string) {
+    markSessionRead(sessionId).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   }
 
   function markerForSession(sessionId: string) {
@@ -850,6 +927,7 @@ export function createSessions(options: {
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
+      markSessionReadBestEffort(sessionId);
       await refreshState();
       if (switchingSessions) await refreshMessages();
     } catch (error) {
@@ -896,6 +974,7 @@ export function createSessions(options: {
   function renderSessionBar() {
     const bar = elements.sessionBarEl;
     const pinned = state.pinnedSessions;
+    updateSessionButtonUnread();
 
     const currentId = state.currentSessionId;
     const currentIsPinned = Boolean(currentId && isPinned(currentId));
@@ -914,23 +993,31 @@ export function createSessions(options: {
     updateCurrentSessionPinButton();
 
     let activeTab: HTMLElement | undefined;
-    const appendTab = (sessionId: string, label: string, cwd: string, options: { pinned: boolean; running?: boolean }) => {
+    const appendTab = (sessionId: string, label: string, cwd: string, options: { pinned: boolean; running?: boolean; unread?: boolean }) => {
       const isActive = currentId === sessionId;
+      const unread = isSessionUnread(sessionId, Boolean(options.unread), Boolean(options.running));
       const markerColor = colorForMarker(markerForSession(sessionId)?.color);
       const tab = document.createElement("div");
-      tab.className = `sessionBarTab${isActive ? " active" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
+      tab.className = `sessionBarTab${isActive ? " active" : ""}${unread ? " unread" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
       if (isActive) activeTab = tab;
 
       const open = document.createElement("button");
       open.type = "button";
       open.className = "sessionBarTabOpen";
       if (isActive) open.setAttribute("aria-current", "page");
-      open.title = markerColor ? `${label} · ${markerColor.label} marker` : label;
+      open.title = [label, markerColor ? `${markerColor.label} marker` : "", unread ? "Unread activity" : ""].filter(Boolean).join(" · ");
 
       const labelEl = document.createElement("span");
       labelEl.className = "sessionBarTabLabel";
       labelEl.textContent = label;
       open.append(labelEl);
+      if (unread) {
+        const unreadDot = document.createElement("span");
+        unreadDot.className = "sessionUnreadDot sessionBarUnreadDot";
+        unreadDot.title = "Unread activity";
+        unreadDot.setAttribute("aria-hidden", "true");
+        open.append(unreadDot);
+      }
       open.addEventListener("click", () => void openSessionTab(sessionId, cwd));
       tab.append(open);
 
@@ -963,7 +1050,7 @@ export function createSessions(options: {
         pinnedEntry.id,
         live ? sessionTitle(live) : pinnedEntry.label,
         live?.cwd || pinnedEntry.cwd || state.currentCwd,
-        { pinned: true, running: (live?.runtime ?? pinnedRuntimes.get(pinnedEntry.id))?.isRunning ?? false },
+        { pinned: true, running: (live?.runtime ?? pinnedRuntimes.get(pinnedEntry.id))?.isRunning ?? false, unread: live?.unread },
       );
     }
 
@@ -978,6 +1065,7 @@ export function createSessions(options: {
       appendTab(currentId, live ? sessionTitle(live) : titleForSessionId(currentId), live?.cwd || state.currentCwd, {
         pinned: false,
         running: (live?.runtime ?? pinnedRuntimes.get(currentId))?.isRunning ?? state.isStreaming,
+        unread: live?.unread,
       });
     }
 
@@ -1248,9 +1336,10 @@ export function createSessions(options: {
     const marker = markerForSession(item.id);
     const markerColor = colorForMarker(marker?.color);
     const pinned = isPinned(item.id);
+    const unread = isSessionUnread(item.id, Boolean(item.unread), Boolean(item.runtime?.isRunning));
     const pinToolSelected = selectedSessionRowTool === "pin";
     const row = document.createElement("div");
-    row.className = `sessionItem${item.isCurrent ? " current" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
+    row.className = `sessionItem${item.isCurrent ? " current" : ""}${unread ? " unread" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
     if (item.isCurrent) row.setAttribute("aria-current", "page");
 
     const markerButton = document.createElement("button");
@@ -1285,6 +1374,7 @@ export function createSessions(options: {
     const navBtn = document.createElement("button");
     navBtn.type = "button";
     navBtn.className = "sessionItemNavBtn";
+    if (unread) navBtn.title = "Unread activity";
 
     const titleRow = document.createElement("span");
     titleRow.className = "sessionItemTitleRow";
@@ -1292,6 +1382,14 @@ export function createSessions(options: {
     title.className = "sessionItemTitle";
     title.textContent = sessionTitle(item);
     titleRow.append(title);
+
+    if (unread) {
+      const unreadDot = document.createElement("span");
+      unreadDot.className = "sessionUnreadDot sessionItemUnreadDot";
+      unreadDot.title = "Unread activity";
+      unreadDot.setAttribute("aria-hidden", "true");
+      titleRow.append(unreadDot);
+    }
 
     if (item.runtime?.isRunning) {
       const spinner = document.createElement("span");
@@ -1327,6 +1425,7 @@ export function createSessions(options: {
         writeActiveSessionIdToUrl(item.id);
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
+        markSessionReadBestEffort(item.id);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
         await refreshState();
         if (switchingSessions) await refreshMessages();
@@ -1440,5 +1539,6 @@ export function createSessions(options: {
     renderSessionBar,
     renderCurrentSessionBucketButton,
     applySessionUiState,
+    markSessionRead,
   };
 }

@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; label: string; cwd?: string }>;
   sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
+  sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string; updatedAt: string }>;
 }) {
   await page.request.patch("/api/session-ui-state", { data: state });
 }
@@ -73,6 +74,55 @@ test.describe("session quick bar", () => {
     await page.goto("/");
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).toHaveClass(/\bactive\b/);
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).not.toHaveClass(/\bactive\b/);
+  });
+
+  test("shows unread indicators in tabs and session drawer rows", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      pinnedSessions: [
+        { id: "mock-current", label: "Current mock session" },
+        { id: "mock-older", label: "Older mock session" },
+      ],
+      sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+
+    await page.goto("/");
+    const olderTab = page.locator(".sessionBarTab").filter({ hasText: "Older mock session" });
+    await expect(olderTab).toHaveClass(/\bunread\b/);
+    await expect(olderTab.locator(".sessionBarUnreadDot")).toBeVisible();
+    await expect(page.locator("#sessionButton")).toHaveClass(/\bunread\b/);
+
+    await page.locator("#sessionButton").click();
+    const olderRow = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
+    await expect(olderRow).toHaveClass(/\bunread\b/);
+    await expect(olderRow.locator(".sessionItemUnreadDot")).toBeVisible();
+  });
+
+  test("opening an unread session clears it in other browser views", async ({ page, context }) => {
+    await seedServerSessionUiState(page, {
+      pinnedSessions: [
+        { id: "mock-current", label: "Current mock session" },
+        { id: "mock-older", label: "Older mock session" },
+      ],
+      sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+
+    await page.goto("/");
+    const other = await context.newPage();
+    await other.goto("/");
+
+    const olderTab = page.locator(".sessionBarTab").filter({ hasText: "Older mock session" });
+    const otherOlderTab = other.locator(".sessionBarTab").filter({ hasText: "Older mock session" });
+    await expect(olderTab).toHaveClass(/\bunread\b/);
+    await expect(otherOlderTab).toHaveClass(/\bunread\b/);
+
+    await olderTab.locator(".sessionBarTabOpen").click();
+    await expect(olderTab).toHaveClass(/\bactive\b/);
+    await expect(olderTab).not.toHaveClass(/\bunread\b/);
+    await expect(otherOlderTab).not.toHaveClass(/\bunread\b/);
+
+    const uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.sessionUnreadStates).toEqual([]);
+    await other.close();
   });
 
   test("/clear reuses the current tab pin and marker while releasing the old session", async ({ page }) => {
@@ -486,16 +536,7 @@ test.describe("session quick bar", () => {
     await expect(tab).not.toHaveClass(/\brunning\b/, { timeout: 5000 });
   });
 
-  test("running class appears on a background session without opening the drawer", async ({ page }) => {
-    // Regression: running state for any pinned session must appear via
-    // session_runtime_changed WebSocket events, not just when refreshSessions() fires.
-    await seedServerPinned(
-      page,
-      { id: "mock-current", label: "Current mock session" },
-      { id: "mock-older", label: "Older mock session" },
-    );
-
-    await page.goto("/");
+  async function switchToOlder(page: import("@playwright/test").Page) {
     // Switch to the older session so mock-current is a background tab.
     await page.locator("#sessionButton").click();
     await expect(page.locator("#sessionDrawer")).toBeVisible();
@@ -506,21 +547,65 @@ test.describe("session quick bar", () => {
       await page.locator("#sessionCloseButton").click();
       await expect(page.locator("#sessionDrawer")).toBeHidden();
     }
+  }
 
-    // Send a message to the background session (mock-current is still live).
-    // Use the sessions/open API directly to prompt without switching the UI.
-    await page.evaluate(async () => {
+  async function promptCurrentInBackground(page: import("@playwright/test").Page, message: string) {
+    await page.evaluate(async (promptMessage) => {
       const token = document.querySelector<HTMLInputElement>("#tokenInput")?.value || "";
       const headers: Record<string, string> = { "content-type": "application/json" };
       if (token) headers["authorization"] = `Bearer ${token}`;
       // Open mock-current session in background then fire a prompt at it.
       const openRes = await fetch("/api/sessions/open", { method: "POST", headers, body: JSON.stringify({ sessionId: "mock-current", cwd: "." }) });
       await openRes.json();
-      await fetch("/api/prompt", { method: "POST", headers, body: JSON.stringify({ sessionId: "mock-current", message: "slow background task" }) });
-    });
+      await fetch("/api/prompt", { method: "POST", headers, body: JSON.stringify({ sessionId: "mock-current", message: promptMessage }) });
+    }, message);
+  }
 
+  async function switchToOlderAndPromptCurrent(page: import("@playwright/test").Page, message: string) {
+    await switchToOlder(page);
+    await promptCurrentInBackground(page, message);
+  }
+
+  test("running class appears on a background session without opening the drawer", async ({ page }) => {
+    // Regression: running state for any pinned session must appear via
+    // session_runtime_changed WebSocket events, not just when refreshSessions() fires.
+    await seedServerPinned(
+      page,
+      { id: "mock-current", label: "Current mock session" },
+      { id: "mock-older", label: "Older mock session" },
+    );
+
+    await page.goto("/");
+    await switchToOlder(page);
     const currentTab = page.locator(".sessionBarTab").filter({ hasText: "Current mock session" });
+    await seedServerSessionUiState(page, {
+      sessionUnreadStates: [{ sessionId: "mock-current", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await expect(currentTab).toHaveClass(/\bunread\b/);
+
+    await promptCurrentInBackground(page, "slow background task");
+
     await expect(currentTab).toHaveClass(/\brunning\b/, { timeout: 4000 });
+    await expect(currentTab).not.toHaveClass(/\bunread\b/);
     await expect(currentTab).not.toHaveClass(/\brunning\b/, { timeout: 6000 });
+    await expect(currentTab).toHaveClass(/\bunread\b/);
+  });
+
+  test("background completion recovers unread state when agent_end is missed", async ({ page }) => {
+    await seedServerPinned(
+      page,
+      { id: "mock-current", label: "Current mock session" },
+      { id: "mock-older", label: "Older mock session" },
+    );
+
+    await page.goto("/");
+    const currentTab = page.locator(".sessionBarTab").filter({ hasText: "Current mock session" });
+
+    await switchToOlderAndPromptCurrent(page, "slow missing agent end");
+
+    await expect(currentTab).toHaveClass(/\brunning\b/, { timeout: 4000 });
+    await expect(currentTab).not.toHaveClass(/\bunread\b/);
+    await expect(currentTab).not.toHaveClass(/\brunning\b/, { timeout: 6000 });
+    await expect(currentTab).toHaveClass(/\bunread\b/);
   });
 });

@@ -16,7 +16,6 @@ export type StatusBar = {
   markActivityEnd: () => void;
 };
 
-const activityVisibleDelayMs = 1500;
 const activityQuietNoticeMs = 30_000;
 const activityQuietWarnMs = 120_000;
 
@@ -54,7 +53,6 @@ export function createStatusBar(options: {
   const { state, elements, api, updateMeta, addMessage, refreshSessions, refreshState } = options;
   const activityBySession = new Map<string, ActivityEntry>();
   let activityTimer: number | undefined;
-  let activityShowTimer: number | undefined;
 
   function setStatusTitle(title: string) {
     const value = title.trim() || "New session";
@@ -168,29 +166,28 @@ export function createStatusBar(options: {
     const quiet = quietFor >= activityQuietNoticeMs;
     const warn = quietFor >= activityQuietWarnMs;
     const elapsedText = activity.startedAt ? ` ${formatActivityDuration(now - activity.startedAt)}` : "";
-    elements.activityStatusEl.className = `activityStatus ${warn ? "stale" : quiet ? "quiet" : "running"}`;
-    elements.activityStatusEl.textContent = `Running${elapsedText}${activity.label ? ` · ${activity.label}` : ""}${quiet ? ` · no updates ${formatActivityDuration(quietFor)}` : ""}`;
-    elements.activityStatusEl.title = activity.startedAt
+    const className = warn ? "stale" : quiet ? "quiet" : "running";
+    const text = `Running${elapsedText}${activity.label ? ` · ${activity.label}` : ""}${quiet ? ` · no updates ${formatActivityDuration(quietFor)}` : ""}`;
+    const title = activity.startedAt
       ? `Session is still active. Last update ${formatActivityDuration(quietFor)} ago.${state.isStreaming ? " Use Stop to cancel if needed." : ""}`
       : `Session is still active, but its original start time is unavailable.${state.isStreaming ? " Use Stop to cancel if needed." : ""}`;
-    if (forceVisible) elements.activityStatusEl.hidden = false;
+    elements.activityStatusEl.className = `activityStatus ${className}`;
+    elements.activityStatusEl.textContent = text;
+    elements.activityStatusEl.title = title;
+    elements.activityStatusEl.hidden = true;
+    elements.runtimeStatusEl.className = `runtimeStatus ${className}`;
+    elements.runtimeStatusEl.textContent = text;
+    elements.runtimeStatusEl.title = title;
+    elements.runtimeStatusEl.hidden = false;
   }
 
   function clearActivityTimers() {
     if (activityTimer !== undefined) window.clearInterval(activityTimer);
-    if (activityShowTimer !== undefined) window.clearTimeout(activityShowTimer);
     activityTimer = undefined;
-    activityShowTimer = undefined;
   }
 
   function ensureActivityTimers() {
     if (activityTimer === undefined) activityTimer = window.setInterval(() => updateActivityStatus(), 1000);
-    if (activityShowTimer === undefined && elements.activityStatusEl.hidden) {
-      activityShowTimer = window.setTimeout(() => {
-        activityShowTimer = undefined;
-        updateActivityStatus(true);
-      }, activityVisibleDelayMs);
-    }
   }
 
   function markActivityStart(label = "starting", startedAt?: string | number | Date) {
@@ -229,6 +226,10 @@ export function createStatusBar(options: {
     elements.activityStatusEl.textContent = "";
     elements.activityStatusEl.title = "";
     elements.activityStatusEl.className = "activityStatus";
+    elements.runtimeStatusEl.hidden = true;
+    elements.runtimeStatusEl.textContent = "";
+    elements.runtimeStatusEl.title = "";
+    elements.runtimeStatusEl.className = "runtimeStatus";
   }
 
   function scheduleConnectionStatus() {

@@ -41,6 +41,7 @@ export function createRealtime(options: {
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
   const sessionRuntimeKeys = new Map<string, string>();
+  const terminalRuntimeSessions = new Set<string>();
 
   function runtimeKey(runtime: any) {
     return [
@@ -60,6 +61,27 @@ export function createRealtime(options: {
       default:
         return false;
     }
+  }
+
+  function noteRuntimeEvent(sessionKey: string, event: PiEvent | undefined) {
+    if (!sessionKey) return;
+    switch (event?.type) {
+      case "agent_start":
+      case "compaction_start":
+        terminalRuntimeSessions.delete(sessionKey);
+        break;
+      case "agent_end":
+      case "compaction_end":
+        terminalRuntimeSessions.add(sessionKey);
+        break;
+    }
+  }
+
+  function isStaleRunningRuntimeAfterTerminal(sessionKey: string, runtime: any) {
+    return Boolean(sessionKey)
+      && terminalRuntimeSessions.has(sessionKey)
+      && Boolean(runtime?.isRunning)
+      && !(typeof runtime?.startedAt === "string" && runtime.startedAt.trim());
   }
 
   function scheduleSessionRefresh(delay = 250) {
@@ -225,14 +247,17 @@ export function createRealtime(options: {
         break;
       }
       case "tool_execution_start":
+        messages.invalidateRefreshes();
         tools.startTool(event.toolCallId, event.toolName || "tool", event.args || {}, event.startedAt);
         status.markActivityProgress(`tool: ${event.toolName || "tool"}`);
         break;
       case "tool_execution_update":
+        messages.invalidateRefreshes();
         tools.updateToolProgress(event.toolCallId, event.toolName || "tool", event.partialResult, event.args || {}, event.startedAt);
         status.markActivityProgress(`tool: ${event.toolName || "tool"}`);
         break;
       case "tool_execution_end":
+        messages.invalidateRefreshes();
         tools.endTool(event.toolCallId, event.toolName || "tool", Boolean(event.isError), event.result);
         status.markActivityProgress("waiting for assistant");
         break;
@@ -243,7 +268,9 @@ export function createRealtime(options: {
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
         tools.clearActiveToolCards();
-        if (!isReplay) refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+        if (!isReplay) refreshMessages()
+          .then(() => sessions.markSessionRead())
+          .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
         if (!isReplay && conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
         status.refreshSessionTitle();
         break;
@@ -260,7 +287,9 @@ export function createRealtime(options: {
         setCompactionMessage(compactionEndText(event), extraClass);
         compactionMessage = null;
         if (event.result) {
-          if (!isReplay) refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+          if (!isReplay) refreshMessages()
+            .then(() => sessions.markSessionRead())
+            .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
           if (!isReplay && conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
           status.refreshSessionTitle();
         }
@@ -318,10 +347,28 @@ export function createRealtime(options: {
       }
       if (data.type === "session_runtime_changed") {
         const key = String(data.sessionId || data.sessionFile || "");
+        if (isStaleRunningRuntimeAfterTerminal(key, data.runtime)) return;
+        if (key && (!data.runtime?.isRunning || typeof data.runtime?.startedAt === "string")) terminalRuntimeSessions.delete(key);
         const nextRuntimeKey = runtimeKey(data.runtime);
         if (key && sessionRuntimeKeys.get(key) !== nextRuntimeKey) {
           sessionRuntimeKeys.set(key, nextRuntimeKey);
           sessions.updateSessionRuntime(String(data.sessionId || ""), data.runtime);
+        }
+        if (data.sessionId && data.sessionId === state.currentSessionId) {
+          const wasRunning = state.isStreaming || state.isCompacting;
+          const isRunning = Boolean(data.runtime?.isRunning);
+          state.isStreaming = Boolean(data.runtime?.isStreaming);
+          state.isCompacting = Boolean(data.runtime?.isCompacting);
+          if (isRunning) status.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtime?.startedAt);
+          else status.markActivityEnd();
+          composer.updatePrimaryAction();
+          if (wasRunning && !isRunning) {
+            refreshMessages()
+              .then(() => sessions.markSessionRead())
+              .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+            if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
+            status.refreshSessionTitle();
+          }
         }
         return;
       }
@@ -350,6 +397,8 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "pi_event") {
+        const eventSessionKey = String(data.sessionId || data.sessionFile || "");
+        noteRuntimeEvent(eventSessionKey, data.event);
         if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
         if (data.sessionId) {
           if (data.event?.type === "agent_start") {

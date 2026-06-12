@@ -35,6 +35,7 @@ export type MessageList = {
     updateEmptyCwdChooser?: () => void;
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
+  invalidateRefreshes: () => void;
   scrollToBottom: () => void;
 };
 
@@ -135,6 +136,10 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
 
   function invalidatePendingRefreshes() {
     if (!applyingRefresh) mutationSerial++;
+  }
+
+  function invalidateExternalRefreshes() {
+    mutationSerial++;
   }
 
   function distanceFromBottom() {
@@ -633,6 +638,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     endStreamingThinking,
     refreshMessages,
     resetStreamingAssistant,
+    invalidateRefreshes: invalidateExternalRefreshes,
     scrollToBottom,
     startStreamingThinking,
   };

@@ -21,6 +21,19 @@ test.describe("stop button", () => {
     await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
   });
 
+  test("stays hidden when a stale running runtime update arrives after completion", async ({ page }) => {
+    await page.locator("#prompt").fill("slow stale runtime after end");
+    await page.locator("#primaryButton").click();
+
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await expect(page.locator(".message.assistant", { hasText: "Mock response." }).last()).toBeVisible();
+    await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
+    await expect(page.locator("#runtimeStatus")).toBeHidden();
+    await page.waitForTimeout(300);
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await expect(page.locator("#runtimeStatus")).toBeHidden();
+  });
+
   test("has red background while streaming", async ({ page }) => {
     await page.locator("#prompt").fill("slow running task");
     await page.locator("#primaryButton").click();

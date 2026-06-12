@@ -258,6 +258,14 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     updateRunningToolProgress(card);
   }
 
+  function setRunningToolStartedAt(card: HTMLDivElement, startedAt?: number) {
+    if (!startedAt) return;
+    const state = runningToolStates.get(card);
+    if (!state || state.startedAt) return;
+    state.startedAt = startedAt;
+    updateRunningToolProgress(card);
+  }
+
   function stopRunningToolProgress(card: HTMLDivElement) {
     const state = runningToolStates.get(card);
     if (state) window.clearInterval(state.timer);
@@ -351,20 +359,26 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
 
   function startTool(toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) {
     const cardKey = runningToolKey(toolCallId, toolName);
+    const knownStartedAt = startedAtForCard(cardKey, startedAt);
     const existing = activeToolCards.get(cardKey);
-    if (existing?.isConnected) return;
-    const card = addToolCard(toolName, args, startedAtForCard(cardKey, startedAt));
+    if (existing?.isConnected) {
+      setRunningToolStartedAt(existing, knownStartedAt);
+      return;
+    }
+    const card = addToolCard(toolName, args, knownStartedAt);
     activeToolCards.set(cardKey, card);
   }
 
   function updateToolProgress(toolCallId: string | undefined, toolName: string, partialResult?: unknown, args: Record<string, unknown> = {}, startedAt?: string | number | Date) {
     const cardKey = runningToolKey(toolCallId, toolName);
+    const knownStartedAt = startedAtForCard(cardKey, startedAt);
     let card = activeToolCards.get(cardKey);
     if (!card?.isConnected && Object.keys(args).length > 0) {
-      card = addToolCard(toolName, args, startedAtForCard(cardKey, startedAt));
+      card = addToolCard(toolName, args, knownStartedAt);
       activeToolCards.set(cardKey, card);
     }
     if (!card?.isConnected) return;
+    setRunningToolStartedAt(card, knownStartedAt);
     noteToolActivity(card, partialResult);
   }
 

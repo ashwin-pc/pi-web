@@ -8,6 +8,7 @@ export type AppElements = {
   extensionFooterEl: HTMLDivElement;
   contextMeterEl: HTMLButtonElement;
   contextMeterFillEl: HTMLSpanElement;
+  runtimeStatusEl: HTMLSpanElement;
   contextMeterLabelEl: HTMLSpanElement;
   contextMeterPopoverEl: HTMLDivElement;
   promptEl: HTMLTextAreaElement;
@@ -75,6 +76,7 @@ export function getAppElements(): AppElements {
     extensionFooterEl: requiredElement<HTMLDivElement>("#extensionFooter"),
     contextMeterEl: requiredElement<HTMLButtonElement>("#contextMeter"),
     contextMeterFillEl: requiredElement<HTMLSpanElement>("#contextMeterFill"),
+    runtimeStatusEl: requiredElement<HTMLSpanElement>("#runtimeStatus"),
     contextMeterLabelEl: requiredElement<HTMLSpanElement>("#contextMeterLabel"),
     contextMeterPopoverEl: requiredElement<HTMLDivElement>("#contextMeterPopover"),
     promptEl: requiredElement<HTMLTextAreaElement>("#prompt"),

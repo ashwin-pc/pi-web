@@ -770,6 +770,25 @@ function runtimeForPath(path: string) {
   };
 }
 
+function stoppedRuntimeForPath(path: string) {
+  const live = liveSessions.get(path)?.session;
+  return {
+    loaded: Boolean(live),
+    isRunning: false,
+    isStreaming: false,
+    isCompacting: false,
+    startedAt: undefined,
+    pendingMessageCount: Number(live?.pendingMessageCount || 0),
+    model: simplifyModel(live?.model),
+  };
+}
+
+function runtimeForEvent(path: string, event: any) {
+  return event?.type === "agent_end" || event?.type === "compaction_end"
+    ? stoppedRuntimeForPath(path)
+    : runtimeForPath(path);
+}
+
 function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd) {
   return {
     id: info.id,
@@ -782,6 +801,14 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     isCurrent: false,
     runtime: runtimeForPath(info.path),
   };
+}
+
+function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessionUiState: { sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string }> }) {
+  const unreadById = new Map((sessionUiState.sessionUnreadStates || []).map((item) => [item.sessionId, item]));
+  return sessions.map((item) => {
+    const unread = unreadById.get(item.id);
+    return unread ? { ...item, unread: true, unreadAt: unread.unreadAt } : { ...item, unread: false };
+  });
 }
 
 async function listSessionInfos(extraCwds: string[] = []) {
@@ -1165,6 +1192,85 @@ function broadcast(value: unknown) {
   for (const client of clients) {
     if (client.readyState === client.OPEN) client.send(data);
   }
+  queueUnreadStateFromBroadcast(value);
+}
+
+function shouldClearSessionUnreadEvent(event: any) {
+  switch (event?.type) {
+    case "agent_start":
+    case "compaction_start":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function noteRuntimeEventForUnreadRecovery(data: Record<string, any>) {
+  const sessionFile = typeof data.sessionFile === "string" ? data.sessionFile.trim() : "";
+  if (!sessionFile) return;
+  const event = data.event;
+  switch (event?.type) {
+    case "agent_start":
+    case "compaction_start": {
+      const startedAt = typeof event.startedAt === "string" && event.startedAt.trim() ? event.startedAt.trim() : new Date().toISOString();
+      runtimeStartedAts.set(sessionFile, startedAt);
+      return;
+    }
+    case "agent_end":
+    case "compaction_end":
+      runtimeStartedAts.delete(sessionFile);
+      return;
+  }
+}
+
+function broadcastSessionUiStateUpdate(operation: Promise<unknown>, warning: string) {
+  void operation
+    .then((sessionUiState) => broadcast({ type: "session_ui_state_changed", sessionUiState }))
+    .catch((error) => console.warn(warning, error));
+}
+
+function markSessionUnreadCompleted(sessionId: string, unreadAt = new Date().toISOString()) {
+  broadcastSessionUiStateUpdate(sessionUiStateStore.markUnread(sessionId, unreadAt), "Could not mark session unread:");
+}
+
+function clearSessionUnread(sessionId: string) {
+  broadcastSessionUiStateUpdate(sessionUiStateStore.markRead(sessionId), "Could not clear session unread state:");
+}
+
+function shouldMarkSessionUnreadEvent(event: any) {
+  // Unread means a background session completed and may need attention.
+  // Do not mark on message_end: pi can emit it for the user's submitted
+  // message before the assistant response has finished.
+  if (!event || event.aborted) return false;
+  switch (event.type) {
+    case "agent_end":
+    case "compaction_end":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function unreadTimestampForEvent(event: any) {
+  for (const value of [event?.timestamp, event?.endedAt, event?.startedAt]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return new Date().toISOString();
+}
+
+function queueUnreadStateFromBroadcast(value: unknown) {
+  if (!value || typeof value !== "object") return;
+  const data = value as Record<string, any>;
+  if (data.type !== "pi_event") return;
+  noteRuntimeEventForUnreadRecovery(data);
+  const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
+  if (!sessionId) return;
+  if (shouldClearSessionUnreadEvent(data.event)) {
+    clearSessionUnread(sessionId);
+    return;
+  }
+  if (!shouldMarkSessionUnreadEvent(data.event)) return;
+  markSessionUnreadCompleted(sessionId, unreadTimestampForEvent(data.event));
 }
 
 const plainExtensionTheme = {
@@ -1488,7 +1594,7 @@ function registerLiveSession(value: any) {
       type: "session_runtime_changed",
       sessionId: eventSessionId,
       sessionFile: eventSessionFile,
-      runtime: runtimeForPath(eventSessionFile),
+      runtime: runtimeForEvent(eventSessionFile, e),
     });
 
     // Broadcast state update when session name changes
@@ -1619,7 +1725,8 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   const current = await sessionUiStateStore.read();
   const oldPinnedIndex = current.pinnedSessions.findIndex((item) => item.id === oldSessionId);
   const oldMarker = current.sessionMarkers.find((item) => item.sessionId === oldSessionId);
-  if (oldPinnedIndex === -1 && !oldMarker) return current;
+  const hasUnreadState = current.sessionUnreadStates.some((item) => item.sessionId === oldSessionId || item.sessionId === newSessionId);
+  if (oldPinnedIndex === -1 && !oldMarker && !hasUnreadState) return current;
 
   const pinnedSessions = current.pinnedSessions.filter((item) => item.id !== oldSessionId && item.id !== newSessionId);
   if (oldPinnedIndex !== -1) {
@@ -1630,8 +1737,9 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   if (oldMarker) {
     sessionMarkers.unshift({ sessionId: newSessionId, color: oldMarker.color, updatedAt: new Date().toISOString() });
   }
+  const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
 
-  const next = await sessionUiStateStore.write({ ...current, pinnedSessions, sessionMarkers });
+  const next = await sessionUiStateStore.write({ ...current, pinnedSessions, sessionMarkers, sessionUnreadStates });
   broadcast({ type: "session_ui_state_changed", sessionUiState: next });
   return next;
 }
@@ -1873,7 +1981,8 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/sessions") {
         const extraCwds = url.searchParams.getAll("cwd");
-        return sendJson(res, 200, { ok: true, sessions: await listSessionInfos(extraCwds) });
+        const sessionUiState = await sessionUiStateStore.read();
+        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(await listSessionInfos(extraCwds), sessionUiState) });
       }
 
       if (method === "GET" && url.pathname === "/api/session-ui-state") {
@@ -1882,6 +1991,14 @@ const server = createServer(async (req, res) => {
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
         const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+        broadcast({ type: "session_ui_state_changed", sessionUiState });
+        return sendJson(res, 200, { ok: true, sessionUiState });
+      }
+
+      if (method === "POST" && url.pathname === "/api/session-ui-state/read") {
+        const body = await readBody(req) as { sessionId?: unknown };
+        const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : session.sessionId;
+        const sessionUiState = await sessionUiStateStore.markRead(sessionId);
         broadcast({ type: "session_ui_state_changed", sessionUiState });
         return sendJson(res, 200, { ok: true, sessionUiState });
       }
@@ -2000,17 +2117,31 @@ const server = createServer(async (req, res) => {
         const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
         const wasAlreadyRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
         if (!wasAlreadyRunning) ensureRuntimeStartedAt(targetSession);
+        const promptSessionFile = targetSession.sessionFile;
         void targetSession.prompt(promptText, {
           ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
           ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
         })
           .catch((error: unknown) => {
-            if (!wasAlreadyRunning) clearRuntimeStartedAt(targetSession);
             broadcast({
               type: "server_error",
               sessionId: targetSession.sessionId,
               sessionFile: targetSession.sessionFile,
               error: error instanceof Error ? error.message : String(error),
+            });
+          })
+          .finally(() => {
+            const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+            const missedTerminalEvent = Boolean(promptSessionFile && runtimeStartedAts.has(promptSessionFile) && !isRunning);
+            if (missedTerminalEvent) {
+              clearRuntimeStartedAt(targetSession, promptSessionFile);
+              markSessionUnreadCompleted(targetSession.sessionId);
+            }
+            broadcast({
+              type: "session_runtime_changed",
+              sessionId: targetSession.sessionId,
+              sessionFile: targetSession.sessionFile,
+              runtime: runtimeForPath(targetSession.sessionFile),
             });
           });
 

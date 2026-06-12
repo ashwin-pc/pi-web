@@ -394,6 +394,31 @@
   border-radius: 999px;
   animation: sessionSpin .8s linear infinite;
 }
+.sessionUnreadDot {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--panel) 86%, black);
+}
+.sessionItemUnreadDot {
+  margin-left: -1px;
+}
+.sessionItem.marked .sessionUnreadDot {
+  background: var(--session-marker-color);
+}
+.sessionItem.unread:not(.current) .sessionItemTitle {
+  color: var(--text);
+  font-weight: 700;
+}
+.sessionItem.unread:not(.current) .sessionItemMeta {
+  color: color-mix(in srgb, var(--accent) 72%, var(--muted));
+}
+.sessionItem.unread.marked:not(.current) .sessionItemMeta {
+  color: color-mix(in srgb, var(--session-marker-color) 76%, var(--muted));
+}
 @keyframes sessionSpin {
   to { transform: rotate(360deg); }
 }
@@ -865,6 +890,34 @@
 .sessionBarTab.marked.running:not(.active) {
   color: color-mix(in srgb, var(--session-tab-accent) 42%, var(--muted));
   background: color-mix(in srgb, var(--session-tab-accent) 6%, transparent);
+}
+.sessionBarTab.unread:not(.active) {
+  color: color-mix(in srgb, var(--session-tab-accent) 72%, var(--text));
+  background: color-mix(in srgb, var(--session-tab-accent) 8%, transparent);
+}
+.sessionBarTab.unread:not(.active) .sessionBarTabLabel {
+  font-weight: 800;
+}
+.sessionBarUnreadDot {
+  width: 6px;
+  height: 6px;
+  margin-left: 5px;
+  background: var(--session-tab-accent);
+}
+#sessionButton.unread {
+  position: relative;
+  color: var(--accent);
+}
+#sessionButton.unread::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 7px;
+  height: 7px;
+  border: 1px solid color-mix(in srgb, var(--panel) 90%, black);
+  border-radius: 999px;
+  background: var(--accent);
 }
 
 /* When the quick bar is visible, remove the composer's mobile safe-area margin
