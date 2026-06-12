@@ -212,6 +212,7 @@ export type SessionInfo = {
     isStreaming: boolean;
     isCompacting: boolean;
     startedAt?: string;
+    lastActivityAt?: string;
     pendingMessageCount: number;
   };
   unread?: boolean;

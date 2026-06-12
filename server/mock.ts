@@ -145,20 +145,49 @@ export function createMockHarness(options: MockSessionOptions) {
     let mockSession: PiWebSession;
     let compactionAbortRequested = false;
     let runtimeStartedAt: string | undefined;
+    let runtimeLastActivityAt: string | undefined;
+
+    function setRuntimeStartedAt(startedAt = new Date().toISOString(), lastActivityAt = startedAt) {
+      runtimeStartedAt = startedAt;
+      runtimeLastActivityAt = lastActivityAt;
+      (mockSession as any).runtimeStartedAt = runtimeStartedAt;
+      (mockSession as any).runtimeLastActivityAt = runtimeLastActivityAt;
+    }
+
+    function markRuntimeActivity(activityAt = new Date().toISOString()) {
+      runtimeLastActivityAt = activityAt;
+      (mockSession as any).runtimeLastActivityAt = runtimeLastActivityAt;
+      return runtimeLastActivityAt;
+    }
+
+    function clearRuntimeTimestamps() {
+      runtimeStartedAt = undefined;
+      runtimeLastActivityAt = undefined;
+      delete (mockSession as any).runtimeStartedAt;
+      delete (mockSession as any).runtimeLastActivityAt;
+    }
+
+    function broadcastPiEvent(event: Record<string, unknown>, activityAt?: string | false) {
+      const lastActivityAt = activityAt === false ? runtimeLastActivityAt : markRuntimeActivity(activityAt || new Date().toISOString());
+      broadcast({
+        type: "pi_event",
+        sessionId: mockSession.sessionId,
+        sessionFile: mockSession.sessionFile,
+        event: lastActivityAt ? { ...event, lastActivityAt } : event,
+      });
+    }
 
     async function runMockCompaction(customInstructions?: string, slow = false) {
       mockSession.isCompacting = true;
-      runtimeStartedAt = new Date().toISOString();
-      (mockSession as any).runtimeStartedAt = runtimeStartedAt;
+      setRuntimeStartedAt();
       compactionAbortRequested = false;
       broadcastRuntimeChanged();
-      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_start", reason: "manual", startedAt: runtimeStartedAt } });
+      broadcastPiEvent({ type: "compaction_start", reason: "manual", startedAt: runtimeStartedAt }, runtimeStartedAt);
       if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       const deadline = Date.now() + (slow ? 5_000 : 1_000);
       while (!compactionAbortRequested && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
       mockSession.isCompacting = false;
-      runtimeStartedAt = undefined;
-      delete (mockSession as any).runtimeStartedAt;
+      clearRuntimeTimestamps();
       if (compactionAbortRequested) {
         broadcastRuntimeChanged();
         broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", aborted: true } });
@@ -225,6 +254,7 @@ export function createMockHarness(options: MockSessionOptions) {
           isStreaming: Boolean(mockSession.isStreaming),
           isCompacting: Boolean(mockSession.isCompacting),
           startedAt: runtimeStartedAt,
+          lastActivityAt: runtimeLastActivityAt,
           pendingMessageCount: 0,
         },
       });
@@ -315,8 +345,12 @@ export function createMockHarness(options: MockSessionOptions) {
         const runGeneration = mockGeneration;
         const isCurrentMockRun = () => runGeneration === mockGeneration;
         const waitForMockRun = async (ms: number) => {
-          await new Promise((resolve) => setTimeout(resolve, ms));
-          return isCurrentMockRun();
+          const deadline = Date.now() + ms;
+          while (Date.now() < deadline) {
+            if (!isCurrentMockRun() || (!mockSession.isStreaming && !mockSession.isCompacting)) return false;
+            await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
+          }
+          return isCurrentMockRun() && Boolean(mockSession.isStreaming || mockSession.isCompacting);
         };
         appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
         const withCompaction = /compact|compaction/i.test(message);
@@ -332,17 +366,23 @@ export function createMockHarness(options: MockSessionOptions) {
         const withMalformedEditTool = /malformed edit/i.test(message);
         const withEditTool = !withShowcase && !withFlatEditTool && !withMalformedEditTool && /edit diff/i.test(message);
         const withProgressDemo = /progress demo|stuck progress/i.test(message);
+        const withQuietRuntime = /quiet runtime/i.test(message);
         const withLateToolTimestamp = /late tool timestamp/i.test(message);
         const withoutAgentEnd = /missing agent end|no agent end/i.test(message);
         const withStaleRuntimeAfterEnd = /stale runtime after end/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message) || withProgressDemo;
         const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
         mockSession.isStreaming = true;
-        runtimeStartedAt = new Date().toISOString();
-        (mockSession as any).runtimeStartedAt = runtimeStartedAt;
+        if (withQuietRuntime) {
+          setRuntimeStartedAt(new Date(Date.now() - 45_000).toISOString(), new Date(Date.now() - 31_000).toISOString());
+        } else {
+          setRuntimeStartedAt();
+        }
         broadcastRuntimeChanged();
-        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_start", startedAt: runtimeStartedAt } });
-        if (slow && !(await waitForMockRun(750))) return;
+        broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
+        if (withQuietRuntime) {
+          if (!(await waitForMockRun(60_000))) return;
+        } else if (slow && !(await waitForMockRun(750))) return;
         if (withProviderError) {
           appendMockMessage({
             role: "assistant",
@@ -354,11 +394,11 @@ export function createMockHarness(options: MockSessionOptions) {
         } else if (withThinking) {
           const thinking = "First I will inspect the request and decide what to answer.";
           const finalText = "Final answer after thinking.";
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } } });
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinking } } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinking } });
           if (!(await waitForMockRun(800))) return;
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: thinking } } });
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: finalText } } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: thinking } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: finalText } });
           appendMockMessage({ role: "assistant", content: [
             { type: "thinking", thinking },
             { type: "text", text: finalText },
@@ -380,14 +420,14 @@ export function createMockHarness(options: MockSessionOptions) {
             : withFlatEditTool
               ? { path: "/some/file.ts", oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }
               : { path: "/some/file.ts", edits: [{ oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }] };
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_start", toolName: "edit", toolCallId: "call-edit", args: editArgs } });
+          broadcastPiEvent({ type: "tool_execution_start", toolName: "edit", toolCallId: "call-edit", args: editArgs });
           if (!(await waitForMockRun(80))) return;
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "edit", toolCallId: "call-edit", isError: false, result: "Successfully replaced 1 block(s) in /some/file.ts." } });
+          broadcastPiEvent({ type: "tool_execution_end", toolName: "edit", toolCallId: "call-edit", isError: false, result: "Successfully replaced 1 block(s) in /some/file.ts." });
           appendMockMessage({ role: "assistant", content: [{ type: "toolCall", id: "call-edit", toolName: "edit", arguments: editArgs }], timestamp: new Date().toISOString() });
           appendMockMessage({ role: "toolResult", toolCallId: "call-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /some/file.ts.", timestamp: new Date().toISOString() });
         } else if (withTools) {
           const toolCallId = withPendingToolRefresh ? `call-pending-${Date.now()}` : "call-1";
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } });
           if (!(await waitForMockRun(80))) return;
           const toolStartedAt = new Date().toISOString();
           if (withPendingToolRefresh) {
@@ -397,15 +437,15 @@ export function createMockHarness(options: MockSessionOptions) {
             ], timestamp: new Date().toISOString() });
           }
           const startEvent = { type: "tool_execution_start", toolName: "read", toolCallId, args: { path: "/some/file" }, ...(withLateToolTimestamp ? {} : { startedAt: toolStartedAt }) };
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: startEvent });
+          broadcastPiEvent(startEvent);
           if (withLateToolTimestamp && !(await waitForMockRun(1_100))) return;
           if (withPendingToolRefresh || withLateToolTimestamp) {
-            broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_update", toolName: "read", toolCallId, args: { path: "/some/file" }, startedAt: toolStartedAt, partialResult: { content: [{ type: "text", text: "Opening /some/file…\nRead header block.\nWaiting for more output…" }] } } });
+            broadcastPiEvent({ type: "tool_execution_update", toolName: "read", toolCallId, args: { path: "/some/file" }, startedAt: toolStartedAt, partialResult: { content: [{ type: "text", text: "Opening /some/file…\nRead header block.\nWaiting for more output…" }] } });
           }
           if (!(await waitForMockRun(withProgressDemo ? 15_000 : withPendingToolRefresh || withLateToolTimestamp ? 3_000 : 150))) return;
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "tool_execution_end", toolName: "read", toolCallId, startedAt: toolStartedAt, isError: false, result: "file contents here" } });
+          broadcastPiEvent({ type: "tool_execution_end", toolName: "read", toolCallId, startedAt: toolStartedAt, isError: false, result: "file contents here" });
           if (!(await waitForMockRun(80))) return;
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done reading." } } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done reading." } });
           if (!(await waitForMockRun(80))) return;
           if (!withPendingToolRefresh) {
             appendMockMessage({ role: "assistant", content: [
@@ -431,8 +471,7 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
         }
         mockSession.isStreaming = false;
-        runtimeStartedAt = undefined;
-        delete (mockSession as any).runtimeStartedAt;
+        clearRuntimeTimestamps();
         broadcastRuntimeChanged();
         if (!withoutAgentEnd) {
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
@@ -453,7 +492,7 @@ export function createMockHarness(options: MockSessionOptions) {
           });
         }
       },
-      abort: async () => { mockSession.isStreaming = false; runtimeStartedAt = undefined; delete (mockSession as any).runtimeStartedAt; broadcastRuntimeChanged(); },
+      abort: async () => { mockSession.isStreaming = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,
       subscribe: () => undefined,

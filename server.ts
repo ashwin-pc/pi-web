@@ -737,21 +737,49 @@ function sessionCwd(targetSession: PiWebSession | any = session) {
 }
 
 function runtimeStartedAtForPath(path: string, isRunning: boolean) {
-  return isRunning ? runtimeStartedAts.get(path) : undefined;
+  if (!isRunning) return undefined;
+  const liveStartedAt = liveSessions.get(path)?.session?.runtimeStartedAt;
+  return typeof liveStartedAt === "string" && liveStartedAt.trim() ? liveStartedAt : runtimeStartedAts.get(path);
+}
+
+function runtimeLastActivityAtForPath(path: string, isRunning: boolean) {
+  if (!isRunning) return undefined;
+  const liveLastActivityAt = liveSessions.get(path)?.session?.runtimeLastActivityAt;
+  return typeof liveLastActivityAt === "string" && liveLastActivityAt.trim()
+    ? liveLastActivityAt
+    : runtimeLastActivityAts.get(path) || runtimeStartedAtForPath(path, isRunning);
 }
 
 function ensureRuntimeStartedAt(targetSession: any, startedAt = new Date().toISOString()) {
   const key = sessionPathKey(targetSession);
   const existing = key ? runtimeStartedAts.get(key) : undefined;
   const value = typeof targetSession?.runtimeStartedAt === "string" ? targetSession.runtimeStartedAt : existing || startedAt;
-  if (key) runtimeStartedAts.set(key, value);
-  if (targetSession && typeof targetSession === "object") targetSession.runtimeStartedAt = value;
+  if (key) {
+    runtimeStartedAts.set(key, value);
+    if (!runtimeLastActivityAts.has(key)) runtimeLastActivityAts.set(key, value);
+  }
+  if (targetSession && typeof targetSession === "object") {
+    targetSession.runtimeStartedAt = value;
+    if (typeof targetSession.runtimeLastActivityAt !== "string") targetSession.runtimeLastActivityAt = value;
+  }
   return value;
 }
 
+function markRuntimeActivity(targetSession: any, activityAt = new Date().toISOString(), sessionFile = sessionPathKey(targetSession)) {
+  if (sessionFile) runtimeLastActivityAts.set(sessionFile, activityAt);
+  if (targetSession && typeof targetSession === "object") targetSession.runtimeLastActivityAt = activityAt;
+  return activityAt;
+}
+
 function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) runtimeStartedAts.delete(sessionFile);
-  if (targetSession && typeof targetSession === "object") delete targetSession.runtimeStartedAt;
+  if (sessionFile) {
+    runtimeStartedAts.delete(sessionFile);
+    runtimeLastActivityAts.delete(sessionFile);
+  }
+  if (targetSession && typeof targetSession === "object") {
+    delete targetSession.runtimeStartedAt;
+    delete targetSession.runtimeLastActivityAt;
+  }
 }
 
 function runtimeForPath(path: string) {
@@ -759,12 +787,15 @@ function runtimeForPath(path: string) {
   const isStreaming = Boolean(live?.isStreaming);
   const isCompacting = Boolean(live?.isCompacting);
   const isRunning = isStreaming || isCompacting;
+  const startedAt = runtimeStartedAtForPath(path, isRunning);
+  const lastActivityAt = runtimeLastActivityAtForPath(path, isRunning);
   return {
     loaded: Boolean(live),
     isRunning,
     isStreaming,
     isCompacting,
-    startedAt: runtimeStartedAtForPath(path, isRunning),
+    startedAt,
+    lastActivityAt,
     pendingMessageCount: Number(live?.pendingMessageCount || 0),
     model: simplifyModel(live?.model),
   };
@@ -778,6 +809,7 @@ function stoppedRuntimeForPath(path: string) {
     isStreaming: false,
     isCompacting: false,
     startedAt: undefined,
+    lastActivityAt: undefined,
     pendingMessageCount: Number(live?.pendingMessageCount || 0),
     model: simplifyModel(live?.model),
   };
@@ -787,6 +819,29 @@ function runtimeForEvent(path: string, event: any) {
   return event?.type === "agent_end" || event?.type === "compaction_end"
     ? stoppedRuntimeForPath(path)
     : runtimeForPath(path);
+}
+
+function isRuntimeActivityEvent(event: any) {
+  switch (event?.type) {
+    case "agent_start":
+    case "compaction_start":
+    case "message_update":
+    case "message_end":
+    case "turn_end":
+    case "tool_execution_start":
+    case "tool_execution_update":
+    case "tool_execution_end":
+      return true;
+    default:
+      return false;
+  }
+}
+
+function runtimeActivityTimestamp(event: any, fallback = new Date().toISOString()) {
+  for (const value of [event?.lastActivityAt, event?.timestamp, event?.startedAt]) {
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return fallback;
 }
 
 function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd) {
@@ -902,6 +957,8 @@ function sessionStats(targetSession: PiWebSession) {
 }
 
 function currentState(targetSession: PiWebSession = session) {
+  const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+  const runtime = runtimeForPath(targetSession.sessionFile);
   return {
     cwd: sessionCwd(targetSession),
     sessionFile: targetSession.sessionFile,
@@ -912,7 +969,11 @@ function currentState(targetSession: PiWebSession = session) {
     isCompacting: Boolean(targetSession.isCompacting),
     runtimeStartedAt: typeof (targetSession as any).runtimeStartedAt === "string"
       ? (targetSession as any).runtimeStartedAt
-      : runtimeStartedAtForPath(targetSession.sessionFile, Boolean(targetSession.isStreaming || targetSession.isCompacting)),
+      : runtimeStartedAtForPath(targetSession.sessionFile, isRunning),
+    runtimeLastActivityAt: typeof (targetSession as any).runtimeLastActivityAt === "string"
+      ? (targetSession as any).runtimeLastActivityAt
+      : runtimeLastActivityAtForPath(targetSession.sessionFile, isRunning),
+    runtime,
     model: simplifyModel(targetSession.model),
     thinkingLevel: targetSession.thinkingLevel,
     stats: sessionStats(targetSession),
@@ -1169,6 +1230,7 @@ const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || jo
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
 const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
 const runtimeStartedAts = new Map<string, string>();
+const runtimeLastActivityAts = new Map<string, string>();
 const toolStartedAts = new Map<string, Map<string, string>>();
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
@@ -1214,11 +1276,16 @@ function noteRuntimeEventForUnreadRecovery(data: Record<string, any>) {
     case "compaction_start": {
       const startedAt = typeof event.startedAt === "string" && event.startedAt.trim() ? event.startedAt.trim() : new Date().toISOString();
       runtimeStartedAts.set(sessionFile, startedAt);
+      runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event, startedAt));
       return;
     }
     case "agent_end":
     case "compaction_end":
       runtimeStartedAts.delete(sessionFile);
+      runtimeLastActivityAts.delete(sessionFile);
+      return;
+    default:
+      if (isRuntimeActivityEvent(event)) runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event));
       return;
   }
 }
@@ -1587,6 +1654,11 @@ function registerLiveSession(value: any) {
       const startedAt = toolKey ? toolStartedAts.get(eventSessionFile)?.get(toolKey) : undefined;
       if (startedAt) eventForClient = { ...e, startedAt };
       if (e?.type === "tool_execution_end" && toolKey) toolStartedAts.get(eventSessionFile)?.delete(toolKey);
+    }
+
+    if (isRuntimeActivityEvent(e)) {
+      const lastActivityAt = markRuntimeActivity(value, runtimeActivityTimestamp(eventForClient), eventSessionFile);
+      eventForClient = { ...eventForClient, lastActivityAt };
     }
 
     broadcast({ type: "pi_event", sessionId: eventSessionId, sessionFile: eventSessionFile, event: eventForClient });

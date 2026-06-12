@@ -232,7 +232,7 @@ export function createRealtime(options: {
         break;
       case "agent_start":
         state.isStreaming = true;
-        status.markActivityStart("starting", event.startedAt);
+        status.markActivityStart("starting", event.startedAt, event.lastActivityAt);
         composer.updatePrimaryAction();
         messages.resetStreamingAssistant();
         messages.beginStreamFollow();
@@ -243,23 +243,23 @@ export function createRealtime(options: {
         else if (deltaEvent?.type === "thinking_start") messages.startStreamingThinking(deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_delta") messages.appendStreamingThinkingDelta(deltaEvent.delta || "", deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_end") messages.endStreamingThinking(deltaEvent.content || deltaEvent.thinking, deltaEvent.contentIndex);
-        status.markActivityProgress(deltaEvent?.type?.startsWith("thinking") ? "thinking" : "responding");
+        status.markActivityProgress(deltaEvent?.type?.startsWith("thinking") ? "thinking" : "responding", event.lastActivityAt);
         break;
       }
       case "tool_execution_start":
         messages.invalidateRefreshes();
         tools.startTool(event.toolCallId, event.toolName || "tool", event.args || {}, event.startedAt);
-        status.markActivityProgress(`tool: ${event.toolName || "tool"}`);
+        status.markActivityProgress(`tool: ${event.toolName || "tool"}`, event.lastActivityAt);
         break;
       case "tool_execution_update":
         messages.invalidateRefreshes();
         tools.updateToolProgress(event.toolCallId, event.toolName || "tool", event.partialResult, event.args || {}, event.startedAt);
-        status.markActivityProgress(`tool: ${event.toolName || "tool"}`);
+        status.markActivityProgress(`tool: ${event.toolName || "tool"}`, event.lastActivityAt);
         break;
       case "tool_execution_end":
         messages.invalidateRefreshes();
         tools.endTool(event.toolCallId, event.toolName || "tool", Boolean(event.isError), event.result);
-        status.markActivityProgress("waiting for assistant");
+        status.markActivityProgress("waiting for assistant", event.lastActivityAt);
         break;
       case "agent_end":
         state.isStreaming = false;
@@ -276,7 +276,7 @@ export function createRealtime(options: {
         break;
       case "compaction_start":
         state.isCompacting = true;
-        status.markActivityStart("compacting", event.startedAt);
+        status.markActivityStart("compacting", event.startedAt, event.lastActivityAt);
         updateSessionStats(state.stats);
         break;
       case "compaction_end": {
@@ -328,7 +328,11 @@ export function createRealtime(options: {
         updateMeta(data);
         state.isStreaming = Boolean(data.isStreaming);
         state.isCompacting = Boolean(data.isCompacting);
-        if (state.isStreaming || state.isCompacting) status.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtimeStartedAt || data.runtime?.startedAt);
+        if (state.isStreaming || state.isCompacting) status.markActivityStart(
+          state.isCompacting ? "compacting" : "active",
+          data.runtimeStartedAt || data.runtime?.startedAt,
+          data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
+        );
         else status.markActivityEnd();
         updateSessionStats(state.stats);
         composer.updatePrimaryAction();
@@ -359,7 +363,7 @@ export function createRealtime(options: {
           const isRunning = Boolean(data.runtime?.isRunning);
           state.isStreaming = Boolean(data.runtime?.isStreaming);
           state.isCompacting = Boolean(data.runtime?.isCompacting);
-          if (isRunning) status.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtime?.startedAt);
+          if (isRunning) status.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtime?.startedAt, data.runtime?.lastActivityAt);
           else status.markActivityEnd();
           composer.updatePrimaryAction();
           if (wasRunning && !isRunning) {

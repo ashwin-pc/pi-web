@@ -95,7 +95,11 @@ async function refreshState() {
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
   state.isCompacting = Boolean(data.isCompacting);
-  if (state.isStreaming || state.isCompacting) statusBar.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtimeStartedAt || data.runtime?.startedAt);
+  if (state.isStreaming || state.isCompacting) statusBar.markActivityStart(
+    state.isCompacting ? "compacting" : "active",
+    data.runtimeStartedAt || data.runtime?.startedAt,
+    data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
+  );
   else statusBar.markActivityEnd();
   contextMeter.update(state.stats);
   composer.updatePrimaryAction();

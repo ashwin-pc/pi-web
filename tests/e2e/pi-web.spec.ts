@@ -792,6 +792,30 @@ test.describe("tool cards", () => {
     await expect(restoredCard.locator(".toolCardProgress")).toContainText(/running [2-9]s|running \d+m/);
   });
 
+  test("keeps quiet activity elapsed when returning to a running session", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "desktop", "Timer regression is covered once on desktop.");
+
+    const quietPattern = /no updates (3[0-9]|4[0-9]|5[0-9])s|no updates \d+m/;
+
+    await page.goto("/");
+    await page.locator("#prompt").fill("quiet runtime");
+    await page.locator("#primaryButton").click();
+
+    await expect(page.locator("#runtimeStatus")).toContainText(quietPattern);
+
+    await page.reload();
+    await expect(page.locator("#runtimeStatus")).toContainText(quietPattern);
+
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+
+    await page.goto("/?sessionId=mock-current");
+    await expect(page.locator("#runtimeStatus")).toContainText(quietPattern);
+
+    await page.locator("#stopButton").click();
+    await expect(page.locator("#runtimeStatus")).toBeHidden();
+  });
+
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");

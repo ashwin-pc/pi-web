@@ -11,8 +11,8 @@ export type StatusBar = {
   markWebSocketOpen: () => void;
   markWebSocketClosed: () => void;
   markSyncRequired: () => void;
-  markActivityStart: (label?: string, startedAt?: string | number | Date) => void;
-  markActivityProgress: (label?: string) => void;
+  markActivityStart: (label?: string, startedAt?: string | number | Date, lastActivityAt?: string | number | Date) => void;
+  markActivityProgress: (label?: string, lastActivityAt?: string | number | Date) => void;
   markActivityEnd: () => void;
 };
 
@@ -190,31 +190,34 @@ export function createStatusBar(options: {
     if (activityTimer === undefined) activityTimer = window.setInterval(() => updateActivityStatus(), 1000);
   }
 
-  function markActivityStart(label = "starting", startedAt?: string | number | Date) {
+  function markActivityStart(label = "starting", startedAt?: string | number | Date, lastActivityAt?: string | number | Date) {
     const now = Date.now();
     const key = activityKey();
     const parsedStartedAt = parseActivityTimestamp(startedAt);
+    const parsedLastActivityAt = parseActivityTimestamp(lastActivityAt);
     let activity = activityBySession.get(key);
     if (!activity) {
-      activity = { startedAt: parsedStartedAt, lastUpdateAt: now, label };
+      activity = { startedAt: parsedStartedAt, lastUpdateAt: parsedLastActivityAt ?? now, label };
       activityBySession.set(key, activity);
       elements.activityStatusEl.hidden = true;
-    } else if (parsedStartedAt && (!activity.startedAt || Math.abs(activity.startedAt - parsedStartedAt) > 1000)) {
-      activity.startedAt = parsedStartedAt;
+    } else {
+      const startedAtChanged = Boolean(parsedStartedAt && (!activity.startedAt || Math.abs(activity.startedAt - parsedStartedAt) > 1000));
+      if (startedAtChanged) activity.startedAt = parsedStartedAt;
+      if (parsedLastActivityAt) activity.lastUpdateAt = parsedLastActivityAt;
+      else if (startedAtChanged) activity.lastUpdateAt = now;
     }
-    activity.lastUpdateAt = now;
     activity.label = label;
     updateActivityStatus(!elements.activityStatusEl.hidden);
     ensureActivityTimers();
   }
 
-  function markActivityProgress(label?: string) {
+  function markActivityProgress(label?: string, lastActivityAt?: string | number | Date) {
     let activity = currentActivity();
     if (!activity) {
-      markActivityStart(label || "working");
+      markActivityStart(label || "working", undefined, lastActivityAt);
       return;
     }
-    activity.lastUpdateAt = Date.now();
+    activity.lastUpdateAt = parseActivityTimestamp(lastActivityAt) ?? Date.now();
     if (label) activity.label = label;
     updateActivityStatus(!elements.activityStatusEl.hidden);
   }
