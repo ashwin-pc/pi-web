@@ -96,6 +96,7 @@ export function createStatusBar(options: {
     const originalValue = input.value.trim();
 
     let finished = false;
+    let blurArmed = false;
     const finish = (save: boolean) => {
       if (finished) return;
       finished = true;
@@ -114,12 +115,27 @@ export function createStatusBar(options: {
         finish(false);
       }
     });
-    input.addEventListener("blur", () => finish(true));
+    // iOS Safari fires a spurious `blur` immediately after we focus the input
+    // (while the on-screen keyboard animates in and the visual viewport
+    // resizes). If we acted on that blur we would tear the rename field back
+    // down to the static title before the user could type a single character
+    // — which looks exactly like "tapping the header does nothing". Only arm
+    // the blur-to-save handler once focus has settled; an early blur instead
+    // re-focuses the input so the keyboard stays up.
+    input.addEventListener("blur", () => {
+      if (finished) return;
+      if (!blurArmed && document.body.contains(input)) {
+        requestAnimationFrame(() => { if (!finished) input.focus(); });
+        return;
+      }
+      finish(true);
+    });
 
     elements.statusTitleEl.textContent = "";
     elements.statusTitleEl.append(input);
     input.focus();
     input.select();
+    window.setTimeout(() => { blurArmed = true; }, 350);
   }
 
   function clearConnectionTimers() {
@@ -303,7 +319,27 @@ export function createStatusBar(options: {
     elements.statusTitleEl.setAttribute("role", "button");
     elements.statusTitleEl.tabIndex = 0;
     setStatusTitle(state.currentSessionTitle);
-    elements.statusTitleEl.addEventListener("click", beginRenameSessionTitle);
+
+    // On iOS Safari a plain tap on the title <span> is otherwise interpreted
+    // as the start of a native text-selection gesture (blue handles +
+    // magnifier) which competes with — and can swallow — the click that opens
+    // the rename field. Handle the tap on `pointerup` and preventDefault so
+    // the selection gesture never starts; fall back to `click` for
+    // environments without Pointer Events. A short suppression window stops
+    // the synthesized click from re-triggering after a pointer-driven open.
+    let suppressClickUntil = 0;
+    if (typeof window !== "undefined" && "PointerEvent" in window) {
+      elements.statusTitleEl.addEventListener("pointerup", (event) => {
+        if (event.button !== undefined && event.button !== 0) return;
+        if (event.cancelable) event.preventDefault();
+        suppressClickUntil = Date.now() + 600;
+        beginRenameSessionTitle();
+      });
+    }
+    elements.statusTitleEl.addEventListener("click", () => {
+      if (Date.now() < suppressClickUntil) return;
+      beginRenameSessionTitle();
+    });
     elements.statusTitleEl.addEventListener("keydown", (event) => {
       if (event.target !== elements.statusTitleEl || (event.key !== "Enter" && event.key !== " ")) return;
       event.preventDefault();

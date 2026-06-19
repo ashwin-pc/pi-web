@@ -290,8 +290,8 @@ test.describe("composer layout", () => {
     expect(styles.touchAction).toBe("manipulation");
   });
 
-  test("tapping the status title on a touch viewport opens the rename input", async ({ page }, testInfo) => {
-    test.skip(testInfo.project.name !== "mobile", "Touch-tap behaviour is only meaningful on the mobile project.");
+  test("tapping the status title on a touch viewport opens the rename input and survives an iOS keyboard blur", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "Touch-tap + iOS blur race is only meaningful on the mobile project.");
     // End-to-end version of the iOS bug: simulate a real tap (not a synthetic
     // mouse click) and assert the rename input is rendered and focused.
     await page.goto("/");
@@ -299,10 +299,16 @@ test.describe("composer layout", () => {
 
     const box = await page.locator("#statusTitle").boundingBox();
     expect(box).not.toBeNull();
-    await page.touchscreen.tap(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await page.touchscreen.tap(box!.x + Math.min(40, box!.width / 2), box!.y + box!.height / 2);
 
     await expect(page.locator("#statusTitle input")).toBeVisible();
     await expect(page.locator("#statusTitle input")).toBeFocused();
+
+    // iOS Safari fires a spurious blur right after focus while the on-screen
+    // keyboard animates in. The editor must NOT be torn down by it (otherwise
+    // the tap appears to "do nothing"). Fire that blur within the grace window.
+    await page.locator("#statusTitle input").evaluate((el) => el.dispatchEvent(new FocusEvent("blur")));
+    await expect(page.locator("#statusTitle input")).toBeVisible();
 
     await page.locator("#statusTitle input").fill("Renamed via tap");
     await page.locator("#statusTitle input").press("Enter");
