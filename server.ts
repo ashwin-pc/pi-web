@@ -144,6 +144,29 @@ function serveArtifact(req: IncomingMessage, res: ServerResponse) {
   createReadStream(resolvedFile).pipe(res);
 }
 
+function cacheControlFor(relative: string): string {
+  const name = relative.replace(/^\/+/, "");
+  const base = name.split("/").pop() || name;
+  // The service-worker script, its registration shim, and the workbox runtime
+  // MUST never be cached: if iOS Safari serves a stale /sw.js it never detects
+  // a new service worker, so the old SW keeps serving the old precached bundle
+  // forever (refresh appears to do nothing). Force revalidation every load.
+  if (base === "sw.js" || base === "registerSW.js" || /^workbox-[A-Za-z0-9_-]+\.js$/.test(base)) {
+    return "no-cache, no-store, must-revalidate";
+  }
+  // HTML / the app shell is served network-first and must stay fresh so it
+  // always references the current hashed asset names.
+  if (base === "index.html" || base.endsWith(".html") || base === "manifest.webmanifest") {
+    return "no-cache";
+  }
+  // Content-hashed build assets are immutable — safe to cache aggressively.
+  if (name.startsWith("assets/") && /-[A-Za-z0-9_-]{6,}\.[a-z0-9]+$/.test(base)) {
+    return "public, max-age=31536000, immutable";
+  }
+  // Everything else (icons, svg, etc.): revalidate to stay safe.
+  return "no-cache";
+}
+
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(url.pathname);
@@ -155,7 +178,10 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  res.writeHead(200, { "content-type": contentTypes[extname(file)] || "application/octet-stream" });
+  res.writeHead(200, {
+    "content-type": contentTypes[extname(file)] || "application/octet-stream",
+    "cache-control": cacheControlFor(relative),
+  });
   createReadStream(file).pipe(res);
 }
 

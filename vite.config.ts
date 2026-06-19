@@ -22,15 +22,27 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Network-first: always try server, fall back to cache
-        // Only precache the app shell assets
-        navigateFallback: "/index.html",
+        // Navigations must be NETWORK-FIRST so a reload always fetches fresh
+        // HTML (and therefore the current hashed asset names). vite-plugin-pwa
+        // always registers an SPA NavigationRoute bound to the *precached*
+        // index.html, and it is registered before runtimeCaching — so left
+        // alone it shadows the NetworkFirst route and a stale service worker
+        // keeps serving old HTML/JS forever (a deploy looks like it "did
+        // nothing", especially on iOS). Deny-list every navigation from that
+        // precache fallback so navigations fall through to the NetworkFirst
+        // route below, which serves fresh HTML online and the cached copy
+        // offline.
+        navigateFallback: "index.html",
+        navigateFallbackDenylist: [/./],
         globPatterns: ["index.html", "assets/index-*.{js,css}", "*.{svg,png,webmanifest}"],
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.mode === "navigate",
             handler: "NetworkFirst",
-            options: { cacheName: "pages" },
+            options: {
+              cacheName: "pages",
+              networkTimeoutSeconds: 3,
+            },
           },
         ],
       },
