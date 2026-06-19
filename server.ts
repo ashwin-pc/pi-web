@@ -2327,6 +2327,37 @@ const server = createServer(async (req, res) => {
       return sendJson(res, 404, { ok: false, error: "Unknown API route" });
     }
 
+    // Server-side cache-bust: when PI_WEB_SW_RESET=1, serve a self-destroying
+    // service worker at /sw.js. A client captured by a stale SW re-fetches the
+    // SW script on its next navigation (the spec bypasses the HTTP cache for
+    // the script, and our no-store header guarantees it), installs this one,
+    // which deletes every cache and unregisters itself — freeing the client to
+    // load fresh content straight from the network. Loop-safe: it force-reloads
+    // clients only the first time (guarded by a marker cache), so re-registering
+    // it does not bounce the page repeatedly. Flip the flag off once clients
+    // have recovered to restore the normal PWA service worker.
+    if (req.method === "GET" && url.pathname === "/sw.js" && (process.env.PI_WEB_SW_RESET === "1" || existsSync(join(appDir, ".pi-sw-reset")))) {
+      const body = `// pi-web self-destroying service worker (PI_WEB_SW_RESET=1)
+const KILL_FLAG = 'pi-sw-killed';
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const firstTime = !(await caches.has(KILL_FLAG));
+    for (const key of await caches.keys()) { if (key !== KILL_FLAG) await caches.delete(key); }
+    try { await self.registration.unregister(); } catch (e) {}
+    if (firstTime) {
+      await caches.open(KILL_FLAG);
+      const clients = await self.clients.matchAll({ type: 'window' });
+      for (const client of clients) { try { client.navigate(client.url); } catch (e) {} }
+    }
+  })());
+});
+`;
+      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache, no-store, must-revalidate" });
+      res.end(body);
+      return;
+    }
+
     if (viteDevServer) {
       viteDevServer.middlewares(req, res, () => {
         if (!res.writableEnded) sendJson(res, 404, { ok: false, error: "Not found" });

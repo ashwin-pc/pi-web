@@ -877,3 +877,39 @@ describe("static asset cache headers (iOS service-worker freshness)", () => {
     expect(cc).toContain("max-age=31536000");
   });
 });
+
+describe("service-worker kill switch (PI_WEB_SW_RESET)", () => {
+  let child: ChildProcess;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const port = await freePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "0", NODE_ENV: "production", PI_WEB_SW_RESET: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (data) => process.stderr.write(data));
+    await waitForServer(baseUrl);
+  }, 20_000);
+
+  afterAll(() => {
+    child?.kill();
+  });
+
+  it("serves a self-destroying service worker that clears caches and unregisters", async () => {
+    // Server-side cache bust: a client captured by a stale SW re-fetches
+    // /sw.js on navigation, installs this one, which wipes caches and
+    // unregisters itself so fresh content loads from the network.
+    const res = await fetch(`${baseUrl}/sw.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toContain("no-store");
+    const body = await res.text();
+    expect(body).toContain("self.registration.unregister()");
+    expect(body).toContain("caches.delete");
+    expect(body).toContain("skipWaiting");
+    // It must NOT be the precaching workbox SW (that would re-cache the bundle).
+    expect(body).not.toContain("precacheAndRoute");
+    expect(body).not.toContain("__WB_MANIFEST");
+  });
+});
