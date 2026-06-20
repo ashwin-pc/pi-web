@@ -144,6 +144,29 @@ function serveArtifact(req: IncomingMessage, res: ServerResponse) {
   createReadStream(resolvedFile).pipe(res);
 }
 
+function cacheControlFor(relative: string): string {
+  const name = relative.replace(/^\/+/, "");
+  const base = name.split("/").pop() || name;
+  // The service-worker script, its registration shim, and the workbox runtime
+  // MUST never be cached: if iOS Safari serves a stale /sw.js it never detects
+  // a new service worker, so the old SW keeps serving the old precached bundle
+  // forever (refresh appears to do nothing). Force revalidation every load.
+  if (base === "sw.js" || base === "registerSW.js" || /^workbox-[A-Za-z0-9_-]+\.js$/.test(base)) {
+    return "no-cache, no-store, must-revalidate";
+  }
+  // HTML / the app shell is served network-first and must stay fresh so it
+  // always references the current hashed asset names.
+  if (base === "index.html" || base.endsWith(".html") || base === "manifest.webmanifest") {
+    return "no-cache";
+  }
+  // Content-hashed build assets are immutable — safe to cache aggressively.
+  if (name.startsWith("assets/") && /-[A-Za-z0-9_-]{6,}\.[a-z0-9]+$/.test(base)) {
+    return "public, max-age=31536000, immutable";
+  }
+  // Everything else (icons, svg, etc.): revalidate to stay safe.
+  return "no-cache";
+}
+
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(url.pathname);
@@ -155,7 +178,10 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  res.writeHead(200, { "content-type": contentTypes[extname(file)] || "application/octet-stream" });
+  res.writeHead(200, {
+    "content-type": contentTypes[extname(file)] || "application/octet-stream",
+    "cache-control": cacheControlFor(relative),
+  });
   createReadStream(file).pipe(res);
 }
 
@@ -2299,6 +2325,37 @@ const server = createServer(async (req, res) => {
       }
 
       return sendJson(res, 404, { ok: false, error: "Unknown API route" });
+    }
+
+    // Server-side cache-bust: when PI_WEB_SW_RESET=1, serve a self-destroying
+    // service worker at /sw.js. A client captured by a stale SW re-fetches the
+    // SW script on its next navigation (the spec bypasses the HTTP cache for
+    // the script, and our no-store header guarantees it), installs this one,
+    // which deletes every cache and unregisters itself — freeing the client to
+    // load fresh content straight from the network. Loop-safe: it force-reloads
+    // clients only the first time (guarded by a marker cache), so re-registering
+    // it does not bounce the page repeatedly. Flip the flag off once clients
+    // have recovered to restore the normal PWA service worker.
+    if (req.method === "GET" && url.pathname === "/sw.js" && (process.env.PI_WEB_SW_RESET === "1" || existsSync(join(appDir, ".pi-sw-reset")))) {
+      const body = `// pi-web self-destroying service worker (PI_WEB_SW_RESET=1)
+const KILL_FLAG = 'pi-sw-killed';
+self.addEventListener('install', () => self.skipWaiting());
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const firstTime = !(await caches.has(KILL_FLAG));
+    for (const key of await caches.keys()) { if (key !== KILL_FLAG) await caches.delete(key); }
+    try { await self.registration.unregister(); } catch (e) {}
+    if (firstTime) {
+      await caches.open(KILL_FLAG);
+      const clients = await self.clients.matchAll({ type: 'window' });
+      for (const client of clients) { try { client.navigate(client.url); } catch (e) {} }
+    }
+  })());
+});
+`;
+      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-cache, no-store, must-revalidate" });
+      res.end(body);
+      return;
     }
 
     if (viteDevServer) {

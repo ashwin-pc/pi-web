@@ -96,6 +96,7 @@ export function createStatusBar(options: {
     const originalValue = input.value.trim();
 
     let finished = false;
+    let blurArmed = false;
     const finish = (save: boolean) => {
       if (finished) return;
       finished = true;
@@ -114,12 +115,27 @@ export function createStatusBar(options: {
         finish(false);
       }
     });
-    input.addEventListener("blur", () => finish(true));
+    // iOS Safari fires a spurious `blur` immediately after we focus the input
+    // (while the on-screen keyboard animates in and the visual viewport
+    // resizes). If we acted on that blur we would tear the rename field back
+    // down to the static title before the user could type a single character
+    // — which looks exactly like "tapping the header does nothing". Only arm
+    // the blur-to-save handler once focus has settled; an early blur instead
+    // re-focuses the input so the keyboard stays up.
+    input.addEventListener("blur", () => {
+      if (finished) return;
+      if (!blurArmed && document.body.contains(input)) {
+        requestAnimationFrame(() => { if (!finished) input.focus(); });
+        return;
+      }
+      finish(true);
+    });
 
     elements.statusTitleEl.textContent = "";
     elements.statusTitleEl.append(input);
     input.focus();
     input.select();
+    window.setTimeout(() => { blurArmed = true; }, 350);
   }
 
   function clearConnectionTimers() {
@@ -303,7 +319,18 @@ export function createStatusBar(options: {
     elements.statusTitleEl.setAttribute("role", "button");
     elements.statusTitleEl.tabIndex = 0;
     setStatusTitle(state.currentSessionTitle);
-    elements.statusTitleEl.addEventListener("click", beginRenameSessionTitle);
+
+    // The title <span> is role="button" and opens an inline rename input on
+    // activation. On iOS Safari two things matter:
+    //   - text selection must be disabled (user-select:none + touch-action:
+    //     manipulation in CSS) so a finger tap is treated as a tap, not the
+    //     start of a text-selection gesture that swallows the click; and
+    //   - the input must be focused inside the *click* handler. iOS only
+    //     raises the on-screen keyboard when focus() runs in a click/touchend
+    //     user gesture; doing it from pointerup (or after preventDefault)
+    //     opens the field but leaves the keyboard down on real devices.
+    // So we trigger purely on click — the canonical, device-tested path.
+    elements.statusTitleEl.addEventListener("click", () => beginRenameSessionTitle());
     elements.statusTitleEl.addEventListener("keydown", (event) => {
       if (event.target !== elements.statusTitleEl || (event.key !== "Enter" && event.key !== " ")) return;
       event.preventDefault();

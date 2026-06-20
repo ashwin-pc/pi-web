@@ -263,6 +263,58 @@ test.describe("composer layout", () => {
     expect(sessions.sessions.find((item: any) => item.id === "mock-current").name).toBe("Renamed from title");
   });
 
+  test("status title is not text-selectable on iOS so taps reach the rename handler", async ({ page }) => {
+    // Regression: on iOS Safari, tapping a <span> with selectable text (the
+    // status title) shows the native blue selection handles + magnifier and
+    // suppresses the click event, so the rename input never appears. The fix
+    // is to mark the status title as non-user-selectable. Verify the rendered
+    // styles still enforce that contract.
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    const styles = await page.locator("#statusTitle").evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        userSelect: cs.userSelect || (cs as any).webkitUserSelect,
+        webkitUserSelect: (cs as any).webkitUserSelect,
+        webkitTouchCallout: (cs as any).webkitTouchCallout,
+        touchAction: cs.touchAction,
+        cursor: cs.cursor,
+        role: el.getAttribute("role"),
+      };
+    });
+    expect(styles.role).toBe("button");
+    expect(styles.cursor).toBe("pointer");
+    expect([styles.userSelect, styles.webkitUserSelect]).toContain("none");
+    // touch-action: manipulation removes the iOS 300ms tap delay too.
+    expect(styles.touchAction).toBe("manipulation");
+  });
+
+  test("tapping the status title on a touch viewport opens the rename input and survives an iOS keyboard blur", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "Touch-tap + iOS blur race is only meaningful on the mobile project.");
+    // End-to-end version of the iOS bug: simulate a real tap (not a synthetic
+    // mouse click) and assert the rename input is rendered and focused.
+    await page.goto("/");
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    const box = await page.locator("#statusTitle").boundingBox();
+    expect(box).not.toBeNull();
+    await page.touchscreen.tap(box!.x + Math.min(40, box!.width / 2), box!.y + box!.height / 2);
+
+    await expect(page.locator("#statusTitle input")).toBeVisible();
+    await expect(page.locator("#statusTitle input")).toBeFocused();
+
+    // iOS Safari fires a spurious blur right after focus while the on-screen
+    // keyboard animates in. The editor must NOT be torn down by it (otherwise
+    // the tap appears to "do nothing"). Fire that blur within the grace window.
+    await page.locator("#statusTitle input").evaluate((el) => el.dispatchEvent(new FocusEvent("blur")));
+    await expect(page.locator("#statusTitle input")).toBeVisible();
+
+    await page.locator("#statusTitle input").fill("Renamed via tap");
+    await page.locator("#statusTitle input").press("Enter");
+    await expect(page.locator("#statusTitle")).toHaveText("Renamed via tap");
+  });
+
   test("new session resets status title", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");

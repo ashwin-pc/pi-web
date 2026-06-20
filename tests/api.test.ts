@@ -820,3 +820,96 @@ describe("WebSocket authentication", () => {
     }
   }, 25_000);
 });
+
+describe("static asset cache headers (iOS service-worker freshness)", () => {
+  let child: ChildProcess;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const port = await freePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    // Production mode (PI_WEB_DEV=0) so the built-in static file server runs.
+    // In dev mode Vite's middleware serves these files with its own headers,
+    // which is not the code path real deployments use.
+    child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "0", NODE_ENV: "production", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (data) => process.stderr.write(data));
+    await waitForServer(baseUrl);
+  }, 20_000);
+
+  afterAll(() => {
+    child?.kill();
+  });
+
+  it("never caches the service worker or its registration shim", async () => {
+    // Regression: with no Cache-Control, iOS Safari heuristically caches
+    // /sw.js, never detects a new service worker, and keeps serving the old
+    // precached bundle forever (a deploy looks like it "did nothing" on
+    // iPhone). The SW script + register shim must always revalidate.
+    const sw = await fetch(`${baseUrl}/sw.js`);
+    if (sw.status === 404) {
+      // dist/ not built in this environment — nothing to assert.
+      return;
+    }
+    expect(sw.headers.get("cache-control")).toContain("no-store");
+
+    const reg = await fetch(`${baseUrl}/registerSW.js`);
+    expect(reg.status).toBe(200);
+    expect(reg.headers.get("cache-control")).toContain("no-store");
+  });
+
+  it("serves the app shell HTML as no-cache so it references current asset hashes", async () => {
+    const res = await fetch(`${baseUrl}/`);
+    expect(res.status).toBe(200);
+    expect((res.headers.get("cache-control") || "")).toContain("no-cache");
+  });
+
+  it("caches content-hashed build assets immutably", async () => {
+    const html = await (await fetch(`${baseUrl}/`)).text();
+    const match = html.match(/assets\/index-[A-Za-z0-9_-]+\.(?:js|css)/);
+    if (!match) return; // dist/ not built
+    const asset = await fetch(`${baseUrl}/${match[0]}`);
+    expect(asset.status).toBe(200);
+    const cc = asset.headers.get("cache-control") || "";
+    expect(cc).toContain("immutable");
+    expect(cc).toContain("max-age=31536000");
+  });
+});
+
+describe("service-worker kill switch (PI_WEB_SW_RESET)", () => {
+  let child: ChildProcess;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const port = await freePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "0", NODE_ENV: "production", PI_WEB_SW_RESET: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (data) => process.stderr.write(data));
+    await waitForServer(baseUrl);
+  }, 20_000);
+
+  afterAll(() => {
+    child?.kill();
+  });
+
+  it("serves a self-destroying service worker that clears caches and unregisters", async () => {
+    // Server-side cache bust: a client captured by a stale SW re-fetches
+    // /sw.js on navigation, installs this one, which wipes caches and
+    // unregisters itself so fresh content loads from the network.
+    const res = await fetch(`${baseUrl}/sw.js`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toContain("no-store");
+    const body = await res.text();
+    expect(body).toContain("self.registration.unregister()");
+    expect(body).toContain("caches.delete");
+    expect(body).toContain("skipWaiting");
+    // It must NOT be the precaching workbox SW (that would re-cache the bundle).
+    expect(body).not.toContain("precacheAndRoute");
+    expect(body).not.toContain("__WB_MANIFEST");
+  });
+});
