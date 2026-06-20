@@ -320,26 +320,17 @@ export function createStatusBar(options: {
     elements.statusTitleEl.tabIndex = 0;
     setStatusTitle(state.currentSessionTitle);
 
-    // On iOS Safari a plain tap on the title <span> is otherwise interpreted
-    // as the start of a native text-selection gesture (blue handles +
-    // magnifier) which competes with — and can swallow — the click that opens
-    // the rename field. Handle the tap on `pointerup` and preventDefault so
-    // the selection gesture never starts; fall back to `click` for
-    // environments without Pointer Events. A short suppression window stops
-    // the synthesized click from re-triggering after a pointer-driven open.
-    let suppressClickUntil = 0;
-    if (typeof window !== "undefined" && "PointerEvent" in window) {
-      elements.statusTitleEl.addEventListener("pointerup", (event) => {
-        if (event.button !== undefined && event.button !== 0) return;
-        if (event.cancelable) event.preventDefault();
-        suppressClickUntil = Date.now() + 600;
-        beginRenameSessionTitle();
-      });
-    }
-    elements.statusTitleEl.addEventListener("click", () => {
-      if (Date.now() < suppressClickUntil) return;
-      beginRenameSessionTitle();
-    });
+    // The title <span> is role="button" and opens an inline rename input on
+    // activation. On iOS Safari two things matter:
+    //   - text selection must be disabled (user-select:none + touch-action:
+    //     manipulation in CSS) so a finger tap is treated as a tap, not the
+    //     start of a text-selection gesture that swallows the click; and
+    //   - the input must be focused inside the *click* handler. iOS only
+    //     raises the on-screen keyboard when focus() runs in a click/touchend
+    //     user gesture; doing it from pointerup (or after preventDefault)
+    //     opens the field but leaves the keyboard down on real devices.
+    // So we trigger purely on click — the canonical, device-tested path.
+    elements.statusTitleEl.addEventListener("click", () => beginRenameSessionTitle());
     elements.statusTitleEl.addEventListener("keydown", (event) => {
       if (event.target !== elements.statusTitleEl || (event.key !== "Enter" && event.key !== " ")) return;
       event.preventDefault();
