@@ -239,6 +239,11 @@ function videoMimeType(pathname: string) {
   return "video/*";
 }
 
+function isStandalonePwa() {
+  return window.matchMedia("(display-mode: standalone)").matches ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+}
+
 function enhanceArtifactLinks(root: ParentNode) {
   for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/api/artifacts/"]'))) {
     if (link.dataset.artifactPreviewEnhanced) continue;
@@ -256,8 +261,12 @@ function enhanceArtifactLinks(root: ParentNode) {
     title.textContent = artifactName(url.pathname);
     const open = document.createElement("a");
     open.href = url.pathname;
-    open.target = "_blank";
-    open.rel = "noopener noreferrer";
+    if (isStandalonePwa()) {
+      open.target = "_top";
+    } else {
+      open.target = "_blank";
+      open.rel = "noopener noreferrer";
+    }
     open.textContent = "Open";
     header.append(title, open);
     const content = document.createElement("div");
