@@ -1075,10 +1075,44 @@ test.describe("context compaction", () => {
 test.describe("image rendering", () => {
   test.beforeAll(async () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
+    const htmlPreview = `<!doctype html><html><body>
+<h1>HTML artifact</h1>
+<p id="static">Rendered in a sandboxed iframe.</p>
+<p id="script-status">script did not run</p>
+<script>
+  const statuses = [];
+  document.getElementById("script-status").textContent = "script ran";
+  try {
+    parent.document.body.dataset.artifactAccess = "unexpected";
+    statuses.push("parent accessible");
+  } catch (error) {
+    statuses.push("parent blocked");
+  }
+  try {
+    localStorage.getItem("pi-web-token");
+    statuses.push("localStorage accessible");
+  } catch (error) {
+    statuses.push("localStorage blocked");
+  }
+  try {
+    statuses.push(document.cookie ? "cookies visible" : "cookies empty");
+  } catch (error) {
+    statuses.push("cookies blocked");
+  }
+  const list = document.createElement("ul");
+  list.id = "sandbox-status";
+  for (const status of statuses) {
+    const item = document.createElement("li");
+    item.textContent = status;
+    list.append(item);
+  }
+  document.body.append(list);
+</script>
+</body></html>`;
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
     await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n```ts\nconst preview = true;\n```\n");
-    await writeFile(join(artifactDir, "preview.html"), "<!doctype html><html><body><h1>HTML artifact</h1><p>Rendered in a sandboxed iframe.</p></body></html>");
+    await writeFile(join(artifactDir, "preview.html"), htmlPreview);
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
   });
 
@@ -1106,8 +1140,14 @@ test.describe("image rendering", () => {
     const preview = page.locator(".artifactPreview--html").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("preview.html");
     const frame = preview.locator("iframe.artifactPreviewFrame");
-    await expect(frame).toHaveAttribute("sandbox", "");
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
     await expect(frame).toHaveAttribute("src", "/api/artifacts/preview.html");
+    const artifactFrame = frame.contentFrame();
+    await expect(artifactFrame.locator("#script-status")).toHaveText("script ran");
+    await expect(artifactFrame.locator("#sandbox-status")).toContainText("parent blocked");
+    await expect(artifactFrame.locator("#sandbox-status")).toContainText("localStorage blocked");
+    await expect(artifactFrame.locator("#sandbox-status")).toContainText(/cookies (empty|blocked)/);
   });
 
   test("renders video artifact links inline", async ({ page }) => {

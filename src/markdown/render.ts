@@ -274,7 +274,9 @@ function enhanceArtifactLinks(root: ParentNode) {
       iframe.className = "artifactPreviewFrame";
       iframe.src = url.pathname;
       iframe.title = `Preview of ${title.textContent}`;
-      iframe.setAttribute("sandbox", "");
+      // Allow artifact scripts (for diagrams and interactive previews) while omitting
+      // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
+      iframe.setAttribute("sandbox", "allow-scripts");
       content.append(iframe);
       continue;
     }

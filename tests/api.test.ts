@@ -467,7 +467,7 @@ describe("artifact serving", () => {
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -499,7 +499,7 @@ describe("artifact serving", () => {
   it("serves artifacts even when a token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "secret" },
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "secret", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
