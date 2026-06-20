@@ -193,7 +193,7 @@ test.describe("visual regression", () => {
     await page.goto("/");
     await page.locator("#conversationTreeButton").click();
     await expect(page.locator(".conversationTreePanel")).toBeVisible();
-    await expect(page.locator(".conversationTreeChildren")).toBeVisible();
+    await expect(page.locator(".conversationTreeGraphPath")).toHaveCount(3);
     await expect(page.locator(".conversationTreeBadge.branch")).toHaveText("2 branches");
 
     await expect(page).toHaveScreenshot(`conversation-tree-${testInfo.project.name}.png`, {

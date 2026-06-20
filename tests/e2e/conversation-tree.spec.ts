@@ -29,7 +29,12 @@ test.describe("conversation tree UI", () => {
     await expect(panel.getByRole("treeitem", { name: /Can you add image attachments/i })).toBeVisible();
     await expect(panel.getByRole("treeitem", { name: /Actually, make the attachment picker mobile-first/i })).toBeVisible();
     await expect(panel.locator(".conversationTreeBadge.branch")).toHaveText("2 branches");
-    await expect(panel.locator(".conversationTreeChildren")).toHaveCount(1);
+    await expect(panel.locator(".conversationTreeGraph")).toBeVisible();
+    await expect(panel.locator(".conversationTreeGraphPath")).toHaveCount(3);
+    await expect(panel.locator(".conversationTreeGraphPath.activePath")).toHaveCount(1);
+    await expect(panel.locator(".conversationTreeGraphPath.inactivePath")).toHaveCount(2);
+    await expect(panel.locator(".conversationTreeBadge.branchLane").first()).toContainText("branch 1 · current");
+    await expect(panel.locator(".conversationTreeBadge.branchLane").last()).toContainText("branch 2");
 
     const firstRowHeight = await panel.locator(".conversationTreeNode").first().evaluate((el: HTMLElement) => el.getBoundingClientRect().height);
     expect(firstRowHeight).toBeLessThanOrEqual(36);

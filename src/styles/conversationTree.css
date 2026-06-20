@@ -13,7 +13,7 @@
   inset: 0 0 0 auto;
   z-index: 31;
   display: flex;
-  width: min(440px, calc(100vw - 28px));
+  width: min(520px, calc(100vw - 28px));
   max-width: 100vw;
   flex-direction: column;
   gap: 12px;
@@ -110,7 +110,7 @@
   min-height: 0;
   flex: 1;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
   overflow: auto;
   padding-right: 2px;
 }
@@ -121,20 +121,82 @@
   font-size: 13px;
 }
 
+.conversationTreeGraph {
+  position: relative;
+  min-width: 0;
+  padding: 1px 0;
+}
+
+.conversationTreeGraphRows {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.conversationTreeGraphSvg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.conversationTreeGraphPathShadow,
+.conversationTreeGraphPath {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.conversationTreeGraphPathShadow {
+  stroke: var(--tree-panel-bg);
+  stroke-width: 5px;
+  opacity: .95;
+}
+
+.conversationTreeGraphPath {
+  stroke-width: 2.2px;
+  opacity: .48;
+}
+
+.conversationTreeGraphPath.activePath {
+  opacity: .98;
+}
+
+.conversationTreeGraphPath.inactivePath {
+  opacity: .42;
+}
+
+.conversationTreeGraphNode {
+  stroke-width: 1.5px;
+  filter: drop-shadow(0 0 0 var(--tree-panel-bg));
+}
+
+.conversationTreeGraphNode.inactivePath:not(.currentLeaf) {
+  opacity: .78;
+}
+
+.conversationTreeGraphNode.currentLeaf {
+  stroke-width: 2.4px;
+}
+
 .conversationTreeNode {
   position: relative;
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
+  grid-template-columns: var(--tree-graph-width, 30px) minmax(0, 1fr);
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   width: 100%;
   height: auto;
-  min-height: 28px;
+  min-height: 30px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 9px;
   background: transparent;
   color: var(--text);
-  padding: 2px 6px;
+  padding: 3px 7px 3px 0;
   text-align: left;
 }
 
@@ -144,91 +206,38 @@
   background: color-mix(in srgb, var(--panel-2) 58%, transparent);
 }
 
-.conversationTreeNode.activePath .conversationTreeRail::before {
-  background: color-mix(in srgb, var(--accent) 55%, transparent);
+.conversationTreeNode.branchPoint:not(.selected) {
+  background: color-mix(in srgb, var(--panel-2) 22%, transparent);
 }
 
 .conversationTreeNode.currentLeaf {
   background: color-mix(in srgb, var(--accent) 9%, transparent);
 }
 
-.conversationTreeItem {
-  position: relative;
-  min-width: 0;
-}
-
-.conversationTreeChildren {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-left: 8px;
-  padding-left: 14px;
-}
-
-.conversationTreeChildren::before {
-  content: "";
-  position: absolute;
-  left: 5px;
-  top: 0;
-  bottom: 0;
-  width: 1.5px;
-  border-radius: 999px;
-  background: var(--tree-line);
-}
-
-.conversationTreeChildren > .conversationTreeItem::before {
-  content: "";
-  position: absolute;
-  left: -9px;
-  top: 14px;
-  width: 10px;
-  height: 1.5px;
-  border-radius: 999px;
-  background: var(--tree-line);
-}
-
-.conversationTreeChildren > .conversationTreeItem.activePath::before {
-  background: var(--tree-line-active);
-}
-
-.conversationTreeChildren > .conversationTreeItem:last-child::after {
-  content: "";
-  position: absolute;
-  left: -10px;
-  top: 16px;
-  bottom: 0;
-  width: 4px;
-  background: var(--tree-panel-bg);
-}
-
-.conversationTreeItem.branchItem.inactivePath > .conversationTreeNode:not(.selected) {
-  opacity: .72;
+.conversationTreeNode.branchStart:not(.selected) {
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--tree-node-color, var(--accent)) 14%, transparent) 0,
+    transparent min(120px, 46%));
 }
 
 .conversationTreeRail {
-  display: flex;
-  justify-content: center;
+  position: relative;
+  align-self: stretch;
+  min-width: 0;
 }
 
 .conversationTreeGlyph {
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  min-width: 7px;
-  align-self: center;
+  position: absolute;
+  left: calc(var(--tree-node-x, 12px) - 4px);
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
   border-radius: 999px;
-  background: var(--muted);
-  box-shadow: 0 0 0 3px var(--tree-panel-bg);
+  background: var(--tree-node-color, var(--muted));
+  opacity: 0;
+  transform: translateY(-50%);
 }
-
-.conversationTreeGlyph.user { background: #60a5fa; }
-.conversationTreeGlyph.assistant { background: var(--accent); }
-.conversationTreeGlyph.toolCall,
-.conversationTreeGlyph.toolResult { background: #8b5cf6; }
-.conversationTreeGlyph.branchSummary,
-.conversationTreeGlyph.compaction { background: #facc15; }
-.conversationTreeGlyph.error { background: var(--danger); }
 
 .conversationTreeNodeMain {
   display: grid;
@@ -298,6 +307,8 @@
 .conversationTreeBadge.label { color: #fde68a; border-color: color-mix(in srgb, #facc15 38%, transparent); }
 .conversationTreeBadge.branch { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 34%, transparent); }
 .conversationTreeBadge.current { color: #86efac; border-color: color-mix(in srgb, #22c55e 36%, transparent); }
+.conversationTreeBadge.branchLane { color: #c4b5fd; border-color: color-mix(in srgb, #a78bfa 40%, transparent); }
+.conversationTreeBadge.branchLane.current { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, transparent); }
 
 .conversationTreeSelection {
   display: grid;
@@ -394,7 +405,6 @@
 
   .conversationTreeNode {
     min-height: 32px;
-    padding-left: 6px;
   }
 
   .conversationTreeSelectionActions button,
