@@ -31,7 +31,7 @@ const state = createAppState();
 const api = createApiClient(state);
 const markdown = createMarkdownRenderer(elements.messagesEl);
 const messages = createMessageList({ messagesEl: elements.messagesEl, markdown });
-const tools = createToolCards(elements.messagesEl, messages.scrollToBottom);
+const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers);
 
 let composer: ComposerController;
 let contextMeter: ContextMeterController;

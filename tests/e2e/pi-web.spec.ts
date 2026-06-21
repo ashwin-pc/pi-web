@@ -837,7 +837,8 @@ test.describe("tool cards", () => {
     await card.locator(".toolCardExpandToggle").click();
     await expect(card).not.toHaveClass(/toolCard--compactCollapsed/);
     await expect(card.locator(".toolCardBody")).toBeVisible();
-    await expect(card.locator(".toolCardArgs")).toContainText('"path": "/some/file"');
+    await expect(card.locator(".toolCardArgKey")).toContainText("path");
+    await expect(card.locator(".toolCardArgValue")).toContainText("/some/file");
     await expect(card.locator(".toolCardExpandToggle")).toHaveAttribute("aria-expanded", "true");
 
     const expandedHeight = await card.evaluate((el) => el.getBoundingClientRect().height);

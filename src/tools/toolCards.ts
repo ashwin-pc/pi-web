@@ -1,11 +1,12 @@
 import hljs from "highlight.js/lib/common";
 import { renderEditDiff } from "../components/editDiff.js";
 import { textFromRawContent } from "../messages/content.js";
+import type { ApiHeaders } from "../app/api.js";
 
 export type ToolCards = {
   addToolCard: (toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => HTMLDivElement;
   updateToolCard: (card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) => void;
-  addToolHistoryCard: (toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) => void;
+  addToolHistoryCard: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
   addRuntimeErrorCard: (title: string, subtitle: string, body: string) => void;
   startTool: (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
   updateToolProgress: (toolCallId: string | undefined, toolName: string, partialResult?: unknown, args?: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -42,6 +43,20 @@ function setCompactCollapsed(card: HTMLDivElement, collapsed: boolean) {
   if (toggle) updateCompactToggle(toggle, collapsed);
 }
 
+function formatArgValue(value: unknown) {
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+}
+
+function appendHighlightedCode(parent: HTMLElement, text: string) {
+  const pre = document.createElement("pre");
+  pre.className = "toolCardArgCode";
+  const code = document.createElement("code");
+  code.className = "hljs";
+  code.innerHTML = hljs.highlightAuto(text).value;
+  pre.append(code);
+  parent.append(pre);
+}
+
 function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>) {
   if (!args || Object.keys(args).length === 0) return;
 
@@ -53,11 +68,28 @@ function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>
   summary.className = "toolCardSummary";
   summary.textContent = "Arguments";
 
-  const pre = document.createElement("pre");
-  pre.className = "toolCardArgs";
-  pre.textContent = JSON.stringify(args, null, 2);
+  const argsEl = document.createElement("div");
+  argsEl.className = "toolCardArgs";
 
-  details.append(summary, pre);
+  for (const [key, value] of Object.entries(args)) {
+    const row = document.createElement("div");
+    row.className = "toolCardArgRow";
+
+    const keyEl = document.createElement("div");
+    keyEl.className = "toolCardArgKey";
+    keyEl.textContent = key;
+
+    const valueEl = document.createElement("div");
+    valueEl.className = "toolCardArgValue";
+    const text = formatArgValue(value);
+    if (text.includes("\n")) appendHighlightedCode(valueEl, text);
+    else valueEl.textContent = text;
+
+    row.append(keyEl, valueEl);
+    argsEl.append(row);
+  }
+
+  details.append(summary, argsEl);
   card.append(details);
 }
 
@@ -154,24 +186,79 @@ function addToolResultBody(card: HTMLDivElement, result: string) {
   }
 }
 
-function textFromToolResult(result: unknown): string {
-  if (typeof result === "string") {
-    const trimmed = result.trim();
-    if ((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"))) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        const text = textFromToolResult(parsed);
-        if (text) return text;
-      } catch {
-        // Plain text that only looks like JSON; render it as-is.
-      }
-    }
+function parseJsonLikeResult(result: unknown): unknown {
+  if (typeof result !== "string") return result;
+  const trimmed = result.trim();
+  if (!((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]")))) return result;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
     return result;
   }
+}
 
+function textFromToolResult(result: unknown): string {
+  result = parseJsonLikeResult(result);
+  if (typeof result === "string") return result;
   if (!result || typeof result !== "object") return result == null ? "" : String(result);
   const value = result as Record<string, unknown>;
   return textFromRawContent(value.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
+}
+
+type ToolImage = { src: string; alt: string; needsAuth?: boolean };
+
+export function collectToolImages(result: unknown): ToolImage[] {
+  result = parseJsonLikeResult(result);
+  const images: ToolImage[] = [];
+  const visit = (value: unknown) => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    const obj = value as Record<string, unknown>;
+    if (obj.type === "image") {
+      const source = obj.source && typeof obj.source === "object" ? obj.source as Record<string, unknown> : undefined;
+      const mimeType = [obj.mimeType, obj.mediaType, obj.mime_type, source?.media_type].find((v): v is string => typeof v === "string") || "image/png";
+      const alt = typeof obj.name === "string" ? obj.name : "tool result image";
+      const data = typeof obj.data === "string" ? obj.data : typeof source?.data === "string" ? source.data : undefined;
+      const url = typeof obj.url === "string" ? obj.url : typeof source?.url === "string" ? source.url : undefined;
+      if (data) images.push({ src: `data:${mimeType};base64,${data}`, alt });
+      else if (url) images.push({ src: url, alt, needsAuth: url.startsWith("/") });
+      else if (typeof obj.path === "string") images.push({ src: `/api/artifacts/${encodeURIComponent(obj.path.split("/").pop() || obj.path)}`, alt, needsAuth: true });
+    } else if (obj.type === "image_url" && obj.image_url && typeof obj.image_url === "object") {
+      const imageUrl = obj.image_url as Record<string, unknown>;
+      if (typeof imageUrl.url === "string") images.push({ src: imageUrl.url, alt: "tool result image", needsAuth: imageUrl.url.startsWith("/") });
+    }
+    visit(obj.content);
+    visit(obj.raw);
+    visit(obj.source);
+  };
+  visit(result);
+  return images;
+}
+
+function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?: ApiHeaders) {
+  const images = collectToolImages(result);
+  if (images.length === 0) return;
+  const wrap = document.createElement("div");
+  wrap.className = "toolCardImage";
+  for (const image of images) {
+    const img = document.createElement("img");
+    img.alt = image.alt;
+    if (image.needsAuth && apiHeaders) {
+      fetch(image.src, { headers: apiHeaders() })
+        .then((res) => res.ok ? res.blob() : Promise.reject(new Error(res.statusText)))
+        .then((blob) => {
+          const objectUrl = URL.createObjectURL(blob);
+          img.src = objectUrl;
+          img.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+        })
+        .catch(() => { img.alt = `${image.alt} (failed to load)`; });
+    } else img.src = image.src;
+    wrap.append(img);
+  }
+  card.append(wrap);
 }
 
 const toolQuietNoticeMs = 30_000;
@@ -218,7 +305,7 @@ function finalizePartialToolOutput(card: HTMLDivElement) {
 
 export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () => void = () => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
-}): ToolCards {
+}, apiHeaders?: ApiHeaders): ToolCards {
   const activeToolCards = new Map<string, HTMLDivElement>();
   const knownToolStartedAts = new Map<string, number>();
   const runningToolStates = new WeakMap<HTMLDivElement, { startedAt?: number; lastActivityAt: number; timer: number }>();
@@ -330,16 +417,19 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     } else {
       finalizePartialToolOutput(card);
     }
+    addToolImagePreviews(card, result, apiHeaders);
 
     scrollToBottom();
   }
 
-  function addToolHistoryCard(toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) {
+  function addToolHistoryCard(toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) {
     const card = document.createElement("div");
     card.className = `toolCard ${isError ? "toolCard--error" : "toolCard--success"}`;
     addToolHeader(card, toolName, args);
+    const resultStr = textFromToolResult(result);
     if (toolName === "edit" && args) renderEditDiff(card, args);
-    else if (result) addToolResultBody(card, result);
+    else if (resultStr) addToolResultBody(card, resultStr);
+    addToolImagePreviews(card, result, apiHeaders);
     messagesEl.append(card);
   }
 

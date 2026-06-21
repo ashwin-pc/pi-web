@@ -4,7 +4,7 @@ import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 import { imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote } from "./content.js";
 
-export type AddToolHistoryCard = (toolName: string, isError: boolean, result: string, args?: Record<string, unknown>) => void;
+export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
 export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => void;
 
@@ -490,8 +490,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   function renderToolResultMessage(message: any, addToolHistoryCard: AddToolHistoryCard, argsOverride?: Record<string, unknown>) {
     const toolName = message.toolName || message.raw?.toolName || message.name || "tool";
     const isError = Boolean(message.isError);
-    const resultText = messageText(message);
-    addToolHistoryCard(toolName, isError, resultText, argsOverride || message.toolArgs);
+    addToolHistoryCard(toolName, isError, message, argsOverride || message.toolArgs);
   }
 
   function renderAssistantMessageParts(message: any, options: {

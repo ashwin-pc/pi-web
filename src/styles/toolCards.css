@@ -164,15 +164,60 @@
 .toolCardSummary::before { content: "▶ "; font-size: 9px; opacity: .6; }
 details[open] > .toolCardSummary::before { content: "▼ "; }
 .toolCardArgs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   margin: 0;
   padding: 8px 12px 10px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
   font-size: 12px;
   color: var(--muted);
   max-height: 280px;
   overflow: auto;
   border-top: 1px solid var(--border);
+}
+.toolCardArgRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.toolCardArgKey {
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  font-size: 10px;
+  opacity: .75;
+}
+.toolCardArgValue {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.toolCardArgCode {
+  margin: 0;
+  padding: 6px 8px;
+  background: var(--surface, rgba(127, 127, 127, .08));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: auto;
+}
+.toolCardArgCode code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: 12px;
+  white-space: pre;
+}
+.toolCardImage {
+  padding: 8px 12px 10px;
+  border-top: 1px solid var(--border);
+}
+.toolCardImage img {
+  max-width: 100%;
+  max-height: 420px;
+  height: auto;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  display: block;
 }
 .toolCardBody code.hljs {
   display: block;
