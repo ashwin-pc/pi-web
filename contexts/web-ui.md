@@ -17,3 +17,7 @@ When creating files the user should view from the web UI, such as screenshots, d
 - Do not ask users to open arbitrary local filesystem paths like `/tmp/...` for user-visible artifacts unless they explicitly ask for the local path.
 
 The `/api/artifacts/<filename>` route serves files from `.pi/web/artifacts/`.
+
+## Diagrams
+
+When drawing diagrams, use Mermaid instead of ASCII art. The web UI renders Mermaid code fences inline as diagrams, so prefer a fenced ```mermaid block over hand-drawn ASCII boxes, arrows, or trees.
