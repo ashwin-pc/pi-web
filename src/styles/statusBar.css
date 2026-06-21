@@ -150,3 +150,57 @@
     content: none;
   }
 }
+.headerActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+.webHeaderActionButton.active {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.webHeaderActionPopover {
+  position: fixed;
+  top: 30px;
+  right: 8px;
+  z-index: 80;
+  width: min(420px, calc(100vw - 16px));
+  max-height: min(58vh, 420px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.32);
+  overflow: hidden;
+}
+.webHeaderActionPopoverHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px 2px 10px;
+  font-size: 13px;
+  line-height: 18px;
+}
+.webHeaderActionPopoverHeader .iconButton {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  min-height: 20px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.webHeaderActionPopoverBody {
+  padding: 4px 10px 10px;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.webHeaderActionPopoverBody h3 {
+  margin: 8px 0 3px;
+  font-size: 13px;
+}
+.webHeaderActionPopoverBody h3:first-child { margin-top: 0; }

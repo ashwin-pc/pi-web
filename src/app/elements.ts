@@ -37,6 +37,7 @@ export type AppElements = {
   modelSettingsPopover: HTMLDivElement;
   modelSelectEl: HTMLSelectElement;
   thinkingSelectEl: HTMLSelectElement;
+  headerActionsEl: HTMLSpanElement;
   newSessionHeaderButton: HTMLButtonElement;
   conversationTreeButton: HTMLButtonElement;
   gitButton: HTMLButtonElement;
@@ -105,6 +106,7 @@ export function getAppElements(): AppElements {
     modelSettingsPopover: requiredElement<HTMLDivElement>("#modelSettingsPopover"),
     modelSelectEl: requiredElement<HTMLSelectElement>("#modelSelect"),
     thinkingSelectEl: requiredElement<HTMLSelectElement>("#thinkingSelect"),
+    headerActionsEl: requiredElement<HTMLSpanElement>("#headerActions"),
     newSessionHeaderButton: requiredElement<HTMLButtonElement>("#newSessionHeaderButton"),
     conversationTreeButton: requiredElement<HTMLButtonElement>("#conversationTreeButton"),
     gitButton: requiredElement<HTMLButtonElement>("#gitButton"),

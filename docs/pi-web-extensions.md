@@ -99,6 +99,27 @@ ctx.ui.web.setFooter("git", {
 
 HTML is rendered as trusted extension-provided markup. pi-web extensions run with the same local trust model as regular pi extensions, so only install extensions from sources you trust.
 
+## Header action API
+
+`ctx.ui.web.setHeaderAction(key, action)` contributes an icon button to the status bar. Clicking it invokes your extension handler and renders returned Markdown in a shared dismissible popover.
+
+```ts
+ctx.ui.web.setHeaderAction("recap", {
+  icon: "scroll-text",
+  title: "Session recap",
+  label: "Recap",
+  invoke: async () => ({ markdown: "## What this session is about\n..." }),
+});
+```
+
+Clear an action by passing `undefined`:
+
+```ts
+ctx.ui.web.setHeaderAction("recap", undefined);
+```
+
+The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../examples/pi-web-extensions/recap.ts).
+
 ## Example: live git footer
 
 The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch and live dirty/clean state, refreshes periodically, and also refreshes around turns, bash commands, and compaction events.

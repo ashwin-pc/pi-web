@@ -10,6 +10,7 @@ import { initKeyboardShortcuts } from "./app/shortcuts.js";
 import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
+import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { initGitPanel } from "./git/panel.js";
 import { createMarkdownRenderer } from "./markdown/render.js";
@@ -39,6 +40,12 @@ let sessions: SessionsController;
 let settings: SettingsController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
+const webHeaderActions = createWebHeaderActions({
+  container: elements.headerActionsEl,
+  headers: api.headers,
+  getSessionId: () => state.currentSessionId,
+  markdown,
+});
 
 function showSystemError(error: unknown) {
   messages.addMessage("system", error instanceof Error ? error.message : String(error), "error");
@@ -52,6 +59,7 @@ function updateMeta(data: any) {
   state.currentCwd = data.cwd || state.currentCwd;
   if ("stats" in data) contextMeter.update(data.stats);
   if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
+  if ("webHeaderActions" in data) webHeaderActions.render(data.webHeaderActions);
   if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;

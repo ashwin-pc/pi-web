@@ -36,6 +36,13 @@ export type PiWebFooter =
   | { kind: "text"; lines: string[] }
   | { kind: "html"; html: string };
 
+export type PiWebHeaderAction = {
+  icon?: string;
+  title: string;
+  label?: string;
+  invoke: () => Promise<{ markdown: string }> | { markdown: string };
+};
+
 export type PiWebUi = {
   /**
    * Set or clear a pi-web footer region.
@@ -47,6 +54,9 @@ export type PiWebUi = {
    * Only install pi-web extensions from sources you trust.
    */
   setFooter(key: string, footer: PiWebFooter | undefined): void;
+
+  /** Set or clear a status-bar icon button contributed by a pi-web extension. */
+  setHeaderAction(key: string, action: PiWebHeaderAction | undefined): void;
 };
 
 export type PiWebExtensionUIContext = ExtensionUIContext & {

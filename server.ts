@@ -24,7 +24,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
-import type { PiWebFooter, PiWebUi } from "./src/extensions.js";
+import type { PiWebFooter, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
 import type { PiWebSession } from "./server/types.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -978,6 +978,7 @@ function currentState(targetSession: PiWebSession = session) {
     thinkingLevel: targetSession.thinkingLevel,
     stats: sessionStats(targetSession),
     webFooters: webFooterEntries(targetSession),
+    webHeaderActions: webHeaderActionEntries(targetSession),
   };
 }
 
@@ -1365,7 +1366,12 @@ type WebFooterState = {
   footers: Map<string, PiWebFooter>;
 };
 
+type WebHeaderActionState = {
+  actions: Map<string, PiWebHeaderAction>;
+};
+
 const webFooterStates = new WeakMap<object, WebFooterState>();
+const webHeaderActionStates = new WeakMap<object, WebHeaderActionState>();
 
 function getWebFooterState(value: any): WebFooterState {
   const key = value as object;
@@ -1381,6 +1387,24 @@ function cleanFooterKey(value: unknown) {
   if (typeof value !== "string") return undefined;
   const cleaned = value.trim().slice(0, 80).replace(/[^a-zA-Z0-9_.:-]/g, "-");
   return cleaned || undefined;
+}
+
+const cleanHeaderActionKey = cleanFooterKey;
+
+function cleanHeaderActionText(value: unknown, maxLength = 200) {
+  if (typeof value !== "string") return undefined;
+  const cleaned = value.replace(/[\u0000-\u001F\u007F]/g, "").trim();
+  return cleaned ? cleaned.slice(0, maxLength) : undefined;
+}
+
+function getWebHeaderActionState(value: any): WebHeaderActionState {
+  const key = value as object;
+  let state = webHeaderActionStates.get(key);
+  if (!state) {
+    state = { actions: new Map() };
+    webHeaderActionStates.set(key, state);
+  }
+  return state;
 }
 
 function cleanFooterText(value: unknown, maxLength = 2_000) {
@@ -1422,6 +1446,26 @@ function broadcastWebFooters(value: any) {
   return webFooters;
 }
 
+function webHeaderActionEntries(value: any) {
+  return Array.from(getWebHeaderActionState(value).actions.entries()).map(([key, action]) => ({
+    key,
+    icon: cleanHeaderActionText(action.icon, 80),
+    title: cleanHeaderActionText(action.title) || key,
+    label: cleanHeaderActionText(action.label),
+  }));
+}
+
+function broadcastWebHeaderActions(value: any) {
+  const webHeaderActions = webHeaderActionEntries(value);
+  broadcast({
+    type: "web_header_actions_changed",
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    webHeaderActions,
+  });
+  return webHeaderActions;
+}
+
 function createPiWebUi(value: any): PiWebUi {
   return {
     setFooter(key, footer) {
@@ -1432,6 +1476,17 @@ function createPiWebUi(value: any): PiWebUi {
       if (normalized) footerState.footers.set(footerKey, normalized);
       else footerState.footers.delete(footerKey);
       broadcastWebFooters(value);
+    },
+    setHeaderAction(key, action) {
+      const actionKey = cleanHeaderActionKey(key);
+      if (!actionKey) return;
+      const actionState = getWebHeaderActionState(value);
+      if (action && typeof action === "object" && typeof action.invoke === "function") {
+        actionState.actions.set(actionKey, action);
+      } else {
+        actionState.actions.delete(actionKey);
+      }
+      broadcastWebHeaderActions(value);
     },
   };
 }
@@ -1971,6 +2026,25 @@ const server = createServer(async (req, res) => {
           sessionUiState: await sessionUiStateStore.read(),
           tokenRequired: Boolean(token),
         });
+      }
+
+      if (method === "POST" && url.pathname === "/api/web-header-action/invoke") {
+        const body = await readBody(req) as { sessionId?: unknown; key?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const actionKey = cleanHeaderActionKey(body.key);
+        if (!actionKey) return sendJson(res, 400, { ok: false, error: "key is required" });
+        const action = getWebHeaderActionState(targetSession).actions.get(actionKey);
+        if (!action) return sendJson(res, 404, { ok: false, error: "Header action not found" });
+        try {
+          const result = await action.invoke();
+          const markdown = cleanFooterText(result?.markdown, 200_000);
+          if (!markdown) return sendJson(res, 400, { ok: false, error: "Header action returned no markdown" });
+          return sendJson(res, 200, { ok: true, label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || actionKey, markdown });
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       if (method === "GET" && url.pathname === "/api/session/stats") {
