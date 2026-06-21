@@ -260,7 +260,9 @@ function enhanceArtifactLinks(root: ParentNode) {
     title.className = "artifactPreviewTitle";
     title.textContent = artifactName(url.pathname);
     const open = document.createElement("a");
-    open.href = url.pathname;
+    open.href = kind === "markdown"
+      ? `/artifact-preview.html?src=${encodeURIComponent(url.pathname)}&name=${encodeURIComponent(artifactName(url.pathname))}`
+      : url.pathname;
     if (isStandalonePwa()) {
       open.target = "_top";
     } else {
@@ -326,13 +328,17 @@ function enhanceArtifactLinks(root: ParentNode) {
   }
 }
 
-function renderAssistantMarkdown(body: HTMLElement, text: string) {
+export function renderStandaloneMarkdown(body: HTMLElement, text: string) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
   enhanceMermaid(body);
   enhanceCodeBlocks(body);
   enhanceImages(body);
   enhanceArtifactLinks(body);
+}
+
+function renderAssistantMarkdown(body: HTMLElement, text: string) {
+  renderStandaloneMarkdown(body, text);
   body.dataset.markdownRendered = "true";
   delete body.dataset.markdownText;
 }

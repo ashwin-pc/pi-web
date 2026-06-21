@@ -1134,6 +1134,25 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
   });
 
+  test("opens markdown artifacts in a rendered preview page", async ({ page }) => {
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const open = page.locator(".artifactPreview--markdown").last().getByRole("link", { name: "Open" });
+    await expect(open).toHaveAttribute("href", /\/artifact-preview\.html\?src=%2Fapi%2Fartifacts%2Freport\.md/);
+
+    const href = await open.getAttribute("href");
+    expect(href).toBeTruthy();
+    await page.goto(href!);
+
+    await expect(page.locator("#artifactPreviewTitle")).toHaveText("report.md");
+    await expect(page.getByRole("button", { name: "Back" })).toHaveClass(/artifactPreviewPageAction/);
+    await expect(page.getByRole("link", { name: "Raw" })).toHaveClass(/artifactPreviewPageAction/);
+    await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Artifact report");
+    await expect(page.locator("#artifactPreviewBody strong")).toHaveText("markdown");
+    await expect(page.locator("#artifactPreviewBody pre code")).toContainText("const preview = true;");
+  });
+
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {
     await page.locator("#prompt").fill("show html artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());

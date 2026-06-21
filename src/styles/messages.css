@@ -21,6 +21,59 @@
 .markdownBody {
   white-space: normal;
 }
+
+.artifactPreviewPage {
+  margin: 0;
+  padding: 0;
+}
+
+.artifactPreviewPageHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--bg);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.artifactPreviewPageHeader h1 {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifactPreviewPageAction {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 0 9px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.artifactPreviewPageAction:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.artifactPreviewPageBody {
+  padding: 10px;
+}
 .markdownBody > :first-child { margin-top: 0; }
 .markdownBody > :last-child { margin-bottom: 0; }
 .markdownBody p, .markdownBody ul, .markdownBody ol, .markdownBody blockquote, .markdownBody pre, .markdownBody table {
