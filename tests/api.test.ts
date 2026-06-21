@@ -55,6 +55,15 @@ async function waitForServer(baseUrl: string) {
   throw new Error(`Server did not start: ${baseUrl}`);
 }
 
+async function waitForCondition(predicate: () => Promise<boolean> | boolean, timeoutMs = 5_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 describe("pi-web mock API", () => {
   let child: ChildProcess;
   let baseUrl: string;
@@ -745,6 +754,112 @@ describe("additional API coverage", () => {
     expect(res.status).toBe(200);
     expect((await res.json()).message).toContain("Aborted");
   });
+});
+
+describe("Live session lifecycle", () => {
+  let child: ChildProcess;
+  let baseUrl: string;
+  let settingsDir: string;
+
+  beforeAll(async () => {
+    settingsDir = await mkdtemp(join(tmpdir(), "pi-web-lifecycle-settings-"));
+    const port = await freePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: {
+        ...process.env,
+        PI_WEB_MOCK: "1",
+        PI_WEB_DEV: "1",
+        HOST: "127.0.0.1",
+        PORT: String(port),
+        PI_WEB_TOKEN: "",
+        PI_WEB_SESSION_IDLE_GRACE_MS: "120",
+        PI_WEB_VIEWER_LEASE_GRACE_MS: "80",
+        PI_WEB_WS_HEARTBEAT_MS: "50",
+        PI_WEB_WS_MAX_MISSED_HEARTBEATS: "1",
+        PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"),
+        PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (data) => process.stderr.write(data));
+    await waitForServer(baseUrl);
+  }, 20_000);
+
+  afterAll(async () => {
+    child?.kill();
+    if (settingsDir) await rm(settingsDir, { recursive: true, force: true });
+  });
+
+  async function reset() {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+  }
+
+  async function lifecycleState() {
+    return (await (await fetch(`${baseUrl}/api/mock/live-sessions`)).json()) as {
+      liveSessions: Array<{ sessionId: string; viewerLeases: number }>;
+      viewerLeases: Array<{ clientId: string; sockets: number }>;
+      lifecycle: Array<{ sessionId: string; shutdowns: number; disposes: number }>;
+    };
+  }
+
+  it("disposes an idle session after its viewer lease is released", async () => {
+    await reset();
+    const res = await fetch(`${baseUrl}/api/sessions/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pi-web-client-id": "lease-test" },
+      body: JSON.stringify({ sessionId: "mock-older", clientId: "lease-test" }),
+    });
+    expect(res.status).toBe(200);
+
+    const leased = await lifecycleState();
+    expect(leased.liveSessions.some((item) => item.sessionId === "mock-older" && item.viewerLeases === 1)).toBe(true);
+
+    await waitForCondition(async () => {
+      const state = await lifecycleState();
+      const olderLive = state.liveSessions.some((item) => item.sessionId === "mock-older");
+      const lifecycle = state.lifecycle.find((item) => item.sessionId === "mock-older");
+      return !olderLive && Boolean(lifecycle && lifecycle.shutdowns >= 1 && lifecycle.disposes >= 1);
+    }, 3_000);
+
+    const state = await lifecycleState();
+    expect(state.liveSessions.some((item) => item.sessionId === "mock-current")).toBe(true);
+  }, 10_000);
+
+  it("terminates stale WebSockets with missed heartbeats and releases their session lease", async () => {
+    await reset();
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-older&clientId=heartbeat-test`, { autoPong: false });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.on("message", (data) => {
+          const msg = JSON.parse(String(data));
+          if (msg.type === "hello") resolve();
+        });
+        ws.on("error", reject);
+      });
+
+      const leased = await lifecycleState();
+      expect(leased.liveSessions.some((item) => item.sessionId === "mock-older" && item.viewerLeases === 1)).toBe(true);
+      expect(leased.viewerLeases.some((item) => item.clientId === "heartbeat-test" && item.sockets === 1)).toBe(true);
+
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error("WebSocket was not closed by heartbeat")), 3_000);
+        ws.on("close", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+      });
+
+      await waitForCondition(async () => {
+        const state = await lifecycleState();
+        const olderLive = state.liveSessions.some((item) => item.sessionId === "mock-older");
+        const lifecycle = state.lifecycle.find((item) => item.sessionId === "mock-older");
+        return !olderLive && Boolean(lifecycle && lifecycle.shutdowns >= 1 && lifecycle.disposes >= 1);
+      }, 3_000);
+    } finally {
+      if (ws.readyState === ws.OPEN || ws.readyState === ws.CONNECTING) ws.terminate();
+    }
+  }, 10_000);
 });
 
 describe("WebSocket authentication", () => {

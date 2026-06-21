@@ -87,6 +87,12 @@ function sendJson(res: ServerResponse, status: number, value: unknown) {
   res.end(body);
 }
 
+function pipeReadStream(res: ServerResponse, file: string) {
+  const stream = createReadStream(file);
+  res.on("close", () => stream.destroy());
+  stream.pipe(res);
+}
+
 function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
 }
@@ -141,7 +147,7 @@ function serveArtifact(req: IncomingMessage, res: ServerResponse) {
     "content-type": contentTypes[extname(resolvedFile).toLowerCase()] || "application/octet-stream",
     "cache-control": "no-store",
   });
-  createReadStream(resolvedFile).pipe(res);
+  pipeReadStream(res, resolvedFile);
 }
 
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
@@ -156,7 +162,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
   }
 
   res.writeHead(200, { "content-type": contentTypes[extname(file)] || "application/octet-stream" });
-  createReadStream(file).pipe(res);
+  pipeReadStream(res, file);
 }
 
 function textFromContent(content: unknown): string {
@@ -347,7 +353,7 @@ async function sendGitImage(res: ServerResponse, options: { cwd: string; path: s
   const info = await stat(resolved);
   if (!info.isFile()) throw new Error("Image not found");
   res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
-  createReadStream(resolved).pipe(res);
+  pipeReadStream(res, resolved);
 }
 
 async function gitCwdFromRepoParam(repo: string | null, baseCwd = piCwd) {
@@ -407,9 +413,13 @@ function parseCommit(entry: string) {
 
 async function requestCwdFromSessionId(sessionId: string | null) {
   if (!sessionId) return piCwd;
-  const targetSession = await getOrCreateLiveSessionById(sessionId);
-  if (!targetSession) throw new Error("Session not found");
-  return sessionCwd(targetSession);
+  if (sessionId === session.sessionId) return sessionCwd(session);
+  for (const entry of liveSessions.values()) {
+    if (entry.session.sessionId === sessionId) return sessionCwd(entry.session);
+  }
+  const info = await findSessionInfoById(sessionId);
+  if (!info) throw new Error("Session not found");
+  return info.cwd || piCwd;
 }
 
 async function gitLog(cwd = piCwd) {
@@ -1125,6 +1135,7 @@ async function executeSlashCommand(input: string, targetSession: PiWebSession = 
       if (targetSession.isCompacting) throw new Error("Compaction is already running.");
       if (typeof targetSession.compact !== "function") throw new Error("Compaction is not available in this session.");
       ensureRuntimeStartedAt(targetSession);
+      const releaseWorkLease = acquireWorkLease(targetSession);
       void targetSession.compact(args || undefined).catch((error: unknown) => {
         clearRuntimeStartedAt(targetSession);
         broadcast({
@@ -1133,7 +1144,7 @@ async function executeSlashCommand(input: string, targetSession: PiWebSession = 
           sessionFile: targetSession.sessionFile,
           error: error instanceof Error ? error.message : String(error),
         });
-      });
+      }).finally(releaseWorkLease);
       return { message: "Compaction started.", state: currentStateWithThinkingLevels(targetSession) };
     }
 
@@ -1198,8 +1209,7 @@ async function deleteSessionById(id: string, cwd?: string) {
     throw error;
   }
 
-  live?.unsubscribe?.();
-  liveSessions.delete(info.path);
+  if (live) await disposeLiveSession(info.path, "delete", true);
 
   if (mockMode) {
     const index = mockSessions.findIndex((item) => item.id === id);
@@ -1229,14 +1239,40 @@ const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
-const liveSessions = new Map<string, { session: any; unsubscribe?: () => void }>();
+type LiveSessionEntry = {
+  session: any;
+  unsubscribe?: () => void;
+  viewerClientIds: Set<string>;
+  workLeases: number;
+  disposeTimer?: ReturnType<typeof setTimeout>;
+  disposing?: boolean;
+};
+
+type ViewerLease = {
+  sessionKey: string;
+  sockets: Set<WebSocket>;
+  releaseTimer?: ReturnType<typeof setTimeout>;
+};
+
+function envMs(name: string, fallback: number) {
+  const raw = Number(process.env[name] || fallback);
+  return Number.isFinite(raw) && raw >= 0 ? raw : fallback;
+}
+
+const sessionIdleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 60_000);
+const viewerLeaseGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, sessionIdleGraceMs));
+const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
+const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
+const liveSessions = new Map<string, LiveSessionEntry>();
+const viewerLeases = new Map<string, ViewerLease>();
 const runtimeStartedAts = new Map<string, string>();
 const runtimeLastActivityAts = new Map<string, string>();
 const toolStartedAts = new Map<string, Map<string, string>>();
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
 
-const clients = new Set<WebSocket>();
+type RealtimeSocket = WebSocket & { missedPongs?: number };
+const clients = new Set<RealtimeSocket>();
 type RealtimeEnvelope = Record<string, unknown> & { seq: number };
 const realtimeEventLog: RealtimeEnvelope[] = [];
 const maxRealtimeEventLogSize = 1000;
@@ -1256,6 +1292,32 @@ function broadcast(value: unknown) {
     if (client.readyState === client.OPEN) client.send(data);
   }
   queueUnreadStateFromBroadcast(value);
+}
+
+function checkRealtimeHeartbeats() {
+  for (const client of clients) {
+    if (client.readyState === client.CLOSED || client.readyState === client.CLOSING) {
+      clients.delete(client);
+      continue;
+    }
+    if (client.readyState !== client.OPEN) continue;
+    const missedPongs = client.missedPongs || 0;
+    if (missedPongs >= websocketMaxMissedHeartbeats) {
+      client.terminate();
+      continue;
+    }
+    client.missedPongs = missedPongs + 1;
+    try {
+      client.ping();
+    } catch {
+      client.terminate();
+    }
+  }
+}
+
+if (websocketHeartbeatMs > 0) {
+  const realtimeHeartbeat = setInterval(checkRealtimeHeartbeats, websocketHeartbeatMs);
+  realtimeHeartbeat.unref?.();
 }
 
 function shouldClearSessionUnreadEvent(event: any) {
@@ -1516,12 +1578,14 @@ function requestExtensionUi<T>(
 
   return new Promise<T>((resolvePromise) => {
     const id = randomUUID();
+    const releaseWorkLease = acquireWorkLease(value);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
     const cleanup = () => {
       if (timeoutId) clearTimeout(timeoutId);
       opts?.signal?.removeEventListener("abort", onAbort);
       pendingExtensionUiRequests.delete(id);
+      releaseWorkLease();
     };
     const finish = (result: T) => {
       cleanup();
@@ -1668,10 +1732,189 @@ const mockHarness = createMockHarness({
   isCurrentSession: (value: PiWebSession) => value === session,
   currentState,
 });
-const { mockSessions, createMockSession, resetMockSessions } = mockHarness;
+const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle } = mockHarness;
 
 function sessionPathKey(value: any) {
   return String(value.sessionFile || value.sessionId || "");
+}
+
+function cleanClientId(value: unknown) {
+  if (typeof value !== "string") return "";
+  return value.trim().slice(0, 120).replace(/[^a-zA-Z0-9_.:-]/g, "");
+}
+
+function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
+  const raw = req.headers["x-pi-web-client-id"];
+  const headerValue = Array.isArray(raw) ? raw[0] : raw;
+  return cleanClientId(headerValue) || cleanClientId(fallback);
+}
+
+function clearTimer(timer: ReturnType<typeof setTimeout> | undefined) {
+  if (timer) clearTimeout(timer);
+}
+
+function cancelLiveSessionCleanup(entry: LiveSessionEntry) {
+  clearTimer(entry.disposeTimer);
+  entry.disposeTimer = undefined;
+}
+
+function isLiveSessionBusy(entry: LiveSessionEntry) {
+  return Boolean(entry.session?.isStreaming || entry.session?.isCompacting || entry.workLeases > 0);
+}
+
+function shouldKeepLiveSession(entry: LiveSessionEntry) {
+  return entry.session === session || entry.viewerClientIds.size > 0 || isLiveSessionBusy(entry);
+}
+
+function scheduleLiveSessionCleanup(key: string) {
+  const entry = liveSessions.get(key);
+  if (!entry || entry.disposing) return;
+  if (shouldKeepLiveSession(entry)) {
+    cancelLiveSessionCleanup(entry);
+    return;
+  }
+  if (entry.disposeTimer) return;
+  entry.disposeTimer = setTimeout(() => {
+    entry.disposeTimer = undefined;
+    void disposeLiveSession(key, "idle");
+  }, sessionIdleGraceMs);
+}
+
+async function emitSessionShutdown(value: any) {
+  const runner = value?.extensionRunner;
+  if (!runner?.hasHandlers?.("session_shutdown")) return;
+  await runner.emit({ type: "session_shutdown", reason: "quit" });
+}
+
+function clearSessionRuntimeMaps(key: string, value: any) {
+  runtimeStartedAts.delete(key);
+  runtimeLastActivityAts.delete(key);
+  toolStartedAts.delete(key);
+  const file = typeof value?.sessionFile === "string" ? value.sessionFile : "";
+  if (file && file !== key) {
+    runtimeStartedAts.delete(file);
+    runtimeLastActivityAts.delete(file);
+    toolStartedAts.delete(file);
+  }
+}
+
+async function disposeLiveSession(key: string, reason: "idle" | "delete" | "reset" = "idle", force = false) {
+  const entry = liveSessions.get(key);
+  if (!entry || entry.disposing) return;
+  if (!force && shouldKeepLiveSession(entry)) return;
+
+  entry.disposing = true;
+  cancelLiveSessionCleanup(entry);
+  const value = entry.session;
+  const sessionId = String(value?.sessionId || "");
+  const sessionFile = String(value?.sessionFile || key || "");
+
+  for (const [clientId, lease] of viewerLeases) {
+    if (lease.sessionKey !== key) continue;
+    clearTimer(lease.releaseTimer);
+    viewerLeases.delete(clientId);
+  }
+
+  try {
+    await emitSessionShutdown(value);
+  } catch (error) {
+    console.warn(`Could not emit session shutdown before ${reason}:`, error);
+  }
+
+  try {
+    entry.unsubscribe?.();
+  } catch (error) {
+    console.warn(`Could not unsubscribe session before ${reason}:`, error);
+  }
+
+  try {
+    value?.dispose?.();
+  } catch (error) {
+    console.warn(`Could not dispose session after ${reason}:`, error);
+  }
+
+  liveSessions.delete(key);
+  clearSessionRuntimeMaps(key, value);
+
+  if (sessionId) {
+    broadcast({ type: "session_runtime_changed", sessionId, sessionFile, runtime: runtimeForPath(sessionFile) });
+  }
+}
+
+function scheduleViewerLeaseRelease(clientId: string) {
+  const lease = viewerLeases.get(clientId);
+  if (!lease || lease.sockets.size > 0) return;
+  clearTimer(lease.releaseTimer);
+  lease.releaseTimer = setTimeout(() => releaseViewerLease(clientId), viewerLeaseGraceMs);
+}
+
+function releaseViewerLease(clientId: string) {
+  const lease = viewerLeases.get(clientId);
+  if (!lease) return;
+  clearTimer(lease.releaseTimer);
+  viewerLeases.delete(clientId);
+  const entry = liveSessions.get(lease.sessionKey);
+  if (entry) {
+    entry.viewerClientIds.delete(clientId);
+    scheduleLiveSessionCleanup(lease.sessionKey);
+  }
+}
+
+function acquireViewerLease(clientId: string, value: any) {
+  if (!clientId || !value) return undefined;
+  const key = sessionPathKey(value);
+  const entry = liveSessions.get(key);
+  if (!key || !entry) return undefined;
+
+  let lease = viewerLeases.get(clientId);
+  const sockets = lease?.sockets || new Set<WebSocket>();
+  clearTimer(lease?.releaseTimer);
+  if (lease && lease.sessionKey !== key) {
+    const previous = liveSessions.get(lease.sessionKey);
+    previous?.viewerClientIds.delete(clientId);
+    scheduleLiveSessionCleanup(lease.sessionKey);
+  }
+
+  lease = { sessionKey: key, sockets };
+  viewerLeases.set(clientId, lease);
+  entry.viewerClientIds.add(clientId);
+  cancelLiveSessionCleanup(entry);
+  if (sockets.size === 0) scheduleViewerLeaseRelease(clientId);
+  return lease;
+}
+
+function bindViewerSocket(clientId: string, ws: WebSocket) {
+  const lease = viewerLeases.get(clientId);
+  if (!lease) return;
+  clearTimer(lease.releaseTimer);
+  lease.releaseTimer = undefined;
+  lease.sockets.add(ws);
+  ws.on("close", () => {
+    const current = viewerLeases.get(clientId);
+    current?.sockets.delete(ws);
+    if (!current || current.sockets.size > 0) return;
+    releaseViewerLease(clientId);
+  });
+}
+
+function noteViewerLeaseFromRequest(req: IncomingMessage, value: any, fallbackClientId?: unknown) {
+  const clientId = clientIdFromRequest(req, fallbackClientId);
+  if (clientId) acquireViewerLease(clientId, value);
+}
+
+function acquireWorkLease(value: any) {
+  const key = sessionPathKey(value);
+  const entry = liveSessions.get(key);
+  if (!entry) return () => undefined;
+  entry.workLeases++;
+  cancelLiveSessionCleanup(entry);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    entry.workLeases = Math.max(0, entry.workLeases - 1);
+    scheduleLiveSessionCleanup(key);
+  };
 }
 
 function registerLiveSession(value: any) {
@@ -1745,7 +1988,8 @@ function registerLiveSession(value: any) {
       }
     }
   });
-  liveSessions.set(key, { session: value, unsubscribe });
+  liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0 });
+  queueMicrotask(() => scheduleLiveSessionCleanup(key));
   return value;
 }
 
@@ -1798,7 +2042,10 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
 
 async function getOrCreateLiveSession(path: string) {
   const existing = liveSessions.get(path)?.session;
-  if (existing) return existing;
+  if (existing) {
+    scheduleLiveSessionCleanup(path);
+    return existing;
+  }
   const created = await makeAgentSession(path);
   if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
   return registerLiveSession(created.session);
@@ -1904,14 +2151,35 @@ const server = createServer(async (req, res) => {
       if (!isAuthorized(req)) return unauthorized(res);
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
-        for (const entry of liveSessions.values()) entry.unsubscribe?.();
-        liveSessions.clear();
+        await Promise.all(Array.from(liveSessions.keys()).map((key) => disposeLiveSession(key, "reset", true)));
         resetMockSessions();
         await sessionUiStateStore.write(defaultSessionUiState);
         session = registerLiveSession(createMockSession());
         broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
+      }
+
+      if (mockMode && method === "GET" && url.pathname === "/api/mock/live-sessions") {
+        return sendJson(res, 200, {
+          ok: true,
+          liveSessions: Array.from(liveSessions.values()).map((entry) => ({
+            sessionId: String(entry.session?.sessionId || ""),
+            sessionFile: String(entry.session?.sessionFile || ""),
+            viewerLeases: entry.viewerClientIds.size,
+            workLeases: entry.workLeases,
+            hasDisposeTimer: Boolean(entry.disposeTimer),
+            isStreaming: Boolean(entry.session?.isStreaming),
+            isCompacting: Boolean(entry.session?.isCompacting),
+          })),
+          viewerLeases: Array.from(viewerLeases.entries()).map(([clientId, lease]) => ({
+            clientId,
+            sessionKey: lease.sessionKey,
+            sockets: lease.sockets.size,
+            hasReleaseTimer: Boolean(lease.releaseTimer),
+          })),
+          lifecycle: getMockLifecycle(),
+        });
       }
 
       if (method === "GET" && url.pathname === "/api/fs/dirs") {
@@ -2020,6 +2288,7 @@ const server = createServer(async (req, res) => {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
         const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
         if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        noteViewerLeaseFromRequest(req, targetSession, url.searchParams.get("clientId"));
         return sendJson(res, 200, {
           ok: true,
           ...currentStateWithThinkingLevels(targetSession),
@@ -2077,6 +2346,7 @@ const server = createServer(async (req, res) => {
         const targetId = String(body.targetId || "").trim();
         if (!targetId) return sendJson(res, 400, { ok: false, error: "targetId is required" });
 
+        const releaseWorkLease = acquireWorkLease(targetSession);
         try {
           const navigation = targetSession.navigateTree(targetId, {
             summarize: Boolean(body.summarize),
@@ -2092,6 +2362,7 @@ const server = createServer(async (req, res) => {
         } catch (error) {
           return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         } finally {
+          releaseWorkLease();
           broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
         }
       }
@@ -2227,6 +2498,9 @@ const server = createServer(async (req, res) => {
         if (!command.startsWith("/")) return sendJson(res, 400, { ok: false, error: "Slash command is required" });
 
         const result = await executeSlashCommand(command, targetSession);
+        const stateSessionId = (result as any)?.state?.sessionId;
+        const stateSession = typeof stateSessionId === "string" ? await getOrCreateLiveSessionById(stateSessionId) : undefined;
+        noteViewerLeaseFromRequest(req, stateSession || targetSession);
         return sendJson(res, 200, { ok: true, ...result });
       }
 
@@ -2264,6 +2538,7 @@ const server = createServer(async (req, res) => {
         const wasAlreadyRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
         if (!wasAlreadyRunning) ensureRuntimeStartedAt(targetSession);
         const promptSessionFile = targetSession.sessionFile;
+        const releaseWorkLease = acquireWorkLease(targetSession);
         void targetSession.prompt(promptText, {
           ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
           ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
@@ -2289,6 +2564,7 @@ const server = createServer(async (req, res) => {
               sessionFile: targetSession.sessionFile,
               runtime: runtimeForPath(targetSession.sessionFile),
             });
+            releaseWorkLease();
           });
 
         return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
@@ -2336,6 +2612,7 @@ const server = createServer(async (req, res) => {
         const previousSession = typeof body.sessionId === "string" ? await getOrCreateLiveSessionById(body.sessionId) : session;
         const targetCwd = typeof body.cwd === "string" ? body.cwd : previousSession ? sessionCwd(previousSession) : undefined;
         const newSession = await createNewLiveSession(targetCwd, previousSession?.sessionFile);
+        noteViewerLeaseFromRequest(req, newSession);
         const state = currentStateWithThinkingLevels(newSession);
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
@@ -2350,6 +2627,8 @@ const server = createServer(async (req, res) => {
         if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         try {
           const state = await switchEmptySessionCwd(targetSession, cwd);
+          const stateSession = state.sessionId ? await getOrCreateLiveSessionById(state.sessionId) : undefined;
+          if (stateSession) noteViewerLeaseFromRequest(req, stateSession);
           broadcast({ type: "state_changed", ...state });
           return sendJson(res, 200, { ok: true, ...state });
         } catch (error) {
@@ -2368,6 +2647,7 @@ const server = createServer(async (req, res) => {
         } catch {
           return sendJson(res, 404, { ok: false, error: "Session not found" });
         }
+        noteViewerLeaseFromRequest(req, targetSession, body.clientId);
         const state = currentStateWithThinkingLevels(targetSession);
         return sendJson(res, 200, { ok: true, ...state });
       }
@@ -2403,7 +2683,12 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 wss.on("connection", async (ws, req) => {
-  clients.add(ws);
+  const realtimeWs = ws as RealtimeSocket;
+  realtimeWs.missedPongs = 0;
+  realtimeWs.on("pong", () => {
+    realtimeWs.missedPongs = 0;
+  });
+  clients.add(realtimeWs);
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
   const latestSeq = nextRealtimeSeq - 1;
@@ -2421,13 +2706,18 @@ wss.on("connection", async (ws, req) => {
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
   const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+  const clientId = cleanClientId(url.searchParams.get("clientId") || "");
+  if (clientId) {
+    acquireViewerLease(clientId, targetSession || session);
+    bindViewerSocket(clientId, realtimeWs);
+  }
   const helloState = targetSession ? currentState(targetSession) : currentState();
-  ws.send(JSON.stringify({
+  realtimeWs.send(JSON.stringify({
     type: "hello",
     seq: latestSeq,
     ...helloState,
   }));
-  ws.on("close", () => clients.delete(ws));
+  realtimeWs.on("close", () => clients.delete(realtimeWs));
 });
 
 if (isDev) {

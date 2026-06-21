@@ -40,11 +40,26 @@ export function createMockHarness(options: MockSessionOptions) {
   }
 
   const mockSessions: PiWebSessionInfo[] = initialMockSessions();
+  const mockLifecycle = new Map<string, { shutdowns: number; disposes: number }>();
   let mockGeneration = 0;
+
+  function lifecycleFor(id: string) {
+    let stats = mockLifecycle.get(id);
+    if (!stats) {
+      stats = { shutdowns: 0, disposes: 0 };
+      mockLifecycle.set(id, stats);
+    }
+    return stats;
+  }
 
   function resetMockSessions() {
     mockGeneration += 1;
     mockSessions.splice(0, mockSessions.length, ...initialMockSessions());
+    mockLifecycle.clear();
+  }
+
+  function getMockLifecycle() {
+    return Array.from(mockLifecycle.entries()).map(([sessionId, stats]) => ({ sessionId, ...stats }));
   }
 
   function initialMessages(path: string): unknown[] {
@@ -279,7 +294,12 @@ export function createMockHarness(options: MockSessionOptions) {
           description: "Mock extension command",
           sourceInfo: { path: "<mock-extension>", source: "mock", scope: "temporary", origin: "top-level" },
         }],
-      },
+        hasHandlers: (eventType: string) => eventType === "session_shutdown",
+        emit: async (event: { type?: string }) => {
+          if (event?.type === "session_shutdown") lifecycleFor(mockSession.sessionId).shutdowns += 1;
+          return undefined;
+        },
+      } as any,
       promptTemplates: [{
         name: "mock-prompt",
         description: "Mock prompt template",
@@ -497,8 +517,9 @@ export function createMockHarness(options: MockSessionOptions) {
       clearQueue: () => undefined,
       subscribe: () => undefined,
     };
+    (mockSession as any).dispose = () => { lifecycleFor(mockSession.sessionId).disposes += 1; };
     return mockSession;
   }
 
-  return { mockSessions, createMockSession, resetMockSessions };
+  return { mockSessions, createMockSession, resetMockSessions, getMockLifecycle };
 }

@@ -15,6 +15,7 @@ export function createApiClient(state: AppState): ApiClient {
     headers() {
       return {
         "content-type": "application/json",
+        "x-pi-web-client-id": clientId,
         ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
       };
     },
@@ -22,6 +23,7 @@ export function createApiClient(state: AppState): ApiClient {
       const url = new URL("/ws", location.href);
       url.protocol = location.protocol === "https:" ? "wss:" : "ws:";
       if (state.token) url.searchParams.set("token", state.token);
+      url.searchParams.set("clientId", clientId);
       if (state.currentSessionId) url.searchParams.set("sessionId", state.currentSessionId);
       if (state.lastRealtimeSeq > 0) url.searchParams.set("lastSeq", String(state.lastRealtimeSeq));
       return url;
