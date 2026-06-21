@@ -1151,6 +1151,8 @@ test.describe("image rendering", () => {
     await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Artifact report");
     await expect(page.locator("#artifactPreviewBody strong")).toHaveText("markdown");
     await expect(page.locator("#artifactPreviewBody pre code")).toContainText("const preview = true;");
+    await expect(page.locator("html")).toHaveCSS("overflow-y", "auto");
+    await expect(page.locator("body")).toHaveCSS("overflow-y", "auto");
   });
 
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {

@@ -22,6 +22,13 @@
   white-space: normal;
 }
 
+html.artifactPreviewDocument,
+body.artifactPreviewDocument {
+  height: auto;
+  min-height: var(--app-height);
+  overflow: auto;
+}
+
 .artifactPreviewPage {
   margin: 0;
   padding: 0;
