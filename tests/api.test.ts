@@ -217,7 +217,7 @@ describe("pi-web mock API", () => {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+        pinnedSessions: [{ id: "mock-current", cwd: "." }],
         pinnedFolders: ["/tmp/pi-web", "/tmp/pi-web", ""],
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
         sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
@@ -227,7 +227,7 @@ describe("pi-web mock API", () => {
     expect(patchedRes.status).toBe(200);
     const patched = await patchedRes.json();
     expect(patched.sessionUiState).toMatchObject({
-      pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+      pinnedSessions: [{ id: "mock-current", cwd: "." }],
       pinnedFolders: ["/tmp/pi-web"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],

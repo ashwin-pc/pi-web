@@ -52,6 +52,17 @@ function showSystemError(error: unknown) {
 }
 
 function updateMeta(data: any) {
+  const sessionId = typeof data.sessionId === "string" ? data.sessionId : state.currentSessionId;
+  if (sessionId) {
+    const sessionName = typeof data.sessionName === "string" ? data.sessionName : typeof data.sessionTitle === "string" ? data.sessionTitle : undefined;
+    state.sessionsById[sessionId] = {
+      ...state.sessionsById[sessionId],
+      id: sessionId,
+      ...(sessionName !== undefined ? { name: sessionName } : {}),
+      ...(typeof data.cwd === "string" ? { cwd: data.cwd } : {}),
+      isCurrent: sessionId === (data.sessionId || state.currentSessionId),
+    };
+  }
   state.currentModelKey = modelKey(data.model);
   state.currentModelDisplay = data.model ? modelLabel(data.model) : "No model";
   state.currentThinkingLevel = data.thinkingLevel || "off";

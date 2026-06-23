@@ -2095,7 +2095,7 @@ async function createNewLiveSession(cwd?: string, previousSessionFile?: string) 
   return liveSession;
 }
 
-async function transferCurrentTabUiState(oldSessionId: string, newSessionId: string, newLabel: string, cwd: string) {
+async function transferCurrentTabUiState(oldSessionId: string, newSessionId: string, _newLabel: string, cwd: string) {
   if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return sessionUiStateStore.read();
   const current = await sessionUiStateStore.read();
   const oldPinnedIndex = current.pinnedSessions.findIndex((item) => item.id === oldSessionId);
@@ -2105,7 +2105,7 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
 
   const pinnedSessions = current.pinnedSessions.filter((item) => item.id !== oldSessionId && item.id !== newSessionId);
   if (oldPinnedIndex !== -1) {
-    pinnedSessions.splice(Math.min(oldPinnedIndex, pinnedSessions.length), 0, { id: newSessionId, label: newLabel, cwd });
+    pinnedSessions.splice(Math.min(oldPinnedIndex, pinnedSessions.length), 0, { id: newSessionId, cwd });
   }
 
   const sessionMarkers = current.sessionMarkers.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);

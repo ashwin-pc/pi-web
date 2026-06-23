@@ -5,7 +5,6 @@ export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green
 
 export type PinnedSession = {
   id: string;
-  label: string;
   cwd?: string;
 };
 
@@ -73,10 +72,9 @@ function normalizeMarkerColor(value: unknown): SessionMarkerColorId | undefined 
 function normalizePinnedSession(value: unknown): PinnedSession | undefined {
   if (!isRecord(value)) return undefined;
   const id = typeof value.id === "string" ? value.id.trim() : "";
-  const label = typeof value.label === "string" ? value.label.trim() : "";
-  if (!id || !label) return undefined;
+  if (!id) return undefined;
   const cwd = typeof value.cwd === "string" && value.cwd.trim() ? value.cwd.trim() : undefined;
-  return { id, label, ...(cwd ? { cwd } : {}) };
+  return { id, ...(cwd ? { cwd } : {}) };
 }
 
 function normalizePinnedFolder(value: unknown): string | undefined {

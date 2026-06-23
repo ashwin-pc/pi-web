@@ -334,17 +334,17 @@ export function createSessions(options: {
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
-    // Freshen labels for any pinned sessions we now have data for
-    let labelsChanged = false;
+    for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
+    let pinnedCwdsChanged = false;
     state.pinnedSessions = state.pinnedSessions.map((pinned) => {
       const live = cachedSessions.find((s) => s.id === pinned.id);
-      if (live && (sessionTitle(live) !== pinned.label || live.cwd && live.cwd !== pinned.cwd)) {
-        labelsChanged = true;
-        return { ...pinned, label: sessionTitle(live), cwd: live.cwd || pinned.cwd };
+      if (live?.cwd && live.cwd !== pinned.cwd) {
+        pinnedCwdsChanged = true;
+        return { ...pinned, cwd: live.cwd };
       }
       return pinned;
     });
-    if (labelsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
+    if (pinnedCwdsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
     renderSessionList(cachedSessions);
     renderSessionBar();
   }
@@ -906,7 +906,8 @@ export function createSessions(options: {
 
   function pinSession(item: SessionInfo) {
     if (isPinned(item.id)) return;
-    state.pinnedSessions = [...state.pinnedSessions, { id: item.id, label: sessionTitle(item), cwd: item.cwd || state.currentCwd }];
+    state.sessionsById[item.id] = { ...state.sessionsById[item.id], ...item };
+    state.pinnedSessions = [...state.pinnedSessions, { id: item.id, cwd: item.cwd || state.currentCwd }];
     persistSessionUiState({ pinnedSessions: state.pinnedSessions });
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
     renderSessionList(cachedSessions);
@@ -956,17 +957,20 @@ export function createSessions(options: {
   }
 
   function titleForSessionId(sessionId: string) {
-    const live = cachedSessions.find((s) => s.id === sessionId);
-    const pinned = state.pinnedSessions.find((s) => s.id === sessionId);
-    if (live) return sessionTitle(live);
-    return pinned?.label || state.currentSessionTitle || "New session";
+    if (sessionId === state.currentSessionId) return state.currentSessionTitle || "New session";
+    const session = state.sessionsById[sessionId];
+    if (session) return sessionTitle(session as SessionInfo);
+    return "Session";
   }
 
   async function openSessionTab(sessionId: string, cwd: string) {
     const previousSessionId = state.currentSessionId;
     const switchingSessions = state.currentSessionId !== sessionId;
     if (switchingSessions) {
+      const knownSession = state.sessionsById[sessionId];
+      const knownTitle = knownSession ? sessionTitle(knownSession as SessionInfo) : "";
       state.currentSessionId = sessionId;
+      state.currentSessionTitle = knownTitle || "Session";
       renderSessionBar();
       renderCurrentSessionBucketButton();
       clearMessages();
@@ -1016,7 +1020,7 @@ export function createSessions(options: {
     }
     if (isPinned(currentId)) unpinSession(currentId);
     else {
-      state.pinnedSessions = [...state.pinnedSessions, { id: currentId, label: state.currentSessionTitle || "New session", cwd: state.currentCwd }];
+      state.pinnedSessions = [...state.pinnedSessions, { id: currentId, cwd: state.currentCwd }];
       persistSessionUiState({ pinnedSessions: state.pinnedSessions });
       renderSessionBar();
       updateCurrentSessionPinButton();
@@ -1102,7 +1106,7 @@ export function createSessions(options: {
       const live = cachedSessions.find((s) => s.id === pinnedEntry.id);
       appendTab(
         pinnedEntry.id,
-        live ? sessionTitle(live) : pinnedEntry.label,
+        titleForSessionId(pinnedEntry.id),
         live?.cwd || pinnedEntry.cwd || state.currentCwd,
         { pinned: true, running: (live?.runtime ?? pinnedRuntimes.get(pinnedEntry.id))?.isRunning ?? false, unread: live?.unread },
       );

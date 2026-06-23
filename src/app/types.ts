@@ -78,7 +78,7 @@ export type AttachedImage = {
   path?: string;
 };
 
-export type PinnedSession = { id: string; label: string; cwd?: string };
+export type PinnedSession = { id: string; cwd?: string };
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
 export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
 export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
@@ -134,11 +134,10 @@ export function normalizePinnedSessions(value: unknown): PinnedSession[] {
   const result: PinnedSession[] = [];
   for (const item of value) {
     const id = typeof item?.id === "string" ? item.id.trim() : "";
-    const label = typeof item?.label === "string" ? item.label.trim() : "";
-    if (!id || !label || seen.has(id)) continue;
+    if (!id || seen.has(id)) continue;
     seen.add(id);
     const cwd = typeof item?.cwd === "string" && item.cwd.trim() ? item.cwd.trim() : undefined;
-    result.push({ id, label, ...(cwd ? { cwd } : {}) });
+    result.push({ id, ...(cwd ? { cwd } : {}) });
   }
   return result;
 }
@@ -235,6 +234,8 @@ export type SessionInfo = {
   unreadAt?: string;
 };
 
+export type SessionRecord = Partial<Omit<SessionInfo, "id">> & { id: string };
+
 export type AppState = {
   token: string;
   currentModelKey: string;
@@ -254,6 +255,7 @@ export type AppState = {
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
+  sessionsById: Record<string, SessionRecord>;
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
@@ -340,6 +342,7 @@ export function createAppState(): AppState {
     connectionLostTimer: undefined,
     reconnectedClearTimer: undefined,
     pinnedSessions: readLegacyPinnedSessions(),
+    sessionsById: {},
     pinnedFolders: [],
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
