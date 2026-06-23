@@ -599,6 +599,45 @@ test.describe("sessions drawer", () => {
     expect(new URL(sessionsUrl).searchParams.getAll("cwd")).toContain(rememberedCwd);
   });
 
+  test("pinned folders stay first and folder labels disambiguate on one row", async ({ page }) => {
+    const pinnedCwd = "/Users/ashwin/projects/pi";
+    const projectCwd = "/Users/ashwin/projects/pi-web";
+    const archiveCwd = "/Users/ashwin/archive/pi-web";
+    await page.request.patch("/api/session-ui-state", { data: { pinnedFolders: [pinnedCwd] } });
+
+    await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+      await route.fulfill({
+        json: {
+          ok: true,
+          sessions: [
+            { id: "archive", name: "Archive session", created: "2026-01-03T00:00:00.000Z", modified: "2026-01-03T00:00:00.000Z", messageCount: 1, cwd: archiveCwd, isCurrent: false, unread: false },
+            { id: "project", name: "Project session", created: "2026-01-02T00:00:00.000Z", modified: "2026-01-02T00:00:00.000Z", messageCount: 1, cwd: projectCwd, isCurrent: false, unread: false },
+            { id: "pinned", name: "Pinned session", created: "2026-01-01T00:00:00.000Z", modified: "2026-01-01T00:00:00.000Z", messageCount: 1, cwd: pinnedCwd, isCurrent: false, unread: false },
+          ],
+        },
+      });
+    });
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const headers = page.locator(".sessionFolderHeader");
+    await expect(headers).toHaveCount(3);
+    await expect(headers.locator(".sessionFolderPath")).toHaveCount(0);
+    await expect(headers.nth(0).locator(".sessionFolderName")).toHaveText("projects/pi");
+    await expect(headers.nth(1).locator(".sessionFolderName")).toHaveText("archive/pi-web");
+    await expect(headers.nth(2).locator(".sessionFolderName")).toHaveText("projects/pi-web");
+    await expect(headers.nth(0).locator(".sessionFolderPinButton")).toHaveAttribute("aria-pressed", "true");
+
+    await headers.nth(2).locator(".sessionFolderPinButton").click();
+    await expect(headers.nth(0).locator(".sessionFolderName")).toHaveText("projects/pi");
+    await expect(headers.nth(1).locator(".sessionFolderName")).toHaveText("projects/pi-web");
+    await expect(headers.nth(2).locator(".sessionFolderName")).toHaveText("archive/pi-web");
+
+    const uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.pinnedFolders).toEqual([pinnedCwd, projectCwd]);
+  });
+
   test("opens, lists sessions, resumes an older session, and creates new session", async ({ page }) => {
     await page.goto("/");
     await page.locator("#sessionButton").click();

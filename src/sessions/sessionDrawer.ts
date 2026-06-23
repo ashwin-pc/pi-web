@@ -40,9 +40,36 @@ function sessionTitle(session: SessionInfo) {
   return session.name || session.firstMessage?.trim() || "New session";
 }
 
+function folderPathParts(path: string) {
+  return path.split(/[\\/]+/).filter(Boolean);
+}
+
 function folderName(path: string) {
-  const parts = path.split(/[\\/]+/).filter(Boolean);
+  const parts = folderPathParts(path);
   return parts.at(-1) || path || "Folder";
+}
+
+function folderPathSuffix(path: string, count: number) {
+  const parts = folderPathParts(path);
+  return parts.length > 0 ? parts.slice(-count).join("/") : path || "Folder";
+}
+
+function folderDisplayNames(cwds: string[]) {
+  const labels = new Map<string, string>();
+  const uniqueCwds = Array.from(new Set(cwds));
+  for (const cwd of uniqueCwds) {
+    const maxDepth = Math.min(3, Math.max(1, folderPathParts(cwd).length));
+    const minDepth = Math.min(2, maxDepth);
+    for (let depth = minDepth; depth <= maxDepth; depth += 1) {
+      const label = folderPathSuffix(cwd, depth);
+      const unique = uniqueCwds.every((other) => other === cwd || folderPathSuffix(other, depth) !== label);
+      if (unique || depth === maxDepth) {
+        labels.set(cwd, label);
+        break;
+      }
+    }
+  }
+  return labels;
 }
 
 function shouldCloseDrawerAfterSessionSwitch() {
@@ -361,6 +388,7 @@ export function createSessions(options: {
   function applySessionUiState(value: unknown) {
     const next = normalizeSessionUiState(value);
     state.pinnedSessions = next.pinnedSessions;
+    state.pinnedFolders = next.pinnedFolders;
     state.sessionMarkers = next.sessionMarkers;
     state.sessionUnreadStates = next.sessionUnreadStates;
     syncCachedUnreadFromState();
@@ -378,6 +406,7 @@ export function createSessions(options: {
 
   function hasAnySessionUiState(value: SessionUiState) {
     return value.pinnedSessions.length > 0
+      || value.pinnedFolders.length > 0
       || value.sessionMarkers.length > 0
       || value.sessionUnreadStates.length > 0
       || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
@@ -408,6 +437,7 @@ export function createSessions(options: {
     const serverState = normalizeSessionUiState(data.sessionUiState);
     const localState = normalizeSessionUiState({
       pinnedSessions: state.pinnedSessions,
+      pinnedFolders: state.pinnedFolders,
       sessionMarkers: state.sessionMarkers,
       sessionUnreadStates: state.sessionUnreadStates,
       selectedMarkerColor: state.selectedMarkerColor,
@@ -901,6 +931,30 @@ export function createSessions(options: {
     else pinSession(item);
   }
 
+  function isFolderPinned(cwd: string) {
+    return state.pinnedFolders.includes(cwd);
+  }
+
+  function pinFolder(cwd: string) {
+    if (isFolderPinned(cwd)) return;
+    state.pinnedFolders = [...state.pinnedFolders, cwd];
+    persistSessionUiState({ pinnedFolders: state.pinnedFolders });
+    renderSessionList(cachedSessions);
+  }
+
+  function unpinFolder(cwd: string) {
+    const pinnedCount = state.pinnedFolders.length;
+    state.pinnedFolders = state.pinnedFolders.filter((folder) => folder !== cwd);
+    if (state.pinnedFolders.length === pinnedCount) return;
+    persistSessionUiState({ pinnedFolders: state.pinnedFolders });
+    renderSessionList(cachedSessions);
+  }
+
+  function toggleFolderPin(cwd: string) {
+    if (isFolderPinned(cwd)) unpinFolder(cwd);
+    else pinFolder(cwd);
+  }
+
   function titleForSessionId(sessionId: string) {
     const live = cachedSessions.find((s) => s.id === sessionId);
     const pinned = state.pinnedSessions.find((s) => s.id === sessionId);
@@ -1245,9 +1299,18 @@ export function createSessions(options: {
       groups.set(cwd, [...(groups.get(cwd) || []), item]);
     }
 
-    for (const [cwd, items] of groups) {
+    const pinnedEntries: Array<[string, SessionInfo[]]> = state.pinnedFolders
+      .filter((cwd) => groups.has(cwd))
+      .map((cwd) => [cwd, groups.get(cwd)!]);
+    const pinnedFolders = new Set(state.pinnedFolders);
+    const unpinnedEntries = Array.from(groups.entries()).filter(([cwd]) => !pinnedFolders.has(cwd));
+    const orderedEntries = [...pinnedEntries, ...unpinnedEntries];
+    const folderLabels = folderDisplayNames(orderedEntries.map(([cwd]) => cwd));
+
+    for (const [cwd, items] of orderedEntries) {
+      const folderPinned = isFolderPinned(cwd);
       const group = document.createElement("section");
-      group.className = "sessionFolderGroup";
+      group.className = `sessionFolderGroup${folderPinned ? " pinned" : ""}`;
 
       const header = document.createElement("div");
       header.className = "sessionFolderHeader";
@@ -1263,11 +1326,9 @@ export function createSessions(options: {
       labels.className = "sessionFolderLabels";
       const name = document.createElement("span");
       name.className = "sessionFolderName";
-      name.textContent = folderName(cwd);
-      const path = document.createElement("span");
-      path.className = "sessionFolderPath";
-      path.textContent = cwd;
-      labels.append(name, path);
+      name.textContent = folderLabels.get(cwd) || folderName(cwd);
+      name.title = cwd;
+      labels.append(name);
       toggle.append(chevron, labels);
       toggle.addEventListener("click", () => {
         if (state.collapsedSessionFolders.has(cwd)) state.collapsedSessionFolders.delete(cwd);
@@ -1275,6 +1336,15 @@ export function createSessions(options: {
         persistCollapsedSessionFolders(state.collapsedSessionFolders);
         renderSessionList(cachedSessions);
       });
+
+      const pinButton = document.createElement("button");
+      pinButton.type = "button";
+      pinButton.className = `iconButton sessionFolderPinButton${folderPinned ? " pinned" : ""}`;
+      pinButton.title = folderPinned ? `Unpin ${folderName(cwd)} folder` : `Pin ${folderName(cwd)} folder`;
+      pinButton.setAttribute("aria-label", pinButton.title);
+      pinButton.setAttribute("aria-pressed", String(folderPinned));
+      setIcon(pinButton, "pin");
+      pinButton.addEventListener("click", () => toggleFolderPin(cwd));
 
       const newButton = document.createElement("button");
       newButton.type = "button";
@@ -1289,7 +1359,7 @@ export function createSessions(options: {
           addMessage("system", error instanceof Error ? error.message : String(error), "error");
         }
       });
-      header.append(toggle, newButton);
+      header.append(toggle, pinButton, newButton);
       group.append(header);
 
       if (state.collapsedSessionFolders.has(cwd)) {

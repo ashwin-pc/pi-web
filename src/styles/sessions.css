@@ -272,6 +272,9 @@
   padding-top: 4px;
   border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent);
 }
+.sessionFolderGroup.pinned .sessionFolderHeader {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 .sessionFolderHeader {
   display: flex;
   align-items: center;
@@ -306,14 +309,12 @@
 .sessionFolderLabels {
   display: flex;
   min-width: 0;
-  flex-direction: column;
+  align-items: center;
 }
 .sessionFolderName {
   overflow: hidden;
   font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   color: var(--muted);
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -326,6 +327,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.sessionFolderPinButton,
 .sessionFolderNewButton {
   flex: 0 0 auto;
   width: 28px;
@@ -336,13 +338,24 @@
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
+}
+.sessionFolderNewButton {
   margin-right: 4px;
 }
+.sessionFolderPinButton {
+  color: color-mix(in srgb, var(--muted) 62%, transparent);
+}
+.sessionFolderPinButton.pinned {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+.sessionFolderPinButton:hover,
 .sessionFolderNewButton:hover {
   border: none;
   background: var(--panel-2);
   color: var(--accent);
 }
+.sessionFolderPinButton svg,
 .sessionFolderNewButton svg {
   width: 13px;
   height: 13px;

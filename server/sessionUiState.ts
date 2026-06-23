@@ -24,6 +24,7 @@ export type SessionUnreadState = {
 export type SessionUiState = {
   version: 1;
   pinnedSessions: PinnedSession[];
+  pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
@@ -31,6 +32,7 @@ export type SessionUiState = {
 
 export type SessionUiStatePatch = Partial<{
   pinnedSessions: unknown;
+  pinnedFolders: unknown;
   sessionMarkers: unknown;
   sessionUnreadStates: unknown;
   selectedMarkerColor: unknown;
@@ -48,6 +50,7 @@ const legacyBucketToColor: Record<string, SessionMarkerColorId> = {
 export const defaultSessionUiState: SessionUiState = {
   version: 1,
   pinnedSessions: [],
+  pinnedFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
   selectedMarkerColor: "blue",
@@ -74,6 +77,11 @@ function normalizePinnedSession(value: unknown): PinnedSession | undefined {
   if (!id || !label) return undefined;
   const cwd = typeof value.cwd === "string" && value.cwd.trim() ? value.cwd.trim() : undefined;
   return { id, label, ...(cwd ? { cwd } : {}) };
+}
+
+function normalizePinnedFolder(value: unknown): string | undefined {
+  const cwd = typeof value === "string" ? value.trim() : "";
+  return cwd || undefined;
 }
 
 function normalizeSessionMarker(value: unknown): SessionMarker | undefined {
@@ -114,6 +122,10 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     state.pinnedSessions = uniqueBy(value.pinnedSessions.map(normalizePinnedSession).filter(Boolean) as PinnedSession[], (item) => item.id);
   }
 
+  if (Array.isArray(value.pinnedFolders)) {
+    state.pinnedFolders = uniqueBy(value.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+  }
+
   if (Array.isArray(value.sessionMarkers)) {
     state.sessionMarkers = uniqueBy(value.sessionMarkers.map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId);
   }
@@ -132,6 +144,10 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   if ("pinnedSessions" in patch && Array.isArray(patch.pinnedSessions)) {
     next.pinnedSessions = uniqueBy(patch.pinnedSessions.map(normalizePinnedSession).filter(Boolean) as PinnedSession[], (item) => item.id);
+  }
+
+  if ("pinnedFolders" in patch && Array.isArray(patch.pinnedFolders)) {
+    next.pinnedFolders = uniqueBy(patch.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
   }
 
   if ("sessionMarkers" in patch && Array.isArray(patch.sessionMarkers)) {

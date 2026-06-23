@@ -209,6 +209,7 @@ describe("pi-web mock API", () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(initial.sessionUiState.pinnedSessions).toEqual([]);
+    expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
 
@@ -217,6 +218,7 @@ describe("pi-web mock API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+        pinnedFolders: ["/tmp/pi-web", "/tmp/pi-web", ""],
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
         sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
         selectedMarkerColor: "green",
@@ -226,6 +228,7 @@ describe("pi-web mock API", () => {
     const patched = await patchedRes.json();
     expect(patched.sessionUiState).toMatchObject({
       pinnedSessions: [{ id: "mock-current", label: "Current mock session", cwd: "." }],
+      pinnedFolders: ["/tmp/pi-web"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],
       selectedMarkerColor: "green",

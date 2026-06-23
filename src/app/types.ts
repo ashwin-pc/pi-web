@@ -86,6 +86,7 @@ export type SessionUnreadState = { sessionId: string; unreadAt: string; updatedA
 export type SessionUiState = {
   version: 1;
   pinnedSessions: PinnedSession[];
+  pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
@@ -102,6 +103,7 @@ export const sessionMarkerColors: SessionMarkerColor[] = [
 export const defaultSessionUiState: SessionUiState = {
   version: 1,
   pinnedSessions: [],
+  pinnedFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
   selectedMarkerColor: "blue",
@@ -141,6 +143,19 @@ export function normalizePinnedSessions(value: unknown): PinnedSession[] {
   return result;
 }
 
+export function normalizePinnedFolders(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const item of value) {
+    const cwd = typeof item === "string" ? item.trim() : "";
+    if (!cwd || seen.has(cwd)) continue;
+    seen.add(cwd);
+    result.push(cwd);
+  }
+  return result;
+}
+
 export function normalizeSessionMarkers(value: unknown): SessionMarker[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -175,6 +190,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   return {
     version: 1,
     pinnedSessions: normalizePinnedSessions(raw.pinnedSessions),
+    pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
@@ -238,6 +254,7 @@ export type AppState = {
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
+  pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
@@ -323,6 +340,7 @@ export function createAppState(): AppState {
     connectionLostTimer: undefined,
     reconnectedClearTimer: undefined,
     pinnedSessions: readLegacyPinnedSessions(),
+    pinnedFolders: [],
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
