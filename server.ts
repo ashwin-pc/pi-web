@@ -1259,7 +1259,8 @@ function envMs(name: string, fallback: number) {
   return Number.isFinite(raw) && raw >= 0 ? raw : fallback;
 }
 
-const sessionIdleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 60_000);
+const defaultSessionIdleGraceMs = 24 * 60 * 60 * 1000;
+const sessionIdleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", defaultSessionIdleGraceMs);
 const viewerLeaseGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, sessionIdleGraceMs));
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
