@@ -4,6 +4,7 @@ import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.j
 import type { AppState, ImageAttachment, SlashCommand } from "../app/types.js";
 import { setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
+import { bindCompactInactiveAction } from "./compactInteractions.js";
 
 export type ComposerController = {
   init: () => void;
@@ -45,7 +46,6 @@ export function createComposer(options: {
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
   const draftStorageKey = "pi-web-composer-draft";
-  const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
   let slashCommandSelectedIndex = 0;
@@ -439,19 +439,11 @@ export function createComposer(options: {
       void maybeRefreshSlashCommands();
     });
 
-    let suppressNextAttachClick = false;
-    elements.attachButton.addEventListener("pointerdown", (event) => {
-      if (!elements.formEl.matches(compactInactiveComposerSelector)) return;
-      event.preventDefault();
-      suppressNextAttachClick = true;
+    const consumeCompactAttachClick = bindCompactInactiveAction(elements.attachButton, elements.formEl, () => {
       elements.imageInput.click();
     });
     elements.attachButton.addEventListener("click", (event) => {
-      if (suppressNextAttachClick) {
-        suppressNextAttachClick = false;
-        event.preventDefault();
-        return;
-      }
+      if (consumeCompactAttachClick(event)) return;
       elements.imageInput.click();
     });
 
@@ -487,19 +479,11 @@ export function createComposer(options: {
       void attachImageFiles(Array.from(event.dataTransfer?.files || []));
     });
 
-    let suppressNextStopClick = false;
-    elements.stopButton.addEventListener("pointerdown", (event) => {
-      if (!elements.formEl.matches(compactInactiveComposerSelector)) return;
-      event.preventDefault();
-      suppressNextStopClick = true;
+    const consumeCompactStopClick = bindCompactInactiveAction(elements.stopButton, elements.formEl, () => {
       void stopStreaming();
     });
     elements.stopButton.addEventListener("click", (event) => {
-      if (suppressNextStopClick) {
-        suppressNextStopClick = false;
-        event.preventDefault();
-        return;
-      }
+      if (consumeCompactStopClick(event)) return;
       void stopStreaming();
     });
 

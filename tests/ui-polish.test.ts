@@ -224,11 +224,13 @@ describe("compact inactive composer styling", () => {
     expect(composer).toContain("    updateCompactInactive();\n  }\n\n  return {");
   });
 
-  it("opens attachments and stop from compact mode before focus expands the composer", () => {
+  it("routes compact actions through press handlers before focus expands the composer", () => {
     const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
-    expect(composer).toContain("elements.attachButton.addEventListener(\"pointerdown\"");
-    expect(composer).toContain("event.preventDefault();\n      suppressNextAttachClick = true;\n      elements.imageInput.click();");
-    expect(composer).toContain("elements.stopButton.addEventListener(\"pointerdown\"");
-    expect(composer).toContain("event.preventDefault();\n      suppressNextStopClick = true;\n      void stopStreaming();");
+    const compactInteractions = readFileSync(new URL("../src/composer/compactInteractions.ts", import.meta.url), "utf8");
+    expect(composer).toContain("bindCompactInactiveAction(elements.attachButton");
+    expect(composer).toContain("bindCompactInactiveAction(elements.stopButton");
+    expect(compactInteractions).toContain("target.addEventListener(\"pointerdown\", handlePress)");
+    expect(compactInteractions).toContain("target.addEventListener(\"mousedown\", handlePress)");
+    expect(compactInteractions).toContain("target.addEventListener(\"touchstart\", handlePress, { passive: false })");
   });
 });

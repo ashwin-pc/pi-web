@@ -3,6 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import { iconElement } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState } from "../app/types.js";
+import { bindCompactInactiveAction } from "../composer/compactInteractions.js";
 
 export type ModelSettings = {
   init: () => void;
@@ -50,8 +51,6 @@ function thinkingOptionsFromSelect(select: HTMLSelectElement) {
     .map((option) => (option.value || option.textContent || "").trim())
     .filter(Boolean);
 }
-
-const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
 
 function createThinkingIcon() {
   const icon = document.createElement("span");
@@ -174,21 +173,12 @@ export function createModelSettings(options: {
   }
 
   function init() {
-    let suppressNextSettingsClick = false;
-    elements.modelSettingsButton.addEventListener("pointerdown", (event) => {
-      if (!elements.formEl.matches(compactInactiveComposerSelector)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      suppressNextSettingsClick = true;
+    const consumeCompactSettingsClick = bindCompactInactiveAction(elements.modelSettingsButton, elements.formEl, () => {
       setModelSettingsOpen(elements.modelSettingsPopover.hidden);
-    });
+    }, { stopPropagation: true });
     elements.modelSettingsButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      if (suppressNextSettingsClick) {
-        suppressNextSettingsClick = false;
-        event.preventDefault();
-        return;
-      }
+      if (consumeCompactSettingsClick(event)) return;
       setModelSettingsOpen(elements.modelSettingsPopover.hidden);
     });
     elements.modelSettingsPopover.addEventListener("click", (event) => event.stopPropagation());

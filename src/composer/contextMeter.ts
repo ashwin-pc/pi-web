@@ -1,6 +1,7 @@
 import type { AppElements } from "../app/elements.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState, SessionStats } from "../app/types.js";
+import { bindCompactInactiveAction } from "./compactInteractions.js";
 
 export type ContextMeterController = {
   init: () => void;
@@ -50,8 +51,6 @@ function contextTone(percent: number | undefined) {
   if (percent >= 50) return "active";
   return "normal";
 }
-
-const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
 
 function contextTitle(stats?: SessionStats | null) {
   const usage = stats?.contextUsage;
@@ -147,19 +146,11 @@ export function createContextMeter(options: { state: AppState; elements: AppElem
   }
 
   function init() {
-    let suppressNextClick = false;
-    elements.contextMeterEl.addEventListener("pointerdown", (event) => {
-      if (!elements.formEl.matches(compactInactiveComposerSelector)) return;
-      event.preventDefault();
-      suppressNextClick = true;
+    const consumeCompactMeterClick = bindCompactInactiveAction(elements.contextMeterEl, elements.formEl, () => {
       togglePopover();
     });
     elements.contextMeterEl.addEventListener("click", (event) => {
-      if (suppressNextClick) {
-        suppressNextClick = false;
-        event.preventDefault();
-        return;
-      }
+      if (consumeCompactMeterClick(event)) return;
       togglePopover();
     });
     document.addEventListener("click", (event) => {
