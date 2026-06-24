@@ -287,6 +287,7 @@ export function createSessions(options: {
   }
 
   async function startNewSession(cwd?: string) {
+    const wasDrawerOpen = !elements.sessionDrawer.hidden;
     const res = await fetch("/api/sessions/new", {
       method: "POST",
       headers: api.headers(),
@@ -302,7 +303,7 @@ export function createSessions(options: {
     updateEmptyCwdChooser();
     if (shouldCloseDrawerAfterSessionSwitch()) {
       setSessionDrawerOpen(false);
-    } else {
+    } else if (wasDrawerOpen) {
       await setSessionDrawerOpen(true);
       scrollCurrentSessionIntoView();
     }

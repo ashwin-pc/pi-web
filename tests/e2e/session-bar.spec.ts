@@ -276,16 +276,23 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#sessionDrawer")).toBeHidden();
   });
 
-  test("new session opens the drawer on wide viewports and preserves mobile close behavior", async ({ page }) => {
+  test("new session preserves the drawer state on wide viewports and closes on mobile", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#sessionDrawer")).toBeHidden();
 
     await page.locator("#newSessionHeaderButton").click();
 
     await expect(page.locator("#statusTitle")).toHaveText("New session");
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
+
     const width = page.viewportSize()?.width || 0;
-    if (width <= 700) await expect(page.locator("#sessionDrawer")).toBeHidden();
-    else await expect(page.locator("#sessionDrawer")).toBeVisible();
+    if (width > 700) {
+      await page.locator("#sessionButton").click();
+      await expect(page.locator("#sessionDrawer")).toBeVisible();
+      await page.locator("#newSessionHeaderButton").click();
+      await expect(page.locator("#statusTitle")).toHaveText("New session");
+      await expect(page.locator("#sessionDrawer")).toBeVisible();
+    }
   });
 
   test("session drawer keeps folder headers visible when filters hide their sessions", async ({ page }) => {
