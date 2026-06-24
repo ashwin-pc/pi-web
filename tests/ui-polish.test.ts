@@ -79,3 +79,26 @@ describe("slash command compact styling", () => {
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
   });
 });
+
+describe("compact inactive composer styling", () => {
+  const css = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
+  const compactSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
+
+  it("collapses the inactive empty composer into a single floating bar", () => {
+    expect(css).toContain(`${compactSelector} {`);
+    expect(css).toContain("grid-template-columns: minmax(0, 1fr) auto");
+    expect(css).toContain("border-radius: 999px");
+    expect(css).toContain(`${compactSelector} textarea {`);
+    expect(css).toContain("height: 38px");
+  });
+
+  it("keeps model, thinking, attachment, and active stop controls available", () => {
+    expect(css).toContain(`${compactSelector} .modelSettingsButton {`);
+    expect(css).toContain(`${compactSelector} #attachButton,\n${compactSelector} #stopButton {`);
+    expect(css).not.toContain(`${compactSelector} #stopButton {\n  display: none !important;`);
+  });
+
+  it("hides nonessential inactive controls until focus", () => {
+    expect(css).toContain(`${compactSelector} .expandButton,\n${compactSelector} #queueToggle,\n${compactSelector} #primaryButton {\n  display: none !important;\n}`);
+  });
+});

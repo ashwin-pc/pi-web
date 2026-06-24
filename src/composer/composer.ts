@@ -65,6 +65,11 @@ export function createComposer(options: {
     setIcon(elements.queueToggle, isSteer ? "route" : "corner-down-right");
   }
 
+  function updateCompactInactive() {
+    const active = document.activeElement;
+    elements.formEl.classList.toggle("compactInactive", !active || !elements.formEl.contains(active));
+  }
+
   async function stopStreaming() {
     if (!state.currentSessionId) return;
     await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId: state.currentSessionId }) });
@@ -421,6 +426,8 @@ export function createComposer(options: {
       }
     });
 
+    elements.formEl.addEventListener("focusin", updateCompactInactive);
+    elements.formEl.addEventListener("focusout", () => window.setTimeout(updateCompactInactive, 0));
     elements.promptEl.addEventListener("focus", () => { void maybeRefreshSlashCommands(); });
     elements.promptEl.addEventListener("blur", () => window.setTimeout(hideSlashCommands, 100));
     elements.promptEl.addEventListener("input", () => {
