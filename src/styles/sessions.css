@@ -72,23 +72,26 @@
 }
 .sessionColorFilterButton {
   flex: 0 0 auto;
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 3px;
   box-sizing: border-box;
+  width: 28px;
   height: 28px;
+  min-width: 28px;
   min-height: 28px;
-  max-width: 84px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel-2);
   color: var(--muted);
-  padding: 0 6px;
-  font: inherit;
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 26px;
+  padding: 0;
+}
+.sessionColorFilterButton svg {
+  width: 14px;
+  height: 14px;
+  stroke-width: 2.25;
 }
 .sessionColorFilterButton.active {
   border-color: color-mix(in srgb, var(--accent) 34%, var(--border));
@@ -99,23 +102,27 @@
   border-color: var(--accent);
   outline: none;
 }
-.sessionColorFilterButton > span:last-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .sessionColorFilterDots {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
   display: flex;
   align-items: center;
   gap: 1px;
   flex: 0 0 auto;
 }
 .sessionColorFilterDot {
-  width: 7px;
-  height: 7px;
+  width: 5px;
+  height: 5px;
   border-radius: 999px;
   background: var(--session-marker-color);
+}
+.sessionFilterUnreadDot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
 }
 .sessionMarkerPalette {
   flex: 0 0 auto;

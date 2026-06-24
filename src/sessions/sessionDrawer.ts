@@ -152,6 +152,7 @@ export function createSessions(options: {
   let closeSessionColorFilterMenu: (() => void) | undefined;
   let closeCurrentSessionBucketMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
+  let unreadFilterActive = false;
   type SessionRowTool = "pin" | SessionMarkerColorId;
   let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
 
@@ -347,6 +348,7 @@ export function createSessions(options: {
     if (pinnedCwdsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
     renderSessionList(cachedSessions);
     renderSessionBar();
+    updateSessionButtonUnread();
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -480,6 +482,9 @@ export function createSessions(options: {
   }
 
   function hasVisibleUnreadSessions() {
+    if (cachedSessions.length > 0) {
+      return cachedSessions.some((item) => isSessionUnread(item.id, Boolean(item.unread), Boolean(item.runtime?.isRunning)));
+    }
     return state.sessionUnreadStates.some((item) => item.sessionId !== state.currentSessionId && !isSessionRunning(item.sessionId));
   }
 
@@ -489,6 +494,7 @@ export function createSessions(options: {
     const title = unread ? "Sessions · unread activity" : "Sessions";
     elements.sessionButton.title = title;
     elements.sessionButton.setAttribute("aria-label", title);
+    renderSessionColorFilterButton();
   }
 
   function clearLocalUnread(sessionId: string) {
@@ -546,19 +552,25 @@ export function createSessions(options: {
     if (!sessionColorFilterButton) return;
     const colors = sortedAllowedMarkerColors();
     sessionColorFilterButton.textContent = "";
-    sessionColorFilterButton.classList.toggle("active", colors.length > 0);
-    sessionColorFilterButton.title = colors.length === 0
-      ? "Filter marker colors: all colors allowed"
-      : `Filter marker colors: ${colors.map(markerColorLabel).join(", ")}`;
+    const active = colors.length > 0 || unreadFilterActive;
+    sessionColorFilterButton.classList.toggle("active", active);
+    const parts = [
+      colors.length === 0 ? "all colors allowed" : `colors: ${colors.map(markerColorLabel).join(", ")}`,
+      unreadFilterActive ? "unread only" : "read and unread",
+    ];
+    sessionColorFilterButton.title = `Filter sessions: ${parts.join("; ")}`;
     sessionColorFilterButton.setAttribute("aria-label", sessionColorFilterButton.title);
     sessionColorFilterButton.setAttribute("aria-expanded", String(Boolean(closeSessionColorFilterMenu)));
 
-    if (colors.length === 0) {
-      const label = document.createElement("span");
-      label.textContent = "All colors";
-      sessionColorFilterButton.append(label);
-      return;
+    sessionColorFilterButton.append(iconElement("funnel"));
+    if (unreadFilterActive) {
+      const unreadDot = document.createElement("span");
+      unreadDot.className = "sessionUnreadDot sessionFilterUnreadDot";
+      unreadDot.title = "Unread only";
+      unreadDot.setAttribute("aria-hidden", "true");
+      sessionColorFilterButton.append(unreadDot);
     }
+    if (colors.length === 0) return;
 
     const dots = document.createElement("span");
     dots.className = "sessionColorFilterDots";
@@ -568,9 +580,7 @@ export function createSessions(options: {
       dot.setAttribute("aria-hidden", "true");
       dots.append(dot);
     }
-    const label = document.createElement("span");
-    label.textContent = colors.length === 1 ? markerColorLabel(colors[0]) : `${colors.length} colors`;
-    sessionColorFilterButton.append(dots, label);
+    sessionColorFilterButton.append(dots);
   }
 
   function setSelectedMarkerColor(color: SessionMarkerColorId) {
@@ -819,7 +829,7 @@ export function createSessions(options: {
 
     const title = document.createElement("div");
     title.className = "sessionColorFilterTitle";
-    title.textContent = "Allowed marker colors";
+    title.textContent = "Filter sessions";
     menu.append(title);
 
     const allButton = document.createElement("button");
@@ -831,12 +841,29 @@ export function createSessions(options: {
     allButton.append(allLabel);
     menu.append(allButton);
 
+    const unreadButton = document.createElement("button");
+    unreadButton.type = "button";
+    unreadButton.className = "sessionColorFilterMenuItem unread";
+    unreadButton.setAttribute("role", "menuitemcheckbox");
+    const unreadLabel = document.createElement("span");
+    unreadLabel.textContent = "Unread only";
+    unreadButton.append(unreadLabel);
+    menu.append(unreadButton);
+
+    const colorTitle = document.createElement("div");
+    colorTitle.className = "sessionColorFilterTitle";
+    colorTitle.textContent = "Marker colors";
+    menu.append(colorTitle);
+
     const colorButtons: Array<{ color: SessionMarkerColorId; button: HTMLButtonElement }> = [];
     const updateMenuState = () => {
       const allSelected = allowedMarkerColors.size === 0;
       allButton.classList.toggle("selected", allSelected);
       allButton.setAttribute("aria-checked", String(allSelected));
       allButton.title = allSelected ? "All marker colors are allowed" : "Allow all marker colors";
+      unreadButton.classList.toggle("selected", unreadFilterActive);
+      unreadButton.setAttribute("aria-checked", String(unreadFilterActive));
+      unreadButton.title = unreadFilterActive ? "Showing unread sessions only" : "Show unread sessions only";
       for (const item of colorButtons) {
         const selected = allowedMarkerColors.has(item.color);
         item.button.classList.toggle("selected", selected);
@@ -847,6 +874,13 @@ export function createSessions(options: {
 
     allButton.addEventListener("click", () => {
       allowedMarkerColors.clear();
+      renderSessionColorFilterButton();
+      renderSessionList(cachedSessions);
+      updateMenuState();
+    });
+
+    unreadButton.addEventListener("click", () => {
+      unreadFilterActive = !unreadFilterActive;
       renderSessionColorFilterButton();
       renderSessionList(cachedSessions);
       updateMenuState();
@@ -1291,11 +1325,13 @@ export function createSessions(options: {
     const matchesFilter = (item: SessionInfo) => {
       const marker = markerForSession(item.id);
       if (allowedMarkerColors.size > 0 && !allowedMarkerColors.has(marker?.color as SessionMarkerColorId)) return false;
+      if (unreadFilterActive && !isSessionUnread(item.id, Boolean(item.unread), Boolean(item.runtime?.isRunning))) return false;
       if (!query) return true;
       return [sessionTitle(item), item.cwd || "", item.firstMessage || ""]
         .some((value) => value.toLowerCase().includes(query));
     };
-    const filterActive = Boolean(query || allowedMarkerColors.size > 0);
+    const filterActive = Boolean(query || allowedMarkerColors.size > 0 || unreadFilterActive);
+    renderSessionColorFilterButton();
 
     const groups = new Map<string, SessionInfo[]>();
     for (const item of sessions) {
@@ -1310,9 +1346,11 @@ export function createSessions(options: {
     const unpinnedEntries = Array.from(groups.entries()).filter(([cwd]) => !pinnedFolders.has(cwd));
     const orderedEntries = [...pinnedEntries, ...unpinnedEntries];
     const folderLabels = folderDisplayNames(orderedEntries.map(([cwd]) => cwd));
+    let renderedItemCount = 0;
 
     for (const [cwd, items] of orderedEntries) {
       const folderPinned = isFolderPinned(cwd);
+      const folderCollapsed = state.collapsedSessionFolders.has(cwd);
       const group = document.createElement("section");
       group.className = `sessionFolderGroup${folderPinned ? " pinned" : ""}`;
 
@@ -1321,11 +1359,11 @@ export function createSessions(options: {
       const toggle = document.createElement("button");
       toggle.type = "button";
       toggle.className = "sessionFolderToggle";
-      toggle.setAttribute("aria-expanded", String(!state.collapsedSessionFolders.has(cwd)));
-      toggle.title = state.collapsedSessionFolders.has(cwd) ? "Expand folder" : "Collapse folder";
+      toggle.setAttribute("aria-expanded", String(!folderCollapsed || filterActive));
+      toggle.title = folderCollapsed ? "Expand folder" : "Collapse folder";
       const chevron = document.createElement("span");
       chevron.className = "sessionFolderChevron";
-      chevron.textContent = state.collapsedSessionFolders.has(cwd) ? "▸" : "▾";
+      chevron.textContent = folderCollapsed && !filterActive ? "▸" : "▾";
       const labels = document.createElement("span");
       labels.className = "sessionFolderLabels";
       const name = document.createElement("span");
@@ -1366,22 +1404,31 @@ export function createSessions(options: {
       header.append(toggle, pinButton, newButton);
       group.append(header);
 
-      if (state.collapsedSessionFolders.has(cwd)) {
+      const filteredItems = items.filter(matchesFilter);
+      if (folderCollapsed && !filterActive) {
+        elements.sessionListEl.append(group);
+        continue;
+      }
+      if (folderCollapsed && filterActive && filteredItems.length === 0) {
         elements.sessionListEl.append(group);
         continue;
       }
 
-      const filteredItems = items.filter(matchesFilter);
       const folderExpanded = state.expandedSessionFolders.has(cwd);
       const visibleItems = folderExpanded ? filteredItems : filteredItems.slice(0, sessionFolderPreviewLimit);
 
       if (filteredItems.length === 0 && filterActive) {
         const empty = document.createElement("p");
         empty.className = "sessionEmpty";
-        empty.textContent = query ? "No matching sessions in this folder." : "No sessions in the selected colors.";
+        empty.textContent = query
+          ? "No matching sessions in this folder."
+          : unreadFilterActive
+            ? "No unread sessions in this folder."
+            : "No sessions in the selected colors.";
         group.append(empty);
       }
 
+      renderedItemCount += filteredItems.length;
       for (const item of visibleItems) {
         group.append(buildSessionItem(item, cwd));
       }
@@ -1402,6 +1449,18 @@ export function createSessions(options: {
       }
 
       elements.sessionListEl.append(group);
+    }
+
+    if (filterActive && renderedItemCount === 0) {
+      elements.sessionListEl.textContent = "";
+      const empty = document.createElement("p");
+      empty.className = "sessionEmpty";
+      empty.textContent = query
+        ? "No matching sessions."
+        : unreadFilterActive
+          ? "No unread sessions."
+          : "No sessions in the selected colors.";
+      elements.sessionListEl.append(empty);
     }
   }
 
