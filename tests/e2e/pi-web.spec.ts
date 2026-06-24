@@ -165,7 +165,9 @@ test.describe("composer layout", () => {
   test("persists composer controls after page refresh", async ({ page }) => {
     await page.goto("/");
 
+    await page.locator("#prompt").focus();
     await page.locator("#queueToggle").click();
+    await page.locator("#promptForm").hover();
     await page.locator("#expandButton").click();
     await expect(page.locator("#promptForm")).toHaveClass(/expanded/);
 
@@ -353,6 +355,10 @@ test.describe("composer layout", () => {
     const composer = page.locator("#promptForm");
     await expect(composer).toBeVisible();
     await expect(page.locator("#sessionButton")).toBeVisible();
+    await expect(page.locator("#attachButton")).toBeVisible();
+    await expect(page.locator("#primaryButton")).toBeHidden();
+
+    await page.locator("#prompt").focus();
     await expect(page.locator("#primaryButton")).toBeVisible();
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
@@ -367,6 +373,7 @@ test.describe("composer layout", () => {
 
   test("composer action row is flush, 40px tall, and has rounded bottom corners", async ({ page }) => {
     await page.goto("/");
+    await page.locator("#prompt").focus();
 
     const footerBox = await page.locator(".composerFooter").boundingBox();
     const textAreaBox = await page.locator("#prompt").boundingBox();
@@ -434,6 +441,13 @@ test.describe("composer layout", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");
 
+    const compactMeterBox = await page.locator("#contextMeter").boundingBox();
+    const compactComposerBox = await page.locator("#promptForm").boundingBox();
+    expect(compactMeterBox).toBeTruthy();
+    expect(compactComposerBox).toBeTruthy();
+    expect(compactMeterBox!.y + compactMeterBox!.height).toBeLessThanOrEqual(compactComposerBox!.y + 1);
+
+    await page.locator("#prompt").focus();
     const meterBox = await page.locator("#contextMeter").boundingBox();
     const composerBox = await page.locator("#promptForm").boundingBox();
     const textareaBox = await page.locator("#prompt").boundingBox();
@@ -448,11 +462,6 @@ test.describe("composer layout", () => {
     const trackRadius = await page.locator(".contextMeterTrack").evaluate((el) => getComputedStyle(el).borderTopLeftRadius);
     expect(textareaRadius).toBe("15px");
     expect(trackRadius).toBe("999px");
-
-    await page.locator("#prompt").focus();
-    const meterAfterFocus = await page.locator("#contextMeter").boundingBox();
-    expect(meterAfterFocus).toBeTruthy();
-    expect(meterAfterFocus!.y + meterAfterFocus!.height).toBeLessThanOrEqual(composerBox!.y + 1);
   });
 
   test("model settings popover changes reasoning level explicitly", async ({ page }) => {
@@ -496,6 +505,7 @@ test.describe("composer layout", () => {
   test("composer expands to fullscreen editor", async ({ page }) => {
     await page.goto("/");
     const composer = page.locator("#promptForm");
+    await page.locator("#prompt").focus();
     const before = await composer.boundingBox();
     expect(before).toBeTruthy();
 

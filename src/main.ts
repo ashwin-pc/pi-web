@@ -64,7 +64,7 @@ function updateMeta(data: any) {
     };
   }
   state.currentModelKey = modelKey(data.model);
-  state.currentModelDisplay = data.model ? modelLabel(data.model) : "No model";
+  state.currentModelDisplay = data.model ? modelLabel(data.model) : "";
   state.currentThinkingLevel = data.thinkingLevel || "off";
   state.currentSessionId = data.sessionId || state.currentSessionId;
   state.currentCwd = data.cwd || state.currentCwd;

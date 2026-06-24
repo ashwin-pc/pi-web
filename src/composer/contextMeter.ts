@@ -51,6 +51,8 @@ function contextTone(percent: number | undefined) {
   return "normal";
 }
 
+const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
+
 function contextTitle(stats?: SessionStats | null) {
   const usage = stats?.contextUsage;
   const percent = contextPercent(stats);
@@ -136,13 +138,29 @@ export function createContextMeter(options: { state: AppState; elements: AppElem
     renderPopover(stats);
   }
 
+  function togglePopover() {
+    const open = elements.contextMeterPopoverEl.hidden;
+    if (open) blurActiveEditableOnMobile();
+    renderPopover(state.stats);
+    elements.contextMeterPopoverEl.hidden = !open;
+    elements.contextMeterEl.setAttribute("aria-expanded", String(open));
+  }
+
   function init() {
-    elements.contextMeterEl.addEventListener("click", () => {
-      const open = elements.contextMeterPopoverEl.hidden;
-      if (open) blurActiveEditableOnMobile();
-      renderPopover(state.stats);
-      elements.contextMeterPopoverEl.hidden = !open;
-      elements.contextMeterEl.setAttribute("aria-expanded", String(open));
+    let suppressNextClick = false;
+    elements.contextMeterEl.addEventListener("pointerdown", (event) => {
+      if (!elements.formEl.matches(compactInactiveComposerSelector)) return;
+      event.preventDefault();
+      suppressNextClick = true;
+      togglePopover();
+    });
+    elements.contextMeterEl.addEventListener("click", (event) => {
+      if (suppressNextClick) {
+        suppressNextClick = false;
+        event.preventDefault();
+        return;
+      }
+      togglePopover();
     });
     document.addEventListener("click", (event) => {
       const target = event.target as Node | null;

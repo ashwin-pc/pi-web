@@ -50,7 +50,7 @@
 }
 .contextMeter.normal .contextMeterFill { background: color-mix(in srgb, var(--muted) 24%, transparent); }
 .contextMeter.active .contextMeterTrack { background: color-mix(in srgb, var(--muted) 14%, transparent); }
-.contextMeter.active .contextMeterFill { background: color-mix(in srgb, var(--accent) 72%, var(--muted)); }
+.contextMeter.active .contextMeterFill { background: #7dd3fc; }
 .contextMeter.warning .contextMeterFill { background: #f59e0b; }
 .contextMeter.danger .contextMeterFill { background: var(--danger); }
 .contextMeter.unknown .contextMeterTrack { background: color-mix(in srgb, var(--muted) 8%, transparent); }
@@ -388,6 +388,8 @@ select {
   white-space: nowrap;
 }
 .modelSettingsThinking {
+  --thinking-fill: 0%;
+  --thinking-accent: #7dd3fc;
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -397,12 +399,49 @@ select {
   font-weight: 700;
   white-space: nowrap;
 }
-.modelSettingsThinking svg {
-  width: 14px;
-  height: 14px;
-  stroke-width: 2.25;
+.modelSettingsThinkingIcon {
+  position: relative;
+  display: inline-grid;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  place-items: center;
+  overflow: hidden;
 }
-.modelSettingsButton:not([data-thinking-level="off"]) .modelSettingsThinking { color: var(--accent); }
+.modelSettingsThinkingIcon::before {
+  content: "";
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 1px;
+  height: var(--thinking-fill, 0%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--thinking-accent) 40%, transparent);
+}
+.modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingIcon::before { min-height: 2px; }
+.modelSettingsThinkingIcon svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke-width: 2.35;
+}
+.modelSettingsThinkingIconBase {
+  z-index: 1;
+  color: var(--muted);
+  opacity: .78;
+}
+.modelSettingsThinkingIconFill {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  z-index: 2;
+  color: var(--thinking-accent);
+  clip-path: inset(calc(100% - var(--thinking-fill, 0%)) 0 0 0);
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--thinking-accent) 45%, transparent));
+}
+.modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingIconBase { opacity: .34; }
+.modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingText { color: var(--thinking-accent); }
 .modelSettingsPopover {
   position: absolute;
   left: 0;
@@ -522,6 +561,14 @@ button:disabled:hover { border-color: var(--border); }
   background: color-mix(in srgb, var(--panel-2) 66%, transparent);
   gap: 8px;
   padding: 0 10px 0 12px;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsPopover {
+  position: fixed;
+  left: 50%;
+  right: auto;
+  bottom: calc(72px + max(0px, env(safe-area-inset-bottom)));
+  width: min(560px, calc(100vw - 32px));
+  transform: translateX(-50%);
 }
 .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #attachButton,
 .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #stopButton {

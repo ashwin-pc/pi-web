@@ -21,6 +21,53 @@ export function modelLabel(model: any): string {
   return `${model.provider}/${model.id}${name}`;
 }
 
+const offThinkingLevels = new Set(["", "off", "none", "disabled", "false", "no", "0"]);
+
+function normalizeThinkingLevel(level: string | undefined | null) {
+  return String(level || "").trim().toLowerCase();
+}
+
+function isOffThinkingLevel(level: string | undefined | null) {
+  return offThinkingLevels.has(normalizeThinkingLevel(level));
+}
+
+export function thinkingLevelFill(level: string | undefined | null, levels: string[]) {
+  const normalizedLevel = normalizeThinkingLevel(level);
+  if (isOffThinkingLevel(normalizedLevel)) return 0;
+
+  const activeLevels = levels
+    .map(normalizeThinkingLevel)
+    .filter((value, index, values) => value && !isOffThinkingLevel(value) && values.indexOf(value) === index);
+
+  if (!activeLevels.length) return 1;
+  const levelIndex = activeLevels.indexOf(normalizedLevel);
+  if (levelIndex === -1) return 1;
+  return (levelIndex + 1) / activeLevels.length;
+}
+
+function thinkingOptionsFromSelect(select: HTMLSelectElement) {
+  return Array.from(select.options || [])
+    .map((option) => (option.value || option.textContent || "").trim())
+    .filter(Boolean);
+}
+
+const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
+
+function createThinkingIcon() {
+  const icon = document.createElement("span");
+  icon.className = "modelSettingsThinkingIcon";
+
+  const baseIcon = iconElement("brain");
+  baseIcon.setAttribute("class", "modelSettingsThinkingIconBase");
+
+  const fill = document.createElement("span");
+  fill.className = "modelSettingsThinkingIconFill";
+  fill.append(iconElement("brain"));
+
+  icon.append(baseIcon, fill);
+  return icon;
+}
+
 export function createModelSettings(options: {
   state: AppState;
   elements: AppElements;
@@ -32,10 +79,18 @@ export function createModelSettings(options: {
 
   function updateSummary() {
     const level = elements.thinkingSelectEl.value || state.currentThinkingLevel || "off";
-    const label = state.currentModelDisplay || state.currentModelKey || "No model";
+    const selectedModelLabel = elements.modelSelectEl.selectedOptions[0]?.textContent?.trim();
+    const label = state.currentModelDisplay || selectedModelLabel || state.currentModelKey || "";
     elements.modelSettingsLabel.textContent = label;
+    const fill = thinkingLevelFill(level, thinkingOptionsFromSelect(elements.thinkingSelectEl));
     elements.modelSettingsThinking.textContent = "";
-    elements.modelSettingsThinking.append(iconElement("brain"), document.createTextNode(level));
+    elements.modelSettingsThinking.style.setProperty("--thinking-fill", `${Math.round(fill * 100)}%`);
+    const thinkingText = document.createElement("span");
+    thinkingText.className = "modelSettingsThinkingText";
+    thinkingText.textContent = level;
+    elements.modelSettingsThinking.append(createThinkingIcon(), thinkingText);
+    elements.modelSettingsThinking.dataset.thinkingLevel = level;
+    elements.modelSettingsThinking.dataset.thinkingActive = fill > 0 ? "true" : "false";
     elements.modelSettingsButton.dataset.thinkingLevel = level;
     elements.modelSettingsButton.title = `${label} · reasoning: ${level}`;
     elements.modelSettingsButton.setAttribute("aria-label", `Model and reasoning settings: ${label}, reasoning ${level}`);
@@ -119,8 +174,21 @@ export function createModelSettings(options: {
   }
 
   function init() {
+    let suppressNextSettingsClick = false;
+    elements.modelSettingsButton.addEventListener("pointerdown", (event) => {
+      if (!elements.formEl.matches(compactInactiveComposerSelector)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      suppressNextSettingsClick = true;
+      setModelSettingsOpen(elements.modelSettingsPopover.hidden);
+    });
     elements.modelSettingsButton.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (suppressNextSettingsClick) {
+        suppressNextSettingsClick = false;
+        event.preventDefault();
+        return;
+      }
       setModelSettingsOpen(elements.modelSettingsPopover.hidden);
     });
     elements.modelSettingsPopover.addEventListener("click", (event) => event.stopPropagation());

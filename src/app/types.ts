@@ -326,7 +326,7 @@ export function createAppState(): AppState {
   return {
     token: localStorage.getItem(tokenStorageKey) || "",
     currentModelKey: "",
-    currentModelDisplay: "No model",
+    currentModelDisplay: "",
     currentThinkingLevel: "off",
     currentSessionId: readActiveSessionIdFromUrl(),
     currentCwd: "",

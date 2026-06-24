@@ -45,6 +45,7 @@ export function createComposer(options: {
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
   const draftStorageKey = "pi-web-composer-draft";
+  const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
   let slashCommandSelectedIndex = 0;
@@ -438,7 +439,21 @@ export function createComposer(options: {
       void maybeRefreshSlashCommands();
     });
 
-    elements.attachButton.addEventListener("click", () => elements.imageInput.click());
+    let suppressNextAttachClick = false;
+    elements.attachButton.addEventListener("pointerdown", (event) => {
+      if (!elements.formEl.matches(compactInactiveComposerSelector)) return;
+      event.preventDefault();
+      suppressNextAttachClick = true;
+      elements.imageInput.click();
+    });
+    elements.attachButton.addEventListener("click", (event) => {
+      if (suppressNextAttachClick) {
+        suppressNextAttachClick = false;
+        event.preventDefault();
+        return;
+      }
+      elements.imageInput.click();
+    });
 
     elements.imageInput.addEventListener("change", () => {
       const files = Array.from(elements.imageInput.files || []);
@@ -472,7 +487,19 @@ export function createComposer(options: {
       void attachImageFiles(Array.from(event.dataTransfer?.files || []));
     });
 
-    elements.stopButton.addEventListener("click", () => {
+    let suppressNextStopClick = false;
+    elements.stopButton.addEventListener("pointerdown", (event) => {
+      if (!elements.formEl.matches(compactInactiveComposerSelector)) return;
+      event.preventDefault();
+      suppressNextStopClick = true;
+      void stopStreaming();
+    });
+    elements.stopButton.addEventListener("click", (event) => {
+      if (suppressNextStopClick) {
+        suppressNextStopClick = false;
+        event.preventDefault();
+        return;
+      }
       void stopStreaming();
     });
 
@@ -509,6 +536,7 @@ export function createComposer(options: {
         updatePrimaryAction();
       }
     } catch { /* ignore */ }
+    updateCompactInactive();
   }
 
   return {

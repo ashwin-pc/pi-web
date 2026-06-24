@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { createContextMeter } from "../src/composer/contextMeter.js";
+import { createModelSettings, thinkingLevelFill } from "../src/models/modelSettings.js";
 import type { AppElements } from "../src/app/elements.js";
 import type { AppState } from "../src/app/types.js";
 
@@ -9,16 +10,22 @@ class MockElement {
   textContent = "";
   title = "";
   hidden = false;
+  disabled = false;
+  dataset: Record<string, string> = {};
   attributes = new Map<string, string>();
   style = { values: new Map<string, string>(), setProperty: (key: string, value: string) => this.style.values.set(key, value) };
   children: unknown[] = [];
+  selectedOptions: Array<{ textContent?: string | null }> = [];
   append(...nodes: unknown[]) { this.children.push(...nodes); }
+  appendChild(node: unknown) { this.children.push(node); return node; }
   setAttribute(key: string, value: string) { this.attributes.set(key, value); }
   addEventListener() {}
 }
 
 globalThis.document = {
   createElement: () => new MockElement(),
+  createElementNS: () => new MockElement(),
+  createTextNode: (text: string) => ({ textContent: text }),
   addEventListener: () => undefined,
 } as unknown as Document;
 
@@ -59,6 +66,87 @@ describe("context meter compaction polish", () => {
   });
 });
 
+describe("model settings summary", () => {
+  it("uses the selected model option instead of deriving a No model label", () => {
+    const modelSettingsLabel = new MockElement();
+    const modelSettingsThinking = new MockElement();
+    const modelSettingsButton = new MockElement();
+    const modelSelectEl = new MockElement();
+    modelSelectEl.selectedOptions = [{ textContent: "aws-bedrock/us.anthropic.claude-3-7-sonnet" }];
+    const controller = createModelSettings({
+      state: { currentModelDisplay: "", currentModelKey: "", currentThinkingLevel: "off" } as AppState,
+      elements: {
+        modelSettingsLabel,
+        modelSettingsThinking,
+        modelSettingsButton,
+        modelSelectEl,
+        thinkingSelectEl: { value: "off" },
+      } as unknown as AppElements,
+      api: { headers: () => ({}) } as any,
+      updateMeta: () => undefined,
+      addMessage: () => undefined,
+    });
+
+    controller.updateSummary();
+
+    expect(modelSettingsLabel.textContent).toBe("aws-bedrock/us.anthropic.claude-3-7-sonnet");
+  });
+
+  it("stores dynamic thinking fill from the API-provided option order", () => {
+    const modelSettingsThinking = new MockElement();
+    const controller = createModelSettings({
+      state: { currentModelDisplay: "mock/model", currentModelKey: "", currentThinkingLevel: "balanced" } as AppState,
+      elements: {
+        modelSettingsLabel: new MockElement(),
+        modelSettingsThinking,
+        modelSettingsButton: new MockElement(),
+        modelSelectEl: new MockElement(),
+        thinkingSelectEl: {
+          value: "balanced",
+          options: [{ value: "off" }, { value: "short" }, { value: "balanced" }, { value: "deep" }],
+        },
+      } as unknown as AppElements,
+      api: { headers: () => ({}) } as any,
+      updateMeta: () => undefined,
+      addMessage: () => undefined,
+    });
+
+    controller.updateSummary();
+
+    expect(modelSettingsThinking.dataset.thinkingLevel).toBe("balanced");
+    expect(modelSettingsThinking.dataset.thinkingActive).toBe("true");
+    expect(modelSettingsThinking.style.values.get("--thinking-fill")).toBe("67%");
+  });
+
+  it("calculates thinking fill without hard-coded level names", () => {
+    expect(thinkingLevelFill("off", ["off", "minimal", "low", "medium", "high", "xhigh"])).toBe(0);
+    expect(thinkingLevelFill("minimal", ["off", "minimal", "low", "medium", "high", "xhigh"])).toBeCloseTo(1 / 5);
+    expect(thinkingLevelFill("xhigh", ["off", "minimal", "low", "medium", "high", "xhigh"])).toBe(1);
+    expect(thinkingLevelFill("balanced", ["none", "short", "balanced", "deep"])).toBeCloseTo(2 / 3);
+  });
+
+  it("leaves the model label empty when no model information is available", () => {
+    const modelSettingsLabel = new MockElement();
+    const controller = createModelSettings({
+      state: { currentModelDisplay: "", currentModelKey: "", currentThinkingLevel: "off" } as AppState,
+      elements: {
+        modelSettingsLabel,
+        modelSettingsThinking: new MockElement(),
+        modelSettingsButton: new MockElement(),
+        modelSelectEl: new MockElement(),
+        thinkingSelectEl: { value: "off" },
+      } as unknown as AppElements,
+      api: { headers: () => ({}) } as any,
+      updateMeta: () => undefined,
+      addMessage: () => undefined,
+    });
+
+    controller.updateSummary();
+
+    expect(modelSettingsLabel.textContent).toBe("");
+  });
+});
+
 describe("slash command compact styling", () => {
   const css = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
 
@@ -71,6 +159,21 @@ describe("slash command compact styling", () => {
   it("hides slash command descriptions until the active or hovered row", () => {
     expect(css).toContain(".slashCommandDescription {\n  display: none;");
     expect(css).toContain(".slashCommandItem.active .slashCommandDescription,\n.slashCommandItem:hover .slashCommandDescription { display: block; }");
+  });
+
+  it("uses the legacy blue for context usage over 50%", () => {
+    expect(css).toContain(".contextMeter.active .contextMeterFill { background: #7dd3fc; }");
+  });
+
+  it("renders a dynamic clipped brain overlay for thinking level", () => {
+    expect(css).toContain("--thinking-fill: 0%;");
+    expect(css).toContain("--thinking-accent: #7dd3fc;");
+    expect(css).toContain(".modelSettingsThinkingIcon::before {");
+    expect(css).toContain("height: var(--thinking-fill, 0%)");
+    expect(css).toContain(".modelSettingsThinkingIconFill {");
+    expect(css).toContain("clip-path: inset(calc(100% - var(--thinking-fill, 0%)) 0 0 0)");
+    expect(css).not.toContain('data-thinking-level="low"');
+    expect(css).not.toContain('data-thinking-level="xhigh"');
   });
 
   it("animates the context meter while compacting with reduced-motion support", () => {
@@ -98,7 +201,34 @@ describe("compact inactive composer styling", () => {
     expect(css).not.toContain(`${compactSelector} #stopButton {\n  display: none !important;`);
   });
 
+  it("keeps compact model settings popover within the viewport", () => {
+    expect(css).toContain(`${compactSelector} .modelSettingsPopover {\n  position: fixed;\n  left: 50%;`);
+    expect(css).toContain("width: min(560px, calc(100vw - 32px));");
+    expect(css).toContain("transform: translateX(-50%);");
+  });
+
+  it("preserves model label width and thinking icon in compact mobile layout", () => {
+    const responsiveCss = readFileSync(new URL("../src/styles/responsive.css", import.meta.url), "utf8");
+    expect(responsiveCss).toContain(`${compactSelector} .modelControl {\n    flex: 0 1 auto;\n    width: clamp(150px, 42vw, 240px);\n  }`);
+    expect(responsiveCss).toContain(".modelSettingsThinking {\n    display: inline-flex;\n  }");
+    expect(responsiveCss).toContain(".modelSettingsThinkingText {");
+  });
+
   it("hides nonessential inactive controls until focus", () => {
     expect(css).toContain(`${compactSelector} .expandButton,\n${compactSelector} #queueToggle,\n${compactSelector} #primaryButton {\n  display: none !important;\n}`);
+  });
+
+  it("sets the compact inactive state during composer initialization", () => {
+    const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
+    expect(composer).toContain("function updateCompactInactive()");
+    expect(composer).toContain("    updateCompactInactive();\n  }\n\n  return {");
+  });
+
+  it("opens attachments and stop from compact mode before focus expands the composer", () => {
+    const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
+    expect(composer).toContain("elements.attachButton.addEventListener(\"pointerdown\"");
+    expect(composer).toContain("event.preventDefault();\n      suppressNextAttachClick = true;\n      elements.imageInput.click();");
+    expect(composer).toContain("elements.stopButton.addEventListener(\"pointerdown\"");
+    expect(composer).toContain("event.preventDefault();\n      suppressNextStopClick = true;\n      void stopStreaming();");
   });
 });
