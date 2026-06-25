@@ -7,3 +7,4 @@
 - In development, pi-web runs behind `supervisor.ts`: public port `8787`, child app server `8788`.
 - Do not kill the public server while working from the web UI. For server-side changes, request a supervised restart with `POST /api/restart`; frontend-only changes usually update via Vite HMR.
 - The server token is available via `$PI_WEB_TOKEN` (e.g. `echo $PI_WEB_TOKEN`). When using browser automation (agent-browser) to interact with the UI, set the token first by clicking the "Set token" button and entering this value so requests are authenticated.
+- To make an npm/GitHub release: bump `package.json`/`package-lock.json`, update release notes under `docs/releases/`, commit and push to `origin/main`, then create and push the matching version tag (`git tag vX.Y.Z <release-commit>` and `git push origin vX.Y.Z`). The release workflow only runs on `v*.*.*` tag pushes.
