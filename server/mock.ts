@@ -85,8 +85,18 @@ export function createMockHarness(options: MockSessionOptions) {
   }
 
   function createInitialEntries(path: string) {
+    const deepTreeDepth = Number(process.env.PI_WEB_MOCK_DEEP_TREE_DEPTH || 0);
+    if (deepTreeDepth > 0 && path === mockSessions[0].path) {
+      return Array.from({ length: deepTreeDepth }, (_, index): any => ({
+        type: "message",
+        id: `mock-deep-${index}`,
+        parentId: index === 0 ? null : `mock-deep-${index - 1}`,
+        timestamp: new Date(Date.UTC(2026, 4, 7, 10, 0, index)).toISOString(),
+        message: { role: index % 2 === 0 ? "user" : "assistant", content: `Deep mock entry ${index}` },
+      }));
+    }
     const [first, second] = initialMessages(path) as Array<Record<string, unknown>>;
-    const entries = [
+    const entries: any[] = [
       { type: "message", id: "mock-u1", parentId: null, timestamp: String(first.timestamp), message: first },
       { type: "message", id: "mock-a1", parentId: "mock-u1", timestamp: String(second.timestamp), message: second },
     ];
@@ -129,13 +139,22 @@ export function createMockHarness(options: MockSessionOptions) {
     }
 
     function buildTree(parentId: string | null): any[] {
-      return mockEntries
-        .filter((entry) => entry.parentId === parentId)
-        .map((entry) => ({
-          entry,
-          label: labelsById.get(entry.id),
-          children: buildTree(entry.id),
-        }));
+      type MockTreeNode = { entry: any; label?: string; children: MockTreeNode[] };
+      const childrenByParent = new Map<string | null, any[]>();
+      for (const entry of mockEntries) {
+        const key = typeof entry.parentId === "string" ? entry.parentId : null;
+        const siblings = childrenByParent.get(key) || [];
+        siblings.push(entry);
+        childrenByParent.set(key, siblings);
+      }
+      const roots: MockTreeNode[] = (childrenByParent.get(parentId) || []).map((entry) => ({ entry, label: labelsById.get(entry.id), children: [] }));
+      const stack = [...roots];
+      while (stack.length > 0) {
+        const node = stack.pop()!;
+        node.children = (childrenByParent.get(node.entry.id) || []).map((entry) => ({ entry, label: labelsById.get(entry.id), children: [] }));
+        for (const child of node.children) stack.push(child);
+      }
+      return roots;
     }
 
     function appendMockMessage(message: Record<string, unknown>) {

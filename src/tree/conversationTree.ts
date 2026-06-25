@@ -54,6 +54,15 @@ type ConversationGraphRow = {
   element?: HTMLButtonElement;
 };
 
+type ConversationGraphFrame = {
+  node: ConversationTreeNode;
+  lane: number;
+  depth: number;
+  parentId?: string;
+  branchIndex?: number;
+  branchCount?: number;
+};
+
 const svgNamespace = "http://www.w3.org/2000/svg";
 const graphLaneGap = 18;
 const graphNodeOffset = 12;
@@ -86,42 +95,78 @@ function formatTimestamp(value: string) {
 }
 
 function projectTree(nodes: ConversationTreeNode[], mode: FilterMode): ConversationTreeNode[] {
-  const projected: ConversationTreeNode[] = [];
-  for (const node of nodes) {
-    const children = projectTree(node.children || [], mode);
-    if (matchesFilter(node, mode)) projected.push({ ...node, children, childCount: children.length });
-    else projected.push(...children);
+  const projectedByNode = new Map<ConversationTreeNode, ConversationTreeNode[]>();
+  const stack = nodes.map((node) => ({ node, visited: false }));
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const children = frame.node.children || [];
+    if (!frame.visited) {
+      stack.push({ node: frame.node, visited: true });
+      for (let index = children.length - 1; index >= 0; index -= 1) stack.push({ node: children[index], visited: false });
+      continue;
+    }
+    const projectedChildren = children.flatMap((child) => projectedByNode.get(child) || []);
+    projectedByNode.set(
+      frame.node,
+      matchesFilter(frame.node, mode)
+        ? [{ ...frame.node, children: projectedChildren, childCount: projectedChildren.length }]
+        : projectedChildren,
+    );
   }
-  return projected;
+  return nodes.flatMap((node) => projectedByNode.get(node) || []);
 }
 
 function countVisibleNodes(nodes: ConversationTreeNode[]): number {
-  return nodes.reduce((sum, node) => sum + 1 + countVisibleNodes(node.children || []), 0);
+  let count = 0;
+  const stack = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    count += 1;
+    for (const child of node.children || []) stack.push(child);
+  }
+  return count;
 }
 
 function collectVisibleIds(nodes: ConversationTreeNode[], ids = new Set<string>()) {
-  for (const node of nodes) {
+  const stack = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
     ids.add(node.id);
-    collectVisibleIds(node.children || [], ids);
+    for (const child of node.children || []) stack.push(child);
   }
   return ids;
 }
 
 function searchTree(nodes: ConversationTreeNode[], query: string): ConversationTreeNode[] {
   if (!query) return nodes;
-  const matches: ConversationTreeNode[] = [];
-  for (const node of nodes) {
-    const children = searchTree(node.children || [], query);
-    if (matchesSearch(node, query) || children.length > 0) matches.push({ ...node, children, childCount: children.length });
+  const matchesByNode = new Map<ConversationTreeNode, ConversationTreeNode[]>();
+  const stack = nodes.map((node) => ({ node, visited: false }));
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const children = frame.node.children || [];
+    if (!frame.visited) {
+      stack.push({ node: frame.node, visited: true });
+      for (let index = children.length - 1; index >= 0; index -= 1) stack.push({ node: children[index], visited: false });
+      continue;
+    }
+    const matchedChildren = children.flatMap((child) => matchesByNode.get(child) || []);
+    matchesByNode.set(
+      frame.node,
+      matchesSearch(frame.node, query) || matchedChildren.length > 0
+        ? [{ ...frame.node, children: matchedChildren, childCount: matchedChildren.length }]
+        : [],
+    );
   }
-  return matches;
+  return nodes.flatMap((node) => matchesByNode.get(node) || []);
 }
 
 function findNode(nodes: ConversationTreeNode[], id: string): ConversationTreeNode | undefined {
-  for (const node of nodes) {
+  const stack = [...nodes].reverse();
+  while (stack.length > 0) {
+    const node = stack.pop()!;
     if (node.id === id) return node;
-    const child = findNode(node.children || [], id);
-    if (child) return child;
+    const children = node.children || [];
+    for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
   }
   return undefined;
 }
@@ -156,8 +201,24 @@ function plural(value: number, singular: string, pluralValue = `${singular}s`) {
   return `${value} ${value === 1 ? singular : pluralValue}`;
 }
 
+function activeSubtreeMap(nodes: ConversationTreeNode[]): Map<ConversationTreeNode, boolean> {
+  const activeByNode = new Map<ConversationTreeNode, boolean>();
+  const stack = nodes.map((node) => ({ node, visited: false }));
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const children = frame.node.children || [];
+    if (!frame.visited) {
+      stack.push({ node: frame.node, visited: true });
+      for (let index = children.length - 1; index >= 0; index -= 1) stack.push({ node: children[index], visited: false });
+      continue;
+    }
+    activeByNode.set(frame.node, frame.node.isOnActivePath || children.some((child) => activeByNode.get(child)));
+  }
+  return activeByNode;
+}
+
 function subtreeHasActivePath(node: ConversationTreeNode): boolean {
-  return node.isOnActivePath || (node.children || []).some(subtreeHasActivePath);
+  return activeSubtreeMap([node]).get(node) || false;
 }
 
 function graphLaneX(lane: number) {
@@ -170,41 +231,47 @@ function graphColour(lane: number) {
 
 function flattenGraphRows(nodes: ConversationTreeNode[]) {
   const rows: ConversationGraphRow[] = [];
+  const activeByNode = activeSubtreeMap(nodes);
+  const stack: ConversationGraphFrame[] = [...nodes].reverse().map((node) => ({ node, lane: 0, depth: 0 }));
 
-  const walk = (
-    node: ConversationTreeNode,
-    lane: number,
-    depth: number,
-    parent?: ConversationGraphRow,
-    branchIndex?: number,
-    branchCount?: number,
-  ) => {
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
     const row: ConversationGraphRow = {
-      node,
-      lane,
-      depth,
-      hasActiveSubtree: subtreeHasActivePath(node),
-      ...(parent ? { parentId: parent.node.id } : {}),
-      ...(branchIndex && branchCount ? { branchIndex, branchCount } : {}),
+      node: frame.node,
+      lane: frame.lane,
+      depth: frame.depth,
+      hasActiveSubtree: activeByNode.get(frame.node) || false,
+      ...(frame.parentId ? { parentId: frame.parentId } : {}),
+      ...(frame.branchIndex && frame.branchCount ? { branchIndex: frame.branchIndex, branchCount: frame.branchCount } : {}),
     };
     rows.push(row);
 
-    const children = node.children || [];
-    if (children.length === 0) return;
+    const children = frame.node.children || [];
+    if (children.length === 0) continue;
     if (children.length === 1) {
-      walk(children[0], lane, depth + 1, row);
-      return;
+      stack.push({ node: children[0], lane: frame.lane, depth: frame.depth + 1, parentId: frame.node.id });
+      continue;
     }
 
-    const activeIndex = Math.max(0, children.findIndex(subtreeHasActivePath));
-    let nextLane = lane + 1;
-    children.forEach((child, index) => {
-      const childLane = index === activeIndex ? lane : nextLane++;
-      walk(child, childLane, depth + 1, row, index + 1, children.length);
-    });
-  };
+    const activeIndex = Math.max(0, children.findIndex((child) => activeByNode.get(child)));
+    const childLanes = children.map((_, index) => frame.lane + index + 1);
+    childLanes[activeIndex] = frame.lane;
+    let nextLane = frame.lane + 1;
+    for (let index = 0; index < children.length; index += 1) {
+      if (index !== activeIndex) childLanes[index] = nextLane++;
+    }
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({
+        node: children[index],
+        lane: childLanes[index],
+        depth: frame.depth + 1,
+        parentId: frame.node.id,
+        branchIndex: index + 1,
+        branchCount: children.length,
+      });
+    }
+  }
 
-  for (const node of nodes) walk(node, 0, 0);
   return rows;
 }
 

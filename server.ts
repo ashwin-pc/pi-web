@@ -693,19 +693,31 @@ function entryPreview(entry: any) {
 }
 
 function countTreeNodes(nodes: any[]): number {
-  return nodes.reduce((sum, node) => sum + 1 + countTreeNodes(Array.isArray(node.children) ? node.children : []), 0);
+  let count = 0;
+  const stack = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    count += 1;
+    const children = Array.isArray(node?.children) ? node.children : [];
+    for (const child of children) stack.push(child);
+  }
+  return count;
 }
 
 function countBranchPoints(nodes: any[]): number {
-  return nodes.reduce((sum, node) => {
-    const children = Array.isArray(node.children) ? node.children : [];
-    return sum + (children.length > 1 ? 1 : 0) + countBranchPoints(children);
-  }, 0);
+  let count = 0;
+  const stack = [...nodes];
+  while (stack.length > 0) {
+    const node = stack.pop();
+    const children = Array.isArray(node?.children) ? node.children : [];
+    if (children.length > 1) count += 1;
+    for (const child of children) stack.push(child);
+  }
+  return count;
 }
 
-function simplifyTreeNode(node: any, activePathIds: Set<string>, leafId: string | null): any {
+function simpleTreeNode(node: any, activePathIds: Set<string>, leafId: string | null, childCount: number): any {
   const entry = node?.entry || node;
-  const children = Array.isArray(node?.children) ? node.children.map((child: any) => simplifyTreeNode(child, activePathIds, leafId)) : [];
   const id = String(entry?.id || "");
   return {
     id,
@@ -716,11 +728,29 @@ function simplifyTreeNode(node: any, activePathIds: Set<string>, leafId: string 
     timestamp: String(entry?.timestamp || ""),
     label: typeof node?.label === "string" ? node.label : undefined,
     labelTimestamp: typeof node?.labelTimestamp === "string" ? node.labelTimestamp : undefined,
-    childCount: children.length,
+    childCount,
     isOnActivePath: activePathIds.has(id),
     isCurrentLeaf: Boolean(leafId && id === leafId),
-    children,
+    children: [],
   };
+}
+
+function simplifyTreeNode(node: any, activePathIds: Set<string>, leafId: string | null): any {
+  const rootChildren = Array.isArray(node?.children) ? node.children : [];
+  const root = simpleTreeNode(node, activePathIds, leafId, rootChildren.length);
+  const stack = [{ source: node, target: root }];
+  while (stack.length > 0) {
+    const frame = stack.pop()!;
+    const children = Array.isArray(frame.source?.children) ? frame.source.children : [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      const child = children[index];
+      const grandchildren = Array.isArray(child?.children) ? child.children : [];
+      const simplified = simpleTreeNode(child, activePathIds, leafId, grandchildren.length);
+      frame.target.children[index] = simplified;
+      stack.push({ source: child, target: simplified });
+    }
+  }
+  return root;
 }
 
 function conversationTreeForSession(targetSession: PiWebSession) {

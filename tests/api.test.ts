@@ -164,6 +164,27 @@ describe("pi-web mock API", () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
   });
 
+  it("returns a very deep conversation tree without overflowing the stack", async () => {
+    const port = await freePort();
+    const deepChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", PI_WEB_MOCK_DEEP_TREE_DEPTH: "2500", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    deepChild.stderr?.on("data", (data) => process.stderr.write(data));
+    try {
+      const deepBaseUrl = `http://127.0.0.1:${port}`;
+      await waitForServer(deepBaseUrl);
+      const res = await fetch(`${deepBaseUrl}/api/session/tree`);
+      expect(res.status).toBe(200);
+      const tree = await res.json();
+      expect(tree.ok).toBe(true);
+      expect(tree.entryCount).toBe(2500);
+      expect(tree.nodes[0].id).toBe("mock-deep-0");
+    } finally {
+      deepChild.kill();
+    }
+  }, 25_000);
+
   it("accepts text and image prompts", async () => {
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",
