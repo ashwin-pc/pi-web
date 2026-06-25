@@ -735,22 +735,16 @@ function simpleTreeNode(node: any, activePathIds: Set<string>, leafId: string | 
   };
 }
 
-function simplifyTreeNode(node: any, activePathIds: Set<string>, leafId: string | null): any {
-  const rootChildren = Array.isArray(node?.children) ? node.children : [];
-  const root = simpleTreeNode(node, activePathIds, leafId, rootChildren.length);
-  const stack = [{ source: node, target: root }];
+function simplifyTreeNodesFlat(roots: any[], activePathIds: Set<string>, leafId: string | null): any[] {
+  const nodes: any[] = [];
+  const stack = [...roots].reverse();
   while (stack.length > 0) {
-    const frame = stack.pop()!;
-    const children = Array.isArray(frame.source?.children) ? frame.source.children : [];
-    for (let index = children.length - 1; index >= 0; index -= 1) {
-      const child = children[index];
-      const grandchildren = Array.isArray(child?.children) ? child.children : [];
-      const simplified = simpleTreeNode(child, activePathIds, leafId, grandchildren.length);
-      frame.target.children[index] = simplified;
-      stack.push({ source: child, target: simplified });
-    }
+    const node = stack.pop();
+    const children = Array.isArray(node?.children) ? node.children : [];
+    nodes.push(simpleTreeNode(node, activePathIds, leafId, children.length));
+    for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
   }
-  return root;
+  return nodes;
 }
 
 function conversationTreeForSession(targetSession: PiWebSession) {
@@ -760,14 +754,14 @@ function conversationTreeForSession(targetSession: PiWebSession) {
   const activePath = typeof manager.getBranch === "function" ? manager.getBranch() : [];
   const activePathIds = new Set(activePath.map((entry: any) => String(entry?.id || "")).filter(Boolean));
   const roots = manager.getTree();
-  const nodes = roots.map((node: any) => simplifyTreeNode(node, activePathIds, leafId));
+  const nodes = simplifyTreeNodesFlat(roots, activePathIds, leafId);
   return {
     ok: true,
     sessionId: targetSession.sessionId,
     leafId,
     activePathIds: Array.from(activePathIds),
-    entryCount: countTreeNodes(nodes),
-    branchPointCount: countBranchPoints(nodes),
+    entryCount: nodes.length,
+    branchPointCount: nodes.filter((node: any) => node.childCount > 1).length,
     nodes,
   };
 }

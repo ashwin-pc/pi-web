@@ -171,6 +171,20 @@ function findNode(nodes: ConversationTreeNode[], id: string): ConversationTreeNo
   return undefined;
 }
 
+function treeFromFlatNodes(nodes: ConversationTreeNode[]): ConversationTreeNode[] {
+  const byId = new Map<string, ConversationTreeNode>();
+  const roots: ConversationTreeNode[] = [];
+  for (const node of nodes) byId.set(node.id, { ...node, children: [] });
+  for (const node of nodes) {
+    const copy = byId.get(node.id)!;
+    const parent = node.parentId ? byId.get(node.parentId) : undefined;
+    if (parent) parent.children.push(copy);
+    else roots.push(copy);
+  }
+  for (const node of byId.values()) node.childCount = node.children.length;
+  return roots;
+}
+
 function isToolNode(node: ConversationTreeNode) {
   return node.role === "toolCall" || node.role === "toolResult";
 }
@@ -658,6 +672,7 @@ export function createConversationTree(options: {
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
       const nextTree = data as ConversationTreeResponse;
+      nextTree.nodes = treeFromFlatNodes(nextTree.nodes || []);
       treeData = nextTree;
       if (selectedId && !findNode(nextTree.nodes || [], selectedId)) selectedId = "";
       if (!selectedId && nextTree.leafId) selectedId = nextTree.leafId;
