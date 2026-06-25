@@ -89,7 +89,8 @@
 .gitFileItem.gitTreeFile { width: fit-content; max-width: 100%; height: auto; min-height: 0; position: relative; align-items: baseline; gap: 4px; border: 0; border-radius: 4px; padding: 1px 7px 1px 5px; line-height: 1.25; }
 .gitFileItem.gitTreeFile:hover, .gitFileItem.gitTreeFile.selected { background: color-mix(in srgb, var(--panel-2) 45%, transparent); }
 .gitFileItem:hover, .gitFileItem.selected, .gitCommitItem:hover, .gitCommitItem.selected { background: var(--panel-2); border-color: var(--border); }
-.gitStatusBadge { flex: 0 0 auto; min-width: 14px; text-align: center; color: var(--accent); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gitStatusBadge { flex: 0 0 auto; min-width: 14px; text-align: center; color: #7dd3fc; font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.gitStatusBadge.modified, .gitStatusBadge.renamed { color: #7dd3fc; }
 .gitStatusBadge.deleted, .gitDiffLine.del { color: var(--danger); }
 .gitStatusBadge.untracked, .gitStatusBadge.added, .gitDiffLine.add { color: #86efac; }
 .gitStatusBadge.conflicted { color: #fbbf24; }

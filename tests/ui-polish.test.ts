@@ -147,6 +147,16 @@ describe("model settings summary", () => {
   });
 });
 
+describe("git status colors", () => {
+  const css = readFileSync(new URL("../src/git/git.css", import.meta.url), "utf8");
+
+  it("keeps git status badges on their legacy semantic colors", () => {
+    expect(css).toContain(".gitStatusBadge { flex: 0 0 auto; min-width: 14px; text-align: center; color: #7dd3fc;");
+    expect(css).toContain(".gitStatusBadge.modified, .gitStatusBadge.renamed { color: #7dd3fc; }");
+    expect(css).toContain(".gitStatusBadge.untracked, .gitStatusBadge.added, .gitDiffLine.add { color: #86efac; }");
+  });
+});
+
 describe("slash command compact styling", () => {
   const css = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
 
