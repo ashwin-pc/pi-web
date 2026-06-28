@@ -5,7 +5,7 @@ import net from "node:net";
 const publicHost = process.env.HOST || "127.0.0.1";
 const publicPort = Number(process.env.PORT || 8787);
 const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
-const childPort = Number(process.env.PI_WEB_CHILD_PORT || 8788);
+const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
 const token = process.env.PI_WEB_TOKEN || "";
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
 

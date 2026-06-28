@@ -205,7 +205,8 @@ http://<machine-name>:8787
 - `PI_WEB_TOKEN` - optional bearer token for API/WebSocket access
 - `PI_WEB_CWD` - project directory Pi should operate in, default current directory
 - `PI_WEB_NO_SESSION=1` - use in-memory sessions only
-- `PI_WEB_CHILD_PORT` - supervised child port, default `8788`
+- `PI_WEB_CHILD_HOST` - supervised child bind host, default `127.0.0.1`
+- `PI_WEB_CHILD_PORT` - supervised child port, default `PORT + 1` (for example `8788` when `PORT=8787`)
 - `PI_WEB_RESTART_GRACE_MS` - delay between child stop/start, default `250`
 
 ## Development architecture
