@@ -90,6 +90,7 @@ export type SessionUiState = {
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
+  allowedMarkerColors: SessionMarkerColorId[];
 };
 
 export const sessionMarkerColors: SessionMarkerColor[] = [
@@ -107,6 +108,7 @@ export const defaultSessionUiState: SessionUiState = {
   sessionMarkers: [],
   sessionUnreadStates: [],
   selectedMarkerColor: "blue",
+  allowedMarkerColors: [],
 };
 
 const markerColorIds = new Set<SessionMarkerColorId>(sessionMarkerColors.map((color) => color.id));
@@ -184,6 +186,19 @@ export function normalizeSessionUnreadStates(value: unknown): SessionUnreadState
   return result;
 }
 
+export function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<SessionMarkerColorId>();
+  const result: SessionMarkerColorId[] = [];
+  for (const item of value) {
+    const color = normalizeMarkerColor(item);
+    if (!color || seen.has(color)) continue;
+    seen.add(color);
+    result.push(color);
+  }
+  return result;
+}
+
 export function normalizeSessionUiState(value: unknown): SessionUiState {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return {
@@ -193,6 +208,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
+    allowedMarkerColors: normalizeMarkerColors(raw.allowedMarkerColors),
   };
 }
 

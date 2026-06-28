@@ -27,6 +27,7 @@ export type SessionUiState = {
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   selectedMarkerColor: SessionMarkerColorId;
+  allowedMarkerColors: SessionMarkerColorId[];
 };
 
 export type SessionUiStatePatch = Partial<{
@@ -35,6 +36,7 @@ export type SessionUiStatePatch = Partial<{
   sessionMarkers: unknown;
   sessionUnreadStates: unknown;
   selectedMarkerColor: unknown;
+  allowedMarkerColors: unknown;
 }>;
 
 const markerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green"]);
@@ -53,6 +55,7 @@ export const defaultSessionUiState: SessionUiState = {
   sessionMarkers: [],
   sessionUnreadStates: [],
   selectedMarkerColor: "blue",
+  allowedMarkerColors: [],
 };
 
 function cloneState(value: SessionUiState): SessionUiState {
@@ -67,6 +70,19 @@ function normalizeMarkerColor(value: unknown): SessionMarkerColorId | undefined 
   return typeof value === "string" && markerColors.has(value as SessionMarkerColorId)
     ? value as SessionMarkerColorId
     : undefined;
+}
+
+function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<SessionMarkerColorId>();
+  const result: SessionMarkerColorId[] = [];
+  for (const item of value) {
+    const color = normalizeMarkerColor(item);
+    if (!color || seen.has(color)) continue;
+    seen.add(color);
+    result.push(color);
+  }
+  return result;
 }
 
 function normalizePinnedSession(value: unknown): PinnedSession | undefined {
@@ -133,6 +149,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   }
 
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;
+  state.allowedMarkerColors = normalizeMarkerColors(value.allowedMarkerColors);
   return state;
 }
 
@@ -158,6 +175,10 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   const selectedMarkerColor = normalizeMarkerColor(patch.selectedMarkerColor);
   if (selectedMarkerColor) next.selectedMarkerColor = selectedMarkerColor;
+
+  if ("allowedMarkerColors" in patch && Array.isArray(patch.allowedMarkerColors)) {
+    next.allowedMarkerColors = normalizeMarkerColors(patch.allowedMarkerColors);
+  }
 
   return normalizeSessionUiState(next);
 }

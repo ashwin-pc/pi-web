@@ -396,6 +396,8 @@ export function createSessions(options: {
     state.sessionUnreadStates = next.sessionUnreadStates;
     syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
+    allowedMarkerColors.clear();
+    for (const color of next.allowedMarkerColors) allowedMarkerColors.add(color);
     if (selectedSessionRowTool !== "pin") selectedSessionRowTool = next.selectedMarkerColor;
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
     renderMarkerPalette();
@@ -412,6 +414,7 @@ export function createSessions(options: {
       || value.pinnedFolders.length > 0
       || value.sessionMarkers.length > 0
       || value.sessionUnreadStates.length > 0
+      || value.allowedMarkerColors.length > 0
       || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
   }
 
@@ -432,6 +435,10 @@ export function createSessions(options: {
     });
   }
 
+  function persistAllowedMarkerColors() {
+    persistSessionUiState({ allowedMarkerColors: Array.from(allowedMarkerColors) });
+  }
+
   async function refreshSessionUiState() {
     const res = await fetch("/api/session-ui-state", { headers: api.headers() });
     if (res.status === 401) return;
@@ -444,6 +451,7 @@ export function createSessions(options: {
       sessionMarkers: state.sessionMarkers,
       sessionUnreadStates: state.sessionUnreadStates,
       selectedMarkerColor: state.selectedMarkerColor,
+      allowedMarkerColors: Array.from(allowedMarkerColors),
     });
     if (!hasAnySessionUiState(serverState) && hasAnySessionUiState(localState)) {
       await patchSessionUiState(localState);
@@ -878,6 +886,7 @@ export function createSessions(options: {
       renderSessionColorFilterButton();
       renderSessionList(cachedSessions);
       updateMenuState();
+      persistAllowedMarkerColors();
     });
 
     unreadButton.addEventListener("click", () => {
@@ -904,6 +913,7 @@ export function createSessions(options: {
         renderSessionColorFilterButton();
         renderSessionList(cachedSessions);
         updateMenuState();
+        persistAllowedMarkerColors();
       });
       colorButtons.push({ color: color.id, button });
       menu.append(button);
