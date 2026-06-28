@@ -33,6 +33,7 @@ export function createComposer(options: {
   elements: AppElements;
   api: ApiClient;
   addMessage: (role: "user" | "system", text: string, extraClass?: string, images?: any[]) => void;
+  addToolHistoryCard?: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
   updateMeta: (data: any) => void;
   updateThinkingOptions: (levels?: string[]) => void;
   refreshModels: () => Promise<void>;
@@ -41,7 +42,7 @@ export function createComposer(options: {
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
 }): ComposerController {
-  const { state, elements, api, addMessage, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
@@ -301,6 +302,27 @@ export function createComposer(options: {
     });
   }
 
+  function isShellError(data: { exitCode?: unknown; cancelled?: unknown }) {
+    return Boolean(data.cancelled || (typeof data.exitCode === "number" && data.exitCode !== 0));
+  }
+
+  async function runShellEscape(input: string) {
+    const trimmed = input.trim();
+    const excludeFromContext = trimmed.startsWith("!!");
+    const command = trimmed.slice(excludeFromContext ? 2 : 1).trim();
+    if (!command) throw new Error("Shell command is required");
+    const res = await fetch("/api/shell", {
+      method: "POST",
+      headers: api.headers(),
+      body: JSON.stringify({ sessionId: state.currentSessionId, command, excludeFromContext }),
+    });
+    const text = await res.text();
+    const data = text ? JSON.parse(text) : {};
+    if (!res.ok || data.ok === false) throw new Error(data.error || text);
+    if (addToolHistoryCard) addToolHistoryCard("bash", isShellError(data), data, { command });
+    else addMessage("system", typeof data.output === "string" && data.output ? data.output : "(no output)", isShellError(data) ? "error" : "");
+  }
+
   async function runSlashCommand(command: string) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
     if (name === "logout") {
@@ -340,6 +362,21 @@ export function createComposer(options: {
       const message = elements.promptEl.value.trim();
       const images = state.attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
       if (!message && images.length === 0) return;
+
+      if (message.startsWith("!") && images.length === 0) {
+        elements.promptEl.value = "";
+        clearDraft();
+        hideSlashCommands();
+        updatePrimaryAction();
+        try {
+          await runShellEscape(message);
+        } catch (error) {
+          addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        } finally {
+          settlePromptFocusAfterSubmit();
+        }
+        return;
+      }
 
       if (message.startsWith("/") && images.length === 0) {
         let commandInfo: SlashCommand | undefined;

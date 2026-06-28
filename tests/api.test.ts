@@ -233,6 +233,7 @@ describe("pi-web mock API", () => {
     expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
+    expect(initial.sessionUiState.allowedMarkerColors).toEqual([]);
 
     const patchedRes = await fetch(`${baseUrl}/api/session-ui-state`, {
       method: "PATCH",
@@ -243,6 +244,7 @@ describe("pi-web mock API", () => {
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
         sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
         selectedMarkerColor: "green",
+        allowedMarkerColors: ["green", "yellow", "green", "invalid"],
       }),
     });
     expect(patchedRes.status).toBe(200);
@@ -253,6 +255,7 @@ describe("pi-web mock API", () => {
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],
       selectedMarkerColor: "green",
+      allowedMarkerColors: ["green", "yellow"],
     });
 
     const readRes = await fetch(`${baseUrl}/api/session-ui-state/read`, {
@@ -266,6 +269,7 @@ describe("pi-web mock API", () => {
 
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
+    expect(current.sessionUiState.allowedMarkerColors).toEqual(["green", "yellow"]);
     expect(current.sessionUiState.sessionUnreadStates).toEqual([]);
   });
 
@@ -356,6 +360,32 @@ describe("pi-web mock API", () => {
       body: JSON.stringify({ command: "/does-not-exist" }),
     });
     expect(invalidRes.status).toBe(500);
+  });
+
+  it("executes shell commands in the requested session cwd", async () => {
+    const res = await fetch(`${baseUrl}/api/shell`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", command: "printf shell-ok" }),
+    });
+    expect(res.status).toBe(200);
+    const data = await res.json();
+    expect(data.ok).toBe(true);
+    expect(data.output).toContain("Mock bash output: printf shell-ok");
+    expect(data.exitCode).toBe(0);
+    expect(data.cwd).toBeTruthy();
+
+    const excludedRes = await fetch(`${baseUrl}/api/shell`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", command: "printf no-context", excludeFromContext: true }),
+    });
+    expect(excludedRes.status).toBe(200);
+    expect((await excludedRes.json()).excludeFromContext).toBe(true);
+
+    const messages = await (await fetch(`${baseUrl}/api/messages?sessionId=mock-current`)).json();
+    expect(messages.messages.some((message: any) => message.role === "bashExecution" && message.command === "printf shell-ok")).toBe(true);
+    expect(messages.messages.some((message: any) => message.role === "bashExecution" && message.command === "printf no-context" && message.excludeFromContext === true)).toBe(true);
   });
 
   it("keeps background sessions running when another session is opened", async () => {

@@ -146,6 +146,14 @@ function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<str
   addToolArgsDetails(card, args);
 }
 
+function addBashHeader(card: HTMLDivElement, result: unknown, args?: Record<string, unknown>) {
+  const value = result && typeof result === "object" ? result as Record<string, unknown> : {};
+  const command = typeof args?.command === "string" ? args.command : typeof value.command === "string" ? value.command : "";
+  const context = value.excludeFromContext ? "not in agent context" : "in agent context";
+  addCardHeader(card, "bash", command ? `${command} · ${context}` : context);
+  addToolArgsDetails(card, args);
+}
+
 function highlightToolResult(pre: HTMLPreElement, text: string) {
   const code = document.createElement("code");
   code.classList.add("hljs");
@@ -202,6 +210,15 @@ function textFromToolResult(result: unknown): string {
   if (typeof result === "string") return result;
   if (!result || typeof result !== "object") return result == null ? "" : String(result);
   const value = result as Record<string, unknown>;
+  if (typeof value.output === "string") {
+    const sections: string[] = [];
+    const output = value.output.replace(/\s+$/, "");
+    sections.push(output || "(no output)");
+    if (value.cancelled) sections.push("Command cancelled.");
+    else if (typeof value.exitCode === "number" && value.exitCode !== 0) sections.push(`Command exited with code ${value.exitCode}`);
+    if (value.truncated) sections.push(typeof value.fullOutputPath === "string" ? `Output truncated. Full output: ${value.fullOutputPath}` : "Output truncated.");
+    return sections.join("\n\n");
+  }
   return textFromRawContent(value.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
 }
 
@@ -425,7 +442,8 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
   function addToolHistoryCard(toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) {
     const card = document.createElement("div");
     card.className = `toolCard ${isError ? "toolCard--error" : "toolCard--success"}`;
-    addToolHeader(card, toolName, args);
+    if (toolName === "bash") addBashHeader(card, result, args);
+    else addToolHeader(card, toolName, args);
     const resultStr = textFromToolResult(result);
     if (toolName === "edit" && args) renderEditDiff(card, args);
     else if (resultStr) addToolResultBody(card, resultStr);

@@ -579,6 +579,21 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
   const m = message as Record<string, unknown>;
   const content = contentWithToolStartedAts(m.content, sessionFile);
   const entry = entryId ? { entryId } : {};
+  if (m.role === "bashExecution") {
+    return {
+      ...entry,
+      role: "bashExecution",
+      command: m.command,
+      output: m.output,
+      exitCode: m.exitCode,
+      cancelled: Boolean(m.cancelled),
+      truncated: Boolean(m.truncated),
+      fullOutputPath: m.fullOutputPath,
+      excludeFromContext: Boolean(m.excludeFromContext),
+      timestamp: m.timestamp,
+      raw: m,
+    };
+  }
   if (m.role === "toolResult") {
     const args = toolCallArgs?.get(m.toolCallId as string);
     return {
@@ -2575,6 +2590,19 @@ const server = createServer(async (req, res) => {
         const stateSession = typeof stateSessionId === "string" ? await getOrCreateLiveSessionById(stateSessionId) : undefined;
         noteViewerLeaseFromRequest(req, stateSession || targetSession);
         return sendJson(res, 200, { ok: true, ...result });
+      }
+
+      if (method === "POST" && url.pathname === "/api/shell") {
+        const body = await readBody(req) as { sessionId?: unknown; command?: unknown; excludeFromContext?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const command = String(body.command || "").trim();
+        if (!command) return sendJson(res, 400, { ok: false, error: "command is required" });
+        if (typeof targetSession.executeBash !== "function") return sendJson(res, 400, { ok: false, error: "Bash execution is not available in this session." });
+        const excludeFromContext = Boolean(body.excludeFromContext);
+        const result = await targetSession.executeBash(command, undefined, { excludeFromContext });
+        return sendJson(res, 200, { ok: true, command, cwd: sessionCwd(targetSession), ...result, excludeFromContext });
       }
 
       if (method === "POST" && url.pathname === "/api/extension-ui/respond") {

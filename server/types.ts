@@ -57,6 +57,7 @@ export interface PiWebSession {
   abortBranchSummary?(): void;
   compact?(customInstructions?: string): Promise<unknown>;
   abortCompaction?(): void;
+  executeBash?(command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean; operations?: unknown }): Promise<{ output: string; exitCode: number | undefined; cancelled: boolean; truncated: boolean; fullOutputPath?: string }>;
   prompt(message: string, options?: { images?: unknown[]; streamingBehavior?: string }): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): void;

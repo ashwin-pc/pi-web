@@ -267,6 +267,7 @@ composer = createComposer({
   elements,
   api,
   addMessage: messages.addMessage,
+  addToolHistoryCard: tools.addToolHistoryCard,
   updateMeta,
   updateThinkingOptions: (levels) => modelSettings.updateThinkingOptions(levels),
   refreshModels: () => modelSettings.refreshModels(),

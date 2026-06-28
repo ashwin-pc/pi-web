@@ -92,7 +92,7 @@ describe("mobile focus wiring", () => {
     const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
 
     expect(composer).toContain("function settlePromptFocusAfterSubmit()");
-    expect(composer.match(/settlePromptFocusAfterSubmit\(\);/g) || []).toHaveLength(2);
+    expect(composer.match(/settlePromptFocusAfterSubmit\(\);/g) || []).toHaveLength(3);
     expect(composer).toContain("function setPromptText(text: string)");
     expect(composer).toContain("    elements.promptEl.focus();\n  }\n\n  function slashCommandName");
   });

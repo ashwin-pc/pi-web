@@ -380,6 +380,13 @@ export function createMockHarness(options: MockSessionOptions) {
         return { editorText, cancelled: false };
       },
       compact: async (customInstructions?: string) => runMockCompaction(customInstructions),
+      executeBash: async (command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean }) => {
+        const output = `Mock bash output: ${command}\n`;
+        onChunk?.(output);
+        const result = { output, exitCode: 0, cancelled: false, truncated: false };
+        appendMockMessage({ role: "bashExecution", command, ...result, excludeFromContext: Boolean(options?.excludeFromContext), timestamp: new Date().toISOString() });
+        return result;
+      },
       prompt: async (message: string, promptOptions?: { images?: unknown[] }) => {
         const runGeneration = mockGeneration;
         const isCurrentMockRun = () => runGeneration === mockGeneration;

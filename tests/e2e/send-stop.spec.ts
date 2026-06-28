@@ -62,7 +62,7 @@ test.describe("stop button", () => {
       await route.continue();
     });
 
-    await page.locator("#prompt").fill("slow running task");
+    await page.locator("#prompt").fill("quiet runtime");
     await page.locator("#primaryButton").click();
     await expect(page.locator("#stopButton")).toBeVisible();
 

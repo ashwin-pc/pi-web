@@ -819,6 +819,12 @@ export function createMessageList(options: {
           continue;
         }
 
+        if (message.role === "bashExecution") {
+          const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+          addToolHistoryCard("bash", Boolean(message.cancelled || (exitCode !== undefined && exitCode !== 0)), message, { command: String(message.command || "") });
+          continue;
+        }
+
         const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
         if (role === "assistant") {
           renderAssistantMessageParts(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
