@@ -1,4 +1,5 @@
 import type { ApiHeaders } from "../app/api.js";
+import { iconElement, type IconName } from "../app/icons.js";
 import type { AttachedImage, Role } from "../app/types.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
@@ -7,6 +8,17 @@ import { imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
 export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => void;
+export type MessageActionKind = "edit" | "rerun" | "continue";
+export type MessageActionContext = {
+  action: MessageActionKind;
+  entryId: string;
+  role: "user" | "assistant";
+  text: string;
+};
+export type MessageMetadata = {
+  entryId?: string;
+  copyText?: string;
+};
 
 type ToolCallSummary = {
   id?: string;
@@ -16,7 +28,7 @@ type ToolCallSummary = {
 };
 
 export type MessageList = {
-  addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[]) => HTMLDivElement;
+  addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[], metadata?: MessageMetadata) => HTMLDivElement;
   appendStreamingDelta: (delta: string) => void;
   startStreamingThinking: (contentIndex?: number | string) => void;
   appendStreamingThinkingDelta: (delta: string, contentIndex?: number | string) => void;
@@ -94,8 +106,12 @@ function toolCallFromPart(part: unknown): ToolCallSummary | undefined {
   };
 }
 
-export function createMessageList(options: { messagesEl: HTMLDivElement; markdown: MarkdownRenderer }): MessageList {
-  const { messagesEl, markdown } = options;
+export function createMessageList(options: {
+  messagesEl: HTMLDivElement;
+  markdown: MarkdownRenderer;
+  onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
+}): MessageList {
+  const { messagesEl, markdown, onMessageAction } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   let currentStreamingThinkingKey = "current";
@@ -118,6 +134,16 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
   jumpButton.setAttribute("aria-label", "Jump to latest message");
   jumpButton.hidden = true;
   document.querySelector(".app")?.append(jumpButton);
+
+  const actionMenu = document.createElement("div");
+  actionMenu.className = "messageActionMenu";
+  actionMenu.setAttribute("role", "menu");
+  actionMenu.hidden = true;
+  document.body.append(actionMenu);
+  let actionMenuAnchor: HTMLElement | null = null;
+  let longPressTimer: number | undefined;
+  let suppressNextMessageClick = false;
+  const messageActionHandlers = new WeakMap<HTMLButtonElement, () => void>();
 
   function updateJumpButtonOffset() {
     const composerEl = document.querySelector<HTMLElement>(".composer");
@@ -228,6 +254,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseStreamFollow(event);
   });
   messagesEl.addEventListener("scroll", () => {
+    if (!actionMenu.hidden) closeActionMenu();
     if (programmaticScroll) return;
     if (shouldFollowStream && !isNearBottom()) {
       shouldFollowStream = false;
@@ -247,7 +274,201 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     setJumpButtonVisible(false);
   });
 
-  function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = []) {
+  function isMobileActionMenuEnabled() {
+    return window.matchMedia("(max-width: 700px), (pointer: coarse)").matches;
+  }
+
+  function cancelLongPress() {
+    if (longPressTimer !== undefined) {
+      window.clearTimeout(longPressTimer);
+      longPressTimer = undefined;
+    }
+  }
+
+  function closeActionMenu() {
+    actionMenu.hidden = true;
+    actionMenu.textContent = "";
+    actionMenuAnchor = null;
+  }
+
+  function positionActionMenu(anchor: HTMLElement, clientX?: number) {
+    const anchorRect = anchor.getBoundingClientRect();
+    const menuRect = actionMenu.getBoundingClientRect();
+    const safeGap = 8;
+    const centerX = typeof clientX === "number" ? clientX : anchorRect.left + anchorRect.width / 2;
+    const left = Math.min(
+      window.innerWidth - menuRect.width - safeGap,
+      Math.max(safeGap, centerX - menuRect.width / 2),
+    );
+    let top = anchorRect.top - menuRect.height - safeGap;
+    if (top < safeGap) top = Math.min(window.innerHeight - menuRect.height - safeGap, anchorRect.bottom + safeGap);
+    actionMenu.style.left = `${Math.round(Math.max(safeGap, left))}px`;
+    actionMenu.style.top = `${Math.round(Math.max(safeGap, top))}px`;
+  }
+
+  function showActionMenu(anchor: HTMLElement, actions: HTMLElement, clientX?: number) {
+    const buttons = Array.from(actions.querySelectorAll<HTMLButtonElement>(".messageActionButton"));
+    if (buttons.length === 0) return;
+    cancelLongPress();
+    actionMenu.textContent = "";
+    actionMenuAnchor = anchor;
+    for (const sourceButton of buttons) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "messageActionMenuItem";
+      item.setAttribute("role", "menuitem");
+      item.textContent = sourceButton.dataset.menuLabel || sourceButton.title || sourceButton.getAttribute("aria-label") || "Action";
+      item.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const handler = messageActionHandlers.get(sourceButton);
+        closeActionMenu();
+        handler?.();
+      });
+      actionMenu.append(item);
+    }
+    actionMenu.hidden = false;
+    positionActionMenu(anchor, clientX);
+  }
+
+  function isInteractiveMessageTarget(target: EventTarget | null) {
+    return target instanceof HTMLElement && Boolean(target.closest("button, a, input, textarea, select, summary, .imageFrame, .imageActions, .messageActions, .messageActionMenu"));
+  }
+
+  document.addEventListener("pointerdown", (event) => {
+    if (actionMenu.hidden) return;
+    const target = event.target;
+    if (target instanceof Node && (actionMenu.contains(target) || actionMenuAnchor?.contains(target))) return;
+    closeActionMenu();
+  }, true);
+  window.addEventListener("resize", closeActionMenu);
+
+  async function copyTextToClipboard(text: string) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return;
+      } catch {
+        // Fall through to the textarea-based fallback.
+      }
+    }
+
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "true");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    textarea.style.top = "0";
+    document.body.append(textarea);
+    textarea.select();
+    document.execCommand("copy");
+    textarea.remove();
+  }
+
+  function renderMessageActionIcon(button: HTMLButtonElement, icon: IconName, title: string) {
+    button.textContent = "";
+    button.append(iconElement(icon));
+    button.title = title;
+    button.setAttribute("aria-label", title);
+  }
+
+  function flashActionButton(button: HTMLButtonElement, icon: IconName, title: string) {
+    renderMessageActionIcon(button, icon, title);
+    window.setTimeout(() => {
+      const defaultIcon = button.dataset.defaultIcon as IconName | undefined;
+      const defaultTitle = button.dataset.defaultTitle;
+      if (button.isConnected && defaultIcon && defaultTitle) renderMessageActionIcon(button, defaultIcon, defaultTitle);
+    }, 1200);
+  }
+
+  function appendMessageActionButton(actions: HTMLElement, icon: IconName, title: string, menuLabel: string, onClick: () => void) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "messageActionButton";
+    button.dataset.defaultIcon = icon;
+    button.dataset.defaultTitle = title;
+    button.dataset.menuLabel = menuLabel;
+    renderMessageActionIcon(button, icon, title);
+    messageActionHandlers.set(button, onClick);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      onClick();
+    });
+    actions.append(button);
+    return button;
+  }
+
+  function bindMobileActionMenu(messageEl: HTMLDivElement, actions: HTMLElement) {
+    let startX = 0;
+    let startY = 0;
+    const moveThreshold = 10;
+    const longPressMs = 520;
+
+    messageEl.addEventListener("pointerdown", (event) => {
+      if (!isMobileActionMenuEnabled() || event.button !== 0 || !event.isPrimary || isInteractiveMessageTarget(event.target)) return;
+      closeActionMenu();
+      startX = event.clientX;
+      startY = event.clientY;
+      cancelLongPress();
+      longPressTimer = window.setTimeout(() => {
+        longPressTimer = undefined;
+        suppressNextMessageClick = true;
+        showActionMenu(messageEl, actions, startX);
+        navigator.vibrate?.(8);
+      }, longPressMs);
+    });
+    messageEl.addEventListener("pointermove", (event) => {
+      if (longPressTimer === undefined) return;
+      if (Math.abs(event.clientX - startX) > moveThreshold || Math.abs(event.clientY - startY) > moveThreshold) cancelLongPress();
+    });
+    messageEl.addEventListener("pointerup", cancelLongPress);
+    messageEl.addEventListener("pointercancel", cancelLongPress);
+    messageEl.addEventListener("click", (event) => {
+      if (!suppressNextMessageClick) return;
+      suppressNextMessageClick = false;
+      event.preventDefault();
+      event.stopPropagation();
+    }, true);
+    messageEl.addEventListener("contextmenu", (event) => {
+      if (!isMobileActionMenuEnabled() || isInteractiveMessageTarget(event.target)) return;
+      event.preventDefault();
+      showActionMenu(messageEl, actions, event.clientX || undefined);
+    });
+  }
+
+  function appendMessageActions(messageEl: HTMLDivElement, role: Role, body: HTMLElement, copyText: string, metadata: MessageMetadata) {
+    if (role !== "user" && role !== "assistant") return;
+
+    const actions = document.createElement("div");
+    actions.className = "messageActions";
+
+    const actionText = () => copyText || body.textContent || "";
+    const entryId = metadata.entryId?.trim();
+    if (entryId && onMessageAction) {
+      messageEl.dataset.entryId = entryId;
+      const runAction = (action: MessageActionKind) => {
+        void onMessageAction({ action, entryId, role, text: actionText() });
+      };
+      if (role === "user") {
+        appendMessageActionButton(actions, "square-pen", "Edit message from here", "Edit", () => runAction("edit"));
+        appendMessageActionButton(actions, "rotate-ccw", "Rerun message from here", "Rerun", () => runAction("rerun"));
+      } else {
+        appendMessageActionButton(actions, "corner-down-right", "Continue from this assistant message", "Continue", () => runAction("continue"));
+      }
+    }
+
+    const copyButton = appendMessageActionButton(actions, "copy", `Copy ${role} message`, "Copy", () => {
+      const textToCopy = actionText();
+      void copyTextToClipboard(textToCopy).then(
+        () => flashActionButton(copyButton, "check", "Copied"),
+        () => flashActionButton(copyButton, "x", "Copy failed"),
+      );
+    });
+
+    messageEl.append(actions);
+    bindMobileActionMenu(messageEl, actions);
+  }
+
+  function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = [], metadata: MessageMetadata = {}) {
     invalidatePendingRefreshes();
     const div = document.createElement("div");
     const collapsible = shouldCollapseMessage(text);
@@ -294,6 +515,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
       div.append(toggle);
     }
 
+    appendMessageActions(div, role, body, metadata.copyText ?? text, metadata);
     messagesEl.append(div);
     scrollToBottom();
     return div;
@@ -512,7 +734,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     }
 
     if (!Array.isArray(content)) {
-      if (text) addMessage("assistant", text, message.isError ? "error" : "");
+      if (text) addMessage("assistant", text, message.isError ? "error" : "", [], { entryId: message.entryId });
       return;
     }
 
@@ -529,7 +751,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
 
       const textPart = partText(part);
       if (textPart) {
-        addMessage("assistant", textPart);
+        addMessage("assistant", textPart, "", [], { entryId: message.entryId });
         renderedAnyPart = true;
         continue;
       }
@@ -550,10 +772,10 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
     // If the server supplied text that did not correspond to individual text
     // parts (for example a stop-reason summary), keep it visible without
     // duplicating normal assistant text parts.
-    if (!renderedAnyPart && text) addMessage("assistant", text, message.isError ? "error" : "");
+    if (!renderedAnyPart && text) addMessage("assistant", text, message.isError ? "error" : "", [], { entryId: message.entryId });
     else if (text && textPartsJoined && text !== textPartsJoined && text.startsWith(textPartsJoined)) {
       const suffix = text.slice(textPartsJoined.length).trim();
-      if (suffix) addMessage("assistant", suffix, message.isError ? "error" : "");
+      if (suffix) addMessage("assistant", suffix, message.isError ? "error" : "", [], { entryId: message.entryId });
     }
   }
 
@@ -607,7 +829,7 @@ export function createMessageList(options: { messagesEl: HTMLDivElement; markdow
         if (text) {
           const rawImages = role === "user" ? imagesFromRawContent(rawContent(message)) : [];
           const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
-          addMessage(role, text, extraClass, rawImages);
+          addMessage(role, text, extraClass, rawImages, { entryId: message.entryId });
         }
       }
       bulkRendering = false;

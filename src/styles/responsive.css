@@ -96,6 +96,7 @@
   }
 
   .message { max-width: 96%; }
+  .messageActions { display: none; }
 
   .sessionDrawer {
     width: 100vw;

@@ -530,13 +530,59 @@ function contentWithToolStartedAts(content: unknown, sessionFile?: string) {
   });
 }
 
-function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<string, unknown>>, sessionFile?: string) {
+function appendMessageEntryRef(refs: Array<{ entryId?: string }>, entry: any) {
+  if (!entry || typeof entry !== "object") return;
+  if (entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary" && entry.summary) {
+    const entryId = typeof entry.id === "string" && entry.id.trim() ? entry.id : undefined;
+    refs.push({ entryId });
+  }
+}
+
+function messageEntryRefs(targetSession: PiWebSession): Array<{ entryId?: string }> {
+  const getBranch = targetSession.sessionManager?.getBranch;
+  if (typeof getBranch !== "function") return [];
+
+  let branch: any[];
+  try {
+    branch = getBranch.call(targetSession.sessionManager);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(branch)) return [];
+
+  const refs: Array<{ entryId?: string }> = [];
+  let compaction: any | undefined;
+  for (const entry of branch) {
+    if (entry?.type === "compaction") compaction = entry;
+  }
+
+  if (!compaction) {
+    for (const entry of branch) appendMessageEntryRef(refs, entry);
+    return refs;
+  }
+
+  const compactionId = typeof compaction.id === "string" && compaction.id.trim() ? compaction.id : undefined;
+  refs.push({ entryId: compactionId });
+  const compactionIndex = branch.findIndex((entry) => entry?.type === "compaction" && entry?.id === compaction.id);
+  let foundFirstKept = false;
+  for (let index = 0; index < compactionIndex; index += 1) {
+    const entry = branch[index];
+    if (entry?.id === compaction.firstKeptEntryId) foundFirstKept = true;
+    if (foundFirstKept) appendMessageEntryRef(refs, entry);
+  }
+  for (let index = compactionIndex + 1; index < branch.length; index += 1) appendMessageEntryRef(refs, branch[index]);
+  return refs;
+}
+
+function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<string, unknown>>, sessionFile?: string, entryId?: string) {
   if (!message || typeof message !== "object") return message;
   const m = message as Record<string, unknown>;
   const content = contentWithToolStartedAts(m.content, sessionFile);
+  const entry = entryId ? { entryId } : {};
   if (m.role === "toolResult") {
     const args = toolCallArgs?.get(m.toolCallId as string);
     return {
+      ...entry,
       role: "toolResult",
       toolCallId: m.toolCallId,
       toolName: m.toolName,
@@ -560,6 +606,7 @@ function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<str
     }))
     : undefined;
   return {
+    ...entry,
     role: m.role,
     text: displayText,
     toolCalls,
@@ -2418,7 +2465,8 @@ const server = createServer(async (req, res) => {
             }
           }
         }
-        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown) => simplifyMessage(m, toolCallArgs, targetSession.sessionFile)) });
+        const refs = messageEntryRefs(targetSession);
+        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown, index: number) => simplifyMessage(m, toolCallArgs, targetSession.sessionFile, refs[index]?.entryId)) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
