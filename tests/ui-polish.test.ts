@@ -200,6 +200,10 @@ describe("compact inactive composer styling", () => {
   it("collapses the inactive empty composer into a single floating bar", () => {
     expect(css).toContain(`${compactSelector} {`);
     expect(css).toContain("grid-template-columns: minmax(0, 1fr) auto");
+    expect(css).toContain("isolation: isolate;");
+    expect(css).toContain("background: linear-gradient(180deg, #1b1b1b, #111 58%, #0d0d0d);");
+    expect(css).toContain(`${compactSelector}::before {`);
+    expect(css).toContain("radial-gradient(ellipse at center, rgba(255,255,255,.07)");
     expect(css).toContain("border-radius: 999px");
     expect(css).toContain(`${compactSelector} textarea {`);
     expect(css).toContain("height: 38px");
