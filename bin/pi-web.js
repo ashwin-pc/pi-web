@@ -87,7 +87,7 @@ function waitForExit(child) {
 function findPiCli() {
   const candidates = [
     join(appDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
-    join(appDir, "..", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+    join(appDir, "..", "..", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
   ];
   return candidates.find((candidate) => existsSync(candidate));
 }
