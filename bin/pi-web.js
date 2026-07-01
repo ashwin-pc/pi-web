@@ -2,11 +2,13 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { constants as osConstants, homedir } from "node:os";
-import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
+import { createRequire } from "node:module";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const appDir = fileURLToPath(new URL("..", import.meta.url));
+const require = createRequire(import.meta.url);
 const env = { ...process.env };
 
 const providerEnvVars = [
@@ -100,7 +102,8 @@ async function maybeRunPiLogin() {
   if (answer === "n" || answer === "no") return;
 
   console.log("\nStarting Pi. Run /login, complete provider setup, then exit Pi to continue starting pi-web.\n");
-  const piCli = fileURLToPath(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/cli.js", import.meta.url));
+  const piMain = require.resolve("@earendil-works/pi-coding-agent");
+  const piCli = join(dirname(piMain), "cli.js");
   const result = await waitForExit(spawn(process.execPath, [piCli], { cwd: env.PI_WEB_CWD || process.cwd(), env, stdio: "inherit" }));
   if (result.code && result.code !== 0) console.warn(`pi-web: Pi exited with code ${result.code}; starting pi-web anyway.`);
 }
