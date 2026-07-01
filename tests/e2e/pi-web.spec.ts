@@ -828,6 +828,40 @@ test.describe("slash commands", () => {
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.system", { hasText: "Thinking level set to low" })).toBeVisible();
   });
+
+  test("sends leading-whitespace slash input as a normal prompt", async ({ page }) => {
+    let promptBody: any;
+    await page.route("**/api/prompt", async (route) => {
+      promptBody = route.request().postDataJSON();
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.locator("#prompt").fill(" /reload");
+    await expect(page.locator("#slashCommands")).toBeHidden();
+    await page.locator("#primaryButton").click();
+
+    await expect.poll(() => promptBody?.message).toBe("/reload");
+    await expect(page.locator(".message.user", { hasText: "/reload" })).toBeVisible();
+    await expect(page.locator(".message.system", { hasText: "› /reload" })).toHaveCount(0);
+    await expect(page.locator(".message.system", { hasText: "Reloaded pi resources" })).toHaveCount(0);
+  });
+
+  test("sends leading-whitespace shell escape input as a normal prompt", async ({ page }) => {
+    let promptBody: any;
+    await page.route("**/api/prompt", async (route) => {
+      promptBody = route.request().postDataJSON();
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await page.locator("#prompt").fill(" !echo hi");
+    await page.locator("#primaryButton").click();
+
+    await expect.poll(() => promptBody?.message).toBe("!echo hi");
+    await expect(page.locator(".message.user", { hasText: "!echo hi" })).toBeVisible();
+    await expect(page.locator(".message.system", { hasText: "› !echo hi" })).toHaveCount(0);
+  });
 });
 
 test.describe("attachments and prompt", () => {

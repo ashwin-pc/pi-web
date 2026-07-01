@@ -126,7 +126,7 @@ export function createComposer(options: {
   }
 
   function slashCommandQuery() {
-    const value = elements.promptEl.value.trimStart();
+    const value = elements.promptEl.value;
     if (!value.startsWith("/") || state.attachedImages.length > 0) return undefined;
     const withoutSlash = value.slice(1);
     if (/\s/.test(withoutSlash) || withoutSlash.includes("\n")) return undefined;
@@ -479,11 +479,12 @@ export function createComposer(options: {
       event.preventDefault();
       if (state.isStreaming && !elements.promptEl.value.trim() && state.attachedImages.length === 0) return;
 
-      const message = elements.promptEl.value.trim();
+      const rawMessage = elements.promptEl.value;
+      const message = rawMessage.trim();
       const images = state.attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
       if (!message && images.length === 0) return;
 
-      if (message.startsWith("!") && images.length === 0) {
+      if (rawMessage.startsWith("!") && images.length === 0) {
         elements.promptEl.value = "";
         clearDraft();
         hideSlashCommands();
@@ -498,7 +499,7 @@ export function createComposer(options: {
         return;
       }
 
-      if (message.startsWith("/") && images.length === 0) {
+      if (rawMessage.startsWith("/") && images.length === 0) {
         let commandInfo: SlashCommand | undefined;
         try {
           commandInfo = await commandInfoForMessage(message);

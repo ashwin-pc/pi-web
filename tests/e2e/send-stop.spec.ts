@@ -67,7 +67,7 @@ test.describe("stop button", () => {
     await expect(page.locator("#stopButton")).toBeVisible();
 
     await page.locator("#prompt").focus();
-    await page.locator("#prompt").evaluate((el) => (el as HTMLTextAreaElement).blur());
+    await page.locator("#messages").click({ position: { x: 4, y: 4 } });
     await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
 
     await page.locator("#stopButton").click();
