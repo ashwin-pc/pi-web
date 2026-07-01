@@ -87,6 +87,8 @@ export function createSettings(options: {
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): SettingsController {
   const { state, elements, api, addMessage } = options;
+  const expandedStorageKey = "pi-web-composer-expanded";
+  let hasAppliedSettings = false;
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -178,9 +180,19 @@ export function createSettings(options: {
 
   function applySettings(rawSettings: PiWebSettings) {
     const settings = normalizeSettings(rawSettings);
+    const storedExpanded = (() => {
+      try {
+        const value = sessionStorage.getItem(expandedStorageKey);
+        return value === null ? undefined : value === "true";
+      } catch {
+        return undefined;
+      }
+    })();
+    const shouldInitializeExpanded = !hasAppliedSettings;
     state.settings = settings;
     state.queueMode = settings.composer.queueMode;
-    state.editorExpanded = settings.composer.expanded;
+    if (shouldInitializeExpanded) state.editorExpanded = storedExpanded ?? settings.composer.expanded;
+    hasAppliedSettings = true;
 
     const accentColor = settings.appearance.accentColor || defaultAccentColor;
     document.documentElement.dataset.density = settings.appearance.density;

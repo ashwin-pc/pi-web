@@ -54,6 +54,7 @@ export function createComposer(options: {
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
   const draftStorageKey = "pi-web-composer-draft";
+  const expandedStorageKey = "pi-web-composer-expanded";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
   let slashCommandSelectedIndex = 0;
@@ -95,7 +96,7 @@ export function createComposer(options: {
     } catch { /* ignore */ }
   }
 
-  async function persistComposerSettings(patch: { queueMode?: AppState["queueMode"]; expanded?: boolean }) {
+  async function persistComposerSettings(patch: { queueMode?: AppState["queueMode"] }) {
     try {
       await fetch("/api/settings", {
         method: "PATCH",
@@ -675,8 +676,8 @@ export function createComposer(options: {
       setIcon(elements.expandButton, state.editorExpanded ? "minimize-2" : "maximize-2");
       elements.expandButton.title = state.editorExpanded ? "Collapse editor" : "Expand editor";
       elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
+      try { sessionStorage.setItem(expandedStorageKey, JSON.stringify(state.editorExpanded)); } catch { /* ignore */ }
       focusIfKeyboardFriendly(elements.promptEl);
-      void persistComposerSettings({ expanded: state.editorExpanded });
     });
 
     try {

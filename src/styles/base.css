@@ -15,6 +15,33 @@
 }
 
 * { box-sizing: border-box; }
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--text) 28%, transparent) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  min-height: 32px;
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 24%, transparent);
+  background-clip: padding-box;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text) 38%, transparent);
+}
+
 html, body {
   width: 100%;
   max-width: 100%;

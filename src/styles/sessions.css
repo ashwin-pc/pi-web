@@ -894,20 +894,31 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Loading bar when session is running */
+/* Full-tab glow when session is running */
 @keyframes sessionBarRunLoading {
-  0% { transform: translateX(-100%); }
-  100% { transform: translateX(100%); }
+  0% { background-position: 0 0; }
+  100% { background-position: 200px 0; }
+}
+.sessionBarTab.running > * {
+  position: relative;
+  z-index: 1;
 }
 .sessionBarTab.running::after {
   content: "";
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 2px;
-  background: linear-gradient(90deg, transparent, var(--session-tab-accent), transparent);
-  animation: sessionBarRunLoading 1.15s linear infinite;
+  inset: 0;
+  z-index: 0;
+  background: linear-gradient(
+    60deg,
+    rgba(0, 0, 0, 0.42) 0%,
+    transparent 24%,
+    color-mix(in srgb, var(--session-tab-accent) 48%, transparent) 50%,
+    transparent 76%,
+    rgba(0, 0, 0, 0.42) 100%
+  );
+  background-size: 200px 100%;
+  background-repeat: repeat;
+  animation: sessionBarRunLoading 2s linear infinite;
   pointer-events: none;
 }
 .sessionBarTab.running:not(.active) {
