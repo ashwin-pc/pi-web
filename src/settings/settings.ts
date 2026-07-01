@@ -103,18 +103,77 @@ export function createSettings(options: {
     elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
   }
 
+  function savedAccentColor() {
+    return normalizeAccentColor(state.settings.appearance.accentColor) || defaultAccentColor;
+  }
+
   function accentSwatchButtons() {
     return Array.from(elements.settingsPanel.querySelectorAll<HTMLButtonElement>(".settingsAccentSwatch"));
+  }
+
+  function accentName(accentColor: string) {
+    const normalized = normalizeAccentColor(accentColor) || defaultAccentColor;
+    const swatch = accentSwatchButtons().find((button) => normalizeAccentColor(button.dataset.accentColor) === normalized);
+    return swatch?.dataset.accentName || "Custom";
+  }
+
+  function setDocumentAccent(accentColor: string) {
+    document.documentElement.style.setProperty("--accent", accentColor);
   }
 
   function syncAccentControls(accentColor: string) {
     const normalized = normalizeAccentColor(accentColor) || defaultAccentColor;
     elements.settingAccentColorInput.value = normalized;
+    elements.settingAccentColorInput.setAttribute("aria-invalid", "false");
+    elements.settingAccentMenuButton.style.setProperty("--settings-accent-preview", normalized);
+    elements.settingAccentMenuName.textContent = accentName(normalized);
+    elements.settingAccentMenuValue.textContent = normalized;
     for (const button of accentSwatchButtons()) {
       const selected = normalizeAccentColor(button.dataset.accentColor) === normalized;
       button.classList.toggle("selected", selected);
       button.setAttribute("aria-checked", String(selected));
     }
+  }
+
+  function isAccentPopoverOpen() {
+    return !elements.settingAccentPopover.hidden;
+  }
+
+  function openAccentPopover() {
+    const accentColor = savedAccentColor();
+    syncAccentControls(accentColor);
+    setDocumentAccent(accentColor);
+    elements.settingAccentPopover.hidden = false;
+    elements.settingAccentMenuButton.setAttribute("aria-expanded", "true");
+    setSettingsStatus("Choose an accent, then Save accent");
+  }
+
+  function closeAccentPopover(options: { restorePreview?: boolean; focusButton?: boolean } = {}) {
+    if (!isAccentPopoverOpen()) return;
+    const restorePreview = options.restorePreview ?? true;
+    const focusButton = options.focusButton ?? true;
+    elements.settingAccentPopover.hidden = true;
+    elements.settingAccentMenuButton.setAttribute("aria-expanded", "false");
+    elements.settingAccentColorInput.setAttribute("aria-invalid", "false");
+    if (restorePreview) {
+      const accentColor = savedAccentColor();
+      setDocumentAccent(accentColor);
+      syncAccentControls(accentColor);
+    }
+    if (focusButton) elements.settingAccentMenuButton.focus();
+  }
+
+  function previewAccentColor(value: string | undefined) {
+    const accentColor = normalizeAccentColor(value);
+    if (!accentColor) {
+      elements.settingAccentColorInput.setAttribute("aria-invalid", "true");
+      setSettingsStatus("Enter a hex color like #7dd3fc", true);
+      return false;
+    }
+    setDocumentAccent(accentColor);
+    syncAccentControls(accentColor);
+    setSettingsStatus("Previewing accent — save to keep");
+    return true;
   }
 
   function applySettings(rawSettings: PiWebSettings) {
@@ -123,10 +182,11 @@ export function createSettings(options: {
     state.queueMode = settings.composer.queueMode;
     state.editorExpanded = settings.composer.expanded;
 
+    const accentColor = settings.appearance.accentColor || defaultAccentColor;
     document.documentElement.dataset.density = settings.appearance.density;
-    document.documentElement.style.setProperty("--accent", settings.appearance.accentColor || defaultAccentColor);
+    setDocumentAccent(accentColor);
     elements.settingDensitySelect.value = settings.appearance.density;
-    syncAccentControls(settings.appearance.accentColor || defaultAccentColor);
+    syncAccentControls(accentColor);
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
@@ -212,14 +272,17 @@ export function createSettings(options: {
     setSettingsStatus("Saved");
   }
 
-  function applyAccentColor(value: string | undefined) {
-    const accentColor = normalizeAccentColor(value);
+  function saveAccentColor() {
+    const accentColor = normalizeAccentColor(elements.settingAccentColorInput.value);
     if (!accentColor) {
+      elements.settingAccentColorInput.setAttribute("aria-invalid", "true");
       setSettingsStatus("Enter a hex color like #7dd3fc", true);
       return;
     }
-    elements.settingAccentColorInput.value = accentColor;
-    patchSettings({ appearance: { accentColor } }).catch((error) => {
+    patchSettings({ appearance: { accentColor } }).then(() => {
+      closeAccentPopover({ restorePreview: false });
+    }).catch((error) => {
+      closeAccentPopover({ restorePreview: true, focusButton: false });
       setSettingsStatus(error instanceof Error ? error.message : String(error), true);
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
     });
@@ -242,6 +305,7 @@ export function createSettings(options: {
   }
 
   function closeSettings() {
+    closeAccentPopover({ restorePreview: true, focusButton: false });
     closeTokenShareFullscreen(false);
     elements.settingsPanel.hidden = true;
     elements.settingsBackdrop.hidden = true;
@@ -272,6 +336,10 @@ export function createSettings(options: {
         closeTokenShareFullscreen();
         return;
       }
+      if (isAccentPopoverOpen()) {
+        closeAccentPopover();
+        return;
+      }
       if (!elements.settingsPanel.hidden) closeSettings();
     });
 
@@ -282,14 +350,27 @@ export function createSettings(options: {
       });
     });
 
+    elements.settingAccentMenuButton.addEventListener("click", () => {
+      if (isAccentPopoverOpen()) closeAccentPopover();
+      else openAccentPopover();
+    });
     for (const button of accentSwatchButtons()) {
-      button.addEventListener("click", () => applyAccentColor(button.dataset.accentColor));
+      button.addEventListener("click", () => previewAccentColor(button.dataset.accentColor));
     }
-    elements.settingAccentApplyButton.addEventListener("click", () => applyAccentColor(elements.settingAccentColorInput.value));
+    elements.settingAccentPreviewButton.addEventListener("click", () => previewAccentColor(elements.settingAccentColorInput.value));
+    elements.settingAccentCancelButton.addEventListener("click", () => closeAccentPopover());
+    elements.settingAccentApplyButton.addEventListener("click", saveAccentColor);
     elements.settingAccentColorInput.addEventListener("keydown", (event) => {
       if (event.key !== "Enter") return;
       event.preventDefault();
-      applyAccentColor(elements.settingAccentColorInput.value);
+      previewAccentColor(elements.settingAccentColorInput.value);
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!isAccentPopoverOpen()) return;
+      const target = event.target instanceof Node ? event.target : undefined;
+      if (target && elements.settingAccentPopover.contains(target)) return;
+      if (target && elements.settingAccentMenuButton.contains(target)) return;
+      closeAccentPopover({ restorePreview: true, focusButton: false });
     });
 
     elements.settingQueueModeSelect.addEventListener("change", () => {

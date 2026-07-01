@@ -79,21 +79,83 @@
   color: var(--text);
   padding: 6px 8px;
 }
-.settingsFieldLabel {
-  color: var(--muted);
-  font-size: 13px;
-}
 .settingsAccentField {
-  display: grid;
-  gap: 8px;
+  position: relative;
 }
-.settingsAccentControl {
+.settingsAccentPicker {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+}
+.settingsAccentMenuButton {
+  min-height: 34px;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 92%, #fff 3%);
+  color: var(--text);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.settingsAccentMenuButton:hover,
+.settingsAccentMenuButton[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--panel-2) 88%, #fff 5%);
+}
+.settingsAccentMenuButton:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.settingsAccentCurrentSwatch {
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: var(--settings-accent-preview, var(--accent));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--settings-accent-preview, var(--accent)) 16%, transparent), inset 0 0 0 1px rgba(0,0,0,.35);
+}
+.settingsAccentMenuValue,
+.settingsAccentMenuChevron {
+  color: var(--muted);
+}
+.settingsAccentMenuValue {
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.settingsAccentPopover {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 40;
   display: grid;
-  gap: 9px;
+  width: min(292px, calc(100vw - 56px));
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, #fff 8%);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel) 96%, black);
+  box-shadow: 0 24px 70px rgba(0,0,0,.58);
+  padding: 12px;
+}
+.settingsAccentPopover[hidden] { display: none; }
+.settingsAccentPopoverHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.settingsAccentPopoverHeader span:last-child {
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
 }
 .settingsAccentSwatches {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
   gap: 8px;
 }
 .settingsAccentSwatch {
@@ -102,12 +164,11 @@
   min-width: 30px;
   height: 30px;
   min-height: 30px;
+  justify-self: center;
   border: 1px solid color-mix(in srgb, var(--border) 72%, #fff 12%);
   border-radius: 999px;
-  background:
-    radial-gradient(circle at 35% 28%, rgba(255,255,255,.48), transparent 28%),
-    var(--swatch-color);
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.25), 0 8px 18px rgba(0,0,0,.22);
+  background: var(--swatch-color);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32), 0 8px 18px rgba(0,0,0,.24);
   cursor: pointer;
   padding: 0;
 }
@@ -115,19 +176,24 @@
 .settingsAccentSwatch:focus-visible {
   outline: none;
   border-color: color-mix(in srgb, var(--swatch-color) 70%, #fff 20%);
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.25), 0 0 0 2px color-mix(in srgb, var(--swatch-color) 36%, transparent), 0 8px 18px rgba(0,0,0,.22);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.25), 0 0 0 2px color-mix(in srgb, var(--swatch-color) 32%, transparent), 0 8px 18px rgba(0,0,0,.22);
+}
+.settingsAccentSwatch[aria-checked="true"] {
+  outline: 2px solid var(--swatch-color);
+  outline-offset: 2px;
 }
 .settingsAccentSwatch[aria-checked="true"]::after {
   content: "";
   position: absolute;
-  inset: 7px;
-  border: 2px solid rgba(0,0,0,.68);
+  inset: 8px 11px 10px 11px;
+  border: 2px solid rgba(0,0,0,.72);
   border-top: 0;
   border-left: 0;
-  transform: rotate(45deg) translate(-1px, -2px);
-  filter: drop-shadow(0 0 1px rgba(255,255,255,.8));
+  transform: rotate(45deg);
+  filter: drop-shadow(0 0 1px rgba(255,255,255,.85));
 }
-.settingsAccentCustom {
+.settingsAccentCustom,
+.settingsAccentActions {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
@@ -136,7 +202,7 @@
   width: 100%;
   min-height: 34px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--panel);
   color: var(--text);
   padding: 6px 9px;
@@ -147,10 +213,20 @@
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
 }
-.settingsAccentCustom button {
+.settingsAccentCustom input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+.settingsAccentCustom button,
+.settingsAccentActions button {
   min-height: 34px;
   padding: 5px 10px;
   font-size: 12px;
+}
+.settingsAccentActions #settingAccentApplyButton {
+  border-color: color-mix(in srgb, var(--accent) 76%, #fff 8%);
+  background: var(--accent);
+  color: #031018;
+  font-weight: 750;
 }
 .settingsCheckbox {
   display: flex;

@@ -112,20 +112,36 @@
               <option value="compact">Compact</option>
             </select>
           </label>
-          <div class="settingsAccentField">
-            <div class="settingsFieldLabel">Accent color</div>
-            <div class="settingsAccentControl">
-              <div class="settingsAccentSwatches" role="radiogroup" aria-label="Accent color presets">
-                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#7dd3fc" style="--swatch-color: #7dd3fc" aria-label="Sky blue accent"></button>
-                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#a78bfa" style="--swatch-color: #a78bfa" aria-label="Violet accent"></button>
-                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#f472b6" style="--swatch-color: #f472b6" aria-label="Pink accent"></button>
-                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#34d399" style="--swatch-color: #34d399" aria-label="Green accent"></button>
-                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#f59e0b" style="--swatch-color: #f59e0b" aria-label="Amber accent"></button>
-                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#fb7185" style="--swatch-color: #fb7185" aria-label="Rose accent"></button>
-              </div>
-              <div class="settingsAccentCustom">
-                <input id="settingAccentColorInput" type="text" value="#7dd3fc" maxlength="7" spellcheck="false" aria-label="Custom accent hex color" />
-                <button id="settingAccentApplyButton" type="button">Apply</button>
+          <div class="settingsField settingsAccentField">
+            <span>Accent color</span>
+            <div class="settingsAccentPicker">
+              <button id="settingAccentMenuButton" class="settingsAccentMenuButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="settingAccentPopover">
+                <span class="settingsAccentCurrentSwatch" aria-hidden="true"></span>
+                <span id="settingAccentMenuName">Noir Sky</span>
+                <span id="settingAccentMenuValue" class="settingsAccentMenuValue">#7dd3fc</span>
+                <span class="settingsAccentMenuChevron" aria-hidden="true">▾</span>
+              </button>
+              <div id="settingAccentPopover" class="settingsAccentPopover" role="dialog" aria-label="Accent color picker" hidden>
+                <div class="settingsAccentPopoverHeader">
+                  <span>Preview accent</span>
+                  <span>Save to confirm</span>
+                </div>
+                <div class="settingsAccentSwatches" role="radiogroup" aria-label="Accent color presets">
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#7dd3fc" data-accent-name="Noir Sky" style="--swatch-color: #7dd3fc" aria-label="Noir Sky accent"></button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#a78bfa" data-accent-name="Noir Violet" style="--swatch-color: #a78bfa" aria-label="Noir Violet accent"></button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#f472b6" data-accent-name="Noir Pink" style="--swatch-color: #f472b6" aria-label="Noir Pink accent"></button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#34d399" data-accent-name="Noir Green" style="--swatch-color: #34d399" aria-label="Noir Green accent"></button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#f59e0b" data-accent-name="Noir Amber" style="--swatch-color: #f59e0b" aria-label="Noir Amber accent"></button>
+                  <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#fb7185" data-accent-name="Noir Rose" style="--swatch-color: #fb7185" aria-label="Noir Rose accent"></button>
+                </div>
+                <div class="settingsAccentCustom">
+                  <input id="settingAccentColorInput" type="text" value="#7dd3fc" maxlength="7" spellcheck="false" aria-label="Custom accent hex color" />
+                  <button id="settingAccentPreviewButton" type="button">Preview</button>
+                </div>
+                <div class="settingsAccentActions">
+                  <button id="settingAccentCancelButton" type="button">Cancel</button>
+                  <button id="settingAccentApplyButton" type="button">Save accent</button>
+                </div>
               </div>
             </div>
           </div>

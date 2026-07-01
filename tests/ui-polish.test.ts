@@ -164,14 +164,20 @@ describe("configurable accent color", () => {
   const settingsHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const settingsTs = readFileSync(new URL("../src/settings/settings.ts", import.meta.url), "utf8");
 
-  it("exposes polished preset swatches and an explicit apply action for accent color", () => {
+  it("keeps the accent setting to one row with a preview/save popover", () => {
     expect(baseCss).toContain("--accent: #7dd3fc;");
+    expect(settingsHtml).toContain('id="settingAccentMenuButton"');
+    expect(settingsHtml).toContain('id="settingAccentPopover" class="settingsAccentPopover"');
     expect(settingsHtml).toContain('class="settingsAccentSwatch"');
     expect(settingsHtml).toContain('id="settingAccentColorInput" type="text"');
+    expect(settingsHtml).toContain('id="settingAccentPreviewButton" type="button"');
+    expect(settingsHtml).toContain('id="settingAccentCancelButton" type="button"');
     expect(settingsHtml).toContain('id="settingAccentApplyButton" type="button"');
-    expect(settingsTs).toContain('document.documentElement.style.setProperty("--accent", settings.appearance.accentColor || defaultAccentColor)');
+    expect(settingsTs).toContain('setDocumentAccent(accentColor)');
     expect(settingsTs).toContain('querySelectorAll<HTMLButtonElement>(".settingsAccentSwatch")');
-    expect(settingsTs).toContain("applyAccentColor(elements.settingAccentColorInput.value)");
+    expect(settingsTs).toContain("previewAccentColor(button.dataset.accentColor)");
+    expect(settingsTs).toContain("closeAccentPopover({ restorePreview: true");
+    expect(settingsTs).toContain("Save accent");
   });
 
   it("routes primary accent UI through the configurable token", () => {

@@ -52,7 +52,13 @@ export type AppElements = {
   settingsBackdrop: HTMLDivElement;
   settingsCloseButton: HTMLButtonElement;
   settingDensitySelect: HTMLSelectElement;
+  settingAccentMenuButton: HTMLButtonElement;
+  settingAccentMenuName: HTMLSpanElement;
+  settingAccentMenuValue: HTMLSpanElement;
+  settingAccentPopover: HTMLDivElement;
   settingAccentColorInput: HTMLInputElement;
+  settingAccentPreviewButton: HTMLButtonElement;
+  settingAccentCancelButton: HTMLButtonElement;
   settingAccentApplyButton: HTMLButtonElement;
   settingQueueModeSelect: HTMLSelectElement;
   settingComposerExpandedCheckbox: HTMLInputElement;
@@ -136,7 +142,13 @@ export function getAppElements(): AppElements {
     settingsBackdrop: requiredElement<HTMLDivElement>("#settingsBackdrop"),
     settingsCloseButton: requiredElement<HTMLButtonElement>("#settingsCloseButton"),
     settingDensitySelect: requiredElement<HTMLSelectElement>("#settingDensitySelect"),
+    settingAccentMenuButton: requiredElement<HTMLButtonElement>("#settingAccentMenuButton"),
+    settingAccentMenuName: requiredElement<HTMLSpanElement>("#settingAccentMenuName"),
+    settingAccentMenuValue: requiredElement<HTMLSpanElement>("#settingAccentMenuValue"),
+    settingAccentPopover: requiredElement<HTMLDivElement>("#settingAccentPopover"),
     settingAccentColorInput: requiredElement<HTMLInputElement>("#settingAccentColorInput"),
+    settingAccentPreviewButton: requiredElement<HTMLButtonElement>("#settingAccentPreviewButton"),
+    settingAccentCancelButton: requiredElement<HTMLButtonElement>("#settingAccentCancelButton"),
     settingAccentApplyButton: requiredElement<HTMLButtonElement>("#settingAccentApplyButton"),
     settingQueueModeSelect: requiredElement<HTMLSelectElement>("#settingQueueModeSelect"),
     settingComposerExpandedCheckbox: requiredElement<HTMLInputElement>("#settingComposerExpandedCheckbox"),

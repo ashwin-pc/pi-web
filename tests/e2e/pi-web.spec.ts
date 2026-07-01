@@ -403,7 +403,7 @@ test.describe("composer layout", () => {
     expect(styles.boxShadow).toContain("inset");
   });
 
-  test("accent color setting visibly changes primary actions, focus states, and unread indicators", async ({ page }) => {
+  test("accent color setting previews in one row and saves explicitly", async ({ page }) => {
     await page.goto("/");
 
     const readAccentStyles = () => page.evaluate(() => {
@@ -427,30 +427,61 @@ test.describe("composer layout", () => {
       };
     });
 
+    const openSettings = async () => {
+      if (await page.locator("#settingsPanel").isVisible()) return;
+      if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
+      await page.locator("#settingsButton").click();
+      await expect(page.locator("#settingsPanel")).toBeVisible();
+    };
+
     const before = await readAccentStyles();
     expect(before.rootAccent).toBe("#7dd3fc");
     expect(before.promptFocusBorder).toBe("rgb(125, 211, 252)");
     expect(before.unreadDotBackground).toBe("rgb(125, 211, 252)");
 
-    await page.locator("#sessionButton").click();
-    await page.locator("#settingsButton").click();
+    await openSettings();
+    await expect(page.locator("#settingAccentMenuButton")).toBeVisible();
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Noir Sky");
+    await expect(page.locator("#settingAccentMenuValue")).toHaveText("#7dd3fc");
+    await expect(page.locator("#settingAccentPopover")).toBeHidden();
+
+    await page.locator("#settingAccentMenuButton").click();
+    await expect(page.locator("#settingAccentPopover")).toBeVisible();
     await expect(page.locator("#settingAccentColorInput")).toHaveValue("#7dd3fc");
     await expect(page.locator('.settingsAccentSwatch[data-accent-color="#7dd3fc"]')).toHaveAttribute("aria-checked", "true");
 
     await page.locator('.settingsAccentSwatch[data-accent-color="#f472b6"]').click();
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#f472b6");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Noir Pink");
     await expect(page.locator('.settingsAccentSwatch[data-accent-color="#f472b6"]')).toHaveAttribute("aria-checked", "true");
-    const preset = await readAccentStyles();
-    expect(preset.buttonBackground).not.toBe(before.buttonBackground);
-    expect(preset.promptFocusBorder).toBe("rgb(244, 114, 182)");
-    expect(preset.unreadDotBackground).toBe("rgb(244, 114, 182)");
+    const preview = await readAccentStyles();
+    expect(preview.buttonBackground).not.toBe(before.buttonBackground);
+    expect(preview.promptFocusBorder).toBe("rgb(244, 114, 182)");
+    expect(preview.unreadDotBackground).toBe("rgb(244, 114, 182)");
 
+    await page.locator("#settingAccentCancelButton").click();
+    await expect(page.locator("#settingAccentPopover")).toBeHidden();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#7dd3fc");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Noir Sky");
+
+    await page.locator("#settingAccentMenuButton").click();
+    await page.locator('.settingsAccentSwatch[data-accent-color="#f472b6"]').click();
+    await page.locator("#settingAccentApplyButton").click();
+    await expect(page.locator("#settingAccentPopover")).toBeHidden();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#f472b6");
+    await expect(page.locator("#settingAccentMenuValue")).toHaveText("#f472b6");
+
+    await page.reload();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#f472b6");
+
+    await openSettings();
+    await page.locator("#settingAccentMenuButton").click();
     await page.locator("#settingAccentColorInput").fill("#ff00aa");
     await page.locator("#settingAccentApplyButton").click();
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#ff00aa");
     const custom = await readAccentStyles();
     expect(custom.buttonBackground).not.toBe(before.buttonBackground);
-    expect(custom.buttonBackground).not.toBe(preset.buttonBackground);
+    expect(custom.buttonBackground).not.toBe(preview.buttonBackground);
     expect(custom.promptFocusBorder).toBe("rgb(255, 0, 170)");
     expect(custom.unreadDotBackground).toBe("rgb(255, 0, 170)");
   });
