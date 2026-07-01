@@ -3,12 +3,10 @@ import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { constants as osConstants, homedir } from "node:os";
 import { createInterface } from "node:readline/promises";
-import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const appDir = fileURLToPath(new URL("..", import.meta.url));
-const require = createRequire(import.meta.url);
 const env = { ...process.env };
 
 const providerEnvVars = [
@@ -86,6 +84,14 @@ function waitForExit(child) {
   });
 }
 
+function findPiCli() {
+  const candidates = [
+    join(appDir, "node_modules", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+    join(appDir, "..", "@earendil-works", "pi-coding-agent", "dist", "cli.js"),
+  ];
+  return candidates.find((candidate) => existsSync(candidate));
+}
+
 async function maybeRunPiLogin() {
   if (env.PI_WEB_SKIP_PROVIDER_ONBOARDING === "1" || env.CI === "1" || hasProviderConfiguration()) return;
 
@@ -102,8 +108,11 @@ async function maybeRunPiLogin() {
   if (answer === "n" || answer === "no") return;
 
   console.log("\nStarting Pi. Run /login, complete provider setup, then exit Pi to continue starting pi-web.\n");
-  const piMain = require.resolve("@earendil-works/pi-coding-agent");
-  const piCli = join(dirname(piMain), "cli.js");
+  const piCli = findPiCli();
+  if (!piCli) {
+    console.warn("pi-web: could not find the bundled Pi CLI. Run `pi` and use `/login`, then start pi-web again.");
+    return;
+  }
   const result = await waitForExit(spawn(process.execPath, [piCli], { cwd: env.PI_WEB_CWD || process.cwd(), env, stdio: "inherit" }));
   if (result.code && result.code !== 0) console.warn(`pi-web: Pi exited with code ${result.code}; starting pi-web anyway.`);
 }
