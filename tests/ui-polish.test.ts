@@ -216,7 +216,7 @@ describe("compact inactive composer styling", () => {
   });
 
   it("keeps compact model settings popover within the viewport", () => {
-    expect(css).toContain(`${compactSelector} .modelSettingsPopover {\n  position: fixed;\n  left: 50%;`);
+    expect(css).toContain(`${compactSelector} .modelSettingsPopover,\n.composer:has(.modelSettingsButton[aria-expanded="true"]) .modelSettingsPopover {\n  position: fixed;\n  left: 50%;`);
     expect(css).toContain("width: min(560px, calc(100vw - 32px));");
     expect(css).toContain("transform: translateX(-50%);");
   });

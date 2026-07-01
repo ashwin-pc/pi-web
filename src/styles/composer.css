@@ -186,7 +186,7 @@ textarea:focus { border-bottom-color: var(--accent); }
 .expandButton svg { width: 14px; height: 14px; }
 .composer:hover .expandButton,
 .composer.expanded .expandButton { display: inline-grid; }
-.composer { position: relative; }
+.composer { position: relative; z-index: 2; }
 .composer.dragOver::after {
   content: "Drop images to attach";
   position: absolute;
@@ -568,7 +568,8 @@ button:disabled:hover { border-color: var(--border); }
   align-items: center;
   overflow: visible;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl {
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl,
+.composer:has(.modelSettingsButton[aria-expanded="true"]) .modelControl {
   flex: 0 1 auto;
   width: clamp(170px, 28vw, 320px);
 }
@@ -582,7 +583,8 @@ button:disabled:hover { border-color: var(--border); }
   gap: 8px;
   padding: 0 10px 0 12px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsPopover {
+.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsPopover,
+.composer:has(.modelSettingsButton[aria-expanded="true"]) .modelSettingsPopover {
   position: fixed;
   left: 50%;
   right: auto;

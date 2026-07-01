@@ -15,9 +15,26 @@
     <div id="tokenOverlay" class="tokenOverlay" hidden>
       <form id="tokenForm" class="tokenForm">
         <label for="tokenInput">Enter PI_WEB_TOKEN to continue</label>
+        <p class="tokenHint">Paste a token, open a token link, or scan a token QR code.</p>
         <input id="tokenInput" type="password" placeholder="Token" autocomplete="current-password" />
-        <button type="submit" class="primaryAction">Connect</button>
+        <div class="tokenActions">
+          <button type="submit" class="primaryAction">Connect</button>
+          <button id="tokenScanButton" type="button">Scan QR</button>
+        </div>
+        <div id="tokenScanPanel" class="tokenScanPanel" hidden>
+          <video id="tokenScanVideo" autoplay playsinline muted></video>
+          <span id="tokenScanStatus" class="tokenScanStatus" aria-live="polite"></span>
+          <button id="tokenScanStopButton" type="button">Stop camera</button>
+        </div>
       </form>
+    </div>
+    <div id="tokenShareFullscreen" class="tokenShareFullscreen" role="dialog" aria-modal="true" aria-label="Token QR code" hidden>
+      <button id="tokenShareFullscreenCloseButton" class="tokenShareFullscreenClose" type="button" aria-label="Close full-screen QR">×</button>
+      <div class="tokenShareFullscreenContent">
+        <h2>Scan to connect to pi web</h2>
+        <div id="tokenShareFullscreenQr" class="tokenShareFullscreenQr"></div>
+        <p>Only share this QR code with trusted devices.</p>
+      </div>
     </div>
     <main class="app">
       <div id="statusBar" class="statusBar">
@@ -121,6 +138,16 @@
           <div class="settingsActions">
             <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>
             <button id="settingClearModelDefaultsButton" type="button">Clear model</button>
+          </div>
+        </section>
+        <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
+          <h3>Token sharing</h3>
+          <p class="settingsHint">Scan this QR on another device to open pi web with this browser’s saved token. Only share it with trusted devices.</p>
+          <div id="tokenShareQr" class="tokenShareQr" aria-live="polite"></div>
+          <input id="tokenShareUrl" class="tokenShareUrl" type="text" readonly aria-label="Token share link" />
+          <div class="settingsActions">
+            <button id="tokenShareFullscreenButton" type="button">Show full screen</button>
+            <button id="tokenShareCopyButton" type="button">Copy token link</button>
           </div>
         </section>
         <span id="settingsStatus" class="settingsStatus" aria-live="polite"></span>

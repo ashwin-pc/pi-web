@@ -18,6 +18,11 @@ export type AppElements = {
   tokenOverlay: HTMLDivElement;
   tokenForm: HTMLFormElement;
   tokenInput: HTMLInputElement;
+  tokenScanButton: HTMLButtonElement;
+  tokenScanPanel: HTMLDivElement;
+  tokenScanVideo: HTMLVideoElement;
+  tokenScanStatus: HTMLSpanElement;
+  tokenScanStopButton: HTMLButtonElement;
   sessionButton: HTMLButtonElement;
   expandButton: HTMLButtonElement;
   sessionDrawer: HTMLElement;
@@ -54,6 +59,14 @@ export type AppElements = {
   settingSaveModelDefaultsButton: HTMLButtonElement;
   settingClearModelDefaultsButton: HTMLButtonElement;
   settingsStatusEl: HTMLSpanElement;
+  tokenShareSection: HTMLElement;
+  tokenShareQr: HTMLDivElement;
+  tokenShareUrl: HTMLInputElement;
+  tokenShareFullscreenButton: HTMLButtonElement;
+  tokenShareCopyButton: HTMLButtonElement;
+  tokenShareFullscreen: HTMLDivElement;
+  tokenShareFullscreenQr: HTMLDivElement;
+  tokenShareFullscreenCloseButton: HTMLButtonElement;
   gitPanel: HTMLElement;
   emptyCwdChooserEl: HTMLDivElement;
   emptyCwdPathEl: HTMLDivElement;
@@ -87,6 +100,11 @@ export function getAppElements(): AppElements {
     tokenOverlay: requiredElement<HTMLDivElement>("#tokenOverlay"),
     tokenForm: requiredElement<HTMLFormElement>("#tokenForm"),
     tokenInput: requiredElement<HTMLInputElement>("#tokenInput"),
+    tokenScanButton: requiredElement<HTMLButtonElement>("#tokenScanButton"),
+    tokenScanPanel: requiredElement<HTMLDivElement>("#tokenScanPanel"),
+    tokenScanVideo: requiredElement<HTMLVideoElement>("#tokenScanVideo"),
+    tokenScanStatus: requiredElement<HTMLSpanElement>("#tokenScanStatus"),
+    tokenScanStopButton: requiredElement<HTMLButtonElement>("#tokenScanStopButton"),
     sessionButton: requiredElement<HTMLButtonElement>("#sessionButton"),
     expandButton: requiredElement<HTMLButtonElement>("#expandButton"),
     sessionDrawer: requiredElement<HTMLElement>("#sessionDrawer"),
@@ -123,6 +141,14 @@ export function getAppElements(): AppElements {
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
     settingClearModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingClearModelDefaultsButton"),
     settingsStatusEl: requiredElement<HTMLSpanElement>("#settingsStatus"),
+    tokenShareSection: requiredElement<HTMLElement>("#tokenShareSection"),
+    tokenShareQr: requiredElement<HTMLDivElement>("#tokenShareQr"),
+    tokenShareUrl: requiredElement<HTMLInputElement>("#tokenShareUrl"),
+    tokenShareFullscreenButton: requiredElement<HTMLButtonElement>("#tokenShareFullscreenButton"),
+    tokenShareCopyButton: requiredElement<HTMLButtonElement>("#tokenShareCopyButton"),
+    tokenShareFullscreen: requiredElement<HTMLDivElement>("#tokenShareFullscreen"),
+    tokenShareFullscreenQr: requiredElement<HTMLDivElement>("#tokenShareFullscreenQr"),
+    tokenShareFullscreenCloseButton: requiredElement<HTMLButtonElement>("#tokenShareFullscreenCloseButton"),
     gitPanel: requiredElement<HTMLElement>("#gitPanel"),
     emptyCwdChooserEl: requiredElement<HTMLDivElement>("#emptyCwdChooser"),
     emptyCwdPathEl: requiredElement<HTMLDivElement>("#emptyCwdChooser .emptyCwdPath"),

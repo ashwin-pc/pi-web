@@ -3,6 +3,9 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
 import { defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
+import { createQrSvg } from "../token/qr.js";
+import { createTokenShareUrl } from "../token/tokenShare.js";
+import type { RightPanelManager } from "../layout/rightPanel.js";
 
 export type SettingsController = {
   init: () => void;
@@ -68,6 +71,7 @@ export function createSettings(options: {
   state: AppState;
   elements: AppElements;
   api: ApiClient;
+  rightPanels?: RightPanelManager;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): SettingsController {
   const { state, elements, api, addMessage } = options;
@@ -102,11 +106,68 @@ export function createSettings(options: {
 
     updateQueueToggle();
     updateExpandedComposer();
+    if (!elements.settingsPanel.hidden) renderTokenShare();
   }
 
   function setSettingsStatus(message: string, isError = false) {
     elements.settingsStatusEl.textContent = message;
     elements.settingsStatusEl.classList.toggle("error", isError);
+  }
+
+  function tokenShareUrl() {
+    const token = state.token.trim();
+    return token ? createTokenShareUrl(token) : "";
+  }
+
+  function renderQr(container: HTMLElement, shareUrl: string, label: string) {
+    container.replaceChildren();
+    try {
+      container.append(createQrSvg(shareUrl, label));
+    } catch (error) {
+      const message = document.createElement("p");
+      message.className = "settingsHint";
+      message.textContent = error instanceof Error ? error.message : String(error);
+      container.append(message);
+    }
+  }
+
+  function renderTokenShare() {
+    const shareUrl = tokenShareUrl();
+    elements.tokenShareSection.hidden = !shareUrl;
+    elements.tokenShareUrl.value = shareUrl;
+    elements.tokenShareQr.replaceChildren();
+    if (shareUrl) renderQr(elements.tokenShareQr, shareUrl, "pi web token link QR code");
+  }
+
+  function openTokenShareFullscreen() {
+    const shareUrl = tokenShareUrl();
+    if (!shareUrl) return;
+
+    renderQr(elements.tokenShareFullscreenQr, shareUrl, "Full-screen pi web token link QR code");
+    elements.tokenShareFullscreen.hidden = false;
+    elements.tokenShareFullscreenCloseButton.focus();
+    elements.tokenShareFullscreen.requestFullscreen?.().catch(() => undefined);
+  }
+
+  function closeTokenShareFullscreen(focusButton = true) {
+    if (elements.tokenShareFullscreen.hidden) return;
+    const shouldExitNativeFullscreen = document.fullscreenElement === elements.tokenShareFullscreen;
+    elements.tokenShareFullscreen.hidden = true;
+    elements.tokenShareFullscreenQr.replaceChildren();
+    if (shouldExitNativeFullscreen) document.exitFullscreen().catch(() => undefined);
+    if (focusButton && !elements.settingsPanel.hidden) elements.tokenShareFullscreenButton.focus();
+  }
+
+  async function copyTokenShareUrl() {
+    const value = elements.tokenShareUrl.value;
+    if (!value) return;
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
+    else {
+      elements.tokenShareUrl.select();
+      document.execCommand("copy");
+      elements.tokenShareUrl.blur();
+    }
+    setSettingsStatus("Copied token link");
   }
 
   async function patchSettings(patch: unknown) {
@@ -132,6 +193,7 @@ export function createSettings(options: {
 
   function openSettings() {
     blurActiveEditableOnMobile();
+    renderTokenShare();
     elements.settingsBackdrop.hidden = false;
     elements.settingsPanel.hidden = false;
     setSettingsStatus("");
@@ -139,6 +201,7 @@ export function createSettings(options: {
   }
 
   function closeSettings() {
+    closeTokenShareFullscreen(false);
     elements.settingsPanel.hidden = true;
     elements.settingsBackdrop.hidden = true;
     elements.settingsButton.focus();
@@ -149,10 +212,26 @@ export function createSettings(options: {
     applySettings(state.settings);
 
     elements.settingsButton.addEventListener("click", openSettings);
+    elements.tokenShareFullscreenButton.addEventListener("click", openTokenShareFullscreen);
+    elements.tokenShareFullscreenCloseButton.addEventListener("click", () => closeTokenShareFullscreen());
+    elements.tokenShareFullscreen.addEventListener("click", (event) => {
+      if (event.target === elements.tokenShareFullscreen) closeTokenShareFullscreen();
+    });
+    document.addEventListener("fullscreenchange", () => {
+      if (!document.fullscreenElement && !elements.tokenShareFullscreen.hidden) closeTokenShareFullscreen(false);
+    });
+    elements.tokenShareCopyButton.addEventListener("click", () => {
+      copyTokenShareUrl().catch((error) => setSettingsStatus(error instanceof Error ? error.message : String(error), true));
+    });
     elements.settingsCloseButton.addEventListener("click", closeSettings);
     elements.settingsBackdrop.addEventListener("click", closeSettings);
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !elements.settingsPanel.hidden) closeSettings();
+      if (event.key !== "Escape") return;
+      if (!elements.tokenShareFullscreen.hidden) {
+        closeTokenShareFullscreen();
+        return;
+      }
+      if (!elements.settingsPanel.hidden) closeSettings();
     });
 
     elements.settingDensitySelect.addEventListener("change", () => {

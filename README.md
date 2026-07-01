@@ -179,7 +179,7 @@ Then open:
 https://<machine-name>.<tailnet>.ts.net
 ```
 
-Click **Token** in the UI and paste the `PI_WEB_TOKEN` value.
+Enter `PI_WEB_TOKEN` on the token screen, or use **Scan QR** if another signed-in pi-web tab is showing the Settings → Token sharing QR code.
 
 ## Direct Tailnet bind
 

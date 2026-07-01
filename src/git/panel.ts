@@ -5,8 +5,9 @@ import { renderDiffView } from "./diffView.js";
 import { renderGraphView } from "./graphView.js";
 import { renderStatusView } from "./statusView.js";
 import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState, GitStatusResponse } from "./types.js";
+import type { RightPanelManager } from "../layout/rightPanel.js";
 
-export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; apiHeaders: () => HeadersInit; getSessionId?: () => string }) {
+export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; rightPanels?: RightPanelManager; apiHeaders: () => HeadersInit; getSessionId?: () => string }) {
   const { button, panel, apiHeaders, getSessionId } = options;
   const primary = panel.querySelector<HTMLElement>("#gitPrimaryPane")!;
   const detail = panel.querySelector<HTMLElement>("#gitDetailPane")!;

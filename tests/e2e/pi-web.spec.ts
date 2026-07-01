@@ -484,6 +484,49 @@ test.describe("composer layout", () => {
     expect(state.thinkingLevel).toBe("off");
   });
 
+  test("model settings popover stays open after mobile model selection", async ({ page }) => {
+    const models = [
+      { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },
+      { provider: "mock", id: "other", name: "Other Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },
+    ];
+    let current = models[0];
+    await page.route("**/api/models**", async (route) => {
+      await route.fulfill({
+        json: { ok: true, cwd: process.cwd(), current, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"], models },
+      });
+    });
+    await page.route("**/api/model", async (route) => {
+      const body = route.request().postDataJSON() as { provider?: string; id?: string; thinkingLevel?: string };
+      current = models.find((model) => model.provider === body.provider && model.id === body.id) || current;
+      await route.fulfill({
+        json: { ok: true, sessionId: "mock-current", cwd: process.cwd(), model: current, thinkingLevel: body.thinkingLevel || "medium", thinkingLevels: ["off", "low", "medium", "high"] },
+      });
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/");
+    await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(page.locator("#modelSelect")).toHaveValue("mock/model");
+
+    await page.locator("#modelSelect").selectOption("mock/other");
+    await expect(page.locator("#modelSettingsButton")).toBeEnabled();
+
+    await page.evaluate(() => {
+      document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
+    });
+
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("aria-expanded", "true");
+    await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
+    await expect(page.locator("#modelSettingsButton")).toContainText("mock/other");
+
+    await page.mouse.click(5, 5);
+    await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+  });
+
   test("model settings popover is not clipped on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/");

@@ -17,6 +17,7 @@ test.describe("token overlay", () => {
     await page.goto("/");
     await expect(page.locator("#tokenOverlay")).toBeVisible();
     await expect(page.locator("#tokenInput")).toBeVisible();
+    await expect(page.locator("#tokenScanButton")).toBeVisible();
   });
 
   test("main UI is behind the overlay when token required", async ({ page }) => {
@@ -64,6 +65,25 @@ test.describe("token overlay", () => {
     await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
     await expect(page.locator("#prompt")).toBeVisible();
     expect(page.url()).not.toContain("token=");
+  });
+
+  test("settings shows an inline token QR share link after login", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
+
+    await page.locator("#sessionButton").click();
+    await page.locator("#settingsButton").click();
+    await expect(page.locator("#tokenShareSection")).toBeVisible();
+    await expect(page.locator("#tokenShareQr svg")).toBeVisible();
+    await expect(page.locator("#tokenShareUrl")).toHaveValue(/token=test-secret/);
+
+    await page.locator("#tokenShareFullscreenButton").click();
+    await expect(page.locator("#tokenShareFullscreen")).toBeVisible();
+    await expect(page.locator("#tokenShareFullscreenQr svg")).toBeVisible();
+    await page.locator("#tokenShareFullscreenCloseButton").click();
+    await expect(page.locator("#tokenShareFullscreen")).toBeHidden();
   });
 });
 

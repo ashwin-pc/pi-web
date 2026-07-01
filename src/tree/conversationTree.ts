@@ -3,6 +3,7 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
+import type { RightPanelManager } from "../layout/rightPanel.js";
 
 export type ConversationTreeController = {
   init: () => void;
@@ -293,6 +294,7 @@ export function createConversationTree(options: {
   state: AppState;
   elements: AppElements;
   api: ApiClient;
+  rightPanels?: RightPanelManager;
   composer: ComposerController;
   updateMeta: (data: any) => void;
   refreshMessages: () => Promise<void>;

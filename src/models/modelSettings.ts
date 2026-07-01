@@ -182,7 +182,7 @@ export function createModelSettings(options: {
       setModelSettingsOpen(elements.modelSettingsPopover.hidden);
     });
     elements.modelSettingsPopover.addEventListener("click", (event) => event.stopPropagation());
-    document.addEventListener("click", (event) => {
+    document.addEventListener("pointerdown", (event) => {
       if (!elements.modelSettingsPopover.hidden && !elements.modelControl.contains(event.target as Node)) setModelSettingsOpen(false);
     });
     document.addEventListener("keydown", (event) => {

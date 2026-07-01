@@ -1,12 +1,14 @@
 import "./style.css";
 import "./components/diff.css";
 import "./git/git.css";
+import "./styles/appLayout.css";
 import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
 import { getAppElements, initAppHeightSync } from "./app/elements.js";
 import { initSwAutoReload } from "./app/sw-update.js";
 import { setIcon } from "./app/icons.js";
 import { initKeyboardShortcuts } from "./app/shortcuts.js";
+import { createRightPanelManager } from "./layout/rightPanel.js";
 import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
@@ -28,6 +30,7 @@ initSwAutoReload();
 
 const elements = getAppElements();
 const state = createAppState();
+const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
 const markdown = createMarkdownRenderer(elements.messagesEl);
 
@@ -240,6 +243,7 @@ settings = createSettings({
   state,
   elements,
   api,
+  rightPanels,
   addMessage: messages.addMessage,
 });
 
@@ -281,6 +285,7 @@ conversationTree = createConversationTree({
   state,
   elements,
   api,
+  rightPanels,
   composer,
   updateMeta,
   refreshMessages,
@@ -349,7 +354,7 @@ initKeyboardShortcuts([
   onError: showSystemError,
 });
 composer.updateQueueToggle();
-initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 window.addEventListener("popstate", () => {
   const nextSessionId = readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;

@@ -7,10 +7,16 @@
 .tokenOverlay[hidden] { display: none; }
 .tokenForm {
   display: flex; flex-direction: column; gap: 12px;
-  width: 320px; padding: 24px;
+  width: min(380px, calc(100vw - 32px)); padding: 24px;
   background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
 }
 .tokenForm label { font-size: 0.9rem; color: var(--fg-muted); }
+.tokenHint {
+  margin: -4px 0 0;
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
 .tokenForm input {
   background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
   color: var(--fg); padding: 8px 10px; font-size: 1rem; outline: none;
@@ -19,4 +25,31 @@
 .tokenForm button {
   padding: 8px; border-radius: 4px; border: 1px solid #256b97;
   font-size: 0.95rem; cursor: pointer; color: var(--fg);
+}
+.tokenActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.tokenScanPanel {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+.tokenScanPanel[hidden] { display: none; }
+.tokenScanPanel video {
+  width: 100%;
+  max-height: 260px;
+  border-radius: 6px;
+  background: #000;
+  object-fit: cover;
+}
+.tokenScanStatus {
+  min-height: 1.2em;
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
 }
