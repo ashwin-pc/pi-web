@@ -157,6 +157,31 @@ describe("git status colors", () => {
   });
 });
 
+describe("configurable accent color", () => {
+  const baseCss = readFileSync(new URL("../src/styles/base.css", import.meta.url), "utf8");
+  const composerCss = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
+  const sessionsCss = readFileSync(new URL("../src/styles/sessions.css", import.meta.url), "utf8");
+  const settingsHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const settingsTs = readFileSync(new URL("../src/settings/settings.ts", import.meta.url), "utf8");
+
+  it("exposes a settings color input and applies it to the root accent token", () => {
+    expect(baseCss).toContain("--accent: #7dd3fc;");
+    expect(settingsHtml).toContain('id="settingAccentColorInput" type="color"');
+    expect(settingsTs).toContain('document.documentElement.style.setProperty("--accent", settings.appearance.accentColor || defaultAccentColor)');
+    expect(settingsTs).toContain("patchSettings({ appearance: { accentColor } })");
+  });
+
+  it("routes primary accent UI through the configurable token", () => {
+    expect(composerCss).toContain(".primaryAction {\n  background: color-mix(in srgb, var(--accent)");
+    expect(composerCss).toContain("box-shadow: inset 0 0 0 2px var(--accent);");
+    expect(composerCss).toContain(".contextMeter.active .contextMeterFill { background: var(--accent); }");
+    expect(composerCss).toContain("--thinking-accent: var(--accent);");
+    expect(sessionsCss).toContain(".sessionUnreadDot {");
+    expect(sessionsCss).toContain("background: var(--accent);");
+    expect(sessionsCss).toContain(".sessionBarTab.active {\n  border-top-color: var(--accent);");
+  });
+});
+
 describe("slash command compact styling", () => {
   const css = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
 
@@ -171,13 +196,13 @@ describe("slash command compact styling", () => {
     expect(css).toContain(".slashCommandItem.active .slashCommandDescription,\n.slashCommandItem:hover .slashCommandDescription { display: block; }");
   });
 
-  it("uses the legacy blue for context usage over 50%", () => {
-    expect(css).toContain(".contextMeter.active .contextMeterFill { background: #7dd3fc; }");
+  it("uses the configurable accent for context usage over 50%", () => {
+    expect(css).toContain(".contextMeter.active .contextMeterFill { background: var(--accent); }");
   });
 
   it("renders a dynamic clipped brain overlay for thinking level", () => {
     expect(css).toContain("--thinking-fill: 0%;");
-    expect(css).toContain("--thinking-accent: #7dd3fc;");
+    expect(css).toContain("--thinking-accent: var(--accent);");
     expect(css).toContain(".modelSettingsThinkingIcon::before {");
     expect(css).toContain("height: var(--thinking-fill, 0%)");
     expect(css).toContain(".modelSettingsThinkingIconFill {");

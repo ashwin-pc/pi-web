@@ -56,10 +56,13 @@ export type SessionStats = {
   contextUsage?: ContextUsage | null;
 };
 
+export const defaultAccentColor = "#7dd3fc";
+
 export type PiWebSettings = {
   version: 1;
   appearance: {
     density: "comfortable" | "compact";
+    accentColor: string;
   };
   composer: {
     queueMode: QueueMode;
@@ -292,7 +295,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
-  appearance: { density: "comfortable" },
+  appearance: { density: "comfortable", accentColor: defaultAccentColor },
   composer: { queueMode: "steer", expanded: false },
   defaults: {},
 };

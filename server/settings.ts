@@ -10,10 +10,13 @@ export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green
 
 const sessionMarkerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green"]);
 
+export const defaultAccentColor = "#7dd3fc";
+
 export type PiWebSettings = {
   version: 1;
   appearance: {
     density: "comfortable" | "compact";
+    accentColor: string;
   };
   composer: {
     queueMode: "steer" | "followUp";
@@ -29,6 +32,7 @@ export type PiWebSettings = {
 export type PiWebSettingsPatch = Partial<{
   appearance: Partial<{
     density: unknown;
+    accentColor: unknown;
   }>;
   composer: Partial<{
     queueMode: unknown;
@@ -45,6 +49,7 @@ export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
   appearance: {
     density: "comfortable",
+    accentColor: defaultAccentColor,
   },
   composer: {
     queueMode: "steer",
@@ -74,6 +79,17 @@ export function normalizeSessionBucketColor(value: unknown): SessionMarkerColorI
     : undefined;
 }
 
+export function normalizeAccentColor(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+    const [, r, g, b] = trimmed;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return undefined;
+}
+
 export function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
@@ -82,6 +98,7 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   if (appearance?.density === "compact" || appearance?.density === "comfortable") {
     settings.appearance.density = appearance.density;
   }
+  settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
 
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "followUp" || composer?.queueMode === "steer") {
@@ -109,6 +126,8 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
     if (patch.appearance.density === "comfortable" || patch.appearance.density === "compact") {
       next.appearance.density = patch.appearance.density;
     }
+    const accentColor = normalizeAccentColor(patch.appearance.accentColor);
+    if (accentColor) next.appearance.accentColor = accentColor;
   }
 
   if (isRecord(patch.composer)) {

@@ -2,7 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
-import { defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
+import { defaultAccentColor, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
 import { createQrSvg } from "../token/qr.js";
 import { createTokenShareUrl } from "../token/tokenShare.js";
 import type { RightPanelManager } from "../layout/rightPanel.js";
@@ -21,12 +21,24 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+function normalizeAccentColor(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(trimmed)) {
+    const [, r, g, b] = trimmed;
+    return `#${r}${r}${g}${g}${b}${b}`.toLowerCase();
+  }
+  return undefined;
+}
+
 function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
 
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
   if (appearance?.density === "compact" || appearance?.density === "comfortable") settings.appearance.density = appearance.density;
+  settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
 
   const composer = isRecord(value.composer) ? value.composer : undefined;
   if (composer?.queueMode === "steer" || composer?.queueMode === "followUp") settings.composer.queueMode = composer.queueMode;
@@ -98,7 +110,9 @@ export function createSettings(options: {
     state.editorExpanded = settings.composer.expanded;
 
     document.documentElement.dataset.density = settings.appearance.density;
+    document.documentElement.style.setProperty("--accent", settings.appearance.accentColor || defaultAccentColor);
     elements.settingDensitySelect.value = settings.appearance.density;
+    elements.settingAccentColorInput.value = settings.appearance.accentColor || defaultAccentColor;
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
@@ -236,6 +250,14 @@ export function createSettings(options: {
 
     elements.settingDensitySelect.addEventListener("change", () => {
       patchSettings({ appearance: { density: elements.settingDensitySelect.value } }).catch((error) => {
+        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      });
+    });
+
+    elements.settingAccentColorInput.addEventListener("change", () => {
+      const accentColor = normalizeAccentColor(elements.settingAccentColorInput.value) || defaultAccentColor;
+      patchSettings({ appearance: { accentColor } }).catch((error) => {
         setSettingsStatus(error instanceof Error ? error.message : String(error), true);
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       });

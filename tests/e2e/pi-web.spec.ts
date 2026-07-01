@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
     data: {
-      appearance: { density: "comfortable" },
+      appearance: { density: "comfortable", accentColor: "#7dd3fc" },
       composer: { queueMode: "steer", expanded: false },
       defaults: { model: null, thinkingLevel: null },
     },
@@ -401,6 +401,40 @@ test.describe("composer layout", () => {
     const styles = await page.locator("#modelSettingsButton").evaluate((el) => getComputedStyle(el));
     expect(styles.outlineStyle).toBe("none");
     expect(styles.boxShadow).toContain("inset");
+  });
+
+  test("accent color setting updates primary actions, focus states, and unread indicators", async ({ page }) => {
+    await page.goto("/");
+
+    const beforeButtonBackground = await page.locator("#primaryButton").evaluate((el) => getComputedStyle(el).backgroundColor);
+    await page.locator("#sessionButton").click();
+    await page.locator("#settingsButton").click();
+    await expect(page.locator("#settingAccentColorInput")).toHaveValue("#7dd3fc");
+    await page.locator("#settingAccentColorInput").evaluate((input) => {
+      const colorInput = input as HTMLInputElement;
+      colorInput.value = "#ff00aa";
+      colorInput.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#ff00aa");
+    const styles = await page.evaluate(() => {
+      const dot = document.createElement("span");
+      dot.className = "sessionUnreadDot";
+      document.body.append(dot);
+      const unreadDotBackground = getComputedStyle(dot).backgroundColor;
+      dot.remove();
+      const prompt = document.querySelector<HTMLElement>("#prompt")!;
+      prompt.focus();
+      return {
+        buttonBackground: getComputedStyle(document.querySelector<HTMLElement>("#primaryButton")!).backgroundColor,
+        promptFocusBorder: getComputedStyle(prompt).borderBottomColor,
+        unreadDotBackground,
+      };
+    });
+
+    expect(styles.buttonBackground).not.toBe(beforeButtonBackground);
+    expect(styles.promptFocusBorder).toBe("rgb(255, 0, 170)");
+    expect(styles.unreadDotBackground).toBe("rgb(255, 0, 170)");
   });
 
   test("context meter shows known usage details without low-usage label", async ({ page }) => {

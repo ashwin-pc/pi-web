@@ -79,6 +79,21 @@
   color: var(--text);
   padding: 6px 8px;
 }
+.settingsColorField input {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 4px 6px;
+  cursor: pointer;
+}
+.settingsColorField input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
 .settingsCheckbox {
   display: flex;
   align-items: center;
