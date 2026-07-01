@@ -17,19 +17,16 @@ pi-web is designed to feel like the core pi agent in a browser: small, direct, s
 - Code-review friendly: inspect tool output, edits, Git status, commits, and diffs
 - Session-oriented: manage ongoing work with tabs, drawers, pins, buckets, filters, and conversation navigation
 
-## What changed in 0.4.0?
+## What changed in 0.4.1?
 
-0.4.0 focuses on visual polish and a more compact default workflow:
+0.4.1 makes first-run setup easier for new users:
 
-- The default dark theme is now a more neutral black/gray palette
-- Active tabs use a dark gray fill with the legacy blue top border, while marked tabs keep their marker-colored border
-- Inactive marked tabs are brighter so bucket colors are easier to scan
-- The composer collapses to a compact inactive bar with model/reasoning and attach controls visible
-- Running sessions can still be stopped directly from the compact composer
-- Context utilization over 50% uses the legacy blue context bar
-- README-backed visual snapshots were refreshed for the current UI
+- `pi-web` detects when no Pi provider login, API key, or custom model config is available
+- first run prompts in the terminal to open the bundled Pi CLI
+- run `/login` there, connect your LLM provider, exit Pi, and pi-web continues starting
+- set `PI_WEB_SKIP_PROVIDER_ONBOARDING=1` to skip the provider onboarding prompt
 
-See the [0.4.0 release notes](docs/releases/0.4.0.md) for the fuller changelog.
+See the [0.4.1 release notes](docs/releases/0.4.1.md) for the fuller changelog.
 
 ## Install
 
@@ -46,7 +43,13 @@ npm i -g @ashwin-pc/pi-web
 pi-web
 ```
 
-First run: if pi-web does not find an existing Pi provider login, API key, or custom model config, it prompts in the same terminal to open the Pi CLI. Run `/login` there, connect your provider, exit Pi, and pi-web continues starting. You can skip this prompt with `PI_WEB_SKIP_PROVIDER_ONBOARDING=1`.
+Or run without a global install:
+
+```bash
+npx -y @ashwin-pc/pi-web@latest
+```
+
+First run: if pi-web does not find an existing Pi provider login, API key, or custom model config, it prompts in the same terminal to open the bundled Pi CLI. Run `/login` there, connect your provider, exit Pi, and pi-web continues starting. You can skip this prompt with `PI_WEB_SKIP_PROVIDER_ONBOARDING=1`.
 
 From a GitHub release asset:
 
