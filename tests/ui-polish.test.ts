@@ -169,6 +169,9 @@ describe("configurable accent color", () => {
     expect(settingsHtml).toContain('id="settingAccentMenuButton"');
     expect(settingsHtml).toContain('id="settingAccentPopover" class="settingsAccentPopover"');
     expect(settingsHtml).toContain('class="settingsAccentSwatch"');
+    expect(settingsHtml).toContain('Nocturne Sky');
+    expect(settingsHtml).toContain('Velvet Orchid');
+    expect(settingsHtml).toContain('class="settingsAccentSwatchLabel"');
     expect(settingsHtml).toContain('id="settingAccentColorInput" type="text"');
     expect(settingsHtml).toContain('id="settingAccentPreviewButton" type="button"');
     expect(settingsHtml).toContain('id="settingAccentCancelButton" type="button"');

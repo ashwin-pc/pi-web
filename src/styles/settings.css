@@ -88,54 +88,65 @@
   min-width: 0;
 }
 .settingsAccentMenuButton {
+  min-width: 0;
   min-height: 34px;
-  max-width: 100%;
+  width: min(218px, 100%);
   display: inline-flex;
   align-items: center;
   gap: 8px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: color-mix(in srgb, var(--panel) 92%, #fff 3%);
+  background: linear-gradient(135deg, color-mix(in srgb, var(--panel) 92%, #fff 3%), color-mix(in srgb, var(--settings-accent-preview, var(--accent)) 9%, var(--panel)));
   color: var(--text);
   padding: 6px 10px;
   cursor: pointer;
 }
 .settingsAccentMenuButton:hover,
 .settingsAccentMenuButton[aria-expanded="true"] {
-  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
-  background: color-mix(in srgb, var(--panel-2) 88%, #fff 5%);
+  border-color: color-mix(in srgb, var(--settings-accent-preview, var(--accent)) 58%, var(--border));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--panel-2) 88%, #fff 5%), color-mix(in srgb, var(--settings-accent-preview, var(--accent)) 14%, var(--panel)));
 }
 .settingsAccentMenuButton:focus-visible {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+  border-color: var(--settings-accent-preview, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--settings-accent-preview, var(--accent)) 24%, transparent);
 }
 .settingsAccentCurrentSwatch {
   width: 14px;
   min-width: 14px;
   height: 14px;
   border-radius: 999px;
-  background: var(--settings-accent-preview, var(--accent));
+  background: radial-gradient(circle at 30% 24%, rgba(255,255,255,.75), transparent 24%), var(--settings-accent-preview, var(--accent));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--settings-accent-preview, var(--accent)) 16%, transparent), inset 0 0 0 1px rgba(0,0,0,.35);
+}
+#settingAccentMenuName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .settingsAccentMenuValue,
 .settingsAccentMenuChevron {
   color: var(--muted);
 }
 .settingsAccentMenuValue {
+  flex: 0 0 auto;
   font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+.settingsAccentMenuChevron { margin-left: auto; }
 .settingsAccentPopover {
   position: absolute;
   top: calc(100% + 8px);
   right: 0;
   z-index: 40;
   display: grid;
-  width: min(292px, calc(100vw - 56px));
+  width: min(336px, calc(100vw - 56px));
   gap: 12px;
   border: 1px solid color-mix(in srgb, var(--border) 82%, #fff 8%);
-  border-radius: 16px;
-  background: color-mix(in srgb, var(--panel) 96%, black);
+  border-radius: 18px;
+  background:
+    radial-gradient(circle at 82% 0%, color-mix(in srgb, var(--accent) 14%, transparent), transparent 36%),
+    linear-gradient(180deg, color-mix(in srgb, var(--panel) 96%, #fff 2%), color-mix(in srgb, var(--panel) 96%, black));
   box-shadow: 0 24px 70px rgba(0,0,0,.58);
   padding: 12px;
 }
@@ -147,6 +158,11 @@
   color: var(--muted);
   font-size: 12px;
 }
+.settingsAccentPopoverHeader span:first-child {
+  color: var(--text);
+  font-weight: 700;
+  letter-spacing: .01em;
+}
 .settingsAccentPopoverHeader span:last-child {
   color: var(--accent);
   font-weight: 700;
@@ -155,42 +171,81 @@
 }
 .settingsAccentSwatches {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
 .settingsAccentSwatch {
   position: relative;
-  width: 30px;
-  min-width: 30px;
-  height: 30px;
-  min-height: 30px;
-  justify-self: center;
-  border: 1px solid color-mix(in srgb, var(--border) 72%, #fff 12%);
-  border-radius: 999px;
-  background: var(--swatch-color);
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.32), 0 8px 18px rgba(0,0,0,.24);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 48px;
+  border: 1px solid color-mix(in srgb, var(--border) 76%, #fff 10%);
+  border-radius: 13px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--swatch-color) 16%, transparent), transparent 62%),
+    color-mix(in srgb, var(--panel-2) 58%, transparent);
+  color: var(--text);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.045), 0 10px 24px rgba(0,0,0,.18);
   cursor: pointer;
-  padding: 0;
+  padding: 8px;
+  text-align: left;
+}
+.settingsAccentSwatchPreview {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  background: radial-gradient(circle at 30% 24%, rgba(255,255,255,.78), transparent 24%), var(--swatch-color);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--swatch-color) 16%, transparent), inset 0 0 0 1px rgba(0,0,0,.32);
+}
+.settingsAccentSwatchCopy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+.settingsAccentSwatchLabel {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.settingsAccentSwatchHex {
+  color: var(--muted);
+  font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 .settingsAccentSwatch:hover,
 .settingsAccentSwatch:focus-visible {
   outline: none;
-  border-color: color-mix(in srgb, var(--swatch-color) 70%, #fff 20%);
-  box-shadow: inset 0 0 0 1px rgba(0,0,0,.25), 0 0 0 2px color-mix(in srgb, var(--swatch-color) 32%, transparent), 0 8px 18px rgba(0,0,0,.22);
+  border-color: color-mix(in srgb, var(--swatch-color) 62%, #fff 18%);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--swatch-color) 24%, transparent), transparent 64%),
+    color-mix(in srgb, var(--panel-2) 78%, #fff 4%);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.07), 0 0 0 2px color-mix(in srgb, var(--swatch-color) 22%, transparent), 0 12px 26px rgba(0,0,0,.24);
 }
 .settingsAccentSwatch[aria-checked="true"] {
-  outline: 2px solid var(--swatch-color);
-  outline-offset: 2px;
+  border-color: color-mix(in srgb, var(--swatch-color) 72%, #fff 18%);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--swatch-color) 30%, transparent), transparent 66%),
+    color-mix(in srgb, var(--panel-2) 84%, #fff 5%);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--swatch-color) 58%, transparent), 0 0 0 2px color-mix(in srgb, var(--swatch-color) 22%, transparent), 0 12px 26px rgba(0,0,0,.24);
 }
 .settingsAccentSwatch[aria-checked="true"]::after {
   content: "";
   position: absolute;
-  inset: 8px 11px 10px 11px;
-  border: 2px solid rgba(0,0,0,.72);
+  top: 9px;
+  right: 10px;
+  width: 5px;
+  height: 9px;
+  border: 2px solid var(--swatch-color);
   border-top: 0;
   border-left: 0;
   transform: rotate(45deg);
-  filter: drop-shadow(0 0 1px rgba(255,255,255,.85));
+  filter: drop-shadow(0 0 2px rgba(0,0,0,.65));
 }
 .settingsAccentCustom,
 .settingsAccentActions {

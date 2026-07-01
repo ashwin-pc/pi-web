@@ -441,7 +441,7 @@ test.describe("composer layout", () => {
 
     await openSettings();
     await expect(page.locator("#settingAccentMenuButton")).toBeVisible();
-    await expect(page.locator("#settingAccentMenuName")).toHaveText("Noir Sky");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Nocturne Sky");
     await expect(page.locator("#settingAccentMenuValue")).toHaveText("#7dd3fc");
     await expect(page.locator("#settingAccentPopover")).toBeHidden();
 
@@ -450,29 +450,29 @@ test.describe("composer layout", () => {
     await expect(page.locator("#settingAccentColorInput")).toHaveValue("#7dd3fc");
     await expect(page.locator('.settingsAccentSwatch[data-accent-color="#7dd3fc"]')).toHaveAttribute("aria-checked", "true");
 
-    await page.locator('.settingsAccentSwatch[data-accent-color="#f472b6"]').click();
-    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#f472b6");
-    await expect(page.locator("#settingAccentMenuName")).toHaveText("Noir Pink");
-    await expect(page.locator('.settingsAccentSwatch[data-accent-color="#f472b6"]')).toHaveAttribute("aria-checked", "true");
+    await page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]').click();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#d98adf");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Velvet Orchid");
+    await expect(page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]')).toHaveAttribute("aria-checked", "true");
     const preview = await readAccentStyles();
     expect(preview.buttonBackground).not.toBe(before.buttonBackground);
-    expect(preview.promptFocusBorder).toBe("rgb(244, 114, 182)");
-    expect(preview.unreadDotBackground).toBe("rgb(244, 114, 182)");
+    expect(preview.promptFocusBorder).toBe("rgb(217, 138, 223)");
+    expect(preview.unreadDotBackground).toBe("rgb(217, 138, 223)");
 
     await page.locator("#settingAccentCancelButton").click();
     await expect(page.locator("#settingAccentPopover")).toBeHidden();
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#7dd3fc");
-    await expect(page.locator("#settingAccentMenuName")).toHaveText("Noir Sky");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Nocturne Sky");
 
     await page.locator("#settingAccentMenuButton").click();
-    await page.locator('.settingsAccentSwatch[data-accent-color="#f472b6"]').click();
+    await page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]').click();
     await page.locator("#settingAccentApplyButton").click();
     await expect(page.locator("#settingAccentPopover")).toBeHidden();
-    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#f472b6");
-    await expect(page.locator("#settingAccentMenuValue")).toHaveText("#f472b6");
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#d98adf");
+    await expect(page.locator("#settingAccentMenuValue")).toHaveText("#d98adf");
 
     await page.reload();
-    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#f472b6");
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#d98adf");
 
     await openSettings();
     await page.locator("#settingAccentMenuButton").click();
