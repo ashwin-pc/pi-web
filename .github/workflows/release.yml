@@ -45,13 +45,25 @@ jobs:
           cd release
           sha256sum *.tgz > SHA256SUMS.txt
 
+      - name: Choose release channels
+        run: |
+          node <<'NODE' >> "$GITHUB_ENV"
+          const { readFileSync } = require('node:fs');
+          const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+          const prerelease = pkg.version.includes('-');
+          const prereleaseTag = prerelease ? pkg.version.split('-')[1].split('.')[0] : '';
+          console.log(`NPM_DIST_TAG=${prerelease ? prereleaseTag : 'latest'}`);
+          console.log(`GITHUB_PRERELEASE=${prerelease ? 'true' : 'false'}`);
+          NODE
+
       - name: Publish to npm
-        run: npm publish --access public
+        run: npm publish --access public --tag "$NPM_DIST_TAG"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ env.GITHUB_PRERELEASE }}
           files: |
             release/*.tgz
             release/SHA256SUMS.txt

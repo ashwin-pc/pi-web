@@ -46,6 +46,8 @@ npm i -g @ashwin-pc/pi-web
 pi-web
 ```
 
+First run: if pi-web does not find an existing Pi provider login, API key, or custom model config, it prompts in the same terminal to open the Pi CLI. Run `/login` there, connect your provider, exit Pi, and pi-web continues starting. You can skip this prompt with `PI_WEB_SKIP_PROVIDER_ONBOARDING=1`.
+
 From a GitHub release asset:
 
 ```bash
