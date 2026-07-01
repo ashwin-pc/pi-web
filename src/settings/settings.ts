@@ -103,6 +103,20 @@ export function createSettings(options: {
     elements.expandButton.setAttribute("aria-label", elements.expandButton.title);
   }
 
+  function accentSwatchButtons() {
+    return Array.from(elements.settingsPanel.querySelectorAll<HTMLButtonElement>(".settingsAccentSwatch"));
+  }
+
+  function syncAccentControls(accentColor: string) {
+    const normalized = normalizeAccentColor(accentColor) || defaultAccentColor;
+    elements.settingAccentColorInput.value = normalized;
+    for (const button of accentSwatchButtons()) {
+      const selected = normalizeAccentColor(button.dataset.accentColor) === normalized;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-checked", String(selected));
+    }
+  }
+
   function applySettings(rawSettings: PiWebSettings) {
     const settings = normalizeSettings(rawSettings);
     state.settings = settings;
@@ -112,7 +126,7 @@ export function createSettings(options: {
     document.documentElement.dataset.density = settings.appearance.density;
     document.documentElement.style.setProperty("--accent", settings.appearance.accentColor || defaultAccentColor);
     elements.settingDensitySelect.value = settings.appearance.density;
-    elements.settingAccentColorInput.value = settings.appearance.accentColor || defaultAccentColor;
+    syncAccentControls(settings.appearance.accentColor || defaultAccentColor);
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
@@ -198,6 +212,19 @@ export function createSettings(options: {
     setSettingsStatus("Saved");
   }
 
+  function applyAccentColor(value: string | undefined) {
+    const accentColor = normalizeAccentColor(value);
+    if (!accentColor) {
+      setSettingsStatus("Enter a hex color like #7dd3fc", true);
+      return;
+    }
+    elements.settingAccentColorInput.value = accentColor;
+    patchSettings({ appearance: { accentColor } }).catch((error) => {
+      setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+    });
+  }
+
   async function refreshSettings() {
     const res = await fetch("/api/settings", { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
@@ -255,12 +282,14 @@ export function createSettings(options: {
       });
     });
 
-    elements.settingAccentColorInput.addEventListener("change", () => {
-      const accentColor = normalizeAccentColor(elements.settingAccentColorInput.value) || defaultAccentColor;
-      patchSettings({ appearance: { accentColor } }).catch((error) => {
-        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
-        addMessage("system", error instanceof Error ? error.message : String(error), "error");
-      });
+    for (const button of accentSwatchButtons()) {
+      button.addEventListener("click", () => applyAccentColor(button.dataset.accentColor));
+    }
+    elements.settingAccentApplyButton.addEventListener("click", () => applyAccentColor(elements.settingAccentColorInput.value));
+    elements.settingAccentColorInput.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      event.preventDefault();
+      applyAccentColor(elements.settingAccentColorInput.value);
     });
 
     elements.settingQueueModeSelect.addEventListener("change", () => {

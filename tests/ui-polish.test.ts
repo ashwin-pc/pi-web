@@ -164,11 +164,14 @@ describe("configurable accent color", () => {
   const settingsHtml = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   const settingsTs = readFileSync(new URL("../src/settings/settings.ts", import.meta.url), "utf8");
 
-  it("exposes a settings color input and applies it to the root accent token", () => {
+  it("exposes polished preset swatches and an explicit apply action for accent color", () => {
     expect(baseCss).toContain("--accent: #7dd3fc;");
-    expect(settingsHtml).toContain('id="settingAccentColorInput" type="color"');
+    expect(settingsHtml).toContain('class="settingsAccentSwatch"');
+    expect(settingsHtml).toContain('id="settingAccentColorInput" type="text"');
+    expect(settingsHtml).toContain('id="settingAccentApplyButton" type="button"');
     expect(settingsTs).toContain('document.documentElement.style.setProperty("--accent", settings.appearance.accentColor || defaultAccentColor)');
-    expect(settingsTs).toContain("patchSettings({ appearance: { accentColor } })");
+    expect(settingsTs).toContain('querySelectorAll<HTMLButtonElement>(".settingsAccentSwatch")');
+    expect(settingsTs).toContain("applyAccentColor(elements.settingAccentColorInput.value)");
   });
 
   it("routes primary accent UI through the configurable token", () => {

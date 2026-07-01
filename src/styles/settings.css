@@ -79,20 +79,78 @@
   color: var(--text);
   padding: 6px 8px;
 }
-.settingsColorField input {
+.settingsFieldLabel {
+  color: var(--muted);
+  font-size: 13px;
+}
+.settingsAccentField {
+  display: grid;
+  gap: 8px;
+}
+.settingsAccentControl {
+  display: grid;
+  gap: 9px;
+}
+.settingsAccentSwatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.settingsAccentSwatch {
+  position: relative;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  min-height: 30px;
+  border: 1px solid color-mix(in srgb, var(--border) 72%, #fff 12%);
+  border-radius: 999px;
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255,255,255,.48), transparent 28%),
+    var(--swatch-color);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.25), 0 8px 18px rgba(0,0,0,.22);
+  cursor: pointer;
+  padding: 0;
+}
+.settingsAccentSwatch:hover,
+.settingsAccentSwatch:focus-visible {
+  outline: none;
+  border-color: color-mix(in srgb, var(--swatch-color) 70%, #fff 20%);
+  box-shadow: inset 0 0 0 1px rgba(0,0,0,.25), 0 0 0 2px color-mix(in srgb, var(--swatch-color) 36%, transparent), 0 8px 18px rgba(0,0,0,.22);
+}
+.settingsAccentSwatch[aria-checked="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border: 2px solid rgba(0,0,0,.68);
+  border-top: 0;
+  border-left: 0;
+  transform: rotate(45deg) translate(-1px, -2px);
+  filter: drop-shadow(0 0 1px rgba(255,255,255,.8));
+}
+.settingsAccentCustom {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+.settingsAccentCustom input {
   width: 100%;
   min-height: 34px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--panel);
   color: var(--text);
-  padding: 4px 6px;
-  cursor: pointer;
+  padding: 6px 9px;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
-.settingsColorField input:focus-visible {
+.settingsAccentCustom input:focus-visible {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.settingsAccentCustom button {
+  min-height: 34px;
+  padding: 5px 10px;
+  font-size: 12px;
 }
 .settingsCheckbox {
   display: flex;

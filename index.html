@@ -112,10 +112,23 @@
               <option value="compact">Compact</option>
             </select>
           </label>
-          <label class="settingsField settingsColorField">
-            <span>Accent color</span>
-            <input id="settingAccentColorInput" type="color" value="#7dd3fc" aria-label="Accent color" />
-          </label>
+          <div class="settingsAccentField">
+            <div class="settingsFieldLabel">Accent color</div>
+            <div class="settingsAccentControl">
+              <div class="settingsAccentSwatches" role="radiogroup" aria-label="Accent color presets">
+                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#7dd3fc" style="--swatch-color: #7dd3fc" aria-label="Sky blue accent"></button>
+                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#a78bfa" style="--swatch-color: #a78bfa" aria-label="Violet accent"></button>
+                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#f472b6" style="--swatch-color: #f472b6" aria-label="Pink accent"></button>
+                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#34d399" style="--swatch-color: #34d399" aria-label="Green accent"></button>
+                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#f59e0b" style="--swatch-color: #f59e0b" aria-label="Amber accent"></button>
+                <button class="settingsAccentSwatch" type="button" role="radio" data-accent-color="#fb7185" style="--swatch-color: #fb7185" aria-label="Rose accent"></button>
+              </div>
+              <div class="settingsAccentCustom">
+                <input id="settingAccentColorInput" type="text" value="#7dd3fc" maxlength="7" spellcheck="false" aria-label="Custom accent hex color" />
+                <button id="settingAccentApplyButton" type="button">Apply</button>
+              </div>
+            </div>
+          </div>
         </section>
         <section class="settingsSection">
           <h3>Composer</h3>

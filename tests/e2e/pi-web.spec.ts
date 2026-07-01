@@ -403,38 +403,56 @@ test.describe("composer layout", () => {
     expect(styles.boxShadow).toContain("inset");
   });
 
-  test("accent color setting updates primary actions, focus states, and unread indicators", async ({ page }) => {
+  test("accent color setting visibly changes primary actions, focus states, and unread indicators", async ({ page }) => {
     await page.goto("/");
 
-    const beforeButtonBackground = await page.locator("#primaryButton").evaluate((el) => getComputedStyle(el).backgroundColor);
-    await page.locator("#sessionButton").click();
-    await page.locator("#settingsButton").click();
-    await expect(page.locator("#settingAccentColorInput")).toHaveValue("#7dd3fc");
-    await page.locator("#settingAccentColorInput").evaluate((input) => {
-      const colorInput = input as HTMLInputElement;
-      colorInput.value = "#ff00aa";
-      colorInput.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-
-    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#ff00aa");
-    const styles = await page.evaluate(() => {
-      const dot = document.createElement("span");
-      dot.className = "sessionUnreadDot";
-      document.body.append(dot);
-      const unreadDotBackground = getComputedStyle(dot).backgroundColor;
-      dot.remove();
+    const readAccentStyles = () => page.evaluate(() => {
+      let dot = document.querySelector<HTMLElement>("#accentTestUnreadDot");
+      if (!dot) {
+        dot = document.createElement("span");
+        dot.id = "accentTestUnreadDot";
+        dot.className = "sessionUnreadDot";
+        dot.style.position = "fixed";
+        dot.style.left = "8px";
+        dot.style.bottom = "8px";
+        document.body.append(dot);
+      }
       const prompt = document.querySelector<HTMLElement>("#prompt")!;
       prompt.focus();
       return {
+        rootAccent: getComputedStyle(document.documentElement).getPropertyValue("--accent").trim(),
         buttonBackground: getComputedStyle(document.querySelector<HTMLElement>("#primaryButton")!).backgroundColor,
         promptFocusBorder: getComputedStyle(prompt).borderBottomColor,
-        unreadDotBackground,
+        unreadDotBackground: getComputedStyle(dot).backgroundColor,
       };
     });
 
-    expect(styles.buttonBackground).not.toBe(beforeButtonBackground);
-    expect(styles.promptFocusBorder).toBe("rgb(255, 0, 170)");
-    expect(styles.unreadDotBackground).toBe("rgb(255, 0, 170)");
+    const before = await readAccentStyles();
+    expect(before.rootAccent).toBe("#7dd3fc");
+    expect(before.promptFocusBorder).toBe("rgb(125, 211, 252)");
+    expect(before.unreadDotBackground).toBe("rgb(125, 211, 252)");
+
+    await page.locator("#sessionButton").click();
+    await page.locator("#settingsButton").click();
+    await expect(page.locator("#settingAccentColorInput")).toHaveValue("#7dd3fc");
+    await expect(page.locator('.settingsAccentSwatch[data-accent-color="#7dd3fc"]')).toHaveAttribute("aria-checked", "true");
+
+    await page.locator('.settingsAccentSwatch[data-accent-color="#f472b6"]').click();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#f472b6");
+    await expect(page.locator('.settingsAccentSwatch[data-accent-color="#f472b6"]')).toHaveAttribute("aria-checked", "true");
+    const preset = await readAccentStyles();
+    expect(preset.buttonBackground).not.toBe(before.buttonBackground);
+    expect(preset.promptFocusBorder).toBe("rgb(244, 114, 182)");
+    expect(preset.unreadDotBackground).toBe("rgb(244, 114, 182)");
+
+    await page.locator("#settingAccentColorInput").fill("#ff00aa");
+    await page.locator("#settingAccentApplyButton").click();
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#ff00aa");
+    const custom = await readAccentStyles();
+    expect(custom.buttonBackground).not.toBe(before.buttonBackground);
+    expect(custom.buttonBackground).not.toBe(preset.buttonBackground);
+    expect(custom.promptFocusBorder).toBe("rgb(255, 0, 170)");
+    expect(custom.unreadDotBackground).toBe("rgb(255, 0, 170)");
   });
 
   test("context meter shows known usage details without low-usage label", async ({ page }) => {

@@ -53,6 +53,7 @@ export type AppElements = {
   settingsCloseButton: HTMLButtonElement;
   settingDensitySelect: HTMLSelectElement;
   settingAccentColorInput: HTMLInputElement;
+  settingAccentApplyButton: HTMLButtonElement;
   settingQueueModeSelect: HTMLSelectElement;
   settingComposerExpandedCheckbox: HTMLInputElement;
   settingDefaultBucketColorSelect: HTMLSelectElement;
@@ -136,6 +137,7 @@ export function getAppElements(): AppElements {
     settingsCloseButton: requiredElement<HTMLButtonElement>("#settingsCloseButton"),
     settingDensitySelect: requiredElement<HTMLSelectElement>("#settingDensitySelect"),
     settingAccentColorInput: requiredElement<HTMLInputElement>("#settingAccentColorInput"),
+    settingAccentApplyButton: requiredElement<HTMLButtonElement>("#settingAccentApplyButton"),
     settingQueueModeSelect: requiredElement<HTMLSelectElement>("#settingQueueModeSelect"),
     settingComposerExpandedCheckbox: requiredElement<HTMLInputElement>("#settingComposerExpandedCheckbox"),
     settingDefaultBucketColorSelect: requiredElement<HTMLSelectElement>("#settingDefaultBucketColorSelect"),
