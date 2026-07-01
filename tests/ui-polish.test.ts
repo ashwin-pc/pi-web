@@ -165,10 +165,11 @@ describe("configurable accent color", () => {
   const settingsTs = readFileSync(new URL("../src/settings/settings.ts", import.meta.url), "utf8");
 
   it("keeps the accent setting to one row with a preview/save popover", () => {
-    expect(baseCss).toContain("--accent: #b8b5ad;");
+    expect(baseCss).toContain("--accent: #e2b15f;");
     expect(settingsHtml).toContain('id="settingAccentMenuButton"');
     expect(settingsHtml).toContain('id="settingAccentPopover" class="settingsAccentPopover"');
     expect(settingsHtml).toContain('class="settingsAccentSwatch"');
+    expect(settingsHtml).toContain('Antique Gold');
     expect(settingsHtml).toContain('Nocturne Sky');
     expect(settingsHtml).toContain('Velvet Orchid');
     expect(settingsHtml).toContain('Palladium');
@@ -193,6 +194,15 @@ describe("configurable accent color", () => {
     expect(sessionsCss).toContain(".sessionUnreadDot {");
     expect(sessionsCss).toContain("background: var(--accent);");
     expect(sessionsCss).toContain(".sessionBarTab.active {\n  border-top-color: var(--accent);");
+  });
+
+  it("uses a bottom-anchored flame glow for running session tabs", () => {
+    expect(sessionsCss).toContain("/* Full-tab bottom flame glow when session is running */");
+    expect(sessionsCss).toContain("@keyframes sessionBarRunEmber");
+    expect(sessionsCss).toContain("@keyframes sessionBarRunFlame");
+    expect(sessionsCss).toContain("transform-origin: 50% 100%;");
+    expect(sessionsCss).toContain("animation: sessionBarRunFlame 1.45s ease-in-out infinite;");
+    expect(sessionsCss).not.toContain("linear-gradient(\n    60deg,");
   });
 });
 

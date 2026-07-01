@@ -204,7 +204,7 @@ describe("pi-web mock API", () => {
   it("persists and returns settings", async () => {
     const initial = await (await fetch(`${baseUrl}/api/settings`)).json();
     expect(initial.settings.composer.queueMode).toBe("steer");
-    expect(initial.settings.appearance.accentColor).toBe("#b8b5ad");
+    expect(initial.settings.appearance.accentColor).toBe("#e2b15f");
 
     const patchedRes = await fetch(`${baseUrl}/api/settings`, {
       method: "PATCH",

@@ -894,32 +894,75 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Full-tab glow when session is running */
-@keyframes sessionBarRunLoading {
-  0% { background-position: 0 0; }
-  100% { background-position: 200px 0; }
+/* Full-tab bottom flame glow when session is running */
+@keyframes sessionBarRunEmber {
+  0%, 100% {
+    opacity: .36;
+    transform: scaleX(.88) scaleY(.82);
+  }
+  50% {
+    opacity: .72;
+    transform: scaleX(1.08) scaleY(1);
+  }
+}
+@keyframes sessionBarRunFlame {
+  0%, 100% {
+    opacity: .44;
+    transform: translateY(24%) scaleX(.92) scaleY(.68);
+    background-position: 50% 104%, 36% 112%, 64% 110%, 50% 118%;
+  }
+  22% {
+    opacity: .82;
+    transform: translateY(8%) scaleX(1.06) scaleY(1.02);
+    background-position: 49% 86%, 31% 99%, 68% 92%, 50% 108%;
+  }
+  43% {
+    opacity: .58;
+    transform: translateY(18%) scaleX(.96) scaleY(.78);
+    background-position: 52% 106%, 42% 116%, 60% 96%, 50% 114%;
+  }
+  67% {
+    opacity: .9;
+    transform: translateY(2%) scaleX(1) scaleY(1.12);
+    background-position: 51% 78%, 34% 91%, 71% 101%, 50% 104%;
+  }
+  84% {
+    opacity: .66;
+    transform: translateY(13%) scaleX(1.1) scaleY(.88);
+    background-position: 48% 97%, 29% 105%, 66% 90%, 50% 112%;
+  }
 }
 .sessionBarTab.running > * {
   position: relative;
   z-index: 1;
 }
+.sessionBarTab.running::before,
 .sessionBarTab.running::after {
   content: "";
   position: absolute;
-  inset: 0;
   z-index: 0;
-  background: linear-gradient(
-    60deg,
-    rgba(0, 0, 0, 0.42) 0%,
-    transparent 24%,
-    color-mix(in srgb, var(--session-tab-accent) 48%, transparent) 50%,
-    transparent 76%,
-    rgba(0, 0, 0, 0.42) 100%
-  );
-  background-size: 200px 100%;
-  background-repeat: repeat;
-  animation: sessionBarRunLoading 2s linear infinite;
   pointer-events: none;
+}
+.sessionBarTab.running::before {
+  inset: auto 0 -16% 0;
+  height: 72%;
+  background: radial-gradient(ellipse at 50% 100%, color-mix(in srgb, var(--session-tab-accent) 44%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 24%, transparent) 28%, transparent 72%);
+  filter: blur(1px);
+  transform-origin: 50% 100%;
+  animation: sessionBarRunEmber 1.35s ease-in-out infinite;
+}
+.sessionBarTab.running::after {
+  inset: -36% 0 -8% 0;
+  background:
+    radial-gradient(ellipse at 50% 84%, color-mix(in srgb, var(--session-tab-accent) 64%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 34%, transparent) 22%, transparent 56%),
+    radial-gradient(ellipse at 36% 92%, color-mix(in srgb, var(--session-tab-accent) 44%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 18%, transparent) 24%, transparent 48%),
+    radial-gradient(ellipse at 66% 94%, color-mix(in srgb, var(--session-tab-accent) 48%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 18%, transparent) 26%, transparent 50%),
+    linear-gradient(0deg, color-mix(in srgb, var(--session-tab-accent) 38%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 18%, transparent) 34%, transparent 76%);
+  background-repeat: no-repeat;
+  background-size: 82% 98%, 48% 78%, 46% 76%, 100% 100%;
+  filter: saturate(1.08) blur(.15px);
+  transform-origin: 50% 100%;
+  animation: sessionBarRunFlame 1.45s ease-in-out infinite;
 }
 .sessionBarTab.running:not(.active) {
   color: color-mix(in srgb, var(--muted) 76%, transparent);

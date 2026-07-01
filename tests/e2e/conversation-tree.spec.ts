@@ -4,7 +4,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
     data: {
-      appearance: { density: "comfortable", accentColor: "#b8b5ad" },
+      appearance: { density: "comfortable", accentColor: "#e2b15f" },
       composer: { queueMode: "steer", expanded: false },
       defaults: { model: null, thinkingLevel: null },
     },

@@ -26,7 +26,7 @@ describe("pi-web settings", () => {
       defaults: { model: { provider: "", id: "model" }, thinkingLevel: "", sessionBucketColor: "orange" },
     })).toEqual({
       version: 1,
-      appearance: { density: "comfortable", accentColor: "#b8b5ad" },
+      appearance: { density: "comfortable", accentColor: "#e2b15f" },
       composer: { queueMode: "steer", expanded: false },
       defaults: {},
     });
