@@ -10,7 +10,7 @@ export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green
 
 const sessionMarkerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green"]);
 
-export const defaultAccentColor = "#7dd3fc";
+export const defaultAccentColor = "#b8b5ad";
 
 export type PiWebSettings = {
   version: 1;

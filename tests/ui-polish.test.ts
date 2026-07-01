@@ -165,7 +165,7 @@ describe("configurable accent color", () => {
   const settingsTs = readFileSync(new URL("../src/settings/settings.ts", import.meta.url), "utf8");
 
   it("keeps the accent setting to one row with a preview/save popover", () => {
-    expect(baseCss).toContain("--accent: #7dd3fc;");
+    expect(baseCss).toContain("--accent: #b8b5ad;");
     expect(settingsHtml).toContain('id="settingAccentMenuButton"');
     expect(settingsHtml).toContain('id="settingAccentPopover" class="settingsAccentPopover"');
     expect(settingsHtml).toContain('class="settingsAccentSwatch"');

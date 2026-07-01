@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
     data: {
-      appearance: { density: "comfortable", accentColor: "#7dd3fc" },
+      appearance: { density: "comfortable", accentColor: "#b8b5ad" },
       composer: { queueMode: "steer", expanded: false },
       defaults: { model: null, thinkingLevel: null },
     },
@@ -435,20 +435,20 @@ test.describe("composer layout", () => {
     };
 
     const before = await readAccentStyles();
-    expect(before.rootAccent).toBe("#7dd3fc");
-    expect(before.promptFocusBorder).toBe("rgb(125, 211, 252)");
-    expect(before.unreadDotBackground).toBe("rgb(125, 211, 252)");
+    expect(before.rootAccent).toBe("#b8b5ad");
+    expect(before.promptFocusBorder).toBe("rgb(184, 181, 173)");
+    expect(before.unreadDotBackground).toBe("rgb(184, 181, 173)");
 
     await openSettings();
     await expect(page.locator("#settingAccentMenuButton")).toBeVisible();
-    await expect(page.locator("#settingAccentMenuName")).toHaveText("Nocturne Sky");
-    await expect(page.locator("#settingAccentMenuValue")).toHaveText("#7dd3fc");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Palladium");
+    await expect(page.locator("#settingAccentMenuValue")).toHaveText("#b8b5ad");
     await expect(page.locator("#settingAccentPopover")).toBeHidden();
 
     await page.locator("#settingAccentMenuButton").click();
     await expect(page.locator("#settingAccentPopover")).toBeVisible();
-    await expect(page.locator("#settingAccentColorInput")).toHaveValue("#7dd3fc");
-    await expect(page.locator('.settingsAccentSwatch[data-accent-color="#7dd3fc"]')).toHaveAttribute("aria-checked", "true");
+    await expect(page.locator("#settingAccentColorInput")).toHaveValue("#b8b5ad");
+    await expect(page.locator('.settingsAccentSwatch[data-accent-color="#b8b5ad"]')).toHaveAttribute("aria-checked", "true");
 
     await page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]').click();
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#d98adf");
@@ -461,8 +461,8 @@ test.describe("composer layout", () => {
 
     await page.locator("#settingAccentCancelButton").click();
     await expect(page.locator("#settingAccentPopover")).toBeHidden();
-    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#7dd3fc");
-    await expect(page.locator("#settingAccentMenuName")).toHaveText("Nocturne Sky");
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#b8b5ad");
+    await expect(page.locator("#settingAccentMenuName")).toHaveText("Palladium");
 
     await page.locator("#settingAccentMenuButton").click();
     await page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]').click();

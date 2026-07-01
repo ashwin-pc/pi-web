@@ -56,7 +56,7 @@ export type SessionStats = {
   contextUsage?: ContextUsage | null;
 };
 
-export const defaultAccentColor = "#7dd3fc";
+export const defaultAccentColor = "#b8b5ad";
 
 export type PiWebSettings = {
   version: 1;

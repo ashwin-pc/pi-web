@@ -167,7 +167,7 @@ export function createSettings(options: {
     const accentColor = normalizeAccentColor(value);
     if (!accentColor) {
       elements.settingAccentColorInput.setAttribute("aria-invalid", "true");
-      setSettingsStatus("Enter a hex color like #7dd3fc", true);
+      setSettingsStatus("Enter a hex color like #b8b5ad", true);
       return false;
     }
     setDocumentAccent(accentColor);
@@ -276,7 +276,7 @@ export function createSettings(options: {
     const accentColor = normalizeAccentColor(elements.settingAccentColorInput.value);
     if (!accentColor) {
       elements.settingAccentColorInput.setAttribute("aria-invalid", "true");
-      setSettingsStatus("Enter a hex color like #7dd3fc", true);
+      setSettingsStatus("Enter a hex color like #b8b5ad", true);
       return;
     }
     patchSettings({ appearance: { accentColor } }).then(() => {
