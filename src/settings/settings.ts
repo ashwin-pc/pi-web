@@ -5,7 +5,7 @@ import { setIcon } from "../app/icons.js";
 import { defaultAccentColor, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
 import { createQrSvg } from "../token/qr.js";
 import { createTokenShareUrl } from "../token/tokenShare.js";
-import type { RightPanelManager } from "../layout/rightPanel.js";
+import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 
 export type SettingsController = {
   init: () => void;
@@ -86,9 +86,10 @@ export function createSettings(options: {
   rightPanels?: RightPanelManager;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): SettingsController {
-  const { state, elements, api, addMessage } = options;
+  const { state, elements, api, rightPanels, addMessage } = options;
   const expandedStorageKey = "pi-web-composer-expanded";
   let hasAppliedSettings = false;
+  let settingsPanelHandle: RightPanelHandle | undefined;
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -307,18 +308,38 @@ export function createSettings(options: {
     applySettings(data.settings);
   }
 
-  function openSettings() {
-    blurActiveEditableOnMobile();
+  function prepareOpenSettings() {
     renderTokenShare();
-    elements.settingsBackdrop.hidden = false;
-    elements.settingsPanel.hidden = false;
     setSettingsStatus("");
+  }
+
+  function afterOpenSettings() {
     elements.settingsCloseButton.focus();
   }
 
-  function closeSettings() {
+  function prepareCloseSettings() {
     closeAccentPopover({ restorePreview: true, focusButton: false });
     closeTokenShareFullscreen(false);
+  }
+
+  function openSettings() {
+    if (settingsPanelHandle) {
+      settingsPanelHandle.open();
+      return;
+    }
+    blurActiveEditableOnMobile();
+    prepareOpenSettings();
+    elements.settingsBackdrop.hidden = false;
+    elements.settingsPanel.hidden = false;
+    afterOpenSettings();
+  }
+
+  function closeSettings() {
+    if (settingsPanelHandle) {
+      settingsPanelHandle.close();
+      return;
+    }
+    prepareCloseSettings();
     elements.settingsPanel.hidden = true;
     elements.settingsBackdrop.hidden = true;
     elements.settingsButton.focus();
@@ -328,7 +349,23 @@ export function createSettings(options: {
     populateBucketColorSelect(elements.settingDefaultBucketColorSelect);
     applySettings(state.settings);
 
-    elements.settingsButton.addEventListener("click", openSettings);
+    settingsPanelHandle = rightPanels?.register({
+      id: "settings",
+      side: "right",
+      panel: elements.settingsPanel,
+      trigger: elements.settingsButton,
+      backdrop: elements.settingsBackdrop,
+      closeButton: elements.settingsCloseButton,
+      width: "380px",
+      minWidth: 320,
+      maxWidth: 560,
+      closeOnEscape: false,
+      onBeforeOpen: prepareOpenSettings,
+      onOpen: afterOpenSettings,
+      onBeforeClose: prepareCloseSettings,
+      focusOnClose: elements.settingsButton,
+    });
+    if (!settingsPanelHandle) elements.settingsButton.addEventListener("click", openSettings);
     elements.tokenShareFullscreenButton.addEventListener("click", openTokenShareFullscreen);
     elements.tokenShareFullscreenCloseButton.addEventListener("click", () => closeTokenShareFullscreen());
     elements.tokenShareFullscreen.addEventListener("click", (event) => {
@@ -340,8 +377,10 @@ export function createSettings(options: {
     elements.tokenShareCopyButton.addEventListener("click", () => {
       copyTokenShareUrl().catch((error) => setSettingsStatus(error instanceof Error ? error.message : String(error), true));
     });
-    elements.settingsCloseButton.addEventListener("click", closeSettings);
-    elements.settingsBackdrop.addEventListener("click", closeSettings);
+    if (!settingsPanelHandle) {
+      elements.settingsCloseButton.addEventListener("click", closeSettings);
+      elements.settingsBackdrop.addEventListener("click", closeSettings);
+    }
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       if (!elements.tokenShareFullscreen.hidden) {

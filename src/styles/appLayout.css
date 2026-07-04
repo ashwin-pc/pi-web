@@ -1,9 +1,13 @@
 :root {
   --app-layout-left-width: 0px;
   --app-layout-right-width: 0px;
+  --app-side-left-active-width: var(--session-drawer-width, 360px);
   --app-side-right-active-width: 420px;
+  --app-chat-min-width: 360px;
 }
 
+.appSidePanel[hidden],
+.appPanelBackdrop[hidden],
 .appRightPanel[hidden],
 .appRightPanelBackdrop[hidden] {
   display: none;
@@ -15,18 +19,65 @@
   border-color: transparent;
 }
 
-@media (min-width: 701px) {
-  body.sessionDrawerOpen {
-    --app-layout-left-width: var(--session-drawer-width);
+.appPanelBackdrop,
+.appRightPanelBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, .42);
+}
+
+.appSidePanel {
+  position: fixed;
+  inset: 0;
+  z-index: 31;
+  width: 100vw;
+  max-width: 100vw;
+  height: var(--app-height);
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  background: color-mix(in srgb, var(--panel) 96%, black);
+  box-shadow: none;
+}
+
+.appSidePanel--left,
+.appSidePanel--right,
+.settingsPanel,
+.conversationTreePanel,
+.gitPanel,
+.sessionDrawer {
+  inset: 0;
+  width: 100vw;
+  max-width: 100vw;
+  height: var(--app-height);
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+}
+
+.appPanelResizeHandle {
+  display: none;
+}
+
+.gitPanel.appSidePanel {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+@media (min-width: 641px) and (min-height: 521px) {
+  body.appLeftPanelOpen {
+    --app-layout-left-width: min(var(--app-side-left-active-width), calc(100vw - var(--app-chat-min-width)));
   }
 
   body.appRightPanelOpen {
-    --app-layout-right-width: min(
-      var(--app-side-right-active-width),
-      max(320px, calc(100vw - var(--app-layout-left-width) - 360px))
-    );
+    --app-layout-right-width: min(var(--app-side-right-active-width), calc(100vw - var(--app-chat-min-width)));
   }
 
+  body.sessionDrawerOpen {
+    --app-layout-left-width: min(var(--app-side-left-active-width), calc(100vw - var(--app-chat-min-width)));
+  }
+
+  body.appPanelOpen .app,
   body.sessionDrawerOpen .app,
   body.appRightPanelOpen .app {
     width: calc(100vw - var(--app-layout-left-width) - var(--app-layout-right-width));
@@ -35,26 +86,163 @@
     margin-right: var(--app-layout-right-width);
   }
 
+  body.appPanelOpen .jumpToLatestButton,
   body.sessionDrawerOpen .jumpToLatestButton,
   body.appRightPanelOpen .jumpToLatestButton {
     left: calc(var(--app-layout-left-width) + (100vw - var(--app-layout-left-width) - var(--app-layout-right-width)) / 2);
   }
 
-  .appRightPanelBackdrop {
+  .appPanelBackdrop,
+  .appRightPanelBackdrop,
+  .sessionBackdrop,
+  .settingsBackdrop,
+  .conversationTreeBackdrop {
     display: none;
   }
 
-  .appRightPanel {
-    position: fixed;
-    inset: 0 0 0 auto;
-    z-index: 31;
-    width: var(--app-layout-right-width);
-    max-width: 100vw;
+  .appSidePanel {
+    height: var(--app-height);
     max-height: none;
-    border: 0;
-    border-left: 1px solid var(--border);
     border-radius: 0;
     background: color-mix(in srgb, var(--panel) 96%, black);
-    box-shadow: -18px 0 60px rgba(0, 0, 0, .35);
+    box-shadow: none;
+    transition: width .16s ease, transform .16s ease;
+  }
+
+  .appSidePanel--left,
+  .sessionDrawer.appSidePanel--left {
+    inset: 0 auto 0 0;
+    width: min(var(--app-side-left-active-width), 100vw);
+    border-right: 1px solid var(--border);
+  }
+
+  .appSidePanel--right,
+  .settingsPanel.appSidePanel--right,
+  .conversationTreePanel.appSidePanel--right,
+  .gitPanel.appSidePanel--right {
+    inset: 0 0 0 auto;
+    width: min(var(--app-side-right-active-width), 100vw);
+    border-left: 1px solid var(--border);
+  }
+
+  .settingsPanel.appSidePanel--right,
+  .conversationTreePanel.appSidePanel--right {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .gitPanel.appSidePanel--right {
+    border-top: 0;
+    border-right: 0;
+    border-bottom: 0;
+  }
+
+  .appPanelResizeHandle {
+    --app-panel-resize-width: 18px;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    z-index: 5;
+    display: block;
+    width: var(--app-panel-resize-width);
+    touch-action: none;
+  }
+
+  .appSidePanel--left > .appPanelResizeHandle {
+    right: calc(-1 * var(--app-panel-resize-width));
+    cursor: col-resize;
+  }
+
+  .appSidePanel--right > .appPanelResizeHandle {
+    left: calc(-1 * var(--app-panel-resize-width));
+    cursor: col-resize;
+  }
+
+  .appPanelResizeHandle::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 1px;
+    background: transparent;
+    transition: background .12s ease;
+  }
+
+  .appSidePanel--left > .appPanelResizeHandle::after { right: 0; }
+  .appSidePanel--right > .appPanelResizeHandle::after { left: 0; }
+
+  .appPanelResizeHandle:hover::after,
+  .appPanelResizeHandle:focus-visible::after,
+  body.appPanelResizing .appPanelResizeHandle::after {
+    background: color-mix(in srgb, var(--accent) 55%, transparent);
+  }
+
+  @media (pointer: coarse) {
+    .appPanelResizeHandle {
+      --app-panel-resize-width: 34px;
+    }
+
+    .appPanelResizeHandle::before {
+      content: "";
+      position: absolute;
+      top: 50%;
+      width: 4px;
+      height: 46px;
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--accent) 30%, transparent);
+      transform: translateY(-50%);
+    }
+
+    .appSidePanel--left > .appPanelResizeHandle::before { right: 7px; }
+    .appSidePanel--right > .appPanelResizeHandle::before { left: 7px; }
+  }
+
+  .appSidePanel.appSidePanel--maximized {
+    inset: 0;
+    z-index: 60;
+    width: 100vw;
+    max-width: 100vw;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .appSidePanel--left.appSidePanel--maximized > .appPanelResizeHandle {
+    right: 0;
+  }
+
+  .appSidePanel--right.appSidePanel--maximized > .appPanelResizeHandle {
+    left: 0;
+  }
+
+  body.appPanelResizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+
+  body.appPanelResizing .appSidePanel {
+    transition: none;
+  }
+}
+
+@media (min-width: 1280px) and (min-height: 521px) {
+  body.appLeftPanelOpen.appRightPanelOpen {
+    --app-layout-left-width: min(var(--app-side-left-active-width), 32vw);
+    --app-layout-right-width: min(var(--app-side-right-active-width), calc(100vw - var(--app-layout-left-width) - var(--app-chat-min-width)));
+  }
+}
+
+@media (max-width: 640px), (max-height: 520px) {
+  .appSidePanel {
+    padding-top: max(0px, env(safe-area-inset-top));
+    padding-bottom: max(0px, env(safe-area-inset-bottom));
+  }
+
+  .sessionDrawer.appSidePanel,
+  .settingsPanel.appSidePanel,
+  .conversationTreePanel.appSidePanel,
+  .gitPanel.appSidePanel {
+    width: 100vw;
+    max-width: 100vw;
   }
 }

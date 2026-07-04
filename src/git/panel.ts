@@ -5,15 +5,16 @@ import { renderDiffView } from "./diffView.js";
 import { renderGraphView } from "./graphView.js";
 import { renderStatusView } from "./statusView.js";
 import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState, GitStatusResponse } from "./types.js";
-import type { RightPanelManager } from "../layout/rightPanel.js";
+import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 
 export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; rightPanels?: RightPanelManager; apiHeaders: () => HeadersInit; getSessionId?: () => string }) {
-  const { button, panel, apiHeaders, getSessionId } = options;
+  const { button, panel, rightPanels, apiHeaders, getSessionId } = options;
   const primary = panel.querySelector<HTMLElement>("#gitPrimaryPane")!;
   const detail = panel.querySelector<HTMLElement>("#gitDetailPane")!;
   const statusTab = panel.querySelector<HTMLButtonElement>("#gitStatusTab")!;
   const graphTab = panel.querySelector<HTMLButtonElement>("#gitGraphTab")!;
   const close = panel.querySelector<HTMLButtonElement>("#gitCloseButton")!;
+  let panelHandle: RightPanelHandle | undefined;
 
   const state: GitState = {
     isOpen: false,
@@ -45,12 +46,20 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     return state.selectedRepo?.path;
   }
 
-  function setOpen(open: boolean) {
-    if (open) blurActiveEditableOnMobile();
+  function applyOpen(open: boolean) {
     state.isOpen = open;
+    if (open) void refresh();
+  }
+
+  function setOpen(open: boolean) {
+    if (panelHandle) {
+      panelHandle.setOpen(open);
+      return;
+    }
+    if (open) blurActiveEditableOnMobile();
     panel.hidden = !open;
     button.classList.toggle("active", open);
-    if (open) void refresh();
+    applyOpen(open);
   }
 
   function chooseRepo(repos: GitRepo[], cwd: string) {
@@ -304,8 +313,23 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     else renderDiffView({ container: detail, file: state.selectedFile, repo: state.selectedFileRepo, diff: state.diff, loading: state.diffLoading, apiHeaders, sessionId: getSessionId?.(), onBack: () => setPrimary("status") });
   }
 
-  button.addEventListener("click", () => setOpen(!state.isOpen));
-  close.addEventListener("click", () => setOpen(false));
+  panelHandle = rightPanels?.register({
+    id: "git",
+    side: "right",
+    panel,
+    trigger: button,
+    closeButton: close,
+    width: "720px",
+    minWidth: 360,
+    maxWidth: 1000,
+    onOpen: () => applyOpen(true),
+    onClose: () => applyOpen(false),
+    focusOnClose: button,
+  });
+  if (!panelHandle) {
+    button.addEventListener("click", () => setOpen(!state.isOpen));
+    close.addEventListener("click", () => setOpen(false));
+  }
   statusTab.addEventListener("click", () => setPrimary("status"));
   graphTab.addEventListener("click", () => setPrimary("graph"));
   render();

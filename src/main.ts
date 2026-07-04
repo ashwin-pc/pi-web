@@ -253,6 +253,7 @@ sessions = createSessions({
   state,
   elements,
   api,
+  rightPanels,
   updateMeta,
   updateThinkingOptions: (levels) => modelSettings.updateThinkingOptions(levels),
   refreshModels: () => modelSettings.refreshModels(),

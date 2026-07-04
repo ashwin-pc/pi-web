@@ -3,7 +3,7 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
-import type { RightPanelManager } from "../layout/rightPanel.js";
+import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 
 export type ConversationTreeController = {
   init: () => void;
@@ -300,11 +300,12 @@ export function createConversationTree(options: {
   refreshMessages: () => Promise<void>;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): ConversationTreeController {
-  const { state, elements, api, composer, updateMeta, refreshMessages, addMessage } = options;
+  const { state, elements, api, rightPanels, composer, updateMeta, refreshMessages, addMessage } = options;
 
   let treeData: ConversationTreeResponse | null = null;
   let selectedId = "";
   let loading = false;
+  let panelHandle: RightPanelHandle | undefined;
 
   const backdrop = document.createElement("div");
   backdrop.className = "conversationTreeBackdrop";
@@ -420,7 +421,7 @@ export function createConversationTree(options: {
   }
 
   function isOpen() {
-    return !panel.hidden;
+    return panelHandle ? panelHandle.isOpen() : !panel.hidden;
   }
 
   function selectedNode() {
@@ -730,22 +731,49 @@ export function createConversationTree(options: {
     }
   }
 
+  function handleOpen() {
+    document.body.classList.toggle("conversationTreeOpen", true);
+    refreshTree().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true));
+    if (!isMobileViewport()) search.focus();
+  }
+
+  function handleClose() {
+    document.body.classList.toggle("conversationTreeOpen", false);
+  }
+
   function setOpen(open: boolean) {
+    if (panelHandle) {
+      panelHandle.setOpen(open);
+      return;
+    }
     if (open) blurActiveEditableOnMobile();
     panel.hidden = !open;
     backdrop.hidden = !open;
-    document.body.classList.toggle("conversationTreeOpen", open);
     elements.conversationTreeButton.setAttribute("aria-expanded", String(open));
-    if (open) {
-      refreshTree().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true));
-      if (!isMobileViewport()) search.focus();
-    }
+    if (open) handleOpen();
+    else handleClose();
   }
 
   function init() {
-    elements.conversationTreeButton.addEventListener("click", () => setOpen(true));
-    closeButton.addEventListener("click", () => setOpen(false));
-    backdrop.addEventListener("click", () => setOpen(false));
+    panelHandle = rightPanels?.register({
+      id: "conversationTree",
+      side: "right",
+      panel,
+      trigger: elements.conversationTreeButton,
+      backdrop,
+      closeButton,
+      width: "520px",
+      minWidth: 340,
+      maxWidth: 760,
+      onOpen: handleOpen,
+      onClose: handleClose,
+      focusOnClose: elements.conversationTreeButton,
+    });
+    if (!panelHandle) {
+      elements.conversationTreeButton.addEventListener("click", () => setOpen(true));
+      closeButton.addEventListener("click", () => setOpen(false));
+      backdrop.addEventListener("click", () => setOpen(false));
+    }
     search.addEventListener("input", renderTree);
     filter.addEventListener("change", renderTree);
     jumpButton.addEventListener("click", () => navigateSelected().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true)));
@@ -759,9 +787,11 @@ export function createConversationTree(options: {
       customInstructions.value = "";
     });
     customSubmit.addEventListener("click", () => navigateSelected({ summarize: true, customInstructions: customInstructions.value.trim() }).catch((error) => setStatus(error instanceof Error ? error.message : String(error), true)));
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && isOpen()) setOpen(false);
-    });
+    if (!panelHandle) {
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && isOpen()) setOpen(false);
+      });
+    }
   }
 
   return {
