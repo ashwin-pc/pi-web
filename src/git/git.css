@@ -4,6 +4,7 @@
   z-index: 20;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  container: git-panel / inline-size;
   width: min(920px, calc(100vw - 32px));
   background: color-mix(in srgb, var(--panel) 97%, black);
   border: 1px solid var(--border);
@@ -130,6 +131,29 @@
 .gitCommitFileStats { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 @media (max-width: 760px) {
   .gitPanel { inset: 0; width: auto; border: 0; border-radius: 0; z-index: 100; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+  .gitPanelHeader { padding: max(6px, env(safe-area-inset-top)) 8px 6px; gap: 6px; }
+  .gitPanelHeader h2 { font-size: 13px; }
+  .gitPanelHeader .iconButton { width: 30px; min-width: 30px; height: 30px; min-height: 30px; }
+  .gitTabs { flex: 1 1 auto; justify-content: center; }
+  .gitTab { flex: 1 1 0; max-width: 88px; height: 28px; min-height: 28px; padding: 2px 8px; }
+  .gitPanelBody { display: block; overflow: hidden; }
+  .gitPrimaryPane, .gitDetailPane { height: 100%; overflow: auto; padding: 10px; font-size: 14px; }
+  .gitCommitList { gap: 8px; }
+  .gitCommitItem { height: auto; min-height: 0; padding: 10px 8px; }
+  .gitCommitBody { gap: 5px; }
+  .gitCommitSubject { font-size: 14px; line-height: 1.35; }
+  .gitCommitMeta, .gitCommitRefs { font-size: 12px; line-height: 1.3; }
+  .gitCommitRail::before { top: -12px; bottom: -12px; }
+  .gitPrimaryPane { border-right: 0; }
+  .gitDetailPane { display: none; }
+  .gitPanel[data-view="diff"] .gitPrimaryPane, .gitPanel[data-view="commit"] .gitPrimaryPane { display: none; }
+  .gitPanel[data-view="diff"] .gitDetailPane, .gitPanel[data-view="commit"] .gitDetailPane { display: block; }
+  .gitImageDiff { grid-template-columns: minmax(0, 1fr); }
+  .gitImagePreview { min-height: 140px; }
+  .gitRebaseButton { flex: 0 0 auto; height: 28px; min-height: 28px; width: 28px; min-width: 28px; }
+}
+
+@container git-panel (max-width: 760px) {
   .gitPanelHeader { padding: max(6px, env(safe-area-inset-top)) 8px 6px; gap: 6px; }
   .gitPanelHeader h2 { font-size: 13px; }
   .gitPanelHeader .iconButton { width: 30px; min-width: 30px; height: 30px; min-height: 30px; }

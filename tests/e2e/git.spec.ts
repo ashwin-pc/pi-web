@@ -62,6 +62,44 @@ test("git status repo accordions switch the selected file", async ({ page }) => 
   await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("b.txt");
 });
 
+test("git panel switches to a single visible pane when its container is narrow", async ({ page }) => {
+  await page.route("**/api/git/repos**", (route) => route.fulfill({ json: {
+    ok: true,
+    cwd: "/workspace",
+    depth: 1,
+    repos: [{ path: ".", root: "/workspace", branch: "main", upstream: "", ahead: 0, behind: 0, dirtyCount: 1, isCurrent: true }],
+  } }));
+  await page.route("**/api/git/status?**", (route) => route.fulfill({ json: {
+    ok: true,
+    isRepo: true,
+    root: "/workspace",
+    branch: "main",
+    upstream: "",
+    defaultRemoteBranch: "",
+    ahead: 0,
+    behind: 0,
+    files: [{ path: "src/git/diffView.ts", indexStatus: " ", worktreeStatus: "M", label: "modified", staged: false }],
+  } }));
+  await page.route("**/api/git/log?**", (route) => route.fulfill({ json: { ok: true, isRepo: true, commits: [] } }));
+  await page.route("**/api/git/diff?**", (route) => route.fulfill({ json: {
+    ok: true,
+    path: "src/git/diffView.ts",
+    staged: false,
+    diff: "diff --git a/src/git/diffView.ts b/src/git/diffView.ts\n--- a/src/git/diffView.ts\n+++ b/src/git/diffView.ts\n@@ -1 +1 @@\n-old\n+new",
+  } }));
+
+  await page.goto("/");
+  await page.locator("#gitButton").click();
+
+  await expect(page.locator("#gitPrimaryPane")).toBeVisible();
+  await expect(page.locator("#gitDetailPane")).toBeHidden();
+
+  await page.locator(".gitFileItem").click();
+
+  await expect(page.locator("#gitPrimaryPane")).toBeHidden();
+  await expect(page.locator("#gitDetailPane")).toBeVisible();
+});
+
 test("git commit detail shows changed files, diff, and layout toggle", async ({ page }) => {
   await page.goto("/");
   await page.locator("#gitButton").click();
