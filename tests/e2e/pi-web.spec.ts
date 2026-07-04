@@ -6,7 +6,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
     data: {
-      appearance: { density: "comfortable", accentColor: "#e2b15f" },
+      appearance: { density: "comfortable", accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
       defaults: { model: null, thinkingLevel: null },
     },
@@ -484,6 +484,31 @@ test.describe("composer layout", () => {
     expect(custom.buttonBackground).not.toBe(preview.buttonBackground);
     expect(custom.promptFocusBorder).toBe("rgb(255, 0, 170)");
     expect(custom.unreadDotBackground).toBe("rgb(255, 0, 170)");
+  });
+
+  test("loading animation setting defaults to fireworks and persists", async ({ page }) => {
+    await page.goto("/");
+
+    const openSettings = async () => {
+      if (await page.locator("#settingsPanel").isVisible()) return;
+      if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
+      await page.locator("#settingsButton").click();
+      await expect(page.locator("#settingsPanel")).toBeVisible();
+    };
+
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.loadingAnimation)).toBe("fireworks");
+    await openSettings();
+    await expect(page.locator("#settingLoadingAnimationSelect")).toHaveValue("fireworks");
+
+    await page.locator("#settingLoadingAnimationSelect").selectOption("pulse");
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.loadingAnimation)).toBe("pulse");
+    const settings = await (await page.request.get("/api/settings")).json();
+    expect(settings.settings.appearance.loadingAnimation).toBe("pulse");
+
+    await page.reload();
+    await expect.poll(() => page.evaluate(() => document.documentElement.dataset.loadingAnimation)).toBe("pulse");
+    await openSettings();
+    await expect(page.locator("#settingLoadingAnimationSelect")).toHaveValue("pulse");
   });
 
   test("context meter shows known usage details without low-usage label", async ({ page }) => {

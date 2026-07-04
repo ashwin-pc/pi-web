@@ -205,12 +205,13 @@ describe("pi-web mock API", () => {
     const initial = await (await fetch(`${baseUrl}/api/settings`)).json();
     expect(initial.settings.composer.queueMode).toBe("steer");
     expect(initial.settings.appearance.accentColor).toBe("#e2b15f");
+    expect(initial.settings.appearance.loadingAnimation).toBe("fireworks");
 
     const patchedRes = await fetch(`${baseUrl}/api/settings`, {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        appearance: { density: "compact", accentColor: "#ff00aa" },
+        appearance: { density: "compact", accentColor: "#ff00aa", loadingAnimation: "pulse" },
         composer: { queueMode: "followUp", expanded: true },
         defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
       }),
@@ -218,7 +219,7 @@ describe("pi-web mock API", () => {
     expect(patchedRes.status).toBe(200);
     const patched = await patchedRes.json();
     expect(patched.settings).toMatchObject({
-      appearance: { density: "compact", accentColor: "#ff00aa" },
+      appearance: { density: "compact", accentColor: "#ff00aa", loadingAnimation: "pulse" },
       composer: { queueMode: "followUp", expanded: true },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low" },
     });
@@ -226,6 +227,7 @@ describe("pi-web mock API", () => {
     const current = await (await fetch(`${baseUrl}/api/settings`)).json();
     expect(current.settings.composer.queueMode).toBe("followUp");
     expect(current.settings.appearance.accentColor).toBe("#ff00aa");
+    expect(current.settings.appearance.loadingAnimation).toBe("pulse");
   });
 
   it("persists and returns server session UI state", async () => {

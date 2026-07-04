@@ -57,12 +57,16 @@ export type SessionStats = {
 };
 
 export const defaultAccentColor = "#e2b15f";
+export const defaultLoadingAnimation = "fireworks";
+
+export type LoadingAnimation = "fireworks" | "glow" | "pulse";
 
 export type PiWebSettings = {
   version: 1;
   appearance: {
     density: "comfortable" | "compact";
     accentColor: string;
+    loadingAnimation: LoadingAnimation;
   };
   composer: {
     queueMode: QueueMode;
@@ -295,7 +299,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
-  appearance: { density: "comfortable", accentColor: defaultAccentColor },
+  appearance: { density: "comfortable", accentColor: defaultAccentColor, loadingAnimation: defaultLoadingAnimation },
   composer: { queueMode: "steer", expanded: false },
   defaults: {},
 };

@@ -21,12 +21,12 @@ describe("pi-web settings", () => {
   it("normalizes missing and invalid values to safe defaults", () => {
     expect(normalizeSettings({
       version: 999,
-      appearance: { density: "tiny", accentColor: "tomato" },
+      appearance: { density: "tiny", accentColor: "tomato", loadingAnimation: "spin" },
       composer: { queueMode: "bad", expanded: "yes" },
       defaults: { model: { provider: "", id: "model" }, thinkingLevel: "", sessionBucketColor: "orange" },
     })).toEqual({
       version: 1,
-      appearance: { density: "comfortable", accentColor: "#e2b15f" },
+      appearance: { density: "comfortable", accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
       defaults: {},
     });
@@ -34,7 +34,7 @@ describe("pi-web settings", () => {
 
   it("applies partial patches without accepting unrelated keys", () => {
     const next = applySettingsPatch(normalizeSettings(undefined), {
-      appearance: { density: "compact", accentColor: "#f0a" },
+      appearance: { density: "compact", accentColor: "#f0a", loadingAnimation: "pulse" },
       composer: { queueMode: "followUp", expanded: true },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low", sessionBucketColor: "purple" },
       unknown: true,
@@ -42,7 +42,7 @@ describe("pi-web settings", () => {
 
     expect(next).toEqual({
       version: 1,
-      appearance: { density: "compact", accentColor: "#ff00aa" },
+      appearance: { density: "compact", accentColor: "#ff00aa", loadingAnimation: "pulse" },
       composer: { queueMode: "followUp", expanded: true },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low", sessionBucketColor: "purple" },
     });

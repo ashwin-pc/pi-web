@@ -52,6 +52,7 @@ export type AppElements = {
   settingsBackdrop: HTMLDivElement;
   settingsCloseButton: HTMLButtonElement;
   settingDensitySelect: HTMLSelectElement;
+  settingLoadingAnimationSelect: HTMLSelectElement;
   settingAccentMenuButton: HTMLButtonElement;
   settingAccentMenuName: HTMLSpanElement;
   settingAccentMenuValue: HTMLSpanElement;
@@ -142,6 +143,7 @@ export function getAppElements(): AppElements {
     settingsBackdrop: requiredElement<HTMLDivElement>("#settingsBackdrop"),
     settingsCloseButton: requiredElement<HTMLButtonElement>("#settingsCloseButton"),
     settingDensitySelect: requiredElement<HTMLSelectElement>("#settingDensitySelect"),
+    settingLoadingAnimationSelect: requiredElement<HTMLSelectElement>("#settingLoadingAnimationSelect"),
     settingAccentMenuButton: requiredElement<HTMLButtonElement>("#settingAccentMenuButton"),
     settingAccentMenuName: requiredElement<HTMLSpanElement>("#settingAccentMenuName"),
     settingAccentMenuValue: requiredElement<HTMLSpanElement>("#settingAccentMenuValue"),

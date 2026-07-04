@@ -894,7 +894,39 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* Full-tab bottom flame glow when session is running */
+/* Running session tab loading animations */
+@keyframes sessionBarRunFireworkHalo {
+  0%, 100% { opacity: .24; transform: scale(.96); }
+  50% { opacity: .62; transform: scale(1.04); }
+}
+@keyframes sessionBarRunFireworkSpark {
+  0%, 10%, 100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(.1) rotate(0deg);
+  }
+  16% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.35) rotate(30deg);
+  }
+  26% {
+    opacity: .55;
+    transform: translate(calc(-50% + var(--spark-dx, 0px)), calc(-50% + var(--spark-dy, 0px))) scale(.72) rotate(75deg);
+  }
+  38% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--spark-dx-end, 0px)), calc(-50% + var(--spark-dy-end, 0px))) scale(.15) rotate(110deg);
+  }
+}
+@keyframes sessionBarRunPulse {
+  0%, 100% {
+    opacity: .26;
+    transform: scale(.96, .78);
+  }
+  50% {
+    opacity: .7;
+    transform: scale(1.04, 1);
+  }
+}
 @keyframes sessionBarRunEmber {
   0%, 100% {
     opacity: .36;
@@ -932,9 +964,9 @@
     background-position: 48% 97%, 29% 105%, 66% 90%, 50% 112%;
   }
 }
-.sessionBarTab.running > * {
+.sessionBarTab.running > :not(.sessionBarTabSpark) {
   position: relative;
-  z-index: 1;
+  z-index: 2;
 }
 .sessionBarTab.running::before,
 .sessionBarTab.running::after {
@@ -943,7 +975,72 @@
   z-index: 0;
   pointer-events: none;
 }
-.sessionBarTab.running::before {
+.sessionBarTabSpark {
+  position: absolute;
+  z-index: 1;
+  display: none;
+  width: var(--spark-size, 8px);
+  height: var(--spark-size, 8px);
+  left: var(--spark-x, 50%);
+  top: var(--spark-y, 50%);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(.1) rotate(0deg);
+}
+.sessionBarTabSpark::before,
+.sessionBarTabSpark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, white 34%, var(--session-tab-accent) 66%);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--session-tab-accent) 72%, transparent), 0 0 14px color-mix(in srgb, var(--session-tab-accent) 32%, transparent);
+  clip-path: polygon(50% 0, 58% 42%, 100% 50%, 58% 58%, 50% 100%, 42% 58%, 0 50%, 42% 42%);
+}
+.sessionBarTabSpark::after {
+  opacity: .72;
+  transform: rotate(45deg) scale(.58);
+}
+:root:not([data-loading-animation]) .sessionBarTab.running::before,
+:root[data-loading-animation="fireworks"] .sessionBarTab.running::before {
+  inset: 0;
+  background:
+    radial-gradient(ellipse at 36% 48%, color-mix(in srgb, var(--session-tab-accent) 18%, transparent), transparent 42%),
+    radial-gradient(ellipse at 72% 40%, color-mix(in srgb, var(--session-tab-accent) 16%, transparent), transparent 40%),
+    radial-gradient(ellipse at 24% 72%, color-mix(in srgb, var(--session-tab-accent) 14%, transparent), transparent 38%),
+    radial-gradient(ellipse at 56% 92%, color-mix(in srgb, var(--session-tab-accent) 24%, transparent), transparent 62%);
+  animation: sessionBarRunFireworkHalo 1.6s ease-in-out infinite;
+}
+:root:not([data-loading-animation]) .sessionBarTab.running .sessionBarTabSpark,
+:root[data-loading-animation="fireworks"] .sessionBarTab.running .sessionBarTabSpark {
+  display: block;
+  animation-name: sessionBarRunFireworkSpark;
+  animation-timing-function: cubic-bezier(.17,.67,.28,1);
+  animation-iteration-count: infinite;
+}
+.sessionBarTabSpark.s1 { --spark-x: 35%; --spark-y: 47%; --spark-size: 7px; --spark-dx: -8px; --spark-dy: -4px; --spark-dx-end: -13px; --spark-dy-end: -7px; animation-duration: 1.65s; animation-delay: -.08s; }
+.sessionBarTabSpark.s2 { --spark-x: 38%; --spark-y: 44%; --spark-size: 10px; --spark-dx: 1px; --spark-dy: -10px; --spark-dx-end: 2px; --spark-dy-end: -16px; animation-duration: 1.65s; animation-delay: -.1s; }
+.sessionBarTabSpark.s3 { --spark-x: 41%; --spark-y: 49%; --spark-size: 7px; --spark-dx: 9px; --spark-dy: 2px; --spark-dx-end: 14px; --spark-dy-end: 3px; animation-duration: 1.65s; animation-delay: -.12s; }
+.sessionBarTabSpark.s4 { --spark-x: 68%; --spark-y: 39%; --spark-size: 6px; --spark-dx: -7px; --spark-dy: -5px; --spark-dx-end: -11px; --spark-dy-end: -8px; animation-duration: 1.9s; animation-delay: -.52s; }
+.sessionBarTabSpark.s5 { --spark-x: 72%; --spark-y: 36%; --spark-size: 9px; --spark-dx: 2px; --spark-dy: -9px; --spark-dx-end: 3px; --spark-dy-end: -14px; animation-duration: 1.9s; animation-delay: -.55s; }
+.sessionBarTabSpark.s6 { --spark-x: 76%; --spark-y: 42%; --spark-size: 6px; --spark-dx: 8px; --spark-dy: 5px; --spark-dx-end: 13px; --spark-dy-end: 8px; animation-duration: 1.9s; animation-delay: -.58s; }
+.sessionBarTabSpark.s7 { --spark-x: 21%; --spark-y: 68%; --spark-size: 6px; --spark-dx: -7px; --spark-dy: 4px; --spark-dx-end: -11px; --spark-dy-end: 6px; animation-duration: 1.55s; animation-delay: -1.02s; }
+.sessionBarTabSpark.s8 { --spark-x: 24%; --spark-y: 64%; --spark-size: 8px; --spark-dx: 1px; --spark-dy: -8px; --spark-dx-end: 2px; --spark-dy-end: -13px; animation-duration: 1.55s; animation-delay: -1.04s; }
+.sessionBarTabSpark.s9 { --spark-x: 28%; --spark-y: 69%; --spark-size: 6px; --spark-dx: 8px; --spark-dy: 6px; --spark-dx-end: 13px; --spark-dy-end: 10px; animation-duration: 1.55s; animation-delay: -1.06s; }
+.sessionBarTabSpark.s10 { --spark-x: 53%; --spark-y: 58%; --spark-size: 6px; --spark-dx: -8px; --spark-dy: 5px; --spark-dx-end: -13px; --spark-dy-end: 8px; animation-duration: 2.05s; animation-delay: -1.42s; }
+.sessionBarTabSpark.s11 { --spark-x: 57%; --spark-y: 54%; --spark-size: 9px; --spark-dx: 2px; --spark-dy: -9px; --spark-dx-end: 3px; --spark-dy-end: -14px; animation-duration: 2.05s; animation-delay: -1.45s; }
+.sessionBarTabSpark.s12 { --spark-x: 61%; --spark-y: 60%; --spark-size: 6px; --spark-dx: 8px; --spark-dy: 4px; --spark-dx-end: 13px; --spark-dy-end: 6px; animation-duration: 2.05s; animation-delay: -1.48s; }
+:root[data-loading-animation="pulse"] .sessionBarTab.running::before {
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 100%, color-mix(in srgb, var(--session-tab-accent) 34%, transparent), color-mix(in srgb, var(--session-tab-accent) 12%, transparent) 44%, transparent 78%);
+  transform-origin: 50% 100%;
+  animation: sessionBarRunPulse 1.45s ease-in-out infinite;
+}
+:root[data-loading-animation="pulse"] .sessionBarTab.running::after {
+  inset: 0;
+  background: linear-gradient(180deg, color-mix(in srgb, white 4%, transparent), transparent 54%);
+  opacity: .42;
+}
+:root[data-loading-animation="glow"] .sessionBarTab.running::before {
   inset: auto 0 -16% 0;
   height: 72%;
   background: radial-gradient(ellipse at 50% 100%, color-mix(in srgb, var(--session-tab-accent) 44%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 24%, transparent) 28%, transparent 72%);
@@ -951,7 +1048,7 @@
   transform-origin: 50% 100%;
   animation: sessionBarRunEmber 1.35s ease-in-out infinite;
 }
-.sessionBarTab.running::after {
+:root[data-loading-animation="glow"] .sessionBarTab.running::after {
   inset: -36% 0 -8% 0;
   background:
     radial-gradient(ellipse at 50% 84%, color-mix(in srgb, var(--session-tab-accent) 64%, transparent) 0%, color-mix(in srgb, var(--session-tab-accent) 34%, transparent) 22%, transparent 56%),
@@ -963,6 +1060,16 @@
   filter: saturate(1.08) blur(.15px);
   transform-origin: 50% 100%;
   animation: sessionBarRunFlame 1.45s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sessionBarTab.running::before,
+  .sessionBarTab.running::after,
+  .sessionBarTab.running .sessionBarTabSpark {
+    animation: none !important;
+  }
+  .sessionBarTab.running .sessionBarTabSpark {
+    display: none !important;
+  }
 }
 .sessionBarTab.running:not(.active) {
   color: color-mix(in srgb, var(--muted) 76%, transparent);

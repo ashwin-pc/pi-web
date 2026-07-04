@@ -1116,6 +1116,14 @@ export function createSessions(options: {
       const tab = document.createElement("div");
       tab.className = `sessionBarTab${isActive ? " active" : ""}${unread ? " unread" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
       if (isActive) activeTab = tab;
+      if (options.running) {
+        for (let i = 1; i <= 12; i += 1) {
+          const spark = document.createElement("span");
+          spark.className = `sessionBarTabSpark s${i}`;
+          spark.setAttribute("aria-hidden", "true");
+          tab.append(spark);
+        }
+      }
 
       const open = document.createElement("button");
       open.type = "button";
