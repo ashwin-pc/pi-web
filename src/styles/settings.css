@@ -321,6 +321,8 @@
 }
 .settingsStatus.error { color: var(--danger); }
 .tokenShareSection[hidden] { display: none; }
+.tokenShareQr[hidden] { display: none; }
+.tokenShareUrl[hidden] { display: none; }
 .tokenShareQr {
   display: grid;
   place-items: center;

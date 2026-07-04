@@ -214,7 +214,6 @@ export function createSettings(options: {
 
     updateQueueToggle();
     updateExpandedComposer();
-    if (!elements.settingsPanel.hidden) renderTokenShare();
   }
 
   function setSettingsStatus(message: string, isError = false) {
@@ -239,12 +238,25 @@ export function createSettings(options: {
     }
   }
 
+  function setTokenShareGenerated(generated: boolean) {
+    elements.tokenShareQr.hidden = !generated;
+    elements.tokenShareUrl.hidden = !generated;
+  }
+
   function renderTokenShare() {
     const shareUrl = tokenShareUrl();
-    elements.tokenShareSection.hidden = !shareUrl;
+    if (!shareUrl) {
+      elements.tokenShareSection.hidden = true;
+      elements.tokenShareQr.replaceChildren();
+      elements.tokenShareUrl.value = "";
+      setTokenShareGenerated(false);
+      return;
+    }
+    elements.tokenShareSection.hidden = false;
     elements.tokenShareUrl.value = shareUrl;
     elements.tokenShareQr.replaceChildren();
-    if (shareUrl) renderQr(elements.tokenShareQr, shareUrl, "pi web token link QR code");
+    renderQr(elements.tokenShareQr, shareUrl, "pi web token link QR code");
+    setTokenShareGenerated(true);
   }
 
   function openTokenShareFullscreen() {
@@ -266,15 +278,28 @@ export function createSettings(options: {
     if (focusButton && !elements.settingsPanel.hidden) elements.tokenShareFullscreenButton.focus();
   }
 
-  async function copyTokenShareUrl() {
-    const value = elements.tokenShareUrl.value;
-    if (!value) return;
-    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(value);
-    else {
-      elements.tokenShareUrl.select();
-      document.execCommand("copy");
-      elements.tokenShareUrl.blur();
+  async function copyText(value: string) {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
     }
+    const input = document.createElement("input");
+    input.value = value;
+    input.readOnly = true;
+    input.setAttribute("aria-hidden", "true");
+    input.style.position = "fixed";
+    input.style.left = "-1000px";
+    input.style.top = "0";
+    document.body.append(input);
+    input.select();
+    document.execCommand("copy");
+    input.remove();
+  }
+
+  async function copyTokenShareUrl() {
+    const value = tokenShareUrl();
+    if (!value) return;
+    await copyText(value);
     setSettingsStatus("Copied token link");
   }
 
@@ -316,7 +341,11 @@ export function createSettings(options: {
   }
 
   function prepareOpenSettings() {
-    renderTokenShare();
+    const hasToken = !!state.token.trim();
+    elements.tokenShareSection.hidden = !hasToken;
+    elements.tokenShareQr.replaceChildren();
+    elements.tokenShareUrl.value = "";
+    setTokenShareGenerated(false);
     setSettingsStatus("");
   }
 
@@ -373,7 +402,11 @@ export function createSettings(options: {
       focusOnClose: elements.settingsButton,
     });
     if (!settingsPanelHandle) elements.settingsButton.addEventListener("click", openSettings);
-    elements.tokenShareFullscreenButton.addEventListener("click", openTokenShareFullscreen);
+    elements.tokenShareFullscreenButton.addEventListener("click", () => {
+      renderTokenShare();
+      if (!elements.tokenShareUrl.value) return;
+      openTokenShareFullscreen();
+    });
     elements.tokenShareFullscreenCloseButton.addEventListener("click", () => closeTokenShareFullscreen());
     elements.tokenShareFullscreen.addEventListener("click", (event) => {
       if (event.target === elements.tokenShareFullscreen) closeTokenShareFullscreen();

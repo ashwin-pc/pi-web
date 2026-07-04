@@ -67,7 +67,7 @@ test.describe("token overlay", () => {
     expect(page.url()).not.toContain("token=");
   });
 
-  test("settings shows an inline token QR share link after login", async ({ page }) => {
+  test("settings reveals token QR only after explicit action", async ({ page }) => {
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
     await page.locator("#tokenForm button[type=submit]").click();
@@ -76,10 +76,18 @@ test.describe("token overlay", () => {
     await page.locator("#sessionButton").click();
     await page.locator("#settingsButton").click();
     await expect(page.locator("#tokenShareSection")).toBeVisible();
-    await expect(page.locator("#tokenShareQr svg")).toBeVisible();
-    await expect(page.locator("#tokenShareUrl")).toHaveValue(/token=test-secret/);
+    await expect(page.locator("#tokenShareQr")).toBeHidden();
+    await expect(page.locator("#tokenShareUrl")).toBeHidden();
+    await expect(page.locator("#tokenShareUrl")).toHaveValue("");
+
+    await page.locator("#tokenShareCopyButton").click();
+    await expect(page.locator("#tokenShareQr")).toBeHidden();
+    await expect(page.locator("#tokenShareUrl")).toBeHidden();
+    await expect(page.locator("#tokenShareUrl")).toHaveValue("");
 
     await page.locator("#tokenShareFullscreenButton").click();
+    await expect(page.locator("#tokenShareQr svg")).toBeVisible();
+    await expect(page.locator("#tokenShareUrl")).toHaveValue(/token=test-secret/);
     await expect(page.locator("#tokenShareFullscreen")).toBeVisible();
     await expect(page.locator("#tokenShareFullscreenQr svg")).toBeVisible();
     await page.locator("#tokenShareFullscreenCloseButton").click();
