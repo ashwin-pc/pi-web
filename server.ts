@@ -1720,6 +1720,11 @@ function makeUnavailableSessionHost(binding: SessionRuntimeBinding, provider: Ru
     async state() { return runtimeUnavailableWebState(binding, provider, error || `Runtime is not registered: ${binding.runtimeId}`); },
     async messages() { return { ok: true, messages: [], runtimeUnavailable: true, error: runtimeUnavailableMessage(error || `Runtime is not registered: ${binding.runtimeId}`), runtimeRef: runtimeRefForBinding(binding, provider) }; },
     async getCwd() { return binding.cwd; },
+    async deleteSession() {
+      await runtimeBindingStore.remove(binding.sessionId);
+      runnerSessionRuntimeIds.delete(binding.sessionId);
+      return { id: binding.sessionId, disposition: "deleted" };
+    },
   };
 }
 
@@ -1769,6 +1774,12 @@ function makeRunnerSessionHost(sessionId: string, provider: RunnerProvider, bind
     async readArtifactBase64(name) {
       const runnerState = await provider.state(sessionId) as any;
       return provider.readArtifactBase64(String(runnerState.cwd || binding?.cwd || provider.cwd), name);
+    },
+    async deleteSession() {
+      await provider.deleteSession(sessionId);
+      await runtimeBindingStore.remove(sessionId);
+      runnerSessionRuntimeIds.delete(sessionId);
+      return { id: sessionId, disposition: "deleted" };
     },
   };
 }

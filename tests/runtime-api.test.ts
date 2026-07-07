@@ -133,5 +133,27 @@ describe("experimental runtime API integration", () => {
       body: JSON.stringify({ sessionId: created.sessionId }),
     });
     expect(abort.status).toBe(202);
+
+    const deleted = await (await fetch(`${baseUrl}/api/sessions/delete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: created.sessionId }),
+    })).json() as any;
+    expect(deleted).toMatchObject({ ok: true, id: created.sessionId, disposition: "deleted" });
+    const afterDelete = await (await fetch(`${baseUrl}/api/sessions?cwd=${encodeURIComponent(cwd)}`)).json() as any;
+    expect(afterDelete.sessions.some((item: any) => item.id === created.sessionId)).toBe(false);
+
+    const disconnected = await (await fetch(`${baseUrl}/api/runtimes/disconnect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "cmd-api" }),
+    })).json() as any;
+    expect(disconnected).toMatchObject({ ok: true, id: "cmd-api" });
+    const unavailableDeleted = await (await fetch(`${baseUrl}/api/sessions/delete`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: inherited.sessionId }),
+    })).json() as any;
+    expect(unavailableDeleted).toMatchObject({ ok: true, id: inherited.sessionId, disposition: "deleted" });
   }, 60_000);
 });

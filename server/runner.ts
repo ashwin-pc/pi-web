@@ -1,4 +1,4 @@
-import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
@@ -230,6 +230,18 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
       const sessionId = String(params.sessionId || "");
       if (sessionId) releaseRunnerSession(sessionId);
       return { ok: true, sessionId };
+    }
+    case "sessions.delete": {
+      const sessionId = String(params.sessionId || "");
+      const live = sessionId ? liveSessions.get(sessionId) : undefined;
+      const sessionFile = String(live?.sessionFile || params.sessionFile || "");
+      if (sessionId) releaseRunnerSession(sessionId);
+      if (sessionFile) {
+        await unlink(sessionFile).catch((error: any) => {
+          if (error?.code !== "ENOENT") throw error;
+        });
+      }
+      return { ok: true, sessionId, deleted: Boolean(sessionFile) };
     }
     case "fs.list":
       return listDirectories(params.path, rootCwd);

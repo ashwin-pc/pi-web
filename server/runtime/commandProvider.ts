@@ -132,6 +132,13 @@ export class CommandRunnerProvider {
     return this.start().request("sessions.release", this.sessionParams(sessionId)).catch(() => ({ ok: true, sessionId }));
   }
 
+  async deleteSession(sessionId: string) {
+    const result = await this.start().request("sessions.delete", this.sessionParams(sessionId));
+    this.subscribedSessionIds.delete(sessionId);
+    this.sessionFiles.delete(sessionId);
+    return result;
+  }
+
   abort(sessionId: string) { return this.start().request("sessions.abort", this.sessionParams(sessionId)); }
   gitStatus(cwd = this.cwd, fetchRemote = false) { return this.start().request("git.status", { cwd, fetchRemote }); }
   gitDiff(options: { cwd?: string; path: string; staged?: boolean }) { return this.start().request("git.diff", { cwd: options.cwd || this.cwd, path: options.path, staged: Boolean(options.staged) }); }

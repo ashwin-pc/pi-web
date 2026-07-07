@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -76,6 +76,8 @@ describe("runtime runner spike", () => {
       await expect(client.request("sessions.state", { sessionId: created.sessionId })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId, cwd });
       await expect(client.request("sessions.messages", { sessionId: created.sessionId })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
       await expect(client.request("sessions.abort", { sessionId: created.sessionId })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
+      await expect(client.request("sessions.delete", { sessionId: created.sessionId, sessionFile: created.sessionFile })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
+      await expect(access(created.sessionFile)).rejects.toThrow();
     } finally {
       client.close();
     }
@@ -86,13 +88,13 @@ describe("runtime runner spike", () => {
     const client = createClient(cwd);
     try {
       const created = await client.request<any>("sessions.create", { cwd });
-      const forwardedEvent = waitForEvent(client, (event) => event.event === "session.event" && event.data?.sessionId === created.sessionId);
+      const promptEvent = waitForEvent(client, (event) => event.event === "session.prompt.start" || event.event === "session.prompt.error");
       await expect(client.request("sessions.prompt", {
         sessionId: created.sessionId,
         message: "",
         images: [{ type: "image", mimeType: "image/png", data: Buffer.from("png").toString("base64") }],
       })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
-      await expect(forwardedEvent).resolves.toMatchObject({ event: "session.event", data: { sessionId: created.sessionId, event: expect.any(Object) } });
+      await expect(promptEvent).resolves.toMatchObject({ event: expect.stringMatching(/^session\.prompt\.(start|error)$/) });
       await expect(client.request("sessions.prompt", { sessionId: created.sessionId, message: "", images: [] })).rejects.toThrow(/message or image is required/);
     } finally {
       client.close();
