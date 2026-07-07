@@ -24,17 +24,20 @@ type BindingFile = {
 
 export class RuntimeBindingStore {
   private writeQueue = Promise.resolve();
+  private cache?: BindingFile;
 
   constructor(private readonly file: string) {}
 
   async read(): Promise<BindingFile> {
+    if (this.cache) return { version: 1, bindings: [...this.cache.bindings] };
     try {
       const parsed = JSON.parse(await readFile(this.file, "utf-8")) as Partial<BindingFile>;
-      return { version: 1, bindings: Array.isArray(parsed.bindings) ? parsed.bindings.filter(isBinding) : [] };
+      this.cache = { version: 1, bindings: Array.isArray(parsed.bindings) ? parsed.bindings.filter(isBinding) : [] };
     } catch (error: any) {
-      if (error?.code === "ENOENT") return { version: 1, bindings: [] };
-      throw error;
+      if (error?.code !== "ENOENT") throw error;
+      this.cache = { version: 1, bindings: [] };
     }
+    return { version: 1, bindings: [...this.cache.bindings] };
   }
 
   async get(sessionId: string): Promise<SessionRuntimeBinding | undefined> {
@@ -48,8 +51,24 @@ export class RuntimeBindingStore {
       const next: SessionRuntimeBinding = { ...binding, updatedAt: binding.updatedAt || new Date().toISOString() };
       const bindings = data.bindings.filter((item) => item.sessionId !== next.sessionId);
       bindings.unshift(next);
-      await writeJsonAtomic(this.file, { version: 1, bindings });
+      const nextData: BindingFile = { version: 1, bindings };
+      await writeJsonAtomic(this.file, nextData);
+      this.cache = nextData;
       return next;
+    };
+    const result = this.writeQueue.then(run, run);
+    this.writeQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  async remove(sessionId: string): Promise<void> {
+    const run = async () => {
+      const data = await this.read();
+      const bindings = data.bindings.filter((item) => item.sessionId !== sessionId);
+      if (bindings.length === data.bindings.length) return;
+      const nextData: BindingFile = { version: 1, bindings };
+      await writeJsonAtomic(this.file, nextData);
+      this.cache = nextData;
     };
     const result = this.writeQueue.then(run, run);
     this.writeQueue = result.then(() => undefined, () => undefined);
@@ -59,7 +78,7 @@ export class RuntimeBindingStore {
   async ensureLocal(sessionId: string, cwd: string): Promise<SessionRuntimeBinding> {
     const existing = await this.get(sessionId);
     if (existing) return existing;
-    return this.set({ sessionId, runtimeId: "local", cwd });
+    return { sessionId, runtimeId: "local", cwd, updatedAt: new Date().toISOString() };
   }
 }
 

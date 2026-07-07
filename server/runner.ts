@@ -8,9 +8,11 @@ import { encodeRuntimeMessage, parseRuntimeLine, type DirectoryListing, type Run
 
 const execFileAsync = promisify(execFile);
 const rootCwd = resolve(process.env.PI_RUNNER_CWD || process.cwd());
+const maxArtifactBytes = Number(process.env.PI_RUNNER_MAX_ARTIFACT_BYTES || 20 * 1024 * 1024);
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 const liveSessions = new Map<string, any>();
+const subscriptions = new Map<string, () => void>();
 
 async function loadSessionFromFile(sessionFile: string, fallbackCwd = rootCwd) {
   for (const session of liveSessions.values()) {
@@ -58,7 +60,7 @@ async function gitStatus(cwdValue: unknown) {
   try {
     await stat(cwd);
     const branch = (await execFileAsync("git", ["branch", "--show-current"], { cwd, timeout: 10_000 }).catch(() => ({ stdout: "" }))).stdout.trim();
-    const porcelain = (await execFileAsync("git", ["status", "--porcelain=v1"], { cwd, timeout: 10_000 })).stdout;
+    const porcelain = (await execFileAsync("git", ["status", "--porcelain=v1", "-b"], { cwd, timeout: 10_000 })).stdout;
     return { ok: true, cwd, isRepo: true, branch, porcelain };
   } catch {
     return { ok: true, cwd, isRepo: false, branch: "", porcelain: "" };
@@ -89,6 +91,29 @@ function firstUserMessage(messages: unknown): string | undefined {
   return undefined;
 }
 
+function simplifyModel(model: any) {
+  if (!model) return undefined;
+  return {
+    provider: model.provider,
+    id: model.id,
+    name: model.name || model.id,
+    reasoning: Boolean(model.reasoning),
+    contextWindow: model.contextWindow,
+    maxTokens: model.maxTokens,
+  };
+}
+
+function modelState(session: any) {
+  return {
+    ok: true,
+    cwd: String(session.sessionManager?.cwd || session.cwd || rootCwd),
+    current: simplifyModel(session.model) || null,
+    thinkingLevel: session.thinkingLevel || "off",
+    thinkingLevels: typeof session.getAvailableThinkingLevels === "function" ? session.getAvailableThinkingLevels() : ["off"],
+    models: typeof session.modelRegistry?.getAvailable === "function" ? session.modelRegistry.getAvailable().map(simplifyModel) : [],
+  };
+}
+
 function sessionState(session: any) {
   const sessionName = session.getSessionName?.()?.trim()
     || session.sessionName?.trim?.()
@@ -104,9 +129,18 @@ function sessionState(session: any) {
     firstMessage,
     isStreaming: Boolean(session.isStreaming),
     isCompacting: Boolean(session.isCompacting),
-    model: session.model ? { provider: session.model.provider, id: session.model.id, name: session.model.name } : null,
+    model: simplifyModel(session.model) || null,
     messages: Array.isArray(session.messages) ? session.messages.length : 0,
   };
+}
+
+function subscribeSession(session: any) {
+  const sessionId = String(session.sessionId || "");
+  if (!sessionId || subscriptions.has(sessionId)) return;
+  const unsubscribe = session.subscribe?.((event: unknown) => {
+    send({ event: "session.event", data: { sessionId, sessionFile: String(session.sessionFile || ""), event } });
+  });
+  if (typeof unsubscribe === "function") subscriptions.set(sessionId, unsubscribe);
 }
 
 async function createRunnerSession(cwdValue: unknown) {
@@ -116,8 +150,18 @@ async function createRunnerSession(cwdValue: unknown) {
   await loader.reload();
   const result = await createAgentSession({ cwd, sessionManager, authStorage, modelRegistry, resourceLoader: loader });
   liveSessions.set(result.session.sessionId, result.session);
+  subscribeSession(result.session);
   send({ event: "session.created", data: sessionState(result.session) });
   return sessionState(result.session);
+}
+
+function promptImages(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((image): image is { type: "image"; data: string; mimeType: string } => {
+    if (!image || typeof image !== "object") return false;
+    const item = image as Record<string, unknown>;
+    return item.type === "image" && typeof item.data === "string" && typeof item.mimeType === "string" && item.mimeType.startsWith("image/");
+  });
 }
 
 async function handle(request: RuntimeRequest): Promise<unknown> {
@@ -127,8 +171,14 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
       return { ok: true, cwd: rootCwd, pid: process.pid, protocol: "pi-runner-v1" };
     case "sessions.create":
       return createRunnerSession(params.cwd);
+    case "sessions.subscribe": {
+      const session = await resolveSession(params);
+      subscribeSession(session);
+      return { ok: true, sessionId: String(params.sessionId || session.sessionId) };
+    }
     case "sessions.state": {
       const session = await resolveSession(params);
+      subscribeSession(session);
       const state = sessionState(session);
       if (typeof params.sessionId === "string" && params.sessionId) state.sessionId = params.sessionId;
       return state;
@@ -139,10 +189,12 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
     }
     case "sessions.prompt": {
       const session = await resolveSession(params);
+      subscribeSession(session);
+      const images = promptImages(params.images);
       const message = String(params.message || "").trim();
-      if (!message) throw new Error("message is required");
+      if (!message && images.length === 0) throw new Error("message or image is required");
       send({ event: "session.prompt.start", data: { ...sessionState(session), isStreaming: true } });
-      void session.prompt(message).then(() => {
+      void session.prompt(message || "Please review the attached image.", images.length ? { images } : undefined).then(() => {
         send({ event: "session.prompt.done", data: sessionState(session) });
       }).catch((error: unknown) => {
         send({ event: "session.prompt.error", data: { sessionId: session.sessionId, error: error instanceof Error ? error.message : String(error) } });
@@ -153,6 +205,22 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
       const session = await resolveSession(params);
       await session.abort?.();
       return { ok: true, sessionId: String(params.sessionId || session.sessionId) };
+    }
+    case "models.list": {
+      const session = await resolveSession(params);
+      return modelState(session);
+    }
+    case "models.set": {
+      const session = await resolveSession(params);
+      const provider = String(params.provider || "").trim();
+      const id = String(params.id || "").trim();
+      if (!provider || !id) throw new Error("provider and id are required");
+      const model = session.modelRegistry?.find?.(provider, id);
+      if (!model) throw new Error("Model not found");
+      const ok = await session.setModel?.(model);
+      if (ok === false) throw new Error("No API key is available for this model");
+      if (typeof params.thinkingLevel === "string") session.setThinkingLevel?.(params.thinkingLevel);
+      return modelState(session);
     }
     case "fs.list":
       return listDirectories(params.path);
@@ -194,7 +262,10 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
       const cwd = asPath(params.cwd || rootCwd);
       const name = safeArtifactName(params.name);
       if (!name) throw new Error("Artifact name is required");
-      const bytes = await readFile(join(cwd, ".pi", "web", "artifacts", name));
+      const file = join(cwd, ".pi", "web", "artifacts", name);
+      const info = await stat(file);
+      if (Number.isFinite(maxArtifactBytes) && maxArtifactBytes > 0 && info.size > maxArtifactBytes) throw new Error(`Artifact is too large (${info.size} bytes > ${maxArtifactBytes} bytes)`);
+      const bytes = await readFile(file);
       return { ok: true, name, base64: bytes.toString("base64") };
     }
     default:

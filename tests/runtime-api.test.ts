@@ -49,7 +49,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", PI_WEB_CWD: cwd, PI_WEB_NO_SESSION: "1", PI_WEB_TOKEN: "", PI_WEB_RUNTIMES_FILE: join(cwd, ".pi", "web", "runtimes.json"), PI_WEB_RUNTIME_BINDINGS_FILE: join(cwd, ".pi", "web", "runtime-bindings.json") },
+    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", PI_WEB_CWD: cwd, PI_WEB_NO_SESSION: "1", PI_WEB_TOKEN: "", PI_WEB_LOCAL_RUNNER: "1", PI_WEB_ALLOW_CUSTOM_RUNTIMES: "1", PI_WEB_RUNTIMES_FILE: join(cwd, ".pi", "web", "runtimes.json"), PI_WEB_RUNTIME_BINDINGS_FILE: join(cwd, ".pi", "web", "runtime-bindings.json") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout?.on("data", () => undefined);

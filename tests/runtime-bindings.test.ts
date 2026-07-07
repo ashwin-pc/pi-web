@@ -32,10 +32,11 @@ describe("RuntimeBindingStore", () => {
     expect(data.bindings[0]).toMatchObject({ sessionId: "s1", runtimeId: "container:abc", cwd: "/workspace/repo" });
   });
 
-  it("ensures local bindings lazily", async () => {
+  it("treats missing bindings as local without persisting unbounded local rows", async () => {
     const bindings = await store();
     await expect(bindings.ensureLocal("s1", "/repo")).resolves.toMatchObject({ runtimeId: "local", cwd: "/repo" });
-    await expect(bindings.ensureLocal("s1", "/other")).resolves.toMatchObject({ runtimeId: "local", cwd: "/repo" });
+    await expect(bindings.ensureLocal("s1", "/other")).resolves.toMatchObject({ runtimeId: "local", cwd: "/other" });
+    await expect(bindings.read()).resolves.toEqual({ version: 1, bindings: [] });
   });
 });
 

@@ -74,7 +74,8 @@ export class StdioRuntimeClient {
     try {
       message = parseRuntimeLine(line) as RuntimeResponse | RuntimeEvent | undefined;
     } catch (error) {
-      this.failAll(error instanceof Error ? error : new Error(String(error)));
+      const detail = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`[runtime] ignored non-protocol stdout line: ${line.slice(0, 500)}${line.length > 500 ? "…" : ""} (${detail})\n`);
       return;
     }
     if (!message) return;
