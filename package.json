@@ -50,8 +50,8 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.78.1",
-    "@earendil-works/pi-coding-agent": "^0.78.1",
+    "@earendil-works/pi-ai": "^0.80.3",
+    "@earendil-works/pi-coding-agent": "^0.80.3",
     "highlight.js": "^11.11.1",
     "lucide": "^1.14.0",
     "marked": "^15.0.12",

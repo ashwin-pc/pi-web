@@ -5,7 +5,7 @@
  * model. The name is set only once and only if the session has no name yet.
  */
 
-import { complete } from "@earendil-works/pi-ai";
+import { complete } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 type SessionEntry = {
