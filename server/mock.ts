@@ -294,6 +294,40 @@ export function createMockHarness(options: MockSessionOptions) {
       });
     }
 
+    function isMockAssistantFailure(message: any) {
+      return message?.role === "assistant" && (message.stopReason === "error" || typeof message.errorMessage === "string");
+    }
+
+    function branchBeforeTrailingMockFailures() {
+      let removed = false;
+      while (mockLeafId) {
+        const entry = entryById(mockLeafId);
+        if (!entry || entry.type !== "message" || !isMockAssistantFailure(entry.message)) break;
+        mockLeafId = typeof entry.parentId === "string" ? entry.parentId : null;
+        removed = true;
+      }
+      if (removed) syncMessagesToLeaf();
+      return removed;
+    }
+
+    async function runMockRetryFromFailure() {
+      const lastMessage = mockMessages[mockMessages.length - 1];
+      if (!isMockAssistantFailure(lastMessage)) throw new Error("There is no failed assistant response to continue from.");
+      branchBeforeTrailingMockFailures();
+      mockSession.isStreaming = true;
+      setRuntimeStartedAt();
+      broadcastRuntimeChanged();
+      broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeStartedAt);
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      if (!mockSession.isStreaming) return;
+      appendMockMessage({ role: "assistant", content: "Recovered after manual continue.", timestamp: new Date().toISOString() });
+      mockSession.isStreaming = false;
+      clearRuntimeTimestamps();
+      broadcastRuntimeChanged();
+      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
+      if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+    }
+
     mockSession = {
       sessionId: mockSessions.find((info) => info.path === path)?.id || "mock-current",
       sessionFile: path,
@@ -572,6 +606,7 @@ export function createMockHarness(options: MockSessionOptions) {
           });
         }
       },
+      retryFromFailure: async () => runMockRetryFromFailure(),
       abort: async () => { mockSession.isStreaming = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,

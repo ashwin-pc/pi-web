@@ -922,6 +922,97 @@ function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(
   }
 }
 
+function isAssistantFailureMessage(message: any) {
+  if (!message || typeof message !== "object") return false;
+  const role = String(message.role || message.raw?.role || "");
+  const stopReason = String(message.stopReason || message.raw?.stopReason || "");
+  const errorMessage = typeof message.errorMessage === "string" ? message.errorMessage : typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : "";
+  return role === "assistant" && (stopReason === "error" || Boolean(errorMessage.trim()));
+}
+
+function trailingAssistantFailure(targetSession: PiWebSession) {
+  const messages = Array.isArray(targetSession.agent?.state?.messages) ? targetSession.agent.state.messages as any[] : [];
+  const index = messages.length - 1;
+  const message = index >= 0 ? messages[index] : undefined;
+  return isAssistantFailureMessage(message) ? { messages, index, message } : undefined;
+}
+
+function branchBeforeFailure(targetSession: PiWebSession, failedMessage: any) {
+  const manager = targetSession.sessionManager;
+  if (typeof manager.getBranch !== "function") return false;
+  let branch: any[];
+  try {
+    branch = manager.getBranch();
+  } catch {
+    return false;
+  }
+  if (!Array.isArray(branch)) return false;
+  const errorText = typeof failedMessage.errorMessage === "string" ? failedMessage.errorMessage : typeof failedMessage.raw?.errorMessage === "string" ? failedMessage.raw.errorMessage : "";
+  const errorTimestamp = typeof failedMessage.timestamp === "string" || typeof failedMessage.timestamp === "number" ? String(failedMessage.timestamp) : "";
+
+  for (let index = branch.length - 1; index >= 0; index -= 1) {
+    const entry = branch[index];
+    const message = entry?.type === "message" ? entry.message : undefined;
+    if (!isAssistantFailureMessage(message)) continue;
+    const sameObject = message === failedMessage;
+    const sameError = Boolean(errorText && message?.errorMessage === errorText);
+    const sameTimestamp = !errorTimestamp || String(message?.timestamp || "") === errorTimestamp;
+    if (!sameObject && !(sameError && sameTimestamp)) continue;
+
+    let firstFailureIndex = index;
+    while (firstFailureIndex > 0) {
+      const previous = branch[firstFailureIndex - 1];
+      const previousMessage = previous?.type === "message" ? previous.message : undefined;
+      if (!isAssistantFailureMessage(previousMessage)) break;
+      firstFailureIndex -= 1;
+    }
+    const firstFailure = branch[firstFailureIndex];
+    const parentId = typeof firstFailure?.parentId === "string" ? firstFailure.parentId : null;
+    if (parentId && typeof manager.branch === "function") manager.branch(parentId);
+    else if (!parentId && typeof manager.resetLeaf === "function") manager.resetLeaf();
+    else return false;
+    return true;
+  }
+  return false;
+}
+
+function assertCanRetryFromFailure(targetSession: PiWebSession) {
+  if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
+  if (targetSession.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
+  if (!trailingAssistantFailure(targetSession)) throw new Error("There is no failed assistant response to retry.");
+}
+
+async function retrySessionFromFailure(targetSession: PiWebSession) {
+  assertCanRetryFromFailure(targetSession);
+  if (typeof targetSession.retryFromFailure === "function") {
+    await targetSession.retryFromFailure();
+    return;
+  }
+
+  const failure = trailingAssistantFailure(targetSession);
+  if (!failure) throw new Error("There is no failed assistant response to continue from.");
+  const branched = branchBeforeFailure(targetSession, failure.message);
+
+  const internal = targetSession as any;
+  if (!internal.agent || typeof internal.agent.continue !== "function") throw new Error("Continuing is not available in this session.");
+  if (branched && typeof targetSession.sessionManager?.buildSessionContext === "function") {
+    internal.agent.state.messages = targetSession.sessionManager.buildSessionContext().messages;
+  } else {
+    while (failure.messages.length > 0 && isAssistantFailureMessage(failure.messages[failure.messages.length - 1])) {
+      failure.messages.pop();
+    }
+  }
+  try {
+    await internal.agent.continue();
+    while (typeof internal._handlePostAgentRun === "function" && await internal._handlePostAgentRun()) {
+      await internal.agent.continue();
+    }
+  } finally {
+    internal._systemPromptOverride = undefined;
+    if (typeof internal._flushPendingBashMessages === "function") internal._flushPendingBashMessages();
+  }
+}
+
 function runtimeForPath(path: string) {
   const live = liveSessions.get(path)?.session;
   const isStreaming = Boolean(live?.isStreaming);
@@ -2701,6 +2792,49 @@ const server = createServer(async (req, res) => {
             const missedTerminalEvent = Boolean(promptSessionFile && runtimeStartedAts.has(promptSessionFile) && !isRunning);
             if (missedTerminalEvent) {
               clearRuntimeStartedAt(targetSession, promptSessionFile);
+              markSessionUnreadCompleted(targetSession.sessionId);
+            }
+            broadcast({
+              type: "session_runtime_changed",
+              sessionId: targetSession.sessionId,
+              sessionFile: targetSession.sessionFile,
+              runtime: runtimeForPath(targetSession.sessionFile),
+            });
+            releaseWorkLease();
+          });
+
+        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/retry") {
+        const body = await readBody(req) as { sessionId?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        try {
+          assertCanRetryFromFailure(targetSession);
+        } catch (error) {
+          return sendJson(res, 409, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+
+        ensureRuntimeStartedAt(targetSession);
+        const retrySessionFile = targetSession.sessionFile;
+        const releaseWorkLease = acquireWorkLease(targetSession);
+        void retrySessionFromFailure(targetSession)
+          .catch((error: unknown) => {
+            clearRuntimeStartedAt(targetSession, retrySessionFile);
+            broadcast({
+              type: "server_error",
+              sessionId: targetSession.sessionId,
+              sessionFile: targetSession.sessionFile,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          })
+          .finally(() => {
+            const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+            const missedTerminalEvent = Boolean(retrySessionFile && runtimeStartedAts.has(retrySessionFile) && !isRunning);
+            if (missedTerminalEvent) {
+              clearRuntimeStartedAt(targetSession, retrySessionFile);
               markSessionUnreadCompleted(targetSession.sessionId);
             }
             broadcast({

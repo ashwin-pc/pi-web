@@ -22,4 +22,8 @@ test("shows retryable model errors live and terminal retry affordances", async (
   await expect(terminalCard.locator(".runtimeErrorAction", { hasText: "Retry" })).toBeVisible();
   await expect(terminalCard.locator(".runtimeErrorAction", { hasText: "Switch model" })).toBeVisible();
   await expect(page.locator(".runtimeErrorCard", { hasText: "_readableState" })).toHaveCount(0);
+
+  await terminalCard.locator(".runtimeErrorAction", { hasText: "Retry" }).click();
+  await expect(page.locator(".message.assistant", { hasText: "Recovered after manual continue." }).last()).toBeVisible();
+  await expect(page.locator(".message.user", { hasText: "Please retry the previous request." })).toHaveCount(0);
 });

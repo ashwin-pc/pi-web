@@ -418,13 +418,32 @@ export function createRealtime(options: {
     elements.promptEl.setSelectionRange(elements.promptEl.value.length, elements.promptEl.value.length);
   }
 
-  function appendTerminalFailureAction(parent: HTMLElement, label: string, title: string, text: string) {
+  async function retryFromFailure(button: HTMLButtonElement) {
+    button.disabled = true;
+    const previousText = button.textContent || "Retry";
+    button.textContent = "Retrying…";
+    try {
+      const res = await fetch("/api/session/retry", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ sessionId: state.currentSessionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = previousText;
+      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+    }
+  }
+
+  function appendTerminalFailureAction(parent: HTMLElement, label: string, title: string, onClick: (button: HTMLButtonElement) => void) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "runtimeErrorAction";
     button.textContent = label;
     button.title = title;
-    button.addEventListener("click", () => focusComposerWith(text));
+    button.addEventListener("click", () => onClick(button));
     parent.append(button);
   }
 
@@ -434,13 +453,13 @@ export function createRealtime(options: {
     const subtitle = failedAfter ? `${info.text} · failed after ${failedAfter} retries` : info.text;
     const body = [
       failedAfter ? "The model request failed after pi exhausted automatic retries." : "The model request failed.",
-      "Try again, or switch models if this provider is rate-limited or overloaded.",
+      "Retry the failed model request from the last good context without adding a new user message, or switch models if this provider remains rate-limited or overloaded.",
     ].join("\n");
     terminalFailureCard = tools.addRuntimeErrorCard("response failed", subtitle, body);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
-    appendTerminalFailureAction(actions, "Retry", "Fill the composer with a retry request", "Please retry the previous request.");
-    appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", "/model ");
+    appendTerminalFailureAction(actions, "Retry", "Retry the failed model request without adding a user message", retryFromFailure);
+    appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", () => focusComposerWith("/model "));
     terminalFailureCard.append(actions);
     messages.scrollToBottom();
   }
