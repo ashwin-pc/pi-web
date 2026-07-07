@@ -58,6 +58,9 @@
         <button id="currentSessionBucketButton" class="iconButton statusBarButton sessionBucketButton" type="button" aria-label="Set session bucket" title="Set session bucket" aria-haspopup="menu">
           <span data-icon="flag"></span>
         </button>
+        <button id="runtimeButton" class="iconButton statusBarButton" type="button" aria-label="Runtimes" title="Runtimes">
+          <span data-icon="server"></span>
+        </button>
         <button id="settingsButton" class="iconButton statusBarButton" type="button" aria-label="Settings" title="Settings">
           <span data-icon="settings"></span>
         </button>
@@ -83,7 +86,9 @@
         <div class="emptyCwdInner">
           <div class="emptyCwdLabel">Working directory</div>
           <div class="emptyCwdPath"></div>
+          <div class="emptyRuntimePath">Runtime: Local machine</div>
           <button type="button" class="emptyCwdButton">Change folder</button>
+          <button type="button" class="emptyRuntimeButton">Change runtime</button>
         </div>
       </div>
 
@@ -95,6 +100,38 @@
         </div>
         <div id="sessionList" class="sessionList" aria-live="polite"></div>
         <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+      </aside>
+
+      <div id="runtimeBackdrop" class="settingsBackdrop" hidden></div>
+      <aside id="runtimePanel" class="settingsPanel runtimePanel" aria-label="Runtimes" hidden>
+        <div class="settingsHeader runtimeHeader">
+          <h2>Runtimes</h2>
+          <button id="runtimeCloseButton" class="iconButton" type="button" aria-label="Close runtimes" title="Close runtimes">×</button>
+        </div>
+        <section class="settingsSection runtimeIntroSection">
+          <h3>Connect to existing places pi can run</h3>
+          <p class="settingsHint">Runtime comes before folder: paths are interpreted inside the selected runtime. pi-web registers and connects to runtimes; it does not create containers or SSH hosts.</p>
+        </section>
+        <section class="settingsSection runtimeSection">
+          <div class="runtimeSectionHeader">
+            <h3>Available runtimes</h3>
+            <button id="runtimeRefreshButton" type="button">Refresh</button>
+          </div>
+          <div id="runtimeList" class="runtimeList" aria-live="polite"></div>
+        </section>
+        <section class="settingsSection runtimeSection">
+          <h3>Connect existing runtime</h3>
+          <p class="settingsHint">Paste or adapt one of the examples below. The command must start <code>server/runner.ts</code> and speak the pi-web runtime protocol over stdio.</p>
+          <textarea id="runtimeConnectJson" class="runtimeConnectJson" rows="11" spellcheck="false" aria-label="Runtime JSON configuration"></textarea>
+          <div class="settingsActions">
+            <button id="runtimeConnectButton" type="button">Connect runtime</button>
+          </div>
+        </section>
+        <section class="settingsSection runtimeSection">
+          <h3>Copyable examples</h3>
+          <div id="runtimeExamples" class="runtimeExamples"></div>
+        </section>
+        <span id="runtimePanelStatus" class="settingsStatus" aria-live="polite"></span>
       </aside>
 
       <div id="settingsBackdrop" class="settingsBackdrop" hidden></div>

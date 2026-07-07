@@ -320,6 +320,130 @@
   font-size: 12px;
 }
 .settingsStatus.error { color: var(--danger); }
+.runtimePanel {
+  width: min(460px, calc(100vw - 32px));
+}
+.runtimeSectionHeader,
+.runtimeCardHeader,
+.runtimeExampleActions,
+.runtimeCardActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.runtimeSectionHeader h3 {
+  min-width: 0;
+}
+.runtimeSectionHeader button,
+.runtimeCardActions button,
+.runtimeExampleActions button,
+#runtimeConnectButton {
+  min-height: 32px;
+  font-size: 12px;
+}
+.runtimeList,
+.runtimeExamples {
+  display: grid;
+  gap: 10px;
+}
+.runtimeCard,
+.runtimeExample {
+  display: grid;
+  gap: 10px;
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 78%, transparent);
+  padding: 10px;
+}
+.runtimeCardTitleWrap {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.runtimeCard h4,
+.runtimeExample h4 {
+  margin: 0;
+  font-size: 13px;
+}
+.runtimeCard code,
+.runtimeExample pre,
+.runtimeConnectJson,
+.runtimeDetails dd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.runtimeCard code {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.runtimeKindBadge {
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, transparent);
+  border-radius: 999px;
+  color: var(--accent);
+  font-size: 11px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.runtimeDetails {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 5px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+.runtimeDetails dt {
+  color: var(--muted);
+}
+.runtimeDetails dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+}
+.runtimeConnectJson {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 190px;
+  resize: vertical;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.runtimeConnectJson:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.runtimeExample p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.runtimeExample pre {
+  max-height: 180px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
+  color: var(--text);
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.runtimeIntroSection code,
+.runtimeSection code {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .tokenShareSection[hidden] { display: none; }
 .tokenShareQr[hidden] { display: none; }
 .tokenShareUrl[hidden] { display: none; }

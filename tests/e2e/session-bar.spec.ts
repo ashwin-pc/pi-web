@@ -528,6 +528,126 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
   });
 
+  test("switching from a runtime tab to a local tab clears stale context immediately", async ({ page }) => {
+    await seedServerPinned(
+      page,
+      { id: "mock-current" },
+      { id: "mock-runtime", cwd: "/workspace" },
+    );
+
+    const runtimeRef = { id: "mock-runtime-provider", kind: "container", label: "Mock runtime", cwd: "/workspace", experimental: false };
+    const runtimeState = () => ({
+      ok: true,
+      cwd: "/workspace",
+      sessionFile: "/workspace/.mock-sessions/runtime.jsonl",
+      sessionId: "mock-runtime",
+      sessionName: "Runtime mock session",
+      sessionTitle: "Runtime mock session",
+      isStreaming: false,
+      isCompacting: false,
+      runtime: { loaded: true, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0 },
+      runtimeRef,
+      model: { provider: "mock", id: "model", name: "Mock Model" },
+      thinkingLevel: "off",
+      thinkingLevels: ["off"],
+      stats: {
+        tokens: { input: 124000, output: 1000, cacheRead: 0, cacheWrite: 0, total: 125000 },
+        cost: 1.23,
+        contextUsage: { tokens: 124000, contextWindow: 128000, percent: 97 },
+      },
+      webFooters: [],
+      webHeaderActions: [],
+    });
+    const runtimeSession = {
+      id: "mock-runtime",
+      name: "Runtime mock session",
+      firstMessage: "Runtime mock session",
+      created: "2026-05-05T10:00:00.000Z",
+      modified: "2026-05-07T11:00:00.000Z",
+      messageCount: 2,
+      cwd: "/workspace",
+      isCurrent: false,
+      runtime: { loaded: true, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0 },
+      runtimeRef,
+    };
+
+    let delayLocalOpen = false;
+    let releaseLocalOpen!: () => void;
+    let localOpenStarted!: () => void;
+    const localOpenGate = new Promise<void>((resolve) => { releaseLocalOpen = resolve; });
+    const localOpenStartedPromise = new Promise<void>((resolve) => { localOpenStarted = resolve; });
+
+    await page.route("**/api/sessions**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (request.method() === "GET" && url.pathname === "/api/sessions") {
+        const response = await route.fetch();
+        const data = await response.json();
+        const sessions = [runtimeSession, ...(data.sessions || []).filter((session: any) => session.id !== "mock-runtime")];
+        await route.fulfill({ status: response.status(), headers: { ...response.headers(), "content-type": "application/json" }, body: JSON.stringify({ ...data, sessions }) });
+        return;
+      }
+      if (request.method() === "POST" && url.pathname === "/api/sessions/open") {
+        const body = request.postDataJSON() as { sessionId?: string; id?: string };
+        const sessionId = body.sessionId || body.id || "";
+        if (sessionId === "mock-runtime") {
+          await route.fulfill({ json: runtimeState() });
+          return;
+        }
+        if (sessionId === "mock-current" && delayLocalOpen) {
+          localOpenStarted();
+          await localOpenGate;
+        }
+      }
+      await route.continue();
+    });
+    await page.route("**/api/state**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("sessionId") === "mock-runtime") {
+        await route.fulfill({ json: runtimeState() });
+        return;
+      }
+      await route.continue();
+    });
+    await page.route("**/api/messages**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("sessionId") === "mock-runtime") {
+        await route.fulfill({ json: { ok: true, sessionId: "mock-runtime", messages: [{ role: "assistant", content: "Runtime context is high." }] } });
+        return;
+      }
+      await route.continue();
+    });
+    await page.route("**/api/models**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("sessionId") === "mock-runtime") {
+        const model = { provider: "mock", id: "model", name: "Mock Model", reasoning: true };
+        await route.fulfill({ json: { ok: true, cwd: "/workspace", current: model, models: [model], thinkingLevel: "off", thinkingLevels: ["off"] } });
+        return;
+      }
+      await route.continue();
+    });
+
+    await page.goto("/");
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Runtime mock session" })).toBeVisible();
+
+    await page.locator(".sessionBarTab").filter({ hasText: "Runtime mock session" }).click();
+    await expect(page.locator("#statusTitle")).toHaveText("Runtime mock session");
+    await expect(page.locator("#statusPath")).toContainText("Mock runtime");
+    await expect(page.locator("#contextMeterLabel")).toHaveText("ctx 97%");
+
+    delayLocalOpen = true;
+    await page.locator(".sessionBarTab").filter({ hasText: "Current mock session" }).click();
+    await localOpenStartedPromise;
+
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect(page.locator("#statusPath")).not.toContainText("Mock runtime");
+    await expect(page.locator("#contextMeterLabel")).toHaveText("");
+    await expect(page.locator("#contextMeter")).toHaveAttribute("aria-label", /Context usage unavailable/);
+
+    releaseLocalOpen();
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+  });
+
   test("clicked tab highlights immediately before the server responds", async ({ page }) => {
     // Regression test: the active-tab highlight must switch optimistically on click,
     // not wait for the POST /api/sessions/open round-trip to complete.

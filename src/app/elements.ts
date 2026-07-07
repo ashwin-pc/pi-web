@@ -47,6 +47,16 @@ export type AppElements = {
   conversationTreeButton: HTMLButtonElement;
   gitButton: HTMLButtonElement;
   currentSessionBucketButton: HTMLButtonElement;
+  runtimeButton: HTMLButtonElement;
+  runtimePanel: HTMLElement;
+  runtimeBackdrop: HTMLDivElement;
+  runtimeCloseButton: HTMLButtonElement;
+  runtimeRefreshButton: HTMLButtonElement;
+  runtimeListEl: HTMLDivElement;
+  runtimeConnectJson: HTMLTextAreaElement;
+  runtimeConnectButton: HTMLButtonElement;
+  runtimeExamplesEl: HTMLDivElement;
+  runtimePanelStatusEl: HTMLSpanElement;
   settingsButton: HTMLButtonElement;
   settingsPanel: HTMLElement;
   settingsBackdrop: HTMLDivElement;
@@ -80,6 +90,8 @@ export type AppElements = {
   emptyCwdChooserEl: HTMLDivElement;
   emptyCwdPathEl: HTMLDivElement;
   emptyCwdButton: HTMLButtonElement;
+  emptyRuntimePathEl: HTMLDivElement;
+  emptyRuntimeButton: HTMLButtonElement;
 };
 
 export function requiredElement<T extends Element>(selector: string): T {
@@ -138,6 +150,16 @@ export function getAppElements(): AppElements {
     conversationTreeButton: requiredElement<HTMLButtonElement>("#conversationTreeButton"),
     gitButton: requiredElement<HTMLButtonElement>("#gitButton"),
     currentSessionBucketButton: requiredElement<HTMLButtonElement>("#currentSessionBucketButton"),
+    runtimeButton: requiredElement<HTMLButtonElement>("#runtimeButton"),
+    runtimePanel: requiredElement<HTMLElement>("#runtimePanel"),
+    runtimeBackdrop: requiredElement<HTMLDivElement>("#runtimeBackdrop"),
+    runtimeCloseButton: requiredElement<HTMLButtonElement>("#runtimeCloseButton"),
+    runtimeRefreshButton: requiredElement<HTMLButtonElement>("#runtimeRefreshButton"),
+    runtimeListEl: requiredElement<HTMLDivElement>("#runtimeList"),
+    runtimeConnectJson: requiredElement<HTMLTextAreaElement>("#runtimeConnectJson"),
+    runtimeConnectButton: requiredElement<HTMLButtonElement>("#runtimeConnectButton"),
+    runtimeExamplesEl: requiredElement<HTMLDivElement>("#runtimeExamples"),
+    runtimePanelStatusEl: requiredElement<HTMLSpanElement>("#runtimePanelStatus"),
     settingsButton: requiredElement<HTMLButtonElement>("#settingsButton"),
     settingsPanel: requiredElement<HTMLElement>("#settingsPanel"),
     settingsBackdrop: requiredElement<HTMLDivElement>("#settingsBackdrop"),
@@ -171,6 +193,8 @@ export function getAppElements(): AppElements {
     emptyCwdChooserEl: requiredElement<HTMLDivElement>("#emptyCwdChooser"),
     emptyCwdPathEl: requiredElement<HTMLDivElement>("#emptyCwdChooser .emptyCwdPath"),
     emptyCwdButton: requiredElement<HTMLButtonElement>("#emptyCwdChooser .emptyCwdButton"),
+    emptyRuntimePathEl: requiredElement<HTMLDivElement>("#emptyCwdChooser .emptyRuntimePath"),
+    emptyRuntimeButton: requiredElement<HTMLButtonElement>("#emptyCwdChooser .emptyRuntimeButton"),
   };
 }
 

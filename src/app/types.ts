@@ -235,6 +235,14 @@ export function readLegacySelectedMarkerColor(): SessionMarkerColorId | undefine
   return normalizeMarkerColor(localStorage.getItem(selectedMarkerColorKey));
 }
 
+export type RuntimeRef = {
+  id: string;
+  kind?: "local" | "container" | "ssh" | string;
+  label?: string;
+  cwd?: string;
+  experimental?: boolean;
+};
+
 export type SessionInfo = {
   id: string;
   name?: string;
@@ -253,7 +261,9 @@ export type SessionInfo = {
     startedAt?: string;
     lastActivityAt?: string;
     pendingMessageCount: number;
+    error?: string;
   };
+  runtimeRef?: RuntimeRef;
   unread?: boolean;
   unreadAt?: string;
 };
@@ -268,6 +278,7 @@ export type AppState = {
   currentSessionId: string;
   currentCwd: string;
   currentSessionTitle: string;
+  currentRuntimeRef?: RuntimeRef;
   statusTitleEditing: boolean;
   isStreaming: boolean;
   isRetrying: boolean;
@@ -356,6 +367,7 @@ export function createAppState(): AppState {
     currentSessionId: readActiveSessionIdFromUrl(),
     currentCwd: "",
     currentSessionTitle: "New session",
+    currentRuntimeRef: undefined,
     statusTitleEditing: false,
     isStreaming: false,
     isRetrying: false,

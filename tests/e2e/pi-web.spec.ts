@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -511,6 +511,46 @@ test.describe("composer layout", () => {
     await expect(page.locator("#settingLoadingAnimationSelect")).toHaveValue("pulse");
   });
 
+  test("runtime panel lists runtimes and populates connect examples", async ({ page }) => {
+    let runtimes = [
+      { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+      { id: "mock-container", label: "Mock container", kind: "container", cwd: "/workspace", command: "mock-runtime", args: ["run"], disconnectable: true },
+    ];
+    let connectedBody: any;
+    await page.route("**/api/runtimes/connect", async (route) => {
+      connectedBody = JSON.parse(route.request().postData() || "{}");
+      const runtime = { id: connectedBody.id, label: connectedBody.label, kind: connectedBody.kind, cwd: connectedBody.cwd, command: connectedBody.command, args: connectedBody.args, disconnectable: true };
+      runtimes = [...runtimes, runtime];
+      await route.fulfill({ status: 201, json: { ok: true, runtime } });
+    });
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes } }));
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await page.locator("#runtimeButton").click();
+    await expect(page.locator("#runtimePanel")).toBeVisible();
+    await expect(page.locator("#runtimeList")).toContainText("Local machine");
+    await expect(page.locator("#runtimeList")).toContainText("Mock container");
+    await expect(page.locator("#runtimeConnectJson")).toHaveValue(/"id": "apple-container:pi-web"/);
+
+    await page.locator(".runtimeExample", { hasText: "SSH host" }).locator(".runtimeExampleUse").click();
+    await expect(page.locator("#runtimeConnectJson")).toHaveValue(/"id": "ssh:devbox"/);
+
+    const sshConfig = {
+      id: "ssh:test",
+      label: "SSH test",
+      kind: "ssh",
+      command: "ssh",
+      args: ["test-host", "cd ~/pi-web-runner && npm exec --yes tsx server/runner.ts"],
+      cwd: "~/workspace",
+    };
+    await page.locator("#runtimeConnectJson").fill(JSON.stringify(sshConfig, null, 2));
+    await page.locator("#runtimeConnectButton").click();
+    await expect(page.locator("#runtimePanelStatus")).toContainText("Connected SSH test");
+    expect(connectedBody).toMatchObject(sshConfig);
+    await expect(page.locator("#runtimeList")).toContainText("SSH test");
+  });
+
   test("context meter shows known usage details without low-usage label", async ({ page }) => {
     await page.goto("/");
 
@@ -758,6 +798,39 @@ test.describe("sessions drawer", () => {
     await page.locator("#sessionButton").click();
     await expect.poll(() => sessionsUrl).toContain("/api/sessions?");
     expect(new URL(sessionsUrl).searchParams.getAll("cwd")).toContain(rememberedCwd);
+  });
+
+  test("folder picker selects runtime before listing runtime folders", async ({ page }) => {
+    const dirRequests: Array<{ runtimeId: string | null; path: string | null }> = [];
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
+      { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+      { id: "container:test", label: "Test container", kind: "container", cwd: "/workspace" },
+    ] } }));
+    await page.route("**/api/fs/dirs?**", async (route) => {
+      const url = new URL(route.request().url());
+      const path = url.searchParams.get("path") || "/";
+      dirRequests.push({ runtimeId: url.searchParams.get("runtimeId"), path });
+      await route.fulfill({ json: { ok: true, path, parent: path === "/" ? "/" : "/", dirs: [{ name: "app", path: `${path.replace(/\/$/, "")}/app` }] } });
+    });
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await page.locator("#sessionNewButton").click();
+    await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();
+    await page.locator(".emptyCwdButton").click();
+
+    await expect(page.locator(".folderPickerRuntimeSelect")).toBeVisible();
+    const runtimeIsBeforeFolder = await page.evaluate(() => {
+      const runtime = document.querySelector(".folderPickerRuntimeSelect")!.getBoundingClientRect();
+      const folder = document.querySelector(".folderPickerInput")!.getBoundingClientRect();
+      return runtime.top < folder.top;
+    });
+    expect(runtimeIsBeforeFolder).toBe(true);
+
+    await page.locator(".folderPickerRuntimeSelect").selectOption("container:test");
+    await expect(page.locator(".folderPickerInput")).toHaveValue("/workspace");
+    await expect.poll(() => dirRequests.at(-1)?.runtimeId).toBe("container:test");
+    await expect(page.locator(".folderPickerList")).toContainText("app");
   });
 
   test("pinned folders stay first and folder labels disambiguate on one row", async ({ page }) => {
@@ -1201,7 +1274,6 @@ test.describe("code block copy button", () => {
     await expect(copyBtn).toBeHidden();
 
     await pre.hover();
-    await copyBtn.evaluate((el) => (el as HTMLElement).focus());
     await expect(copyBtn).toBeVisible();
 
     // before click: copy state
@@ -1219,9 +1291,10 @@ test.describe("code block copy button", () => {
     await page.locator("#primaryButton").click();
 
     const pre = page.locator(".message.assistant .markdownBody pre").last();
+    await expect(pre).toBeVisible();
     await pre.hover();
     const copyBtn = pre.locator(".copyCode");
-    await copyBtn.evaluate((el) => (el as HTMLElement).focus());
+    await expect(copyBtn).toBeVisible();
     await copyBtn.click();
     await expect(copyBtn).toHaveAttribute("data-icon", "check");
 
@@ -1308,6 +1381,12 @@ test.describe("context compaction", () => {
 });
 
 test.describe("image rendering", () => {
+  async function submitPrompt(page: Page) {
+    const send = page.locator("#primaryButton");
+    await expect(send).toBeEnabled();
+    await send.click();
+  }
+
   test.beforeAll(async () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     const htmlPreview = `<!doctype html><html><body>
@@ -1359,7 +1438,7 @@ test.describe("image rendering", () => {
 
   test("renders markdown artifact links inline", async ({ page }) => {
     await page.locator("#prompt").fill("show markdown artifact");
-    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await submitPrompt(page);
 
     const preview = page.locator(".artifactPreview--markdown").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("report.md");
@@ -1370,7 +1449,7 @@ test.describe("image rendering", () => {
 
   test("opens markdown artifacts in a rendered preview page", async ({ page }) => {
     await page.locator("#prompt").fill("show markdown artifact");
-    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await submitPrompt(page);
 
     const open = page.locator(".artifactPreview--markdown").last().getByRole("link", { name: "Open" });
     await expect(open).toHaveAttribute("href", /\/artifact-preview\.html\?src=%2Fapi%2Fartifacts%2Freport\.md/);
@@ -1391,7 +1470,7 @@ test.describe("image rendering", () => {
 
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {
     await page.locator("#prompt").fill("show html artifact");
-    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await submitPrompt(page);
 
     const preview = page.locator(".artifactPreview--html").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("preview.html");
@@ -1408,7 +1487,7 @@ test.describe("image rendering", () => {
 
   test("renders video artifact links inline", async ({ page }) => {
     await page.locator("#prompt").fill("show video artifact");
-    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await submitPrompt(page);
 
     const preview = page.locator(".artifactPreview--video").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-video-artifact.webm");

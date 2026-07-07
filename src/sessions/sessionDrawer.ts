@@ -3,14 +3,14 @@ import type { AppElements } from "../app/elements.js";
 import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
-import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
+import type { AppState, RuntimeRef, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 
 export type SessionsController = {
   init: () => void;
   refreshSessions: () => Promise<void>;
   setSessionDrawerOpen: (open: boolean) => void;
-  startNewSession: (cwd?: string) => Promise<void>;
+  startNewSession: (cwd?: string, runtimeId?: string) => Promise<void>;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateEmptyCwdChooser: () => void;
   renderSessionBar: () => void;
@@ -39,6 +39,14 @@ function formatRelativeTime(value: string) {
 
 function sessionTitle(session: SessionInfo) {
   return session.name || session.firstMessage?.trim() || "New session";
+}
+
+function localRuntimeRef(cwd: string): RuntimeRef {
+  return { id: "local", kind: "local", label: "Local machine", cwd };
+}
+
+function optimisticRuntimeRef(session: Partial<SessionInfo> | undefined, cwd: string): RuntimeRef {
+  return session?.runtimeRef?.id ? { ...session.runtimeRef, cwd: session.runtimeRef.cwd || cwd } : localRuntimeRef(cwd);
 }
 
 function folderPathParts(path: string) {
@@ -113,6 +121,45 @@ function rememberSessionCwd(cwd?: string) {
   localStorage.setItem(knownSessionCwdsStorageKey, JSON.stringify(Array.from(cwds)));
 }
 
+async function responseError(response: Response) {
+  const text = await response.text();
+  try {
+    const data = JSON.parse(text);
+    const runtime = data?.runtimeRef?.label || data?.runtimeRef?.id;
+    return new Error(runtime && data?.error ? `${runtime}: ${data.error}` : data?.error || text);
+  } catch {
+    return new Error(text);
+  }
+}
+
+type RuntimeOption = RuntimeRef & { id: string };
+
+function runtimeOptionLabel(runtime: RuntimeOption) {
+  return runtime.label || runtime.id;
+}
+
+function normalizeRuntimeOptions(value: unknown): RuntimeOption[] {
+  if (!Array.isArray(value)) return [localRuntimeRef("")];
+  const seen = new Set<string>();
+  const result: RuntimeOption[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const runtime = item as Record<string, unknown>;
+    const id = typeof runtime.id === "string" && runtime.id.trim() ? runtime.id.trim() : "";
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push({
+      id,
+      kind: typeof runtime.kind === "string" ? runtime.kind : undefined,
+      label: typeof runtime.label === "string" ? runtime.label : undefined,
+      cwd: typeof runtime.cwd === "string" ? runtime.cwd : undefined,
+      experimental: Boolean(runtime.experimental),
+    });
+  }
+  if (!seen.has("local")) result.unshift(localRuntimeRef(""));
+  return result;
+}
+
 export function createSessions(options: {
   state: AppState;
   elements: AppElements;
@@ -159,6 +206,33 @@ export function createSessions(options: {
   let unreadFilterActive = false;
   type SessionRowTool = "pin" | SessionMarkerColorId;
   let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
+  let selectedRuntimeId = "local";
+  let selectedRuntimeLabel = "Local machine";
+  let selectedRuntimeCwd: string | undefined;
+  let runtimeOverrideActive = false;
+
+  function effectiveRuntimeId() {
+    return runtimeOverrideActive ? selectedRuntimeId : state.currentRuntimeRef?.id || "local";
+  }
+
+  function effectiveRuntimeLabel() {
+    return runtimeOverrideActive ? selectedRuntimeLabel : state.currentRuntimeRef?.label || "Local machine";
+  }
+
+  function effectiveRuntimeCwd() {
+    return runtimeOverrideActive ? selectedRuntimeCwd : state.currentRuntimeRef?.cwd;
+  }
+
+  function currentRuntimeId() {
+    return state.currentRuntimeRef?.id || "local";
+  }
+
+  async function fetchRuntimeOptions() {
+    const res = await fetch("/api/runtimes", { headers: api.headers() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || "Could not load runtimes");
+    return normalizeRuntimeOptions(data.runtimes);
+  }
 
   type SessionAction = {
     id: string;
@@ -171,11 +245,17 @@ export function createSessions(options: {
   };
 
   function updateEmptyCwdChooser() {
-    elements.emptyCwdPathEl.textContent = state.currentCwd;
+    elements.emptyCwdPathEl.textContent = effectiveRuntimeId() !== "local" && effectiveRuntimeCwd() ? effectiveRuntimeCwd()! : state.currentCwd;
+    elements.emptyRuntimePathEl.textContent = `Runtime: ${effectiveRuntimeLabel()}`;
     elements.emptyCwdChooserEl.hidden = elements.messagesEl.children.length > 0 || state.isStreaming;
   }
 
   async function selectSessionCwd(cwd: string) {
+    const runtimeId = effectiveRuntimeId();
+    if (runtimeId !== "local" || runtimeOverrideActive) {
+      await startNewSession(cwd, runtimeId);
+      return;
+    }
     const res = await fetch("/api/session/cwd", {
       method: "POST",
       headers: api.headers(),
@@ -192,14 +272,113 @@ export function createSessions(options: {
     refreshSessionTitle();
   }
 
+  async function openRuntimePicker() {
+    const runtimes = await fetchRuntimeOptions();
+
+    const backdrop = document.createElement("div");
+    backdrop.className = "folderPickerBackdrop";
+    const modal = document.createElement("div");
+    modal.className = "folderPicker runtimePicker";
+    const title = document.createElement("h2");
+    title.textContent = "Run new sessions in";
+    const list = document.createElement("div");
+    list.className = "folderPickerList";
+    const actions = document.createElement("div");
+    actions.className = "folderPickerActions";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel";
+    const use = document.createElement("button");
+    use.type = "button";
+    use.className = "primaryAction";
+    use.textContent = "Use runtime";
+    actions.append(cancel, use);
+    modal.append(title, list, actions);
+    backdrop.append(modal);
+    document.body.append(backdrop);
+
+    let pendingRuntime = effectiveRuntimeId();
+    let pendingLabel = effectiveRuntimeLabel();
+    let pendingCwd = effectiveRuntimeCwd();
+    function render() {
+      list.textContent = "";
+      for (const runtime of runtimes) {
+        const id = runtime.id;
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "folderPickerRow";
+        row.textContent = `${id === pendingRuntime ? "✓ " : ""}${runtimeOptionLabel(runtime)}${runtime.experimental ? " · experimental" : ""}`;
+        row.addEventListener("click", () => {
+          pendingRuntime = id;
+          pendingLabel = runtimeOptionLabel(runtime);
+          pendingCwd = runtime.cwd;
+          render();
+        });
+        list.append(row);
+      }
+    }
+    render();
+    cancel.addEventListener("click", () => backdrop.remove());
+    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) backdrop.remove(); });
+    use.addEventListener("click", () => {
+      selectedRuntimeId = pendingRuntime;
+      selectedRuntimeLabel = pendingLabel;
+      selectedRuntimeCwd = pendingCwd;
+      runtimeOverrideActive = pendingRuntime !== currentRuntimeId();
+      updateEmptyCwdChooser();
+      backdrop.remove();
+    });
+  }
+
   async function openFolderPicker(startPath: string) {
     blurActiveEditableOnMobile();
+    const currentRuntime = state.currentRuntimeRef;
+    let runtimes: RuntimeOption[];
+    let initialRuntimeWarning = "";
+    try {
+      runtimes = await fetchRuntimeOptions();
+    } catch (error) {
+      initialRuntimeWarning = error instanceof Error ? error.message : String(error);
+      runtimes = [localRuntimeRef(state.currentCwd)];
+      if (currentRuntime?.id && currentRuntime.id !== "local") runtimes.push({ ...currentRuntime, cwd: currentRuntime.cwd || state.currentCwd });
+    }
+
+    let pickerRuntimeId = effectiveRuntimeId();
+    let pickerRuntime = runtimes.find((runtime) => runtime.id === pickerRuntimeId)
+      || (pickerRuntimeId === currentRuntime?.id && currentRuntime ? { ...currentRuntime, cwd: currentRuntime.cwd || startPath } : undefined)
+      || runtimes[0]
+      || localRuntimeRef(state.currentCwd);
+    pickerRuntimeId = pickerRuntime.id;
+    let pickerRuntimeLabel = runtimeOptionLabel(pickerRuntime);
+    let pickerRuntimeCwd = pickerRuntime.cwd;
+    const folderRuntimeOptions = runtimes.filter((runtime) => runtime.id === "local" || !runtime.experimental || runtime.id === pickerRuntimeId);
+    if (!folderRuntimeOptions.some((runtime) => runtime.id === pickerRuntimeId)) folderRuntimeOptions.push(pickerRuntime);
+    const showRuntimeSelect = folderRuntimeOptions.length > 1 || pickerRuntimeId !== "local";
+
     const backdrop = document.createElement("div");
     backdrop.className = "folderPickerBackdrop";
     const modal = document.createElement("div");
     modal.className = "folderPicker";
     const title = document.createElement("h2");
-    title.textContent = "Select working directory";
+    title.textContent = showRuntimeSelect ? "Select runtime and working directory" : "Select working directory";
+    const runtimeField = document.createElement("label");
+    runtimeField.className = "folderPickerRuntimeField";
+    if (!showRuntimeSelect) runtimeField.hidden = true;
+    const runtimeLabel = document.createElement("span");
+    runtimeLabel.textContent = "Runtime";
+    const runtimeSelect = document.createElement("select");
+    runtimeSelect.className = "folderPickerRuntimeSelect";
+    runtimeSelect.setAttribute("aria-label", "Runtime");
+    for (const runtime of folderRuntimeOptions) {
+      const option = new Option(`${runtimeOptionLabel(runtime)}${runtime.experimental ? " · experimental" : ""}`, runtime.id);
+      runtimeSelect.append(option);
+    }
+    runtimeSelect.value = pickerRuntimeId;
+    runtimeField.append(runtimeLabel, runtimeSelect);
+    const runtimeHint = document.createElement("div");
+    runtimeHint.className = "folderPickerHint";
+    runtimeHint.hidden = !showRuntimeSelect;
+    runtimeHint.textContent = "Choose where pi runs first; folders below are resolved inside that runtime.";
     const input = document.createElement("input");
     input.className = "folderPickerInput";
     input.value = startPath;
@@ -207,6 +386,7 @@ export function createSessions(options: {
     list.className = "folderPickerList";
     const error = document.createElement("div");
     error.className = "folderPickerError";
+    error.textContent = initialRuntimeWarning;
     const actions = document.createElement("div");
     actions.className = "folderPickerActions";
     const create = document.createElement("button");
@@ -220,14 +400,20 @@ export function createSessions(options: {
     select.className = "primaryAction";
     select.textContent = "Select folder";
     actions.append(create, cancel, select);
-    modal.append(title, input, list, error, actions);
+    modal.append(title, runtimeField, runtimeHint, input, list, error, actions);
     backdrop.append(modal);
     document.body.append(backdrop);
+
+    function selectedRuntimeDefaultPath(runtime: RuntimeOption) {
+      if (runtime.id === "local") return state.currentRuntimeRef?.id === "local" || !state.currentRuntimeRef ? state.currentCwd || runtime.cwd || startPath : runtime.cwd || state.currentCwd || startPath;
+      return runtime.cwd || startPath || "/";
+    }
 
     async function load(path: string) {
       error.textContent = "";
       list.textContent = "Loading…";
-      const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}`, { headers: api.headers() });
+      const runtimeQuery = pickerRuntimeId !== "local" ? `&runtimeId=${encodeURIComponent(pickerRuntimeId)}` : "";
+      const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}${runtimeQuery}`, { headers: api.headers() });
       const data = await res.json();
       if (!res.ok || data.ok === false) throw new Error(data.error || "Could not list directory");
       input.value = data.path;
@@ -248,6 +434,17 @@ export function createSessions(options: {
       }
     }
 
+    runtimeSelect.addEventListener("change", () => {
+      const nextRuntime = folderRuntimeOptions.find((runtime) => runtime.id === runtimeSelect.value) || folderRuntimeOptions[0] || localRuntimeRef(state.currentCwd);
+      pickerRuntime = nextRuntime;
+      pickerRuntimeId = nextRuntime.id;
+      pickerRuntimeLabel = runtimeOptionLabel(nextRuntime);
+      pickerRuntimeCwd = nextRuntime.cwd;
+      const nextPath = selectedRuntimeDefaultPath(nextRuntime);
+      input.value = nextPath;
+      load(nextPath).catch((e) => { error.textContent = e.message; list.textContent = ""; });
+    });
+
     create.addEventListener("click", async () => {
       const name = window.prompt("New folder name");
       if (name === null) return;
@@ -257,7 +454,7 @@ export function createSessions(options: {
         const res = await fetch("/api/fs/dirs", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ parent: input.value, name }),
+          body: JSON.stringify({ parent: input.value, name, ...(pickerRuntimeId !== "local" ? { runtimeId: pickerRuntimeId } : {}) }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.ok === false) throw new Error(data.error || "Could not create folder");
@@ -277,6 +474,10 @@ export function createSessions(options: {
     select.addEventListener("click", async () => {
       try {
         select.disabled = true;
+        selectedRuntimeId = pickerRuntimeId;
+        selectedRuntimeLabel = pickerRuntimeLabel;
+        selectedRuntimeCwd = pickerRuntimeCwd;
+        runtimeOverrideActive = pickerRuntimeId !== currentRuntimeId();
         await selectSessionCwd(input.value);
         backdrop.remove();
       } catch (e) {
@@ -284,23 +485,25 @@ export function createSessions(options: {
         select.disabled = false;
       }
     });
-    load(startPath).catch((e) => { error.textContent = e.message; list.textContent = ""; });
+    load(selectedRuntimeDefaultPath(pickerRuntime)).catch((e) => { error.textContent = e.message; list.textContent = ""; });
     if (!("ontouchstart" in window) && navigator.maxTouchPoints === 0) {
       input.focus();
     }
   }
 
-  async function startNewSession(cwd?: string) {
+  async function startNewSession(cwd?: string, runtimeIdOverride?: string) {
     const wasDrawerOpen = !elements.sessionDrawer.hidden;
+    const runtimeId = runtimeIdOverride !== undefined ? runtimeIdOverride : runtimeOverrideActive ? selectedRuntimeId : undefined;
     const res = await fetch("/api/sessions/new", {
       method: "POST",
       headers: api.headers(),
-      body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: state.currentSessionId }),
+      body: JSON.stringify({ ...(cwd ? { cwd } : {}), ...(runtimeId ? { runtimeId } : {}), sessionId: state.currentSessionId }),
     });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) throw await responseError(res);
     const data = await res.json();
     if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
     rememberSessionCwd(cwd || data.cwd || state.currentCwd);
+    runtimeOverrideActive = false;
     clearMessages();
     updateMeta(data);
     await refreshState();
@@ -346,7 +549,7 @@ export function createSessions(options: {
     for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
     const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
     const res = await fetch(url, { headers: api.headers() });
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) throw await responseError(res);
     const data = await res.json();
     cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
     for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
@@ -1021,17 +1224,40 @@ export function createSessions(options: {
     return "Session";
   }
 
+  function currentMetaSnapshot() {
+    return {
+      sessionId: state.currentSessionId,
+      sessionTitle: state.currentSessionTitle || "New session",
+      cwd: state.currentCwd,
+      runtimeRef: state.currentRuntimeRef || localRuntimeRef(state.currentCwd),
+      isStreaming: state.isStreaming,
+      isCompacting: state.isCompacting,
+      stats: state.stats || null,
+    };
+  }
+
+  function applyOptimisticSessionSwitch(sessionId: string, sessionTitle: string, cwd: string, knownSession?: Partial<SessionInfo>) {
+    updateMeta({
+      sessionId,
+      sessionTitle,
+      cwd,
+      runtimeRef: optimisticRuntimeRef(knownSession, cwd),
+      isStreaming: Boolean(knownSession?.runtime?.isStreaming),
+      isCompacting: Boolean(knownSession?.runtime?.isCompacting),
+      stats: null,
+    });
+    renderSessionBar();
+    renderCurrentSessionBucketButton();
+    clearMessages();
+  }
+
   async function openSessionTab(sessionId: string, cwd: string) {
-    const previousSessionId = state.currentSessionId;
+    const previousMeta = currentMetaSnapshot();
     const switchingSessions = state.currentSessionId !== sessionId;
     if (switchingSessions) {
       const knownSession = state.sessionsById[sessionId];
       const knownTitle = knownSession ? sessionTitle(knownSession as SessionInfo) : "";
-      state.currentSessionId = sessionId;
-      state.currentSessionTitle = knownTitle || "Session";
-      renderSessionBar();
-      renderCurrentSessionBucketButton();
-      clearMessages();
+      applyOptimisticSessionSwitch(sessionId, knownTitle || "Session", cwd, knownSession);
     }
     try {
       const openRes = await fetch("/api/sessions/open", {
@@ -1039,15 +1265,16 @@ export function createSessions(options: {
         headers: api.headers(),
         body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
-      if (!openRes.ok) throw new Error(await openRes.text());
+      if (!openRes.ok) throw await responseError(openRes);
       writeActiveSessionIdToUrl(sessionId);
+      runtimeOverrideActive = false;
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       markSessionReadBestEffort(sessionId);
       await refreshState();
       if (switchingSessions) await refreshMessages();
     } catch (error) {
-      state.currentSessionId = previousSessionId;
+      updateMeta(previousMeta);
       renderSessionBar();
       renderCurrentSessionBucketButton();
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
@@ -1359,28 +1586,39 @@ export function createSessions(options: {
       if (allowedMarkerColors.size > 0 && !allowedMarkerColors.has(marker?.color as SessionMarkerColorId)) return false;
       if (unreadFilterActive && !isSessionUnread(item.id, Boolean(item.unread), Boolean(item.runtime?.isRunning))) return false;
       if (!query) return true;
-      return [sessionTitle(item), item.cwd || "", item.firstMessage || ""]
+      return [sessionTitle(item), item.cwd || "", item.runtimeRef?.label || "", item.firstMessage || ""]
         .some((value) => value.toLowerCase().includes(query));
     };
     const filterActive = Boolean(query || allowedMarkerColors.size > 0 || unreadFilterActive);
     renderSessionColorFilterButton();
 
     const groups = new Map<string, SessionInfo[]>();
+    const groupMeta = new Map<string, { cwd: string; runtimeId: string; runtimeLabel: string }>();
     for (const item of sessions) {
       const cwd = item.cwd || state.currentCwd || "";
-      groups.set(cwd, [...(groups.get(cwd) || []), item]);
+      const runtimeId = item.runtimeRef?.id || "local";
+      const runtimeLabel = item.runtimeRef?.label || "Local machine";
+      const key = `${runtimeId}\n${cwd}`;
+      groupMeta.set(key, { cwd, runtimeId, runtimeLabel });
+      groups.set(key, [...(groups.get(key) || []), item]);
     }
 
-    const pinnedEntries: Array<[string, SessionInfo[]]> = state.pinnedFolders
-      .filter((cwd) => groups.has(cwd))
-      .map((cwd) => [cwd, groups.get(cwd)!]);
-    const pinnedFolders = new Set(state.pinnedFolders);
-    const unpinnedEntries = Array.from(groups.entries()).filter(([cwd]) => !pinnedFolders.has(cwd));
+    const pinnedEntries: Array<[string, SessionInfo[]]> = Array.from(groups.entries())
+      .filter(([key]) => isFolderPinned(groupMeta.get(key)?.cwd || ""))
+      .sort(([left], [right]) => {
+        const leftIndex = state.pinnedFolders.indexOf(groupMeta.get(left)?.cwd || "");
+        const rightIndex = state.pinnedFolders.indexOf(groupMeta.get(right)?.cwd || "");
+        return leftIndex - rightIndex;
+      });
+    const pinnedKeys = new Set(pinnedEntries.map(([key]) => key));
+    const unpinnedEntries = Array.from(groups.entries()).filter(([key]) => !pinnedKeys.has(key));
     const orderedEntries = [...pinnedEntries, ...unpinnedEntries];
-    const folderLabels = folderDisplayNames(orderedEntries.map(([cwd]) => cwd));
+    const folderLabels = folderDisplayNames(orderedEntries.map(([key]) => groupMeta.get(key)?.cwd || key));
     let renderedItemCount = 0;
 
-    for (const [cwd, items] of orderedEntries) {
+    for (const [groupKey, items] of orderedEntries) {
+      const meta = groupMeta.get(groupKey) || { cwd: groupKey, runtimeId: "local", runtimeLabel: "Local machine" };
+      const cwd = meta.cwd;
       const folderPinned = isFolderPinned(cwd);
       const folderCollapsed = state.collapsedSessionFolders.has(cwd);
       const group = document.createElement("section");
@@ -1400,8 +1638,9 @@ export function createSessions(options: {
       labels.className = "sessionFolderLabels";
       const name = document.createElement("span");
       name.className = "sessionFolderName";
-      name.textContent = folderLabels.get(cwd) || folderName(cwd);
-      name.title = cwd;
+      const folderLabel = folderLabels.get(cwd) || folderName(cwd);
+      name.textContent = meta.runtimeId === "local" ? folderLabel : `${meta.runtimeLabel} · ${folderLabel}`;
+      name.title = meta.runtimeId === "local" ? cwd : `${meta.runtimeLabel}\n${cwd}`;
       labels.append(name);
       toggle.append(chevron, labels);
       toggle.addEventListener("click", () => {
@@ -1428,7 +1667,7 @@ export function createSessions(options: {
       setIcon(newButton, "square-pen");
       newButton.addEventListener("click", async () => {
         try {
-          await startNewSession(cwd);
+          await startNewSession(cwd, meta.runtimeId);
         } catch (error) {
           addMessage("system", error instanceof Error ? error.message : String(error), "error");
         }
@@ -1567,18 +1806,17 @@ export function createSessions(options: {
 
     const meta = document.createElement("span");
     meta.className = "sessionItemMeta";
-    meta.textContent = `${formatRelativeTime(item.modified)} · ${item.messageCount}`;
+    const runtimeUnavailable = item.runtimeRef?.id && item.runtimeRef.id !== "local" && item.runtime?.loaded === false;
+    meta.textContent = `${runtimeUnavailable ? "runtime unavailable · " : ""}${formatRelativeTime(item.modified)} · ${item.messageCount}`;
 
     navBtn.append(titleRow, meta);
     navBtn.addEventListener("click", async () => {
-      const previousSessionId = state.currentSessionId;
+      const previousMeta = currentMetaSnapshot();
       const nextCwd = item.cwd || cwd;
       const switchingSessions = state.currentSessionId !== item.id;
       if (switchingSessions) {
-        state.currentSessionId = item.id;
-        renderSessionBar();
-        renderCurrentSessionBucketButton();
-        clearMessages();
+        applyOptimisticSessionSwitch(item.id, sessionTitle(item), nextCwd, item);
+        if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
       }
       try {
         const openRes = await fetch("/api/sessions/open", {
@@ -1586,8 +1824,9 @@ export function createSessions(options: {
           headers: api.headers(),
           body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
         });
-        if (!openRes.ok) throw new Error(await openRes.text());
+        if (!openRes.ok) throw await responseError(openRes);
         writeActiveSessionIdToUrl(item.id);
+        runtimeOverrideActive = false;
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         markSessionReadBestEffort(item.id);
@@ -1596,7 +1835,7 @@ export function createSessions(options: {
         if (switchingSessions) await refreshMessages();
       } catch (error) {
         if (switchingSessions) {
-          state.currentSessionId = previousSessionId;
+          updateMeta(previousMeta);
           renderSessionBar();
           renderCurrentSessionBucketButton();
         }
@@ -1623,7 +1862,8 @@ export function createSessions(options: {
 
   function init() {
     new MutationObserver(updateEmptyCwdChooser).observe(elements.messagesEl, { childList: true });
-    elements.emptyCwdButton.addEventListener("click", () => openFolderPicker(state.currentCwd));
+    elements.emptyCwdButton.addEventListener("click", () => openFolderPicker(effectiveRuntimeId() !== "local" && effectiveRuntimeCwd() ? effectiveRuntimeCwd()! : state.currentCwd).catch((error) => window.alert(error instanceof Error ? error.message : String(error))));
+    elements.emptyRuntimeButton.addEventListener("click", () => openRuntimePicker().catch((error) => window.alert(error instanceof Error ? error.message : String(error))));
     const headerTitle = elements.sessionDrawer.querySelector(".sessionDrawerHeader h2");
     if (headerTitle) {
       const filterWrap = document.createElement("div");
@@ -1654,8 +1894,12 @@ export function createSessions(options: {
     elements.settingsButton.textContent = "";
     setIcon(elements.settingsButton, "settings");
     elements.settingsButton.append(document.createTextNode("Settings"));
+    elements.runtimeButton.classList.add("sessionDrawerFooterButton");
+    elements.runtimeButton.textContent = "";
+    setIcon(elements.runtimeButton, "server");
+    elements.runtimeButton.append(document.createTextNode("Runtimes"));
     elements.sessionNewButton.textContent = "+ New session";
-    footer.append(elements.settingsButton, elements.sessionNewButton);
+    footer.append(elements.settingsButton, elements.runtimeButton, elements.sessionNewButton);
     elements.sessionDrawer.append(footer);
 
     sessionPanelHandle = rightPanels?.register({

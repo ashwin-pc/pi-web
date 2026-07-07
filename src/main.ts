@@ -19,6 +19,7 @@ import { createMarkdownRenderer } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
+import { createRuntimePanel, type RuntimePanelController } from "./runtimes/runtimePanel.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
@@ -39,6 +40,7 @@ let composer: ComposerController;
 let contextMeter: ContextMeterController;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
+let runtimePanel: RuntimePanelController;
 let settings: SettingsController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
@@ -129,8 +131,16 @@ function showSystemError(error: unknown) {
   messages.addMessage("system", error instanceof Error ? error.message : String(error), "error");
 }
 
+function normalizeRuntimeRef(value: any, cwd?: string) {
+  if (!value || typeof value !== "object" || typeof value.id !== "string" || !value.id) return undefined;
+  return { ...value, ...(typeof value.cwd === "string" ? {} : cwd ? { cwd } : {}) };
+}
+
 function updateMeta(data: any) {
   const sessionId = typeof data.sessionId === "string" ? data.sessionId : state.currentSessionId;
+  const cwd = typeof data.cwd === "string" ? data.cwd : state.currentCwd;
+  const hasRuntimeRef = Object.prototype.hasOwnProperty.call(data, "runtimeRef");
+  const runtimeRef = hasRuntimeRef ? normalizeRuntimeRef(data.runtimeRef, cwd) : undefined;
   if (sessionId) {
     const sessionName = typeof data.sessionName === "string" ? data.sessionName : typeof data.sessionTitle === "string" ? data.sessionTitle : undefined;
     state.sessionsById[sessionId] = {
@@ -138,21 +148,28 @@ function updateMeta(data: any) {
       id: sessionId,
       ...(sessionName !== undefined ? { name: sessionName } : {}),
       ...(typeof data.cwd === "string" ? { cwd: data.cwd } : {}),
+      ...(hasRuntimeRef ? { runtimeRef } : {}),
       isCurrent: sessionId === (data.sessionId || state.currentSessionId),
     };
   }
-  state.currentModelKey = modelKey(data.model);
-  state.currentModelDisplay = data.model ? modelLabel(data.model) : "";
-  state.currentThinkingLevel = data.thinkingLevel || "off";
-  state.currentSessionId = data.sessionId || state.currentSessionId;
-  state.currentCwd = data.cwd || state.currentCwd;
+  if ("model" in data) {
+    state.currentModelKey = modelKey(data.model);
+    state.currentModelDisplay = data.model ? modelLabel(data.model) : "";
+  }
+  if ("thinkingLevel" in data) state.currentThinkingLevel = data.thinkingLevel || "off";
+  if (data.sessionId) state.currentSessionId = data.sessionId;
+  if (typeof data.cwd === "string") state.currentCwd = data.cwd;
+  if (hasRuntimeRef) state.currentRuntimeRef = runtimeRef;
+  if ("isStreaming" in data) state.isStreaming = Boolean(data.isStreaming);
+  if ("isCompacting" in data) state.isCompacting = Boolean(data.isCompacting);
   if ("stats" in data) contextMeter.update(data.stats);
   if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
   if ("webHeaderActions" in data) webHeaderActions.render(data.webHeaderActions);
   if ("webGitTabs" in data) gitPanel?.setExtensionTabs(data.webGitTabs);
   if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
-  elements.statusPathEl.textContent = state.currentCwd;
+  const runtimeLabel = state.currentRuntimeRef?.id && state.currentRuntimeRef.id !== "local" ? state.currentRuntimeRef.label || state.currentRuntimeRef.id : "";
+  elements.statusPathEl.textContent = runtimeLabel ? `${runtimeLabel}: ${state.currentCwd}` : state.currentCwd;
   modelSettings.updateSummary();
   if (sessions) {
     if (data.sessionUiState) sessions.applySessionUiState(data.sessionUiState);
@@ -225,6 +242,7 @@ function initStaticIcons() {
   setIcon(elements.expandButton, "maximize-2");
   setIcon(elements.gitButton, "git-branch");
   setIcon(elements.currentSessionBucketButton, "flag");
+  setIcon(elements.runtimeButton, "server");
   setIcon(elements.settingsButton, "settings");
   setIcon(elements.stopButton, "square");
 }
@@ -256,6 +274,13 @@ settings = createSettings({
 });
 
 contextMeter = createContextMeter({ state, elements });
+
+runtimePanel = createRuntimePanel({
+  elements,
+  api,
+  rightPanels,
+  addMessage: messages.addMessage,
+});
 
 sessions = createSessions({
   state,
@@ -323,6 +348,7 @@ realtime = createRealtime({
 initStaticIcons();
 statusBar.init();
 sessions.init();
+runtimePanel.init();
 contextMeter.init();
 composer.init();
 conversationTree.init();
@@ -353,6 +379,7 @@ initKeyboardShortcuts([
     const scopes: string[] = [];
     if (!elements.tokenOverlay.hidden) scopes.push("token");
     if (!elements.settingsPanel.hidden) scopes.push("settings");
+    if (!elements.runtimePanel.hidden) scopes.push("runtimes");
     if (!elements.modelSettingsPopover.hidden) scopes.push("modelSettings");
     if (conversationTree.isOpen()) scopes.push("conversationTree");
     if (document.activeElement === elements.promptEl) scopes.push("composer");

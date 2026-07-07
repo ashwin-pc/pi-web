@@ -570,9 +570,10 @@ button:disabled:hover { border-color: var(--border); }
 }
 .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl,
 .composer:has(.modelSettingsButton[aria-expanded="true"]) .modelControl {
-  flex: 0 1 auto;
-  width: clamp(170px, 28vw, 320px);
+  flex: 1 1 auto;
+  max-width: clamp(170px, 28vw, 320px);
 }
+
 .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsButton {
   height: 38px;
   min-height: 38px;

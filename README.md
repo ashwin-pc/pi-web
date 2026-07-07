@@ -203,6 +203,10 @@ Then open:
 http://<machine-name>:8787
 ```
 
+## Bundled session orchestration tool
+
+pi-web includes a bundled `pi_web_session` tool for orchestrator/verifier agents. It can list sessions, read state/messages, wait for a target session to become idle, send a follow-up nudge, open/create sessions, or abort a runaway response. Use normal `bash`, `read`, and `grep` tools for verification, diffs, tests, and Docker smoke checks.
+
 ## Environment variables
 
 - `HOST` - bind host, default `127.0.0.1`
@@ -213,6 +217,8 @@ http://<machine-name>:8787
 - `PI_WEB_CHILD_HOST` - supervised child bind host, default `127.0.0.1`
 - `PI_WEB_CHILD_PORT` - supervised child port, default `PORT + 1` (for example `8788` when `PORT=8787`)
 - `PI_WEB_RESTART_GRACE_MS` - delay between child stop/start, default `250`
+- `PI_WEB_INTERNAL_BASE_URL` / `PI_WEB_BASE_URL` - optional base URL used by the bundled `pi_web_session` tool when it needs to call pi-web from inside a non-default runtime
+- `PI_WEB_SESSION_TOOL=0` - disable the bundled `pi_web_session` tool
 
 ## Development architecture
 

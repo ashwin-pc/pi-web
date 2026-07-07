@@ -25,10 +25,17 @@
 .emptyCwdPath {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   overflow-wrap: anywhere;
+  margin-bottom: 8px;
+}
+
+.emptyRuntimePath {
+  color: var(--muted);
+  font-size: 13px;
   margin-bottom: 18px;
 }
 
 .emptyCwdButton,
+.emptyRuntimeButton,
 .folderPickerActions button {
   min-height: 34px;
   border-radius: 10px;
@@ -62,6 +69,35 @@
 .folderPicker h2 {
   margin: 0;
   font-size: 16px;
+}
+
+.folderPickerRuntimeField {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 260px);
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.folderPickerRuntimeField[hidden],
+.folderPickerHint[hidden] {
+  display: none;
+}
+
+.folderPickerRuntimeSelect {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 6px 8px;
+}
+
+.folderPickerHint {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .folderPickerInput {
