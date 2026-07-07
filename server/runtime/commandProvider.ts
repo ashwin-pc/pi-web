@@ -13,6 +13,8 @@ export type RunnerSessionState = {
   isStreaming: boolean;
   isCompacting: boolean;
   model: { provider?: string; id?: string; name?: string } | null;
+  thinkingLevel?: string;
+  thinkingLevels?: string[];
   messages: number;
 };
 

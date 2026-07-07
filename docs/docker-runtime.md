@@ -4,7 +4,7 @@ pi-web can expose one configured Docker runtime in addition to the normal local 
 
 ## Secure expectations
 
-- Set `PI_WEB_TOKEN`; browser/API access is still protected by the normal pi-web bearer token flow.
+- Set `PI_WEB_TOKEN`; browser/API access is still protected by the normal pi-web bearer token flow. The web bearer token is not passed into the Docker runtime.
 - Set `PI_WEB_DOCKER_WORKSPACE_HOST` to the only host folder that Docker may mount. pi-web does not accept arbitrary host mount paths from API requests.
 - The mounted folder appears inside the container as `PI_WEB_DOCKER_WORKSPACE_CONTAINER` (default `/workspace`). Users should pick folders under that container path.
 - Docker networking defaults to `none`. This is the safest mode, but remote model APIs will not work from inside the container. Set `PI_WEB_DOCKER_NETWORK=bridge` when the selected pi model provider needs outbound network access.
@@ -39,5 +39,6 @@ Open pi-web, enter the token, choose **Docker workspace** in the folder/runtime 
 ## Current limitations
 
 - The Docker runtime is one long-lived runner process managed by pi-web; container lifecycle is tied to the server process.
-- Git status/diff and prompt/state/messages are proxied for runner sessions; some host-only routes may still use local behavior.
+- Git status/diff and prompt/state/messages are proxied for runner sessions; host-only routes return an explicit unsupported-runtime error instead of falling back to the host.
 - The default image runs `npm exec tsx server/runner.ts` with the pi-web source mounted at `/app`; custom images must be able to run that command.
+- Persistent custom command runtimes are authenticated host command execution. They are disabled in production unless `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` is set; prefer the guided Docker/Apple adapters once available.

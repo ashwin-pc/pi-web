@@ -130,6 +130,8 @@ function sessionState(session: any) {
     isStreaming: Boolean(session.isStreaming),
     isCompacting: Boolean(session.isCompacting),
     model: simplifyModel(session.model) || null,
+    thinkingLevel: session.thinkingLevel || "off",
+    thinkingLevels: typeof session.getAvailableThinkingLevels === "function" ? session.getAvailableThinkingLevels() : ["off"],
     messages: Array.isArray(session.messages) ? session.messages.length : 0,
   };
 }
