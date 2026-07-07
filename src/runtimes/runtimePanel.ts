@@ -1,8 +1,8 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
-import type { RuntimeRef } from "../app/types.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { connectRuntime as connectRuntimeApi, disconnectRuntime as disconnectRuntimeApi, listRuntimes, type RuntimeConfig, type RuntimeOption } from "./api.js";
 
 export type RuntimePanelController = {
   init: () => void;
@@ -10,25 +10,7 @@ export type RuntimePanelController = {
   isOpen: () => boolean;
 };
 
-type RuntimeSummary = RuntimeRef & {
-  command?: string;
-  args?: string[];
-  processCwd?: string;
-  workspace?: string;
-  network?: string;
-  readOnly?: boolean;
-  disconnectable?: boolean;
-};
-
-type RuntimeConfig = {
-  id: string;
-  label: string;
-  kind?: "local" | "container" | "ssh";
-  command: string;
-  args: string[];
-  cwd: string;
-  processCwd?: string;
-};
+type RuntimeSummary = RuntimeOption;
 
 type RuntimeExample = {
   title: string;
@@ -111,31 +93,8 @@ function commandLine(runtime: RuntimeSummary) {
   return [runtime.command, ...args].join(" ");
 }
 
-function parseJsonError(responseText: string) {
-  try {
-    const data = JSON.parse(responseText);
-    return data?.error || responseText;
-  } catch {
-    return responseText;
-  }
-}
-
 async function copyText(value: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(value);
-    return;
-  }
-  const input = document.createElement("textarea");
-  input.value = value;
-  input.readOnly = true;
-  input.setAttribute("aria-hidden", "true");
-  input.style.position = "fixed";
-  input.style.left = "-1000px";
-  input.style.top = "0";
-  document.body.append(input);
-  input.select();
-  document.execCommand("copy");
-  input.remove();
+  await navigator.clipboard.writeText(value);
 }
 
 function normalizeRuntimeConfig(value: unknown): RuntimeConfig {
@@ -243,11 +202,7 @@ export function createRuntimePanel(options: {
   async function refreshRuntimes() {
     elements.runtimeRefreshButton.disabled = true;
     try {
-      const res = await fetch("/api/runtimes", { headers: api.headers() });
-      const text = await res.text();
-      const data = text ? JSON.parse(text) : {};
-      if (!res.ok || data.ok === false) throw new Error(data.error || text || "Could not load runtimes");
-      renderRuntimeList(Array.isArray(data.runtimes) ? data.runtimes : []);
+      renderRuntimeList(await listRuntimes(api));
     } finally {
       elements.runtimeRefreshButton.disabled = false;
     }
@@ -302,15 +257,8 @@ export function createRuntimePanel(options: {
     elements.runtimeConnectButton.disabled = true;
     setRuntimeStatus("Checking runtime…");
     try {
-      const res = await fetch("/api/runtimes/connect", {
-        method: "POST",
-        headers: api.headers(),
-        body: JSON.stringify(config),
-      });
-      const text = await res.text();
-      const data = text ? JSON.parse(text) : {};
-      if (!res.ok || data.ok === false) throw new Error(data.error || parseJsonError(text) || "Could not connect runtime");
-      setRuntimeStatus(`Connected ${data.runtime?.label || data.runtime?.id || config.label}`);
+      const runtime = await connectRuntimeApi(api, config);
+      setRuntimeStatus(`Connected ${runtime?.label || runtime?.id || config.label}`);
       await refreshRuntimes();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -324,14 +272,7 @@ export function createRuntimePanel(options: {
   async function disconnectRuntime(runtime: RuntimeSummary) {
     if (!window.confirm(`Disconnect runtime ${runtimeTitle(runtime)}? Existing runtime-bound sessions will remain listed but unavailable until the runtime is reconnected.`)) return;
     setRuntimeStatus(`Disconnecting ${runtimeTitle(runtime)}…`);
-    const res = await fetch("/api/runtimes/disconnect", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ id: runtime.id }),
-    });
-    const text = await res.text();
-    const data = text ? JSON.parse(text) : {};
-    if (!res.ok || data.ok === false) throw new Error(data.error || parseJsonError(text) || "Could not disconnect runtime");
+    await disconnectRuntimeApi(api, runtime.id);
     setRuntimeStatus(`Disconnected ${runtimeTitle(runtime)}`);
     await refreshRuntimes();
   }

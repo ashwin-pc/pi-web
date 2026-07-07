@@ -123,11 +123,17 @@ export class CommandRunnerProvider {
 
   async prompt(sessionId: string, message: string, images?: unknown[]) {
     await this.subscribe(sessionId).catch((error) => console.warn(`Failed to subscribe runtime session ${sessionId}:`, error));
-    return this.start().request("sessions.prompt", { ...this.sessionParams(sessionId), message, images: images || [] }, 30_000);
+    const timeout = images?.length ? 120_000 : 30_000;
+    return this.start().request("sessions.prompt", { ...this.sessionParams(sessionId), message, images: images || [] }, timeout);
+  }
+
+  release(sessionId: string) {
+    this.subscribedSessionIds.delete(sessionId);
+    return this.start().request("sessions.release", this.sessionParams(sessionId)).catch(() => ({ ok: true, sessionId }));
   }
 
   abort(sessionId: string) { return this.start().request("sessions.abort", this.sessionParams(sessionId)); }
-  gitStatus(cwd = this.cwd) { return this.start().request("git.status", { cwd }); }
+  gitStatus(cwd = this.cwd, fetchRemote = false) { return this.start().request("git.status", { cwd, fetchRemote }); }
   gitDiff(options: { cwd?: string; path: string; staged?: boolean }) { return this.start().request("git.diff", { cwd: options.cwd || this.cwd, path: options.path, staged: Boolean(options.staged) }); }
   readArtifactBase64(cwd: string, name: string) { return this.start().request<{ ok: true; name: string; base64: string }>("artifacts.readBase64", { cwd, name }); }
   listModels(sessionId: string) { return this.start().request("models.list", this.sessionParams(sessionId)); }

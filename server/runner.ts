@@ -1,35 +1,63 @@
-import { readdir, stat, mkdir, writeFile, readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { mkdir, writeFile, readFile } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
-import { encodeRuntimeMessage, parseRuntimeLine, type DirectoryListing, type RuntimeRequest, type RuntimeResponse } from "./runtime/protocol.js";
-
-const execFileAsync = promisify(execFile);
+import { encodeRuntimeMessage, parseRuntimeLine, type RuntimeRequest, type RuntimeResponse } from "./runtime/protocol.js";
+import { artifactDirForCwd, artifactFileForCwd, readArtifactBase64, safeArtifactName } from "./shared/artifacts.js";
+import { listDirectories } from "./shared/fsList.js";
+import { gitDiff, gitStatus } from "./shared/git.js";
 const rootCwd = resolve(process.env.PI_RUNNER_CWD || process.cwd());
 const maxArtifactBytes = Number(process.env.PI_RUNNER_MAX_ARTIFACT_BYTES || 20 * 1024 * 1024);
+const maxLiveSessions = Math.max(1, Number(process.env.PI_RUNNER_MAX_LIVE_SESSIONS || 50));
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 const liveSessions = new Map<string, any>();
 const subscriptions = new Map<string, () => void>();
 
+function releaseRunnerSession(sessionId: string) {
+  const session = liveSessions.get(sessionId);
+  const unsubscribe = subscriptions.get(sessionId);
+  try { unsubscribe?.(); } catch { /* ignore cleanup errors */ }
+  try { session?.dispose?.(); } catch { /* ignore cleanup errors */ }
+  subscriptions.delete(sessionId);
+  liveSessions.delete(sessionId);
+}
+
+function rememberLiveSession(session: any) {
+  const sessionId = String(session?.sessionId || "");
+  if (!sessionId) return session;
+  if (liveSessions.has(sessionId)) liveSessions.delete(sessionId);
+  liveSessions.set(sessionId, session);
+  while (liveSessions.size > maxLiveSessions) {
+    const oldest = liveSessions.keys().next().value as string | undefined;
+    if (!oldest || oldest === sessionId && liveSessions.size <= 1) break;
+    releaseRunnerSession(oldest);
+  }
+  return session;
+}
+
+function touchLiveSession(sessionId: string) {
+  const session = liveSessions.get(sessionId);
+  if (session) rememberLiveSession(session);
+  return session;
+}
+
 async function loadSessionFromFile(sessionFile: string, fallbackCwd = rootCwd) {
   for (const session of liveSessions.values()) {
-    if (session.sessionFile === sessionFile) return session;
+    if (session.sessionFile === sessionFile) return rememberLiveSession(session);
   }
   const sessionManager = SessionManager.open(sessionFile, undefined, fallbackCwd);
   const cwd = fallbackCwd;
   const loader = new DefaultResourceLoader({ cwd, agentDir: getAgentDir() });
   await loader.reload();
   const result = await createAgentSession({ cwd, sessionManager, authStorage, modelRegistry, resourceLoader: loader });
-  liveSessions.set(result.session.sessionId, result.session);
+  rememberLiveSession(result.session);
   return result.session;
 }
 
 async function resolveSession(params: Record<string, unknown>) {
   const sessionId = String(params.sessionId || "");
-  const existing = liveSessions.get(sessionId);
+  const existing = touchLiveSession(sessionId);
   if (existing) return existing;
   const sessionFile = typeof params.sessionFile === "string" ? params.sessionFile : "";
   if (sessionFile) return loadSessionFromFile(sessionFile, typeof params.cwd === "string" ? params.cwd : rootCwd);
@@ -43,32 +71,6 @@ function send(value: RuntimeResponse | { event: string; data?: unknown }) {
 function asPath(value: unknown, fallback = rootCwd): string {
   if (!value || typeof value !== "string") return fallback;
   return resolve(value);
-}
-
-async function listDirectories(pathValue: unknown): Promise<DirectoryListing> {
-  const path = asPath(pathValue);
-  const entries = await readdir(path, { withFileTypes: true });
-  const dirs = entries
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-    .map((entry) => ({ name: entry.name, path: join(path, entry.name) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  return { path, parent: dirname(path), dirs };
-}
-
-async function gitStatus(cwdValue: unknown) {
-  const cwd = asPath(cwdValue);
-  try {
-    await stat(cwd);
-    const branch = (await execFileAsync("git", ["branch", "--show-current"], { cwd, timeout: 10_000 }).catch(() => ({ stdout: "" }))).stdout.trim();
-    const porcelain = (await execFileAsync("git", ["status", "--porcelain=v1", "-b"], { cwd, timeout: 10_000 })).stdout;
-    return { ok: true, cwd, isRepo: true, branch, porcelain };
-  } catch {
-    return { ok: true, cwd, isRepo: false, branch: "", porcelain: "" };
-  }
-}
-
-function safeArtifactName(name: unknown): string {
-  return String(name || "").replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 160);
 }
 
 function textFromContent(content: unknown): string {
@@ -151,7 +153,7 @@ async function createRunnerSession(cwdValue: unknown) {
   const loader = new DefaultResourceLoader({ cwd, agentDir: getAgentDir() });
   await loader.reload();
   const result = await createAgentSession({ cwd, sessionManager, authStorage, modelRegistry, resourceLoader: loader });
-  liveSessions.set(result.session.sessionId, result.session);
+  rememberLiveSession(result.session);
   subscribeSession(result.session);
   send({ event: "session.created", data: sessionState(result.session) });
   return sessionState(result.session);
@@ -222,34 +224,34 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
       const ok = await session.setModel?.(model);
       if (ok === false) throw new Error("No API key is available for this model");
       if (typeof params.thinkingLevel === "string") session.setThinkingLevel?.(params.thinkingLevel);
-      return modelState(session);
+      return { ...sessionState(session), models: modelState(session) };
+    }
+    case "sessions.release": {
+      const sessionId = String(params.sessionId || "");
+      if (sessionId) releaseRunnerSession(sessionId);
+      return { ok: true, sessionId };
     }
     case "fs.list":
-      return listDirectories(params.path);
+      return listDirectories(params.path, rootCwd);
     case "fs.mkdir": {
       const parent = asPath(params.parent);
       const name = String(params.name || "").trim();
       if (!name || name.includes("/") || name.includes("..")) throw new Error("Invalid directory name");
       const path = join(parent, name);
       await mkdir(path, { recursive: false });
-      return listDirectories(parent);
+      return listDirectories(parent, rootCwd);
     }
     case "git.status":
-      return gitStatus(params.cwd || rootCwd);
+      return gitStatus(asPath(params.cwd || rootCwd), Boolean(params.fetchRemote));
     case "git.diff": {
-      const cwd = asPath(params.cwd || rootCwd);
-      const filePath = String(params.path || "");
-      const staged = Boolean(params.staged);
-      const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-      const result = await execFileAsync("git", args, { cwd, timeout: 15_000 }).catch((error: any) => ({ stdout: error?.stdout || "", stderr: error?.stderr || "" }));
-      return { ok: true, path: filePath, staged, diff: result.stdout || "" };
+      return gitDiff({ cwd: asPath(params.cwd || rootCwd), path: String(params.path || ""), staged: Boolean(params.staged) });
     }
     case "artifacts.write": {
       const cwd = asPath(params.cwd || rootCwd);
       const name = safeArtifactName(params.name);
       if (!name) throw new Error("Artifact name is required");
       const text = typeof params.text === "string" ? params.text : "";
-      const artifactDir = join(cwd, ".pi", "web", "artifacts");
+      const artifactDir = artifactDirForCwd(cwd);
       await mkdir(artifactDir, { recursive: true });
       await writeFile(join(artifactDir, name), text, "utf-8");
       return { ok: true, name };
@@ -258,17 +260,13 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
       const cwd = asPath(params.cwd || rootCwd);
       const name = safeArtifactName(params.name);
       if (!name) throw new Error("Artifact name is required");
-      return { ok: true, name, text: await readFile(join(cwd, ".pi", "web", "artifacts", name), "utf-8") };
+      return { ok: true, name, text: await readFile(artifactFileForCwd(cwd, name), "utf-8") };
     }
     case "artifacts.readBase64": {
       const cwd = asPath(params.cwd || rootCwd);
       const name = safeArtifactName(params.name);
       if (!name) throw new Error("Artifact name is required");
-      const file = join(cwd, ".pi", "web", "artifacts", name);
-      const info = await stat(file);
-      if (Number.isFinite(maxArtifactBytes) && maxArtifactBytes > 0 && info.size > maxArtifactBytes) throw new Error(`Artifact is too large (${info.size} bytes > ${maxArtifactBytes} bytes)`);
-      const bytes = await readFile(file);
-      return { ok: true, name, base64: bytes.toString("base64") };
+      return readArtifactBase64(cwd, name, maxArtifactBytes);
     }
     default:
       throw new Error(`Unknown runtime method: ${request.method}`);

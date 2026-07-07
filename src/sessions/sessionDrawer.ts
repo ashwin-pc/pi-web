@@ -5,6 +5,7 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import type { AppState, RuntimeRef, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { listRuntimes, localRuntimeRef, parseApiError, type RuntimeOption } from "../runtimes/api.js";
 
 export type SessionsController = {
   init: () => void;
@@ -39,10 +40,6 @@ function formatRelativeTime(value: string) {
 
 function sessionTitle(session: SessionInfo) {
   return session.name || session.firstMessage?.trim() || "New session";
-}
-
-function localRuntimeRef(cwd: string): RuntimeRef {
-  return { id: "local", kind: "local", label: "Local machine", cwd };
 }
 
 function optimisticRuntimeRef(session: Partial<SessionInfo> | undefined, cwd: string): RuntimeRef {
@@ -122,42 +119,11 @@ function rememberSessionCwd(cwd?: string) {
 }
 
 async function responseError(response: Response) {
-  const text = await response.text();
-  try {
-    const data = JSON.parse(text);
-    const runtime = data?.runtimeRef?.label || data?.runtimeRef?.id;
-    return new Error(runtime && data?.error ? `${runtime}: ${data.error}` : data?.error || text);
-  } catch {
-    return new Error(text);
-  }
+  return parseApiError(response);
 }
-
-type RuntimeOption = RuntimeRef & { id: string };
 
 function runtimeOptionLabel(runtime: RuntimeOption) {
   return runtime.label || runtime.id;
-}
-
-function normalizeRuntimeOptions(value: unknown): RuntimeOption[] {
-  if (!Array.isArray(value)) return [localRuntimeRef("")];
-  const seen = new Set<string>();
-  const result: RuntimeOption[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const runtime = item as Record<string, unknown>;
-    const id = typeof runtime.id === "string" && runtime.id.trim() ? runtime.id.trim() : "";
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    result.push({
-      id,
-      kind: typeof runtime.kind === "string" ? runtime.kind : undefined,
-      label: typeof runtime.label === "string" ? runtime.label : undefined,
-      cwd: typeof runtime.cwd === "string" ? runtime.cwd : undefined,
-      experimental: Boolean(runtime.experimental),
-    });
-  }
-  if (!seen.has("local")) result.unshift(localRuntimeRef(""));
-  return result;
 }
 
 export function createSessions(options: {
@@ -228,10 +194,7 @@ export function createSessions(options: {
   }
 
   async function fetchRuntimeOptions() {
-    const res = await fetch("/api/runtimes", { headers: api.headers() });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || "Could not load runtimes");
-    return normalizeRuntimeOptions(data.runtimes);
+    return listRuntimes(api);
   }
 
   type SessionAction = {

@@ -75,7 +75,8 @@ export class StdioRuntimeClient {
       message = parseRuntimeLine(line) as RuntimeResponse | RuntimeEvent | undefined;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`[runtime] ignored non-protocol stdout line: ${line.slice(0, 500)}${line.length > 500 ? "…" : ""} (${detail})\n`);
+      const level = line.trimStart().startsWith("{\"id\":") ? "malformed protocol response" : "ignored non-protocol stdout line";
+      process.stderr.write(`[runtime] ${level}: ${line.slice(0, 500)}${line.length > 500 ? "…" : ""} (${detail})\n`);
       return;
     }
     if (!message) return;
