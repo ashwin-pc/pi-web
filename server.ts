@@ -685,17 +685,61 @@ function messageTextPreview(message: any) {
   return textFromContent(message?.content || "");
 }
 
+const assistantHttpErrorLabels: Record<string, string> = {
+  "429": "Throttling error",
+  "500": "Server error",
+  "502": "Bad gateway",
+  "503": "Service unavailable",
+  "504": "Gateway timeout",
+  "529": "Overloaded",
+};
+
+function isAssistantHttpErrorStatus(code: string) {
+  return code in assistantHttpErrorLabels || /^[45]\d\d$/.test(code);
+}
+
+function assistantStatusLabel(label: string | undefined, code: string) {
+  const clean = (label || "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean || /^(?:http|status|error|request failed|model request failed)$/i.test(clean)) return assistantHttpErrorLabels[code] || `HTTP ${code}`;
+  return clean;
+}
+
+function assistantStatusErrorPreview(text: string) {
+  const labelled = text.match(/^([A-Za-z][A-Za-z0-9 _/-]*?):\s*(\d{3})(?=$|[\s:,-])/);
+  if (labelled && isAssistantHttpErrorStatus(labelled[2])) return `${assistantStatusLabel(labelled[1], labelled[2])} (${labelled[2]})`;
+  const leading = text.match(/^(?:HTTP\s*)?(\d{3})(?=$|[\s:,-])/i);
+  if (leading && isAssistantHttpErrorStatus(leading[1])) return `${assistantStatusLabel(undefined, leading[1])} (${leading[1]})`;
+  const generic = text.match(/^(Error|Request failed|Model request failed)\s*:?\s*(\d{3})(?=$|[\s:,-])/i);
+  if (generic && isAssistantHttpErrorStatus(generic[2])) return `${assistantStatusLabel(generic[1], generic[2])} (${generic[2]})`;
+  return "";
+}
+
+function assistantParsedErrorDetail(parsed: any) {
+  if (typeof parsed === "string") return parsed.trim();
+  if (!parsed || typeof parsed !== "object") return "";
+  if (parsed.error && typeof parsed.error === "object") return parsed.error.message || parsed.error.type || "";
+  return parsed.message || parsed.detail || parsed.error_description || "";
+}
+
+function assistantJsonErrorPreview(text: string) {
+  const trimmed = text.trim();
+  if (!((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]")))) return "";
+  try {
+    const detail = assistantParsedErrorDetail(JSON.parse(trimmed));
+    return detail ? `Error: ${detail}` : "";
+  } catch {
+    return "";
+  }
+}
+
 function assistantErrorPreview(message: any) {
   const raw = String(message?.errorMessage || "").trim();
   if (!raw) return "";
-  const jsonText = raw.replace(/^Codex error:\s*/, "");
-  try {
-    const parsed = JSON.parse(jsonText);
-    const detail = parsed?.error?.message || parsed?.message || raw;
-    return `Error: ${detail}`;
-  } catch {
-    return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw;
-  }
+  const jsonText = raw.replace(/^Codex error:\s*/i, "").trim();
+  return assistantJsonErrorPreview(jsonText)
+    || assistantStatusErrorPreview(jsonText)
+    || assistantStatusErrorPreview(raw)
+    || (raw.length > 180 ? `${raw.slice(0, 179)}…` : raw);
 }
 
 function assistantStopReasonPreview(message: any) {

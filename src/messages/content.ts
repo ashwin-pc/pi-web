@@ -46,17 +46,99 @@ export function thinkingFromRawContent(content: unknown): string[] {
   }).map((text) => text.trim()).filter(Boolean);
 }
 
-function errorTextFromRaw(message: any) {
-  const raw = String(message?.raw?.errorMessage || message?.errorMessage || "").trim();
-  if (!raw) return "";
-  const jsonText = raw.replace(/^Codex error:\s*/, "");
-  try {
-    const parsed = JSON.parse(jsonText);
-    const detail = parsed?.error?.message || parsed?.message || raw;
-    return `Error: ${detail}`;
-  } catch {
-    return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw;
+const httpStatusErrorLabels: Record<string, string> = {
+  "429": "Throttling error",
+  "500": "Server error",
+  "502": "Bad gateway",
+  "503": "Service unavailable",
+  "504": "Gateway timeout",
+  "529": "Overloaded",
+};
+
+function rawErrorText(rawError: unknown) {
+  return String(rawError || "").trim();
+}
+
+function withoutCodexPrefix(raw: string) {
+  return raw.replace(/^Codex error:\s*/i, "").trim();
+}
+
+function isJsonLike(text: string) {
+  const trimmed = text.trim();
+  return (trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]"));
+}
+
+function parsedErrorDetail(parsed: unknown): string {
+  if (typeof parsed === "string") return parsed.trim();
+  if (!parsed || typeof parsed !== "object") return "";
+  const value = parsed as Record<string, any>;
+  const error = value.error;
+  if (error && typeof error === "object") {
+    const errorValue = error as Record<string, unknown>;
+    if (typeof errorValue.message === "string" && errorValue.message.trim()) return errorValue.message.trim();
+    if (typeof errorValue.type === "string" && errorValue.type.trim()) return errorValue.type.trim();
   }
+  for (const key of ["message", "detail", "error_description"] as const) {
+    if (typeof value[key] === "string" && value[key].trim()) return value[key].trim();
+  }
+  return "";
+}
+
+function parseWholeJsonError(text: string) {
+  if (!isJsonLike(text)) return "";
+  try {
+    return parsedErrorDetail(JSON.parse(text));
+  } catch {
+    return "";
+  }
+}
+
+function isHttpErrorStatus(code: string) {
+  return code in httpStatusErrorLabels || /^[45]\d\d$/.test(code);
+}
+
+function statusLabel(label: string | undefined, code: string) {
+  const clean = (label || "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!clean || /^(?:http|status|error|request failed|model request failed)$/i.test(clean)) return httpStatusErrorLabels[code] || `HTTP ${code}`;
+  return clean;
+}
+
+function statusErrorSummary(text: string) {
+  const labelled = text.match(/^([A-Za-z][A-Za-z0-9 _/-]*?):\s*(\d{3})(?=$|[\s:,-])/);
+  if (labelled && isHttpErrorStatus(labelled[2])) return `${statusLabel(labelled[1], labelled[2])} (${labelled[2]})`;
+
+  const leading = text.match(/^(?:HTTP\s*)?(\d{3})(?=$|[\s:,-])/i);
+  if (leading && isHttpErrorStatus(leading[1])) return `${statusLabel(undefined, leading[1])} (${leading[1]})`;
+
+  const generic = text.match(/^(Error|Request failed|Model request failed)\s*:?\s*(\d{3})(?=$|[\s:,-])/i);
+  if (generic && isHttpErrorStatus(generic[2])) return `${statusLabel(generic[1], generic[2])} (${generic[2]})`;
+
+  return "";
+}
+
+export function normalizeAssistantError(rawError: unknown) {
+  const raw = rawErrorText(rawError);
+  if (!raw) return "";
+  const jsonText = withoutCodexPrefix(raw);
+  const parsedDetail = parseWholeJsonError(jsonText);
+  if (parsedDetail) return `Error: ${parsedDetail}`;
+  const statusSummary = statusErrorSummary(jsonText) || statusErrorSummary(raw);
+  if (statusSummary) return statusSummary;
+  return raw.length > 180 ? `${raw.slice(0, 179)}…` : raw;
+}
+
+export function assistantErrorBody(rawError: unknown, fallback = "") {
+  const raw = rawErrorText(rawError);
+  if (!raw) return fallback;
+  const jsonText = withoutCodexPrefix(raw);
+  if (parseWholeJsonError(jsonText)) return raw;
+  const statusSummary = statusErrorSummary(jsonText) || statusErrorSummary(raw);
+  if (statusSummary) return statusSummary;
+  return raw.length > 2000 ? `${raw.slice(0, 1999)}…` : raw;
+}
+
+function errorTextFromRaw(message: any) {
+  return normalizeAssistantError(message?.raw?.errorMessage || message?.errorMessage || "");
 }
 
 function stopReasonTextFromRaw(message: any) {

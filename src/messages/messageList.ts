@@ -3,11 +3,11 @@ import { iconElement, type IconName } from "../app/icons.js";
 import type { AttachedImage, Role } from "../app/types.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
-import { imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote } from "./content.js";
+import { assistantErrorBody, imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote } from "./content.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
-export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => void;
+export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => HTMLDivElement;
 export type MessageActionKind = "edit" | "rerun" | "continue";
 export type MessageActionContext = {
   action: MessageActionKind;
@@ -729,7 +729,7 @@ export function createMessageList(options: {
 
     if (message.isError) {
       const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
-      addRuntimeErrorCard("assistant error", text, rawError);
+      addRuntimeErrorCard("assistant error", text, assistantErrorBody(rawError, text));
       return;
     }
 

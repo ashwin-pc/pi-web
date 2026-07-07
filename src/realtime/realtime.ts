@@ -11,10 +11,20 @@ import type { StatusBar } from "../status/statusBar.js";
 import type { ToolCards } from "../tools/toolCards.js";
 import type { ConversationTreeController } from "../tree/conversationTree.js";
 import { renderWebFooters } from "../extensions/webFooter.js";
+import { assistantErrorBody, normalizeAssistantError } from "../messages/content.js";
 
 export type RealtimeController = {
   connect: () => void;
   handlePiEvent: (event: PiEvent) => void;
+};
+
+type AssistantErrorInfo = {
+  text: string;
+  body: string;
+  raw: string;
+  attempt?: number;
+  maxAttempts?: number;
+  delayMs?: number;
 };
 
 export function createRealtime(options: {
@@ -37,6 +47,14 @@ export function createRealtime(options: {
 }): RealtimeController {
   const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
+  let retryErrorCard: HTMLDivElement | null = null;
+  let terminalFailureCard: HTMLDivElement | null = null;
+  let terminalFailureInfo: AssistantErrorInfo | null = null;
+  let terminalFailureSessionId = "";
+  let lastAssistantError: AssistantErrorInfo | null = null;
+  let retryFinalError: AssistantErrorInfo | null = null;
+  let latestRetryAttempt: number | undefined;
+  let latestRetryMaxAttempts: number | undefined;
   let sessionRefreshTimer: number | undefined;
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
@@ -225,12 +243,226 @@ export function createRealtime(options: {
     messages.scrollToBottom();
   }
 
+  function numericEventValue(value: unknown) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : undefined;
+  }
+
+  function formatRetryDelay(delayMs?: number) {
+    if (!delayMs || delayMs <= 0) return "";
+    const totalSeconds = Math.max(1, Math.round(delayMs / 1000));
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return seconds ? `${minutes}m ${String(seconds).padStart(2, "0")}s` : `${minutes}m`;
+  }
+
+  function retryAttemptText(attempt?: number, maxAttempts?: number) {
+    if (!attempt) return "";
+    return maxAttempts ? `attempt ${attempt}/${maxAttempts}` : `attempt ${attempt}`;
+  }
+
+  function messageFromEvent(value: any) {
+    return value?.message && typeof value.message === "object" && value.message.message ? value.message.message : value?.message || value;
+  }
+
+  function assistantErrorInfoFromMessage(value: any): AssistantErrorInfo | null {
+    const message = messageFromEvent(value);
+    const role = String(message?.raw?.role || message?.role || "");
+    const raw = String(message?.raw?.errorMessage || message?.errorMessage || "").trim();
+    const stopReason = String(message?.raw?.stopReason || message?.stopReason || "").trim();
+    if (role && role !== "assistant") return null;
+    if (!raw && stopReason !== "error") return null;
+    const text = normalizeAssistantError(raw || stopReason) || "Assistant error";
+    return {
+      text,
+      body: assistantErrorBody(raw || text, text),
+      raw: raw || text,
+      attempt: latestRetryAttempt,
+      maxAttempts: latestRetryMaxAttempts,
+    };
+  }
+
+  function assistantErrorInfoFromRetryEvent(event: PiEvent): AssistantErrorInfo {
+    const attempt = numericEventValue(event.attempt) ?? latestRetryAttempt;
+    const maxAttempts = numericEventValue(event.maxAttempts) ?? numericEventValue(event.maxRetries) ?? latestRetryMaxAttempts;
+    const delayMs = numericEventValue(event.delayMs);
+    const raw = String(event.errorMessage || event.finalError || lastAssistantError?.raw || "").trim();
+    const text = normalizeAssistantError(raw) || lastAssistantError?.text || "Transient model error";
+    return {
+      text,
+      body: assistantErrorBody(raw || text, text),
+      raw: raw || text,
+      attempt,
+      maxAttempts,
+      delayMs,
+    };
+  }
+
+  function setRuntimeCardKind(card: HTMLDivElement, kind: "error" | "running" | "success") {
+    card.classList.remove("toolCard--error", "toolCard--running", "toolCard--success");
+    card.classList.add(kind === "running" ? "toolCard--running" : kind === "success" ? "toolCard--success" : "toolCard--error");
+  }
+
+  function setRuntimeErrorCardText(card: HTMLDivElement, title: string, subtitle: string, body: string) {
+    const name = card.querySelector<HTMLElement>(".toolCardName");
+    if (name) name.textContent = title;
+    const label = card.querySelector<HTMLElement>(".toolCardLabel");
+    let subtitleEl = card.querySelector<HTMLElement>(".toolCardSubtitle");
+    if (subtitle) {
+      if (!subtitleEl && label) {
+        subtitleEl = document.createElement("span");
+        subtitleEl.className = "toolCardSubtitle";
+        label.append(subtitleEl);
+      }
+      if (subtitleEl) subtitleEl.textContent = subtitle;
+    } else {
+      subtitleEl?.remove();
+    }
+
+    card.querySelector(".toolCardCollapseToggle")?.remove();
+    let bodyEl = card.querySelector<HTMLElement>(".toolCardBody");
+    if (!body) {
+      bodyEl?.remove();
+    } else {
+      if (!bodyEl) {
+        bodyEl = document.createElement("pre");
+        bodyEl.className = "toolCardBody";
+        card.append(bodyEl);
+      }
+      bodyEl.classList.remove("collapsed");
+      bodyEl.textContent = body;
+    }
+    messages.scrollToBottom();
+  }
+
+  function ensureRetryErrorCard(info: AssistantErrorInfo) {
+    if (!retryErrorCard?.isConnected) {
+      messages.invalidateRefreshes();
+      retryErrorCard = tools.addRuntimeErrorCard("assistant error", info.text, info.body);
+    }
+    return retryErrorCard;
+  }
+
+  function clearTransientFailureUi() {
+    retryErrorCard?.remove();
+    retryErrorCard = null;
+    terminalFailureCard?.remove();
+    terminalFailureCard = null;
+    terminalFailureInfo = null;
+    terminalFailureSessionId = "";
+    lastAssistantError = null;
+    retryFinalError = null;
+    latestRetryAttempt = undefined;
+    latestRetryMaxAttempts = undefined;
+  }
+
+  function updateRetryStart(event: PiEvent) {
+    const info = assistantErrorInfoFromRetryEvent(event);
+    latestRetryAttempt = info.attempt;
+    latestRetryMaxAttempts = info.maxAttempts;
+    lastAssistantError = info;
+    retryFinalError = null;
+    const attemptText = retryAttemptText(info.attempt, info.maxAttempts);
+    const delayText = formatRetryDelay(info.delayMs);
+    const retryText = `retrying${attemptText ? ` (${attemptText})` : ""}${delayText ? ` in ${delayText}` : ""}…`;
+    status.markActivityProgress(`${info.text} — ${retryText}`, event.lastActivityAt);
+    const card = ensureRetryErrorCard(info);
+    setRuntimeCardKind(card, "running");
+    setRuntimeErrorCardText(
+      card,
+      "retrying assistant request",
+      `${info.text} · ${retryText}`,
+      `pi is retrying automatically after a transient provider error.${attemptText ? `\n${attemptText}` : ""}${delayText ? `\nBackoff: ${delayText}` : ""}`,
+    );
+  }
+
+  function updateRetryEnd(event: PiEvent) {
+    const info = assistantErrorInfoFromRetryEvent(event);
+    latestRetryAttempt = info.attempt;
+    latestRetryMaxAttempts = info.maxAttempts;
+    if (event.success) {
+      retryFinalError = null;
+      lastAssistantError = null;
+      status.markActivityProgress("responding", event.lastActivityAt);
+      if (retryErrorCard?.isConnected) {
+        setRuntimeCardKind(retryErrorCard, "success");
+        const attemptText = retryAttemptText(info.attempt, info.maxAttempts);
+        setRuntimeErrorCardText(retryErrorCard, "retry recovered", attemptText ? `resumed after ${attemptText}` : "assistant request resumed", info.text ? `Earlier error: ${info.text}` : "");
+      }
+      return;
+    }
+
+    retryFinalError = info;
+    lastAssistantError = info;
+    status.markActivityProgress("retry failed", event.lastActivityAt);
+    const card = ensureRetryErrorCard(info);
+    setRuntimeCardKind(card, "error");
+    const attemptText = retryAttemptText(info.attempt, info.maxAttempts);
+    setRuntimeErrorCardText(card, "retry failed", `${info.text}${attemptText ? ` · ${attemptText}` : ""}`, info.body || info.text);
+  }
+
+  function terminalErrorFromAgentEnd(event: PiEvent) {
+    const eventMessages = Array.isArray(event.messages) ? event.messages : [];
+    for (let index = eventMessages.length - 1; index >= 0; index -= 1) {
+      const message = messageFromEvent(eventMessages[index]);
+      if (String(message?.role || message?.raw?.role || "") !== "assistant") continue;
+      return assistantErrorInfoFromMessage(message);
+    }
+    return retryFinalError || lastAssistantError;
+  }
+
+  function focusComposerWith(text: string) {
+    composer.setPromptText(text);
+    elements.promptEl.focus();
+    elements.promptEl.setSelectionRange(elements.promptEl.value.length, elements.promptEl.value.length);
+  }
+
+  function appendTerminalFailureAction(parent: HTMLElement, label: string, title: string, text: string) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "runtimeErrorAction";
+    button.textContent = label;
+    button.title = title;
+    button.addEventListener("click", () => focusComposerWith(text));
+    parent.append(button);
+  }
+
+  function addTerminalFailureCard(info: AssistantErrorInfo) {
+    terminalFailureCard?.remove();
+    const failedAfter = info.maxAttempts || info.attempt;
+    const subtitle = failedAfter ? `${info.text} · failed after ${failedAfter} retries` : info.text;
+    const body = [
+      failedAfter ? "The model request failed after pi exhausted automatic retries." : "The model request failed.",
+      "Try again, or switch models if this provider is rate-limited or overloaded.",
+    ].join("\n");
+    terminalFailureCard = tools.addRuntimeErrorCard("response failed", subtitle, body);
+    const actions = document.createElement("div");
+    actions.className = "runtimeErrorActions";
+    appendTerminalFailureAction(actions, "Retry", "Fill the composer with a retry request", "Please retry the previous request.");
+    appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", "/model ");
+    terminalFailureCard.append(actions);
+    messages.scrollToBottom();
+  }
+
+  function restoreTerminalFailureCard() {
+    if (!terminalFailureInfo || terminalFailureSessionId !== (state.currentSessionId || "") || state.isStreaming) return;
+    if (!terminalFailureCard?.isConnected) addTerminalFailureCard(terminalFailureInfo);
+  }
+
+  function rememberTerminalFailure(info: AssistantErrorInfo | null) {
+    terminalFailureInfo = info;
+    terminalFailureSessionId = info ? state.currentSessionId || "" : "";
+    if (info) restoreTerminalFailureCard();
+  }
+
   function handlePiEvent(event: PiEvent, isReplay = false) {
     switch (event.type) {
       case "session_info_changed":
         if ("name" in event) status.setStatusTitle(event.name || "New session");
         break;
       case "agent_start":
+        clearTransientFailureUi();
         state.isStreaming = true;
         status.markActivityStart("starting", event.startedAt, event.lastActivityAt);
         composer.updatePrimaryAction();
@@ -261,19 +493,48 @@ export function createRealtime(options: {
         tools.endTool(event.toolCallId, event.toolName || "tool", Boolean(event.isError), event.result);
         status.markActivityProgress("waiting for assistant", event.lastActivityAt);
         break;
-      case "agent_end":
+      case "message_end": {
+        const errorInfo = assistantErrorInfoFromMessage(event.message);
+        if (errorInfo) {
+          lastAssistantError = errorInfo;
+          const card = ensureRetryErrorCard(errorInfo);
+          setRuntimeCardKind(card, "error");
+          setRuntimeErrorCardText(card, "assistant error", errorInfo.text, errorInfo.body);
+        } else {
+          const message = messageFromEvent(event.message);
+          if (String(message?.role || message?.raw?.role || "") === "assistant") {
+            lastAssistantError = null;
+            retryFinalError = null;
+          }
+        }
+        break;
+      }
+      case "auto_retry_start":
+        updateRetryStart(event);
+        break;
+      case "auto_retry_end":
+        updateRetryEnd(event);
+        break;
+      case "agent_end": {
+        const terminalError = terminalErrorFromAgentEnd(event);
         state.isStreaming = false;
+        rememberTerminalFailure(terminalError);
         status.markActivityEnd();
         composer.updatePrimaryAction();
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
         tools.clearActiveToolCards();
         if (!isReplay) refreshMessages()
-          .then(() => sessions.markSessionRead())
+          .then(() => {
+            retryErrorCard = null;
+            restoreTerminalFailureCard();
+            return sessions.markSessionRead();
+          })
           .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
         if (!isReplay && conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
         status.refreshSessionTitle();
         break;
+      }
       case "compaction_start":
         state.isCompacting = true;
         status.markActivityStart("compacting", event.startedAt, event.lastActivityAt);
@@ -339,7 +600,9 @@ export function createRealtime(options: {
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
         if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
-          refreshMessages().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+          refreshMessages()
+            .then(restoreTerminalFailureCard)
+            .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
           if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
           scheduleSessionRefresh();
         }
@@ -363,12 +626,17 @@ export function createRealtime(options: {
           const isRunning = Boolean(data.runtime?.isRunning);
           state.isStreaming = Boolean(data.runtime?.isStreaming);
           state.isCompacting = Boolean(data.runtime?.isCompacting);
-          if (isRunning) status.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtime?.startedAt, data.runtime?.lastActivityAt);
-          else status.markActivityEnd();
+          if (isRunning) {
+            if (wasRunning) status.markActivityProgress(undefined, data.runtime?.lastActivityAt);
+            else status.markActivityStart(state.isCompacting ? "compacting" : "active", data.runtime?.startedAt, data.runtime?.lastActivityAt);
+          } else status.markActivityEnd();
           composer.updatePrimaryAction();
           if (wasRunning && !isRunning) {
             refreshMessages()
-              .then(() => sessions.markSessionRead())
+              .then(() => {
+                restoreTerminalFailureCard();
+                return sessions.markSessionRead();
+              })
               .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
             if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
             status.refreshSessionTitle();

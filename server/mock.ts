@@ -407,6 +407,8 @@ export function createMockHarness(options: MockSessionOptions) {
         const slow = /slow|running/i.test(message);
         const withShowcase = /showcase/i.test(message);
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
+        const withRetryFailure = /retry failure|retry exhausted|throttle failure/i.test(message);
+        const withRetrySuccess = !withRetryFailure && /retry demo|retry success|throttle retry/i.test(message);
         const withThinking = /thinking card/i.test(message);
         const withFlatEditTool = /flat edit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
@@ -437,6 +439,38 @@ export function createMockHarness(options: MockSessionOptions) {
             errorMessage: "Codex error: {\"type\":\"error\",\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"The usage limit has been reached\",\"resets_in_seconds\":120},\"status_code\":429}",
             timestamp: new Date().toISOString(),
           });
+        } else if (withRetryFailure || withRetrySuccess) {
+          const retryDelayMs = /screenshot/i.test(message) ? 5_000 : 500;
+          const throttleRaw = "Throttling error: 429: {\"_events\":{\"close\":[null,null],\"error\":[null,null]},\"_readableState\":{\"highWaterMark\":65536}}";
+          const throttledMessage = {
+            role: "assistant",
+            content: [],
+            stopReason: "error",
+            errorMessage: throttleRaw,
+            timestamp: new Date().toISOString(),
+          };
+          appendMockMessage(throttledMessage);
+          broadcastPiEvent({ type: "message_end", message: throttledMessage });
+          broadcastPiEvent({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: retryDelayMs, errorMessage: throttleRaw });
+          if (!(await waitForMockRun(retryDelayMs))) return;
+          if (withRetryFailure) {
+            const unavailableRaw = "Service unavailable: 503: {\"socket\":true,\"_readableState\":{\"highWaterMark\":65536}}";
+            broadcastPiEvent({ type: "auto_retry_end", success: false, attempt: 3, maxAttempts: 3, finalError: unavailableRaw });
+            const failedMessage = {
+              role: "assistant",
+              content: [],
+              stopReason: "error",
+              errorMessage: unavailableRaw,
+              timestamp: new Date().toISOString(),
+            };
+            appendMockMessage(failedMessage);
+            broadcastPiEvent({ type: "message_end", message: failedMessage });
+          } else {
+            broadcastPiEvent({ type: "auto_retry_end", success: true, attempt: 1, maxAttempts: 3 });
+            const recoveredMessage = { role: "assistant", content: "Recovered after retry.", timestamp: new Date().toISOString() };
+            appendMockMessage(recoveredMessage);
+            broadcastPiEvent({ type: "message_end", message: recoveredMessage });
+          }
         } else if (withThinking) {
           const thinking = "First I will inspect the request and decide what to answer.";
           const finalText = "Final answer after thinking.";

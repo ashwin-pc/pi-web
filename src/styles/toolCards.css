@@ -260,6 +260,38 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
 .toolCard--success .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
 .toolCard--error   .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
 .toolCard--thinking .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #251a3d); }
+.runtimeErrorActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 2px 12px 10px;
+}
+.runtimeErrorAction {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 22px;
+  border: 0;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: color-mix(in srgb, var(--text) 88%, var(--danger));
+  padding: 2px 12px;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.runtimeErrorAction:hover:not(:disabled) {
+  border: 0;
+  background: color-mix(in srgb, var(--danger) 18%, transparent);
+  color: var(--text);
+}
+.runtimeErrorAction:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--danger) 48%, var(--text));
+  outline-offset: 2px;
+}
 
 :root[data-density="compact"] .toolCard {
   font-size: 12px;
