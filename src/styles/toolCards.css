@@ -238,6 +238,19 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
   font-size: 12px;
   color: var(--muted);
 }
+.toolCard:not(.toolCard--thinking) .toolCardBody {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  white-space: pre;
+  overflow-wrap: normal;
+}
+.toolCard:not(.toolCard--thinking) .toolCardBody code.hljs {
+  white-space: pre;
+  overflow-wrap: normal;
+}
 .toolCardPartialBody {
   max-height: 12rem;
   overflow: auto;

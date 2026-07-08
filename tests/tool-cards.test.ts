@@ -60,6 +60,14 @@ describe("tool card structured arguments styling", () => {
     expect(css).toContain(".toolCardArgCode code");
   });
 
+  it("keeps tool result monospace output from wrapping on narrow screens", () => {
+    expect(css).toContain(".toolCard:not(.toolCard--thinking) .toolCardBody {");
+    expect(css).toContain("overflow-x: auto;");
+    expect(css).toContain("-webkit-overflow-scrolling: touch;");
+    expect(css).toContain("white-space: pre;");
+    expect(css).toContain(".toolCard:not(.toolCard--thinking) .toolCardBody code.hljs {");
+  });
+
   it("defines image preview styles", () => {
     expect(css).toContain(".toolCardImage");
     expect(css).toContain("max-height: 420px");
