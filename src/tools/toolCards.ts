@@ -205,7 +205,7 @@ function parseJsonLikeResult(result: unknown): unknown {
   }
 }
 
-function textFromToolResult(result: unknown): string {
+export function textFromToolResult(result: unknown): string {
   result = parseJsonLikeResult(result);
   if (typeof result === "string") return result;
   if (!result || typeof result !== "object") return result == null ? "" : String(result);
@@ -219,7 +219,9 @@ function textFromToolResult(result: unknown): string {
     if (value.truncated) sections.push(typeof value.fullOutputPath === "string" ? `Output truncated. Full output: ${value.fullOutputPath}` : "Output truncated.");
     return sections.join("\n\n");
   }
-  return textFromRawContent(value.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
+  if (typeof value.text === "string") return value.text;
+  const raw = value.raw && typeof value.raw === "object" ? value.raw as Record<string, unknown> : undefined;
+  return textFromRawContent(value.content) || textFromRawContent(raw?.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
 }
 
 type ToolImage = { src: string; alt: string; needsAuth?: boolean };

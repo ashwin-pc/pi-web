@@ -1,6 +1,30 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { collectToolImages } from "../src/tools/toolCards.js";
+import { collectToolImages, textFromToolResult } from "../src/tools/toolCards.js";
+
+describe("tool card result text", () => {
+  it("renders simplified API tool result text instead of JSON stringifying the whole message", () => {
+    expect(textFromToolResult({
+      entryId: "entry-1",
+      role: "toolResult",
+      toolName: "read",
+      text: "line 1\nline 2",
+      raw: { content: [{ type: "text", text: "raw line" }] },
+    })).toBe("line 1\nline 2");
+  });
+
+  it("falls back to raw content text for tool results without precomputed text", () => {
+    expect(textFromToolResult({
+      role: "toolResult",
+      toolName: "bash",
+      raw: { content: [{ type: "text", text: "command output" }] },
+    })).toBe("command output");
+  });
+
+  it("keeps bash execution output readable with status metadata", () => {
+    expect(textFromToolResult({ output: "failed\n", exitCode: 2 })).toBe("failed\n\nCommand exited with code 2");
+  });
+});
 
 describe("tool card image previews", () => {
   it("extracts image data from read tool style raw content", () => {
