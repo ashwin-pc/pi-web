@@ -334,6 +334,18 @@ export function createMessageList(options: {
     return target instanceof HTMLElement && Boolean(target.closest("button, a, input, textarea, select, summary, .imageFrame, .imageActions, .messageActions, .messageActionMenu"));
   }
 
+  function hasTextSelectionInMessage(messageEl: HTMLElement) {
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+    for (let i = 0; i < selection.rangeCount; i++) {
+      const range = selection.getRangeAt(i);
+      const start = range.startContainer;
+      const end = range.endContainer;
+      if (messageEl.contains(start) || messageEl.contains(end) || range.intersectsNode(messageEl)) return true;
+    }
+    return false;
+  }
+
   document.addEventListener("pointerdown", (event) => {
     if (actionMenu.hidden) return;
     const target = event.target;
@@ -411,6 +423,7 @@ export function createMessageList(options: {
       cancelLongPress();
       longPressTimer = window.setTimeout(() => {
         longPressTimer = undefined;
+        if (hasTextSelectionInMessage(messageEl)) return;
         suppressNextMessageClick = true;
         showActionMenu(messageEl, actions, startX);
         navigator.vibrate?.(8);
@@ -429,7 +442,7 @@ export function createMessageList(options: {
       event.stopPropagation();
     }, true);
     messageEl.addEventListener("contextmenu", (event) => {
-      if (!isMobileActionMenuEnabled() || isInteractiveMessageTarget(event.target)) return;
+      if (!isMobileActionMenuEnabled() || isInteractiveMessageTarget(event.target) || hasTextSelectionInMessage(messageEl)) return;
       event.preventDefault();
       showActionMenu(messageEl, actions, event.clientX || undefined);
     });
