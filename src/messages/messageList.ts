@@ -3,7 +3,7 @@ import { iconElement, type IconName } from "../app/icons.js";
 import type { AttachedImage, Role } from "../app/types.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
-import { assistantErrorBody, imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote } from "./content.js";
+import { assistantErrorBody, imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -114,6 +114,7 @@ export function createMessageList(options: {
   const { messagesEl, markdown, onMessageAction } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
+  const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
   let currentStreamingThinkingKey = "current";
   let isStreaming = false;
   let shouldFollowStream = true;
@@ -538,12 +539,27 @@ export function createMessageList(options: {
     return text.split(/\s+/).filter(Boolean).length;
   }
 
+  function renderThinkingBody(body: HTMLElement, text: string) {
+    body.replaceChildren();
+    for (const segment of thinkingTextSegments(text)) {
+      if (segment.type === "heading") {
+        const heading = document.createElement("strong");
+        heading.className = "toolCardThinkingHeading";
+        heading.textContent = segment.text;
+        body.append(heading);
+      } else {
+        body.append(document.createTextNode(segment.text));
+      }
+    }
+  }
+
   function updateThinkingCardText(card: HTMLDivElement, text: string, streaming = false) {
+    thinkingCardRawText.set(card, text);
     card.classList.toggle("toolCard--thinkingEmpty", !text.trim());
     const body = card.querySelector<HTMLElement>(".toolCardBody");
     const subtitle = card.querySelector<HTMLElement>(".toolCardSubtitle");
     if (body) {
-      body.textContent = text;
+      renderThinkingBody(body, text);
       if (!streaming && (text.length > 1200 || text.split("\n").length > 16)) body.classList.add("collapsed");
     }
     if (subtitle) {
@@ -700,8 +716,8 @@ export function createMessageList(options: {
       card = addThinkingCard("", true);
       streamingThinkingCards.set(key, card);
     }
-    const body = card.querySelector<HTMLElement>(".toolCardBody");
-    updateThinkingCardText(card, `${body?.textContent || ""}${delta || ""}`, true);
+    const rawText = thinkingCardRawText.get(card) ?? card.querySelector<HTMLElement>(".toolCardBody")?.textContent ?? "";
+    updateThinkingCardText(card, `${rawText}${delta || ""}`, true);
     scrollToBottom();
   }
 
@@ -711,7 +727,9 @@ export function createMessageList(options: {
     const card = streamingThinkingCards.get(key);
     if (!card?.isConnected) return;
     card.classList.remove("toolCard--thinkingStreaming");
-    const finalText = typeof content === "string" ? content : card.querySelector<HTMLElement>(".toolCardBody")?.textContent || "";
+    const finalText = typeof content === "string"
+      ? content
+      : thinkingCardRawText.get(card) ?? card.querySelector<HTMLElement>(".toolCardBody")?.textContent ?? "";
     if (!finalText.trim()) {
       card.remove();
     } else {

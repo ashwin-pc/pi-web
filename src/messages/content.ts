@@ -46,6 +46,28 @@ export function thinkingFromRawContent(content: unknown): string[] {
   }).map((text) => text.trim()).filter(Boolean);
 }
 
+export type ThinkingTextSegment = { type: "heading" | "text"; text: string };
+
+function standaloneThinkingHeading(line: string) {
+  const match = line.match(/^(\s*)\*\*(\S(?:.*\S)?)\*\*\s*$/);
+  return match ? `${match[1]}${match[2]}` : undefined;
+}
+
+export function thinkingTextSegments(text: string): ThinkingTextSegment[] {
+  const lines = text.split("\n");
+  const segments: ThinkingTextSegment[] = [];
+  lines.forEach((line, index) => {
+    const heading = standaloneThinkingHeading(line);
+    segments.push({ type: heading === undefined ? "text" : "heading", text: heading ?? line });
+    if (index < lines.length - 1) segments.push({ type: "text", text: "\n" });
+  });
+  return segments;
+}
+
+export function formatThinkingText(text: string) {
+  return thinkingTextSegments(text).map((segment) => segment.text).join("");
+}
+
 const httpStatusErrorLabels: Record<string, string> = {
   "429": "Throttling error",
   "500": "Server error",

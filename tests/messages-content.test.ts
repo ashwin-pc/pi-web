@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assistantErrorBody, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent } from "../src/messages/content.js";
+import { assistantErrorBody, formatThinkingText, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
 
 describe("message content helpers", () => {
   it("keeps thinking out of text bubbles and extracts it for thinking cards", () => {
@@ -12,6 +12,14 @@ describe("message content helpers", () => {
 
     expect(textFromRawContent(content)).toBe("Final answer");
     expect(thinkingFromRawContent(content)).toEqual(["consider the options", "alternative thinking"]);
+  });
+
+  it("formats model-specific standalone bold thinking headings without touching other asterisks", () => {
+    const text = "**Planning next step**\n\nKeep *literal* inline emphasis and 2 * 3.";
+    expect(formatThinkingText(text)).toBe("Planning next step\n\nKeep *literal* inline emphasis and 2 * 3.");
+    expect(thinkingTextSegments(text)[0]).toEqual({ type: "heading", text: "Planning next step" });
+    expect(formatThinkingText("- **bullet stays markdown-ish**\nnot **a heading** inline"))
+      .toBe("- **bullet stays markdown-ish**\nnot **a heading** inline");
   });
 
   it("shows friendly stop-reason text for truncated assistant messages", () => {

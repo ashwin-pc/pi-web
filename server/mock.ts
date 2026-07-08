@@ -506,10 +506,13 @@ export function createMockHarness(options: MockSessionOptions) {
             broadcastPiEvent({ type: "message_end", message: recoveredMessage });
           }
         } else if (withThinking) {
-          const thinking = "First I will inspect the request and decide what to answer.";
+          const thinkingHeading = "**Inspecting request**\n\n";
+          const thinkingBody = "First I will inspect the request and decide what to answer.";
+          const thinking = `${thinkingHeading}${thinkingBody}`;
           const finalText = "Final answer after thinking.";
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_start", contentIndex: 0 } });
-          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinking } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinkingHeading } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: thinkingBody } });
           if (!(await waitForMockRun(800))) return;
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: thinking } });
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: finalText } });

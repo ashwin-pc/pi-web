@@ -60,6 +60,11 @@ describe("tool card structured arguments styling", () => {
     expect(css).toContain(".toolCardArgCode code");
   });
 
+  it("styles formatted thinking headings without using markdown markers", () => {
+    expect(css).toContain(".toolCardThinkingHeading {");
+    expect(css).toContain("font-weight: 800;");
+  });
+
   it("keeps tool result monospace output from wrapping on narrow screens", () => {
     expect(css).toContain(".toolCard:not(.toolCard--thinking) .toolCardBody {");
     expect(css).toContain("overflow-x: auto;");
