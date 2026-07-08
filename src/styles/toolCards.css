@@ -35,7 +35,7 @@
   min-height: 0;
   border: none;
   background: transparent;
-  color: var(--accent);
+  color: #fff;
   padding: 0;
   font-size: 16px;
   line-height: 1;
@@ -53,7 +53,9 @@
   display: inline-flex;
 }
 .toolCardExpandToggle:hover,
-.toolCardCollapseToggle:hover { color: var(--text); border: none; }
+.toolCardExpandToggle:focus-visible,
+.toolCardCollapseToggle:hover,
+.toolCardCollapseToggle:focus-visible { color: #fff; border: none; }
 .toolCardIcon {
   flex: 0 0 auto;
   font-size: 13px;

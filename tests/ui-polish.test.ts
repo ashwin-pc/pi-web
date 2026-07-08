@@ -157,6 +157,17 @@ describe("git status colors", () => {
   });
 });
 
+describe("tool card expand chevrons", () => {
+  const css = readFileSync(new URL("../src/styles/toolCards.css", import.meta.url), "utf8");
+
+  it("keeps tool and thinking expand/collapse chevrons white instead of accent-colored", () => {
+    const toggleBlock = css.match(/\.toolCardExpandToggle,\n\.toolCardCollapseToggle \{[\s\S]*?\n\}/)?.[0] || "";
+    expect(toggleBlock).toContain("color: #fff;");
+    expect(toggleBlock).not.toContain("color: var(--accent);");
+    expect(css).toContain(".toolCardCollapseToggle:focus-visible { color: #fff; border: none; }");
+  });
+});
+
 describe("configurable accent color", () => {
   const baseCss = readFileSync(new URL("../src/styles/base.css", import.meta.url), "utf8");
   const composerCss = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
