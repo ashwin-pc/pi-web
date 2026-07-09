@@ -48,13 +48,25 @@ export function thinkingFromRawContent(content: unknown): string[] {
 
 export type ThinkingTextSegment = { type: "heading" | "text"; text: string };
 
+const emptyHtmlCommentLine = /^\s*<!--\s*-->\s*$/;
+
+export function cleanThinkingText(text: string) {
+  return text
+    .split("\n")
+    .filter((line) => !emptyHtmlCommentLine.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/^(?:[ \t]*\n)+/, "")
+    .replace(/(?:\n[ \t]*)+$/, "");
+}
+
 function standaloneThinkingHeading(line: string) {
   const match = line.match(/^(\s*)\*\*(\S(?:.*\S)?)\*\*\s*$/);
   return match ? `${match[1]}${match[2]}` : undefined;
 }
 
 export function thinkingTextSegments(text: string): ThinkingTextSegment[] {
-  const lines = text.split("\n");
+  const lines = cleanThinkingText(text).split("\n");
   const segments: ThinkingTextSegment[] = [];
   lines.forEach((line, index) => {
     const heading = standaloneThinkingHeading(line);

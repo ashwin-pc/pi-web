@@ -3,7 +3,7 @@ import { iconElement, type IconName } from "../app/icons.js";
 import type { AttachedImage, Role } from "../app/types.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
-import { assistantErrorBody, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
+import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -683,15 +683,16 @@ export function createMessageList(options: {
 
   function updateThinkingCardText(card: HTMLDivElement, text: string, streaming = false) {
     thinkingCardRawText.set(card, text);
-    card.classList.toggle("toolCard--thinkingEmpty", !text.trim());
+    const displayText = cleanThinkingText(text);
+    card.classList.toggle("toolCard--thinkingEmpty", !displayText.trim());
     const body = card.querySelector<HTMLElement>(".toolCardBody");
     const subtitle = card.querySelector<HTMLElement>(".toolCardSubtitle");
     if (body) {
-      renderThinkingBody(body, text);
-      if (!streaming && (text.length > 1200 || text.split("\n").length > 16)) body.classList.add("collapsed");
+      renderThinkingBody(body, displayText);
+      if (!streaming && (displayText.length > 1200 || displayText.split("\n").length > 16)) body.classList.add("collapsed");
     }
     if (subtitle) {
-      const words = thinkingWordCount(text);
+      const words = thinkingWordCount(displayText);
       subtitle.textContent = streaming
         ? words > 0 ? `${words.toLocaleString()} words · streaming` : "streaming"
         : `${words.toLocaleString()} words`;
@@ -858,7 +859,7 @@ export function createMessageList(options: {
     const finalText = typeof content === "string"
       ? content
       : thinkingCardRawText.get(card) ?? card.querySelector<HTMLElement>(".toolCardBody")?.textContent ?? "";
-    if (!finalText.trim()) {
+    if (!cleanThinkingText(finalText).trim()) {
       card.remove();
     } else {
       updateThinkingCardText(card, finalText, false);

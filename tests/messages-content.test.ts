@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assistantErrorBody, assistantErrorStatusCode, formatThinkingText, isRetryableAssistantError, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
+import { assistantErrorBody, assistantErrorStatusCode, cleanThinkingText, formatThinkingText, isRetryableAssistantError, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
 
 describe("message content helpers", () => {
   it("keeps thinking out of text bubbles and extracts it for thinking cards", () => {
@@ -20,6 +20,13 @@ describe("message content helpers", () => {
     expect(thinkingTextSegments(text)[0]).toEqual({ type: "heading", text: "Planning next step" });
     expect(formatThinkingText("- **bullet stays markdown-ish**\nnot **a heading** inline"))
       .toBe("- **bullet stays markdown-ish**\nnot **a heading** inline");
+  });
+
+  it("strips provider empty HTML comments from thinking display text", () => {
+    const text = "**Testing UI clipping and overflow**\n\n<!-- -->\n\n**Running UI density and spacing tests**\n\n<!---->";
+    expect(cleanThinkingText(text)).toBe("**Testing UI clipping and overflow**\n\n**Running UI density and spacing tests**");
+    expect(formatThinkingText(text)).toBe("Testing UI clipping and overflow\n\nRunning UI density and spacing tests");
+    expect(cleanThinkingText("Keep <!-- note --> inline")).toBe("Keep <!-- note --> inline");
   });
 
   it("shows friendly stop-reason text for truncated assistant messages", () => {
