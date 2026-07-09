@@ -7,14 +7,26 @@ import { renderStatusView } from "./statusView.js";
 import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState, GitStatusResponse } from "./types.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 
-export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; rightPanels?: RightPanelManager; apiHeaders: () => HeadersInit; getSessionId?: () => string }) {
+type GitExtensionTabEntry = { key?: unknown; title?: unknown; label?: unknown };
+type GitExtensionTab = { key: string; title: string; label: string };
+type GitExtensionTabView = { key: string; loading: boolean; title?: string; html?: string; error?: string };
+
+export type GitPanelController = {
+  setExtensionTabs(tabs: unknown): void;
+  isOpen(): boolean;
+};
+
+export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; rightPanels?: RightPanelManager; apiHeaders: () => HeadersInit; getSessionId?: () => string }): GitPanelController {
   const { button, panel, rightPanels, apiHeaders, getSessionId } = options;
   const primary = panel.querySelector<HTMLElement>("#gitPrimaryPane")!;
   const detail = panel.querySelector<HTMLElement>("#gitDetailPane")!;
   const statusTab = panel.querySelector<HTMLButtonElement>("#gitStatusTab")!;
   const graphTab = panel.querySelector<HTMLButtonElement>("#gitGraphTab")!;
   const close = panel.querySelector<HTMLButtonElement>("#gitCloseButton")!;
+  const tabsContainer = statusTab.parentElement!;
   let panelHandle: RightPanelHandle | undefined;
+  let extensionTabs: GitExtensionTab[] = [];
+  let extensionTabView: GitExtensionTabView | undefined;
 
   const state: GitState = {
     isOpen: false,
@@ -29,6 +41,35 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     diffLoading: false,
     commitLoading: false,
   };
+
+  function extensionViewKey(key: string) {
+    return `extension:${key}` as GitPrimaryView;
+  }
+
+  function extensionKeyFromView(view: GitPrimaryView = state.primaryView) {
+    return view.startsWith("extension:") ? view.slice("extension:".length) : undefined;
+  }
+
+  function parsePayload(value: string | undefined) {
+    if (!value) return undefined;
+    try { return JSON.parse(value); } catch { return value; }
+  }
+
+  function escapeHtml(value: unknown) {
+    return String(value ?? "").replace(/[&<>\"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '\"': "&quot;",
+      "'": "&#39;",
+    }[char]!));
+  }
+
+  function selectedRepoContext() {
+    const repo = state.selectedRepo;
+    if (!repo) return undefined;
+    return { path: repo.path, root: repo.root, branch: repo.branch };
+  }
 
   function repoStorageKey(cwd = state.repoCwd) {
     return cwd ? `pi-web.git.selectedRepo:${cwd}` : "pi-web.git.selectedRepo";
@@ -205,6 +246,33 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     render();
   }
 
+  async function loadExtensionTab(key: string, event?: { action?: string; payload?: unknown }) {
+    state.primaryView = extensionViewKey(key);
+    state.mobileView = extensionViewKey(key);
+    extensionTabView = { key, loading: true };
+    render();
+    try {
+      const res = await fetch("/api/web-git-tab/invoke", {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({
+          sessionId: getSessionId?.(),
+          key,
+          action: event?.action,
+          payload: event?.payload,
+          repo: selectedRepoContext(),
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
+      extensionTabView = { key, loading: false, title: String(data.title || ""), html: String(data.html || "") };
+    } catch (error) {
+      extensionTabView = { key, loading: false, error: error instanceof Error ? error.message : String(error) };
+    } finally {
+      render();
+    }
+  }
+
   async function runRebase(repo: GitRepo) {
     state.syncing = true;
     state.syncingRepo = repo.path;
@@ -228,6 +296,42 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
 
   function repoDisplayPath(repo: GitRepo) {
     return repo.path === "." ? "." : repo.path;
+  }
+
+  function normalizeExtensionTabs(value: unknown): GitExtensionTab[] {
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((raw): GitExtensionTab[] => {
+      const tab = raw as GitExtensionTabEntry;
+      if (typeof tab.key !== "string" || !tab.key) return [];
+      const title = typeof tab.title === "string" && tab.title.trim() ? tab.title.trim() : tab.key;
+      const label = typeof tab.label === "string" && tab.label.trim() ? tab.label.trim() : title;
+      return [{ key: tab.key, title, label }];
+    });
+  }
+
+  function renderExtensionTabButtons() {
+    tabsContainer.querySelectorAll(".gitExtensionTab").forEach((button) => button.remove());
+    const activeKey = extensionKeyFromView();
+    for (const tab of extensionTabs) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `gitTab gitExtensionTab${activeKey === tab.key ? " active" : ""}`;
+      button.title = tab.title;
+      button.textContent = tab.label;
+      button.addEventListener("click", () => void loadExtensionTab(tab.key));
+      tabsContainer.append(button);
+    }
+  }
+
+  function setExtensionTabs(tabs: unknown) {
+    extensionTabs = normalizeExtensionTabs(tabs);
+    const activeKey = extensionKeyFromView();
+    if (activeKey && !extensionTabs.some((tab) => tab.key === activeKey)) {
+      extensionTabView = undefined;
+      state.primaryView = "status";
+      state.mobileView = "status";
+    }
+    render();
   }
 
   function renderRepoPicker(container: HTMLElement) {
@@ -278,13 +382,28 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
   function render() {
     panel.dataset.view = state.mobileView;
     panel.dataset.primaryView = state.primaryView;
+    const extensionKey = extensionKeyFromView();
+    panel.classList.toggle("gitPanelExtensionView", Boolean(extensionKey));
     statusTab.classList.toggle("active", state.primaryView === "status");
     graphTab.classList.toggle("active", state.primaryView === "graph");
+    renderExtensionTabButtons();
     primary.textContent = "";
+    detail.textContent = "";
     if (state.primaryView === "graph") renderRepoPicker(primary);
     const primaryContent = document.createElement("div");
-    primaryContent.className = "gitPrimaryContent";
+    primaryContent.className = `gitPrimaryContent${extensionKey ? " gitExtensionContent" : ""}`;
     primary.append(primaryContent);
+
+    if (extensionKey) {
+      if (extensionTabView?.key !== extensionKey || extensionTabView.loading) {
+        primaryContent.textContent = "Loading…";
+      } else if (extensionTabView.error) {
+        primaryContent.innerHTML = `<div class="gitExtensionError">${escapeHtml(extensionTabView.error)}</div>`;
+      } else {
+        primaryContent.innerHTML = extensionTabView.html || "";
+      }
+      return;
+    }
 
     if (state.loading) {
       primaryContent.textContent = "Loading Git data…";
@@ -313,6 +432,36 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
     else renderDiffView({ container: detail, file: state.selectedFile, repo: state.selectedFileRepo, diff: state.diff, loading: state.diffLoading, apiHeaders, sessionId: getSessionId?.(), onBack: () => setPrimary("status") });
   }
 
+  function invokeExtensionAction(activeKey: string, target: HTMLElement) {
+    void loadExtensionTab(activeKey, {
+      action: target.dataset.webGitTabAction || "",
+      payload: parsePayload(target.dataset.webGitTabPayload),
+    });
+  }
+
+  primary.addEventListener("click", (event) => {
+    const activeKey = extensionKeyFromView();
+    if (!activeKey) return;
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLElement>("[data-web-git-tab-action]")
+      : undefined;
+    if (!target || !primary.contains(target)) return;
+    event.preventDefault();
+    invokeExtensionAction(activeKey, target);
+  });
+
+  primary.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    const activeKey = extensionKeyFromView();
+    if (!activeKey) return;
+    const target = event.target instanceof Element
+      ? event.target.closest<HTMLElement>("[data-web-git-tab-action]")
+      : undefined;
+    if (!target || !primary.contains(target)) return;
+    event.preventDefault();
+    invokeExtensionAction(activeKey, target);
+  });
+
   panelHandle = rightPanels?.register({
     id: "git",
     side: "right",
@@ -333,4 +482,9 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
   statusTab.addEventListener("click", () => setPrimary("status"));
   graphTab.addEventListener("click", () => setPrimary("graph"));
   render();
+
+  return {
+    setExtensionTabs,
+    isOpen: () => panelHandle?.isOpen() ?? state.isOpen,
+  };
 }

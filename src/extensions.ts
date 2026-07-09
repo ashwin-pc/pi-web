@@ -43,6 +43,27 @@ export type PiWebHeaderAction = {
   invoke: () => Promise<{ markdown: string }> | { markdown: string };
 };
 
+export type PiWebGitTabEvent = {
+  action?: string;
+  payload?: unknown;
+  repo?: {
+    path?: string;
+    root?: string;
+    branch?: string;
+  };
+};
+
+export type PiWebGitTabView = {
+  title?: string;
+  html: string;
+};
+
+export type PiWebGitTab = {
+  title: string;
+  label?: string;
+  render: (event?: PiWebGitTabEvent) => Promise<PiWebGitTabView> | PiWebGitTabView;
+};
+
 export type PiWebUi = {
   /**
    * Set or clear a pi-web footer region.
@@ -57,6 +78,9 @@ export type PiWebUi = {
 
   /** Set or clear a status-bar icon button contributed by a pi-web extension. */
   setHeaderAction(key: string, action: PiWebHeaderAction | undefined): void;
+
+  /** Set or clear a provider-specific tab in the built-in Git panel. */
+  setGitTab(key: string, tab: PiWebGitTab | undefined): void;
 };
 
 export type PiWebExtensionUIContext = ExtensionUIContext & {

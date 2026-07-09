@@ -24,7 +24,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
-import type { PiWebFooter, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
+import type { PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
 import type { PiWebSession } from "./server/types.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -1262,6 +1262,7 @@ function currentState(targetSession: PiWebSession = session) {
     stats: sessionStats(targetSession),
     webFooters: webFooterEntries(targetSession),
     webHeaderActions: webHeaderActionEntries(targetSession),
+    webGitTabs: webGitTabEntries(targetSession),
   };
 }
 
@@ -1708,8 +1709,13 @@ type WebHeaderActionState = {
   actions: Map<string, PiWebHeaderAction>;
 };
 
+type WebGitTabState = {
+  tabs: Map<string, PiWebGitTab>;
+};
+
 const webFooterStates = new WeakMap<object, WebFooterState>();
 const webHeaderActionStates = new WeakMap<object, WebHeaderActionState>();
+const webGitTabStates = new WeakMap<object, WebGitTabState>();
 
 function getWebFooterState(value: any): WebFooterState {
   const key = value as object;
@@ -1728,6 +1734,7 @@ function cleanFooterKey(value: unknown) {
 }
 
 const cleanHeaderActionKey = cleanFooterKey;
+const cleanGitTabKey = cleanFooterKey;
 
 function cleanHeaderActionText(value: unknown, maxLength = 200) {
   if (typeof value !== "string") return undefined;
@@ -1741,6 +1748,16 @@ function getWebHeaderActionState(value: any): WebHeaderActionState {
   if (!state) {
     state = { actions: new Map() };
     webHeaderActionStates.set(key, state);
+  }
+  return state;
+}
+
+function getWebGitTabState(value: any): WebGitTabState {
+  const key = value as object;
+  let state = webGitTabStates.get(key);
+  if (!state) {
+    state = { tabs: new Map() };
+    webGitTabStates.set(key, state);
   }
   return state;
 }
@@ -1804,6 +1821,25 @@ function broadcastWebHeaderActions(value: any) {
   return webHeaderActions;
 }
 
+function webGitTabEntries(value: any) {
+  return Array.from(getWebGitTabState(value).tabs.entries()).map(([key, tab]) => ({
+    key,
+    title: cleanHeaderActionText(tab.title) || key,
+    label: cleanHeaderActionText(tab.label, 80),
+  }));
+}
+
+function broadcastWebGitTabs(value: any) {
+  const webGitTabs = webGitTabEntries(value);
+  broadcast({
+    type: "web_git_tabs_changed",
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    webGitTabs,
+  });
+  return webGitTabs;
+}
+
 function createPiWebUi(value: any): PiWebUi {
   return {
     setFooter(key, footer) {
@@ -1825,6 +1861,17 @@ function createPiWebUi(value: any): PiWebUi {
         actionState.actions.delete(actionKey);
       }
       broadcastWebHeaderActions(value);
+    },
+    setGitTab(key, tab) {
+      const tabKey = cleanGitTabKey(key);
+      if (!tabKey) return;
+      const tabState = getWebGitTabState(value);
+      if (tab && typeof tab === "object" && typeof tab.render === "function") {
+        tabState.tabs.set(tabKey, tab);
+      } else {
+        tabState.tabs.delete(tabKey);
+      }
+      broadcastWebGitTabs(value);
     },
   };
 }
@@ -2587,6 +2634,34 @@ const server = createServer(async (req, res) => {
           const markdown = cleanFooterText(result?.markdown, 200_000);
           if (!markdown) return sendJson(res, 400, { ok: false, error: "Header action returned no markdown" });
           return sendJson(res, 200, { ok: true, label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || actionKey, markdown });
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/web-git-tab/invoke") {
+        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
+        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const tabKey = cleanGitTabKey(body.key);
+        if (!tabKey) return sendJson(res, 400, { ok: false, error: "key is required" });
+        const tab = getWebGitTabState(targetSession).tabs.get(tabKey);
+        if (!tab) return sendJson(res, 404, { ok: false, error: "Git tab not found" });
+        try {
+          const repo = body.repo && typeof body.repo === "object" ? body.repo as Record<string, unknown> : undefined;
+          const result = await tab.render({
+            action: typeof body.action === "string" ? body.action : undefined,
+            payload: body.payload,
+            repo: repo ? {
+              path: typeof repo.path === "string" ? repo.path : undefined,
+              root: typeof repo.root === "string" ? repo.root : undefined,
+              branch: typeof repo.branch === "string" ? repo.branch : undefined,
+            } : undefined,
+          });
+          const html = cleanFooterText(result?.html, 500_000);
+          if (!html) return sendJson(res, 400, { ok: false, error: "Git tab returned no HTML" });
+          return sendJson(res, 200, { ok: true, title: cleanHeaderActionText(result?.title) || cleanHeaderActionText(tab.title) || tabKey, html });
         } catch (error) {
           return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }

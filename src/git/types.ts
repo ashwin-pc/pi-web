@@ -1,4 +1,5 @@
-export type GitPrimaryView = "status" | "graph";
+export type GitExtensionPrimaryView = `extension:${string}`;
+export type GitPrimaryView = "status" | "graph" | GitExtensionPrimaryView;
 export type GitView = GitPrimaryView | "diff" | "commit";
 
 export type GitFileLabel = "modified" | "added" | "deleted" | "renamed" | "untracked" | "staged" | "conflicted";

@@ -120,6 +120,73 @@ ctx.ui.web.setHeaderAction("recap", undefined);
 
 The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../examples/pi-web-extensions/recap.ts).
 
+## Git panel tab API
+
+`ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer; extensions own provider detection, data fetching, and trusted HTML rendering.
+
+Elements inside the HTML can call back into the extension by using `data-web-git-tab-action` and optional JSON in `data-web-git-tab-payload`.
+
+```ts
+ctx.ui.web.setGitTab("github", {
+  title: "GitHub",
+  label: "GitHub",
+  render: async (event) => {
+    if (event?.action === "issue") {
+      return { title: "Issue #123", html: "<button data-web-git-tab-action=\"back\">Back</button>" };
+    }
+    return {
+      html: `<button data-web-git-tab-action="issue" data-web-git-tab-payload='{"number":123}'>Issue #123</button>`,
+    };
+  },
+});
+```
+
+Clear a Git panel tab by passing `undefined`:
+
+```ts
+ctx.ui.web.setGitTab("github", undefined);
+```
+
+## Example: GitHub PRs and issues tab
+
+The repo includes an opt-in GitHub extension example at [`examples/pi-web-extensions/github-repo-panel.ts`](../examples/pi-web-extensions/github-repo-panel.ts). It adds a **GitHub** tab to the built-in Git drawer for repositories with GitHub remotes. The extension uses the `gh` CLI to list and view pull requests and issues.
+
+This example is shipped as source for discovery and sharing, but it is **not enabled by default**. Install it by copying or downloading the file into a pi-web extension directory.
+
+Prerequisite:
+
+```sh
+gh auth status
+```
+
+Install for one project:
+
+```sh
+mkdir -p .pi/web/extensions
+cp examples/pi-web-extensions/github-repo-panel.ts .pi/web/extensions/github-repo-panel.ts
+```
+
+Install globally from a checkout of this repo:
+
+```sh
+mkdir -p ~/.pi/web/extensions
+cp examples/pi-web-extensions/github-repo-panel.ts ~/.pi/web/extensions/github-repo-panel.ts
+```
+
+Install globally from GitHub without cloning the repo:
+
+```sh
+mkdir -p ~/.pi/web/extensions
+curl -fsSL https://raw.githubusercontent.com/ashwin-pc/pi-web/main/examples/pi-web-extensions/github-repo-panel.ts \
+  -o ~/.pi/web/extensions/github-repo-panel.ts
+```
+
+Update by running the same `cp` or `curl` command again. Disable it by deleting the copied file and reloading/restarting pi-web:
+
+```sh
+rm ~/.pi/web/extensions/github-repo-panel.ts
+```
+
 ## Example: live git footer
 
 The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch and live dirty/clean state, refreshes periodically, and also refreshes around turns, bash commands, and compaction events.

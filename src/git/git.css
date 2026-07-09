@@ -37,7 +37,8 @@
   background: var(--panel-2);
   color: var(--text);
 }
-.gitTabs { display: flex; gap: 2px; }
+.gitTabs { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.gitTabs::-webkit-scrollbar { display: none; }
 .gitTab, .gitBackButton, .gitRebaseButton {
   height: 30px;
   min-height: 30px;
@@ -53,6 +54,10 @@
 .gitPanelBody { min-height: 0; display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); }
 .gitPrimaryPane, .gitDetailPane { min-width: 0; min-height: 0; overflow: auto; padding: 12px; }
 .gitPrimaryPane { border-right: 1px solid var(--border); }
+.gitPanelExtensionView .gitPanelBody { grid-template-columns: minmax(0, 1fr); }
+.gitPanelExtensionView .gitPrimaryPane { border-right: 0; }
+.gitPanelExtensionView .gitDetailPane { display: none; }
+.gitExtensionError { border: 1px solid color-mix(in srgb, var(--danger) 55%, transparent); border-radius: 10px; padding: 10px; color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 .gitRepoAccordion { border: 1px solid var(--border); border-radius: 10px; margin-bottom: 10px; overflow: hidden; background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
 .gitRepoAccordion summary { cursor: pointer; padding: 8px 10px; color: var(--text); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gitRepoList { display: grid; gap: 4px; padding: 6px; border-top: 1px solid var(--border); }
@@ -134,8 +139,8 @@
   .gitPanelHeader { padding: max(6px, env(safe-area-inset-top)) 8px 6px; gap: 6px; }
   .gitPanelHeader h2 { font-size: 13px; }
   .gitPanelHeader .iconButton { width: 30px; min-width: 30px; height: 30px; min-height: 30px; }
-  .gitTabs { flex: 1 1 auto; justify-content: center; }
-  .gitTab { flex: 1 1 0; max-width: 88px; height: 28px; min-height: 28px; padding: 2px 8px; }
+  .gitTabs { flex: 1 1 auto; justify-content: flex-start; }
+  .gitTab { flex: 0 0 auto; min-width: 64px; max-width: none; height: 28px; min-height: 28px; padding: 2px 8px; white-space: nowrap; }
   .gitPanelBody { display: block; overflow: hidden; }
   .gitPrimaryPane, .gitDetailPane { height: 100%; overflow: auto; padding: 10px; font-size: 14px; }
   .gitCommitList { gap: 8px; }
@@ -157,8 +162,8 @@
   .gitPanelHeader { padding: max(6px, env(safe-area-inset-top)) 8px 6px; gap: 6px; }
   .gitPanelHeader h2 { font-size: 13px; }
   .gitPanelHeader .iconButton { width: 30px; min-width: 30px; height: 30px; min-height: 30px; }
-  .gitTabs { flex: 1 1 auto; justify-content: center; }
-  .gitTab { flex: 1 1 0; max-width: 88px; height: 28px; min-height: 28px; padding: 2px 8px; }
+  .gitTabs { flex: 1 1 auto; justify-content: flex-start; }
+  .gitTab { flex: 0 0 auto; min-width: 64px; max-width: none; height: 28px; min-height: 28px; padding: 2px 8px; white-space: nowrap; }
   .gitPanelBody { display: block; overflow: hidden; }
   .gitPrimaryPane, .gitDetailPane { height: 100%; overflow: auto; padding: 10px; font-size: 14px; }
   .gitCommitList { gap: 8px; }

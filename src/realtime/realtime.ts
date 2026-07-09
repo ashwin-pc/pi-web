@@ -813,6 +813,10 @@ export function createRealtime(options: {
         if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
         return;
       }
+      if (data.type === "web_git_tabs_changed") {
+        if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
+        return;
+      }
       if (data.type === "pi_event") {
         const eventSessionKey = String(data.sessionId || data.sessionFile || "");
         noteRuntimeEvent(eventSessionKey, data.event);

@@ -14,7 +14,7 @@ import { createComposer, type ComposerController } from "./composer/composer.js"
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
-import { initGitPanel } from "./git/panel.js";
+import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { createMarkdownRenderer } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
@@ -42,6 +42,7 @@ let sessions: SessionsController;
 let settings: SettingsController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
+let gitPanel: GitPanelController;
 let realtime: RealtimeController;
 async function submitPromptFromMessageAction(message: string) {
   const promptText = message.trim();
@@ -148,6 +149,7 @@ function updateMeta(data: any) {
   if ("stats" in data) contextMeter.update(data.stats);
   if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
   if ("webHeaderActions" in data) webHeaderActions.render(data.webHeaderActions);
+  if ("webGitTabs" in data) gitPanel?.setExtensionTabs(data.webGitTabs);
   if ("sessionTitle" in data) statusBar.setStatusTitle(data.sessionTitle?.trim() || "New session");
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
@@ -361,7 +363,7 @@ initKeyboardShortcuts([
   onError: showSystemError,
 });
 composer.updateQueueToggle();
-initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+gitPanel = initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 window.addEventListener("popstate", () => {
   const nextSessionId = readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;
