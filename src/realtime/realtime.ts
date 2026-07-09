@@ -3,7 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
-import type { MessageList } from "../messages/messageList.js";
+import type { MessageList, TranscriptRuntimeState, TranscriptIncomplete } from "../messages/messageList.js";
 import type { ModelSettings } from "../models/modelSettings.js";
 import type { SessionsController } from "../sessions/sessionDrawer.js";
 import type { SettingsController } from "../settings/settings.js";
@@ -16,6 +16,7 @@ import { assistantErrorBody, normalizeAssistantError } from "../messages/content
 export type RealtimeController = {
   connect: () => void;
   handlePiEvent: (event: PiEvent) => void;
+  applyTranscriptRuntimeState: (transcriptState: TranscriptRuntimeState) => void;
 };
 
 type AssistantErrorInfo = {
@@ -24,6 +25,7 @@ type AssistantErrorInfo = {
   raw: string;
   attempt?: number;
   maxAttempts?: number;
+  attempts?: number;
   delayMs?: number;
 };
 
@@ -51,6 +53,9 @@ export function createRealtime(options: {
   let terminalFailureCard: HTMLDivElement | null = null;
   let terminalFailureInfo: AssistantErrorInfo | null = null;
   let terminalFailureSessionId = "";
+  let incompleteResponseCard: HTMLDivElement | null = null;
+  let incompleteResponseInfo: TranscriptIncomplete | null = null;
+  let incompleteResponseSessionId = "";
   let lastAssistantError: AssistantErrorInfo | null = null;
   let retryFinalError: AssistantErrorInfo | null = null;
   let latestRetryAttempt: number | undefined;
@@ -266,6 +271,11 @@ export function createRealtime(options: {
     return value?.message && typeof value.message === "object" && value.message.message ? value.message.message : value?.message || value;
   }
 
+  function distinctAssistantErrorBody(rawError: unknown, fallback = "") {
+    const body = assistantErrorBody(rawError, fallback).trim();
+    return body && body !== fallback.trim() ? body : "";
+  }
+
   function assistantErrorInfoFromMessage(value: any): AssistantErrorInfo | null {
     const message = messageFromEvent(value);
     const role = String(message?.raw?.role || message?.role || "");
@@ -276,7 +286,7 @@ export function createRealtime(options: {
     const text = normalizeAssistantError(raw || stopReason) || "Assistant error";
     return {
       text,
-      body: assistantErrorBody(raw || text, text),
+      body: distinctAssistantErrorBody(raw || text, text),
       raw: raw || text,
       attempt: latestRetryAttempt,
       maxAttempts: latestRetryMaxAttempts,
@@ -291,7 +301,7 @@ export function createRealtime(options: {
     const text = normalizeAssistantError(raw) || lastAssistantError?.text || "Transient model error";
     return {
       text,
-      body: assistantErrorBody(raw || text, text),
+      body: distinctAssistantErrorBody(raw || text, text),
       raw: raw || text,
       attempt,
       maxAttempts,
@@ -302,6 +312,16 @@ export function createRealtime(options: {
   function setRuntimeCardKind(card: HTMLDivElement, kind: "error" | "running" | "success") {
     card.classList.remove("toolCard--error", "toolCard--running", "toolCard--success");
     card.classList.add(kind === "running" ? "toolCard--running" : kind === "success" ? "toolCard--success" : "toolCard--error");
+  }
+
+  function expandRuntimeErrorCard(card: HTMLDivElement) {
+    card.classList.remove("toolCard--compactCollapsed");
+    const toggle = card.querySelector<HTMLButtonElement>(".toolCardExpandToggle");
+    if (!toggle) return;
+    toggle.textContent = "▾";
+    toggle.setAttribute("aria-label", "Hide tool details");
+    toggle.title = "Hide tool details";
+    toggle.setAttribute("aria-expanded", "true");
   }
 
   function setRuntimeErrorCardText(card: HTMLDivElement, title: string, subtitle: string, body: string) {
@@ -351,6 +371,10 @@ export function createRealtime(options: {
     terminalFailureCard = null;
     terminalFailureInfo = null;
     terminalFailureSessionId = "";
+    incompleteResponseCard?.remove();
+    incompleteResponseCard = null;
+    incompleteResponseInfo = null;
+    incompleteResponseSessionId = "";
     lastAssistantError = null;
     retryFinalError = null;
     latestRetryAttempt = undefined;
@@ -399,17 +423,21 @@ export function createRealtime(options: {
     const card = ensureRetryErrorCard(info);
     setRuntimeCardKind(card, "error");
     const attemptText = retryAttemptText(info.attempt, info.maxAttempts);
-    setRuntimeErrorCardText(card, "retry failed", `${info.text}${attemptText ? ` · ${attemptText}` : ""}`, info.body || info.text);
+    setRuntimeErrorCardText(card, "retry failed", `${info.text}${attemptText ? ` · ${attemptText}` : ""}`, info.body);
   }
 
   function terminalErrorFromAgentEnd(event: PiEvent) {
+    if (retryFinalError) return retryFinalError;
     const eventMessages = Array.isArray(event.messages) ? event.messages : [];
     for (let index = eventMessages.length - 1; index >= 0; index -= 1) {
       const message = messageFromEvent(eventMessages[index]);
       if (String(message?.role || message?.raw?.role || "") !== "assistant") continue;
-      return assistantErrorInfoFromMessage(message);
+      const info = assistantErrorInfoFromMessage(message);
+      const attempts = info?.attempts || info?.maxAttempts || info?.attempt || 0;
+      if (info && attempts >= 2) return info;
     }
-    return retryFinalError || lastAssistantError;
+    const attempts = lastAssistantError?.attempts || lastAssistantError?.maxAttempts || lastAssistantError?.attempt || 0;
+    return attempts >= 2 ? lastAssistantError : null;
   }
 
   function focusComposerWith(text: string) {
@@ -418,10 +446,10 @@ export function createRealtime(options: {
     elements.promptEl.setSelectionRange(elements.promptEl.value.length, elements.promptEl.value.length);
   }
 
-  async function retryFromFailure(button: HTMLButtonElement) {
+  async function resumeFromTerminalCard(button: HTMLButtonElement, busyText = "Retrying…") {
     button.disabled = true;
     const previousText = button.textContent || "Retry";
-    button.textContent = "Retrying…";
+    button.textContent = busyText;
     try {
       const res = await fetch("/api/session/retry", {
         method: "POST",
@@ -449,18 +477,34 @@ export function createRealtime(options: {
 
   function addTerminalFailureCard(info: AssistantErrorInfo) {
     terminalFailureCard?.remove();
-    const failedAfter = info.maxAttempts || info.attempt;
-    const subtitle = failedAfter ? `${info.text} · failed after ${failedAfter} retries` : info.text;
+    const failedAfter = info.attempts || info.maxAttempts || info.attempt;
+    const subtitle = failedAfter ? `${info.text} · failed after ${failedAfter} attempts` : info.text;
     const body = [
       failedAfter ? "The model request failed after pi exhausted automatic retries." : "The model request failed.",
       "Retry the failed model request from the last good context without adding a new user message, or switch models if this provider remains rate-limited or overloaded.",
     ].join("\n");
     terminalFailureCard = tools.addRuntimeErrorCard("response failed", subtitle, body);
+    expandRuntimeErrorCard(terminalFailureCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
-    appendTerminalFailureAction(actions, "Retry", "Retry the failed model request without adding a user message", retryFromFailure);
+    appendTerminalFailureAction(actions, "Retry", "Retry the failed model request without adding a user message", (button) => resumeFromTerminalCard(button, "Retrying…"));
     appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", () => focusComposerWith("/model "));
     terminalFailureCard.append(actions);
+    messages.scrollToBottom();
+  }
+
+  function addIncompleteResponseCard(info: TranscriptIncomplete) {
+    incompleteResponseCard?.remove();
+    incompleteResponseCard = tools.addRuntimeErrorCard("response incomplete", info.text, [
+      info.body,
+      "Continue from the current context without adding a new user message, or switch models if this provider remains unreliable.",
+    ].filter(Boolean).join("\n"));
+    expandRuntimeErrorCard(incompleteResponseCard);
+    const actions = document.createElement("div");
+    actions.className = "runtimeErrorActions";
+    appendTerminalFailureAction(actions, "Continue", "Continue the incomplete turn without adding a user message", (button) => resumeFromTerminalCard(button, "Continuing…"));
+    appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", () => focusComposerWith("/model "));
+    incompleteResponseCard.append(actions);
     messages.scrollToBottom();
   }
 
@@ -469,10 +513,52 @@ export function createRealtime(options: {
     if (!terminalFailureCard?.isConnected) addTerminalFailureCard(terminalFailureInfo);
   }
 
+  function restoreIncompleteResponseCard() {
+    if (!incompleteResponseInfo || incompleteResponseSessionId !== (state.currentSessionId || "") || state.isStreaming) return;
+    if (!incompleteResponseCard?.isConnected) addIncompleteResponseCard(incompleteResponseInfo);
+  }
+
   function rememberTerminalFailure(info: AssistantErrorInfo | null) {
     terminalFailureInfo = info;
     terminalFailureSessionId = info ? state.currentSessionId || "" : "";
-    if (info) restoreTerminalFailureCard();
+    if (info) {
+      incompleteResponseCard?.remove();
+      incompleteResponseInfo = null;
+      incompleteResponseSessionId = "";
+      restoreTerminalFailureCard();
+    } else {
+      terminalFailureCard?.remove();
+      terminalFailureCard = null;
+    }
+  }
+
+  function rememberIncompleteResponse(info: TranscriptIncomplete | null) {
+    incompleteResponseInfo = info;
+    incompleteResponseSessionId = info ? state.currentSessionId || "" : "";
+    if (info) {
+      terminalFailureCard?.remove();
+      terminalFailureInfo = null;
+      terminalFailureSessionId = "";
+      restoreIncompleteResponseCard();
+    } else {
+      incompleteResponseCard?.remove();
+      incompleteResponseCard = null;
+    }
+  }
+
+  function applyTranscriptRuntimeState(transcriptState: TranscriptRuntimeState) {
+    if (state.isStreaming) return;
+    if (transcriptState.terminalFailure) {
+      rememberTerminalFailure({
+        text: transcriptState.terminalFailure.text,
+        body: transcriptState.terminalFailure.body,
+        raw: transcriptState.terminalFailure.raw,
+        attempts: transcriptState.terminalFailure.attempts,
+      });
+      return;
+    }
+    rememberTerminalFailure(null);
+    rememberIncompleteResponse(transcriptState.incomplete || null);
   }
 
   function handlePiEvent(event: PiEvent, isReplay = false) {
@@ -547,6 +633,7 @@ export function createRealtime(options: {
           .then(() => {
             retryErrorCard = null;
             restoreTerminalFailureCard();
+            restoreIncompleteResponseCard();
             return sessions.markSessionRead();
           })
           .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
@@ -620,7 +707,10 @@ export function createRealtime(options: {
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
         if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
           refreshMessages()
-            .then(restoreTerminalFailureCard)
+            .then(() => {
+              restoreTerminalFailureCard();
+              restoreIncompleteResponseCard();
+            })
             .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
           if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
           scheduleSessionRefresh();
@@ -654,6 +744,7 @@ export function createRealtime(options: {
             refreshMessages()
               .then(() => {
                 restoreTerminalFailureCard();
+                restoreIncompleteResponseCard();
                 return sessions.markSessionRead();
               })
               .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
@@ -718,5 +809,5 @@ export function createRealtime(options: {
     });
   }
 
-  return { connect, handlePiEvent };
+  return { connect, handlePiEvent, applyTranscriptRuntimeState };
 }

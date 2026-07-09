@@ -125,17 +125,33 @@ function statusLabel(label: string | undefined, code: string) {
   return clean;
 }
 
-function statusErrorSummary(text: string) {
+function statusErrorMatch(text: string): { label?: string; code: string } | undefined {
   const labelled = text.match(/^([A-Za-z][A-Za-z0-9 _/-]*?):\s*(\d{3})(?=$|[\s:,-])/);
-  if (labelled && isHttpErrorStatus(labelled[2])) return `${statusLabel(labelled[1], labelled[2])} (${labelled[2]})`;
+  if (labelled && isHttpErrorStatus(labelled[2])) return { label: labelled[1], code: labelled[2] };
 
   const leading = text.match(/^(?:HTTP\s*)?(\d{3})(?=$|[\s:,-])/i);
-  if (leading && isHttpErrorStatus(leading[1])) return `${statusLabel(undefined, leading[1])} (${leading[1]})`;
+  if (leading && isHttpErrorStatus(leading[1])) return { code: leading[1] };
 
   const generic = text.match(/^(Error|Request failed|Model request failed)\s*:?\s*(\d{3})(?=$|[\s:,-])/i);
-  if (generic && isHttpErrorStatus(generic[2])) return `${statusLabel(generic[1], generic[2])} (${generic[2]})`;
+  if (generic && isHttpErrorStatus(generic[2])) return { label: generic[1], code: generic[2] };
 
-  return "";
+  return undefined;
+}
+
+function statusErrorSummary(text: string) {
+  const match = statusErrorMatch(text);
+  return match ? `${statusLabel(match.label, match.code)} (${match.code})` : "";
+}
+
+export function assistantErrorStatusCode(rawError: unknown) {
+  const raw = rawErrorText(rawError);
+  if (!raw) return "";
+  const jsonText = withoutCodexPrefix(raw);
+  return statusErrorMatch(jsonText)?.code || statusErrorMatch(raw)?.code || "";
+}
+
+export function isRetryableAssistantError(rawError: unknown) {
+  return new Set(["429", "500", "502", "503", "504", "529"]).has(assistantErrorStatusCode(rawError));
 }
 
 export function normalizeAssistantError(rawError: unknown) {

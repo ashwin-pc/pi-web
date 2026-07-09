@@ -3,7 +3,7 @@ import { iconElement, type IconName } from "../app/icons.js";
 import type { AttachedImage, Role } from "../app/types.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
-import { assistantErrorBody, imageFileName, imagesFromRawContent, messageText, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
+import { assistantErrorBody, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -18,6 +18,24 @@ export type MessageActionContext = {
 export type MessageMetadata = {
   entryId?: string;
   copyText?: string;
+};
+
+export type TranscriptTerminalFailure = {
+  text: string;
+  body: string;
+  raw: string;
+  attempts: number;
+};
+
+export type TranscriptIncomplete = {
+  reason: "toolResult" | "aborted";
+  text: string;
+  body: string;
+};
+
+export type TranscriptRuntimeState = {
+  terminalFailure?: TranscriptTerminalFailure;
+  incomplete?: TranscriptIncomplete;
 };
 
 type ToolCallSummary = {
@@ -45,6 +63,7 @@ export type MessageList = {
     clearActiveToolCards: () => void;
     isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
+    onTranscriptRuntimeState?: (state: TranscriptRuntimeState) => void;
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
   invalidateRefreshes: () => void;
@@ -104,6 +123,115 @@ function toolCallFromPart(part: unknown): ToolCallSummary | undefined {
     args,
     startedAt: typeof value.startedAt === "string" || typeof value.startedAt === "number" ? value.startedAt : undefined,
   };
+}
+
+function rawAssistantError(message: any) {
+  return String(message?.raw?.errorMessage || message?.errorMessage || "").trim();
+}
+
+function assistantStopReason(message: any) {
+  return String(message?.raw?.stopReason || message?.stopReason || "").trim();
+}
+
+function isAssistantMessage(message: any) {
+  return String(message?.raw?.role || message?.role || "") === "assistant";
+}
+
+function retryableAssistantErrorInfo(message: any) {
+  if (!isAssistantMessage(message)) return undefined;
+  const raw = rawAssistantError(message);
+  if (!raw || !isRetryableAssistantError(raw)) return undefined;
+  const text = normalizeAssistantError(raw) || messageText(message) || "Assistant error";
+  const body = distinctAssistantErrorBody(raw, text);
+  return { text, body, raw };
+}
+
+function distinctAssistantErrorBody(rawError: unknown, fallback = "") {
+  const body = assistantErrorBody(rawError, fallback).trim();
+  return body && body !== fallback.trim() ? body : "";
+}
+
+function retryableAssistantErrorGroup(messages: any[], startIndex: number) {
+  const group = [] as Array<{ message: any; text: string; body: string; raw: string }>;
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const info = retryableAssistantErrorInfo(messages[index]);
+    if (!info) break;
+    group.push({ message: messages[index], ...info });
+  }
+  return group;
+}
+
+function retryErrorGroupBody(group: Array<{ text: string; body: string }>) {
+  const distinctTexts = Array.from(new Set(group.map((item) => item.text).filter(Boolean)));
+  const distinctBodies = Array.from(new Set(group.map((item) => item.body).filter((body) => body && !distinctTexts.includes(body))));
+  if (distinctBodies.length > 0) return distinctBodies.join("\n\n");
+  return distinctTexts.length > 1 ? `Earlier transient errors: ${distinctTexts.slice(0, -1).join(", ")}` : "";
+}
+
+function toolCallIndex(content: unknown, toolCallId: string) {
+  if (!Array.isArray(content)) return -1;
+  return content.findIndex((part) => toolCallFromPart(part)?.id === toolCallId);
+}
+
+function assistantHasTextAfterToolCall(message: any, toolCallId: string) {
+  const content = rawContent(message);
+  const index = toolCallIndex(content, toolCallId);
+  if (index < 0 || !Array.isArray(content)) return false;
+  return content.slice(index + 1).some((part) => partText(part).trim());
+}
+
+function trailingToolResultLooksIncomplete(messages: any[]) {
+  const last = messages[messages.length - 1];
+  if (last?.role !== "toolResult") return false;
+  const toolCallId = String(last.toolCallId || last.raw?.toolCallId || "");
+  if (!toolCallId) return true;
+  for (let index = messages.length - 2; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (!isAssistantMessage(message)) continue;
+    if (assistantHasTextAfterToolCall(message, toolCallId)) return false;
+    if (toolCallIndex(rawContent(message), toolCallId) >= 0) return true;
+  }
+  return true;
+}
+
+function transcriptRuntimeState(messages: any[], isStreaming?: boolean): TranscriptRuntimeState {
+  if (isStreaming || messages.length === 0) return {};
+  const last = messages[messages.length - 1];
+  if (trailingToolResultLooksIncomplete(messages)) {
+    const toolName = String(last.toolName || last.raw?.toolName || "tool");
+    return {
+      incomplete: {
+        reason: "toolResult",
+        text: "Response incomplete",
+        body: `The turn ended after the ${toolName} tool returned, before the assistant wrote a final response.`,
+      },
+    };
+  }
+  if (isAssistantMessage(last) && assistantStopReason(last) === "aborted") {
+    return {
+      incomplete: {
+        reason: "aborted",
+        text: "Response incomplete",
+        body: "The assistant response was interrupted before the turn completed.",
+      },
+    };
+  }
+
+  let firstTrailingRetryError = messages.length;
+  while (firstTrailingRetryError > 0 && retryableAssistantErrorInfo(messages[firstTrailingRetryError - 1])) firstTrailingRetryError -= 1;
+  const trailingGroup = messages.slice(firstTrailingRetryError).map((message) => retryableAssistantErrorInfo(message)).filter(Boolean) as Array<{ text: string; body: string; raw: string }>;
+  if (trailingGroup.length >= 2) {
+    const lastError = trailingGroup[trailingGroup.length - 1];
+    return {
+      terminalFailure: {
+        text: lastError.text,
+        body: retryErrorGroupBody(trailingGroup) || lastError.body,
+        raw: lastError.raw,
+        attempts: trailingGroup.length,
+      },
+    };
+  }
+  return {};
 }
 
 export function createMessageList(options: {
@@ -760,7 +888,7 @@ export function createMessageList(options: {
 
     if (message.isError) {
       const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
-      addRuntimeErrorCard("assistant error", text, assistantErrorBody(rawError, text));
+      addRuntimeErrorCard("assistant error", text, distinctAssistantErrorBody(rawError, text));
       return;
     }
 
@@ -810,7 +938,7 @@ export function createMessageList(options: {
     }
   }
 
-  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser }: {
+  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState }: {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
@@ -819,6 +947,7 @@ export function createMessageList(options: {
     clearActiveToolCards: () => void;
     isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
+    onTranscriptRuntimeState?: (state: TranscriptRuntimeState) => void;
   }) {
     const refreshId = ++refreshSerial;
     const mutationAtStart = mutationSerial;
@@ -835,6 +964,7 @@ export function createMessageList(options: {
       clearInternal(false);
       clearActiveToolCards();
       const allMessages = data.messages || [];
+      const runtimeState = transcriptRuntimeState(allMessages, isStreaming);
       bulkRendering = true;
       const completedToolResults = new Map<string, any>();
       const renderedToolResultIds = new Set<string>();
@@ -842,7 +972,17 @@ export function createMessageList(options: {
         const id = message?.toolCallId || message?.raw?.toolCallId;
         if (message?.role === "toolResult" && typeof id === "string") completedToolResults.set(id, message);
       }
-      for (const message of allMessages) {
+      for (let index = 0; index < allMessages.length; index += 1) {
+        const message = allMessages[index];
+        const retryGroup = retryableAssistantErrorGroup(allMessages, index);
+        if (retryGroup.length >= 2) {
+          index += retryGroup.length - 1;
+          if (index === allMessages.length - 1) continue;
+          const lastError = retryGroup[retryGroup.length - 1];
+          addRuntimeErrorCard("assistant error", `${lastError.text} · retried ${retryGroup.length} attempts`, retryErrorGroupBody(retryGroup));
+          continue;
+        }
+
         const id = message?.toolCallId || message?.raw?.toolCallId;
         if (message.role === "toolResult") {
           if (typeof id === "string" && renderedToolResultIds.has(id)) continue;
@@ -879,6 +1019,7 @@ export function createMessageList(options: {
         }, 0);
         showJumpButtonIfAwayFromBottom();
       }
+      onTranscriptRuntimeState?.(runtimeState);
       updateEmptyCwdChooser?.();
     } finally {
       bulkRendering = false;

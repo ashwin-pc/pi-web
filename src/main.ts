@@ -18,7 +18,7 @@ import { initGitPanel } from "./git/panel.js";
 import { createMarkdownRenderer } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
-import { createRealtime } from "./realtime/realtime.js";
+import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
@@ -42,6 +42,7 @@ let sessions: SessionsController;
 let settings: SettingsController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
+let realtime: RealtimeController;
 async function submitPromptFromMessageAction(message: string) {
   const promptText = message.trim();
   if (!promptText) throw new Error("Message is empty.");
@@ -171,6 +172,7 @@ async function refreshMessages() {
     clearActiveToolCards: tools.clearActiveToolCards,
     isStreaming: state.isStreaming,
     updateEmptyCwdChooser: () => sessions.updateEmptyCwdChooser(),
+    onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
   });
 }
 
@@ -293,7 +295,7 @@ conversationTree = createConversationTree({
   addMessage: messages.addMessage,
 });
 
-const realtime = createRealtime({
+realtime = createRealtime({
   state,
   elements,
   api,

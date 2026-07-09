@@ -922,22 +922,50 @@ function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(
   }
 }
 
-function isAssistantFailureMessage(message: any) {
-  if (!message || typeof message !== "object") return false;
-  const role = String(message.role || message.raw?.role || "");
-  const stopReason = String(message.stopReason || message.raw?.stopReason || "");
-  const errorMessage = typeof message.errorMessage === "string" ? message.errorMessage : typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : "";
-  return role === "assistant" && (stopReason === "error" || Boolean(errorMessage.trim()));
+function messageRole(message: any) {
+  return String(message?.role || message?.raw?.role || "");
 }
 
-function trailingAssistantFailure(targetSession: PiWebSession) {
+function messageStopReason(message: any) {
+  return String(message?.stopReason || message?.raw?.stopReason || "");
+}
+
+function messageErrorText(message: any) {
+  return typeof message?.errorMessage === "string"
+    ? message.errorMessage
+    : typeof message?.raw?.errorMessage === "string"
+      ? message.raw.errorMessage
+      : "";
+}
+
+function isAssistantFailureMessage(message: any) {
+  return messageRole(message) === "assistant" && (messageStopReason(message) === "error" || Boolean(messageErrorText(message).trim()));
+}
+
+function isAssistantAbortedMessage(message: any) {
+  return messageRole(message) === "assistant" && messageStopReason(message) === "aborted";
+}
+
+function isIncompleteToolResultMessage(message: any) {
+  return messageRole(message) === "toolResult";
+}
+
+type RetrySessionTarget =
+  | { kind: "failure"; messages: any[]; index: number; message: any }
+  | { kind: "aborted"; messages: any[]; index: number; message: any }
+  | { kind: "toolResult"; messages: any[]; index: number; message: any };
+
+function trailingRetryTarget(targetSession: PiWebSession): RetrySessionTarget | undefined {
   const messages = Array.isArray(targetSession.agent?.state?.messages) ? targetSession.agent.state.messages as any[] : [];
   const index = messages.length - 1;
   const message = index >= 0 ? messages[index] : undefined;
-  return isAssistantFailureMessage(message) ? { messages, index, message } : undefined;
+  if (isAssistantFailureMessage(message)) return { kind: "failure", messages, index, message };
+  if (isAssistantAbortedMessage(message)) return { kind: "aborted", messages, index, message };
+  if (isIncompleteToolResultMessage(message)) return { kind: "toolResult", messages, index, message };
+  return undefined;
 }
 
-function branchBeforeFailure(targetSession: PiWebSession, failedMessage: any) {
+function branchBeforeTrailingMessages(targetSession: PiWebSession, shouldBranchBefore: (message: any) => boolean) {
   const manager = targetSession.sessionManager;
   if (typeof manager.getBranch !== "function") return false;
   let branch: any[];
@@ -947,39 +975,44 @@ function branchBeforeFailure(targetSession: PiWebSession, failedMessage: any) {
     return false;
   }
   if (!Array.isArray(branch)) return false;
-  const errorText = typeof failedMessage.errorMessage === "string" ? failedMessage.errorMessage : typeof failedMessage.raw?.errorMessage === "string" ? failedMessage.raw.errorMessage : "";
-  const errorTimestamp = typeof failedMessage.timestamp === "string" || typeof failedMessage.timestamp === "number" ? String(failedMessage.timestamp) : "";
 
+  let lastMessageIndex = -1;
   for (let index = branch.length - 1; index >= 0; index -= 1) {
-    const entry = branch[index];
-    const message = entry?.type === "message" ? entry.message : undefined;
-    if (!isAssistantFailureMessage(message)) continue;
-    const sameObject = message === failedMessage;
-    const sameError = Boolean(errorText && message?.errorMessage === errorText);
-    const sameTimestamp = !errorTimestamp || String(message?.timestamp || "") === errorTimestamp;
-    if (!sameObject && !(sameError && sameTimestamp)) continue;
-
-    let firstFailureIndex = index;
-    while (firstFailureIndex > 0) {
-      const previous = branch[firstFailureIndex - 1];
-      const previousMessage = previous?.type === "message" ? previous.message : undefined;
-      if (!isAssistantFailureMessage(previousMessage)) break;
-      firstFailureIndex -= 1;
+    if (branch[index]?.type === "message") {
+      lastMessageIndex = index;
+      break;
     }
-    const firstFailure = branch[firstFailureIndex];
-    const parentId = typeof firstFailure?.parentId === "string" ? firstFailure.parentId : null;
-    if (parentId && typeof manager.branch === "function") manager.branch(parentId);
-    else if (!parentId && typeof manager.resetLeaf === "function") manager.resetLeaf();
-    else return false;
-    return true;
   }
-  return false;
+  if (lastMessageIndex < 0) return false;
+  const lastMessage = branch[lastMessageIndex]?.message;
+  if (!shouldBranchBefore(lastMessage)) return false;
+
+  let firstRemovedIndex = lastMessageIndex;
+  while (firstRemovedIndex > 0) {
+    const previous = branch[firstRemovedIndex - 1];
+    if (previous?.type !== "message" || !shouldBranchBefore(previous.message)) break;
+    firstRemovedIndex -= 1;
+  }
+
+  const firstRemoved = branch[firstRemovedIndex];
+  const parentId = typeof firstRemoved?.parentId === "string" ? firstRemoved.parentId : null;
+  if (parentId && typeof manager.branch === "function") manager.branch(parentId);
+  else if (!parentId && typeof manager.resetLeaf === "function") manager.resetLeaf();
+  else return false;
+  return true;
+}
+
+function syncAgentMessagesToSessionContext(targetSession: PiWebSession) {
+  const internal = targetSession as any;
+  if (typeof targetSession.sessionManager?.buildSessionContext !== "function") return false;
+  internal.agent.state.messages = targetSession.sessionManager.buildSessionContext().messages;
+  return true;
 }
 
 function assertCanRetryFromFailure(targetSession: PiWebSession) {
   if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
   if (targetSession.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
-  if (!trailingAssistantFailure(targetSession)) throw new Error("There is no failed assistant response to retry.");
+  if (!trailingRetryTarget(targetSession)) throw new Error("There is no failed or incomplete response to retry.");
 }
 
 async function retrySessionFromFailure(targetSession: PiWebSession) {
@@ -989,19 +1022,24 @@ async function retrySessionFromFailure(targetSession: PiWebSession) {
     return;
   }
 
-  const failure = trailingAssistantFailure(targetSession);
-  if (!failure) throw new Error("There is no failed assistant response to continue from.");
-  const branched = branchBeforeFailure(targetSession, failure.message);
+  const target = trailingRetryTarget(targetSession);
+  if (!target) throw new Error("There is no failed or incomplete response to retry.");
 
   const internal = targetSession as any;
   if (!internal.agent || typeof internal.agent.continue !== "function") throw new Error("Continuing is not available in this session.");
-  if (branched && typeof targetSession.sessionManager?.buildSessionContext === "function") {
-    internal.agent.state.messages = targetSession.sessionManager.buildSessionContext().messages;
-  } else {
-    while (failure.messages.length > 0 && isAssistantFailureMessage(failure.messages[failure.messages.length - 1])) {
-      failure.messages.pop();
+
+  if (target.kind === "failure") {
+    const branched = branchBeforeTrailingMessages(targetSession, isAssistantFailureMessage);
+    if (!branched || !syncAgentMessagesToSessionContext(targetSession)) {
+      while (target.messages.length > 0 && isAssistantFailureMessage(target.messages[target.messages.length - 1])) target.messages.pop();
+    }
+  } else if (target.kind === "aborted") {
+    const branched = branchBeforeTrailingMessages(targetSession, isAssistantAbortedMessage);
+    if (!branched || !syncAgentMessagesToSessionContext(targetSession)) {
+      if (isAssistantAbortedMessage(target.messages[target.messages.length - 1])) target.messages.pop();
     }
   }
+
   try {
     await internal.agent.continue();
     while (typeof internal._handlePostAgentRun === "function" && await internal._handlePostAgentRun()) {

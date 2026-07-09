@@ -298,11 +298,19 @@ export function createMockHarness(options: MockSessionOptions) {
       return message?.role === "assistant" && (message.stopReason === "error" || typeof message.errorMessage === "string");
     }
 
-    function branchBeforeTrailingMockFailures() {
+    function isMockAssistantAborted(message: any) {
+      return message?.role === "assistant" && message.stopReason === "aborted";
+    }
+
+    function isMockIncompleteToolResult(message: any) {
+      return message?.role === "toolResult";
+    }
+
+    function branchBeforeTrailingMockMessages(predicate: (message: any) => boolean) {
       let removed = false;
       while (mockLeafId) {
         const entry = entryById(mockLeafId);
-        if (!entry || entry.type !== "message" || !isMockAssistantFailure(entry.message)) break;
+        if (!entry || entry.type !== "message" || !predicate(entry.message)) break;
         mockLeafId = typeof entry.parentId === "string" ? entry.parentId : null;
         removed = true;
       }
@@ -312,15 +320,16 @@ export function createMockHarness(options: MockSessionOptions) {
 
     async function runMockRetryFromFailure() {
       const lastMessage = mockMessages[mockMessages.length - 1];
-      if (!isMockAssistantFailure(lastMessage)) throw new Error("There is no failed assistant response to continue from.");
-      branchBeforeTrailingMockFailures();
+      if (isMockAssistantFailure(lastMessage)) branchBeforeTrailingMockMessages(isMockAssistantFailure);
+      else if (isMockAssistantAborted(lastMessage)) branchBeforeTrailingMockMessages(isMockAssistantAborted);
+      else if (!isMockIncompleteToolResult(lastMessage)) throw new Error("There is no failed or incomplete response to retry.");
       mockSession.isStreaming = true;
       setRuntimeStartedAt();
       broadcastRuntimeChanged();
       broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeStartedAt);
       await new Promise((resolve) => setTimeout(resolve, 150));
       if (!mockSession.isStreaming) return;
-      appendMockMessage({ role: "assistant", content: "Recovered after manual continue.", timestamp: new Date().toISOString() });
+      appendMockMessage({ role: "assistant", content: isMockIncompleteToolResult(lastMessage) || isMockAssistantAborted(lastMessage) ? "Completed after manual continue." : "Recovered after manual continue.", timestamp: new Date().toISOString() });
       mockSession.isStreaming = false;
       clearRuntimeTimestamps();
       broadcastRuntimeChanged();
@@ -443,6 +452,8 @@ export function createMockHarness(options: MockSessionOptions) {
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
         const withRetryFailure = /retry failure|retry exhausted|throttle failure/i.test(message);
         const withRetrySuccess = !withRetryFailure && /retry demo|retry success|throttle retry/i.test(message);
+        const withInterruptedTool = /incomplete tool|interrupted tool|timed out tool|timeout after tool/i.test(message);
+        const withAbortedAssistant = /aborted assistant|interrupted assistant/i.test(message);
         const withThinking = /thinking card/i.test(message);
         const withFlatEditTool = /flat edit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
@@ -453,7 +464,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const withoutAgentEnd = /missing agent end|no agent end/i.test(message);
         const withStaleRuntimeAfterEnd = /stale runtime after end/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message) || withProgressDemo;
-        const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
+        const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && !withInterruptedTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
         mockSession.isStreaming = true;
         if (withQuietRuntime) {
           setRuntimeStartedAt(new Date(Date.now() - 45_000).toISOString(), new Date(Date.now() - 31_000).toISOString());
@@ -505,6 +516,22 @@ export function createMockHarness(options: MockSessionOptions) {
             appendMockMessage(recoveredMessage);
             broadcastPiEvent({ type: "message_end", message: recoveredMessage });
           }
+        } else if (withInterruptedTool) {
+          const toolCallId = "call-incomplete-read";
+          const assistantMessage = { role: "assistant", content: [
+            { type: "text", text: "I need to inspect a file first." },
+            { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/some/file" } },
+          ], stopReason: "toolUse", timestamp: new Date().toISOString() };
+          appendMockMessage(assistantMessage);
+          broadcastPiEvent({ type: "message_end", message: assistantMessage });
+          broadcastPiEvent({ type: "tool_execution_start", toolName: "read", toolCallId, args: { path: "/some/file" } });
+          if (!(await waitForMockRun(80))) return;
+          broadcastPiEvent({ type: "tool_execution_end", toolName: "read", toolCallId, isError: false, result: "file contents here" });
+          appendMockMessage({ role: "toolResult", toolCallId, toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
+        } else if (withAbortedAssistant) {
+          const abortedMessage = { role: "assistant", content: "Partial response before interruption.", stopReason: "aborted", timestamp: new Date().toISOString() };
+          appendMockMessage(abortedMessage);
+          broadcastPiEvent({ type: "message_end", message: abortedMessage });
         } else if (withThinking) {
           const thinkingHeading = "**Inspecting request**\n\n";
           const thinkingBody = "First I will inspect the request and decide what to answer.";

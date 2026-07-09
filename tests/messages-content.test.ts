@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assistantErrorBody, formatThinkingText, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
+import { assistantErrorBody, assistantErrorStatusCode, formatThinkingText, isRetryableAssistantError, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
 
 describe("message content helpers", () => {
   it("keeps thinking out of text bubbles and extracts it for thinking cards", () => {
@@ -44,5 +44,11 @@ describe("message content helpers", () => {
   it("normalizes overloaded and unavailable retry errors", () => {
     expect(normalizeAssistantError("Service unavailable: 503: {\"socket\":true}")).toBe("Service unavailable (503)");
     expect(normalizeAssistantError("529 overloaded_error: Overloaded")).toBe("Overloaded (529)");
+  });
+
+  it("detects retryable assistant HTTP errors", () => {
+    expect(assistantErrorStatusCode("Service unavailable: 503: {\"socket\":true}")).toBe("503");
+    expect(isRetryableAssistantError("Throttling error: 429: {}")).toBe(true);
+    expect(isRetryableAssistantError("usage_limit_reached")).toBe(false);
   });
 });
