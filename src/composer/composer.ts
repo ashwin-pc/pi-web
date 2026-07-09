@@ -67,7 +67,7 @@ export function createComposer(options: {
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
     elements.primaryButton.disabled = !hasInput || !initialRealtimeReady;
     elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
-    elements.stopButton.style.display = state.isStreaming ? "" : "none";
+    elements.stopButton.style.display = state.isStreaming || state.isRetrying ? "" : "none";
   }
 
   function updateQueueToggle() {
@@ -466,6 +466,7 @@ export function createComposer(options: {
       updateMeta(data.state);
       if ((name === "new" || name === "clear") && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
       state.isStreaming = Boolean(data.state.isStreaming);
+      state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
       updatePrimaryAction();
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
     }
@@ -478,7 +479,7 @@ export function createComposer(options: {
   function init() {
     elements.formEl.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if (state.isStreaming && !elements.promptEl.value.trim() && state.attachedImages.length === 0) return;
+      if ((state.isStreaming || state.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0) return;
 
       const rawMessage = elements.promptEl.value;
       const message = rawMessage.trim();
@@ -533,6 +534,7 @@ export function createComposer(options: {
       state.attachedImages = [];
       renderAttachments();
       state.isStreaming = true;
+      state.isRetrying = false;
       updatePrimaryAction();
       beginStreamFollow?.();
       addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
@@ -546,6 +548,7 @@ export function createComposer(options: {
         if (!res.ok) throw new Error(await res.text());
       } catch (error) {
         state.isStreaming = false;
+        state.isRetrying = false;
         updatePrimaryAction();
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");

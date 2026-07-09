@@ -169,8 +169,8 @@ export function createStatusBar(options: {
     const className = warn ? "stale" : quiet ? "quiet" : "running";
     const text = `Running${elapsedText}${activity.label ? ` · ${activity.label}` : ""}${quiet ? ` · no updates ${formatActivityDuration(quietFor)}` : ""}`;
     const title = activity.startedAt
-      ? `Session is still active. Last update ${formatActivityDuration(quietFor)} ago.${state.isStreaming ? " Use Stop to cancel if needed." : ""}`
-      : `Session is still active, but its original start time is unavailable.${state.isStreaming ? " Use Stop to cancel if needed." : ""}`;
+      ? `Session is still active. Last update ${formatActivityDuration(quietFor)} ago.${state.isStreaming || state.isRetrying ? " Use Stop to cancel if needed." : ""}`
+      : `Session is still active, but its original start time is unavailable.${state.isStreaming || state.isRetrying ? " Use Stop to cancel if needed." : ""}`;
     elements.activityStatusEl.className = `activityStatus ${className}`;
     elements.activityStatusEl.textContent = text;
     elements.activityStatusEl.title = title;

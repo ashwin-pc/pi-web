@@ -11,6 +11,7 @@ export interface PiWebSession {
   sessionId: string;
   sessionFile: string;
   isStreaming: boolean;
+  isRetrying?: boolean;
   isCompacting?: boolean;
   pendingMessageCount?: number;
   model: PiWebModel;

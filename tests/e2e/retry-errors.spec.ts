@@ -14,6 +14,7 @@ test("shows retryable model errors live and terminal retry affordances", async (
   await expect(retryCard.locator(".toolCardSubtitle")).toContainText("Throttling error (429)");
   await expect(retryCard.locator(".toolCardSubtitle")).toContainText("attempt 1/3");
   await expect(page.locator("#runtimeStatus")).toContainText("retrying");
+  await expect(page.locator("#stopButton")).toBeVisible();
   await expect(retryCard).not.toContainText("_readableState");
 
   const terminalCard = page.locator(".runtimeErrorCard", { hasText: "response failed" }).last();
@@ -22,6 +23,7 @@ test("shows retryable model errors live and terminal retry affordances", async (
   await expect(terminalCard.locator(".runtimeErrorAction", { hasText: "Retry" })).toBeVisible();
   await expect(terminalCard.locator(".runtimeErrorAction", { hasText: "Switch model" })).toBeVisible();
   await expect(page.locator(".runtimeErrorCard", { hasText: "_readableState" })).toHaveCount(0);
+  await expect(page.locator("#stopButton")).toBeHidden();
 
   await page.reload();
   const reloadedTerminalCard = page.locator(".runtimeErrorCard", { hasText: "response failed" }).last();

@@ -284,8 +284,9 @@ export function createMockHarness(options: MockSessionOptions) {
         sessionFile: mockSession.sessionFile,
         runtime: {
           loaded: true,
-          isRunning: Boolean(mockSession.isStreaming) || Boolean(mockSession.isCompacting),
+          isRunning: Boolean(mockSession.isStreaming) || Boolean(mockSession.isRetrying) || Boolean(mockSession.isCompacting),
           isStreaming: Boolean(mockSession.isStreaming),
+          isRetrying: Boolean(mockSession.isRetrying),
           isCompacting: Boolean(mockSession.isCompacting),
           startedAt: runtimeStartedAt,
           lastActivityAt: runtimeLastActivityAt,
@@ -341,6 +342,7 @@ export function createMockHarness(options: MockSessionOptions) {
       sessionId: mockSessions.find((info) => info.path === path)?.id || "mock-current",
       sessionFile: path,
       isStreaming: false,
+      isRetrying: false,
       model: mockModel,
       thinkingLevel: "medium",
       messages: mockMessages,
@@ -436,10 +438,10 @@ export function createMockHarness(options: MockSessionOptions) {
         const waitForMockRun = async (ms: number) => {
           const deadline = Date.now() + ms;
           while (Date.now() < deadline) {
-            if (!isCurrentMockRun() || (!mockSession.isStreaming && !mockSession.isCompacting)) return false;
+            if (!isCurrentMockRun() || (!mockSession.isStreaming && !mockSession.isRetrying && !mockSession.isCompacting)) return false;
             await new Promise((resolve) => setTimeout(resolve, Math.min(50, Math.max(0, deadline - Date.now()))));
           }
-          return isCurrentMockRun() && Boolean(mockSession.isStreaming || mockSession.isCompacting);
+          return isCurrentMockRun() && Boolean(mockSession.isStreaming || mockSession.isRetrying || mockSession.isCompacting);
         };
         appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
         const withCompaction = /compact|compaction/i.test(message);
@@ -485,7 +487,7 @@ export function createMockHarness(options: MockSessionOptions) {
             timestamp: new Date().toISOString(),
           });
         } else if (withRetryFailure || withRetrySuccess) {
-          const retryDelayMs = /screenshot/i.test(message) ? 5_000 : 500;
+          const retryDelayMs = /screenshot/i.test(message) ? 5_000 : 1_500;
           const throttleRaw = "Throttling error: 429: {\"_events\":{\"close\":[null,null],\"error\":[null,null]},\"_readableState\":{\"highWaterMark\":65536}}";
           const throttledMessage = {
             role: "assistant",
@@ -496,8 +498,16 @@ export function createMockHarness(options: MockSessionOptions) {
           };
           appendMockMessage(throttledMessage);
           broadcastPiEvent({ type: "message_end", message: throttledMessage });
+          mockSession.isStreaming = false;
+          mockSession.isRetrying = true;
+          broadcastPiEvent({ type: "agent_end", willRetry: true });
+          broadcastRuntimeChanged();
           broadcastPiEvent({ type: "auto_retry_start", attempt: 1, maxAttempts: 3, delayMs: retryDelayMs, errorMessage: throttleRaw });
           if (!(await waitForMockRun(retryDelayMs))) return;
+          mockSession.isRetrying = false;
+          mockSession.isStreaming = true;
+          broadcastRuntimeChanged();
+          broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
           if (withRetryFailure) {
             const unavailableRaw = "Service unavailable: 503: {\"socket\":true,\"_readableState\":{\"highWaterMark\":65536}}";
             broadcastPiEvent({ type: "auto_retry_end", success: false, attempt: 3, maxAttempts: 3, finalError: unavailableRaw });
@@ -615,6 +625,7 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
         }
         mockSession.isStreaming = false;
+        mockSession.isRetrying = false;
         clearRuntimeTimestamps();
         broadcastRuntimeChanged();
         if (!withoutAgentEnd) {
@@ -637,7 +648,7 @@ export function createMockHarness(options: MockSessionOptions) {
         }
       },
       retryFromFailure: async () => runMockRetryFromFailure(),
-      abort: async () => { mockSession.isStreaming = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
+      abort: async () => { mockSession.isStreaming = false; mockSession.isRetrying = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,
       subscribe: () => undefined,

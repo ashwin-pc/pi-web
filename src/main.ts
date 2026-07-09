@@ -48,6 +48,7 @@ async function submitPromptFromMessageAction(message: string) {
   if (!promptText) throw new Error("Message is empty.");
 
   state.isStreaming = true;
+  state.isRetrying = false;
   composer.updatePrimaryAction();
   messages.beginStreamFollow();
   messages.addMessage("user", promptText);
@@ -62,6 +63,7 @@ async function submitPromptFromMessageAction(message: string) {
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
   } catch (error) {
     state.isStreaming = false;
+    state.isRetrying = false;
     composer.updatePrimaryAction();
     messages.endStreamFollow();
     throw error;
@@ -69,7 +71,7 @@ async function submitPromptFromMessageAction(message: string) {
 }
 
 async function navigateMessageActionTarget(context: MessageActionContext) {
-  if (state.isStreaming) throw new Error("Wait for the current response to finish first.");
+  if (state.isStreaming || state.isRetrying) throw new Error("Wait for the current response to finish first.");
   if (state.isCompacting) throw new Error("Wait for compaction to finish first.");
 
   const res = await fetch("/api/session/tree/navigate", {
@@ -84,6 +86,7 @@ async function navigateMessageActionTarget(context: MessageActionContext) {
   if (data.state) {
     updateMeta(data.state);
     state.isStreaming = Boolean(data.state.isStreaming);
+    state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
     state.isCompacting = Boolean(data.state.isCompacting);
     composer.updatePrimaryAction();
   }
@@ -170,7 +173,7 @@ async function refreshMessages() {
     addPendingToolCard: tools.startTool,
     addRuntimeErrorCard: tools.addRuntimeErrorCard,
     clearActiveToolCards: tools.clearActiveToolCards,
-    isStreaming: state.isStreaming,
+    isStreaming: state.isStreaming || state.isRetrying,
     updateEmptyCwdChooser: () => sessions.updateEmptyCwdChooser(),
     onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
   });
@@ -188,9 +191,10 @@ async function refreshState() {
   const data = await res.json();
   updateMeta(data);
   state.isStreaming = Boolean(data.isStreaming);
+  state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
   state.isCompacting = Boolean(data.isCompacting);
-  if (state.isStreaming || state.isCompacting) statusBar.markActivityStart(
-    state.isCompacting ? "compacting" : "active",
+  if (state.isStreaming || state.isRetrying || state.isCompacting) statusBar.markActivityStart(
+    state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
     data.runtimeStartedAt || data.runtime?.startedAt,
     data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
   );
@@ -339,7 +343,7 @@ initKeyboardShortcuts([
     allowInEditable: true,
     when: () => elements.tokenOverlay.hidden
       && elements.slashCommandsEl.hidden
-      && state.isStreaming,
+      && (state.isStreaming || state.isRetrying),
     run: () => composer.stopStreaming(),
   },
 ], {

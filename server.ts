@@ -1051,17 +1051,23 @@ async function retrySessionFromFailure(targetSession: PiWebSession) {
   }
 }
 
-function runtimeForPath(path: string) {
+function sessionIsRetrying(live: PiWebSession | undefined) {
+  return Boolean((live as any)?.isRetrying);
+}
+
+function runtimeForPath(path: string, overrides: { isRetrying?: boolean } = {}) {
   const live = liveSessions.get(path)?.session;
   const isStreaming = Boolean(live?.isStreaming);
+  const isRetrying = overrides.isRetrying ?? sessionIsRetrying(live);
   const isCompacting = Boolean(live?.isCompacting);
-  const isRunning = isStreaming || isCompacting;
+  const isRunning = isStreaming || isRetrying || isCompacting;
   const startedAt = runtimeStartedAtForPath(path, isRunning);
   const lastActivityAt = runtimeLastActivityAtForPath(path, isRunning);
   return {
     loaded: Boolean(live),
     isRunning,
     isStreaming,
+    isRetrying,
     isCompacting,
     startedAt,
     lastActivityAt,
@@ -1076,6 +1082,7 @@ function stoppedRuntimeForPath(path: string) {
     loaded: Boolean(live),
     isRunning: false,
     isStreaming: false,
+    isRetrying: false,
     isCompacting: false,
     startedAt: undefined,
     lastActivityAt: undefined,
@@ -1085,6 +1092,9 @@ function stoppedRuntimeForPath(path: string) {
 }
 
 function runtimeForEvent(path: string, event: any) {
+  if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
+    return runtimeForPath(path, { isRetrying: true });
+  }
   return event?.type === "agent_end" || event?.type === "compaction_end"
     ? stoppedRuntimeForPath(path)
     : runtimeForPath(path);
@@ -1100,6 +1110,8 @@ function isRuntimeActivityEvent(event: any) {
     case "tool_execution_start":
     case "tool_execution_update":
     case "tool_execution_end":
+    case "auto_retry_start":
+    case "auto_retry_end":
       return true;
     default:
       return false;
@@ -1226,7 +1238,8 @@ function sessionStats(targetSession: PiWebSession) {
 }
 
 function currentState(targetSession: PiWebSession = session) {
-  const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+  const isRetrying = sessionIsRetrying(targetSession);
+  const isRunning = Boolean(targetSession.isStreaming || isRetrying || targetSession.isCompacting);
   const runtime = runtimeForPath(targetSession.sessionFile);
   return {
     cwd: sessionCwd(targetSession),
@@ -1235,6 +1248,7 @@ function currentState(targetSession: PiWebSession = session) {
     sessionName: sessionDisplayName(targetSession),
     sessionTitle: liveSessionTitle(targetSession),
     isStreaming: targetSession.isStreaming,
+    isRetrying,
     isCompacting: Boolean(targetSession.isCompacting),
     runtimeStartedAt: typeof (targetSession as any).runtimeStartedAt === "string"
       ? (targetSession as any).runtimeStartedAt
@@ -1604,8 +1618,10 @@ function noteRuntimeEventForUnreadRecovery(data: Record<string, any>) {
     }
     case "agent_end":
     case "compaction_end":
-      runtimeStartedAts.delete(sessionFile);
-      runtimeLastActivityAts.delete(sessionFile);
+      if (!event.willRetry) {
+        runtimeStartedAts.delete(sessionFile);
+        runtimeLastActivityAts.delete(sessionFile);
+      }
       return;
     default:
       if (isRuntimeActivityEvent(event)) runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event));
@@ -1631,7 +1647,7 @@ function shouldMarkSessionUnreadEvent(event: any) {
   // Unread means a background session completed and may need attention.
   // Do not mark on message_end: pi can emit it for the user's submitted
   // message before the assistant response has finished.
-  if (!event || event.aborted) return false;
+  if (!event || event.aborted || event.willRetry) return false;
   switch (event.type) {
     case "agent_end":
     case "compaction_end":
@@ -2192,7 +2208,7 @@ function registerLiveSession(value: any) {
       const startedAt = ensureRuntimeStartedAt(value, typeof e.startedAt === "string" ? e.startedAt : undefined);
       eventForClient = { ...e, startedAt };
     } else if (e?.type === "agent_end" || e?.type === "compaction_end") {
-      clearRuntimeStartedAt(value, eventSessionFile);
+      if (!e.willRetry) clearRuntimeStartedAt(value, eventSessionFile);
     }
 
     if (e?.type === "tool_execution_start") {

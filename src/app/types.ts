@@ -248,6 +248,7 @@ export type SessionInfo = {
     loaded: boolean;
     isRunning: boolean;
     isStreaming: boolean;
+    isRetrying?: boolean;
     isCompacting: boolean;
     startedAt?: string;
     lastActivityAt?: string;
@@ -269,6 +270,7 @@ export type AppState = {
   currentSessionTitle: string;
   statusTitleEditing: boolean;
   isStreaming: boolean;
+  isRetrying: boolean;
   isCompacting: boolean;
   wsHasOpened: boolean;
   wsDisconnected: boolean;
@@ -356,6 +358,7 @@ export function createAppState(): AppState {
     currentSessionTitle: "New session",
     statusTitleEditing: false,
     isStreaming: false,
+    isRetrying: false,
     isCompacting: false,
     wsHasOpened: false,
     wsDisconnected: false,
