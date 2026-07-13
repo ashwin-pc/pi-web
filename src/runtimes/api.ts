@@ -9,6 +9,9 @@ export type RuntimeOption = RuntimeRef & {
   workspace?: string;
   network?: string;
   readOnly?: boolean;
+  sessionPersistence?: "runtime" | "volume" | "disposable";
+  sessionVolume?: string;
+  connection?: { state: "connecting" | "connected" | "disconnected"; attempt?: number; error?: string };
   disconnectable?: boolean;
 };
 
@@ -21,6 +24,17 @@ export type RuntimeConfig = {
   cwd: string;
   processCwd?: string;
 };
+
+export type GuidedRuntimeConfig = {
+  id: string;
+  label: string;
+  adapter: "apple" | "docker" | "podman" | "ssh";
+  target: string;
+  cwd: string;
+  runnerDir: string;
+};
+
+export type RuntimeConnectConfig = RuntimeConfig | GuidedRuntimeConfig;
 
 export function localRuntimeRef(cwd = ""): RuntimeOption {
   return { id: "local", kind: "local", label: "Local machine", cwd };
@@ -48,6 +62,9 @@ export function normalizeRuntimeOptions(value: unknown): RuntimeOption[] {
       workspace: typeof runtime.workspace === "string" ? runtime.workspace : undefined,
       network: typeof runtime.network === "string" ? runtime.network : undefined,
       readOnly: typeof runtime.readOnly === "boolean" ? runtime.readOnly : undefined,
+      sessionPersistence: runtime.sessionPersistence === "runtime" || runtime.sessionPersistence === "volume" || runtime.sessionPersistence === "disposable" ? runtime.sessionPersistence : undefined,
+      sessionVolume: typeof runtime.sessionVolume === "string" ? runtime.sessionVolume : undefined,
+      connection: runtime.connection && typeof runtime.connection === "object" && (runtime.connection as any).state ? runtime.connection as RuntimeOption["connection"] : undefined,
       disconnectable: typeof runtime.disconnectable === "boolean" ? runtime.disconnectable : undefined,
     });
   }
@@ -85,7 +102,7 @@ export async function listRuntimes(api: ApiClient): Promise<RuntimeOption[]> {
   return normalizeRuntimeOptions(data.runtimes);
 }
 
-export async function connectRuntime(api: ApiClient, config: RuntimeConfig): Promise<RuntimeOption> {
+export async function connectRuntime(api: ApiClient, config: RuntimeConnectConfig): Promise<RuntimeOption> {
   const res = await fetch("/api/runtimes/connect", {
     method: "POST",
     headers: api.headers(),

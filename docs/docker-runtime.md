@@ -1,6 +1,6 @@
 # Docker workspace runtime
 
-pi-web can expose one configured Docker runtime in addition to the normal local runtime. The runtime starts `server/runner.ts` in a container and mounts exactly one host workspace at a fixed container path.
+pi-web can expose one configured Docker runtime in addition to the normal local runtime. The runtime starts `server/runner.ts` in a container, mounts exactly one host workspace at a fixed container path, and stores pi sessions in a persistent Docker volume. Connecting is a one-time setup; selecting it switches the complete browser-tab workbench—tabs, sessions, folders, models/auth, git, artifacts, composer, and tools.
 
 ## Secure expectations
 
@@ -11,6 +11,7 @@ pi-web can expose one configured Docker runtime in addition to the normal local 
 - Credentials are not mounted automatically. Only environment variables named in `PI_WEB_DOCKER_ENV_ALLOWLIST` are passed through (default: common model API keys only). Prefer short-lived, scoped tokens.
 - The pi-web source tree is mounted read-only at `/app` so the container can run the same `server/runner.ts`; this mount should contain pi-web application code, not the user's private target workspace. The target workspace is the separate `PI_WEB_DOCKER_WORKSPACE_HOST` mount.
 - Set `PI_WEB_DOCKER_READONLY=1` to mount the workspace read-only.
+- Runtime-owned session history must outlive the disposable `--rm` container. pi-web mounts a named volume at `/root/.pi/agent`; override its name with `PI_WEB_DOCKER_SESSION_VOLUME`. Removing that volume permanently removes the runtime's sessions and credentials/config stored there.
 
 ## Run
 
@@ -34,11 +35,12 @@ ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
 npm run dev
 ```
 
-Open pi-web, enter the token, choose **Docker workspace** in the folder/runtime picker, and create the session with cwd `/workspace` or a subdirectory.
+Open pi-web, enter the token, connect **Docker workspace** once, and select it from the session drawer's workbench switcher. The complete tab is then scoped to the container and paths resolve under `/workspace`. A different-runtime session requires an explicit workbench switch or another browser tab.
 
 ## Current limitations
 
-- The Docker runtime is one long-lived runner process managed by pi-web; container lifecycle is tied to the server process.
+- The Docker runner process and `--rm` container lifecycle are tied to the server process, but session data is durable in the named volume.
+- **Remove from list** only removes an offline locator cached by pi-web. **Delete session data** requires the runtime to be connected and deletes the authoritative runtime session file.
 - Git status/diff and prompt/state/messages are proxied for runner sessions; host-only routes return an explicit unsupported-runtime error instead of falling back to the host.
 - The default image runs `npm exec tsx server/runner.ts` with the pi-web source mounted at `/app`; custom images must be able to run that command.
-- Persistent custom command runtimes are authenticated host command execution. They are disabled in production unless `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` is set; prefer the guided Docker/Apple adapters once available.
+- Persistent custom command runtimes are authenticated host command execution. They are disabled in production unless `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` is set; prefer the guided Apple container, Docker/Podman, and SSH connection forms.

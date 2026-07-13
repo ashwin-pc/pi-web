@@ -6,10 +6,10 @@ import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
 import { getAppElements, initAppHeightSync } from "./app/elements.js";
 import { initSwAutoReload } from "./app/sw-update.js";
-import { setIcon } from "./app/icons.js";
+import { iconElement, setIcon } from "./app/icons.js";
 import { initKeyboardShortcuts } from "./app/shortcuts.js";
 import { createRightPanelManager } from "./layout/rightPanel.js";
-import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
+import { createAppState, readActiveSessionIdFromUrl, readActiveSessionRuntimeIdFromUrl } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
@@ -193,7 +193,7 @@ async function refreshMessages() {
     addRuntimeErrorCard: tools.addRuntimeErrorCard,
     clearActiveToolCards: tools.clearActiveToolCards,
     isStreaming: state.isStreaming || state.isRetrying,
-    updateEmptyCwdChooser: () => sessions.updateEmptyCwdChooser(),
+    updateEmptyCwdChooser: () => sessions.finishTranscriptLoading(),
     onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
   });
 }
@@ -235,6 +235,7 @@ async function refreshState() {
 
 function initStaticIcons() {
   setIcon(elements.sessionButton, "menu");
+  elements.workbenchRuntimeButton.replaceChildren(iconElement("server"), elements.workbenchRuntimeLabel);
   setIcon(elements.newSessionHeaderButton, "square-pen");
   setIcon(elements.conversationTreeButton, "git-fork");
   setIcon(elements.attachButton, "paperclip");
@@ -393,8 +394,10 @@ composer.updateQueueToggle();
 gitPanel = initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 window.addEventListener("popstate", () => {
   const nextSessionId = readActiveSessionIdFromUrl();
-  if (nextSessionId === state.currentSessionId) return;
+  const nextRuntimeId = readActiveSessionRuntimeIdFromUrl() || "local";
+  if (nextSessionId === state.currentSessionId && nextRuntimeId === (state.currentRuntimeRef?.id || "local")) return;
   state.currentSessionId = nextSessionId;
+  state.currentRuntimeRef = { id: nextRuntimeId };
   tools.clearActiveToolCards();
   messages.clear();
   sessions.renderSessionBar();

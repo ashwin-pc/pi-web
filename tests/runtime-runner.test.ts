@@ -26,7 +26,7 @@ async function tempRepo() {
 function createClient(cwd: string, env: Record<string, string> = {}) {
   return new StdioRuntimeClient(process.execPath, ["--import", "tsx", "server/runner.ts"], {
     cwd: process.cwd(),
-    env: { ...process.env, PI_RUNNER_CWD: cwd, ...env },
+    env: { ...process.env, PI_RUNNER_CWD: cwd, PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent"), ...env },
   });
 }
 
@@ -74,9 +74,16 @@ describe("runtime runner spike", () => {
       await expect(createdEvent).resolves.toMatchObject({ event: "session.created", data: { sessionId: created.sessionId } });
       await expect(client.request("sessions.subscribe", { sessionId: created.sessionId })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
       await expect(client.request("sessions.state", { sessionId: created.sessionId })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId, cwd });
+      const second = await client.request<any>("sessions.create", { cwd });
+      const listed = await client.request<any>("sessions.list", { limit: 1 });
+      expect(listed).toMatchObject({ ok: true, total: 2, sessions: [{ cwd }], nextCursor: "1" });
+      const secondPage = await client.request<any>("sessions.list", { limit: 1, cursor: listed.nextCursor });
+      expect(secondPage).toMatchObject({ ok: true, total: 2, sessions: [{ cwd }] });
+      expect(new Set([...listed.sessions, ...secondPage.sessions].map((item: any) => item.sessionId))).toEqual(new Set([created.sessionId, second.sessionId]));
       await expect(client.request("sessions.messages", { sessionId: created.sessionId })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
       await expect(client.request("sessions.abort", { sessionId: created.sessionId })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
       await expect(client.request("sessions.delete", { sessionId: created.sessionId, sessionFile: created.sessionFile })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
+      await expect(client.request("sessions.delete", { sessionId: second.sessionId, sessionFile: second.sessionFile })).resolves.toMatchObject({ ok: true, sessionId: second.sessionId });
       await expect(access(created.sessionFile)).rejects.toThrow();
     } finally {
       client.close();

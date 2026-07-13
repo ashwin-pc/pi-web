@@ -14,6 +14,11 @@ export type SessionRuntimeBinding = {
   runtimeId: string;
   cwd: string;
   sessionFile?: string;
+  name?: string;
+  firstMessage?: string;
+  createdAt?: string;
+  runtimeModifiedAt?: string;
+  messageCount?: number;
   updatedAt: string;
 };
 
@@ -48,7 +53,11 @@ export class RuntimeBindingStore {
   async set(binding: Omit<SessionRuntimeBinding, "updatedAt"> & { updatedAt?: string }): Promise<SessionRuntimeBinding> {
     const run = async () => {
       const data = await this.read();
-      const next: SessionRuntimeBinding = { ...binding, updatedAt: binding.updatedAt || new Date().toISOString() };
+      const existing = data.bindings.find((item) => item.sessionId === binding.sessionId);
+      if (existing && existing.runtimeId !== binding.runtimeId) {
+        throw new Error(`Session ${binding.sessionId} is already bound to runtime ${existing.runtimeId}; refusing to rebind it to ${binding.runtimeId}`);
+      }
+      const next: SessionRuntimeBinding = { ...existing, ...binding, updatedAt: binding.updatedAt || new Date().toISOString() };
       const bindings = data.bindings.filter((item) => item.sessionId !== next.sessionId);
       bindings.unshift(next);
       const nextData: BindingFile = { version: 1, bindings };
@@ -75,9 +84,24 @@ export class RuntimeBindingStore {
     return result;
   }
 
+  async removeRuntime(runtimeId: string): Promise<number> {
+    let removed = 0;
+    const run = async () => {
+      const data = await this.read();
+      const bindings = data.bindings.filter((item) => item.runtimeId !== runtimeId);
+      removed = data.bindings.length - bindings.length;
+      if (removed === 0) return;
+      const nextData: BindingFile = { version: 1, bindings };
+      await writeJsonAtomic(this.file, nextData);
+      this.cache = nextData;
+    };
+    const result = this.writeQueue.then(run, run);
+    this.writeQueue = result.then(() => undefined, () => undefined);
+    await result;
+    return removed;
+  }
+
   async ensureLocal(sessionId: string, cwd: string): Promise<SessionRuntimeBinding> {
-    const existing = await this.get(sessionId);
-    if (existing) return existing;
     return { sessionId, runtimeId: "local", cwd, updatedAt: new Date().toISOString() };
   }
 }
@@ -92,5 +116,11 @@ async function writeJsonAtomic(file: string, value: unknown) {
 function isBinding(value: unknown): value is SessionRuntimeBinding {
   if (!value || typeof value !== "object") return false;
   const item = value as Record<string, unknown>;
-  return typeof item.sessionId === "string" && typeof item.runtimeId === "string" && typeof item.cwd === "string" && typeof item.updatedAt === "string";
+  return typeof item.sessionId === "string" && typeof item.runtimeId === "string" && typeof item.cwd === "string" && typeof item.updatedAt === "string"
+    && (item.sessionFile === undefined || typeof item.sessionFile === "string")
+    && (item.name === undefined || typeof item.name === "string")
+    && (item.firstMessage === undefined || typeof item.firstMessage === "string")
+    && (item.createdAt === undefined || typeof item.createdAt === "string")
+    && (item.runtimeModifiedAt === undefined || typeof item.runtimeModifiedAt === "string")
+    && (item.messageCount === undefined || typeof item.messageCount === "number");
 }

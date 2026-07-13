@@ -17,6 +17,7 @@
   border-color: transparent;
   background: transparent;
 }
+.statusBar .iconButton[hidden] { display: none; }
 .statusBarButton:hover {
   border-color: transparent;
 }
@@ -37,6 +38,40 @@
 .sessionBucketButton.marked:focus-visible {
   color: var(--session-marker-color);
   background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
+}
+.workbenchRuntimeButton {
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 170px;
+  height: 22px;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
+  color: var(--muted);
+  padding: 0 7px;
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.workbenchRuntimeButton[hidden] { display: none; }
+.workbenchRuntimeButton:hover,
+.workbenchRuntimeButton:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  color: var(--text);
+}
+.workbenchRuntimeButton svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+}
+#workbenchRuntimeLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .statusTitle {
   flex: 0 0 auto;
@@ -124,6 +159,15 @@
   .statusBar {
     gap: 4px;
   }
+
+  .workbenchRuntimeButton {
+    width: 24px;
+    min-width: 24px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  #workbenchRuntimeLabel { display: none; }
 
   .statusTitle {
     max-width: 28vw;

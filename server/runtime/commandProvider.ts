@@ -18,12 +18,34 @@ export type RunnerSessionState = {
   messages: number;
 };
 
+export type RunnerSessionInfo = {
+  sessionId: string;
+  sessionFile: string;
+  cwd: string;
+  sessionName?: string;
+  firstMessage?: string;
+  created: string;
+  modified: string;
+  messages: number;
+  isStreaming: boolean;
+  isCompacting: boolean;
+};
+
+export type RunnerSessionList = {
+  ok: true;
+  sessions: RunnerSessionInfo[];
+  nextCursor?: string;
+  total: number;
+};
+
 export type RuntimeRunnerMetadata = {
   workspace?: string;
   hostWorkspace?: string;
   image?: string;
   network?: string;
   readOnly?: boolean;
+  sessionPersistence?: "runtime" | "volume" | "disposable";
+  sessionVolume?: string;
 };
 
 export type CommandRunnerConfig = {
@@ -33,6 +55,7 @@ export type CommandRunnerConfig = {
   args: string[];
   cwd: string;
   processCwd?: string;
+  agentDir?: string;
   kind?: RuntimeKind;
 };
 
@@ -43,6 +66,12 @@ export type RuntimeRunnerConfig = CommandRunnerConfig & {
   metadata?: RuntimeRunnerMetadata;
 };
 
+export type RuntimeProviderStatus = {
+  state: "connecting" | "connected" | "disconnected";
+  attempt: number;
+  error?: string;
+};
+
 export class CommandRunnerProvider {
   readonly id: string;
   readonly label: string;
@@ -50,6 +79,7 @@ export class CommandRunnerProvider {
   readonly args: string[];
   readonly cwd: string;
   readonly processCwd?: string;
+  readonly agentDir?: string;
   readonly kind: RuntimeKind;
   readonly disconnectable: boolean;
   readonly experimental: boolean;
@@ -58,6 +88,17 @@ export class CommandRunnerProvider {
   private client?: StdioRuntimeClient;
   private sessionFiles = new Map<string, { sessionFile: string; cwd?: string }>();
   private subscribedSessionIds = new Set<string>();
+  private desiredSubscriptionIds = new Set<string>();
+  private eventListeners = new Set<(event: RuntimeEvent) => void>();
+  private statusListeners = new Set<(status: RuntimeProviderStatus) => void>();
+  private reconnectTimer?: NodeJS.Timeout;
+  private reconnectAttempt = 0;
+  private stopped = false;
+  private currentStatus: RuntimeProviderStatus = { state: "disconnected", attempt: 0 };
+
+  get status(): RuntimeProviderStatus {
+    return { ...this.currentStatus };
+  }
 
   constructor(config: RuntimeRunnerConfig) {
     this.id = config.id;
@@ -66,28 +107,89 @@ export class CommandRunnerProvider {
     this.args = config.args;
     this.cwd = config.cwd;
     this.processCwd = config.processCwd;
+    this.agentDir = config.agentDir;
     this.kind = config.kind || "container";
     this.disconnectable = config.disconnectable ?? true;
     this.experimental = Boolean(config.experimental);
     this.metadata = config.metadata || {};
-    this.env = config.env;
+    this.env = config.agentDir
+      ? { ...(config.env || process.env), PI_CODING_AGENT_DIR: config.agentDir }
+      : config.env;
   }
 
   start(): StdioRuntimeClient {
     if (this.client && !this.client.isClosed) return this.client;
-    this.client = new StdioRuntimeClient(this.command, this.args, { cwd: this.processCwd || process.cwd(), env: this.env || process.env });
+    this.stopped = false;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    this.emitStatus({ state: "connecting", attempt: this.reconnectAttempt });
+    const client = new StdioRuntimeClient(this.command, this.args, { cwd: this.processCwd || process.cwd(), env: this.env || process.env });
+    this.client = client;
     this.subscribedSessionIds.clear();
-    return this.client;
+    client.onEvent((event) => {
+      for (const listener of this.eventListeners) listener(event);
+    });
+    client.onClose((error) => this.handleClientClose(client, error));
+    void client.request("health", undefined, 30_000).then(() => {
+      if (this.client !== client || client.isClosed) return;
+      this.reconnectAttempt = 0;
+      this.emitStatus({ state: "connected", attempt: 0 });
+      void this.restoreSubscriptions(client);
+    }).catch(() => undefined);
+    return client;
   }
 
   stop(): void {
-    this.client?.close();
+    this.stopped = true;
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = undefined;
+    const client = this.client;
+    this.client = undefined;
+    client?.close();
+    this.subscribedSessionIds.clear();
+    this.desiredSubscriptionIds.clear();
+  }
+
+  private async restoreSubscriptions(client: StdioRuntimeClient) {
+    for (const sessionId of this.desiredSubscriptionIds) {
+      if (this.client !== client || client.isClosed) return;
+      try {
+        await client.request("sessions.subscribe", this.sessionParams(sessionId));
+        this.subscribedSessionIds.add(sessionId);
+      } catch (error) {
+        console.warn(`Failed to restore runtime session subscription ${sessionId}:`, error);
+      }
+    }
+  }
+
+  private handleClientClose(client: StdioRuntimeClient, error: Error) {
+    if (this.client !== client) return;
     this.client = undefined;
     this.subscribedSessionIds.clear();
+    this.emitStatus({ state: "disconnected", attempt: this.reconnectAttempt, error: error.message });
+    if (this.stopped) return;
+    this.reconnectAttempt += 1;
+    const delay = Math.min(30_000, 500 * 2 ** Math.min(this.reconnectAttempt - 1, 6));
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
+      if (!this.stopped) this.start();
+    }, delay);
+    this.reconnectTimer.unref?.();
+  }
+
+  private emitStatus(status: RuntimeProviderStatus) {
+    this.currentStatus = status;
+    for (const listener of this.statusListeners) listener(status);
   }
 
   health() { return this.start().request("health", undefined, 30_000); }
   listDirectories(path = this.cwd) { return this.start().request("fs.list", { path }); }
+
+  async listSessions(options: { limit?: number; cursor?: string } = {}) {
+    const result = await this.start().request<RunnerSessionList>("sessions.list", options, 30_000);
+    for (const item of result.sessions) this.rememberSession(item.sessionId, item.sessionFile, item.cwd);
+    return result;
+  }
 
   async createSession(cwd = this.cwd) {
     const state = await this.start().request<RunnerSessionState>("sessions.create", { cwd }, 30_000);
@@ -106,7 +208,9 @@ export class CommandRunnerProvider {
   }
 
   async subscribe(sessionId: string) {
-    if (!sessionId || this.subscribedSessionIds.has(sessionId)) return { ok: true, sessionId };
+    if (!sessionId) return { ok: true, sessionId };
+    this.desiredSubscriptionIds.add(sessionId);
+    if (this.subscribedSessionIds.has(sessionId)) return { ok: true, sessionId };
     const result = await this.start().request<{ ok: true; sessionId: string }>("sessions.subscribe", this.sessionParams(sessionId));
     this.subscribedSessionIds.add(sessionId);
     return result;
@@ -129,25 +233,38 @@ export class CommandRunnerProvider {
 
   release(sessionId: string) {
     this.subscribedSessionIds.delete(sessionId);
+    this.desiredSubscriptionIds.delete(sessionId);
     return this.start().request("sessions.release", this.sessionParams(sessionId)).catch(() => ({ ok: true, sessionId }));
   }
 
   async deleteSession(sessionId: string) {
     const result = await this.start().request("sessions.delete", this.sessionParams(sessionId));
     this.subscribedSessionIds.delete(sessionId);
+    this.desiredSubscriptionIds.delete(sessionId);
     this.sessionFiles.delete(sessionId);
     return result;
   }
 
   abort(sessionId: string) { return this.start().request("sessions.abort", this.sessionParams(sessionId)); }
+  conversationTree(sessionId: string) { return this.start().request("sessions.tree", this.sessionParams(sessionId)); }
+  navigateTree(sessionId: string, options: Record<string, unknown>) { return this.start().request("sessions.tree.navigate", { ...this.sessionParams(sessionId), ...options }, 120_000); }
+  abortBranchSummary(sessionId: string) { return this.start().request("sessions.tree.abortSummary", this.sessionParams(sessionId)); }
   gitStatus(cwd = this.cwd, fetchRemote = false) { return this.start().request("git.status", { cwd, fetchRemote }); }
   gitDiff(options: { cwd?: string; path: string; staged?: boolean }) { return this.start().request("git.diff", { cwd: options.cwd || this.cwd, path: options.path, staged: Boolean(options.staged) }); }
   readArtifactBase64(cwd: string, name: string) { return this.start().request<{ ok: true; name: string; base64: string }>("artifacts.readBase64", { cwd, name }); }
   listModels(sessionId: string) { return this.start().request("models.list", this.sessionParams(sessionId)); }
   setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string) { return this.start().request("models.set", { ...this.sessionParams(sessionId), provider, id, thinkingLevel }); }
-  onEvent(listener: (event: RuntimeEvent) => void): () => void { return this.start().onEvent(listener); }
+  onEvent(listener: (event: RuntimeEvent) => void): () => void {
+    this.eventListeners.add(listener);
+    this.start();
+    return () => this.eventListeners.delete(listener);
+  }
+  onStatus(listener: (status: RuntimeProviderStatus) => void): () => void {
+    this.statusListeners.add(listener);
+    return () => this.statusListeners.delete(listener);
+  }
 
   toConfig(): CommandRunnerConfig {
-    return { id: this.id, label: this.label, command: this.command, args: this.args, cwd: this.cwd, processCwd: this.processCwd, kind: this.kind };
+    return { id: this.id, label: this.label, command: this.command, args: this.args, cwd: this.cwd, processCwd: this.processCwd, agentDir: this.agentDir, kind: this.kind };
   }
 }

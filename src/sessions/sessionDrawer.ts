@@ -4,7 +4,7 @@ import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import type { AppState, RuntimeRef, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
-import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, persistActiveRuntimeRef, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 import { listRuntimes, localRuntimeRef, parseApiError, type RuntimeOption } from "../runtimes/api.js";
 
 export type SessionsController = {
@@ -14,6 +14,7 @@ export type SessionsController = {
   startNewSession: (cwd?: string, runtimeId?: string) => Promise<void>;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateEmptyCwdChooser: () => void;
+  finishTranscriptLoading: () => void;
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
@@ -84,6 +85,25 @@ function shouldCloseDrawerAfterSessionSwitch() {
 
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
 const sessionDrawerOpenStorageKey = "pi-web-session-drawer-open";
+const runtimeLastSessionsStorageKey = "pi-web-runtime-last-sessions";
+
+type RememberedRuntimeSession = { sessionId: string; cwd?: string };
+
+function readRuntimeLastSessions(): Record<string, RememberedRuntimeSession> {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(runtimeLastSessionsStorageKey) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function rememberRuntimeSession(runtimeId: string, sessionId?: string, cwd?: string) {
+  if (!runtimeId || !sessionId) return;
+  const sessions = readRuntimeLastSessions();
+  sessions[runtimeId] = { sessionId, ...(cwd ? { cwd } : {}) };
+  try { sessionStorage.setItem(runtimeLastSessionsStorageKey, JSON.stringify(sessions)); } catch { /* best effort */ }
+}
 
 function readPersistedSessionDrawerOpen() {
   try {
@@ -101,21 +121,32 @@ function persistSessionDrawerOpen(open: boolean) {
   }
 }
 
-function readKnownSessionCwds() {
+function readKnownSessionCwdMap(): Record<string, string[]> {
   try {
-    const raw = JSON.parse(localStorage.getItem(knownSessionCwdsStorageKey) || "[]");
-    return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [];
+    const raw = JSON.parse(localStorage.getItem(knownSessionCwdsStorageKey) || "{}");
+    if (Array.isArray(raw)) return { local: raw.filter((value): value is string => typeof value === "string" && value.trim().length > 0) };
+    if (!raw || typeof raw !== "object") return {};
+    return Object.fromEntries(Object.entries(raw).map(([runtimeId, values]) => [
+      runtimeId,
+      Array.isArray(values) ? values.filter((value): value is string => typeof value === "string" && value.trim().length > 0) : [],
+    ]));
   } catch {
-    return [];
+    return {};
   }
 }
 
-function rememberSessionCwd(cwd?: string) {
+function readKnownSessionCwds(runtimeId = "local") {
+  return readKnownSessionCwdMap()[runtimeId] || [];
+}
+
+function rememberSessionCwd(cwd?: string, runtimeId = "local") {
   const value = cwd?.trim();
   if (!value) return;
-  const cwds = new Set(readKnownSessionCwds());
+  const map = readKnownSessionCwdMap();
+  const cwds = new Set(map[runtimeId] || []);
   cwds.add(value);
-  localStorage.setItem(knownSessionCwdsStorageKey, JSON.stringify(Array.from(cwds)));
+  map[runtimeId] = Array.from(cwds);
+  localStorage.setItem(knownSessionCwdsStorageKey, JSON.stringify(map));
 }
 
 async function responseError(response: Response) {
@@ -156,6 +187,7 @@ export function createSessions(options: {
   } = options;
 
   let cachedSessions: SessionInfo[] = [];
+  let sessionRefreshSerial = 0;
   // Tracks runtime state for pinned sessions independently of cachedSessions so
   // session_runtime_changed events can update the bar even before the first
   // refreshSessions() completes.
@@ -170,27 +202,35 @@ export function createSessions(options: {
   let closeCurrentSessionBucketMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
   let unreadFilterActive = false;
+  let transcriptLoading = true;
   type SessionRowTool = "pin" | SessionMarkerColorId;
   let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
-  let selectedRuntimeId = "local";
-  let selectedRuntimeLabel = "Local machine";
-  let selectedRuntimeCwd: string | undefined;
-  let runtimeOverrideActive = false;
-
   function effectiveRuntimeId() {
-    return runtimeOverrideActive ? selectedRuntimeId : state.currentRuntimeRef?.id || "local";
+    return state.activeRuntimeRef.id || "local";
   }
 
   function effectiveRuntimeLabel() {
-    return runtimeOverrideActive ? selectedRuntimeLabel : state.currentRuntimeRef?.label || "Local machine";
+    return state.activeRuntimeRef.label || state.activeRuntimeRef.id || "Local machine";
   }
 
   function effectiveRuntimeCwd() {
-    return runtimeOverrideActive ? selectedRuntimeCwd : state.currentRuntimeRef?.cwd;
+    return state.activeRuntimeRef.cwd;
   }
 
-  function currentRuntimeId() {
-    return state.currentRuntimeRef?.id || "local";
+  function renderActiveRuntime() {
+    const label = effectiveRuntimeLabel();
+    elements.workbenchRuntimeLabel.textContent = effectiveRuntimeId() === "local" ? "Local" : label;
+    elements.workbenchRuntimeButton.title = `Workbench runtime: ${label}. Change runtime`;
+    elements.workbenchRuntimeButton.setAttribute("aria-label", `Workbench runtime: ${label}`);
+    elements.workbenchRuntimeButton.classList.toggle("remote", effectiveRuntimeId() !== "local");
+  }
+
+  function setActiveRuntime(runtime: RuntimeOption) {
+    state.activeRuntimeRef = { ...runtime };
+    persistActiveRuntimeRef(state.activeRuntimeRef);
+    renderActiveRuntime();
+    updateEmptyCwdChooser();
+    window.dispatchEvent(new CustomEvent("pi-web:workbench-runtime-changed", { detail: { runtime: state.activeRuntimeRef } }));
   }
 
   async function fetchRuntimeOptions() {
@@ -209,13 +249,49 @@ export function createSessions(options: {
 
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = effectiveRuntimeId() !== "local" && effectiveRuntimeCwd() ? effectiveRuntimeCwd()! : state.currentCwd;
-    elements.emptyRuntimePathEl.textContent = `Runtime: ${effectiveRuntimeLabel()}`;
-    elements.emptyCwdChooserEl.hidden = elements.messagesEl.children.length > 0 || state.isStreaming;
+    elements.emptyCwdChooserEl.hidden = transcriptLoading || elements.messagesEl.children.length > 0 || state.isStreaming;
+  }
+
+  function finishTranscriptLoading() {
+    if (elements.messagesEl.children.length === 0 && !state.isStreaming) {
+      transcriptLoading = true;
+      void restartNewChatAnimation();
+      return;
+    }
+    transcriptLoading = false;
+    updateEmptyCwdChooser();
+  }
+
+  async function restartNewChatAnimation() {
+    const video = elements.emptyCwdChooserEl.querySelector<HTMLVideoElement>(".newChatLoadingAnimation");
+    if (!video) {
+      transcriptLoading = false;
+      updateEmptyCwdChooser();
+      return;
+    }
+
+    video.classList.add("resetting");
+    video.pause();
+    video.currentTime = 0;
+    if (video.seeking) {
+      await new Promise<void>((resolve) => {
+        const timeout = window.setTimeout(resolve, 150);
+        video.addEventListener("seeked", () => {
+          window.clearTimeout(timeout);
+          resolve();
+        }, { once: true });
+      });
+    }
+
+    transcriptLoading = false;
+    updateEmptyCwdChooser();
+    video.addEventListener("playing", () => video.classList.remove("resetting"), { once: true });
+    void video.play().catch(() => video.classList.remove("resetting"));
   }
 
   async function selectSessionCwd(cwd: string) {
     const runtimeId = effectiveRuntimeId();
-    if (runtimeId !== "local" || runtimeOverrideActive) {
+    if (runtimeId !== "local") {
       await startNewSession(cwd, runtimeId);
       return;
     }
@@ -226,8 +302,9 @@ export function createSessions(options: {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    rememberSessionCwd(cwd);
-    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
+    rememberSessionCwd(cwd, runtimeId);
+    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId, "push", data.runtimeRef?.id || runtimeId);
+    rememberRuntimeSession(data.runtimeRef?.id || runtimeId, data.sessionId, cwd);
     updateMeta(data);
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await refreshModels();
@@ -235,61 +312,118 @@ export function createSessions(options: {
     refreshSessionTitle();
   }
 
+  async function switchWorkbenchRuntime(runtime: RuntimeOption, confirmChange = true) {
+    const currentWorkbenchId = effectiveRuntimeId();
+    if (runtime.id === currentWorkbenchId) {
+      setActiveRuntime(runtime);
+      return;
+    }
+
+    if (confirmChange && state.currentSessionId) {
+      const accepted = window.confirm(
+        `Switch the entire workbench to ${runtimeOptionLabel(runtime)}?\n\nOpen tabs, sessions, folders, models, git, artifacts, and tools will switch together. Your current sessions remain saved and return when you switch back.`,
+      );
+      if (!accepted) return;
+    }
+
+    if ((state.currentRuntimeRef?.id || "local") === currentWorkbenchId) {
+      rememberRuntimeSession(currentWorkbenchId, state.currentSessionId, state.currentCwd);
+    }
+
+    setActiveRuntime(runtime);
+    cachedSessions = [];
+    sessionRefreshSerial += 1;
+    state.currentSessionId = "";
+    state.currentRuntimeRef = { ...runtime };
+    state.currentCwd = runtime.cwd || "";
+    writeActiveSessionIdToUrl("", "replace");
+    clearMessages();
+    renderSessionList([]);
+    renderSessionBar();
+    updateEmptyCwdChooser();
+
+    const remembered = readRuntimeLastSessions()[runtime.id];
+    if (remembered?.sessionId) {
+      state.sessionsById[remembered.sessionId] = {
+        ...state.sessionsById[remembered.sessionId],
+        id: remembered.sessionId,
+        cwd: remembered.cwd || runtime.cwd,
+        runtimeRef: { ...runtime, cwd: remembered.cwd || runtime.cwd },
+      };
+      try {
+        if (await openSessionTab(remembered.sessionId, remembered.cwd || runtime.cwd || "")) {
+          await refreshSessions();
+          return;
+        }
+        // The remembered session may have been deleted on the runtime. Start a
+        // clean session in the selected workbench instead.
+      } catch {
+        // Fall through to a clean session if recovery fails.
+      }
+    }
+    await startNewSession(runtime.cwd, runtime.id);
+    await refreshSessions();
+  }
+
   async function openRuntimePicker() {
     const runtimes = await fetchRuntimeOptions();
+    if (!runtimes.some((runtime) => runtime.id === effectiveRuntimeId()) && effectiveRuntimeId() !== "local") {
+      runtimes.push({ ...state.activeRuntimeRef, id: effectiveRuntimeId(), label: `${effectiveRuntimeLabel()} · unavailable` });
+    }
 
     const backdrop = document.createElement("div");
     backdrop.className = "folderPickerBackdrop";
     const modal = document.createElement("div");
     modal.className = "folderPicker runtimePicker";
     const title = document.createElement("h2");
-    title.textContent = "Run new sessions in";
+    title.textContent = "Switch workbench runtime";
+    const description = document.createElement("p");
+    description.className = "folderPickerHint runtimePickerHint";
+    description.textContent = "Changing runtime replaces all open tabs, sessions, folders, models, git, artifacts, and tools in this browser tab.";
     const list = document.createElement("div");
     list.className = "folderPickerList";
     const actions = document.createElement("div");
     actions.className = "folderPickerActions";
+    const manage = document.createElement("button");
+    manage.type = "button";
+    manage.textContent = "Manage runtimes…";
     const cancel = document.createElement("button");
     cancel.type = "button";
     cancel.textContent = "Cancel";
     const use = document.createElement("button");
     use.type = "button";
     use.className = "primaryAction";
-    use.textContent = "Use runtime";
-    actions.append(cancel, use);
-    modal.append(title, list, actions);
+    use.textContent = "Switch runtime";
+    actions.append(manage, cancel, use);
+    modal.append(title, description, list, actions);
     backdrop.append(modal);
     document.body.append(backdrop);
 
-    let pendingRuntime = effectiveRuntimeId();
-    let pendingLabel = effectiveRuntimeLabel();
-    let pendingCwd = effectiveRuntimeCwd();
+    let pendingRuntime = runtimes.find((runtime) => runtime.id === effectiveRuntimeId()) || runtimes[0] || localRuntimeRef();
     function render() {
       list.textContent = "";
       for (const runtime of runtimes) {
-        const id = runtime.id;
         const row = document.createElement("button");
         row.type = "button";
         row.className = "folderPickerRow";
-        row.textContent = `${id === pendingRuntime ? "✓ " : ""}${runtimeOptionLabel(runtime)}${runtime.experimental ? " · experimental" : ""}`;
+        row.textContent = `${runtime.id === pendingRuntime.id ? "✓ " : ""}${runtimeOptionLabel(runtime)}${runtime.experimental ? " · experimental" : ""}`;
         row.addEventListener("click", () => {
-          pendingRuntime = id;
-          pendingLabel = runtimeOptionLabel(runtime);
-          pendingCwd = runtime.cwd;
+          pendingRuntime = runtime;
           render();
         });
         list.append(row);
       }
     }
     render();
+    manage.addEventListener("click", () => {
+      backdrop.remove();
+      elements.runtimeButton.click();
+    });
     cancel.addEventListener("click", () => backdrop.remove());
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) backdrop.remove(); });
     use.addEventListener("click", () => {
-      selectedRuntimeId = pendingRuntime;
-      selectedRuntimeLabel = pendingLabel;
-      selectedRuntimeCwd = pendingCwd;
-      runtimeOverrideActive = pendingRuntime !== currentRuntimeId();
-      updateEmptyCwdChooser();
       backdrop.remove();
+      void switchWorkbenchRuntime(pendingRuntime).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
     });
   }
 
@@ -308,22 +442,22 @@ export function createSessions(options: {
 
     let pickerRuntimeId = effectiveRuntimeId();
     let pickerRuntime = runtimes.find((runtime) => runtime.id === pickerRuntimeId)
+      || (pickerRuntimeId === state.activeRuntimeRef.id ? { ...state.activeRuntimeRef, cwd: state.activeRuntimeRef.cwd || startPath } : undefined)
       || (pickerRuntimeId === currentRuntime?.id && currentRuntime ? { ...currentRuntime, cwd: currentRuntime.cwd || startPath } : undefined)
       || runtimes[0]
       || localRuntimeRef(state.currentCwd);
     pickerRuntimeId = pickerRuntime.id;
     let pickerRuntimeLabel = runtimeOptionLabel(pickerRuntime);
     let pickerRuntimeCwd = pickerRuntime.cwd;
-    const folderRuntimeOptions = runtimes.filter((runtime) => runtime.id === "local" || !runtime.experimental || runtime.id === pickerRuntimeId);
-    if (!folderRuntimeOptions.some((runtime) => runtime.id === pickerRuntimeId)) folderRuntimeOptions.push(pickerRuntime);
-    const showRuntimeSelect = folderRuntimeOptions.length > 1 || pickerRuntimeId !== "local";
+    const folderRuntimeOptions = [pickerRuntime];
+    const showRuntimeSelect = false;
 
     const backdrop = document.createElement("div");
     backdrop.className = "folderPickerBackdrop";
     const modal = document.createElement("div");
     modal.className = "folderPicker";
     const title = document.createElement("h2");
-    title.textContent = showRuntimeSelect ? "Select runtime and working directory" : "Select working directory";
+    title.textContent = "Select working directory";
     const runtimeField = document.createElement("label");
     runtimeField.className = "folderPickerRuntimeField";
     if (!showRuntimeSelect) runtimeField.hidden = true;
@@ -341,7 +475,7 @@ export function createSessions(options: {
     const runtimeHint = document.createElement("div");
     runtimeHint.className = "folderPickerHint";
     runtimeHint.hidden = !showRuntimeSelect;
-    runtimeHint.textContent = "Choose where pi runs first; folders below are resolved inside that runtime.";
+    runtimeHint.textContent = `Folders are resolved inside ${pickerRuntimeLabel}. Change the workbench runtime separately to browse elsewhere.`;
     const input = document.createElement("input");
     input.className = "folderPickerInput";
     input.value = startPath;
@@ -368,7 +502,7 @@ export function createSessions(options: {
     document.body.append(backdrop);
 
     function selectedRuntimeDefaultPath(runtime: RuntimeOption) {
-      if (runtime.id === "local") return state.currentRuntimeRef?.id === "local" || !state.currentRuntimeRef ? state.currentCwd || runtime.cwd || startPath : runtime.cwd || state.currentCwd || startPath;
+      if (runtime.id === "local") return runtime.cwd || (state.currentRuntimeRef?.id === "local" ? state.currentCwd : "") || startPath || "/";
       return runtime.cwd || startPath || "/";
     }
 
@@ -437,10 +571,6 @@ export function createSessions(options: {
     select.addEventListener("click", async () => {
       try {
         select.disabled = true;
-        selectedRuntimeId = pickerRuntimeId;
-        selectedRuntimeLabel = pickerRuntimeLabel;
-        selectedRuntimeCwd = pickerRuntimeCwd;
-        runtimeOverrideActive = pickerRuntimeId !== currentRuntimeId();
         await selectSessionCwd(input.value);
         backdrop.remove();
       } catch (e) {
@@ -456,7 +586,7 @@ export function createSessions(options: {
 
   async function startNewSession(cwd?: string, runtimeIdOverride?: string) {
     const wasDrawerOpen = !elements.sessionDrawer.hidden;
-    const runtimeId = runtimeIdOverride !== undefined ? runtimeIdOverride : runtimeOverrideActive ? selectedRuntimeId : undefined;
+    const runtimeId = runtimeIdOverride !== undefined ? runtimeIdOverride : effectiveRuntimeId();
     const res = await fetch("/api/sessions/new", {
       method: "POST",
       headers: api.headers(),
@@ -464,13 +594,14 @@ export function createSessions(options: {
     });
     if (!res.ok) throw await responseError(res);
     const data = await res.json();
-    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
-    rememberSessionCwd(cwd || data.cwd || state.currentCwd);
-    runtimeOverrideActive = false;
+    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId, "push", data.runtimeRef?.id || runtimeId);
+    rememberRuntimeSession(data.runtimeRef?.id || runtimeId, data.sessionId, cwd || data.cwd);
+    rememberSessionCwd(cwd || data.cwd || state.currentCwd, data.runtimeRef?.id || runtimeId);
+    transcriptLoading = true;
     clearMessages();
     updateMeta(data);
     await refreshState();
-    updateEmptyCwdChooser();
+    await restartNewChatAnimation();
     if (shouldCloseDrawerAfterSessionSwitch()) {
       setSessionDrawerOpen(false);
     } else if (wasDrawerOpen) {
@@ -507,28 +638,44 @@ export function createSessions(options: {
   }
 
   async function refreshSessions() {
-    rememberSessionCwd(state.currentCwd);
+    const refreshId = ++sessionRefreshSerial;
+    const runtimeId = effectiveRuntimeId();
+    rememberSessionCwd(state.currentCwd, state.currentRuntimeRef?.id || "local");
     const params = new URLSearchParams();
-    for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
-    const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
-    const res = await fetch(url, { headers: api.headers() });
-    if (!res.ok) throw await responseError(res);
-    const data = await res.json();
-    cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
-    for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
-    let pinnedCwdsChanged = false;
-    state.pinnedSessions = state.pinnedSessions.map((pinned) => {
-      const live = cachedSessions.find((s) => s.id === pinned.id);
-      if (live?.cwd && live.cwd !== pinned.cwd) {
-        pinnedCwdsChanged = true;
-        return { ...pinned, cwd: live.cwd };
-      }
-      return pinned;
-    });
-    if (pinnedCwdsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
-    renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
+    params.set("runtimeId", runtimeId);
+    params.set("limit", "200");
+    for (const cwd of readKnownSessionCwds(runtimeId)) params.append("cwd", cwd);
+
+    async function load(cachedOnly: boolean) {
+      const requestParams = new URLSearchParams(params);
+      if (cachedOnly) requestParams.set("cached", "1");
+      const res = await fetch(`/api/sessions?${requestParams}`, { headers: api.headers() });
+      if (!res.ok) throw await responseError(res);
+      const data = await res.json();
+      if (refreshId !== sessionRefreshSerial || runtimeId !== effectiveRuntimeId()) return;
+      cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({
+        ...item,
+        isCurrent: item.id === state.currentSessionId && (item.runtimeRef?.id || "local") === (state.currentRuntimeRef?.id || "local"),
+      }));
+      for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
+      let pinnedCwdsChanged = false;
+      state.pinnedSessions = state.pinnedSessions.map((pinned) => {
+        const live = cachedSessions.find((s) => s.id === pinned.id);
+        const runtimeId = live?.runtimeRef?.id;
+        if (live && (live.cwd && live.cwd !== pinned.cwd || runtimeId && runtimeId !== pinned.runtimeId)) {
+          pinnedCwdsChanged = true;
+          return { ...pinned, ...(live.cwd ? { cwd: live.cwd } : {}), ...(runtimeId ? { runtimeId } : {}) };
+        }
+        return pinned;
+      });
+      if (pinnedCwdsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
+      renderSessionList(cachedSessions);
+      renderSessionBar();
+      updateSessionButtonUnread();
+    }
+
+    if (runtimeId !== "local") await load(true).catch(() => undefined);
+    await load(false);
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -1131,7 +1278,7 @@ export function createSessions(options: {
   function pinSession(item: SessionInfo) {
     if (isPinned(item.id)) return;
     state.sessionsById[item.id] = { ...state.sessionsById[item.id], ...item };
-    state.pinnedSessions = [...state.pinnedSessions, { id: item.id, cwd: item.cwd || state.currentCwd }];
+    state.pinnedSessions = [...state.pinnedSessions, { id: item.id, cwd: item.cwd || state.currentCwd, runtimeId: item.runtimeRef?.id || "local" }];
     persistSessionUiState({ pinnedSessions: state.pinnedSessions });
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
     renderSessionList(cachedSessions);
@@ -1200,6 +1347,8 @@ export function createSessions(options: {
   }
 
   function applyOptimisticSessionSwitch(sessionId: string, sessionTitle: string, cwd: string, knownSession?: Partial<SessionInfo>) {
+    transcriptLoading = true;
+    updateEmptyCwdChooser();
     updateMeta({
       sessionId,
       sessionTitle,
@@ -1216,9 +1365,10 @@ export function createSessions(options: {
 
   async function openSessionTab(sessionId: string, cwd: string) {
     const previousMeta = currentMetaSnapshot();
+    const knownSession = state.sessionsById[sessionId];
+    const runtimeId = knownSession?.runtimeRef?.id || (sessionId === state.currentSessionId ? state.currentRuntimeRef?.id : undefined);
     const switchingSessions = state.currentSessionId !== sessionId;
     if (switchingSessions) {
-      const knownSession = state.sessionsById[sessionId];
       const knownTitle = knownSession ? sessionTitle(knownSession as SessionInfo) : "";
       applyOptimisticSessionSwitch(sessionId, knownTitle || "Session", cwd, knownSession);
     }
@@ -1226,21 +1376,26 @@ export function createSessions(options: {
       const openRes = await fetch("/api/sessions/open", {
         method: "POST",
         headers: api.headers(),
-        body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
+        body: JSON.stringify({ sessionId, runtimeId: runtimeId || null, cwd, clientId: api.clientId }),
       });
       if (!openRes.ok) throw await responseError(openRes);
-      writeActiveSessionIdToUrl(sessionId);
-      runtimeOverrideActive = false;
-      rememberSessionCwd(cwd);
+      const opened = await openRes.json();
+      const openedRuntimeId = opened.runtimeRef?.id || runtimeId || "local";
+      updateMeta(opened);
+      writeActiveSessionIdToUrl(sessionId, "push", openedRuntimeId);
+      rememberRuntimeSession(openedRuntimeId, sessionId, cwd);
+      rememberSessionCwd(cwd, openedRuntimeId);
       markCachedCurrentSession(sessionId, cwd);
       markSessionReadBestEffort(sessionId);
       await refreshState();
       if (switchingSessions) await refreshMessages();
+      return true;
     } catch (error) {
       updateMeta(previousMeta);
       renderSessionBar();
       renderCurrentSessionBucketButton();
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      return false;
     }
   }
 
@@ -1268,7 +1423,7 @@ export function createSessions(options: {
     }
     if (isPinned(currentId)) unpinSession(currentId);
     else {
-      state.pinnedSessions = [...state.pinnedSessions, { id: currentId, cwd: state.currentCwd }];
+      state.pinnedSessions = [...state.pinnedSessions, { id: currentId, cwd: state.currentCwd, runtimeId: state.currentRuntimeRef?.id || effectiveRuntimeId() }];
       persistSessionUiState({ pinnedSessions: state.pinnedSessions });
       renderSessionBar();
       updateCurrentSessionPinButton();
@@ -1279,11 +1434,13 @@ export function createSessions(options: {
 
   function renderSessionBar() {
     const bar = elements.sessionBarEl;
-    const pinned = state.pinnedSessions;
+    const activeRuntimeId = effectiveRuntimeId();
+    const pinned = state.pinnedSessions.filter((entry) => (entry.runtimeId || "local") === activeRuntimeId);
     updateSessionButtonUnread();
 
-    const currentId = state.currentSessionId;
-    const currentIsPinned = Boolean(currentId && isPinned(currentId));
+    const currentMatchesWorkbench = (state.currentRuntimeRef?.id || "local") === activeRuntimeId;
+    const currentId = currentMatchesWorkbench ? state.currentSessionId : "";
+    const currentIsPinned = Boolean(currentId && pinned.some((entry) => entry.id === currentId));
 
     if (pinned.length === 0 && !currentId) {
       bar.hidden = true;
@@ -1360,6 +1517,14 @@ export function createSessions(options: {
 
     for (const pinnedEntry of pinned) {
       const live = cachedSessions.find((s) => s.id === pinnedEntry.id);
+      if (!state.sessionsById[pinnedEntry.id]?.runtimeRef && pinnedEntry.runtimeId) {
+        state.sessionsById[pinnedEntry.id] = {
+          ...state.sessionsById[pinnedEntry.id],
+          id: pinnedEntry.id,
+          cwd: pinnedEntry.cwd,
+          runtimeRef: { id: pinnedEntry.runtimeId, cwd: pinnedEntry.cwd },
+        };
+      }
       appendTab(
         pinnedEntry.id,
         titleForSessionId(pinnedEntry.id),
@@ -1405,7 +1570,7 @@ export function createSessions(options: {
     const res = await fetch("/api/sessions/delete", {
       method: "POST",
       headers: api.headers(),
-      body: JSON.stringify({ sessionId: item.id, cwd: item.cwd || cwd, activeSessionId: state.currentSessionId }),
+      body: JSON.stringify({ sessionId: item.id, runtimeId: item.runtimeRef?.id || "local", cwd: item.cwd || cwd, activeSessionId: state.currentSessionId }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
@@ -1419,6 +1584,26 @@ export function createSessions(options: {
     addMessage("system", data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
   }
 
+  async function removeSessionFromList(item: SessionInfo) {
+    if (item.isCurrent) throw new Error("Switch to another session before removing the current session.");
+    const title = sessionTitle(item);
+    if (!window.confirm(`Remove “${title}” from this list? The session data will remain in its runtime.`)) return;
+    const res = await fetch("/api/sessions/remove", {
+      method: "POST",
+      headers: api.headers(),
+      body: JSON.stringify({ sessionId: item.id, runtimeId: item.runtimeRef?.id, activeSessionId: state.currentSessionId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    cachedSessions = cachedSessions.filter((session) => session.id !== item.id);
+    pinnedRuntimes.delete(item.id);
+    state.pinnedSessions = state.pinnedSessions.filter((session) => session.id !== item.id);
+    state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== item.id);
+    renderSessionList(cachedSessions);
+    renderSessionBar();
+    addMessage("system", "Session removed from the local list; runtime data was not deleted.");
+  }
+
   function getSessionActions(item: SessionInfo, cwd: string): SessionAction[] {
     const deleteDisabledReason = item.isCurrent
       ? "Switch to another session before deleting the current session"
@@ -1426,23 +1611,43 @@ export function createSessions(options: {
         ? "Wait for the session to finish before deleting it"
         : undefined;
     const pinned = isPinned(item.id);
-    return [
+    const runtimeUnavailable = item.runtimeRef?.id && item.runtimeRef.id !== "local" && item.runtime?.loaded === false;
+    const actions: SessionAction[] = [
       {
         id: pinned ? "unpin" : "pin",
         label: pinned ? "Unpin from tab bar" : "Pin to tab bar",
         icon: "pin",
         run: () => togglePin(item),
       },
-      {
+    ];
+    if (runtimeUnavailable) {
+      actions.push({
+        id: "reconnect",
+        label: "Reconnect runtime",
+        icon: "rotate-ccw",
+        run: () => elements.runtimeButton.click(),
+      });
+      actions.push({
+        id: "remove",
+        label: "Remove from list",
+        icon: "trash-2",
+        danger: true,
+        disabled: item.isCurrent,
+        disabledReason: item.isCurrent ? "Switch to another session before removing it" : undefined,
+        run: () => removeSessionFromList(item),
+      });
+    } else {
+      actions.push({
         id: "delete",
-        label: "Delete",
+        label: "Delete session data",
         icon: "trash-2",
         danger: true,
         disabled: Boolean(deleteDisabledReason),
         disabledReason: deleteDisabledReason,
         run: () => deleteSession(item, cwd),
-      },
-    ];
+      });
+    }
+    return actions;
   }
 
   function buildSessionMarkerActionRow(item: SessionInfo) {
@@ -1785,12 +1990,11 @@ export function createSessions(options: {
         const openRes = await fetch("/api/sessions/open", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
+          body: JSON.stringify({ sessionId: item.id, runtimeId: item.runtimeRef?.id || "local", cwd: nextCwd, clientId: api.clientId }),
         });
         if (!openRes.ok) throw await responseError(openRes);
-        writeActiveSessionIdToUrl(item.id);
-        runtimeOverrideActive = false;
-        rememberSessionCwd(nextCwd);
+        writeActiveSessionIdToUrl(item.id, "push", item.runtimeRef?.id || "local");
+        rememberSessionCwd(nextCwd, item.runtimeRef?.id || "local");
         markCachedCurrentSession(item.id, nextCwd);
         markSessionReadBestEffort(item.id);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
@@ -1824,9 +2028,29 @@ export function createSessions(options: {
   }
 
   function init() {
+    renderActiveRuntime();
+    const refreshRuntimeContext = () => listRuntimes(api).then((runtimes) => {
+      const active = runtimes.find((runtime) => runtime.id === effectiveRuntimeId());
+      if (active) setActiveRuntime(active);
+      else if (effectiveRuntimeId() !== "local") {
+        const local = runtimes.find((runtime) => runtime.id === "local") || localRuntimeRef(state.currentCwd);
+        void switchWorkbenchRuntime(local, false).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+      }
+      elements.workbenchRuntimeButton.hidden = false;
+    }).catch(() => {
+      elements.workbenchRuntimeButton.hidden = false;
+    });
+    void refreshRuntimeContext();
+    window.addEventListener("pi-web:runtimes-changed", (event) => {
+      const detail = (event as CustomEvent<{ runtime?: RuntimeOption; select?: boolean }>).detail;
+      if (detail?.select && detail.runtime) {
+        void switchWorkbenchRuntime(detail.runtime).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+      }
+      void refreshRuntimeContext();
+    });
     new MutationObserver(updateEmptyCwdChooser).observe(elements.messagesEl, { childList: true });
+    elements.workbenchRuntimeButton.addEventListener("click", () => openRuntimePicker().catch((error) => window.alert(error instanceof Error ? error.message : String(error))));
     elements.emptyCwdButton.addEventListener("click", () => openFolderPicker(effectiveRuntimeId() !== "local" && effectiveRuntimeCwd() ? effectiveRuntimeCwd()! : state.currentCwd).catch((error) => window.alert(error instanceof Error ? error.message : String(error))));
-    elements.emptyRuntimeButton.addEventListener("click", () => openRuntimePicker().catch((error) => window.alert(error instanceof Error ? error.message : String(error))));
     const headerTitle = elements.sessionDrawer.querySelector(".sessionDrawerHeader h2");
     if (headerTitle) {
       const filterWrap = document.createElement("div");
@@ -1853,16 +2077,17 @@ export function createSessions(options: {
 
     const footer = document.createElement("div");
     footer.className = "sessionDrawerFooter";
-    elements.settingsButton.classList.add("sessionDrawerFooterButton");
+    elements.settingsButton.classList.add("sessionDrawerFooterButton", "sessionDrawerSettingsButton");
     elements.settingsButton.textContent = "";
     setIcon(elements.settingsButton, "settings");
-    elements.settingsButton.append(document.createTextNode("Settings"));
-    elements.runtimeButton.classList.add("sessionDrawerFooterButton");
-    elements.runtimeButton.textContent = "";
-    setIcon(elements.runtimeButton, "server");
-    elements.runtimeButton.append(document.createTextNode("Runtimes"));
+    elements.settingsButton.setAttribute("aria-label", "Settings");
+    elements.settingsButton.title = "Settings";
+    elements.runtimeButton.hidden = true;
+    elements.workbenchRuntimeButton.hidden = false;
+    elements.workbenchRuntimeButton.classList.add("sessionDrawerRuntimeButton");
     elements.sessionNewButton.textContent = "+ New session";
-    footer.append(elements.settingsButton, elements.runtimeButton, elements.sessionNewButton);
+    elements.sessionDrawer.querySelector(".sessionDrawerHeader")?.after(elements.sessionNewButton);
+    footer.append(elements.settingsButton, elements.workbenchRuntimeButton);
     elements.sessionDrawer.append(footer);
 
     sessionPanelHandle = rightPanels?.register({
@@ -1923,6 +2148,7 @@ export function createSessions(options: {
     setSessionDrawerOpen,
     startNewSession,
     updateEmptyCwdChooser,
+    finishTranscriptLoading,
     updateSessionRuntime,
     renderSessionBar,
     renderCurrentSessionBucketButton,

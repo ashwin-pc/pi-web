@@ -41,6 +41,10 @@
         <button id="sessionButton" class="iconButton statusBarButton" type="button" aria-label="Sessions" title="Sessions">
           <span data-icon="menu"></span>
         </button>
+        <button id="workbenchRuntimeButton" class="workbenchRuntimeButton" type="button" aria-label="Workbench runtime: Local machine" title="Change workbench runtime" hidden>
+          <span data-icon="server"></span>
+          <span id="workbenchRuntimeLabel">Local</span>
+        </button>
         <span id="statusTitle" class="statusTitle"></span>
         <span id="statusPath" class="statusPath"></span>
         <span id="activityStatus" class="activityStatus" hidden></span>
@@ -83,12 +87,18 @@
 
       <section id="messages" class="messages" aria-live="polite"></section>
       <div id="emptyCwdChooser" class="emptyCwdChooser" hidden>
+        <video class="newChatLoadingAnimation" muted playsinline preload="auto" aria-hidden="true">
+          <source src="/new-chat-loading.mp4" type="video/mp4">
+        </video>
         <div class="emptyCwdInner">
-          <div class="emptyCwdLabel">Working directory</div>
-          <div class="emptyCwdPath"></div>
-          <div class="emptyRuntimePath">Runtime: Local machine</div>
-          <button type="button" class="emptyCwdButton">Change folder</button>
-          <button type="button" class="emptyRuntimeButton">Change runtime</button>
+          <span class="emptyCwdLabel">Working directory</span>
+          <div class="emptyWorkspaceControls">
+            <button type="button" class="emptyCwdButton" aria-label="Change working directory" title="Change working directory">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h6l2 2h10v10H3z"></path></svg>
+              <span class="emptyCwdPath"></span>
+              <span class="emptyControlChevron" aria-hidden="true">⌄</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -121,14 +131,46 @@
         </section>
         <section class="settingsSection runtimeSection">
           <h3>Connect existing runtime</h3>
-          <p class="settingsHint">Paste or adapt one of the examples below. The command must start <code>server/runner.ts</code> and speak the pi-web runtime protocol over stdio.</p>
-          <textarea id="runtimeConnectJson" class="runtimeConnectJson" rows="11" spellcheck="false" aria-label="Runtime JSON configuration"></textarea>
+          <p class="settingsHint">Choose how to reach a runtime that already exists. pi-web generates and verifies the runner command for you.</p>
+          <label class="settingsField">
+            <span>Connection type</span>
+            <select id="runtimeConnectKind">
+              <option value="apple">Apple container</option>
+              <option value="docker">Docker container</option>
+              <option value="podman">Podman container</option>
+              <option value="ssh">SSH host</option>
+            </select>
+          </label>
+          <label class="settingsField">
+            <span>Display name</span>
+            <input id="runtimeConnectLabel" value="Apple container: pi-web-runtime" />
+          </label>
+          <label class="settingsField">
+            <span id="runtimeConnectTargetLabel">Container name</span>
+            <input id="runtimeConnectTarget" value="pi-web-runtime" autocomplete="off" />
+          </label>
+          <label class="settingsField">
+            <span>Runtime workspace</span>
+            <input id="runtimeConnectCwd" value="/workspace" autocomplete="off" />
+          </label>
+          <label class="settingsField">
+            <span>Runner source directory inside runtime</span>
+            <input id="runtimeConnectRunnerDir" value="/workspace/pi-web" autocomplete="off" />
+          </label>
           <div class="settingsActions">
-            <button id="runtimeConnectButton" type="button">Connect runtime</button>
+            <button id="runtimeConnectButton" type="button">Connect and use</button>
           </div>
+          <details id="runtimeAdvancedDetails" class="runtimeAdvancedDetails">
+            <summary>Advanced command JSON</summary>
+            <p class="settingsHint">Custom commands are privileged host command execution. Persistent custom runtimes require the server opt-in.</p>
+            <textarea id="runtimeConnectJson" class="runtimeConnectJson" rows="11" spellcheck="false" aria-label="Runtime JSON configuration"></textarea>
+            <div class="settingsActions">
+              <button id="runtimeAdvancedConnectButton" type="button">Connect JSON configuration</button>
+            </div>
+          </details>
         </section>
         <section class="settingsSection runtimeSection">
-          <h3>Copyable examples</h3>
+          <h3>Examples and diagnostics</h3>
           <div id="runtimeExamples" class="runtimeExamples"></div>
         </section>
         <span id="runtimePanelStatus" class="settingsStatus" aria-live="polite"></span>
@@ -239,13 +281,13 @@
             <span>Keep composer expanded</span>
           </label>
         </section>
-        <section class="settingsSection">
-          <h3>New sessions</h3>
+        <section id="settingSessionDefaultsSection" class="settingsSection">
+          <h3 id="settingSessionDefaultsTitle">Local machine new sessions</h3>
           <label class="settingsField">
             <span>Default bucket</span>
             <select id="settingDefaultBucketColorSelect" aria-label="Default session bucket color"></select>
           </label>
-          <p class="settingsHint">Choose a bucket color and saved model defaults for sessions you start from now on. Existing sessions are unchanged.</p>
+          <p id="settingSessionDefaultsHint" class="settingsHint">Choose a bucket color and saved model defaults for local sessions you start from now on. Existing sessions are unchanged.</p>
           <div class="settingsValue" id="settingModelDefaultsValue">No default model saved</div>
           <div class="settingsActions">
             <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>

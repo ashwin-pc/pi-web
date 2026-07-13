@@ -62,5 +62,6 @@ function isCommandRuntimeConfig(value: unknown): value is CommandRunnerConfig {
     && Array.isArray(item.args) && item.args.every((arg) => typeof arg === "string")
     && typeof item.cwd === "string" && item.cwd.trim().length > 0
     && (item.processCwd === undefined || typeof item.processCwd === "string")
+    && (item.agentDir === undefined || typeof item.agentDir === "string")
     && (item.kind === undefined || item.kind === "local" || item.kind === "container" || item.kind === "ssh");
 }

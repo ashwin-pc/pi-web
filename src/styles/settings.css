@@ -338,7 +338,8 @@
 .runtimeSectionHeader button,
 .runtimeCardActions button,
 .runtimeExampleActions button,
-#runtimeConnectButton {
+#runtimeConnectButton,
+#runtimeAdvancedConnectButton {
   min-height: 32px;
   font-size: 12px;
 }
@@ -388,6 +389,10 @@
   padding: 2px 8px;
   white-space: nowrap;
 }
+.runtimeKindBadge.disconnected {
+  border-color: color-mix(in srgb, var(--danger) 38%, transparent);
+  color: var(--danger);
+}
 .runtimeDetails {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -402,6 +407,21 @@
   min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
+  color: var(--text);
+}
+.runtimeAdvancedDetails {
+  margin-top: 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  padding-top: 10px;
+}
+.runtimeAdvancedDetails summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+.runtimeAdvancedDetails[open] summary {
+  margin-bottom: 10px;
   color: var(--text);
 }
 .runtimeConnectJson {

@@ -22,14 +22,21 @@ describe("RuntimeBindingStore", () => {
     await expect((await store()).read()).resolves.toEqual({ version: 1, bindings: [] });
   });
 
-  it("persists and replaces session runtime bindings", async () => {
+  it("updates metadata without allowing a session to be rebound to another runtime", async () => {
     const bindings = await store();
-    await bindings.set({ sessionId: "s1", runtimeId: "local", cwd: "/repo" });
-    await expect(bindings.get("s1")).resolves.toMatchObject({ sessionId: "s1", runtimeId: "local", cwd: "/repo" });
-    await bindings.set({ sessionId: "s1", runtimeId: "container:abc", cwd: "/workspace/repo" });
-    const data = await bindings.read();
-    expect(data.bindings).toHaveLength(1);
-    expect(data.bindings[0]).toMatchObject({ sessionId: "s1", runtimeId: "container:abc", cwd: "/workspace/repo" });
+    await bindings.set({ sessionId: "s1", runtimeId: "container:abc", cwd: "/workspace/repo", name: "First", messageCount: 3 });
+    await bindings.set({ sessionId: "s1", runtimeId: "container:abc", cwd: "/workspace/renamed", messageCount: 4 });
+    await expect(bindings.get("s1")).resolves.toMatchObject({ sessionId: "s1", runtimeId: "container:abc", cwd: "/workspace/renamed", name: "First", messageCount: 4 });
+    await expect(bindings.set({ sessionId: "s1", runtimeId: "container:other", cwd: "/workspace/repo" })).rejects.toThrow(/refusing to rebind/);
+  });
+
+  it("removes every cached locator when a runtime is forgotten", async () => {
+    const bindings = await store();
+    await bindings.set({ sessionId: "s1", runtimeId: "container:abc", cwd: "/workspace/a" });
+    await bindings.set({ sessionId: "s2", runtimeId: "container:abc", cwd: "/workspace/b" });
+    await bindings.set({ sessionId: "s3", runtimeId: "ssh:dev", cwd: "/repo" });
+    await expect(bindings.removeRuntime("container:abc")).resolves.toBe(2);
+    await expect((await bindings.read()).bindings).toEqual([expect.objectContaining({ sessionId: "s3", runtimeId: "ssh:dev" })]);
   });
 
   it("treats missing bindings as local without persisting unbounded local rows", async () => {

@@ -16,6 +16,7 @@ export function createApiClient(state: AppState): ApiClient {
       return {
         "content-type": "application/json",
         "x-pi-web-client-id": clientId,
+        ...(state.currentRuntimeRef?.id ? { "x-pi-web-runtime-id": state.currentRuntimeRef.id } : {}),
         ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
       };
     },
@@ -25,6 +26,7 @@ export function createApiClient(state: AppState): ApiClient {
       if (state.token) url.searchParams.set("token", state.token);
       url.searchParams.set("clientId", clientId);
       if (state.currentSessionId) url.searchParams.set("sessionId", state.currentSessionId);
+      if (state.currentRuntimeRef?.id && state.currentRuntimeRef.id !== "local") url.searchParams.set("runtimeId", state.currentRuntimeRef.id);
       if (state.lastRealtimeSeq > 0) url.searchParams.set("lastSeq", String(state.lastRealtimeSeq));
       return url;
     },

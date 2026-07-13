@@ -2,7 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
-import { connectRuntime as connectRuntimeApi, disconnectRuntime as disconnectRuntimeApi, listRuntimes, type RuntimeConfig, type RuntimeOption } from "./api.js";
+import { connectRuntime as connectRuntimeApi, disconnectRuntime as disconnectRuntimeApi, listRuntimes, type GuidedRuntimeConfig, type RuntimeConfig, type RuntimeConnectConfig, type RuntimeOption } from "./api.js";
 
 export type RuntimePanelController = {
   init: () => void;
@@ -76,6 +76,22 @@ const runtimeExamples: RuntimeExample[] = [
 
 function formatConfig(config: RuntimeConfig) {
   return `${JSON.stringify(config, null, 2)}\n`;
+}
+
+function runtimeConfigId(kind: string, target: string) {
+  const slug = target.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "runtime";
+  return `${kind}:${slug}`;
+}
+
+function guidedRuntimeConfig(elements: AppElements): GuidedRuntimeConfig {
+  const kind = elements.runtimeConnectKind.value;
+  const label = elements.runtimeConnectLabel.value.trim();
+  const target = elements.runtimeConnectTarget.value.trim();
+  const cwd = elements.runtimeConnectCwd.value.trim();
+  const runnerDir = elements.runtimeConnectRunnerDir.value.trim();
+  if (!label || !target || !cwd || !runnerDir) throw new Error("Name, target, workspace, and runner source directory are required.");
+  if (kind !== "apple" && kind !== "docker" && kind !== "podman" && kind !== "ssh") throw new Error("Unsupported guided runtime adapter.");
+  return { id: runtimeConfigId(kind, target), label, adapter: kind, target, cwd, runnerDir };
 }
 
 function runtimeTitle(runtime: RuntimeSummary) {
@@ -157,8 +173,8 @@ export function createRuntimePanel(options: {
       id.textContent = runtime.id;
       titleWrap.append(title, id);
       const badge = document.createElement("span");
-      badge.className = "runtimeKindBadge";
-      badge.textContent = `${runtimeKind(runtime)}${runtime.experimental ? " · experimental" : ""}`;
+      badge.className = `runtimeKindBadge${runtime.connection?.state === "disconnected" ? " disconnected" : ""}`;
+      badge.textContent = `${runtimeKind(runtime)}${runtime.connection?.state ? ` · ${runtime.connection.state}` : ""}${runtime.experimental ? " · experimental" : ""}`;
       header.append(titleWrap, badge);
 
       const details = document.createElement("dl");
@@ -171,7 +187,9 @@ export function createRuntimePanel(options: {
       if (line) rows.push(["Command", line]);
       if (runtime.processCwd) rows.push(["Process cwd", runtime.processCwd]);
       if (runtime.network) rows.push(["Network", runtime.network]);
+      if (runtime.connection?.error) rows.push(["Connection", runtime.connection.error]);
       if (typeof runtime.readOnly === "boolean") rows.push(["Read-only", runtime.readOnly ? "yes" : "no"]);
+      if (runtime.sessionPersistence) rows.push(["Session storage", runtime.sessionPersistence === "volume" ? `persistent volume${runtime.sessionVolume ? ` · ${runtime.sessionVolume}` : ""}` : runtime.sessionPersistence]);
       for (const [label, value] of rows) {
         const term = document.createElement("dt");
         term.textContent = label;
@@ -186,7 +204,7 @@ export function createRuntimePanel(options: {
         actions.className = "runtimeCardActions";
         const disconnect = document.createElement("button");
         disconnect.type = "button";
-        disconnect.textContent = "Disconnect";
+        disconnect.textContent = "Forget…";
         disconnect.addEventListener("click", () => disconnectRuntime(runtime).catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
           setRuntimeStatus(message, true);
@@ -229,8 +247,9 @@ export function createRuntimePanel(options: {
       use.textContent = "Use example";
       use.addEventListener("click", () => {
         elements.runtimeConnectJson.value = formatConfig(example.config);
+        elements.runtimeAdvancedDetails.open = true;
         elements.runtimeConnectJson.focus();
-        setRuntimeStatus(`Loaded ${example.title} example`);
+        setRuntimeStatus(`Loaded ${example.title} example in Advanced command JSON`);
       });
       const copy = document.createElement("button");
       copy.type = "button";
@@ -245,36 +264,47 @@ export function createRuntimePanel(options: {
     }
   }
 
-  async function connectRuntime() {
-    let config: RuntimeConfig;
-    try {
-      config = normalizeRuntimeConfig(JSON.parse(elements.runtimeConnectJson.value));
-    } catch (error) {
-      setRuntimeStatus(error instanceof Error ? error.message : String(error), true);
-      return;
-    }
-
-    elements.runtimeConnectButton.disabled = true;
-    setRuntimeStatus("Checking runtime…");
+  async function connectConfig(config: RuntimeConnectConfig, button: HTMLButtonElement) {
+    button.disabled = true;
+    setRuntimeStatus("Connecting and checking runner protocol…");
     try {
       const runtime = await connectRuntimeApi(api, config);
       setRuntimeStatus(`Connected ${runtime?.label || runtime?.id || config.label}`);
       await refreshRuntimes();
+      window.dispatchEvent(new CustomEvent("pi-web:runtimes-changed", { detail: { runtime, select: true } }));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setRuntimeStatus(message, true);
       addMessage("system", message, "error");
     } finally {
-      elements.runtimeConnectButton.disabled = false;
+      button.disabled = false;
+    }
+  }
+
+  async function connectGuidedRuntime() {
+    try {
+      await connectConfig(guidedRuntimeConfig(elements), elements.runtimeConnectButton);
+    } catch (error) {
+      setRuntimeStatus(error instanceof Error ? error.message : String(error), true);
+    }
+  }
+
+  async function connectAdvancedRuntime() {
+    try {
+      const config = normalizeRuntimeConfig(JSON.parse(elements.runtimeConnectJson.value));
+      await connectConfig(config, elements.runtimeAdvancedConnectButton);
+    } catch (error) {
+      setRuntimeStatus(error instanceof Error ? error.message : String(error), true);
     }
   }
 
   async function disconnectRuntime(runtime: RuntimeSummary) {
-    if (!window.confirm(`Disconnect runtime ${runtimeTitle(runtime)}? Existing runtime-bound sessions will remain listed but unavailable until the runtime is reconnected.`)) return;
-    setRuntimeStatus(`Disconnecting ${runtimeTitle(runtime)}…`);
+    if (!window.confirm(`Forget ${runtimeTitle(runtime)}?\n\nThis removes the saved connection and its cached session list from pi-web. Session data owned by the runtime is not deleted.`)) return;
+    setRuntimeStatus(`Forgetting ${runtimeTitle(runtime)}…`);
     await disconnectRuntimeApi(api, runtime.id);
-    setRuntimeStatus(`Disconnected ${runtimeTitle(runtime)}`);
+    setRuntimeStatus(`Forgot ${runtimeTitle(runtime)}`);
     await refreshRuntimes();
+    window.dispatchEvent(new CustomEvent("pi-web:runtimes-changed"));
   }
 
   function prepareOpenRuntimes() {
@@ -316,7 +346,18 @@ export function createRuntimePanel(options: {
   function init() {
     setIcon(elements.runtimeButton, "server");
     elements.runtimeRefreshButton.addEventListener("click", () => refreshRuntimes().catch((error) => setRuntimeStatus(error instanceof Error ? error.message : String(error), true)));
-    elements.runtimeConnectButton.addEventListener("click", connectRuntime);
+    elements.runtimeConnectButton.addEventListener("click", connectGuidedRuntime);
+    elements.runtimeAdvancedConnectButton.addEventListener("click", connectAdvancedRuntime);
+    elements.runtimeConnectKind.addEventListener("change", () => {
+      const kind = elements.runtimeConnectKind.value;
+      const ssh = kind === "ssh";
+      elements.runtimeConnectTargetLabel.textContent = ssh ? "SSH host alias" : "Container name";
+      const target = ssh ? "devbox" : "pi-web-runtime";
+      elements.runtimeConnectTarget.value = target;
+      elements.runtimeConnectLabel.value = ssh ? "SSH devbox" : `${kind === "apple" ? "Apple" : kind === "podman" ? "Podman" : "Docker"} container: ${target}`;
+      elements.runtimeConnectCwd.value = ssh ? "~/workspace" : "/workspace";
+      elements.runtimeConnectRunnerDir.value = ssh ? "~/pi-web-runner" : "/workspace/pi-web";
+    });
 
     runtimePanelHandle = rightPanels?.register({
       id: "runtimes",

@@ -24,6 +24,8 @@ export type AppElements = {
   tokenScanStatus: HTMLSpanElement;
   tokenScanStopButton: HTMLButtonElement;
   sessionButton: HTMLButtonElement;
+  workbenchRuntimeButton: HTMLButtonElement;
+  workbenchRuntimeLabel: HTMLSpanElement;
   expandButton: HTMLButtonElement;
   sessionDrawer: HTMLElement;
   sessionBackdrop: HTMLDivElement;
@@ -53,8 +55,16 @@ export type AppElements = {
   runtimeCloseButton: HTMLButtonElement;
   runtimeRefreshButton: HTMLButtonElement;
   runtimeListEl: HTMLDivElement;
+  runtimeConnectKind: HTMLSelectElement;
+  runtimeConnectLabel: HTMLInputElement;
+  runtimeConnectTargetLabel: HTMLSpanElement;
+  runtimeConnectTarget: HTMLInputElement;
+  runtimeConnectCwd: HTMLInputElement;
+  runtimeConnectRunnerDir: HTMLInputElement;
+  runtimeAdvancedDetails: HTMLDetailsElement;
   runtimeConnectJson: HTMLTextAreaElement;
   runtimeConnectButton: HTMLButtonElement;
+  runtimeAdvancedConnectButton: HTMLButtonElement;
   runtimeExamplesEl: HTMLDivElement;
   runtimePanelStatusEl: HTMLSpanElement;
   settingsButton: HTMLButtonElement;
@@ -73,6 +83,8 @@ export type AppElements = {
   settingAccentApplyButton: HTMLButtonElement;
   settingQueueModeSelect: HTMLSelectElement;
   settingComposerExpandedCheckbox: HTMLInputElement;
+  settingSessionDefaultsTitle: HTMLHeadingElement;
+  settingSessionDefaultsHint: HTMLParagraphElement;
   settingDefaultBucketColorSelect: HTMLSelectElement;
   settingModelDefaultsValue: HTMLSpanElement;
   settingSaveModelDefaultsButton: HTMLButtonElement;
@@ -88,10 +100,8 @@ export type AppElements = {
   tokenShareFullscreenCloseButton: HTMLButtonElement;
   gitPanel: HTMLElement;
   emptyCwdChooserEl: HTMLDivElement;
-  emptyCwdPathEl: HTMLDivElement;
+  emptyCwdPathEl: HTMLSpanElement;
   emptyCwdButton: HTMLButtonElement;
-  emptyRuntimePathEl: HTMLDivElement;
-  emptyRuntimeButton: HTMLButtonElement;
 };
 
 export function requiredElement<T extends Element>(selector: string): T {
@@ -127,6 +137,8 @@ export function getAppElements(): AppElements {
     tokenScanStatus: requiredElement<HTMLSpanElement>("#tokenScanStatus"),
     tokenScanStopButton: requiredElement<HTMLButtonElement>("#tokenScanStopButton"),
     sessionButton: requiredElement<HTMLButtonElement>("#sessionButton"),
+    workbenchRuntimeButton: requiredElement<HTMLButtonElement>("#workbenchRuntimeButton"),
+    workbenchRuntimeLabel: requiredElement<HTMLSpanElement>("#workbenchRuntimeLabel"),
     expandButton: requiredElement<HTMLButtonElement>("#expandButton"),
     sessionDrawer: requiredElement<HTMLElement>("#sessionDrawer"),
     sessionBackdrop: requiredElement<HTMLDivElement>("#sessionBackdrop"),
@@ -156,8 +168,16 @@ export function getAppElements(): AppElements {
     runtimeCloseButton: requiredElement<HTMLButtonElement>("#runtimeCloseButton"),
     runtimeRefreshButton: requiredElement<HTMLButtonElement>("#runtimeRefreshButton"),
     runtimeListEl: requiredElement<HTMLDivElement>("#runtimeList"),
+    runtimeConnectKind: requiredElement<HTMLSelectElement>("#runtimeConnectKind"),
+    runtimeConnectLabel: requiredElement<HTMLInputElement>("#runtimeConnectLabel"),
+    runtimeConnectTargetLabel: requiredElement<HTMLSpanElement>("#runtimeConnectTargetLabel"),
+    runtimeConnectTarget: requiredElement<HTMLInputElement>("#runtimeConnectTarget"),
+    runtimeConnectCwd: requiredElement<HTMLInputElement>("#runtimeConnectCwd"),
+    runtimeConnectRunnerDir: requiredElement<HTMLInputElement>("#runtimeConnectRunnerDir"),
+    runtimeAdvancedDetails: requiredElement<HTMLDetailsElement>("#runtimeAdvancedDetails"),
     runtimeConnectJson: requiredElement<HTMLTextAreaElement>("#runtimeConnectJson"),
     runtimeConnectButton: requiredElement<HTMLButtonElement>("#runtimeConnectButton"),
+    runtimeAdvancedConnectButton: requiredElement<HTMLButtonElement>("#runtimeAdvancedConnectButton"),
     runtimeExamplesEl: requiredElement<HTMLDivElement>("#runtimeExamples"),
     runtimePanelStatusEl: requiredElement<HTMLSpanElement>("#runtimePanelStatus"),
     settingsButton: requiredElement<HTMLButtonElement>("#settingsButton"),
@@ -176,6 +196,8 @@ export function getAppElements(): AppElements {
     settingAccentApplyButton: requiredElement<HTMLButtonElement>("#settingAccentApplyButton"),
     settingQueueModeSelect: requiredElement<HTMLSelectElement>("#settingQueueModeSelect"),
     settingComposerExpandedCheckbox: requiredElement<HTMLInputElement>("#settingComposerExpandedCheckbox"),
+    settingSessionDefaultsTitle: requiredElement<HTMLHeadingElement>("#settingSessionDefaultsTitle"),
+    settingSessionDefaultsHint: requiredElement<HTMLParagraphElement>("#settingSessionDefaultsHint"),
     settingDefaultBucketColorSelect: requiredElement<HTMLSelectElement>("#settingDefaultBucketColorSelect"),
     settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
@@ -191,10 +213,8 @@ export function getAppElements(): AppElements {
     tokenShareFullscreenCloseButton: requiredElement<HTMLButtonElement>("#tokenShareFullscreenCloseButton"),
     gitPanel: requiredElement<HTMLElement>("#gitPanel"),
     emptyCwdChooserEl: requiredElement<HTMLDivElement>("#emptyCwdChooser"),
-    emptyCwdPathEl: requiredElement<HTMLDivElement>("#emptyCwdChooser .emptyCwdPath"),
+    emptyCwdPathEl: requiredElement<HTMLSpanElement>("#emptyCwdChooser .emptyCwdPath"),
     emptyCwdButton: requiredElement<HTMLButtonElement>("#emptyCwdChooser .emptyCwdButton"),
-    emptyRuntimePathEl: requiredElement<HTMLDivElement>("#emptyCwdChooser .emptyRuntimePath"),
-    emptyRuntimeButton: requiredElement<HTMLButtonElement>("#emptyCwdChooser .emptyRuntimeButton"),
   };
 }
 

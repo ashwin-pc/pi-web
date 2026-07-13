@@ -511,15 +511,45 @@ test.describe("composer layout", () => {
     await expect(page.locator("#settingLoadingAnimationSelect")).toHaveValue("pulse");
   });
 
+  test("keeps the local workbench selector in the session drawer footer", async ({ page }) => {
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
+      { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+    ] } }));
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#workbenchRuntimeButton")).toBeVisible();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Local");
+  });
+
+  test("recovers a stale per-tab runtime selection after that runtime was forgotten", async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem("pi-web-active-runtime", JSON.stringify({ id: "cmd-api", label: "Command API" })));
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
+      { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+    ] } }));
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Local");
+    await expect(page.locator("#sessionList")).toContainText("Current mock session");
+  });
+
   test("runtime panel lists runtimes and populates connect examples", async ({ page }) => {
     let runtimes = [
       { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
       { id: "mock-container", label: "Mock container", kind: "container", cwd: "/workspace", command: "mock-runtime", args: ["run"], disconnectable: true },
     ];
-    let connectedBody: any;
+    const connectedBodies: any[] = [];
     await page.route("**/api/runtimes/connect", async (route) => {
-      connectedBody = JSON.parse(route.request().postData() || "{}");
-      const runtime = { id: connectedBody.id, label: connectedBody.label, kind: connectedBody.kind, cwd: connectedBody.cwd, command: connectedBody.command, args: connectedBody.args, disconnectable: true };
+      const connectedBody = JSON.parse(route.request().postData() || "{}");
+      connectedBodies.push(connectedBody);
+      const runtime = {
+        id: connectedBody.id,
+        label: connectedBody.label,
+        kind: connectedBody.adapter === "ssh" ? "ssh" : connectedBody.kind || "container",
+        cwd: connectedBody.cwd,
+        command: connectedBody.command || (connectedBody.adapter === "apple" ? "container" : connectedBody.adapter),
+        args: connectedBody.args || [],
+        disconnectable: true,
+      };
       runtimes = [...runtimes, runtime];
       await route.fulfill({ status: 201, json: { ok: true, runtime } });
     });
@@ -527,28 +557,25 @@ test.describe("composer layout", () => {
 
     await page.goto("/");
     await page.locator("#sessionButton").click();
-    await page.locator("#runtimeButton").click();
+    await page.locator("#workbenchRuntimeButton").click();
+    await page.locator(".runtimePicker", { hasText: "Switch workbench runtime" }).getByRole("button", { name: "Manage runtimes…" }).click();
     await expect(page.locator("#runtimePanel")).toBeVisible();
     await expect(page.locator("#runtimeList")).toContainText("Local machine");
     await expect(page.locator("#runtimeList")).toContainText("Mock container");
-    await expect(page.locator("#runtimeConnectJson")).toHaveValue(/"id": "apple-container:pi-web"/);
+    await expect(page.locator("#runtimeConnectKind")).toHaveValue("apple");
+    await expect(page.locator("#runtimeAdvancedDetails")).not.toHaveAttribute("open", "");
 
-    await page.locator(".runtimeExample", { hasText: "SSH host" }).locator(".runtimeExampleUse").click();
-    await expect(page.locator("#runtimeConnectJson")).toHaveValue(/"id": "ssh:devbox"/);
-
-    const sshConfig = {
-      id: "ssh:test",
-      label: "SSH test",
-      kind: "ssh",
-      command: "ssh",
-      args: ["test-host", "cd ~/pi-web-runner && npm exec --yes tsx server/runner.ts"],
-      cwd: "~/workspace",
-    };
-    await page.locator("#runtimeConnectJson").fill(JSON.stringify(sshConfig, null, 2));
+    await page.locator("#runtimeConnectKind").selectOption("ssh");
+    await page.locator("#runtimeConnectLabel").fill("SSH test");
+    await page.locator("#runtimeConnectTarget").fill("test-host");
     await page.locator("#runtimeConnectButton").click();
     await expect(page.locator("#runtimePanelStatus")).toContainText("Connected SSH test");
-    expect(connectedBody).toMatchObject(sshConfig);
+    expect(connectedBodies.at(-1)).toMatchObject({ id: "ssh:test-host", label: "SSH test", adapter: "ssh", target: "test-host", cwd: "~/workspace", runnerDir: "~/pi-web-runner" });
     await expect(page.locator("#runtimeList")).toContainText("SSH test");
+
+    await page.locator(".runtimeExample", { hasText: "SSH host" }).locator(".runtimeExampleUse").click();
+    await expect(page.locator("#runtimeAdvancedDetails")).toHaveAttribute("open", "");
+    await expect(page.locator("#runtimeConnectJson")).toHaveValue(/"id": "ssh:devbox"/);
   });
 
   test("context meter shows known usage details without low-usage label", async ({ page }) => {
@@ -615,7 +642,8 @@ test.describe("composer layout", () => {
   test("model settings popover changes reasoning level explicitly", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("#modelSettingsButton")).toContainText("mock/model");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Mock Model");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/model/);
     await expect(page.locator("#modelSettingsThinking")).toContainText("medium");
     await expect(page.locator("#modelSettingsThinking")).not.toContainText("reasoning");
 
@@ -669,7 +697,8 @@ test.describe("composer layout", () => {
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
     await expect(page.locator("#modelSettingsButton")).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
-    await expect(page.locator("#modelSettingsButton")).toContainText("mock/other");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Other Mock Model");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/other/);
 
     await page.mouse.click(5, 5);
     await expect(page.locator("#modelSettingsPopover")).toBeHidden();
@@ -800,12 +829,30 @@ test.describe("sessions drawer", () => {
     expect(new URL(sessionsUrl).searchParams.getAll("cwd")).toContain(rememberedCwd);
   });
 
-  test("folder picker selects runtime before listing runtime folders", async ({ page }) => {
+  test("workbench runtime scopes new-session folder browsing", async ({ page }) => {
     const dirRequests: Array<{ runtimeId: string | null; path: string | null }> = [];
+    const sessionListRequests: URL[] = [];
     await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
       { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
       { id: "container:test", label: "Test container", kind: "container", cwd: "/workspace" },
     ] } }));
+    await page.route("**/api/sessions?**", async (route) => {
+      sessionListRequests.push(new URL(route.request().url()));
+      await route.continue();
+    });
+    await page.route("**/api/sessions/new", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}");
+      if (body.runtimeId !== "container:test") return route.continue();
+      await route.fulfill({ json: { ok: true, sessionId: "runtime-session", cwd: body.cwd || "/workspace", sessionFile: "/runtime/session.jsonl", runtimeRef: { id: "container:test", kind: "container", label: "Test container", cwd: body.cwd || "/workspace" }, model: null, thinkingLevel: "off", thinkingLevels: ["off"], isStreaming: false, isCompacting: false } });
+    });
+    await page.route("**/api/state*", async (route) => {
+      if (route.request().headers()["x-pi-web-runtime-id"] !== "container:test") return route.continue();
+      await route.fulfill({ json: { ok: true, sessionId: "runtime-session", cwd: "/workspace", sessionFile: "/runtime/session.jsonl", runtimeRef: { id: "container:test", kind: "container", label: "Test container", cwd: "/workspace" }, model: null, thinkingLevel: "off", thinkingLevels: ["off"], isStreaming: false, isCompacting: false } });
+    });
+    await page.route("**/api/messages?**", async (route) => {
+      if (route.request().headers()["x-pi-web-runtime-id"] !== "container:test") return route.continue();
+      await route.fulfill({ json: { ok: true, messages: [] } });
+    });
     await page.route("**/api/fs/dirs?**", async (route) => {
       const url = new URL(route.request().url());
       const path = url.searchParams.get("path") || "/";
@@ -813,24 +860,38 @@ test.describe("sessions drawer", () => {
       await route.fulfill({ json: { ok: true, path, parent: path === "/" ? "/" : "/", dirs: [{ name: "app", path: `${path.replace(/\/$/, "")}/app` }] } });
     });
 
+    page.on("dialog", (dialog) => dialog.accept());
     await page.goto("/");
     await page.locator("#sessionButton").click();
+    await expect(page.locator("#workbenchRuntimeButton")).toBeVisible();
     await page.locator("#sessionNewButton").click();
     await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();
-    await page.locator(".emptyCwdButton").click();
+    if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
 
-    await expect(page.locator(".folderPickerRuntimeSelect")).toBeVisible();
-    const runtimeIsBeforeFolder = await page.evaluate(() => {
-      const runtime = document.querySelector(".folderPickerRuntimeSelect")!.getBoundingClientRect();
-      const folder = document.querySelector(".folderPickerInput")!.getBoundingClientRect();
-      return runtime.top < folder.top;
-    });
-    expect(runtimeIsBeforeFolder).toBe(true);
+    await page.locator("#workbenchRuntimeButton").click();
+    await page.locator(".runtimePicker .folderPickerRow", { hasText: "Test container" }).click();
+    await page.locator(".runtimePicker .primaryAction").click();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Test container");
+    await expect(page.locator("#sessionList")).not.toContainText("Current mock session");
+    await expect.poll(() => sessionListRequests.some((url) => url.searchParams.get("runtimeId") === "container:test" && url.searchParams.get("cached") === "1")).toBe(true);
+    await expect.poll(() => sessionListRequests.some((url) => url.searchParams.get("runtimeId") === "container:test" && !url.searchParams.has("cached"))).toBe(true);
 
-    await page.locator(".folderPickerRuntimeSelect").selectOption("container:test");
+    if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
+    await page.locator("#settingsButton").click();
+    await expect(page.locator("#settingSessionDefaultsTitle")).toHaveText("Test container new sessions");
+    await expect(page.locator("#settingSessionDefaultsHint")).toContainText("owns its model authentication and defaults");
+    await expect(page.locator("#settingSaveModelDefaultsButton")).toBeDisabled();
+    await page.locator("#settingsCloseButton").click();
+
+    await page.locator(".emptyCwdButton").evaluate((button: HTMLButtonElement) => button.click());
+    await expect(page.locator(".folderPickerRuntimeSelect")).toBeHidden();
     await expect(page.locator(".folderPickerInput")).toHaveValue("/workspace");
     await expect.poll(() => dirRequests.at(-1)?.runtimeId).toBe("container:test");
     await expect(page.locator(".folderPickerList")).toContainText("app");
+
+    await page.keyboard.press("Escape");
+    await page.reload();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Test container");
   });
 
   test("pinned folders stay first and folder labels disambiguate on one row", async ({ page }) => {

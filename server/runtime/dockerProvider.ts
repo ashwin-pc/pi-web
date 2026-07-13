@@ -11,15 +11,21 @@ export type DockerRunnerOptions = {
   envAllowlist?: string[];
   network?: "none" | "bridge";
   readOnly?: boolean;
+  sessionVolume?: string;
 };
 
-function dockerArgs(options: Required<Pick<DockerRunnerOptions, "image" | "hostWorkspace" | "containerWorkspace" | "appDir" | "network" | "readOnly" | "envAllowlist">>): string[] {
+function runtimeVolumeName(id: string) {
+  return `pi-web-sessions-${id.toLowerCase().replace(/[^a-z0-9_.-]+/g, "-").replace(/^-+|-+$/g, "") || "runtime"}`;
+}
+
+function dockerArgs(options: Required<Pick<DockerRunnerOptions, "image" | "hostWorkspace" | "containerWorkspace" | "appDir" | "network" | "readOnly" | "envAllowlist" | "sessionVolume">>): string[] {
   const workspaceMode = options.readOnly ? "ro" : "rw";
   const args = [
     "run", "--rm", "-i",
     "--network", options.network,
     "-v", `${options.appDir}:/app:ro`,
     "-v", `${options.hostWorkspace}:${options.containerWorkspace}:${workspaceMode}`,
+    "-v", `${options.sessionVolume}:/root/.pi/agent`,
     "-w", "/app",
     "-e", `PI_RUNNER_CWD=${options.containerWorkspace}`,
   ];
@@ -30,9 +36,10 @@ function dockerArgs(options: Required<Pick<DockerRunnerOptions, "image" | "hostW
   return args;
 }
 
-function dockerRunnerConfig(options: DockerRunnerOptions): RuntimeRunnerConfig & Required<Pick<DockerRunnerOptions, "image" | "hostWorkspace" | "containerWorkspace" | "appDir" | "network" | "readOnly" | "envAllowlist">> {
+function dockerRunnerConfig(options: DockerRunnerOptions): RuntimeRunnerConfig & Required<Pick<DockerRunnerOptions, "image" | "hostWorkspace" | "containerWorkspace" | "appDir" | "network" | "readOnly" | "envAllowlist" | "sessionVolume">> {
+  const id = options.id || "docker-workspace";
   const normalized = {
-    id: options.id || "docker-workspace",
+    id,
     label: options.label || "Docker workspace",
     image: options.image || "node:22-bookworm-slim",
     hostWorkspace: resolve(options.hostWorkspace),
@@ -41,6 +48,7 @@ function dockerRunnerConfig(options: DockerRunnerOptions): RuntimeRunnerConfig &
     network: options.network || "none" as const,
     readOnly: Boolean(options.readOnly),
     envAllowlist: options.envAllowlist || ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+    sessionVolume: options.sessionVolume || runtimeVolumeName(id),
   };
   return {
     ...normalized,
@@ -56,6 +64,8 @@ function dockerRunnerConfig(options: DockerRunnerOptions): RuntimeRunnerConfig &
       image: normalized.image,
       network: normalized.network,
       readOnly: normalized.readOnly,
+      sessionPersistence: "volume",
+      sessionVolume: normalized.sessionVolume,
     },
   };
 }
@@ -66,6 +76,7 @@ export class DockerRunnerProvider extends CommandRunnerProvider {
   readonly image: string;
   readonly network: "none" | "bridge";
   readonly readOnly: boolean;
+  readonly sessionVolume: string;
 
   constructor(options: DockerRunnerOptions) {
     const config = dockerRunnerConfig(options);
@@ -75,6 +86,7 @@ export class DockerRunnerProvider extends CommandRunnerProvider {
     this.image = config.image;
     this.network = config.network;
     this.readOnly = config.readOnly;
+    this.sessionVolume = config.sessionVolume;
   }
 
   dockerArgs(): string[] {

@@ -13,6 +13,7 @@ const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
 const liveSessions = new Map<string, any>();
 const subscriptions = new Map<string, () => void>();
+const sessionActivityAt = new Map<string, string>();
 
 function releaseRunnerSession(sessionId: string) {
   const session = liveSessions.get(sessionId);
@@ -21,6 +22,7 @@ function releaseRunnerSession(sessionId: string) {
   try { session?.dispose?.(); } catch { /* ignore cleanup errors */ }
   subscriptions.delete(sessionId);
   liveSessions.delete(sessionId);
+  sessionActivityAt.delete(sessionId);
 }
 
 function rememberLiveSession(session: any) {
@@ -138,10 +140,45 @@ function sessionState(session: any) {
   };
 }
 
+function listedSessionState(info: Awaited<ReturnType<typeof SessionManager.listAll>>[number]) {
+  const live = liveSessions.get(info.id);
+  return {
+    sessionId: info.id,
+    sessionFile: info.path,
+    cwd: info.cwd || rootCwd,
+    sessionName: info.name,
+    firstMessage: info.firstMessage || undefined,
+    created: info.created.toISOString(),
+    modified: info.modified.toISOString(),
+    messages: info.messageCount,
+    isStreaming: Boolean(live?.isStreaming),
+    isCompacting: Boolean(live?.isCompacting),
+  };
+}
+
+function listedLiveSessionState(session: any) {
+  const state = sessionState(session);
+  const headerTimestamp = session.sessionManager?.getHeader?.()?.timestamp;
+  const timestamp = typeof headerTimestamp === "string" ? headerTimestamp : new Date().toISOString();
+  return {
+    sessionId: state.sessionId,
+    sessionFile: state.sessionFile,
+    cwd: state.cwd,
+    sessionName: state.sessionName,
+    firstMessage: state.firstMessage,
+    created: timestamp,
+    modified: sessionActivityAt.get(state.sessionId) || timestamp,
+    messages: state.messages,
+    isStreaming: state.isStreaming,
+    isCompacting: state.isCompacting,
+  };
+}
+
 function subscribeSession(session: any) {
   const sessionId = String(session.sessionId || "");
   if (!sessionId || subscriptions.has(sessionId)) return;
   const unsubscribe = session.subscribe?.((event: unknown) => {
+    sessionActivityAt.set(sessionId, new Date().toISOString());
     send({ event: "session.event", data: { sessionId, sessionFile: String(session.sessionFile || ""), event } });
   });
   if (typeof unsubscribe === "function") subscriptions.set(sessionId, unsubscribe);
@@ -154,9 +191,47 @@ async function createRunnerSession(cwdValue: unknown) {
   await loader.reload();
   const result = await createAgentSession({ cwd, sessionManager, authStorage, modelRegistry, resourceLoader: loader });
   rememberLiveSession(result.session);
+  sessionActivityAt.set(String(result.session.sessionId || ""), new Date().toISOString());
   subscribeSession(result.session);
   send({ event: "session.created", data: sessionState(result.session) });
   return sessionState(result.session);
+}
+
+function entryText(entry: any): string {
+  const message = entry?.message || entry;
+  return textFromContent(message?.content || entry?.summary || entry?.text || "");
+}
+
+function conversationTree(session: any) {
+  const manager = session.sessionManager;
+  if (typeof manager?.getTree !== "function") throw new Error("Session tree is not available");
+  const leafId = typeof manager.getLeafId === "function" ? manager.getLeafId() : null;
+  const activePath = typeof manager.getBranch === "function" ? manager.getBranch() : [];
+  const activePathIds = new Set(activePath.map((entry: any) => String(entry?.id || "")).filter(Boolean));
+  const nodes: any[] = [];
+  const stack = [...manager.getTree()].reverse();
+  while (stack.length) {
+    const node = stack.pop();
+    const entry = node?.entry || node;
+    const children = Array.isArray(node?.children) ? node.children : [];
+    const id = String(entry?.id || "");
+    nodes.push({
+      id,
+      parentId: typeof entry?.parentId === "string" ? entry.parentId : null,
+      type: String(entry?.type || "entry"),
+      role: String(entry?.message?.role || entry?.role || entry?.type || "entry"),
+      preview: entryText(entry).replace(/\s+/g, " ").trim().slice(0, 180),
+      timestamp: String(entry?.timestamp || ""),
+      label: typeof node?.label === "string" ? node.label : undefined,
+      labelTimestamp: typeof node?.labelTimestamp === "string" ? node.labelTimestamp : undefined,
+      childCount: children.length,
+      isOnActivePath: activePathIds.has(id),
+      isCurrentLeaf: Boolean(leafId && id === leafId),
+      children: [],
+    });
+    for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
+  }
+  return { ok: true, sessionId: String(session.sessionId || ""), leafId, activePathIds: [...activePathIds], entryCount: nodes.length, branchPointCount: nodes.filter((node) => node.childCount > 1).length, nodes };
 }
 
 function promptImages(value: unknown) {
@@ -175,6 +250,23 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
       return { ok: true, cwd: rootCwd, pid: process.pid, protocol: "pi-runner-v1" };
     case "sessions.create":
       return createRunnerSession(params.cwd);
+    case "sessions.list": {
+      const requestedLimit = Number(params.limit || 100);
+      const limit = Math.max(1, Math.min(500, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 100));
+      const requestedCursor = Number(params.cursor || 0);
+      const cursor = Math.max(0, Number.isFinite(requestedCursor) ? Math.floor(requestedCursor) : 0);
+      const persisted = (await SessionManager.listAll()).map(listedSessionState);
+      const sessionsById = new Map(persisted.map((item) => [item.sessionId, item]));
+      for (const session of liveSessions.values()) {
+        const live = listedLiveSessionState(session);
+        const existing = sessionsById.get(live.sessionId);
+        sessionsById.set(live.sessionId, existing ? { ...existing, ...live, created: existing.created, modified: sessionActivityAt.get(live.sessionId) || existing.modified } : live);
+      }
+      const sessions = Array.from(sessionsById.values()).sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+      const page = sessions.slice(cursor, cursor + limit);
+      const nextCursor = cursor + page.length < sessions.length ? String(cursor + page.length) : undefined;
+      return { ok: true, sessions: page, nextCursor, total: sessions.length };
+    }
     case "sessions.subscribe": {
       const session = await resolveSession(params);
       subscribeSession(session);
@@ -208,6 +300,28 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
     case "sessions.abort": {
       const session = await resolveSession(params);
       await session.abort?.();
+      return { ok: true, sessionId: String(params.sessionId || session.sessionId) };
+    }
+    case "sessions.tree": {
+      return conversationTree(await resolveSession(params));
+    }
+    case "sessions.tree.navigate": {
+      const session = await resolveSession(params);
+      if (session.isStreaming || session.isCompacting) throw new Error("Wait for the current response to finish before navigating the tree");
+      if (typeof session.navigateTree !== "function") throw new Error("Tree navigation is not available");
+      const targetId = String(params.targetId || "").trim();
+      if (!targetId) throw new Error("targetId is required");
+      const result = await session.navigateTree(targetId, {
+        summarize: Boolean(params.summarize),
+        customInstructions: typeof params.customInstructions === "string" && params.customInstructions.trim() ? params.customInstructions.trim() : undefined,
+        replaceInstructions: Boolean(params.replaceInstructions),
+        label: typeof params.label === "string" && params.label.trim() ? params.label.trim() : undefined,
+      });
+      return { ok: true, ...result, leafId: session.sessionManager?.getLeafId?.() || null, state: sessionState(session) };
+    }
+    case "sessions.tree.abortSummary": {
+      const session = await resolveSession(params);
+      session.abortBranchSummary?.();
       return { ok: true, sessionId: String(params.sessionId || session.sessionId) };
     }
     case "models.list": {

@@ -23,12 +23,13 @@ async function tempWorkspace() {
 describe("StdioRunnerProvider", () => {
   it("can create, inspect, and reopen a runtime-owned pi session", async () => {
     const cwd = await tempWorkspace();
-    const provider = new StdioRunnerProvider({ cwd });
+    const provider = new StdioRunnerProvider({ cwd, agentDir: join(cwd, ".pi", "agent") });
     try {
       await expect(provider.health()).resolves.toMatchObject({ ok: true, cwd });
       await expect(provider.listDirectories()).resolves.toMatchObject({ path: cwd });
       const created = await provider.createSession();
       expect(created).toMatchObject({ ok: true, cwd, isStreaming: false });
+      await expect(provider.listSessions()).resolves.toMatchObject({ ok: true, total: 1, sessions: [{ sessionId: created.sessionId, cwd }] });
       await expect(provider.state(created.sessionId)).resolves.toMatchObject({ ok: true, sessionId: created.sessionId, cwd });
       await expect(provider.messages(created.sessionId)).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
       await expect(provider.start().request("artifacts.write", { cwd, name: "hello.txt", text: "artifact from runner" })).resolves.toMatchObject({ ok: true });
@@ -37,7 +38,7 @@ describe("StdioRunnerProvider", () => {
       const sessionFile = created.sessionFile;
       provider.stop();
 
-      const reopenedProvider = new StdioRunnerProvider({ cwd });
+      const reopenedProvider = new StdioRunnerProvider({ cwd, agentDir: join(cwd, ".pi", "agent") });
       try {
         reopenedProvider.rememberSession(created.sessionId, sessionFile, cwd);
         await expect(reopenedProvider.state(created.sessionId)).resolves.toMatchObject({ ok: true, sessionId: created.sessionId, cwd });
@@ -53,11 +54,26 @@ describe("StdioRunnerProvider", () => {
 describe("CommandRunnerProvider", () => {
   it("can use an arbitrary command transport", async () => {
     const cwd = await tempWorkspace();
-    const provider = new CommandRunnerProvider({ id: "cmd:test", label: "Command test", command: process.execPath, args: ["--import", "tsx", "server/runner.ts"], cwd, kind: "local" });
+    const provider = new CommandRunnerProvider({ id: "cmd:test", label: "Command test", command: process.execPath, args: ["--import", "tsx", "server/runner.ts"], cwd, kind: "local", env: { ...process.env, PI_RUNNER_CWD: cwd, PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent") } });
     try {
       await expect(provider.health()).resolves.toMatchObject({ ok: true });
       const created = await provider.createSession();
       expect(created).toMatchObject({ ok: true, cwd });
+
+      const reconnected = new Promise<void>((resolve, reject) => {
+        let disconnected = false;
+        const timeout = setTimeout(() => { unsubscribe(); reject(new Error("runtime did not reconnect")); }, 10_000);
+        const unsubscribe = provider.onStatus((status) => {
+          if (status.state === "disconnected") disconnected = true;
+          if (!disconnected || status.state !== "connected") return;
+          clearTimeout(timeout);
+          unsubscribe();
+          resolve();
+        });
+      });
+      provider.start().child.kill("SIGTERM");
+      await expect(reconnected).resolves.toBeUndefined();
+      await expect(provider.state(created.sessionId)).resolves.toMatchObject({ ok: true, sessionId: created.sessionId, cwd });
     } finally {
       provider.stop();
     }
@@ -72,6 +88,8 @@ describe("DockerRunnerProvider", () => {
     expect(args).toContain("--network");
     expect(args).toContain("none");
     expect(args).toContain(`${cwd}:/workspace:ro`);
+    expect(args).toContain(`${provider.sessionVolume}:/root/.pi/agent`);
+    expect(provider.metadata).toMatchObject({ sessionPersistence: "volume", sessionVolume: provider.sessionVolume });
     expect(args).not.toContain(process.env.HOME || "");
     expect(args.at(-4)).toBe("node:test");
   });

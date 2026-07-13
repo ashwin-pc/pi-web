@@ -49,7 +49,7 @@ beforeAll(async () => {
   baseUrl = `http://127.0.0.1:${port}`;
   child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
     cwd: process.cwd(),
-    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", PI_WEB_CWD: cwd, PI_WEB_NO_SESSION: "1", PI_WEB_TOKEN: "", PI_WEB_LOCAL_RUNNER: "1", PI_WEB_ALLOW_CUSTOM_RUNTIMES: "1", PI_WEB_RUNTIMES_FILE: join(cwd, ".pi", "web", "runtimes.json"), PI_WEB_RUNTIME_BINDINGS_FILE: join(cwd, ".pi", "web", "runtime-bindings.json") },
+    env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", PI_WEB_CWD: cwd, PI_WEB_NO_SESSION: "1", PI_WEB_TOKEN: "", PI_WEB_LOCAL_RUNNER: "1", PI_WEB_ALLOW_CUSTOM_RUNTIMES: "1", PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent"), PI_WEB_RUNTIMES_FILE: join(cwd, ".pi", "web", "runtimes.json"), PI_WEB_RUNTIME_BINDINGS_FILE: join(cwd, ".pi", "web", "runtime-bindings.json") },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout?.on("data", () => undefined);
@@ -66,6 +66,14 @@ describe("experimental runtime API integration", () => {
   it("creates a runner-owned session and accesses it through normal state/messages/prompt/abort routes", async () => {
     const runtimes = await (await fetch(`${baseUrl}/api/runtimes`)).json() as any;
     expect(runtimes.runtimes.some((runtime: any) => runtime.id === "local-runner")).toBe(true);
+
+    const unsafeGuided = await fetch(`${baseUrl}/api/runtimes/connect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "ssh:unsafe", label: "Unsafe", adapter: "ssh", target: "devbox; touch /tmp/nope", cwd, runnerDir: cwd }),
+    });
+    expect(unsafeGuided.status).toBe(400);
+    await expect(unsafeGuided.json()).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/host alias/) });
 
     const connected = await (await fetch(`${baseUrl}/api/runtimes/connect`, {
       method: "POST",
@@ -88,48 +96,60 @@ describe("experimental runtime API integration", () => {
     expect(created.runtimeRef.id).toBe("cmd-api");
     expect(created.sessionId).toBeTruthy();
 
-    const state = await (await fetch(`${baseUrl}/api/state?sessionId=${encodeURIComponent(created.sessionId)}`)).json() as any;
+    const runtimeHeaders = { "x-pi-web-runtime-id": "cmd-api" };
+    const removedWhileOnline = await (await fetch(`${baseUrl}/api/sessions/remove`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: created.sessionId, runtimeId: "cmd-api" }),
+    })).json() as any;
+    expect(removedWhileOnline).toMatchObject({ ok: true, disposition: "removed" });
+
+    // An explicit runtime route can rediscover authoritative data after its local locator was removed.
+    const state = await (await fetch(`${baseUrl}/api/state?sessionId=${encodeURIComponent(created.sessionId)}`, { headers: runtimeHeaders })).json() as any;
     expect(state).toMatchObject({ ok: true, sessionId: created.sessionId, cwd, runtimeRef: { id: "cmd-api" } });
 
-    const listed = await (await fetch(`${baseUrl}/api/sessions?cwd=${encodeURIComponent(cwd)}`)).json() as any;
+    const cached = await (await fetch(`${baseUrl}/api/sessions?runtimeId=cmd-api&cached=1`)).json() as any;
+    expect(cached.sessions.find((item: any) => item.id === created.sessionId)).toMatchObject({ id: created.sessionId, cwd, runtimeRef: { id: "cmd-api" } });
+    const listed = await (await fetch(`${baseUrl}/api/sessions?runtimeId=cmd-api&limit=100`)).json() as any;
     const listedRuntimeSession = listed.sessions.find((item: any) => item.id === created.sessionId);
     expect(listedRuntimeSession).toMatchObject({ id: created.sessionId, cwd, runtimeRef: { id: "cmd-api" } });
+    expect(listed.runtimeId).toBe("cmd-api");
 
     const opened = await (await fetch(`${baseUrl}/api/sessions/open`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: created.sessionId, cwd }),
+      body: JSON.stringify({ sessionId: created.sessionId, runtimeId: "cmd-api", cwd }),
     })).json() as any;
     expect(opened).toMatchObject({ ok: true, sessionId: created.sessionId, runtimeRef: { id: "cmd-api" } });
 
     const inherited = await (await fetch(`${baseUrl}/api/sessions/new`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: created.sessionId }),
+      body: JSON.stringify({ sessionId: created.sessionId, runtimeId: "cmd-api" }),
     })).json() as any;
     expect(inherited).toMatchObject({ ok: true, runtimeRef: { id: "cmd-api" }, cwd });
 
-    const git = await (await fetch(`${baseUrl}/api/git/status?sessionId=${encodeURIComponent(created.sessionId)}`)).json() as any;
+    const git = await (await fetch(`${baseUrl}/api/git/status?sessionId=${encodeURIComponent(created.sessionId)}`, { headers: runtimeHeaders })).json() as any;
     expect(git).toMatchObject({ ok: true, cwd });
 
-    const diff = await (await fetch(`${baseUrl}/api/git/diff?sessionId=${encodeURIComponent(created.sessionId)}&path=README.md`)).json() as any;
+    const diff = await (await fetch(`${baseUrl}/api/git/diff?sessionId=${encodeURIComponent(created.sessionId)}&path=README.md`, { headers: runtimeHeaders })).json() as any;
     expect(diff).toMatchObject({ ok: true, path: "README.md" });
     expect(diff.diff).toContain("after");
 
-    const messages = await (await fetch(`${baseUrl}/api/messages?sessionId=${encodeURIComponent(created.sessionId)}`)).json() as any;
+    const messages = await (await fetch(`${baseUrl}/api/messages?sessionId=${encodeURIComponent(created.sessionId)}`, { headers: runtimeHeaders })).json() as any;
     expect(messages).toMatchObject({ ok: true });
     expect(Array.isArray(messages.messages)).toBe(true);
 
     const prompt = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...runtimeHeaders },
       body: JSON.stringify({ sessionId: created.sessionId, message: "Say hello" }),
     });
     expect(prompt.status).toBe(202);
 
     const abort = await fetch(`${baseUrl}/api/abort`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...runtimeHeaders },
       body: JSON.stringify({ sessionId: created.sessionId }),
     });
     expect(abort.status).toBe(202);
@@ -137,10 +157,10 @@ describe("experimental runtime API integration", () => {
     const deleted = await (await fetch(`${baseUrl}/api/sessions/delete`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: created.sessionId }),
+      body: JSON.stringify({ sessionId: created.sessionId, runtimeId: "cmd-api" }),
     })).json() as any;
     expect(deleted).toMatchObject({ ok: true, id: created.sessionId, disposition: "deleted" });
-    const afterDelete = await (await fetch(`${baseUrl}/api/sessions?cwd=${encodeURIComponent(cwd)}`)).json() as any;
+    const afterDelete = await (await fetch(`${baseUrl}/api/sessions?runtimeId=cmd-api`)).json() as any;
     expect(afterDelete.sessions.some((item: any) => item.id === created.sessionId)).toBe(false);
 
     const disconnected = await (await fetch(`${baseUrl}/api/runtimes/disconnect`, {
@@ -148,12 +168,31 @@ describe("experimental runtime API integration", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: "cmd-api" }),
     })).json() as any;
-    expect(disconnected).toMatchObject({ ok: true, id: "cmd-api" });
-    const unavailableDeleted = await (await fetch(`${baseUrl}/api/sessions/delete`, {
+    expect(disconnected).toMatchObject({ ok: true, id: "cmd-api", removedLocators: expect.any(Number) });
+    expect(disconnected.removedLocators).toBeGreaterThan(0);
+
+    // A stale or omitted runtime route must never let former locator metadata
+    // hijack a local session after the runtime is forgotten.
+    const implicitLocalResponse = await fetch(`${baseUrl}/api/state?sessionId=${encodeURIComponent(inherited.sessionId)}`);
+    const implicitLocal = await implicitLocalResponse.json() as any;
+    expect(implicitLocalResponse.status).not.toBe(503);
+    expect(String(implicitLocal.error || "")).not.toContain("cmd-api");
+
+    const unavailableDeleteResponse = await fetch(`${baseUrl}/api/sessions/delete`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: inherited.sessionId }),
-    })).json() as any;
-    expect(unavailableDeleted).toMatchObject({ ok: true, id: inherited.sessionId, disposition: "deleted" });
+      body: JSON.stringify({ sessionId: inherited.sessionId, runtimeId: "cmd-api" }),
+    });
+    expect(unavailableDeleteResponse.status).toBe(503);
+    await expect(unavailableDeleteResponse.json()).resolves.toMatchObject({ ok: false, runtimeId: "cmd-api" });
+
+    const forgotten = await (await fetch(`${baseUrl}/api/sessions?runtimeId=cmd-api&cached=1`)).json() as any;
+    expect(forgotten.sessions).toEqual([]);
+    const removedAfterForget = await fetch(`${baseUrl}/api/sessions/remove`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: inherited.sessionId, runtimeId: "cmd-api" }),
+    });
+    expect(removedAfterForget.status).toBe(404);
   }, 60_000);
 });

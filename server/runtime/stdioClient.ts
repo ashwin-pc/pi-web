@@ -13,7 +13,9 @@ export class StdioRuntimeClient {
   readonly child: ChildProcess;
   private pending = new Map<string, Pending>();
   private eventListeners = new Set<(event: RuntimeEvent) => void>();
+  private closeListeners = new Set<(error: Error) => void>();
   private closed = false;
+  private closeNotified = false;
 
   get isClosed(): boolean {
     return this.closed || this.child.exitCode !== null || this.child.signalCode !== null;
@@ -30,12 +32,10 @@ export class StdioRuntimeClient {
     rl.on("line", (line) => this.handleLine(line));
     this.child.stderr?.on("data", (chunk) => process.stderr.write(`[runtime] ${chunk}`));
     this.child.on("exit", (code, signal) => {
-      this.closed = true;
-      this.failAll(new Error(`runtime exited code=${code ?? ""} signal=${signal ?? ""}`));
+      this.notifyClosed(new Error(`runtime exited code=${code ?? ""} signal=${signal ?? ""}`));
     });
     this.child.on("error", (error) => {
-      this.closed = true;
-      this.failAll(error);
+      this.notifyClosed(error);
     });
   }
 
@@ -63,10 +63,14 @@ export class StdioRuntimeClient {
     return () => this.eventListeners.delete(listener);
   }
 
+  onClose(listener: (error: Error) => void): () => void {
+    this.closeListeners.add(listener);
+    return () => this.closeListeners.delete(listener);
+  }
+
   close(): void {
-    this.closed = true;
+    this.notifyClosed(new Error("runtime client closed"));
     this.child.kill("SIGTERM");
-    this.failAll(new Error("runtime client closed"));
   }
 
   private handleLine(line: string): void {
@@ -90,6 +94,14 @@ export class StdioRuntimeClient {
     this.pending.delete(message.id);
     if (message.ok) pending.resolve(message.result);
     else pending.reject(new Error(message.error));
+  }
+
+  private notifyClosed(error: Error): void {
+    if (this.closeNotified) return;
+    this.closeNotified = true;
+    this.closed = true;
+    this.failAll(error);
+    for (const listener of this.closeListeners) listener(error);
   }
 
   private failAll(error: Error): void {

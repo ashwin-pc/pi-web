@@ -1,45 +1,132 @@
 .emptyCwdChooser {
+  position: relative;
   grid-row: 2;
   grid-column: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 2px;
+  overflow: hidden;
   z-index: 1;
+}
+
+/* A small avatar above the empty-state copy; the circular edge dissolves into the background. */
+.newChatLoadingAnimation {
+  position: relative;
+  flex: 0 0 auto;
+  width: clamp(88px, 14vw, 136px);
+  height: clamp(88px, 14vw, 136px);
+  object-fit: cover;
+  opacity: .78;
+  pointer-events: none;
+  mix-blend-mode: screen;
+  -webkit-mask-image: radial-gradient(ellipse at center, black 0 58%, transparent 76%);
+  mask-image: radial-gradient(ellipse at center, black 0 58%, transparent 76%);
+}
+
+.newChatLoadingAnimation.resetting {
+  visibility: hidden;
+}
+
+.newChatLoadingAnimation + .emptyCwdInner {
+  position: relative;
+  z-index: 1;
+}
+
+@media (max-width: 600px) {
+  .newChatLoadingAnimation {
+    width: 92px;
+    height: 92px;
+  }
 }
 .emptyCwdChooser[hidden] { display: none; }
 
 .emptyCwdInner {
-  max-width: min(680px, calc(100% - 32px));
-  text-align: center;
+  width: min(100% - 24px, 520px);
   color: var(--text);
-  padding: 28px;
-  border-radius: 18px;
+  padding: 8px 0 28px;
 }
 
 .emptyCwdLabel {
-  color: var(--muted);
-  font-size: 13px;
-  margin-bottom: 10px;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.emptyWorkspaceControls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.emptyCwdButton {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  min-height: 35px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 15%, var(--border));
+  border-radius: 10px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--panel-2)), color-mix(in srgb, var(--accent) 2%, var(--panel)));
+  color: color-mix(in srgb, var(--text) 74%, var(--muted));
+  font-size: 12px;
+}
+
+.emptyCwdButton {
+  max-width: min(330px, 65vw);
+}
+
+.emptyCwdButton:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--border));
+  color: var(--text);
+}
+
+.emptyCwdButton svg {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+}
+
+.emptyCwdPath {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .emptyCwdPath {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  overflow-wrap: anywhere;
-  margin-bottom: 8px;
 }
 
-.emptyRuntimePath {
-  color: var(--muted);
-  font-size: 13px;
-  margin-bottom: 18px;
+.emptyControlChevron {
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--muted) 62%, transparent);
+  font-size: 10px;
 }
 
-.emptyCwdButton,
-.emptyRuntimeButton,
 .folderPickerActions button {
   min-height: 34px;
   border-radius: 10px;
   padding: 0 14px;
+}
+
+@media (max-width: 600px) {
+  .emptyCwdInner {
+    padding-bottom: 18px;
+  }
+
+  .emptyCwdButton {
+    flex: 1 1 auto;
+    max-width: 100%;
+  }
 }
 
 .folderPickerBackdrop {

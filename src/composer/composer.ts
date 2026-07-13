@@ -365,8 +365,10 @@ export function createComposer(options: {
 
     const sessionId = scanned.url?.searchParams.get("sessionId")?.trim();
     if (sessionId) {
+      const runtimeId = scanned.url?.searchParams.get("runtimeId")?.trim() || "local";
       state.currentSessionId = sessionId;
-      writeActiveSessionIdToUrl(sessionId, "replace");
+      state.currentRuntimeRef = { id: runtimeId };
+      writeActiveSessionIdToUrl(sessionId, "replace", runtimeId);
     }
     connectWithToken(scanned.token);
     return true;
@@ -464,7 +466,7 @@ export function createComposer(options: {
     if (!res.ok || data.ok === false) throw new Error(data.error || text);
     if (data.state) {
       updateMeta(data.state);
-      if ((name === "new" || name === "clear") && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
+      if ((name === "new" || name === "clear") && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId, "push", data.state.runtimeRef?.id || state.currentRuntimeRef?.id);
       state.isStreaming = Boolean(data.state.isStreaming);
       state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
       updatePrimaryAction();

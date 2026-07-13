@@ -1,259 +1,159 @@
-# Per-session runtime binding design
+# Runtime-authoritative session and workbench design
 
-Issue context: GitHub issue #3 proposes that pi-web should support both normal host sessions and sandboxed sessions at the same time. The runtime choice is made per session, not globally.
+Issue context: pi-web must support local and sandbox/remote sessions without silently crossing trust boundaries. Connecting a runtime is a one-time operation; choosing a workbench runtime establishes the complete execution scope for one browser tab.
 
-## Goals
+## Product model
 
-- Keep current host behavior unchanged by default.
-- Let a user choose a trust boundary when creating/opening a session.
-- Support managed sandboxes created by pi-web and external sandboxes created by the user.
-- Do not require one worktree per session. Multiple sessions may attach to the same runtime/cwd, with warnings only.
-- Make existing API routes runtime-aware without duplicating UI behavior.
+- **Runtime manager:** connect, verify, reconnect, and forget runtime configurations.
+- **Workbench runtime:** an explicit per-tab choice, similar to a VS Code window's remote authority. Session tabs, drawer, folders, models/auth, git, artifacts, composer, and tools all share it.
+- **Session runtime:** an immutable routing attribute of an existing session. A different-runtime session must switch this workbench explicitly or open in another browser tab.
+- **cwd:** always interpreted inside the selected workbench runtime.
+- **No fallback:** an unavailable runtime produces recovery UI, never a local session with the same id/cwd.
 
-## Non-goals for the first implementation
+Connecting and selecting are separate:
 
-- Perfect concurrent edit isolation.
-- A full container orchestration product.
-- Replacing the current local `createAgentSession` path.
-- Rewriting all pi-web session history storage in one change.
+```text
+Connect SSH devbox once
+  -> select SSH devbox as this tab's workbench runtime
+  -> browse ~/workspace on devbox
+  -> create multiple sessions there
+```
 
-## Runtime model
+The workbench switcher lives in the session drawer footer beside Settings. It remains the entry point for connecting a first runtime, while the empty-session screen only changes folders.
+
+## Identity and routing
+
+`sessionId` remains the globally unique identity. Runtime ids are routing attributes, not part of identity:
 
 ```ts
-export type RuntimeRef =
-  | { kind: "host"; cwd: string }
-  | { kind: "sandbox"; sandboxId: string; cwd: string };
-
-export type SandboxRuntime = {
-  id: string;
-  name: string;
-  mode: "managed" | "external";
-  endpoint: string;
-  status: "unknown" | "starting" | "ready" | "stopped" | "error";
-  network: "unknown" | "on" | "off";
-  description?: string;
+type SessionLocator = {
+  sessionId: string;
+  runtimeId: string;
+  cwd: string;
+  sessionFile?: string;
+  updatedAt: string; // host-observed activity/reconciliation time
 };
 ```
 
-Persist a binding:
+Reasons:
 
-```text
-sessionId -> RuntimeRef
-```
+- pi session ids are UUIDv7 and already globally unique;
+- pins, unread state, and markers can stay keyed by session id without migration;
+- the same durable session store exposed through two runtime configs remains one session;
+- API calls, deep links, and realtime envelopes carry `runtimeId` explicitly for routing.
 
-The binding should live in server-owned web metadata, not in the core pi session file format initially. A simple first store can be `.pi/web/runtime-bindings.json` keyed by session id.
+Session URLs use `sessionId` plus `runtimeId` for recovery routing. Current-session API calls also send `x-pi-web-runtime-id`. The runtime id is a stable, user-declared configuration id—not a container instance id.
 
-## Server architecture
+## Ownership
 
-Introduce a small adapter layer around host and sandbox execution.
+### Runtime is authoritative
+
+A runtime owns:
+
+- pi session files and transcripts;
+- cwd, title, message count, model/thinking state;
+- session tree and runtime artifacts;
+- runtime-side git and tool execution.
+
+The runner exposes capped/paginated `sessions.list`; pi-web reconciles its locator cache from that list.
+
+### Host stores connection configuration and locator cache
+
+The host stores:
+
+- declarative runtime connection configurations;
+- last-known session locator and display metadata;
+- host-observed activity ordering;
+- normal web UI state keyed by session id.
+
+The locator cache supports immediate drawer rendering, deep links, and unavailable-runtime recovery. It is not authoritative session history. A locator's runtime ownership is immutable: reconciliation may update metadata but must never reclassify the session to a runtime that also happens to list the same id. Forgetting a runtime intentionally removes all of its cached locators.
+
+## Durable runtime storage
+
+Disposable infrastructure cannot be authoritative for durable data.
+
+The built-in Docker provider uses an `--rm` container but mounts a stable named volume at `/root/.pi/agent`. The container/runner can be recreated while session data survives. The volume name derives from the declarative runtime id and can be overridden with `PI_WEB_DOCKER_SESSION_VOLUME`.
+
+User-managed Apple containers, Docker/Podman exec targets, and SSH hosts are responsible for durable runtime storage. The UI should state whether storage is a pi-web volume, runtime-managed, or explicitly disposable.
+
+## Session host architecture
+
+Routes resolve a session once to a capability-based host:
 
 ```ts
-interface RuntimeAdapter {
-  ref: RuntimeRef;
-  getState(sessionId: string): Promise<PiWebState>;
-  getMessages(sessionId: string): Promise<SimplifiedMessage[]>;
-  prompt(input: PromptRequest): Promise<{ sessionId: string }>;
-  abort(sessionId: string): Promise<void>;
-  listGitRepos(sessionId: string): Promise<GitRepo[]>;
-  gitStatus(request: GitStatusRequest): Promise<GitStatusResponse>;
-  gitDiff(request: GitDiffRequest): Promise<GitDiffResponse>;
-  gitSync(request: GitSyncRequest): Promise<GitSyncResponse>;
-  listDirs(path: string): Promise<DirectoryListing>;
-  createDir(parent: string, name: string): Promise<DirectoryListing>;
-  artifact(name: string): Promise<ArtifactResult>;
+interface SessionHost {
+  kind: "local" | "runner" | "unavailable";
+  sessionId: string;
+  runtimeId: string;
+  state(): Promise<WebState>;
+  messages(): Promise<MessageState>;
+  prompt?(message: string, images: ImagePart[], mode: QueueMode): Promise<void>;
+  abort?(): Promise<void>;
+  listModels?(): Promise<ModelState>;
+  setModel?(...): Promise<WebState>;
+  gitStatus?(): Promise<GitStatus>;
+  // Optional method means explicit unsupported capability.
 }
 ```
 
-### Host adapter
+- Local host wraps the in-process pi session.
+- Runner host wraps the shared stdio runner protocol.
+- Unavailable host returns last-known metadata and recovery state.
 
-The host adapter wraps existing server functions:
+The runner forwards every pi event through the same host enrichment and browser realtime pipeline used by local sessions.
 
-- `makeAgentSession`
-- `getOrCreateLiveSessionById`
-- `createNewLiveSession`
-- `liveSessions`
-- `sessionCwd`
-- local git/fs/artifact helpers
+## Listing and ordering
 
-This should be mostly extraction/refactoring. Behavior should remain byte-for-byte compatible where possible.
+`GET /api/sessions?runtimeId=<id>` lists only the requested runtime and includes `runtimeRef` on every row.
 
-### Sandbox adapter
+For remote runtimes, the browser first requests cached locators and renders them immediately, then requests authoritative runner data in the background. `sessions.list` is capped and cursor-paginated.
 
-The sandbox adapter proxies to a worker running inside a Docker container, VM, or user-managed environment.
+Drawer ordering uses host-observed activity/reconciliation time. Runtime timestamps remain metadata but do not control cross-host ordering, avoiding SSH clock-skew bugs.
 
-Expected worker surface:
+Remembered cwd history is keyed by runtime id so paths such as `/workspace` are never suggested for local sessions.
 
-```text
-GET  /health
-POST /sessions/new
-POST /sessions/:id/prompt
-POST /sessions/:id/abort
-GET  /sessions/:id/state
-GET  /sessions/:id/messages
-GET  /git/repos?sessionId=...
-GET  /git/status?sessionId=...&repo=...
-GET  /git/diff?sessionId=...&repo=...&path=...
-POST /git/sync
-GET  /fs/dirs?path=...
-POST /fs/dirs
-GET  /artifacts/:name
-WS   /events
-```
+## Delete versus remove
 
-The worker should emit the same logical event types pi-web already broadcasts, so the UI can stay mostly unchanged.
+These are distinct operations:
 
-## Request routing
+- **Remove from list:** deletes only the host locator/UI metadata. It works while the runtime is offline and does not claim runtime data was deleted. If an online runtime later lists the session again, it correctly reappears.
+- **Delete session data:** requires the authoritative runtime to be connected, releases the live session, and deletes its session file. Only then is the locator removed.
 
-Add a resolver:
+Unavailable sessions show **Remove from list**, not a misleading successful **Delete** action. **Forget runtime** removes the saved connection and all host-side locators for that runtime, but never claims to delete runtime-owned session data.
 
-```ts
-async function runtimeForSessionId(sessionId?: string): Promise<RuntimeAdapter>;
-```
+## Connection and recovery
 
-Rules:
+Command-backed providers keep desired session subscriptions and automatically reconnect with exponential backoff. After reconnect they resubscribe to remembered sessions.
 
-1. If no `sessionId`, use the current active session binding.
-2. If the session has no binding, default to `{ kind: "host", cwd: sessionCwd(...) }` and persist it lazily.
-3. For new sessions, use the runtime selected in the request body.
-4. For opening historical sessions, use existing binding; if missing, assume host.
+On transport/runner death the host:
 
-Routes to move behind adapters first:
+- broadcasts runtime connection state;
+- clears running/tool/activity enrichment maps for sessions routed there;
+- broadcasts terminal unavailable state so rows do not remain “running” forever;
+- never falls back to local.
 
-- `/api/prompt`
-- `/api/abort`
-- `/api/state`
-- `/api/messages`
-- `/api/sessions/new`
-- `/api/sessions/open`
-- `/api/git/repos`
-- `/api/git/status`
-- `/api/git/diff`
-- `/api/git/sync`
-- `/api/artifacts/*`
-- `/api/fs/dirs`
-- `/api/session/cwd`
+Deep links and WebSocket hello for an unavailable explicit runtime return a locator/recovery state rather than a local state. Requests without an explicit runtime are local for compatibility and never infer routing from locator metadata.
 
-## API additions
+## Runtime manager UX
 
-```text
-GET  /api/runtimes
-POST /api/runtimes/managed
-POST /api/runtimes/external
-GET  /api/sessions/:id/runtime
-PATCH /api/sessions/:id/runtime
-```
+Normal users use guided forms for:
 
-Example new-session body:
+- Apple container exec;
+- Docker exec;
+- Podman exec;
+- SSH host aliases.
 
-```json
-{
-  "cwd": "/workspace/pi-web",
-  "runtime": { "kind": "sandbox", "sandboxId": "sensitive-work", "cwd": "/workspace/pi-web" }
-}
-```
+The server generates constrained commands for guided adapters and verifies runner health/protocol before registration. Raw command JSON remains under an Advanced disclosure and requires `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` outside development/mock mode because it is persistent authenticated host command execution.
 
-## UX design
+## Validation requirements
 
-### New session flow
-
-```text
-Start session in:
-  ○ Host machine
-  ○ Existing sandbox
-      sensitive-work · sandbox · network off
-      private-client · sandbox · network on
-      disposable · sandbox
-  ○ Create sandbox...
-  ○ Connect external sandbox...
-```
-
-### Session drawer metadata
-
-```text
-Fix reload issue
-pi-web · host
-
-Review sensitive client repo
-sensitive-work · sandbox · network off
-```
-
-### Warnings
-
-Show non-blocking warnings when:
-
-- Multiple live sessions attach to the same sandbox and cwd.
-- Sandbox health is unknown or disconnected.
-- The selected cwd is outside the sandbox-mounted workspace.
-- A sandbox has network enabled for a session marked sensitive.
-
-## Managed sandbox MVP
-
-Docker is the simplest first managed runtime.
-
-Suggested shape:
-
-```text
-pi-web server
-  creates container
-  mounts selected host repo to /workspace/<name>
-  starts pi-web sandbox worker inside container
-  stores sandbox metadata
-  proxies session operations to worker
-```
-
-Initial policy knobs:
-
-- mount path
-- read/write vs read-only mount
-- network on/off
-- environment/secrets allowlist
-- image name/tag
-
-## External sandbox MVP
-
-For user-created sandboxes, pi-web only stores:
-
-- name
-- endpoint URL
-- optional auth token
-- display metadata: network/cwd/description
-
-Health check verifies `/health` and protocol version.
-
-## Event forwarding
-
-Each sandbox adapter maintains a worker WebSocket connection. Incoming sandbox events are normalized and rebroadcast through the existing pi-web WebSocket stream:
-
-```text
-sandbox worker event -> sandbox adapter -> pi-web broadcast(...) -> browser
-```
-
-Events must include `sessionId` and runtime metadata so the browser can reconcile active sessions.
-
-## Rollout plan
-
-1. Add `RuntimeRef` types and runtime binding store.
-2. Persist host bindings for current and newly created sessions.
-3. Extract current host behavior into `HostRuntimeAdapter` with no UX changes.
-4. Route `/api/prompt`, `/api/state`, `/api/messages`, and `/api/abort` through the adapter resolver.
-5. Add `/api/runtimes` and UI display of runtime badges.
-6. Add external sandbox adapter and worker protocol.
-7. Add runtime selection to new-session/open-session flow.
-8. Add Docker managed sandbox creation.
-9. Move git/fs/artifact routes fully behind adapters.
-10. Add tests for host compatibility and sandbox proxy behavior.
-
-## Test strategy
-
-- Unit test binding store migration/defaulting.
-- API tests proving current host behavior is unchanged.
-- Mock sandbox worker tests for prompt/state/messages/abort.
-- Git/fs/artifact route tests for both host and sandbox adapters.
-- E2E tests for new-session runtime selection and session drawer badges.
-
-## Open questions
-
-- Should artifacts remain globally addressable by filename, or include session/runtime in the URL for sandbox artifacts?
-- How should sandbox worker authentication be configured for external sandboxes?
-- Should managed sandbox lifecycle follow session lifecycle, or be explicitly user-controlled?
-- How much of model/auth configuration should be copied into managed sandboxes vs proxied from host?
+- Local behavior remains unchanged with no extra runtime.
+- Runner-owned session list and pagination.
+- Cache-first runtime-scoped drawer reconciliation.
+- Per-tab workbench persistence with runtime-scoped tabs, session drawer, folders, models/auth, git, artifacts, composer, and tools.
+- Cross-runtime session navigation requires an explicit workbench switch or another browser tab.
+- Explicit runtime routing for state/messages/prompt/model/git/artifacts/open/delete and WebSocket hello.
+- Durable Docker session-volume command construction.
+- Offline remove versus online delete semantics.
+- Reconnect/resubscribe and stale-running cleanup.
+- Full typecheck, unit/API/runtime tests, E2E suite, and production build.
