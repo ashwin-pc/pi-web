@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { StdioRuntimeClient } from "../server/runtime/stdioClient.js";
+import type { RuntimeRequestHandler } from "../server/runtime/protocol.js";
 
 const execFileAsync = promisify(execFile);
 const tempDirs: string[] = [];
@@ -23,10 +24,11 @@ async function tempRepo() {
   return dir;
 }
 
-function createClient(cwd: string, env: Record<string, string> = {}) {
+function createClient(cwd: string, env: Record<string, string> = {}, runtimeRequestHandler?: RuntimeRequestHandler) {
   return new StdioRuntimeClient(process.execPath, ["--import", "tsx", "server/runner.ts"], {
     cwd: process.cwd(),
     env: { ...process.env, PI_RUNNER_CWD: cwd, PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent"), ...env },
+    runtimeRequestHandler,
   });
 }
 
@@ -56,7 +58,7 @@ describe("runtime runner spike", () => {
     const ready = new Promise((resolve) => client.onEvent((event) => event.event === "ready" && resolve(event)));
     try {
       await expect(ready).resolves.toMatchObject({ event: "ready" });
-      await expect(client.request("health")).resolves.toMatchObject({ ok: true, cwd, protocol: "pi-runner-v1" });
+      await expect(client.request("health")).resolves.toMatchObject({ ok: true, cwd, protocol: "pi-runner-v2", modelTransport: "runtime" });
 
       const listing = await client.request<any>("fs.list", { path: cwd });
       expect(listing.dirs.map((dir: any) => dir.name)).toEqual(expect.arrayContaining(["docs", "src"]));
@@ -103,6 +105,58 @@ describe("runtime runner spike", () => {
       })).resolves.toMatchObject({ ok: true, sessionId: created.sessionId });
       await expect(promptEvent).resolves.toMatchObject({ event: expect.stringMatching(/^session\.prompt\.(start|error)$/) });
       await expect(client.request("sessions.prompt", { sessionId: created.sessionId, message: "", images: [] })).rejects.toThrow(/message or image is required/);
+    } finally {
+      client.close();
+    }
+  }, 60_000);
+
+  it("streams an approved host model without runtime credentials", async () => {
+    const cwd = await tempRepo();
+    const brokerRequests: any[] = [];
+    const model = {
+      provider: "test-host",
+      id: "broker-model",
+      name: "Broker Model",
+      reasoning: false,
+      input: ["text"] as const,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+      contextWindow: 32_000,
+      maxTokens: 4_000,
+    };
+    const runtimeRequestHandler: RuntimeRequestHandler = async (request, transport) => {
+      if (request.method === "host.models.list") return { ok: true, models: [model] };
+      if (request.method === "host.models.abort") return { ok: true };
+      if (request.method !== "host.models.stream") throw new Error("Unexpected host method");
+      brokerRequests.push(request.params);
+      const message = {
+        role: "assistant" as const,
+        content: [{ type: "text" as const, text: "hello from host broker" }],
+        api: "openai-responses",
+        provider: model.provider,
+        model: model.id,
+        usage: { input: 1, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 5, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+        stopReason: "stop" as const,
+        timestamp: Date.now(),
+      };
+      transport.sendEvent("host.models.stream.event", { requestId: request.id, event: { type: "start", partial: { ...message, content: [] } } });
+      transport.sendEvent("host.models.stream.event", { requestId: request.id, event: { type: "done", reason: "stop", message } });
+      return { ok: true };
+    };
+    const client = createClient(cwd, { PI_RUNNER_MODEL_BROKER: "1", OPENAI_API_KEY: "must-not-be-used" }, runtimeRequestHandler);
+    try {
+      await expect(client.request("health")).resolves.toMatchObject({ modelTransport: "host-broker" });
+      const created = await client.request<any>("sessions.create", { cwd });
+      await expect(client.request("models.list", { sessionId: created.sessionId })).resolves.toMatchObject({
+        models: [{ provider: model.provider, id: model.id }],
+      });
+      const done = waitForEvent(client, (event) => event.event === "session.prompt.done");
+      await client.request("sessions.prompt", { sessionId: created.sessionId, message: "hello", images: [] });
+      await expect(done).resolves.toMatchObject({ event: "session.prompt.done" });
+      const messages = await client.request<any>("sessions.messages", { sessionId: created.sessionId });
+      expect(messages.messages.at(-1)).toMatchObject({ role: "assistant", content: [{ text: "hello from host broker" }] });
+      expect(brokerRequests).toHaveLength(1);
+      expect(brokerRequests[0]).toMatchObject({ provider: model.provider, id: model.id });
+      expect(JSON.stringify(brokerRequests[0])).not.toContain("must-not-be-used");
     } finally {
       client.close();
     }

@@ -9,7 +9,7 @@ export type DockerRunnerOptions = {
   containerWorkspace?: string;
   appDir: string;
   envAllowlist?: string[];
-  network?: "none" | "bridge";
+  network?: "none";
   readOnly?: boolean;
   sessionVolume?: string;
 };
@@ -47,7 +47,7 @@ function dockerRunnerConfig(options: DockerRunnerOptions): RuntimeRunnerConfig &
     appDir: resolve(options.appDir),
     network: options.network || "none" as const,
     readOnly: Boolean(options.readOnly),
-    envAllowlist: options.envAllowlist || ["ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"],
+    envAllowlist: options.envAllowlist || [],
     sessionVolume: options.sessionVolume || runtimeVolumeName(id),
   };
   return {
@@ -57,12 +57,14 @@ function dockerRunnerConfig(options: DockerRunnerOptions): RuntimeRunnerConfig &
     cwd: normalized.containerWorkspace,
     processCwd: normalized.appDir,
     kind: "container",
+    modelBroker: true,
     disconnectable: false,
     metadata: {
       workspace: normalized.containerWorkspace,
       hostWorkspace: normalized.hostWorkspace,
       image: normalized.image,
       network: normalized.network,
+      networkPolicy: normalized.network === "none" ? "none" : "unrestricted",
       readOnly: normalized.readOnly,
       sessionPersistence: "volume",
       sessionVolume: normalized.sessionVolume,
@@ -74,7 +76,7 @@ export class DockerRunnerProvider extends CommandRunnerProvider {
   readonly hostWorkspace: string;
   readonly containerWorkspace: string;
   readonly image: string;
-  readonly network: "none" | "bridge";
+  readonly network: "none";
   readonly readOnly: boolean;
   readonly sessionVolume: string;
 

@@ -1,16 +1,33 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile, readFile, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { AuthStorage, createAgentSession, DefaultResourceLoader, getAgentDir, ModelRegistry, SessionManager } from "@earendil-works/pi-coding-agent";
-import { encodeRuntimeMessage, parseRuntimeLine, type RuntimeRequest, type RuntimeResponse } from "./runtime/protocol.js";
+import {
+  createAssistantMessageEventStream,
+  type AssistantMessage,
+  type AssistantMessageEvent,
+  type AssistantMessageEventStream,
+  type Context,
+  type Model,
+  type SimpleStreamOptions,
+} from "@earendil-works/pi-ai/compat";
+import { encodeRuntimeMessage, parseRuntimeLine, type RuntimeEvent, type RuntimeRequest, type RuntimeResponse } from "./runtime/protocol.js";
+import { MODEL_BROKER_API, type BrokerModelCatalog } from "./runtime/modelBroker.js";
 import { artifactDirForCwd, artifactFileForCwd, readArtifactBase64, safeArtifactName } from "./shared/artifacts.js";
 import { listDirectories } from "./shared/fsList.js";
 import { gitDiff, gitStatus } from "./shared/git.js";
 const rootCwd = resolve(process.env.PI_RUNNER_CWD || process.cwd());
 const maxArtifactBytes = Number(process.env.PI_RUNNER_MAX_ARTIFACT_BYTES || 20 * 1024 * 1024);
 const maxLiveSessions = Math.max(1, Number(process.env.PI_RUNNER_MAX_LIVE_SESSIONS || 50));
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
+const modelBrokerEnabled = process.env.PI_RUNNER_MODEL_BROKER === "1";
+if (modelBrokerEnabled) {
+  for (const name of Object.keys(process.env)) {
+    if (/(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)/i.test(name)) delete process.env[name];
+  }
+}
+let authStorage = modelBrokerEnabled ? AuthStorage.inMemory() : AuthStorage.create();
+let modelRegistry = modelBrokerEnabled ? ModelRegistry.inMemory(authStorage) : ModelRegistry.create(authStorage);
 const liveSessions = new Map<string, any>();
 const subscriptions = new Map<string, () => void>();
 const sessionActivityAt = new Map<string, string>();
@@ -66,8 +83,99 @@ async function resolveSession(params: Record<string, unknown>) {
   throw new Error("Session not found");
 }
 
-function send(value: RuntimeResponse | { event: string; data?: unknown }) {
+function send(value: RuntimeRequest | RuntimeResponse | RuntimeEvent) {
   process.stdout.write(encodeRuntimeMessage(value));
+}
+
+type PendingHostRequest = {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+};
+
+const pendingHostRequests = new Map<string, PendingHostRequest>();
+const brokerStreams = new Map<string, AssistantMessageEventStream>();
+let brokerReady: Promise<void> | undefined;
+
+function requestHost<T>(method: string, params?: unknown, requestId = randomUUID()): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    pendingHostRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject });
+    send({ id: requestId, method, params });
+  });
+}
+
+function brokerErrorMessage(model: Model<any>, error: unknown, aborted = false): AssistantMessage {
+  const message = error instanceof Error ? error.message : String(error);
+  return {
+    role: "assistant",
+    content: [],
+    api: model.api,
+    provider: model.provider,
+    model: model.id,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+    stopReason: aborted ? "aborted" : "error",
+    errorMessage: message,
+    timestamp: Date.now(),
+  };
+}
+
+function brokerStreamSimple(model: Model<any>, context: Context, options: SimpleStreamOptions = {}): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+  const requestId = randomUUID();
+  brokerStreams.set(requestId, stream);
+  const abort = () => {
+    void requestHost("host.models.abort", { requestId }).catch(() => undefined);
+  };
+  options.signal?.addEventListener("abort", abort, { once: true });
+  void requestHost("host.models.stream", {
+    provider: model.provider,
+    id: model.id,
+    context,
+    options: { ...options, signal: undefined, apiKey: undefined, headers: undefined, env: undefined },
+  }, requestId).catch((error) => {
+    stream.push({ type: "error", reason: options.signal?.aborted ? "aborted" : "error", error: brokerErrorMessage(model, error, Boolean(options.signal?.aborted)) });
+  }).finally(() => {
+    options.signal?.removeEventListener("abort", abort);
+    brokerStreams.delete(requestId);
+  });
+  return stream;
+}
+
+async function ensureModelBroker(): Promise<void> {
+  if (!modelBrokerEnabled) return;
+  if (!brokerReady) brokerReady = (async () => {
+    const catalog = await requestHost<BrokerModelCatalog>("host.models.list");
+    const brokerAuth = AuthStorage.inMemory();
+    const brokerRegistry = ModelRegistry.inMemory(brokerAuth);
+    const byProvider = new Map<string, BrokerModelCatalog["models"]>();
+    for (const model of catalog.models) {
+      const models = byProvider.get(model.provider) || [];
+      models.push(model);
+      byProvider.set(model.provider, models);
+    }
+    for (const [provider, models] of byProvider) {
+      brokerRegistry.registerProvider(provider, {
+        api: MODEL_BROKER_API,
+        apiKey: "host-broker",
+        baseUrl: "http://pi-web-model-broker.invalid",
+        streamSimple: brokerStreamSimple,
+        models: models.map((model) => ({
+          id: model.id,
+          name: model.name,
+          api: MODEL_BROKER_API,
+          reasoning: model.reasoning,
+          thinkingLevelMap: model.thinkingLevelMap,
+          input: model.input,
+          cost: model.cost,
+          contextWindow: model.contextWindow,
+          maxTokens: model.maxTokens,
+          compat: model.compat,
+        })),
+      });
+    }
+    authStorage = brokerAuth;
+    modelRegistry = brokerRegistry;
+  })();
+  return brokerReady;
 }
 
 function asPath(value: unknown, fallback = rootCwd): string {
@@ -247,7 +355,7 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
   const params = (request.params || {}) as Record<string, unknown>;
   switch (request.method) {
     case "health":
-      return { ok: true, cwd: rootCwd, pid: process.pid, protocol: "pi-runner-v1" };
+      return { ok: true, cwd: rootCwd, pid: process.pid, protocol: "pi-runner-v2", modelTransport: modelBrokerEnabled ? "host-broker" : "runtime" };
     case "sessions.create":
       return createRunnerSession(params.cwd);
     case "sessions.list": {
@@ -400,15 +508,39 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
 }
 
 const rl = createInterface({ input: process.stdin });
-setTimeout(() => send({ event: "ready", data: { cwd: rootCwd, pid: process.pid } }), 0);
-rl.on("line", async (line) => {
-  let request: RuntimeRequest | undefined;
+setTimeout(() => send({ event: "ready", data: { cwd: rootCwd, pid: process.pid, modelTransport: modelBrokerEnabled ? "host-broker" : "runtime" } }), 0);
+rl.on("line", (line) => {
+  let message: RuntimeRequest | RuntimeResponse | RuntimeEvent | undefined;
   try {
-    request = parseRuntimeLine(line) as RuntimeRequest | undefined;
-    if (!request?.id || !request.method) throw new Error("Invalid request");
-    const result = await handle(request);
-    send({ id: request.id, ok: true, result });
+    message = parseRuntimeLine(line);
   } catch (error) {
-    send({ id: request?.id || "unknown", ok: false, error: error instanceof Error ? error.message : String(error) });
+    send({ id: "unknown", ok: false, error: error instanceof Error ? error.message : String(error) });
+    return;
   }
+  if (!message) return;
+  if ("event" in message) {
+    if (message.event !== "host.models.stream.event") return;
+    const data = message.data as { requestId?: unknown; event?: AssistantMessageEvent } | undefined;
+    const requestId = String(data?.requestId || "");
+    if (requestId && data?.event) brokerStreams.get(requestId)?.push(data.event);
+    return;
+  }
+  if (!("method" in message)) {
+    const pending = pendingHostRequests.get(message.id);
+    if (!pending) return;
+    pendingHostRequests.delete(message.id);
+    if (message.ok) pending.resolve(message.result);
+    else pending.reject(new Error(message.error));
+    return;
+  }
+  const request = message;
+  void (async () => {
+    try {
+      await ensureModelBroker();
+      const result = await handle(request);
+      send({ id: request.id, ok: true, result });
+    } catch (error) {
+      send({ id: request.id || "unknown", ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  })();
 });

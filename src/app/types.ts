@@ -242,6 +242,8 @@ export type RuntimeRef = {
   label?: string;
   cwd?: string;
   experimental?: boolean;
+  modelTransport?: "runtime" | "host-broker";
+  networkPolicy?: "none" | "provider-only" | "unrestricted" | "unverified";
 };
 
 export type SessionInfo = {

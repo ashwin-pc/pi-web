@@ -51,9 +51,11 @@ Session URLs use `sessionId` plus `runtimeId` for recovery routing. Current-sess
 A runtime owns:
 
 - pi session files and transcripts;
-- cwd, title, message count, model/thinking state;
+- cwd, title, message count, model/thinking selection state;
 - session tree and runtime artifacts;
 - runtime-side git and tool execution.
+
+Managed local containers do not own provider credentials or provider network transport. Those are deliberately host-brokered as described below. SSH and other machine runtimes remain responsible for their own credentials and networking.
 
 The runner exposes capped/paginated `sessions.list`; pi-web reconciles its locator cache from that list.
 
@@ -102,6 +104,22 @@ interface SessionHost {
 
 The runner forwards every pi event through the same host enrichment and browser realtime pipeline used by local sessions.
 
+## Managed-container model broker
+
+Apple container, Docker, and Podman runners use a typed, bidirectional model protocol over the existing stdio transport. Their container network has no internet route.
+
+- On startup the runner requests the host's available model catalog. The catalog contains model metadata only—never URLs, headers, or credentials.
+- The runtime keeps authoritative model/thinking selection in its session but registers a broker stream implementation for inference.
+- A model request carries only an approved provider/model id, conversation context, and safe stream options.
+- The host looks up the authoritative model, resolves host auth, invokes pi-ai, and forwards typed stream events.
+- Runner-supplied API keys, headers, environment, URLs, callbacks, and abort signals are discarded. Abort is a separate typed operation tied to one stream id.
+- A runner may not issue arbitrary host HTTP requests. Unknown host methods and unavailable models are rejected.
+- Closing the runner transport aborts active host model streams so reconnects cannot leave billable requests running.
+
+The runtime process scrubs credential-shaped environment variables in broker mode and uses in-memory dummy auth only to satisfy the agent's local model-selection API. Host auth never enters runtime storage. This supersedes copying `auth.json` into managed containers.
+
+Because tools have no network route, they cannot bypass the broker with curl, DNS, raw sockets, or cleared proxy settings. Broker failure is fail-closed. SSH runtimes intentionally do not use this broker and depend on authentication/networking configured on the remote machine.
+
 ## Listing and ordering
 
 `GET /api/sessions?runtimeId=<id>` lists only the requested runtime and includes `runtimeRef` on every row.
@@ -143,7 +161,9 @@ Normal users use guided forms for:
 - Podman exec;
 - SSH host aliases.
 
-The server generates constrained commands for guided adapters and verifies runner health/protocol before registration. Raw command JSON remains under an Advanced disclosure and requires `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` outside development/mock mode because it is persistent authenticated host command execution.
+The server generates constrained commands for guided adapters and verifies runner health/protocol before registration. For Apple container, Docker, and Podman it first inspects the network and rejects an unproven policy. Apple must use a `hostOnly` network with `--no-dns`; Docker/Podman must use `--network none`. Internal Docker/Podman bridges are rejected because embedded DNS can remain an egress channel. Advanced command runtimes cannot be proven by pi-web and are labeled `unverified`.
+
+Raw command JSON remains under an Advanced disclosure and requires `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` outside development/mock mode because it is persistent authenticated host command execution.
 
 ## Validation requirements
 
@@ -154,6 +174,9 @@ The server generates constrained commands for guided adapters and verifies runne
 - Cross-runtime session navigation requires an explicit workbench switch or another browser tab.
 - Explicit runtime routing for state/messages/prompt/model/git/artifacts/open/delete and WebSocket hello.
 - Durable Docker session-volume command construction.
+- Typed host model broker with host-authoritative endpoint/auth resolution and cancellation.
+- Zero-egress managed containers and guided network-inspection rejection tests.
+- Proof that runtime-supplied credentials/headers cannot cross the broker contract.
 - Offline remove versus online delete semantics.
 - Reconnect/resubscribe and stale-running cleanup.
 - Full typecheck, unit/API/runtime tests, E2E suite, and production build.

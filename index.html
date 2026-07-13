@@ -131,7 +131,7 @@
         </section>
         <section class="settingsSection runtimeSection">
           <h3>Connect existing runtime</h3>
-          <p class="settingsHint">Choose how to reach a runtime that already exists. pi-web generates and verifies the runner command for you.</p>
+          <p class="settingsHint">Choose how to reach a runtime that already exists. Docker/Podman require network none; Apple requires a host-only network with DNS disabled. Model calls use host authentication through pi-web's typed broker. SSH uses the remote machine's own policy.</p>
           <label class="settingsField">
             <span>Connection type</span>
             <select id="runtimeConnectKind">
@@ -162,7 +162,7 @@
           </div>
           <details id="runtimeAdvancedDetails" class="runtimeAdvancedDetails">
             <summary>Advanced command JSON</summary>
-            <p class="settingsHint">Custom commands are privileged host command execution. Persistent custom runtimes require the server opt-in.</p>
+            <p class="settingsHint">Custom commands are privileged host command execution. Their network isolation cannot be verified and persistent custom runtimes require the server opt-in.</p>
             <textarea id="runtimeConnectJson" class="runtimeConnectJson" rows="11" spellcheck="false" aria-label="Runtime JSON configuration"></textarea>
             <div class="settingsActions">
               <button id="runtimeAdvancedConnectButton" type="button">Connect JSON configuration</button>

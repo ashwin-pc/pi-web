@@ -21,7 +21,7 @@ type RuntimeExample = {
 const runtimeExamples: RuntimeExample[] = [
   {
     title: "Apple container",
-    description: "Attach to an already-running Apple container and use /workspace as the runtime folder namespace.",
+    description: "Attach to an Apple container on a host-only internal network created with --no-dns. Model calls use the host broker.",
     config: {
       id: "apple-container:pi-web",
       label: "Apple container: pi-web",
@@ -40,7 +40,7 @@ const runtimeExamples: RuntimeExample[] = [
   },
   {
     title: "Docker or Podman exec",
-    description: "Attach to an existing container. Replace docker with podman if that is your runtime tool.",
+    description: "Attach to a --network none container. Replace docker with podman if that is your runtime tool.",
     config: {
       id: "docker:pi-web",
       label: "Docker container: pi-web",
@@ -187,6 +187,8 @@ export function createRuntimePanel(options: {
       if (line) rows.push(["Command", line]);
       if (runtime.processCwd) rows.push(["Process cwd", runtime.processCwd]);
       if (runtime.network) rows.push(["Network", runtime.network]);
+      if (runtime.networkPolicy) rows.push(["Network policy", runtime.networkPolicy === "none" ? "no runtime egress" : runtime.networkPolicy]);
+      if (runtime.modelTransport) rows.push(["Model transport", runtime.modelTransport === "host-broker" ? "host broker" : "runtime direct"]);
       if (runtime.connection?.error) rows.push(["Connection", runtime.connection.error]);
       if (typeof runtime.readOnly === "boolean") rows.push(["Read-only", runtime.readOnly ? "yes" : "no"]);
       if (runtime.sessionPersistence) rows.push(["Session storage", runtime.sessionPersistence === "volume" ? `persistent volume${runtime.sessionVolume ? ` · ${runtime.sessionVolume}` : ""}` : runtime.sessionPersistence]);

@@ -1,17 +1,28 @@
 # Docker workspace runtime
 
-pi-web can expose one configured Docker runtime in addition to the normal local runtime. The runtime starts `server/runner.ts` in a container, mounts exactly one host workspace at a fixed container path, and stores pi sessions in a persistent Docker volume. Connecting is a one-time setup; selecting it switches the complete browser-tab workbench—tabs, sessions, folders, models/auth, git, artifacts, composer, and tools.
+pi-web can expose one configured Docker runtime in addition to the normal local runtime. The runtime starts `server/runner.ts` in a container, mounts exactly one host workspace at a fixed container path, and stores pi sessions in a persistent Docker volume. Connecting is a one-time setup; selecting it switches the complete browser-tab workbench—tabs, sessions, folders, model selection, git, artifacts, composer, and tools.
+
+## Network and authentication boundary
+
+Managed Docker runtimes run with `--network none`. They do not need provider network access:
+
+1. The runner sends a typed model request over its existing stdio connection to pi-web.
+2. The host validates the provider/model against its authoritative `ModelRegistry`.
+3. The host resolves authentication and streams the model response back over stdio.
+
+The broker cannot request arbitrary URLs. Runner-supplied URLs, API keys, headers, environment, signals, and callbacks are not accepted. Model endpoint and authentication are always selected by the host registry. Provider credentials and the pi-web bearer token are never copied or mounted into the container.
+
+Tools inside the runtime have no DNS or internet path, so clearing proxy variables or opening raw sockets cannot bypass the policy. If the broker or stdio connection is unavailable, model calls fail closed.
 
 ## Secure expectations
 
-- Set `PI_WEB_TOKEN`; browser/API access is still protected by the normal pi-web bearer token flow. The web bearer token is not passed into the Docker runtime.
-- Set `PI_WEB_DOCKER_WORKSPACE_HOST` to the only host folder that Docker may mount. pi-web does not accept arbitrary host mount paths from API requests.
-- The mounted folder appears inside the container as `PI_WEB_DOCKER_WORKSPACE_CONTAINER` (default `/workspace`). Users should pick folders under that container path.
-- Docker networking defaults to `none`. This is the safest mode, but remote model APIs will not work from inside the container. Set `PI_WEB_DOCKER_NETWORK=bridge` when the selected pi model provider needs outbound network access.
-- Credentials are not mounted automatically. Only environment variables named in `PI_WEB_DOCKER_ENV_ALLOWLIST` are passed through (default: common model API keys only). Prefer short-lived, scoped tokens.
-- The pi-web source tree is mounted read-only at `/app` so the container can run the same `server/runner.ts`; this mount should contain pi-web application code, not the user's private target workspace. The target workspace is the separate `PI_WEB_DOCKER_WORKSPACE_HOST` mount.
+- Set `PI_WEB_TOKEN`; browser/API access remains protected by the normal bearer-token flow.
+- Set `PI_WEB_DOCKER_WORKSPACE_HOST` to the only host folder Docker may mount. pi-web does not accept arbitrary host mount paths from API requests.
+- The mounted folder appears inside the container as `PI_WEB_DOCKER_WORKSPACE_CONTAINER` (default `/workspace`).
+- The pi-web source tree is mounted read-only at `/app` so the container can run the same `server/runner.ts`. The target workspace is a separate mount.
 - Set `PI_WEB_DOCKER_READONLY=1` to mount the workspace read-only.
-- Runtime-owned session history must outlive the disposable `--rm` container. pi-web mounts a named volume at `/root/.pi/agent`; override its name with `PI_WEB_DOCKER_SESSION_VOLUME`. Removing that volume permanently removes the runtime's sessions and credentials/config stored there.
+- Runtime-owned session history outlives the disposable `--rm` container in a named volume at `/root/.pi/agent`. Override its name with `PI_WEB_DOCKER_SESSION_VOLUME`. Removing that volume permanently removes the runtime's sessions and runtime configuration.
+- `PI_WEB_DOCKER_ENV_ALLOWLIST` has no credential defaults. Avoid passing secrets into a brokered runtime.
 
 ## Run
 
@@ -24,23 +35,15 @@ PI_WEB_DOCKER_IMAGE=node:22-bookworm-slim \
 npm run dev
 ```
 
-For remote model providers, explicitly allow outbound networking and pass only the needed provider key:
-
-```sh
-PI_WEB_TOKEN="$(openssl rand -hex 24)" \
-PI_WEB_DOCKER_WORKSPACE_HOST=/absolute/path/to/repo \
-PI_WEB_DOCKER_NETWORK=bridge \
-PI_WEB_DOCKER_ENV_ALLOWLIST=ANTHROPIC_API_KEY \
-ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
-npm run dev
-```
-
 Open pi-web, enter the token, connect **Docker workspace** once, and select it from the session drawer's workbench switcher. The complete tab is then scoped to the container and paths resolve under `/workspace`. A different-runtime session requires an explicit workbench switch or another browser tab.
+
+Guided connections to existing Docker/Podman containers are accepted only when inspection confirms `--network none`. An internal bridge is not sufficient because its embedded DNS resolver may still become an egress channel. Apple containers require both a `hostOnly` internal network and `--no-dns`. Advanced custom command runtimes are marked as unverified because pi-web cannot prove their network posture.
 
 ## Current limitations
 
 - The Docker runner process and `--rm` container lifecycle are tied to the server process, but session data is durable in the named volume.
-- **Remove from list** only removes an offline locator cached by pi-web. **Delete session data** requires the runtime to be connected and deletes the authoritative runtime session file.
-- Git status/diff and prompt/state/messages are proxied for runner sessions; host-only routes return an explicit unsupported-runtime error instead of falling back to the host.
+- **Remove from list** removes only an offline locator cached by pi-web. **Delete session data** requires the runtime to be connected and deletes the authoritative runtime session file.
+- Git status/diff and prompt/state/messages are routed to runner sessions; host-only routes return an explicit unsupported-runtime error instead of falling back to the host.
 - The default image runs `npm exec tsx server/runner.ts` with the pi-web source mounted at `/app`; custom images must be able to run that command.
-- Persistent custom command runtimes are authenticated host command execution. They are disabled in production unless `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` is set; prefer the guided Apple container, Docker/Podman, and SSH connection forms.
+- SSH runtimes are not brokered. They use authentication and network policy configured on the remote machine.
+- Persistent custom command runtimes are authenticated host command execution. They are disabled in production unless `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` is set.

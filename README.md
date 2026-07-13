@@ -209,9 +209,11 @@ pi-web includes a bundled `pi_web_session` tool for orchestrator/verifier agents
 
 ## Runtime workbenches
 
-pi-web can connect once to an existing Apple container, Docker/Podman container, SSH host, or advanced command-backed runner. Each browser tab has one explicit VS Code-style workbench runtime: its tabs, session drawer, folders, models/auth, git, artifacts, composer, and tools switch together. Existing sessions remain bound to their authoritative runtime; cross-runtime navigation requires an explicit workbench switch and never falls back to local.
+pi-web can connect once to an existing Apple container, Docker/Podman container, SSH host, or advanced command-backed runner. Each browser tab has one explicit VS Code-style workbench runtime: its tabs, session drawer, folders, model selection, git, artifacts, composer, and tools switch together. Existing sessions remain bound to their authoritative runtime; cross-runtime navigation requires an explicit workbench switch and never falls back to local.
 
-See [docs/runtime-binding-design.md](docs/runtime-binding-design.md) for the ownership/routing model and [docs/docker-runtime.md](docs/docker-runtime.md) for durable Docker setup.
+Managed Apple container, Docker, and Podman runtimes are network-isolated. Model inference is streamed over a typed stdio broker and uses host authentication, so provider credentials never enter the container. Guided container connections reject internet-capable networks. SSH runtimes continue using authentication and networking configured on the remote machine.
+
+See [docs/runtime-binding-design.md](docs/runtime-binding-design.md) for the ownership/routing and model-broker design, and [docs/docker-runtime.md](docs/docker-runtime.md) for durable Docker setup.
 
 ## Environment variables
 

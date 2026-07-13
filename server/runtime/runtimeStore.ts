@@ -63,5 +63,8 @@ function isCommandRuntimeConfig(value: unknown): value is CommandRunnerConfig {
     && typeof item.cwd === "string" && item.cwd.trim().length > 0
     && (item.processCwd === undefined || typeof item.processCwd === "string")
     && (item.agentDir === undefined || typeof item.agentDir === "string")
+    && (item.modelBroker === undefined || typeof item.modelBroker === "boolean")
+    && (item.network === undefined || typeof item.network === "string")
+    && (item.networkPolicy === undefined || item.networkPolicy === "none" || item.networkPolicy === "provider-only" || item.networkPolicy === "unrestricted" || item.networkPolicy === "unverified")
     && (item.kind === undefined || item.kind === "local" || item.kind === "container" || item.kind === "ssh");
 }

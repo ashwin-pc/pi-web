@@ -19,6 +19,14 @@ export type RuntimeEvent = {
   data?: unknown;
 };
 
+export type RuntimeRequestTransport = {
+  sendEvent: (event: string, data?: unknown) => void;
+};
+
+export type RuntimeRequestHandler = ((request: RuntimeRequest, transport: RuntimeRequestTransport) => Promise<unknown>) & {
+  dispose?: () => void;
+};
+
 export type DirectoryListing = {
   path: string;
   parent: string;

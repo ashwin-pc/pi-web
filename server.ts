@@ -31,6 +31,8 @@ import { localRuntime, RuntimeRegistry } from "./server/runtime/registry.js";
 import { StdioRunnerProvider } from "./server/runtime/stdioProvider.js";
 import { DockerRunnerProvider } from "./server/runtime/dockerProvider.js";
 import { CommandRunnerProvider, type CommandRunnerConfig, type RunnerSessionInfo } from "./server/runtime/commandProvider.js";
+import { HostModelBroker } from "./server/runtime/modelBroker.js";
+import { guidedContainerTarget, verifyGuidedContainerIsolation } from "./server/runtime/networkIsolation.js";
 import { RuntimeStore } from "./server/runtime/runtimeStore.js";
 import { artifactDirForCwd, legacyArtifactDirForCwd, safeArtifactName } from "./server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
@@ -1588,6 +1590,24 @@ function runtimeShellPath(value: string) {
   return value.startsWith("~/") ? `"$HOME"/${quote(value.slice(2))}` : quote(value);
 }
 
+function guidedAdapterCommand(adapter: string): string {
+  const configured = adapter === "apple"
+    ? process.env.PI_WEB_APPLE_CONTAINER_COMMAND
+    : adapter === "docker"
+      ? process.env.PI_WEB_DOCKER_COMMAND
+      : adapter === "podman"
+        ? process.env.PI_WEB_PODMAN_COMMAND
+        : undefined;
+  if (configured?.trim()) return configured.trim();
+  const executable = adapter === "apple" ? "container" : adapter;
+  const candidates = [
+    join(getAgentDir(), "bin", executable),
+    join("/opt/homebrew/bin", executable),
+    join("/usr/local/bin", executable),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) || executable;
+}
+
 function commandConfigForGuidedRuntime(body: GuidedRuntimeConnectConfig): CommandRunnerConfig {
   const adapter = String(body.adapter || "");
   if (!new Set(["apple", "docker", "podman", "ssh"]).has(adapter)) throw new Error("Unsupported guided runtime adapter");
@@ -1605,7 +1625,7 @@ function commandConfigForGuidedRuntime(body: GuidedRuntimeConnectConfig): Comman
     id,
     label,
     kind: "container",
-    command: adapter === "apple" ? "container" : adapter,
+    command: guidedAdapterCommand(adapter),
     args: ["exec", "-i", target, "sh", "-lc", runnerCommand],
     cwd,
   };
@@ -1613,6 +1633,7 @@ function commandConfigForGuidedRuntime(body: GuidedRuntimeConnectConfig): Comman
 
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
+const hostModelBroker = new HostModelBroker(modelRegistry);
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
 const runtimeRegistry = new RuntimeRegistry([localRuntime]);
@@ -1626,7 +1647,7 @@ const dockerRunnerProvider = process.env.PI_WEB_DOCKER_WORKSPACE_HOST
     hostWorkspace: process.env.PI_WEB_DOCKER_WORKSPACE_HOST,
     containerWorkspace: process.env.PI_WEB_DOCKER_WORKSPACE_CONTAINER || "/workspace",
     image: process.env.PI_WEB_DOCKER_IMAGE,
-    network: process.env.PI_WEB_DOCKER_NETWORK === "bridge" ? "bridge" : "none",
+    network: "none",
     readOnly: process.env.PI_WEB_DOCKER_READONLY === "1",
     sessionVolume: process.env.PI_WEB_DOCKER_SESSION_VOLUME,
     envAllowlist: process.env.PI_WEB_DOCKER_ENV_ALLOWLIST?.split(",").map((item) => item.trim()).filter(Boolean),
@@ -1636,6 +1657,7 @@ const runnerSessionRuntimeIds = new Map<string, string>();
 type RunnerProvider = CommandRunnerProvider;
 const runtimeRunnerProviders: RunnerProvider[] = [...(localRunnerProvider ? [localRunnerProvider] : []), ...(dockerRunnerProvider ? [dockerRunnerProvider] : [])];
 function attachRuntimeProvider(provider: RunnerProvider) {
+  provider.setRuntimeRequestHandlerFactory(provider.modelBroker ? () => hostModelBroker.createRequestHandler() : undefined);
   provider.onStatus((status) => handleRuntimeProviderStatus(provider, status));
   provider.onEvent((event) => handleRunnerEvent(provider, event));
 }
@@ -1658,7 +1680,20 @@ function unregisterRuntimeProvider(id: string) {
 }
 async function hydrateCommandRuntimes() {
   const data = await runtimeStore.read();
-  for (const config of data.commandRuntimes) registerRuntimeProvider(new CommandRunnerProvider(config));
+  for (const config of data.commandRuntimes) {
+    const guidedTarget = guidedContainerTarget(config);
+    if (!guidedTarget) {
+      registerRuntimeProvider(new CommandRunnerProvider(config));
+      continue;
+    }
+    try {
+      const isolation = await verifyGuidedContainerIsolation(guidedTarget.adapter, guidedTarget.target, undefined, config.command);
+      registerRuntimeProvider(new CommandRunnerProvider({ ...config, modelBroker: true, ...isolation }));
+    } catch (error) {
+      const reason = `Runtime blocked: ${error instanceof Error ? error.message : String(error)}`;
+      registerRuntimeProvider(new CommandRunnerProvider({ ...config, modelBroker: true, networkPolicy: "unverified", blockedReason: reason }));
+    }
+  }
 }
 async function hydrateRunnerRuntimeBindings() {
   const data = await runtimeBindingStore.read();
@@ -3334,6 +3369,11 @@ const server = createServer(async (req, res) => {
           if (guided) {
             try {
               guidedConfig = commandConfigForGuidedRuntime(body);
+              const adapter = String(body.adapter || "") as "apple" | "docker" | "podman" | "ssh";
+              if (adapter !== "ssh") {
+                const isolation = await verifyGuidedContainerIsolation(adapter, String(body.target || ""), undefined, guidedConfig.command);
+                guidedConfig = { ...guidedConfig, modelBroker: true, ...isolation };
+              }
             } catch (error) {
               return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
             }
@@ -3351,7 +3391,19 @@ const server = createServer(async (req, res) => {
           const agentDir = kind === "local"
             ? (typeof body.agentDir === "string" && body.agentDir.trim() ? body.agentDir.trim() : join(getAgentDir(), "runtimes", id))
             : undefined;
-          const config: CommandRunnerConfig = { id, label, command, args, cwd, processCwd: guidedConfig?.processCwd || (typeof body.processCwd === "string" ? body.processCwd : undefined), ...(agentDir ? { agentDir } : {}), kind };
+          const config: CommandRunnerConfig = {
+            id,
+            label,
+            command,
+            args,
+            cwd,
+            processCwd: guidedConfig?.processCwd || (typeof body.processCwd === "string" ? body.processCwd : undefined),
+            ...(agentDir ? { agentDir } : {}),
+            kind,
+            modelBroker: guidedConfig?.modelBroker ?? (kind === "container"),
+            network: guidedConfig?.network,
+            networkPolicy: guidedConfig?.networkPolicy || (kind === "container" ? "unverified" : undefined),
+          };
           const provider = new CommandRunnerProvider(config);
           registerRuntimeProvider(provider);
           try {

@@ -189,10 +189,13 @@ export function createSettings(options: {
     const runtimeId = runtime.id || "local";
     const runtimeLabel = runtime.label || runtimeId || "Local machine";
     const isLocal = runtimeId === "local";
+    const usesHostBroker = runtime.modelTransport === "host-broker";
     elements.settingSessionDefaultsTitle.textContent = `${isLocal ? "Local machine" : runtimeLabel} new sessions`;
     elements.settingSessionDefaultsHint.textContent = isLocal
       ? "Choose a bucket color and saved model defaults for local sessions you start from now on. Existing sessions are unchanged."
-      : `${runtimeLabel} owns its model authentication and defaults. Configure those on the runtime; pi-web will not apply Local machine defaults.`;
+      : usesHostBroker
+        ? `${runtimeLabel} uses Local machine model authentication through pi-web's host broker. Credentials are not copied into the runtime.`
+        : `${runtimeLabel} owns its model authentication and defaults. Configure those on the runtime; pi-web will not apply Local machine defaults.`;
     elements.settingDefaultBucketColorSelect.disabled = !isLocal;
     elements.settingSaveModelDefaultsButton.disabled = !isLocal;
     elements.settingClearModelDefaultsButton.disabled = !isLocal;

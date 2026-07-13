@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
-import { encodeRuntimeMessage, parseRuntimeLine, type RuntimeEvent, type RuntimeResponse } from "./protocol.js";
+import { encodeRuntimeMessage, parseRuntimeLine, type RuntimeEvent, type RuntimeRequest, type RuntimeRequestHandler, type RuntimeResponse } from "./protocol.js";
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -16,12 +16,14 @@ export class StdioRuntimeClient {
   private closeListeners = new Set<(error: Error) => void>();
   private closed = false;
   private closeNotified = false;
+  private readonly runtimeRequestHandler?: RuntimeRequestHandler;
 
   get isClosed(): boolean {
     return this.closed || this.child.exitCode !== null || this.child.signalCode !== null;
   }
 
-  constructor(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
+  constructor(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; runtimeRequestHandler?: RuntimeRequestHandler } = {}) {
+    this.runtimeRequestHandler = options.runtimeRequestHandler;
     this.child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env || process.env,
@@ -74,9 +76,9 @@ export class StdioRuntimeClient {
   }
 
   private handleLine(line: string): void {
-    let message: RuntimeResponse | RuntimeEvent | undefined;
+    let message: RuntimeRequest | RuntimeResponse | RuntimeEvent | undefined;
     try {
-      message = parseRuntimeLine(line) as RuntimeResponse | RuntimeEvent | undefined;
+      message = parseRuntimeLine(line);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       const level = line.trimStart().startsWith("{\"id\":") ? "malformed protocol response" : "ignored non-protocol stdout line";
@@ -84,6 +86,10 @@ export class StdioRuntimeClient {
       return;
     }
     if (!message) return;
+    if ("method" in message) {
+      void this.handleRuntimeRequest(message);
+      return;
+    }
     if ("event" in message) {
       for (const listener of this.eventListeners) listener(message);
       return;
@@ -96,10 +102,28 @@ export class StdioRuntimeClient {
     else pending.reject(new Error(message.error));
   }
 
+  private async handleRuntimeRequest(request: RuntimeRequest): Promise<void> {
+    try {
+      if (!this.runtimeRequestHandler) throw new Error(`Runtime-initiated requests are disabled: ${request.method}`);
+      const result = await this.runtimeRequestHandler(request, {
+        sendEvent: (event, data) => this.writeToRuntime({ event, data }),
+      });
+      this.writeToRuntime({ id: request.id, ok: true, result });
+    } catch (error) {
+      this.writeToRuntime({ id: request.id, ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+
+  private writeToRuntime(value: RuntimeResponse | RuntimeEvent): void {
+    if (this.isClosed || !this.child.stdin?.writable) return;
+    this.child.stdin.write(encodeRuntimeMessage(value));
+  }
+
   private notifyClosed(error: Error): void {
     if (this.closeNotified) return;
     this.closeNotified = true;
     this.closed = true;
+    this.runtimeRequestHandler?.dispose?.();
     this.failAll(error);
     for (const listener of this.closeListeners) listener(error);
   }

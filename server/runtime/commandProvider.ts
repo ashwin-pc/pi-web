@@ -1,5 +1,5 @@
 import { StdioRuntimeClient } from "./stdioClient.js";
-import type { RuntimeEvent } from "./protocol.js";
+import type { RuntimeEvent, RuntimeRequestHandler } from "./protocol.js";
 
 export type RuntimeKind = "local" | "container" | "ssh";
 
@@ -46,6 +46,8 @@ export type RuntimeRunnerMetadata = {
   readOnly?: boolean;
   sessionPersistence?: "runtime" | "volume" | "disposable";
   sessionVolume?: string;
+  modelTransport?: "runtime" | "host-broker";
+  networkPolicy?: "none" | "provider-only" | "unrestricted" | "unverified";
 };
 
 export type CommandRunnerConfig = {
@@ -57,6 +59,9 @@ export type CommandRunnerConfig = {
   processCwd?: string;
   agentDir?: string;
   kind?: RuntimeKind;
+  modelBroker?: boolean;
+  network?: string;
+  networkPolicy?: RuntimeRunnerMetadata["networkPolicy"];
 };
 
 export type RuntimeRunnerConfig = CommandRunnerConfig & {
@@ -64,6 +69,7 @@ export type RuntimeRunnerConfig = CommandRunnerConfig & {
   disconnectable?: boolean;
   experimental?: boolean;
   metadata?: RuntimeRunnerMetadata;
+  blockedReason?: string;
 };
 
 export type RuntimeProviderStatus = {
@@ -84,7 +90,9 @@ export class CommandRunnerProvider {
   readonly disconnectable: boolean;
   readonly experimental: boolean;
   readonly metadata: RuntimeRunnerMetadata;
+  readonly modelBroker: boolean;
   private readonly env?: NodeJS.ProcessEnv;
+  private runtimeRequestHandlerFactory?: () => RuntimeRequestHandler;
   private client?: StdioRuntimeClient;
   private sessionFiles = new Map<string, { sessionFile: string; cwd?: string }>();
   private subscribedSessionIds = new Set<string>();
@@ -94,7 +102,8 @@ export class CommandRunnerProvider {
   private reconnectTimer?: NodeJS.Timeout;
   private reconnectAttempt = 0;
   private stopped = false;
-  private currentStatus: RuntimeProviderStatus = { state: "disconnected", attempt: 0 };
+  private currentStatus: RuntimeProviderStatus;
+  private readonly blockedReason?: string;
 
   get status(): RuntimeProviderStatus {
     return { ...this.currentStatus };
@@ -104,26 +113,39 @@ export class CommandRunnerProvider {
     this.id = config.id;
     this.label = config.label;
     this.command = config.command;
-    this.args = config.args;
+    this.modelBroker = config.modelBroker ?? (config.kind === "container");
+    this.args = this.modelBroker ? config.args.map((arg) => enableBrokerInRunnerCommand(arg)) : config.args;
     this.cwd = config.cwd;
     this.processCwd = config.processCwd;
     this.agentDir = config.agentDir;
     this.kind = config.kind || "container";
     this.disconnectable = config.disconnectable ?? true;
     this.experimental = Boolean(config.experimental);
-    this.metadata = config.metadata || {};
+    this.blockedReason = config.blockedReason;
+    this.currentStatus = { state: "disconnected", attempt: 0, ...(this.blockedReason ? { error: this.blockedReason } : {}) };
+    this.metadata = {
+      ...(config.metadata || {}),
+      ...(config.network ? { network: config.network } : {}),
+      networkPolicy: config.networkPolicy || config.metadata?.networkPolicy || (config.kind === "container" ? "unverified" : undefined),
+      modelTransport: this.modelBroker ? "host-broker" : (config.metadata?.modelTransport || "runtime"),
+    };
     this.env = config.agentDir
       ? { ...(config.env || process.env), PI_CODING_AGENT_DIR: config.agentDir }
       : config.env;
   }
 
   start(): StdioRuntimeClient {
+    if (this.blockedReason) throw new Error(this.blockedReason);
     if (this.client && !this.client.isClosed) return this.client;
     this.stopped = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.emitStatus({ state: "connecting", attempt: this.reconnectAttempt });
-    const client = new StdioRuntimeClient(this.command, this.args, { cwd: this.processCwd || process.cwd(), env: this.env || process.env });
+    const client = new StdioRuntimeClient(this.command, this.args, {
+      cwd: this.processCwd || process.cwd(),
+      env: this.env || process.env,
+      runtimeRequestHandler: this.runtimeRequestHandlerFactory?.(),
+    });
     this.client = client;
     this.subscribedSessionIds.clear();
     client.onEvent((event) => {
@@ -180,6 +202,10 @@ export class CommandRunnerProvider {
   private emitStatus(status: RuntimeProviderStatus) {
     this.currentStatus = status;
     for (const listener of this.statusListeners) listener(status);
+  }
+
+  setRuntimeRequestHandlerFactory(factory: (() => RuntimeRequestHandler) | undefined): void {
+    this.runtimeRequestHandlerFactory = factory;
   }
 
   health() { return this.start().request("health", undefined, 30_000); }
@@ -265,6 +291,11 @@ export class CommandRunnerProvider {
   }
 
   toConfig(): CommandRunnerConfig {
-    return { id: this.id, label: this.label, command: this.command, args: this.args, cwd: this.cwd, processCwd: this.processCwd, agentDir: this.agentDir, kind: this.kind };
+    return { id: this.id, label: this.label, command: this.command, args: this.args, cwd: this.cwd, processCwd: this.processCwd, agentDir: this.agentDir, kind: this.kind, modelBroker: this.modelBroker, network: this.metadata.network, networkPolicy: this.metadata.networkPolicy };
   }
+}
+
+function enableBrokerInRunnerCommand(value: string): string {
+  if (!value.includes("server/runner") || value.includes("PI_RUNNER_MODEL_BROKER=")) return value;
+  return value.replace(/\bnpm\s+exec\b/, "PI_RUNNER_MODEL_BROKER=1 npm exec");
 }

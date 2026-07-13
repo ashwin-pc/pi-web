@@ -8,6 +8,8 @@ export type RuntimeOption = RuntimeRef & {
   processCwd?: string;
   workspace?: string;
   network?: string;
+  modelTransport?: "runtime" | "host-broker";
+  networkPolicy?: "none" | "provider-only" | "unrestricted" | "unverified";
   readOnly?: boolean;
   sessionPersistence?: "runtime" | "volume" | "disposable";
   sessionVolume?: string;
@@ -61,6 +63,8 @@ export function normalizeRuntimeOptions(value: unknown): RuntimeOption[] {
       processCwd: typeof runtime.processCwd === "string" ? runtime.processCwd : undefined,
       workspace: typeof runtime.workspace === "string" ? runtime.workspace : undefined,
       network: typeof runtime.network === "string" ? runtime.network : undefined,
+      modelTransport: runtime.modelTransport === "host-broker" || runtime.modelTransport === "runtime" ? runtime.modelTransport : undefined,
+      networkPolicy: runtime.networkPolicy === "none" || runtime.networkPolicy === "provider-only" || runtime.networkPolicy === "unrestricted" || runtime.networkPolicy === "unverified" ? runtime.networkPolicy : undefined,
       readOnly: typeof runtime.readOnly === "boolean" ? runtime.readOnly : undefined,
       sessionPersistence: runtime.sessionPersistence === "runtime" || runtime.sessionPersistence === "volume" || runtime.sessionPersistence === "disposable" ? runtime.sessionPersistence : undefined,
       sessionVolume: typeof runtime.sessionVolume === "string" ? runtime.sessionVolume : undefined,

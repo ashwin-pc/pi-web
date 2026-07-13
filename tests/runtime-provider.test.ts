@@ -52,6 +52,20 @@ describe("StdioRunnerProvider", () => {
 });
 
 describe("CommandRunnerProvider", () => {
+  it("fails closed before spawning a container whose network is not verified", async () => {
+    const provider = new CommandRunnerProvider({
+      id: "blocked",
+      label: "Blocked",
+      command: "container",
+      args: ["exec", "-i", "unsafe", "sh"],
+      cwd: "/workspace",
+      kind: "container",
+      blockedReason: "Runtime blocked: internet-capable network",
+    });
+    expect(provider.status).toMatchObject({ state: "disconnected", error: expect.stringContaining("internet-capable") });
+    expect(() => provider.health()).toThrow(/Runtime blocked/);
+  });
+
   it("can use an arbitrary command transport", async () => {
     const cwd = await tempWorkspace();
     const provider = new CommandRunnerProvider({ id: "cmd:test", label: "Command test", command: process.execPath, args: ["--import", "tsx", "server/runner.ts"], cwd, kind: "local", env: { ...process.env, PI_RUNNER_CWD: cwd, PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent") } });
@@ -89,7 +103,8 @@ describe("DockerRunnerProvider", () => {
     expect(args).toContain("none");
     expect(args).toContain(`${cwd}:/workspace:ro`);
     expect(args).toContain(`${provider.sessionVolume}:/root/.pi/agent`);
-    expect(provider.metadata).toMatchObject({ sessionPersistence: "volume", sessionVolume: provider.sessionVolume });
+    expect(provider.metadata).toMatchObject({ sessionPersistence: "volume", sessionVolume: provider.sessionVolume, modelTransport: "host-broker", networkPolicy: "none" });
+    expect(args.join(" ")).toContain("PI_RUNNER_MODEL_BROKER=1");
     expect(args).not.toContain(process.env.HOME || "");
     expect(args.at(-4)).toBe("node:test");
   });
