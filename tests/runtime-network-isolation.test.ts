@@ -18,10 +18,10 @@ describe("guided container network isolation", () => {
 
   it("accepts an Apple host-only network", async () => {
     const run = fakeRun({
-      "container inspect safe": [{ configuration: { dns: null }, status: { networks: [{ network: "pi-web-safe" }] } }],
+      "container inspect safe": [{ id: "safe-id", configuration: { dns: null }, status: { networks: [{ network: "pi-web-safe" }] } }],
       "container network inspect pi-web-safe": [{ configuration: { mode: "hostOnly" } }],
     });
-    await expect(verifyGuidedContainerIsolation("apple", "safe", run)).resolves.toEqual({ network: "pi-web-safe", networkPolicy: "none" });
+    await expect(verifyGuidedContainerIsolation("apple", "safe", run)).resolves.toEqual(expect.objectContaining({ network: "pi-web-safe", networkPolicy: "host-only", containerId: "safe-id", networkVerifiedAt: expect.any(String) }));
   });
 
   it("rejects Apple's internet-capable default network", async () => {
@@ -41,8 +41,8 @@ describe("guided container network isolation", () => {
 
   it("accepts Docker none but rejects internal and bridge networks", async () => {
     await expect(verifyGuidedContainerIsolation("docker", "none", fakeRun({
-      "docker inspect none": [{ HostConfig: { NetworkMode: "none" }, NetworkSettings: { Networks: {} } }],
-    }))).resolves.toEqual({ network: "none", networkPolicy: "none" });
+      "docker inspect none": [{ Id: "sha256:safe", HostConfig: { NetworkMode: "none" }, NetworkSettings: { Networks: {} } }],
+    }))).resolves.toEqual(expect.objectContaining({ network: "none", networkPolicy: "none", containerId: "sha256:safe", networkVerifiedAt: expect.any(String) }));
 
     await expect(verifyGuidedContainerIsolation("docker", "internal", fakeRun({
       "docker inspect internal": [{ HostConfig: { NetworkMode: "pi-safe" }, NetworkSettings: { Networks: { "pi-safe": {} } } }],
@@ -51,5 +51,11 @@ describe("guided container network isolation", () => {
     await expect(verifyGuidedContainerIsolation("docker", "bridge", fakeRun({
       "docker inspect bridge": [{ HostConfig: { NetworkMode: "bridge" }, NetworkSettings: { Networks: { bridge: {} } } }],
     }))).rejects.toThrow(/must use --network none/);
+  });
+
+  it("rejects container-engine socket mounts", async () => {
+    await expect(verifyGuidedContainerIsolation("docker", "socket", fakeRun({
+      "docker inspect socket": [{ Id: "sha256:socket", HostConfig: { NetworkMode: "none" }, NetworkSettings: { Networks: {} }, Mounts: [{ Source: "/var/run/docker.sock", Destination: "/var/run/docker.sock" }] }],
+    }))).rejects.toThrow(/socket mount/);
   });
 });

@@ -243,7 +243,8 @@ export type RuntimeRef = {
   cwd?: string;
   experimental?: boolean;
   modelTransport?: "runtime" | "host-broker";
-  networkPolicy?: "none" | "provider-only" | "unrestricted" | "unverified";
+  networkPolicy?: "none" | "host-only" | "provider-only" | "unrestricted" | "unverified" | "unknown";
+  networkVerifiedAt?: string;
 };
 
 export type SessionInfo = {
@@ -397,9 +398,7 @@ export function createAppState(): AppState {
     currentRuntimeRef: linkedRuntimeId ? { id: linkedRuntimeId } : undefined,
     activeRuntimeRef: linkedRuntimeId
       ? { id: linkedRuntimeId, label: linkedRuntimeId }
-      : linkedSessionId
-        ? { id: "local", kind: "local", label: "Local machine" }
-        : persistedRuntime,
+      : persistedRuntime,
     statusTitleEditing: false,
     isStreaming: false,
     isRetrying: false,

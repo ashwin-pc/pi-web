@@ -32,7 +32,7 @@ import { StdioRunnerProvider } from "./server/runtime/stdioProvider.js";
 import { DockerRunnerProvider } from "./server/runtime/dockerProvider.js";
 import { CommandRunnerProvider, type CommandRunnerConfig, type RunnerSessionInfo } from "./server/runtime/commandProvider.js";
 import { HostModelBroker } from "./server/runtime/modelBroker.js";
-import { guidedContainerTarget, verifyGuidedContainerIsolation } from "./server/runtime/networkIsolation.js";
+import { guidedContainerTarget, verifyGuidedContainerIsolation, verifyGuidedContainerIsolationSync } from "./server/runtime/networkIsolation.js";
 import { RuntimeStore } from "./server/runtime/runtimeStore.js";
 import { artifactDirForCwd, legacyArtifactDirForCwd, safeArtifactName } from "./server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
@@ -1164,7 +1164,7 @@ async function reconcileRunnerSessionInfo(provider: RunnerProvider, item: Runner
   return runtimeSessionInfoFromRunner(item, provider, binding);
 }
 
-async function runtimeBoundSessionInfos(bindings: SessionRuntimeBinding[], options: { runtimeId?: string; cachedOnly?: boolean; limit?: number; cursor?: string } = {}) {
+async function runtimeBoundSessionInfos(bindings: SessionRuntimeBinding[], options: { runtimeId?: string; cachedOnly?: boolean; limit?: number; cursor?: string; all?: boolean } = {}) {
   const runtimeBindings = bindings.filter((binding) => binding.runtimeId !== "local" && (!options.runtimeId || binding.runtimeId === options.runtimeId));
   const grouped = new Map<string, SessionRuntimeBinding[]>();
   for (const binding of runtimeBindings) grouped.set(binding.runtimeId, [...(grouped.get(binding.runtimeId) || []), binding]);
@@ -1181,16 +1181,32 @@ async function runtimeBoundSessionInfos(bindings: SessionRuntimeBinding[], optio
       continue;
     }
     try {
-      const page = await provider.listSessions({ limit: options.limit, cursor: options.cursor });
+      const listed: RunnerSessionInfo[] = [];
+      let cursor = options.cursor;
+      let page: Awaited<ReturnType<RunnerProvider["listSessions"]>>;
+      do {
+        page = await provider.listSessions({ limit: options.limit, cursor });
+        listed.push(...page.sessions);
+        cursor = options.all ? page.nextCursor : undefined;
+      } while (cursor);
       const observedAt = Date.now();
-      for (let index = 0; index < page.sessions.length; index += 1) {
+      for (let index = 0; index < listed.length; index += 1) {
         try {
-          sessions.push(await reconcileRunnerSessionInfo(provider, page.sessions[index], new Date(observedAt - index).toISOString()));
+          sessions.push(await reconcileRunnerSessionInfo(provider, listed[index], new Date(observedAt - index).toISOString()));
         } catch (error) {
           console.warn(`Ignoring conflicting session locator from runtime ${provider.id}:`, error);
         }
       }
-      if (options.runtimeId) nextCursor = page.nextCursor;
+      if (options.all && !options.cursor) {
+        const authoritativeIds = new Set(listed.map((item) => item.sessionId));
+        for (const binding of await runtimeBindingStore.removeMissingForRuntime(provider.id, authoritativeIds)) {
+          runnerSessionRuntimeIds.delete(binding.sessionId);
+          await sessionUiStateStore.removeSession(binding.sessionId);
+          broadcast({ type: "session_removed", sessionId: binding.sessionId, runtimeId: provider.id, disposition: "authoritative-missing" });
+        }
+      } else if (options.runtimeId) {
+        nextCursor = page.nextCursor;
+      }
     } catch (error) {
       sessions.push(...cached.map((binding) => runtimeSessionInfoFromBinding(binding, provider, error)));
     }
@@ -1216,7 +1232,7 @@ async function listLocalSessionInfos(extraCwds: string[] = []) {
   return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
 }
 
-async function listSessionInfos(extraCwds: string[] = [], options: { runtimeId?: string; cachedOnly?: boolean; limit?: number; cursor?: string } = {}) {
+async function listSessionInfos(extraCwds: string[] = [], options: { runtimeId?: string; cachedOnly?: boolean; limit?: number; cursor?: string; all?: boolean } = {}) {
   const bindings = (await runtimeBindingStore.read()).bindings;
   if (options.runtimeId === "local") return { sessions: await listLocalSessionInfos(extraCwds), nextCursor: undefined };
   if (options.runtimeId) return runtimeBoundSessionInfos(bindings, options);
@@ -1583,6 +1599,7 @@ type GuidedRuntimeConnectConfig = {
   target?: unknown;
   cwd?: unknown;
   runnerDir?: unknown;
+  modelBroker?: unknown;
 };
 
 function runtimeShellPath(value: string) {
@@ -1608,6 +1625,19 @@ function guidedAdapterCommand(adapter: string): string {
   return candidates.find((candidate) => existsSync(candidate)) || executable;
 }
 
+function guidedContainerPreflight(config: CommandRunnerConfig) {
+  const target = guidedContainerTarget(config);
+  return target ? () => { verifyGuidedContainerIsolationSync(target.adapter, target.target, config.command); } : undefined;
+}
+
+function pinGuidedContainerTarget(config: CommandRunnerConfig, target: string, containerId: string): CommandRunnerConfig {
+  if (!containerId || containerId === target) return config;
+  const args = [...config.args];
+  const index = args.findIndex((arg, position) => position > 0 && arg === target);
+  if (index >= 0) args[index] = containerId;
+  return { ...config, args };
+}
+
 function commandConfigForGuidedRuntime(body: GuidedRuntimeConnectConfig): CommandRunnerConfig {
   const adapter = String(body.adapter || "");
   if (!new Set(["apple", "docker", "podman", "ssh"]).has(adapter)) throw new Error("Unsupported guided runtime adapter");
@@ -1620,7 +1650,8 @@ function commandConfigForGuidedRuntime(body: GuidedRuntimeConnectConfig): Comman
   if (!cwd || !runnerDir) throw new Error("Runtime workspace and runner source directory are required");
   if (cwd.includes("\u0000") || runnerDir.includes("\u0000")) throw new Error("Runtime paths are invalid");
   const runnerCommand = `cd ${runtimeShellPath(runnerDir)} && PI_RUNNER_CWD=${runtimeShellPath(cwd)} npm exec --yes tsx server/runner.ts`;
-  if (adapter === "ssh") return { id, label, kind: "ssh", command: "ssh", args: [target, runnerCommand], cwd };
+  const modelBroker = body.modelBroker === true;
+  if (adapter === "ssh") return { id, label, kind: "ssh", command: "ssh", args: [target, runnerCommand], cwd, modelBroker };
   return {
     id,
     label,
@@ -1628,6 +1659,7 @@ function commandConfigForGuidedRuntime(body: GuidedRuntimeConnectConfig): Comman
     command: guidedAdapterCommand(adapter),
     args: ["exec", "-i", target, "sh", "-lc", runnerCommand],
     cwd,
+    modelBroker,
   };
 }
 
@@ -1687,11 +1719,14 @@ async function hydrateCommandRuntimes() {
       continue;
     }
     try {
-      const isolation = await verifyGuidedContainerIsolation(guidedTarget.adapter, guidedTarget.target, undefined, config.command);
-      registerRuntimeProvider(new CommandRunnerProvider({ ...config, modelBroker: true, ...isolation }));
+      const { containerId, ...isolation } = await verifyGuidedContainerIsolation(guidedTarget.adapter, guidedTarget.target, undefined, config.command);
+      const pinnedConfig = pinGuidedContainerTarget(config, guidedTarget.target, containerId);
+      const verifiedConfig: CommandRunnerConfig = { ...pinnedConfig, ...isolation };
+      if (JSON.stringify(verifiedConfig) !== JSON.stringify(config)) await runtimeStore.upsert(verifiedConfig);
+      registerRuntimeProvider(new CommandRunnerProvider({ ...verifiedConfig, preflight: guidedContainerPreflight(verifiedConfig) }));
     } catch (error) {
       const reason = `Runtime blocked: ${error instanceof Error ? error.message : String(error)}`;
-      registerRuntimeProvider(new CommandRunnerProvider({ ...config, modelBroker: true, networkPolicy: "unverified", blockedReason: reason }));
+      registerRuntimeProvider(new CommandRunnerProvider({ ...config, networkPolicy: "unverified", blockedReason: reason }));
     }
   }
 }
@@ -1879,7 +1914,16 @@ function makeRunnerSessionHost(sessionId: string, provider: RunnerProvider, bind
     async messages() {
       const result = await provider.messages(sessionId) as any;
       const messages = Array.isArray(result?.messages) ? result.messages : [];
-      return { ok: true, messages: messages.map((message: unknown) => simplifyMessage(message)) };
+      const entryIds = Array.isArray(result?.entryIds) ? result.entryIds : [];
+      const toolCallArgs = new Map<string, Record<string, unknown>>();
+      for (const message of messages as any[]) {
+        if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+        for (const part of message.content) {
+          if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
+        }
+      }
+      const sessionFile = typeof result?.sessionFile === "string" ? result.sessionFile : binding?.sessionFile;
+      return { ok: true, messages: messages.map((message: unknown, index: number) => simplifyMessage(message, toolCallArgs, sessionFile, typeof entryIds[index] === "string" ? entryIds[index] : undefined)) };
     },
     async getCwd() {
       const runnerState = await provider.state(sessionId) as any;
@@ -1922,7 +1966,7 @@ function makeRunnerSessionHost(sessionId: string, provider: RunnerProvider, bind
       return provider.abortBranchSummary(sessionId) as Promise<Record<string, any>>;
     },
     async deleteSession() {
-      await provider.deleteSession(sessionId);
+      await provider.deleteSession(sessionId, binding?.sessionFile);
       await runtimeBindingStore.remove(sessionId);
       runnerSessionRuntimeIds.delete(sessionId);
       return { id: sessionId, disposition: "deleted" };
@@ -3363,6 +3407,7 @@ const server = createServer(async (req, res) => {
       if (method === "POST" && url.pathname === "/api/runtimes/connect") {
         const body = await readBody(req) as Partial<CommandRunnerConfig> & GuidedRuntimeConnectConfig;
         const guided = typeof body.adapter === "string" && body.adapter.trim().length > 0;
+        if (typeof body.modelBroker !== "boolean") return sendJson(res, 400, { ok: false, error: "modelBroker is required: choose host-brokered models or runtime-owned models explicitly" });
         if (!guided && !allowCustomRuntimes) return sendJson(res, 403, { ok: false, error: "Custom runtime connections are disabled. Use a guided adapter or set PI_WEB_ALLOW_CUSTOM_RUNTIMES=1 to enable persistent command runtimes." });
         try {
           let guidedConfig: CommandRunnerConfig | undefined;
@@ -3371,8 +3416,9 @@ const server = createServer(async (req, res) => {
               guidedConfig = commandConfigForGuidedRuntime(body);
               const adapter = String(body.adapter || "") as "apple" | "docker" | "podman" | "ssh";
               if (adapter !== "ssh") {
-                const isolation = await verifyGuidedContainerIsolation(adapter, String(body.target || ""), undefined, guidedConfig.command);
-                guidedConfig = { ...guidedConfig, modelBroker: true, ...isolation };
+                const target = String(body.target || "");
+                const { containerId, ...isolation } = await verifyGuidedContainerIsolation(adapter, target, undefined, guidedConfig.command);
+                guidedConfig = { ...pinGuidedContainerTarget(guidedConfig, target, containerId), ...isolation };
               }
             } catch (error) {
               return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -3400,11 +3446,11 @@ const server = createServer(async (req, res) => {
             processCwd: guidedConfig?.processCwd || (typeof body.processCwd === "string" ? body.processCwd : undefined),
             ...(agentDir ? { agentDir } : {}),
             kind,
-            modelBroker: guidedConfig?.modelBroker ?? (kind === "container"),
+            modelBroker: body.modelBroker,
             network: guidedConfig?.network,
-            networkPolicy: guidedConfig?.networkPolicy || (kind === "container" ? "unverified" : undefined),
+            networkPolicy: guidedConfig?.networkPolicy || (kind === "container" ? "unverified" : kind === "ssh" ? "unknown" : undefined),
           };
-          const provider = new CommandRunnerProvider(config);
+          const provider = new CommandRunnerProvider({ ...config, preflight: guidedContainerPreflight(config) });
           registerRuntimeProvider(provider);
           try {
             await provider.health();
@@ -3416,6 +3462,29 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 201, { ok: true, runtime: runtimeSummaryForProvider(provider) });
         } catch (error) {
           return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/runtimes/model-access") {
+        const body = await readBody(req) as { id?: unknown; modelBroker?: unknown };
+        const id = String(body.id || "").trim();
+        if (typeof body.modelBroker !== "boolean") return sendJson(res, 400, { ok: false, error: "modelBroker must be boolean" });
+        const previous = runnerProviderById(id);
+        if (!previous) return sendJson(res, 404, { ok: false, error: "Runtime not found" });
+        if (!previous.disconnectable) return sendJson(res, 400, { ok: false, error: "This runtime's model access is configured by the server" });
+        const config = { ...previous.toConfig(), modelBroker: body.modelBroker };
+        unregisterRuntimeProvider(id);
+        const provider = new CommandRunnerProvider({ ...config, preflight: guidedContainerPreflight(config) });
+        try {
+          registerRuntimeProvider(provider);
+          await provider.health();
+          await runtimeStore.upsert(provider.toConfig());
+          return sendJson(res, 200, { ok: true, runtime: runtimeSummaryForProvider(provider) });
+        } catch (error) {
+          if (runnerProviderById(id) === provider) unregisterRuntimeProvider(id);
+          runtimeRunnerProviders.push(previous);
+          void previous.health().catch(() => undefined);
+          return sendJson(res, 400, { ok: false, error: `Could not reconnect runtime: ${error instanceof Error ? error.message : String(error)}` });
         }
       }
 
@@ -3598,8 +3667,9 @@ const server = createServer(async (req, res) => {
         const requestedLimit = Number(url.searchParams.get("limit") || 100);
         const limit = Math.max(1, Math.min(500, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 100));
         const cursor = url.searchParams.get("cursor") || undefined;
+        const all = url.searchParams.get("all") === "1";
         const sessionUiState = await sessionUiStateStore.read();
-        const result = await listSessionInfos(extraCwds, { runtimeId, cachedOnly, limit, cursor });
+        const result = await listSessionInfos(extraCwds, { runtimeId, cachedOnly, limit, cursor, all });
         return sendJson(res, 200, { ok: true, runtimeId: runtimeId || "all", sessions: applySessionUnreadState(result.sessions, sessionUiState), nextCursor: result.nextCursor });
       }
 

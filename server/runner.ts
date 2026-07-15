@@ -48,9 +48,9 @@ function rememberLiveSession(session: any) {
   if (liveSessions.has(sessionId)) liveSessions.delete(sessionId);
   liveSessions.set(sessionId, session);
   while (liveSessions.size > maxLiveSessions) {
-    const oldest = liveSessions.keys().next().value as string | undefined;
-    if (!oldest || oldest === sessionId && liveSessions.size <= 1) break;
-    releaseRunnerSession(oldest);
+    const oldestIdle = Array.from(liveSessions.entries()).find(([id, candidate]) => id !== sessionId && !candidate?.isStreaming && !candidate?.isCompacting)?.[0];
+    if (!oldestIdle) break;
+    releaseRunnerSession(oldestIdle);
   }
   return session;
 }
@@ -90,17 +90,33 @@ function send(value: RuntimeRequest | RuntimeResponse | RuntimeEvent) {
 type PendingHostRequest = {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+  timer: NodeJS.Timeout;
 };
 
 const pendingHostRequests = new Map<string, PendingHostRequest>();
 const brokerStreams = new Map<string, AssistantMessageEventStream>();
 let brokerReady: Promise<void> | undefined;
 
-function requestHost<T>(method: string, params?: unknown, requestId = randomUUID()): Promise<T> {
+function requestHost<T>(method: string, params?: unknown, requestId = randomUUID(), timeoutMs = 15 * 60_000): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    pendingHostRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject });
+    if (pendingHostRequests.has(requestId)) return reject(new Error(`Duplicate host request id: ${requestId}`));
+    const timer = setTimeout(() => {
+      pendingHostRequests.delete(requestId);
+      if (method === "host.models.stream") send({ id: randomUUID(), method: "host.models.abort", params: { requestId } });
+      reject(new Error(`Host request timed out: ${method}`));
+    }, timeoutMs);
+    timer.unref?.();
+    pendingHostRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timer });
     send({ id: requestId, method, params });
   });
+}
+
+function rejectPendingHostRequests(error: Error) {
+  for (const pending of pendingHostRequests.values()) {
+    clearTimeout(pending.timer);
+    pending.reject(error);
+  }
+  pendingHostRequests.clear();
 }
 
 function brokerErrorMessage(model: Model<any>, error: unknown, aborted = false): AssistantMessage {
@@ -140,12 +156,22 @@ function brokerStreamSimple(model: Model<any>, context: Context, options: Simple
   return stream;
 }
 
+function closeRegistryToBrokerModels(registry: ModelRegistry) {
+  const getAll = registry.getAll.bind(registry);
+  const brokerModels = () => getAll().filter((model) => model.api === MODEL_BROKER_API);
+  registry.getAll = brokerModels;
+  registry.getAvailable = brokerModels;
+  registry.find = (provider, modelId) => brokerModels().find((model) => model.provider === provider && model.id === modelId);
+  registry.hasConfiguredAuth = (model) => model.api === MODEL_BROKER_API && Boolean(registry.find(model.provider, model.id));
+}
+
 async function ensureModelBroker(): Promise<void> {
   if (!modelBrokerEnabled) return;
-  if (!brokerReady) brokerReady = (async () => {
-    const catalog = await requestHost<BrokerModelCatalog>("host.models.list");
-    const brokerAuth = AuthStorage.inMemory();
-    const brokerRegistry = ModelRegistry.inMemory(brokerAuth);
+  if (!brokerReady) {
+    brokerReady = (async () => {
+      const catalog = await requestHost<BrokerModelCatalog>("host.models.list", undefined, randomUUID(), 30_000);
+      const brokerAuth = AuthStorage.inMemory();
+      const brokerRegistry = ModelRegistry.inMemory(brokerAuth);
     const byProvider = new Map<string, BrokerModelCatalog["models"]>();
     for (const model of catalog.models) {
       const models = byProvider.get(model.provider) || [];
@@ -172,9 +198,14 @@ async function ensureModelBroker(): Promise<void> {
         })),
       });
     }
-    authStorage = brokerAuth;
-    modelRegistry = brokerRegistry;
-  })();
+      closeRegistryToBrokerModels(brokerRegistry);
+      authStorage = brokerAuth;
+      modelRegistry = brokerRegistry;
+    })().catch((error) => {
+      brokerReady = undefined;
+      throw error;
+    });
+  }
   return brokerReady;
 }
 
@@ -246,6 +277,43 @@ function sessionState(session: any) {
     thinkingLevels: typeof session.getAvailableThinkingLevels === "function" ? session.getAvailableThinkingLevels() : ["off"],
     messages: Array.isArray(session.messages) ? session.messages.length : 0,
   };
+}
+
+function appendMessageEntryId(ids: Array<string | undefined>, entry: any) {
+  if (!entry || typeof entry !== "object") return;
+  if (entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary" && entry.summary) {
+    ids.push(typeof entry.id === "string" && entry.id.trim() ? entry.id : undefined);
+  }
+}
+
+function messageEntryIds(session: any): Array<string | undefined> {
+  const getBranch = session.sessionManager?.getBranch;
+  if (typeof getBranch !== "function") return [];
+  let branch: any[];
+  try {
+    branch = getBranch.call(session.sessionManager);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(branch)) return [];
+
+  const ids: Array<string | undefined> = [];
+  const compaction = [...branch].reverse().find((entry) => entry?.type === "compaction");
+  if (!compaction) {
+    for (const entry of branch) appendMessageEntryId(ids, entry);
+    return ids;
+  }
+
+  ids.push(typeof compaction.id === "string" && compaction.id.trim() ? compaction.id : undefined);
+  const compactionIndex = branch.findIndex((entry) => entry?.type === "compaction" && entry?.id === compaction.id);
+  let foundFirstKept = false;
+  for (let index = 0; index < compactionIndex; index += 1) {
+    const entry = branch[index];
+    if (entry?.id === compaction.firstKeptEntryId) foundFirstKept = true;
+    if (foundFirstKept) appendMessageEntryId(ids, entry);
+  }
+  for (let index = compactionIndex + 1; index < branch.length; index += 1) appendMessageEntryId(ids, branch[index]);
+  return ids;
 }
 
 function listedSessionState(info: Awaited<ReturnType<typeof SessionManager.listAll>>[number]) {
@@ -389,7 +457,13 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
     }
     case "sessions.messages": {
       const session = await resolveSession(params);
-      return { ok: true, sessionId: String(params.sessionId || session.sessionId), messages: session.messages || [] };
+      return {
+        ok: true,
+        sessionId: String(params.sessionId || session.sessionId),
+        sessionFile: String(session.sessionFile || ""),
+        messages: session.messages || [],
+        entryIds: messageEntryIds(session),
+      };
     }
     case "sessions.prompt": {
       const session = await resolveSession(params);
@@ -509,6 +583,7 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
 
 const rl = createInterface({ input: process.stdin });
 setTimeout(() => send({ event: "ready", data: { cwd: rootCwd, pid: process.pid, modelTransport: modelBrokerEnabled ? "host-broker" : "runtime" } }), 0);
+rl.on("close", () => rejectPendingHostRequests(new Error("Host transport closed")));
 rl.on("line", (line) => {
   let message: RuntimeRequest | RuntimeResponse | RuntimeEvent | undefined;
   try {
@@ -529,6 +604,7 @@ rl.on("line", (line) => {
     const pending = pendingHostRequests.get(message.id);
     if (!pending) return;
     pendingHostRequests.delete(message.id);
+    clearTimeout(pending.timer);
     if (message.ok) pending.resolve(message.result);
     else pending.reject(new Error(message.error));
     return;

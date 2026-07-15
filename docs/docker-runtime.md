@@ -37,7 +37,9 @@ npm run dev
 
 Open pi-web, enter the token, connect **Docker workspace** once, and select it from the session drawer's workbench switcher. The complete tab is then scoped to the container and paths resolve under `/workspace`. A different-runtime session requires an explicit workbench switch or another browser tab.
 
-Guided connections to existing Docker/Podman containers are accepted only when inspection confirms `--network none`. An internal bridge is not sufficient because its embedded DNS resolver may still become an egress channel. Apple containers require both a `hostOnly` internal network and `--no-dns`. Advanced custom command runtimes are marked as unverified because pi-web cannot prove their network posture.
+Guided connections to existing Docker/Podman containers are accepted only when inspection confirms `--network none`. An internal bridge is not sufficient because its embedded DNS resolver may still become an egress channel. Apple containers require both a `hostOnly` internal network and `--no-dns`; this is reported honestly as `host-only` because services on the host gateway remain reachable. Container identity is pinned, engine socket mounts are rejected, and isolation is rechecked before each runner spawn. Advanced custom command runtimes are marked as unverified because pi-web cannot prove their network posture.
+
+Every connection requires an explicit model-access decision with no default: **host credentials** uses the typed model broker, while **runtime credentials/models** never grants host model access. The choice is persisted, displayed on the runtime, and can be changed with an explicit reconnect.
 
 ## Current limitations
 
@@ -45,5 +47,5 @@ Guided connections to existing Docker/Podman containers are accepted only when i
 - **Remove from list** removes only an offline locator cached by pi-web. **Delete session data** requires the runtime to be connected and deletes the authoritative runtime session file.
 - Git status/diff and prompt/state/messages are routed to runner sessions; host-only routes return an explicit unsupported-runtime error instead of falling back to the host.
 - The default image runs `npm exec tsx server/runner.ts` with the pi-web source mounted at `/app`; custom images must be able to run that command.
-- SSH runtimes are not brokered. They use authentication and network policy configured on the remote machine.
+- SSH runtimes use network policy configured on the remote machine. Model access is explicitly chosen at connection time: remote credentials/models or the host broker.
 - Persistent custom command runtimes are authenticated host command execution. They are disabled in production unless `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` is set.

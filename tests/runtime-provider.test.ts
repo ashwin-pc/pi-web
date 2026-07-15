@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -45,6 +45,15 @@ describe("StdioRunnerProvider", () => {
       } finally {
         reopenedProvider.stop();
       }
+
+      await writeFile(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: created.sessionId, timestamp: new Date().toISOString(), cwd })}\n`, "utf-8");
+      const deletingProvider = new StdioRunnerProvider({ cwd, agentDir: join(cwd, ".pi", "agent") });
+      try {
+        await expect(deletingProvider.deleteSession(created.sessionId, sessionFile)).resolves.toMatchObject({ deleted: true });
+        await expect(access(sessionFile)).rejects.toThrow();
+      } finally {
+        deletingProvider.stop();
+      }
     } finally {
       provider.stop();
     }
@@ -60,15 +69,33 @@ describe("CommandRunnerProvider", () => {
       args: ["exec", "-i", "unsafe", "sh"],
       cwd: "/workspace",
       kind: "container",
+      modelBroker: true,
       blockedReason: "Runtime blocked: internet-capable network",
     });
     expect(provider.status).toMatchObject({ state: "disconnected", error: expect.stringContaining("internet-capable") });
     expect(() => provider.health()).toThrow(/Runtime blocked/);
   });
 
+  it("rechecks isolation before every runner spawn", () => {
+    let checks = 0;
+    const provider = new CommandRunnerProvider({
+      id: "preflight",
+      label: "Preflight",
+      command: "must-not-spawn",
+      args: [],
+      cwd: "/workspace",
+      kind: "container",
+      modelBroker: true,
+      preflight: () => { checks += 1; throw new Error("network changed"); },
+    });
+    expect(() => provider.health()).toThrow(/isolation check failed.*network changed/);
+    expect(checks).toBe(1);
+    expect(provider.status).toMatchObject({ state: "disconnected", error: expect.stringContaining("network changed") });
+  });
+
   it("can use an arbitrary command transport", async () => {
     const cwd = await tempWorkspace();
-    const provider = new CommandRunnerProvider({ id: "cmd:test", label: "Command test", command: process.execPath, args: ["--import", "tsx", "server/runner.ts"], cwd, kind: "local", env: { ...process.env, PI_RUNNER_CWD: cwd, PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent") } });
+    const provider = new CommandRunnerProvider({ id: "cmd:test", label: "Command test", command: process.execPath, args: ["--import", "tsx", "server/runner.ts"], cwd, kind: "local", modelBroker: false, env: { ...process.env, PI_RUNNER_CWD: cwd, PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent") } });
     try {
       await expect(provider.health()).resolves.toMatchObject({ ok: true });
       const created = await provider.createSession();

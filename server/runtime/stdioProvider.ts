@@ -14,6 +14,7 @@ export class StdioRunnerProvider extends CommandRunnerProvider {
       processCwd: process.cwd(),
       env: { ...process.env, PI_RUNNER_CWD: options.cwd, ...(options.agentDir ? { PI_CODING_AGENT_DIR: options.agentDir } : {}) },
       kind: "local",
+      modelBroker: false,
       disconnectable: false,
       experimental: true,
     });

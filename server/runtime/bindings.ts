@@ -58,6 +58,10 @@ export class RuntimeBindingStore {
         throw new Error(`Session ${binding.sessionId} is already bound to runtime ${existing.runtimeId}; refusing to rebind it to ${binding.runtimeId}`);
       }
       const next: SessionRuntimeBinding = { ...existing, ...binding, updatedAt: binding.updatedAt || new Date().toISOString() };
+      if (existing) {
+        const keys = new Set([...Object.keys(existing), ...Object.keys(next)] as Array<keyof SessionRuntimeBinding>);
+        if (Array.from(keys).every((key) => existing[key] === next[key])) return existing;
+      }
       const bindings = data.bindings.filter((item) => item.sessionId !== next.sessionId);
       bindings.unshift(next);
       const nextData: BindingFile = { version: 1, bindings };
@@ -82,6 +86,23 @@ export class RuntimeBindingStore {
     const result = this.writeQueue.then(run, run);
     this.writeQueue = result.then(() => undefined, () => undefined);
     return result;
+  }
+
+  async removeMissingForRuntime(runtimeId: string, authoritativeSessionIds: ReadonlySet<string>): Promise<SessionRuntimeBinding[]> {
+    let removed: SessionRuntimeBinding[] = [];
+    const run = async () => {
+      const data = await this.read();
+      removed = data.bindings.filter((item) => item.runtimeId === runtimeId && !authoritativeSessionIds.has(item.sessionId));
+      if (removed.length === 0) return;
+      const removedIds = new Set(removed.map((item) => item.sessionId));
+      const nextData: BindingFile = { version: 1, bindings: data.bindings.filter((item) => !removedIds.has(item.sessionId)) };
+      await writeJsonAtomic(this.file, nextData);
+      this.cache = nextData;
+    };
+    const result = this.writeQueue.then(run, run);
+    this.writeQueue = result.then(() => undefined, () => undefined);
+    await result;
+    return removed;
   }
 
   async removeRuntime(runtimeId: string): Promise<number> {

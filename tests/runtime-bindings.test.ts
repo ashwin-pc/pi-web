@@ -30,6 +30,17 @@ describe("RuntimeBindingStore", () => {
     await expect(bindings.set({ sessionId: "s1", runtimeId: "container:other", cwd: "/workspace/repo" })).rejects.toThrow(/refusing to rebind/);
   });
 
+  it("removes locators absent from a complete authoritative runtime listing", async () => {
+    const bindings = await store();
+    await bindings.set({ sessionId: "keep", runtimeId: "container:abc", cwd: "/workspace/keep" });
+    await bindings.set({ sessionId: "missing", runtimeId: "container:abc", cwd: "/workspace/missing" });
+    await bindings.set({ sessionId: "other", runtimeId: "ssh:dev", cwd: "/repo" });
+    await expect(bindings.removeMissingForRuntime("container:abc", new Set(["keep"]))).resolves.toEqual([
+      expect.objectContaining({ sessionId: "missing", runtimeId: "container:abc" }),
+    ]);
+    await expect((await bindings.read()).bindings.map((item) => item.sessionId).sort()).toEqual(["keep", "other"]);
+  });
+
   it("removes every cached locator when a runtime is forgotten", async () => {
     const bindings = await store();
     await bindings.set({ sessionId: "s1", runtimeId: "container:abc", cwd: "/workspace/a" });

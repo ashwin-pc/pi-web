@@ -361,7 +361,6 @@ export function createSessions(options: {
         // Fall through to a clean session if recovery fails.
       }
     }
-    await startNewSession(runtime.cwd, runtime.id);
     await refreshSessions();
   }
 
@@ -644,6 +643,7 @@ export function createSessions(options: {
     const params = new URLSearchParams();
     params.set("runtimeId", runtimeId);
     params.set("limit", "200");
+    params.set("all", "1");
     for (const cwd of readKnownSessionCwds(runtimeId)) params.append("cwd", cwd);
 
     async function load(cachedOnly: boolean) {
@@ -1587,7 +1587,7 @@ export function createSessions(options: {
   async function removeSessionFromList(item: SessionInfo) {
     if (item.isCurrent) throw new Error("Switch to another session before removing the current session.");
     const title = sessionTitle(item);
-    if (!window.confirm(`Remove “${title}” from this list? The session data will remain in its runtime.`)) return;
+    if (!window.confirm(`Remove “${title}” from this list? The session data will remain in its runtime, and the row will return if that runtime reconnects and still reports the session.`)) return;
     const res = await fetch("/api/sessions/remove", {
       method: "POST",
       headers: api.headers(),

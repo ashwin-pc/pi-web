@@ -55,7 +55,7 @@ A runtime owns:
 - session tree and runtime artifacts;
 - runtime-side git and tool execution.
 
-Managed local containers do not own provider credentials or provider network transport. Those are deliberately host-brokered as described below. SSH and other machine runtimes remain responsible for their own credentials and networking.
+Model access is an explicit runtime connection property with no inferred default. A runtime either uses host credentials through the typed broker described below, or uses only credentials/models owned by that runtime. SSH and other-machine networking remains controlled by the remote machine even when host-brokered model access is selected.
 
 The runner exposes capped/paginated `sessions.list`; pi-web reconciles its locator cache from that list.
 
@@ -104,9 +104,9 @@ interface SessionHost {
 
 The runner forwards every pi event through the same host enrichment and browser realtime pipeline used by local sessions.
 
-## Managed-container model broker
+## Host model broker
 
-Apple container, Docker, and Podman runners use a typed, bidirectional model protocol over the existing stdio transport. Their container network has no internet route.
+Runtimes explicitly configured for host model access use a typed, bidirectional model protocol over the existing stdio transport. Guided Docker/Podman containers additionally have no network route. Guided Apple containers are limited to a DNS-disabled `hostOnly` network, which still permits access to host services and is reported separately from `none`.
 
 - On startup the runner requests the host's available model catalog. The catalog contains model metadata only—never URLs, headers, or credentials.
 - The runtime keeps authoritative model/thinking selection in its session but registers a broker stream implementation for inference.
@@ -116,9 +116,9 @@ Apple container, Docker, and Podman runners use a typed, bidirectional model pro
 - A runner may not issue arbitrary host HTTP requests. Unknown host methods and unavailable models are rejected.
 - Closing the runner transport aborts active host model streams so reconnects cannot leave billable requests running.
 
-The runtime process scrubs credential-shaped environment variables in broker mode and uses in-memory dummy auth only to satisfy the agent's local model-selection API. Host auth never enters runtime storage. This supersedes copying `auth.json` into managed containers.
+The runtime process scrubs credential-shaped environment variables in broker mode and exposes only broker-registered models; built-in models backed by ambient AWS profiles, Google ADC files, or other runtime auth cannot bypass the broker registry. Host auth never enters runtime storage. This supersedes copying `auth.json` into containers.
 
-Because tools have no network route, they cannot bypass the broker with curl, DNS, raw sockets, or cleared proxy settings. Broker failure is fail-closed. SSH runtimes intentionally do not use this broker and depend on authentication/networking configured on the remote machine.
+For Docker/Podman, tools have no network route and cannot bypass the broker with curl, DNS, raw sockets, or cleared proxy settings. Apple `hostOnly` prevents internet routing and DNS but does not claim host-service isolation. Broker failure is fail-closed. SSH may use the broker only after the user explicitly grants host model access; otherwise it depends entirely on authentication configured remotely.
 
 ## Listing and ordering
 
@@ -161,7 +161,9 @@ Normal users use guided forms for:
 - Podman exec;
 - SSH host aliases.
 
-The server generates constrained commands for guided adapters and verifies runner health/protocol before registration. For Apple container, Docker, and Podman it first inspects the network and rejects an unproven policy. Apple must use a `hostOnly` network with `--no-dns`; Docker/Podman must use `--network none`. Internal Docker/Podman bridges are rejected because embedded DNS can remain an egress channel. Advanced command runtimes cannot be proven by pi-web and are labeled `unverified`.
+The server generates constrained commands for guided adapters and verifies runner health/protocol before registration. For Apple container, Docker, and Podman it first inspects the network and rejects an unproven policy. Apple must use a `hostOnly` network with `--no-dns`; Docker/Podman must use `--network none`. Internal Docker/Podman bridges are rejected because embedded DNS can remain an egress channel. The inspected container identity is pinned, engine socket mounts are rejected, and isolation is checked again before every runner spawn. Advanced command runtimes cannot be proven by pi-web and are labeled `unverified`.
+
+The connection UI requires an explicit host-broker versus runtime-owned-model choice for every adapter and custom command. The saved choice is visible and can be changed only through an explicit reconnect.
 
 Raw command JSON remains under an Advanced disclosure and requires `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` outside development/mock mode because it is persistent authenticated host command execution.
 

@@ -47,7 +47,8 @@ export type RuntimeRunnerMetadata = {
   sessionPersistence?: "runtime" | "volume" | "disposable";
   sessionVolume?: string;
   modelTransport?: "runtime" | "host-broker";
-  networkPolicy?: "none" | "provider-only" | "unrestricted" | "unverified";
+  networkPolicy?: "none" | "host-only" | "provider-only" | "unrestricted" | "unverified" | "unknown";
+  networkVerifiedAt?: string;
 };
 
 export type CommandRunnerConfig = {
@@ -59,13 +60,15 @@ export type CommandRunnerConfig = {
   processCwd?: string;
   agentDir?: string;
   kind?: RuntimeKind;
-  modelBroker?: boolean;
+  modelBroker: boolean;
   network?: string;
   networkPolicy?: RuntimeRunnerMetadata["networkPolicy"];
+  networkVerifiedAt?: string;
 };
 
 export type RuntimeRunnerConfig = CommandRunnerConfig & {
   env?: NodeJS.ProcessEnv;
+  preflight?: () => void;
   disconnectable?: boolean;
   experimental?: boolean;
   metadata?: RuntimeRunnerMetadata;
@@ -83,6 +86,7 @@ export class CommandRunnerProvider {
   readonly label: string;
   readonly command: string;
   readonly args: string[];
+  private readonly configuredArgs: string[];
   readonly cwd: string;
   readonly processCwd?: string;
   readonly agentDir?: string;
@@ -92,6 +96,7 @@ export class CommandRunnerProvider {
   readonly metadata: RuntimeRunnerMetadata;
   readonly modelBroker: boolean;
   private readonly env?: NodeJS.ProcessEnv;
+  private readonly preflight?: () => void;
   private runtimeRequestHandlerFactory?: () => RuntimeRequestHandler;
   private client?: StdioRuntimeClient;
   private sessionFiles = new Map<string, { sessionFile: string; cwd?: string }>();
@@ -113,8 +118,9 @@ export class CommandRunnerProvider {
     this.id = config.id;
     this.label = config.label;
     this.command = config.command;
-    this.modelBroker = config.modelBroker ?? (config.kind === "container");
-    this.args = this.modelBroker ? config.args.map((arg) => enableBrokerInRunnerCommand(arg)) : config.args;
+    this.modelBroker = config.modelBroker;
+    this.configuredArgs = config.args.map((arg) => disableBrokerInRunnerCommand(arg));
+    this.args = runnerArgsForModelAccess(config.command, this.configuredArgs, config.kind, this.modelBroker);
     this.cwd = config.cwd;
     this.processCwd = config.processCwd;
     this.agentDir = config.agentDir;
@@ -122,21 +128,31 @@ export class CommandRunnerProvider {
     this.disconnectable = config.disconnectable ?? true;
     this.experimental = Boolean(config.experimental);
     this.blockedReason = config.blockedReason;
+    this.preflight = config.preflight;
     this.currentStatus = { state: "disconnected", attempt: 0, ...(this.blockedReason ? { error: this.blockedReason } : {}) };
     this.metadata = {
       ...(config.metadata || {}),
       ...(config.network ? { network: config.network } : {}),
       networkPolicy: config.networkPolicy || config.metadata?.networkPolicy || (config.kind === "container" ? "unverified" : undefined),
+      networkVerifiedAt: config.networkVerifiedAt || config.metadata?.networkVerifiedAt,
       modelTransport: this.modelBroker ? "host-broker" : (config.metadata?.modelTransport || "runtime"),
     };
-    this.env = config.agentDir
+    const baseEnv = config.agentDir
       ? { ...(config.env || process.env), PI_CODING_AGENT_DIR: config.agentDir }
-      : config.env;
+      : { ...(config.env || process.env) };
+    this.env = { ...baseEnv, PI_RUNNER_MODEL_BROKER: this.modelBroker ? "1" : "0" };
   }
 
   start(): StdioRuntimeClient {
     if (this.blockedReason) throw new Error(this.blockedReason);
     if (this.client && !this.client.isClosed) return this.client;
+    try {
+      this.preflight?.();
+    } catch (error) {
+      const message = `Runtime isolation check failed: ${error instanceof Error ? error.message : String(error)}`;
+      this.emitStatus({ state: "disconnected", attempt: this.reconnectAttempt, error: message });
+      throw new Error(message);
+    }
     this.stopped = false;
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
@@ -263,8 +279,13 @@ export class CommandRunnerProvider {
     return this.start().request("sessions.release", this.sessionParams(sessionId)).catch(() => ({ ok: true, sessionId }));
   }
 
-  async deleteSession(sessionId: string) {
-    const result = await this.start().request("sessions.delete", this.sessionParams(sessionId));
+  async deleteSession(sessionId: string, fallbackSessionFile?: string) {
+    const params = this.sessionParams(sessionId);
+    const result = await this.start().request<{ ok: true; sessionId: string; deleted: boolean }>("sessions.delete", {
+      ...params,
+      sessionFile: params.sessionFile || fallbackSessionFile,
+    });
+    if (!result.deleted) throw new Error("Could not locate session data in the runtime. Use Remove from list to forget its locator.");
     this.subscribedSessionIds.delete(sessionId);
     this.desiredSubscriptionIds.delete(sessionId);
     this.sessionFiles.delete(sessionId);
@@ -291,11 +312,24 @@ export class CommandRunnerProvider {
   }
 
   toConfig(): CommandRunnerConfig {
-    return { id: this.id, label: this.label, command: this.command, args: this.args, cwd: this.cwd, processCwd: this.processCwd, agentDir: this.agentDir, kind: this.kind, modelBroker: this.modelBroker, network: this.metadata.network, networkPolicy: this.metadata.networkPolicy };
+    return { id: this.id, label: this.label, command: this.command, args: this.configuredArgs, cwd: this.cwd, processCwd: this.processCwd, agentDir: this.agentDir, kind: this.kind, modelBroker: this.modelBroker, network: this.metadata.network, networkPolicy: this.metadata.networkPolicy, networkVerifiedAt: this.metadata.networkVerifiedAt };
   }
 }
 
-function enableBrokerInRunnerCommand(value: string): string {
-  if (!value.includes("server/runner") || value.includes("PI_RUNNER_MODEL_BROKER=")) return value;
-  return value.replace(/\bnpm\s+exec\b/, "PI_RUNNER_MODEL_BROKER=1 npm exec");
+function disableBrokerInRunnerCommand(value: string): string {
+  return value.replace(/\bPI_RUNNER_MODEL_BROKER=1\s+/g, "");
+}
+
+function runnerArgsForModelAccess(command: string, args: string[], kind: RuntimeKind | undefined, modelBroker: boolean): string[] {
+  if (!modelBroker) return args;
+  const executable = command.split(/[\\/]/).at(-1);
+  if ((executable === "container" || executable === "docker" || executable === "podman") && (args[0] === "exec" || args[0] === "run")) {
+    return [args[0], "-e", "PI_RUNNER_MODEL_BROKER=1", ...args.slice(1)];
+  }
+  if ((kind === "ssh" || executable === "ssh") && args.length > 1) {
+    const next = [...args];
+    next[next.length - 1] = `PI_RUNNER_MODEL_BROKER=1 ${next.at(-1)}`;
+    return next;
+  }
+  return args;
 }

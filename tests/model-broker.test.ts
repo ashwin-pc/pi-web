@@ -48,7 +48,7 @@ describe("HostModelBroker", () => {
           provider,
           id: "safe-model",
           context: { messages: [{ role: "user", content: "hello", timestamp: Date.now() }] },
-          options: { apiKey: "runner-attack", headers: { authorization: "runner-attack" }, env: { SECRET: "runner-attack" }, baseUrl: "https://runner.invalid", url: "https://runner.invalid", maxTokens: 42 },
+          options: { apiKey: "runner-attack", headers: { authorization: "runner-attack" }, env: { SECRET: "runner-attack" }, baseUrl: "https://runner.invalid", url: "https://runner.invalid", maxTokens: 42, transport: { smuggled: true }, timeoutMs: "forever" },
         },
       }, { sendEvent: (event, data) => events.push({ event, data }) });
 
@@ -57,10 +57,50 @@ describe("HostModelBroker", () => {
       expect(receivedOptions?.env).toBeUndefined();
       expect((receivedOptions as Record<string, unknown> | undefined)?.baseUrl).toBeUndefined();
       expect((receivedOptions as Record<string, unknown> | undefined)?.url).toBeUndefined();
+      expect(receivedOptions?.transport).toBeUndefined();
+      expect(receivedOptions?.timeoutMs).toBeUndefined();
       expect(JSON.stringify(events)).not.toContain("host-only-secret");
       expect(JSON.stringify(events)).not.toContain("runner-attack");
       expect(events).toMatchObject([{ event: "host.models.stream.event", data: { requestId: "stream", event: { type: "done" } } }]);
     } finally {
+      unregisterApiProviders(sourceId);
+      registry.unregisterProvider(provider);
+    }
+  });
+
+  it("bounds concurrent streams and rejects duplicate runner request ids", async () => {
+    const provider = `broker-limit-${Date.now()}`;
+    const api = `${provider}-api`;
+    const registry = ModelRegistry.inMemory(AuthStorage.inMemory());
+    registry.registerProvider(provider, {
+      api,
+      apiKey: "host-secret",
+      baseUrl: "https://provider.invalid",
+      models: [{ id: "model", name: "Model", reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 1000, maxTokens: 100 }],
+    });
+    const sourceId = `${provider}-source`;
+    const fakeStream = (model: any, _context: any, options?: SimpleStreamOptions) => {
+      const stream = createAssistantMessageEventStream();
+      options?.signal?.addEventListener("abort", () => stream.push({
+        type: "error",
+        reason: "aborted",
+        error: { role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id, usage: usage(), stopReason: "aborted", timestamp: Date.now() },
+      }), { once: true });
+      return stream;
+    };
+    registerApiProvider({ api, stream: fakeStream, streamSimple: fakeStream }, sourceId);
+    const handler = new HostModelBroker(registry, 1).createRequestHandler();
+    const transport = { sendEvent: () => undefined };
+    const params = { provider, id: "model", context: { messages: [] } };
+    try {
+      const first = handler({ id: "stream-1", method: "host.models.stream", params }, transport);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await expect(handler({ id: "stream-1", method: "host.models.stream", params }, transport)).rejects.toThrow(/Duplicate/);
+      await expect(handler({ id: "stream-2", method: "host.models.stream", params }, transport)).rejects.toThrow(/limit/);
+      handler.dispose?.();
+      await expect(first).resolves.toMatchObject({ ok: true });
+    } finally {
+      handler.dispose?.();
       unregisterApiProviders(sourceId);
       registry.unregisterProvider(provider);
     }

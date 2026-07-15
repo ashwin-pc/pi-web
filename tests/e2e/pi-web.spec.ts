@@ -566,11 +566,12 @@ test.describe("composer layout", () => {
     await expect(page.locator("#runtimeAdvancedDetails")).not.toHaveAttribute("open", "");
 
     await page.locator("#runtimeConnectKind").selectOption("ssh");
+    await page.locator("#runtimeConnectModelAccess").selectOption("runtime");
     await page.locator("#runtimeConnectLabel").fill("SSH test");
     await page.locator("#runtimeConnectTarget").fill("test-host");
     await page.locator("#runtimeConnectButton").click();
     await expect(page.locator("#runtimePanelStatus")).toContainText("Connected SSH test");
-    expect(connectedBodies.at(-1)).toMatchObject({ id: "ssh:test-host", label: "SSH test", adapter: "ssh", target: "test-host", cwd: "~/workspace", runnerDir: "~/pi-web-runner" });
+    expect(connectedBodies.at(-1)).toMatchObject({ id: "ssh:test-host", label: "SSH test", adapter: "ssh", target: "test-host", cwd: "~/workspace", runnerDir: "~/pi-web-runner", modelBroker: false });
     await expect(page.locator("#runtimeList")).toContainText("SSH test");
 
     await page.locator(".runtimeExample", { hasText: "SSH host" }).locator(".runtimeExampleUse").click();

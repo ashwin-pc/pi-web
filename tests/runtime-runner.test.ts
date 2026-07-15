@@ -110,6 +110,25 @@ describe("runtime runner spike", () => {
     }
   }, 60_000);
 
+  it("retries broker initialization after a transient host catalog failure", async () => {
+    const cwd = await tempRepo();
+    let attempts = 0;
+    const runtimeRequestHandler: RuntimeRequestHandler = async (request) => {
+      if (request.method !== "host.models.list") throw new Error("Unexpected host method");
+      attempts += 1;
+      if (attempts === 1) throw new Error("temporary catalog failure");
+      return { ok: true, models: [] };
+    };
+    const client = createClient(cwd, { PI_RUNNER_MODEL_BROKER: "1" }, runtimeRequestHandler);
+    try {
+      await expect(client.request("health")).rejects.toThrow(/temporary catalog failure/);
+      await expect(client.request("health")).resolves.toMatchObject({ modelTransport: "host-broker" });
+      expect(attempts).toBe(2);
+    } finally {
+      client.close();
+    }
+  });
+
   it("streams an approved host model without runtime credentials", async () => {
     const cwd = await tempRepo();
     const brokerRequests: any[] = [];
@@ -142,18 +161,24 @@ describe("runtime runner spike", () => {
       transport.sendEvent("host.models.stream.event", { requestId: request.id, event: { type: "done", reason: "stop", message } });
       return { ok: true };
     };
-    const client = createClient(cwd, { PI_RUNNER_MODEL_BROKER: "1", OPENAI_API_KEY: "must-not-be-used" }, runtimeRequestHandler);
+    const client = createClient(cwd, {
+      PI_RUNNER_MODEL_BROKER: "1",
+      OPENAI_API_KEY: "must-not-be-used",
+      AWS_PROFILE: "ambient-profile-must-not-be-visible",
+      GOOGLE_CLOUD_PROJECT: "ambient-project-must-not-be-visible",
+    }, runtimeRequestHandler);
     try {
       await expect(client.request("health")).resolves.toMatchObject({ modelTransport: "host-broker" });
       const created = await client.request<any>("sessions.create", { cwd });
-      await expect(client.request("models.list", { sessionId: created.sessionId })).resolves.toMatchObject({
-        models: [{ provider: model.provider, id: model.id }],
-      });
+      const listedModels = await client.request<any>("models.list", { sessionId: created.sessionId });
+      expect(listedModels.models.map(({ provider, id }: any) => ({ provider, id }))).toEqual([{ provider: model.provider, id: model.id }]);
       const done = waitForEvent(client, (event) => event.event === "session.prompt.done");
       await client.request("sessions.prompt", { sessionId: created.sessionId, message: "hello", images: [] });
       await expect(done).resolves.toMatchObject({ event: "session.prompt.done" });
       const messages = await client.request<any>("sessions.messages", { sessionId: created.sessionId });
       expect(messages.messages.at(-1)).toMatchObject({ role: "assistant", content: [{ text: "hello from host broker" }] });
+      expect(messages.entryIds).toHaveLength(messages.messages.length);
+      expect(messages.entryIds).toEqual(messages.entryIds.map(() => expect.any(String)));
       expect(brokerRequests).toHaveLength(1);
       expect(brokerRequests[0]).toMatchObject({ provider: model.provider, id: model.id });
       expect(JSON.stringify(brokerRequests[0])).not.toContain("must-not-be-used");

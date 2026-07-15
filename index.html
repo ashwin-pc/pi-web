@@ -131,7 +131,7 @@
         </section>
         <section class="settingsSection runtimeSection">
           <h3>Connect existing runtime</h3>
-          <p class="settingsHint">Choose how to reach a runtime that already exists. Docker/Podman require network none; Apple requires a host-only network with DNS disabled. Model calls use host authentication through pi-web's typed broker. SSH uses the remote machine's own policy.</p>
+          <p class="settingsHint">Choose how to reach a runtime that already exists. Docker/Podman require network none; Apple requires a host-only network with DNS disabled. SSH uses the remote machine's own network policy.</p>
           <label class="settingsField">
             <span>Connection type</span>
             <select id="runtimeConnectKind">
@@ -140,6 +140,15 @@
               <option value="podman">Podman container</option>
               <option value="ssh">SSH host</option>
             </select>
+          </label>
+          <label class="settingsField">
+            <span>Model access</span>
+            <select id="runtimeConnectModelAccess" required>
+              <option value="" selected>Choose model access…</option>
+              <option value="host">Host credentials (typed broker)</option>
+              <option value="runtime">Runtime's own credentials/models</option>
+            </select>
+            <small>Host access lets code in the runtime spend—but not read—host credentials while connected. Runtime access never uses host credentials and only exposes models available inside the runtime.</small>
           </label>
           <label class="settingsField">
             <span>Display name</span>

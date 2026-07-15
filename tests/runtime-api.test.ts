@@ -67,10 +67,18 @@ describe("experimental runtime API integration", () => {
     const runtimes = await (await fetch(`${baseUrl}/api/runtimes`)).json() as any;
     expect(runtimes.runtimes.some((runtime: any) => runtime.id === "local-runner")).toBe(true);
 
+    const missingModelDecision = await fetch(`${baseUrl}/api/runtimes/connect`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "missing-model-choice", label: "Missing choice", command: process.execPath, args: [], cwd, kind: "local" }),
+    });
+    expect(missingModelDecision.status).toBe(400);
+    await expect(missingModelDecision.json()).resolves.toMatchObject({ error: expect.stringMatching(/modelBroker is required/) });
+
     const unsafeGuided = await fetch(`${baseUrl}/api/runtimes/connect`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: "ssh:unsafe", label: "Unsafe", adapter: "ssh", target: "devbox; touch /tmp/nope", cwd, runnerDir: cwd }),
+      body: JSON.stringify({ id: "ssh:unsafe", label: "Unsafe", adapter: "ssh", target: "devbox; touch /tmp/nope", cwd, runnerDir: cwd, modelBroker: false }),
     });
     expect(unsafeGuided.status).toBe(400);
     await expect(unsafeGuided.json()).resolves.toMatchObject({ ok: false, error: expect.stringMatching(/host alias/) });
@@ -78,11 +86,24 @@ describe("experimental runtime API integration", () => {
     const connected = await (await fetch(`${baseUrl}/api/runtimes/connect`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: "cmd-api", label: "Command API", command: process.execPath, args: ["--import", "tsx", "server/runner.ts"], cwd, kind: "local" }),
+      body: JSON.stringify({ id: "cmd-api", label: "Command API", command: process.execPath, args: ["--import", "tsx", "server/runner.ts"], cwd, kind: "local", modelBroker: false }),
     })).json() as any;
     expect(connected).toMatchObject({ ok: true, runtime: { id: "cmd-api", label: "Command API" } });
     const updatedRuntimes = await (await fetch(`${baseUrl}/api/runtimes`)).json() as any;
     expect(updatedRuntimes.runtimes.some((runtime: any) => runtime.id === "cmd-api")).toBe(true);
+
+    const brokered = await (await fetch(`${baseUrl}/api/runtimes/model-access`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "cmd-api", modelBroker: true }),
+    })).json() as any;
+    expect(brokered).toMatchObject({ ok: true, runtime: { id: "cmd-api", modelTransport: "host-broker" } });
+    const runtimeOwned = await (await fetch(`${baseUrl}/api/runtimes/model-access`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: "cmd-api", modelBroker: false }),
+    })).json() as any;
+    expect(runtimeOwned).toMatchObject({ ok: true, runtime: { id: "cmd-api", modelTransport: "runtime" } });
 
     const dirs = await (await fetch(`${baseUrl}/api/fs/dirs?path=${encodeURIComponent(cwd)}&runtimeId=cmd-api`)).json() as any;
     expect(dirs.path).toBe(cwd);

@@ -36,20 +36,14 @@ type BrokerStreamParams = {
   options?: unknown;
 };
 
-const allowedOptionKeys = new Set([
-  "temperature",
-  "maxTokens",
-  "transport",
-  "cacheRetention",
-  "sessionId",
-  "timeoutMs",
-  "websocketConnectTimeoutMs",
-  "maxRetries",
-  "maxRetryDelayMs",
-  "metadata",
-  "reasoning",
-  "thinkingBudgets",
-]);
+const numericOptionKeys = new Set(["temperature", "maxTokens", "timeoutMs", "websocketConnectTimeoutMs", "maxRetries", "maxRetryDelayMs"]);
+const transports = new Set(["sse", "websocket", "websocket-cached", "auto"]);
+const cacheRetentions = new Set(["none", "short", "long"]);
+const reasoningLevels = new Set(["off", "minimal", "low", "medium", "high", "xhigh"]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 function brokerModel(model: Model<Api>): BrokerModel {
   return {
@@ -67,11 +61,19 @@ function brokerModel(model: Model<Api>): BrokerModel {
 }
 
 function safeStreamOptions(value: unknown): SimpleStreamOptions {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  if (!isRecord(value)) return {};
   const result: Record<string, unknown> = {};
-  for (const [key, option] of Object.entries(value as Record<string, unknown>)) {
-    if (!allowedOptionKeys.has(key) || typeof option === "function") continue;
-    result[key] = option;
+  for (const [key, option] of Object.entries(value)) {
+    if (numericOptionKeys.has(key)) {
+      if (typeof option === "number" && Number.isFinite(option) && option >= 0) result[key] = option;
+      continue;
+    }
+    if (key === "transport" && typeof option === "string" && transports.has(option)) result[key] = option;
+    else if (key === "cacheRetention" && typeof option === "string" && cacheRetentions.has(option)) result[key] = option;
+    else if (key === "sessionId" && typeof option === "string") result[key] = option;
+    else if (key === "metadata" && isRecord(option)) result[key] = option;
+    else if (key === "reasoning" && typeof option === "string" && reasoningLevels.has(option)) result[key] = option;
+    else if (key === "thinkingBudgets" && isRecord(option) && Object.values(option).every((budget) => typeof budget === "number" && Number.isFinite(budget) && budget >= 0)) result[key] = option;
   }
   return result as SimpleStreamOptions;
 }
@@ -91,7 +93,7 @@ function asContext(value: unknown): Context {
  * The authoritative host registry resolves both the model endpoint and auth.
  */
 export class HostModelBroker {
-  constructor(private readonly modelRegistry: ModelRegistry) {}
+  constructor(private readonly modelRegistry: ModelRegistry, private readonly maxConcurrentStreams = 4) {}
 
   createRequestHandler(): RuntimeRequestHandler {
     const active = new Map<string, AbortController>();
@@ -106,18 +108,20 @@ export class HostModelBroker {
       }
       if (request.method !== "host.models.stream") throw new Error(`Host method is not allowed: ${request.method}`);
 
-      const params = (request.params || {}) as BrokerStreamParams;
-      const provider = String(params.provider || "").trim();
-      const id = String(params.id || "").trim();
-      if (!provider || !id) throw new Error("Model provider and id are required");
-      const model = this.modelRegistry.find(provider, id);
-      if (!model || !this.modelRegistry.hasConfiguredAuth(model)) throw new Error("Requested model is not available on the host");
-
-      const auth = await this.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) throw new Error(auth.error);
+      if (active.has(request.id)) throw new Error(`Duplicate model stream request id: ${request.id}`);
+      if (active.size >= this.maxConcurrentStreams) throw new Error(`Model broker stream limit reached (${this.maxConcurrentStreams})`);
       const controller = new AbortController();
       active.set(request.id, controller);
       try {
+        const params = (request.params || {}) as BrokerStreamParams;
+        const provider = String(params.provider || "").trim();
+        const id = String(params.id || "").trim();
+        if (!provider || !id) throw new Error("Model provider and id are required");
+        const model = this.modelRegistry.find(provider, id);
+        if (!model || !this.modelRegistry.hasConfiguredAuth(model)) throw new Error("Requested model is not available on the host");
+
+        const auth = await this.modelRegistry.getApiKeyAndHeaders(model);
+        if (!auth.ok) throw new Error(auth.error);
         const options = safeStreamOptions(params.options);
         const stream = streamSimple(model, asContext(params.context), {
           ...options,

@@ -2,7 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
-import { connectRuntime as connectRuntimeApi, disconnectRuntime as disconnectRuntimeApi, listRuntimes, type GuidedRuntimeConfig, type RuntimeConfig, type RuntimeConnectConfig, type RuntimeOption } from "./api.js";
+import { connectRuntime as connectRuntimeApi, disconnectRuntime as disconnectRuntimeApi, listRuntimes, setRuntimeModelAccess, type GuidedRuntimeConfig, type RuntimeConfig, type RuntimeConnectConfig, type RuntimeOption } from "./api.js";
 
 export type RuntimePanelController = {
   init: () => void;
@@ -36,6 +36,7 @@ const runtimeExamples: RuntimeExample[] = [
         "cd /tmp/pi-web-runner && PI_RUNNER_CWD=/workspace npm exec --yes tsx server/runner.ts",
       ],
       cwd: "/workspace",
+      modelBroker: true,
     },
   },
   {
@@ -55,6 +56,7 @@ const runtimeExamples: RuntimeExample[] = [
         "cd /workspace && PI_RUNNER_CWD=/workspace npm exec --yes tsx server/runner.ts",
       ],
       cwd: "/workspace",
+      modelBroker: true,
     },
   },
   {
@@ -70,6 +72,7 @@ const runtimeExamples: RuntimeExample[] = [
         "cd ~/pi-web-runner && PI_RUNNER_CWD=~/workspace npm exec --yes tsx server/runner.ts",
       ],
       cwd: "~/workspace",
+      modelBroker: false,
     },
   },
 ];
@@ -89,9 +92,11 @@ function guidedRuntimeConfig(elements: AppElements): GuidedRuntimeConfig {
   const target = elements.runtimeConnectTarget.value.trim();
   const cwd = elements.runtimeConnectCwd.value.trim();
   const runnerDir = elements.runtimeConnectRunnerDir.value.trim();
+  const modelAccess = elements.runtimeConnectModelAccess.value;
   if (!label || !target || !cwd || !runnerDir) throw new Error("Name, target, workspace, and runner source directory are required.");
+  if (modelAccess !== "host" && modelAccess !== "runtime") throw new Error("Choose how this runtime should access models.");
   if (kind !== "apple" && kind !== "docker" && kind !== "podman" && kind !== "ssh") throw new Error("Unsupported guided runtime adapter.");
-  return { id: runtimeConfigId(kind, target), label, adapter: kind, target, cwd, runnerDir };
+  return { id: runtimeConfigId(kind, target), label, adapter: kind, target, cwd, runnerDir, modelBroker: modelAccess === "host" };
 }
 
 function runtimeTitle(runtime: RuntimeSummary) {
@@ -123,11 +128,13 @@ function normalizeRuntimeConfig(value: unknown): RuntimeConfig {
   const cwd = typeof item.cwd === "string" ? item.cwd.trim() : "";
   const processCwd = typeof item.processCwd === "string" && item.processCwd.trim() ? item.processCwd.trim() : undefined;
   const kind = item.kind === "ssh" || item.kind === "local" || item.kind === "container" ? item.kind : undefined;
+  const modelBroker = typeof item.modelBroker === "boolean" ? item.modelBroker : undefined;
   if (!id) throw new Error("Runtime id is required.");
   if (!label) throw new Error("Runtime label is required.");
   if (!command) throw new Error("Runtime command is required.");
   if (!cwd) throw new Error("Runtime cwd is required.");
-  return { id, label, command, args, cwd, ...(processCwd ? { processCwd } : {}), ...(kind ? { kind } : {}) };
+  if (modelBroker === undefined) throw new Error("Runtime modelBroker must explicitly be true (host credentials) or false (runtime credentials).");
+  return { id, label, command, args, cwd, modelBroker, ...(processCwd ? { processCwd } : {}), ...(kind ? { kind } : {}) };
 }
 
 export function createRuntimePanel(options: {
@@ -174,7 +181,9 @@ export function createRuntimePanel(options: {
       titleWrap.append(title, id);
       const badge = document.createElement("span");
       badge.className = `runtimeKindBadge${runtime.connection?.state === "disconnected" ? " disconnected" : ""}`;
-      badge.textContent = `${runtimeKind(runtime)}${runtime.connection?.state ? ` · ${runtime.connection.state}` : ""}${runtime.experimental ? " · experimental" : ""}`;
+      badge.textContent = `${runtimeKind(runtime)}${runtime.connection?.state ? ` · ${runtime.connection.state}` : ""}${runtime.modelTransport ? ` · models: ${runtime.modelTransport === "host-broker" ? "host" : "runtime"}` : ""}${runtime.experimental ? " · experimental" : ""}`;
+      if (runtime.modelTransport === "host-broker") badge.title = "Anything running in this runtime can spend—but cannot read—host model credentials while connected.";
+      else if (runtime.modelTransport === "runtime") badge.title = "Only credentials and models configured inside the runtime are used.";
       header.append(titleWrap, badge);
 
       const details = document.createElement("dl");
@@ -186,9 +195,12 @@ export function createRuntimePanel(options: {
       const line = commandLine(runtime);
       if (line) rows.push(["Command", line]);
       if (runtime.processCwd) rows.push(["Process cwd", runtime.processCwd]);
-      if (runtime.network) rows.push(["Network", runtime.network]);
-      if (runtime.networkPolicy) rows.push(["Network policy", runtime.networkPolicy === "none" ? "no runtime egress" : runtime.networkPolicy]);
-      if (runtime.modelTransport) rows.push(["Model transport", runtime.modelTransport === "host-broker" ? "host broker" : "runtime direct"]);
+      if (runtime.network) rows.push(["Attached network", runtime.network]);
+      if (runtime.networkPolicy) {
+        const checked = runtime.networkVerifiedAt ? ` · checked ${new Date(runtime.networkVerifiedAt).toLocaleString()}` : "";
+        rows.push(["Network", runtime.networkPolicy === "none" ? `none ✓${checked}` : runtime.networkPolicy === "host-only" ? `host-only ✓ · host services remain reachable${checked}` : runtime.networkPolicy]);
+      }
+      if (runtime.modelTransport) rows.push(["Models", runtime.modelTransport === "host-broker" ? "host credentials · typed broker" : "runtime credentials/models"]);
       if (runtime.connection?.error) rows.push(["Connection", runtime.connection.error]);
       if (typeof runtime.readOnly === "boolean") rows.push(["Read-only", runtime.readOnly ? "yes" : "no"]);
       if (runtime.sessionPersistence) rows.push(["Session storage", runtime.sessionPersistence === "volume" ? `persistent volume${runtime.sessionVolume ? ` · ${runtime.sessionVolume}` : ""}` : runtime.sessionPersistence]);
@@ -204,6 +216,23 @@ export function createRuntimePanel(options: {
       if (runtime.disconnectable) {
         const actions = document.createElement("div");
         actions.className = "runtimeCardActions";
+        const modelAccess = document.createElement("select");
+        modelAccess.setAttribute("aria-label", `Model access for ${runtimeTitle(runtime)}`);
+        modelAccess.append(new Option("Models: host", "host"), new Option("Models: runtime", "runtime"));
+        modelAccess.value = runtime.modelTransport === "host-broker" ? "host" : "runtime";
+        const applyModelAccess = document.createElement("button");
+        applyModelAccess.type = "button";
+        applyModelAccess.textContent = "Reconnect to apply";
+        applyModelAccess.addEventListener("click", () => {
+          applyModelAccess.disabled = true;
+          void setRuntimeModelAccess(api, runtime.id, modelAccess.value === "host")
+            .then(async () => {
+              setRuntimeStatus(`Updated model access for ${runtimeTitle(runtime)}`);
+              await refreshRuntimes();
+            })
+            .catch((error) => setRuntimeStatus(error instanceof Error ? error.message : String(error), true))
+            .finally(() => { applyModelAccess.disabled = false; });
+        });
         const disconnect = document.createElement("button");
         disconnect.type = "button";
         disconnect.textContent = "Forget…";
@@ -212,7 +241,7 @@ export function createRuntimePanel(options: {
           setRuntimeStatus(message, true);
           addMessage("system", message, "error");
         }));
-        actions.append(disconnect);
+        actions.append(modelAccess, applyModelAccess, disconnect);
         card.append(actions);
       }
       elements.runtimeListEl.append(card);

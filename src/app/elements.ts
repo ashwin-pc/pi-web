@@ -56,6 +56,7 @@ export type AppElements = {
   runtimeRefreshButton: HTMLButtonElement;
   runtimeListEl: HTMLDivElement;
   runtimeConnectKind: HTMLSelectElement;
+  runtimeConnectModelAccess: HTMLSelectElement;
   runtimeConnectLabel: HTMLInputElement;
   runtimeConnectTargetLabel: HTMLSpanElement;
   runtimeConnectTarget: HTMLInputElement;
@@ -169,6 +170,7 @@ export function getAppElements(): AppElements {
     runtimeRefreshButton: requiredElement<HTMLButtonElement>("#runtimeRefreshButton"),
     runtimeListEl: requiredElement<HTMLDivElement>("#runtimeList"),
     runtimeConnectKind: requiredElement<HTMLSelectElement>("#runtimeConnectKind"),
+    runtimeConnectModelAccess: requiredElement<HTMLSelectElement>("#runtimeConnectModelAccess"),
     runtimeConnectLabel: requiredElement<HTMLInputElement>("#runtimeConnectLabel"),
     runtimeConnectTargetLabel: requiredElement<HTMLSpanElement>("#runtimeConnectTargetLabel"),
     runtimeConnectTarget: requiredElement<HTMLInputElement>("#runtimeConnectTarget"),

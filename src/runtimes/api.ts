@@ -9,7 +9,8 @@ export type RuntimeOption = RuntimeRef & {
   workspace?: string;
   network?: string;
   modelTransport?: "runtime" | "host-broker";
-  networkPolicy?: "none" | "provider-only" | "unrestricted" | "unverified";
+  networkPolicy?: "none" | "host-only" | "provider-only" | "unrestricted" | "unverified" | "unknown";
+  networkVerifiedAt?: string;
   readOnly?: boolean;
   sessionPersistence?: "runtime" | "volume" | "disposable";
   sessionVolume?: string;
@@ -25,6 +26,7 @@ export type RuntimeConfig = {
   args: string[];
   cwd: string;
   processCwd?: string;
+  modelBroker: boolean;
 };
 
 export type GuidedRuntimeConfig = {
@@ -34,6 +36,7 @@ export type GuidedRuntimeConfig = {
   target: string;
   cwd: string;
   runnerDir: string;
+  modelBroker: boolean;
 };
 
 export type RuntimeConnectConfig = RuntimeConfig | GuidedRuntimeConfig;
@@ -64,7 +67,8 @@ export function normalizeRuntimeOptions(value: unknown): RuntimeOption[] {
       workspace: typeof runtime.workspace === "string" ? runtime.workspace : undefined,
       network: typeof runtime.network === "string" ? runtime.network : undefined,
       modelTransport: runtime.modelTransport === "host-broker" || runtime.modelTransport === "runtime" ? runtime.modelTransport : undefined,
-      networkPolicy: runtime.networkPolicy === "none" || runtime.networkPolicy === "provider-only" || runtime.networkPolicy === "unrestricted" || runtime.networkPolicy === "unverified" ? runtime.networkPolicy : undefined,
+      networkPolicy: runtime.networkPolicy === "none" || runtime.networkPolicy === "host-only" || runtime.networkPolicy === "provider-only" || runtime.networkPolicy === "unrestricted" || runtime.networkPolicy === "unverified" || runtime.networkPolicy === "unknown" ? runtime.networkPolicy : undefined,
+      networkVerifiedAt: typeof runtime.networkVerifiedAt === "string" ? runtime.networkVerifiedAt : undefined,
       readOnly: typeof runtime.readOnly === "boolean" ? runtime.readOnly : undefined,
       sessionPersistence: runtime.sessionPersistence === "runtime" || runtime.sessionPersistence === "volume" || runtime.sessionPersistence === "disposable" ? runtime.sessionPersistence : undefined,
       sessionVolume: typeof runtime.sessionVolume === "string" ? runtime.sessionVolume : undefined,
@@ -115,6 +119,16 @@ export async function connectRuntime(api: ApiClient, config: RuntimeConnectConfi
   const data = await readJson(res, "Could not connect runtime");
   const runtimes = normalizeRuntimeOptions([data.runtime]);
   return runtimes.find((runtime) => runtime.id === data.runtime?.id) || runtimes[0];
+}
+
+export async function setRuntimeModelAccess(api: ApiClient, id: string, modelBroker: boolean): Promise<RuntimeOption> {
+  const res = await fetch("/api/runtimes/model-access", {
+    method: "POST",
+    headers: api.headers(),
+    body: JSON.stringify({ id, modelBroker }),
+  });
+  const data = await readJson(res, "Could not update runtime model access");
+  return normalizeRuntimeOptions([data.runtime])[0];
 }
 
 export async function disconnectRuntime(api: ApiClient, id: string): Promise<{ ok: true; id: string }> {
