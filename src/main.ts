@@ -391,7 +391,14 @@ initKeyboardShortcuts([
   onError: showSystemError,
 });
 composer.updateQueueToggle();
-gitPanel = initGitPanel({ button: elements.gitButton, panel: elements.gitPanel, rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+gitPanel = initGitPanel({
+  button: elements.gitButton,
+  panel: elements.gitPanel,
+  rightPanels,
+  apiHeaders: api.headers,
+  getSessionId: () => state.currentSessionId,
+  gitSyncSupported: () => state.currentRuntimeRef?.capabilities?.gitSync !== false,
+});
 window.addEventListener("popstate", () => {
   const nextSessionId = readActiveSessionIdFromUrl();
   const nextRuntimeId = readActiveSessionRuntimeIdFromUrl() || "local";

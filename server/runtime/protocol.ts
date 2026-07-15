@@ -1,3 +1,36 @@
+export type RuntimeCapabilities = {
+  messageBranching: boolean;
+  sessionRename: boolean;
+  slashCommands: boolean;
+  shellCommands: boolean;
+  sessionStats: boolean;
+  gitSync: boolean;
+  extensionUi: boolean;
+  compactionCancel: boolean;
+};
+
+export const RUNNER_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
+  messageBranching: true,
+  sessionRename: false,
+  slashCommands: false,
+  shellCommands: false,
+  sessionStats: false,
+  gitSync: false,
+  extensionUi: false,
+  compactionCancel: false,
+};
+
+export const LOCAL_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
+  messageBranching: true,
+  sessionRename: true,
+  slashCommands: true,
+  shellCommands: true,
+  sessionStats: true,
+  gitSync: true,
+  extensionUi: true,
+  compactionCancel: true,
+};
+
 export type RuntimeRequest = {
   id: string;
   method: string;

@@ -104,6 +104,10 @@ interface SessionHost {
 
 The runner forwards every pi event through the same host enrichment and browser realtime pipeline used by local sessions.
 
+### Typed capability contract
+
+Runtime summaries and session state carry a typed capability map. The current runner advertises message branching but explicitly reports session rename, slash commands, shell commands, full session statistics, git sync, extension UI, and compaction cancellation as unavailable. The browser disables or explains those controls instead of attempting a local fallback or discovering the gap through a failed request. Missing capability metadata remains backward-compatible for Local and older servers; explicit `false` is authoritative.
+
 ## Host model broker
 
 Runtimes explicitly configured for host model access use a typed, bidirectional model protocol over the existing stdio transport. Guided Docker/Podman containers additionally have no network route. Guided Apple containers are limited to a DNS-disabled `hostOnly` network, which still permits access to host services and is reported separately from `none`.

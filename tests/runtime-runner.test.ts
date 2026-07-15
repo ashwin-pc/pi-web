@@ -58,7 +58,13 @@ describe("runtime runner spike", () => {
     const ready = new Promise((resolve) => client.onEvent((event) => event.event === "ready" && resolve(event)));
     try {
       await expect(ready).resolves.toMatchObject({ event: "ready" });
-      await expect(client.request("health")).resolves.toMatchObject({ ok: true, cwd, protocol: "pi-runner-v2", modelTransport: "runtime" });
+      await expect(client.request("health")).resolves.toMatchObject({
+        ok: true,
+        cwd,
+        protocol: "pi-runner-v2",
+        modelTransport: "runtime",
+        capabilities: { messageBranching: true, sessionRename: false, slashCommands: false, shellCommands: false, sessionStats: false, gitSync: false, extensionUi: false, compactionCancel: false },
+      });
 
       const listing = await client.request<any>("fs.list", { path: cwd });
       expect(listing.dirs.map((dir: any) => dir.name)).toEqual(expect.arrayContaining(["docs", "src"]));

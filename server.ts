@@ -34,6 +34,7 @@ import { CommandRunnerProvider, type CommandRunnerConfig, type RunnerSessionInfo
 import { HostModelBroker } from "./server/runtime/modelBroker.js";
 import { guidedContainerTarget, verifyGuidedContainerIsolation, verifyGuidedContainerIsolationSync } from "./server/runtime/networkIsolation.js";
 import { RuntimeStore } from "./server/runtime/runtimeStore.js";
+import { RUNNER_RUNTIME_CAPABILITIES } from "./server/runtime/protocol.js";
 import { artifactDirForCwd, legacyArtifactDirForCwd, safeArtifactName } from "./server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { git, gitBuffer, gitDiff, gitStatus, isGitRepo, safeGitPath } from "./server/shared/git.js";
@@ -1752,7 +1753,7 @@ function runtimeKindForProvider(provider: RunnerProvider) {
   return provider.kind;
 }
 function runtimeRefForProvider(provider: RunnerProvider, cwd = defaultCwdForRunnerProvider(provider)) {
-  return { id: provider.id, kind: runtimeKindForProvider(provider), label: provider.label, cwd, experimental: provider.experimental };
+  return { id: provider.id, kind: runtimeKindForProvider(provider), label: provider.label, cwd, experimental: provider.experimental, capabilities: provider.capabilities };
 }
 function runtimeSummaryForProvider(provider: RunnerProvider) {
   return {
@@ -1774,7 +1775,7 @@ function runtimeUnavailableMessage(error?: unknown) {
   return error instanceof Error ? error.message : error ? String(error) : "Runtime unavailable";
 }
 function runtimeRefForBinding(binding: SessionRuntimeBinding, provider?: RunnerProvider) {
-  return provider ? runtimeRefForProvider(provider, binding.cwd) : { id: binding.runtimeId, kind: "container", label: binding.runtimeId, cwd: binding.cwd, experimental: false };
+  return provider ? runtimeRefForProvider(provider, binding.cwd) : { id: binding.runtimeId, kind: "container", label: binding.runtimeId, cwd: binding.cwd, experimental: false, capabilities: RUNNER_RUNTIME_CAPABILITIES };
 }
 function runtimeUnavailableSessionInfo(binding: SessionRuntimeBinding, provider: RunnerProvider | undefined, error?: unknown) {
   const runtimeRef = runtimeRefForBinding(binding, provider);

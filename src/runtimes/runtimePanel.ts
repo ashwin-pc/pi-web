@@ -201,6 +201,14 @@ export function createRuntimePanel(options: {
         rows.push(["Network", runtime.networkPolicy === "none" ? `none ✓${checked}` : runtime.networkPolicy === "host-only" ? `host-only ✓ · host services remain reachable${checked}` : runtime.networkPolicy]);
       }
       if (runtime.modelTransport) rows.push(["Models", runtime.modelTransport === "host-broker" ? "host credentials · typed broker" : "runtime credentials/models"]);
+      if (runtime.capabilities) {
+        const labels: Array<[keyof typeof runtime.capabilities, string]> = [
+          ["sessionRename", "rename"], ["slashCommands", "slash commands"], ["shellCommands", "shell commands"],
+          ["sessionStats", "full stats"], ["gitSync", "git sync"], ["extensionUi", "extension UI"], ["compactionCancel", "compaction cancel"],
+        ];
+        const unavailable = labels.filter(([key]) => !runtime.capabilities?.[key]).map(([, label]) => label);
+        rows.push(["Capabilities", unavailable.length ? `Unavailable: ${unavailable.join(", ")}` : "Full local capability set"]);
+      }
       if (runtime.connection?.error) rows.push(["Connection", runtime.connection.error]);
       if (typeof runtime.readOnly === "boolean") rows.push(["Read-only", runtime.readOnly ? "yes" : "no"]);
       if (runtime.sessionPersistence) rows.push(["Session storage", runtime.sessionPersistence === "volume" ? `persistent volume${runtime.sessionVolume ? ` · ${runtime.sessionVolume}` : ""}` : runtime.sessionPersistence]);

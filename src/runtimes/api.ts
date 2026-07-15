@@ -1,5 +1,5 @@
 import type { ApiClient } from "../app/api.js";
-import type { RuntimeRef } from "../app/types.js";
+import type { RuntimeCapabilities, RuntimeRef } from "../app/types.js";
 
 export type RuntimeOption = RuntimeRef & {
   id: string;
@@ -45,6 +45,14 @@ export function localRuntimeRef(cwd = ""): RuntimeOption {
   return { id: "local", kind: "local", label: "Local machine", cwd };
 }
 
+function normalizeRuntimeCapabilities(value: unknown): RuntimeCapabilities | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const item = value as Record<keyof RuntimeCapabilities, unknown>;
+  const keys: Array<keyof RuntimeCapabilities> = ["messageBranching", "sessionRename", "slashCommands", "shellCommands", "sessionStats", "gitSync", "extensionUi", "compactionCancel"];
+  if (!keys.every((key) => typeof item[key] === "boolean")) return undefined;
+  return Object.fromEntries(keys.map((key) => [key, item[key]])) as RuntimeCapabilities;
+}
+
 export function normalizeRuntimeOptions(value: unknown): RuntimeOption[] {
   if (!Array.isArray(value)) return [localRuntimeRef()];
   const seen = new Set<string>();
@@ -69,6 +77,7 @@ export function normalizeRuntimeOptions(value: unknown): RuntimeOption[] {
       modelTransport: runtime.modelTransport === "host-broker" || runtime.modelTransport === "runtime" ? runtime.modelTransport : undefined,
       networkPolicy: runtime.networkPolicy === "none" || runtime.networkPolicy === "host-only" || runtime.networkPolicy === "provider-only" || runtime.networkPolicy === "unrestricted" || runtime.networkPolicy === "unverified" || runtime.networkPolicy === "unknown" ? runtime.networkPolicy : undefined,
       networkVerifiedAt: typeof runtime.networkVerifiedAt === "string" ? runtime.networkVerifiedAt : undefined,
+      capabilities: normalizeRuntimeCapabilities(runtime.capabilities),
       readOnly: typeof runtime.readOnly === "boolean" ? runtime.readOnly : undefined,
       sessionPersistence: runtime.sessionPersistence === "runtime" || runtime.sessionPersistence === "volume" || runtime.sessionPersistence === "disposable" ? runtime.sessionPersistence : undefined,
       sessionVolume: typeof runtime.sessionVolume === "string" ? runtime.sessionVolume : undefined,

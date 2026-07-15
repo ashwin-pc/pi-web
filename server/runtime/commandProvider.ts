@@ -1,5 +1,5 @@
 import { StdioRuntimeClient } from "./stdioClient.js";
-import type { RuntimeEvent, RuntimeRequestHandler } from "./protocol.js";
+import { RUNNER_RUNTIME_CAPABILITIES, type RuntimeCapabilities, type RuntimeEvent, type RuntimeRequestHandler } from "./protocol.js";
 
 export type RuntimeKind = "local" | "container" | "ssh";
 
@@ -95,6 +95,7 @@ export class CommandRunnerProvider {
   readonly experimental: boolean;
   readonly metadata: RuntimeRunnerMetadata;
   readonly modelBroker: boolean;
+  readonly capabilities: RuntimeCapabilities = RUNNER_RUNTIME_CAPABILITIES;
   private readonly env?: NodeJS.ProcessEnv;
   private readonly preflight?: () => void;
   private runtimeRequestHandlerFactory?: () => RuntimeRequestHandler;

@@ -16,8 +16,8 @@ export type GitPanelController = {
   isOpen(): boolean;
 };
 
-export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; rightPanels?: RightPanelManager; apiHeaders: () => HeadersInit; getSessionId?: () => string }): GitPanelController {
-  const { button, panel, rightPanels, apiHeaders, getSessionId } = options;
+export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; rightPanels?: RightPanelManager; apiHeaders: () => HeadersInit; getSessionId?: () => string; gitSyncSupported?: () => boolean }): GitPanelController {
+  const { button, panel, rightPanels, apiHeaders, getSessionId, gitSyncSupported = () => true } = options;
   const primary = panel.querySelector<HTMLElement>("#gitPrimaryPane")!;
   const detail = panel.querySelector<HTMLElement>("#gitDetailPane")!;
   const statusTab = panel.querySelector<HTMLButtonElement>("#gitStatusTab")!;
@@ -274,6 +274,7 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
   }
 
   async function runRebase(repo: GitRepo) {
+    if (!gitSyncSupported()) return;
     state.syncing = true;
     state.syncingRepo = repo.path;
     state.error = undefined;
@@ -419,6 +420,7 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
         selectedPath: state.selectedFile?.path,
         selectedRepoPath: state.selectedFileRepo || state.selectedRepo?.path,
         syncingRepo: state.syncingRepo,
+        gitSyncSupported: gitSyncSupported(),
         onSelectFile: (file, repo) => void selectFile(file, repo),
         onRebase: (repo) => void runRebase(repo),
       });

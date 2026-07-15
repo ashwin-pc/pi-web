@@ -88,6 +88,12 @@
 .statusTitle:hover {
   color: var(--accent);
 }
+.statusTitle[aria-disabled="true"] {
+  cursor: default;
+}
+.statusTitle[aria-disabled="true"]:hover {
+  color: var(--text);
+}
 .statusTitleInput {
   width: min(240px, 34vw);
   height: 20px;

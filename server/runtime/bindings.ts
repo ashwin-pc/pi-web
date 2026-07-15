@@ -1,5 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import type { RuntimeCapabilities } from "./protocol.js";
 
 export type RuntimeKind = "local" | "container" | "ssh";
 
@@ -7,6 +8,7 @@ export type RuntimeRef = {
   id: string;
   kind: RuntimeKind;
   label: string;
+  capabilities?: RuntimeCapabilities;
 };
 
 export type SessionRuntimeBinding = {

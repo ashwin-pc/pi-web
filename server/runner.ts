@@ -12,7 +12,7 @@ import {
   type Model,
   type SimpleStreamOptions,
 } from "@earendil-works/pi-ai/compat";
-import { encodeRuntimeMessage, parseRuntimeLine, type RuntimeEvent, type RuntimeRequest, type RuntimeResponse } from "./runtime/protocol.js";
+import { encodeRuntimeMessage, parseRuntimeLine, RUNNER_RUNTIME_CAPABILITIES, type RuntimeEvent, type RuntimeRequest, type RuntimeResponse } from "./runtime/protocol.js";
 import { MODEL_BROKER_API, type BrokerModelCatalog } from "./runtime/modelBroker.js";
 import { artifactDirForCwd, artifactFileForCwd, readArtifactBase64, safeArtifactName } from "./shared/artifacts.js";
 import { listDirectories } from "./shared/fsList.js";
@@ -423,7 +423,7 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
   const params = (request.params || {}) as Record<string, unknown>;
   switch (request.method) {
     case "health":
-      return { ok: true, cwd: rootCwd, pid: process.pid, protocol: "pi-runner-v2", modelTransport: modelBrokerEnabled ? "host-broker" : "runtime" };
+      return { ok: true, cwd: rootCwd, pid: process.pid, protocol: "pi-runner-v2", modelTransport: modelBrokerEnabled ? "host-broker" : "runtime", capabilities: RUNNER_RUNTIME_CAPABILITIES };
     case "sessions.create":
       return createRunnerSession(params.cwd);
     case "sessions.list": {

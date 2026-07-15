@@ -1,4 +1,5 @@
 import type { RuntimeRef } from "./bindings.js";
+import { LOCAL_RUNTIME_CAPABILITIES } from "./protocol.js";
 
 export class RuntimeRegistry {
   private runtimes = new Map<string, RuntimeRef>();
@@ -20,4 +21,4 @@ export class RuntimeRegistry {
   }
 }
 
-export const localRuntime: RuntimeRef = { id: "local", kind: "local", label: "Local machine" };
+export const localRuntime: RuntimeRef = { id: "local", kind: "local", label: "Local machine", capabilities: LOCAL_RUNTIME_CAPABILITIES };

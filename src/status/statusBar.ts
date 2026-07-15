@@ -56,9 +56,11 @@ export function createStatusBar(options: {
 
   function setStatusTitle(title: string) {
     const value = title.trim() || "New session";
+    const canRename = state.currentRuntimeRef?.capabilities?.sessionRename !== false;
     state.currentSessionTitle = value;
-    elements.statusTitleEl.title = "Rename session";
-    elements.statusTitleEl.setAttribute("aria-label", `Session: ${value}. Click to rename.`);
+    elements.statusTitleEl.title = canRename ? "Rename session" : "Session rename is not supported by this runtime";
+    elements.statusTitleEl.setAttribute("aria-label", canRename ? `Session: ${value}. Click to rename.` : `Session: ${value}. Rename unavailable for this runtime.`);
+    elements.statusTitleEl.setAttribute("aria-disabled", String(!canRename));
     if (!state.statusTitleEditing) elements.statusTitleEl.textContent = value;
   }
 
@@ -83,7 +85,7 @@ export function createStatusBar(options: {
   }
 
   function beginRenameSessionTitle() {
-    if (state.statusTitleEditing || !state.currentSessionId) return;
+    if (state.statusTitleEditing || !state.currentSessionId || state.currentRuntimeRef?.capabilities?.sessionRename === false) return;
     state.statusTitleEditing = true;
 
     const input = document.createElement("input");

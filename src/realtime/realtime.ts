@@ -249,7 +249,12 @@ export function createRealtime(options: {
       cancelButton.type = "button";
       cancelButton.className = "compactionCancel";
       cancelButton.textContent = "Cancel";
-      cancelButton.addEventListener("click", () => abortCompaction(cancelButton));
+      if (state.currentRuntimeRef?.capabilities?.compactionCancel === false) {
+        cancelButton.disabled = true;
+        cancelButton.title = "Compaction cancellation is not supported by this runtime";
+      } else {
+        cancelButton.addEventListener("click", () => abortCompaction(cancelButton));
+      }
       target.append(cancelButton);
     }
     messages.scrollToBottom();

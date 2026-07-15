@@ -236,6 +236,8 @@ export function readLegacySelectedMarkerColor(): SessionMarkerColorId | undefine
   return normalizeMarkerColor(localStorage.getItem(selectedMarkerColorKey));
 }
 
+export type RuntimeCapabilities = import("../../server/runtime/protocol.js").RuntimeCapabilities;
+
 export type RuntimeRef = {
   id: string;
   kind?: "local" | "container" | "ssh" | string;
@@ -245,6 +247,7 @@ export type RuntimeRef = {
   modelTransport?: "runtime" | "host-broker";
   networkPolicy?: "none" | "host-only" | "provider-only" | "unrestricted" | "unverified" | "unknown";
   networkVerifiedAt?: string;
+  capabilities?: RuntimeCapabilities;
 };
 
 export type SessionInfo = {

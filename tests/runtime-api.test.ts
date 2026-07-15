@@ -90,7 +90,9 @@ describe("experimental runtime API integration", () => {
     })).json() as any;
     expect(connected).toMatchObject({ ok: true, runtime: { id: "cmd-api", label: "Command API" } });
     const updatedRuntimes = await (await fetch(`${baseUrl}/api/runtimes`)).json() as any;
-    expect(updatedRuntimes.runtimes.some((runtime: any) => runtime.id === "cmd-api")).toBe(true);
+    expect(updatedRuntimes.runtimes.find((runtime: any) => runtime.id === "cmd-api")).toMatchObject({
+      capabilities: { messageBranching: true, sessionRename: false, slashCommands: false, shellCommands: false, sessionStats: false, gitSync: false, extensionUi: false, compactionCancel: false },
+    });
 
     const brokered = await (await fetch(`${baseUrl}/api/runtimes/model-access`, {
       method: "POST",

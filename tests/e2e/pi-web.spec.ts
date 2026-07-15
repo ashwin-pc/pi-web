@@ -535,7 +535,7 @@ test.describe("composer layout", () => {
   test("runtime panel lists runtimes and populates connect examples", async ({ page }) => {
     let runtimes = [
       { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
-      { id: "mock-container", label: "Mock container", kind: "container", cwd: "/workspace", command: "mock-runtime", args: ["run"], disconnectable: true },
+      { id: "mock-container", label: "Mock container", kind: "container", cwd: "/workspace", command: "mock-runtime", args: ["run"], disconnectable: true, capabilities: { messageBranching: true, sessionRename: false, slashCommands: false, shellCommands: false, sessionStats: false, gitSync: false, extensionUi: false, compactionCancel: false } },
     ];
     const connectedBodies: any[] = [];
     await page.route("**/api/runtimes/connect", async (route) => {
@@ -562,6 +562,7 @@ test.describe("composer layout", () => {
     await expect(page.locator("#runtimePanel")).toBeVisible();
     await expect(page.locator("#runtimeList")).toContainText("Local machine");
     await expect(page.locator("#runtimeList")).toContainText("Mock container");
+    await expect(page.locator("#runtimeList")).toContainText("Unavailable: rename, slash commands, shell commands, full stats, git sync, extension UI, compaction cancel");
     await expect(page.locator("#runtimeConnectKind")).toHaveValue("apple");
     await expect(page.locator("#runtimeAdvancedDetails")).not.toHaveAttribute("open", "");
 

@@ -83,14 +83,14 @@ function shouldShowRebase(repo: GitRepo, status?: GitStatusResponse) {
   return Boolean(counts.upstream && counts.behind > 0);
 }
 
-function createRebaseButton(repo: GitRepo, status: GitStatusResponse | undefined, syncingRepo: string | undefined, onRebase: (repo: GitRepo) => void) {
+function createRebaseButton(repo: GitRepo, status: GitStatusResponse | undefined, syncingRepo: string | undefined, gitSyncSupported: boolean, onRebase: (repo: GitRepo) => void) {
   if (!shouldShowRebase(repo, status)) return undefined;
   const button = document.createElement("button");
   button.type = "button";
   button.className = "gitRebaseButton";
-  button.title = "Fetch and rebase onto upstream";
+  button.title = gitSyncSupported ? "Fetch and rebase onto upstream" : "Git sync is not supported by this runtime";
   button.setAttribute("aria-label", `Fetch and rebase ${repoDisplayName(repo)} onto upstream`);
-  button.disabled = syncingRepo === repo.path;
+  button.disabled = !gitSyncSupported || syncingRepo === repo.path;
   button.append(createElement(GitPullRequestArrow, { "aria-hidden": "true" }));
   button.addEventListener("click", (event) => {
     event.preventDefault();
@@ -153,10 +153,11 @@ function createRepoAccordion(options: {
   selectedPath?: string;
   selectedRepoPath?: string;
   syncingRepo?: string;
+  gitSyncSupported: boolean;
   onSelectFile: (file: GitFileStatus, repo: GitRepo) => void;
   onRebase: (repo: GitRepo) => void;
 }) {
-  const { repo, status, selectedPath, selectedRepoPath, syncingRepo, onSelectFile, onRebase } = options;
+  const { repo, status, selectedPath, selectedRepoPath, syncingRepo, gitSyncSupported, onSelectFile, onRebase } = options;
   const files = status?.files || [];
   const details = document.createElement("details");
   details.className = "gitRepoChangesAccordion";
@@ -179,7 +180,7 @@ function createRepoAccordion(options: {
   label.append(name, meta);
 
   summary.append(disclosure, label);
-  const rebase = createRebaseButton(repo, status, syncingRepo, onRebase);
+  const rebase = createRebaseButton(repo, status, syncingRepo, gitSyncSupported, onRebase);
   if (rebase) summary.append(rebase);
   details.append(summary);
 
@@ -209,10 +210,11 @@ export function renderStatusView(options: {
   selectedPath?: string;
   selectedRepoPath?: string;
   syncingRepo?: string;
+  gitSyncSupported: boolean;
   onSelectFile: (file: GitFileStatus, repo: GitRepo) => void;
   onRebase: (repo: GitRepo) => void;
 }) {
-  const { container, repos, statusesByRepo, selectedPath, selectedRepoPath, syncingRepo, onSelectFile, onRebase } = options;
+  const { container, repos, statusesByRepo, selectedPath, selectedRepoPath, syncingRepo, gitSyncSupported, onSelectFile, onRebase } = options;
   container.textContent = "";
 
   const section = document.createElement("section");
@@ -224,7 +226,7 @@ export function renderStatusView(options: {
   const list = document.createElement("div");
   list.className = "gitRepoChangesList";
   for (const repo of repos) {
-    list.append(createRepoAccordion({ repo, status: statusesByRepo[repo.path], selectedPath, selectedRepoPath, syncingRepo, onSelectFile, onRebase }));
+    list.append(createRepoAccordion({ repo, status: statusesByRepo[repo.path], selectedPath, selectedRepoPath, syncingRepo, gitSyncSupported, onSelectFile, onRebase }));
   }
   section.append(list);
   container.append(section);
