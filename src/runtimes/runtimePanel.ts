@@ -204,7 +204,7 @@ export function createRuntimePanel(options: {
       if (runtime.capabilities) {
         const labels: Array<[keyof typeof runtime.capabilities, string]> = [
           ["sessionRename", "rename"], ["slashCommands", "slash commands"], ["shellCommands", "shell commands"],
-          ["sessionStats", "full stats"], ["gitSync", "git sync"], ["extensionUi", "extension UI"], ["compactionCancel", "compaction cancel"],
+          ["sessionStats", "full stats"], ["gitPanel", "Git panel"], ["gitSync", "git sync"], ["extensionUi", "extension UI"], ["compactionCancel", "compaction cancel"],
         ];
         const unavailable = labels.filter(([key]) => !runtime.capabilities?.[key]).map(([, label]) => label);
         rows.push(["Capabilities", unavailable.length ? `Unavailable: ${unavailable.join(", ")}` : "Full local capability set"]);

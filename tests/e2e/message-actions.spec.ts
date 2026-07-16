@@ -6,6 +6,7 @@ const runnerCapabilities = {
   slashCommands: false,
   shellCommands: false,
   sessionStats: false,
+  gitPanel: false,
   gitSync: false,
   extensionUi: false,
   compactionCancel: false,
@@ -13,7 +14,7 @@ const runnerCapabilities = {
 
 const runtimeRef = { id: "container:test", kind: "container", label: "Test runtime", cwd: "/workspace", capabilities: runnerCapabilities };
 
-async function routeRuntimeSession(page: Page) {
+async function routeRuntimeSession(page: Page, assistantText = "Runtime assistant response") {
   await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
     { id: "local", kind: "local", label: "Local machine" },
     runtimeRef,
@@ -33,7 +34,7 @@ async function routeRuntimeSession(page: Page) {
   } }));
   await page.route("**/api/messages?**", (route) => route.fulfill({ json: { ok: true, messages: [
     { role: "user", text: "Runtime user message", entryId: "runtime-entry-1" },
-    { role: "assistant", text: "Runtime assistant response", entryId: "runtime-entry-2" },
+    { role: "assistant", text: assistantText, entryId: "runtime-entry-2" },
   ] } }));
   await page.route("**/api/models?**", (route) => route.fulfill({ json: { ok: true, models: [], current: null, thinkingLevel: "off", thinkingLevels: ["off"] } }));
 }
@@ -145,6 +146,23 @@ test.describe("message actions", () => {
     expect(navigatedTo).toBe("runtime-entry-1");
   });
 
+  test("preserves runtime artifact routing in markdown previews", async ({ page }) => {
+    await routeRuntimeSession(page, "[runtime report](/api/artifacts/report.md?sessionId=runtime-session&runtimeId=container%3Atest)");
+    let artifactRequest = "";
+    await page.route("**/api/artifacts/report.md?**", async (route) => {
+      artifactRequest = route.request().url();
+      await route.fulfill({ contentType: "text/markdown", body: "# Runtime artifact" });
+    });
+
+    await page.goto("/?sessionId=runtime-session&runtimeId=container%3Atest");
+    await expect(page.locator(".artifactPreview--markdown h1")).toHaveText("Runtime artifact");
+    const requested = new URL(artifactRequest);
+    expect(requested.searchParams.get("sessionId")).toBe("runtime-session");
+    expect(requested.searchParams.get("runtimeId")).toBe("container:test");
+    const open = page.locator(".artifactPreview--markdown").getByRole("link", { name: "Open" });
+    await expect(open).toHaveAttribute("href", /runtimeId%3Dcontainer%253Atest/);
+  });
+
   test("disables unsupported runtime commands and rename before making API calls", async ({ page }) => {
     await routeRuntimeSession(page);
     let shellRequests = 0;
@@ -155,6 +173,8 @@ test.describe("message actions", () => {
     await page.goto("/?sessionId=runtime-session&runtimeId=container%3Atest");
     await expect(page.locator("#statusTitle")).toHaveAttribute("aria-disabled", "true");
     await expect(page.locator("#statusTitle")).toHaveAttribute("title", "Session rename is not supported by this runtime");
+    await expect(page.locator("#gitButton")).toBeDisabled();
+    await expect(page.locator("#gitButton")).toHaveAttribute("title", "The full Git panel is not supported by this runtime");
 
     await page.locator("#prompt").fill("!pwd");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());

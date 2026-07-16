@@ -4,6 +4,7 @@ export type RuntimeCapabilities = {
   slashCommands: boolean;
   shellCommands: boolean;
   sessionStats: boolean;
+  gitPanel: boolean;
   gitSync: boolean;
   extensionUi: boolean;
   compactionCancel: boolean;
@@ -15,6 +16,7 @@ export const RUNNER_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
   slashCommands: false,
   shellCommands: false,
   sessionStats: false,
+  gitPanel: false,
   gitSync: false,
   extensionUi: false,
   compactionCancel: false,
@@ -26,6 +28,7 @@ export const LOCAL_RUNTIME_CAPABILITIES: RuntimeCapabilities = {
   slashCommands: true,
   shellCommands: true,
   sessionStats: true,
+  gitPanel: true,
   gitSync: true,
   extensionUi: true,
   compactionCancel: true,

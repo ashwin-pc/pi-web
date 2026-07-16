@@ -14,6 +14,7 @@ import {
 } from "@earendil-works/pi-ai/compat";
 import { encodeRuntimeMessage, parseRuntimeLine, RUNNER_RUNTIME_CAPABILITIES, type RuntimeEvent, type RuntimeRequest, type RuntimeResponse } from "./runtime/protocol.js";
 import { MODEL_BROKER_API, type BrokerModelCatalog } from "./runtime/modelBroker.js";
+import { runtimePromptOptions } from "./runtime/prompt.js";
 import { artifactDirForCwd, artifactFileForCwd, readArtifactBase64, safeArtifactName } from "./shared/artifacts.js";
 import { listDirectories } from "./shared/fsList.js";
 import { gitDiff, gitStatus } from "./shared/git.js";
@@ -472,7 +473,7 @@ async function handle(request: RuntimeRequest): Promise<unknown> {
       const message = String(params.message || "").trim();
       if (!message && images.length === 0) throw new Error("message or image is required");
       send({ event: "session.prompt.start", data: { ...sessionState(session), isStreaming: true } });
-      void session.prompt(message || "Please review the attached image.", images.length ? { images } : undefined).then(() => {
+      void session.prompt(message || "Please review the attached image.", runtimePromptOptions(Boolean(session.isStreaming), params.mode, images)).then(() => {
         send({ event: "session.prompt.done", data: sessionState(session) });
       }).catch((error: unknown) => {
         send({ event: "session.prompt.error", data: { sessionId: session.sessionId, error: error instanceof Error ? error.message : String(error) } });

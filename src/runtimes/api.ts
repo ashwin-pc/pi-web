@@ -48,7 +48,7 @@ export function localRuntimeRef(cwd = ""): RuntimeOption {
 function normalizeRuntimeCapabilities(value: unknown): RuntimeCapabilities | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const item = value as Record<keyof RuntimeCapabilities, unknown>;
-  const keys: Array<keyof RuntimeCapabilities> = ["messageBranching", "sessionRename", "slashCommands", "shellCommands", "sessionStats", "gitSync", "extensionUi", "compactionCancel"];
+  const keys: Array<keyof RuntimeCapabilities> = ["messageBranching", "sessionRename", "slashCommands", "shellCommands", "sessionStats", "gitPanel", "gitSync", "extensionUi", "compactionCancel"];
   if (!keys.every((key) => typeof item[key] === "boolean")) return undefined;
   return Object.fromEntries(keys.map((key) => [key, item[key]])) as RuntimeCapabilities;
 }

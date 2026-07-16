@@ -34,6 +34,7 @@ import { CommandRunnerProvider, type CommandRunnerConfig, type RunnerSessionInfo
 import { HostModelBroker } from "./server/runtime/modelBroker.js";
 import { guidedContainerTarget, verifyGuidedContainerIsolation, verifyGuidedContainerIsolationSync } from "./server/runtime/networkIsolation.js";
 import { RuntimeStore } from "./server/runtime/runtimeStore.js";
+import { routeRuntimeArtifactUrls } from "./server/runtime/artifactRouting.js";
 import { RUNNER_RUNTIME_CAPABILITIES } from "./server/runtime/protocol.js";
 import { artifactDirForCwd, legacyArtifactDirForCwd, safeArtifactName } from "./server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
@@ -1924,14 +1925,21 @@ function makeRunnerSessionHost(sessionId: string, provider: RunnerProvider, bind
         }
       }
       const sessionFile = typeof result?.sessionFile === "string" ? result.sessionFile : binding?.sessionFile;
-      return { ok: true, messages: messages.map((message: unknown, index: number) => simplifyMessage(message, toolCallArgs, sessionFile, typeof entryIds[index] === "string" ? entryIds[index] : undefined)) };
+      return {
+        ok: true,
+        messages: messages.map((message: unknown, index: number) => routeRuntimeArtifactUrls(
+          simplifyMessage(message, toolCallArgs, sessionFile, typeof entryIds[index] === "string" ? entryIds[index] : undefined),
+          sessionId,
+          provider.id,
+        )),
+      };
     },
     async getCwd() {
       const runnerState = await provider.state(sessionId) as any;
       return String(runnerState.cwd || binding?.cwd || provider.cwd);
     },
-    async prompt(message, images) {
-      await provider.prompt(sessionId, message || "Please review the attached image.", images.map(({ type, data, mimeType }) => ({ type, data, mimeType })));
+    async prompt(message, images, mode) {
+      await provider.prompt(sessionId, message || "Please review the attached image.", images.map(({ type, data, mimeType }) => ({ type, data, mimeType })), mode);
       return { ok: true, sessionId };
     },
     async abort() {

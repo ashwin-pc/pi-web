@@ -43,7 +43,7 @@
 .emptyCwdChooser[hidden] { display: none; }
 
 .emptyCwdInner {
-  width: min(100% - 24px, 520px);
+  width: min(calc(100% - 24px), 520px);
   color: var(--text);
   padding: 8px 0 28px;
 }

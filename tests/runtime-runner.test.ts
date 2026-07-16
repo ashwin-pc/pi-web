@@ -63,7 +63,7 @@ describe("runtime runner spike", () => {
         cwd,
         protocol: "pi-runner-v2",
         modelTransport: "runtime",
-        capabilities: { messageBranching: true, sessionRename: false, slashCommands: false, shellCommands: false, sessionStats: false, gitSync: false, extensionUi: false, compactionCancel: false },
+        capabilities: { messageBranching: true, sessionRename: false, slashCommands: false, shellCommands: false, sessionStats: false, gitPanel: false, gitSync: false, extensionUi: false, compactionCancel: false },
       });
 
       const listing = await client.request<any>("fs.list", { path: cwd });

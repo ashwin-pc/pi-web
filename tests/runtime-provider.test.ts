@@ -93,6 +93,31 @@ describe("CommandRunnerProvider", () => {
     expect(provider.status).toMatchObject({ state: "disconnected", error: expect.stringContaining("network changed") });
   });
 
+  it("forwards the selected prompt queue mode over the runner protocol", async () => {
+    const cwd = await tempWorkspace();
+    const fakeRunner = join(cwd, "fake-runner.mjs");
+    await writeFile(fakeRunner, `
+import { createInterface } from "node:readline";
+const rl = createInterface({ input: process.stdin });
+rl.on("line", (line) => {
+  const request = JSON.parse(line);
+  const result = request.method === "health"
+    ? { ok: true }
+    : request.method === "sessions.prompt"
+      ? { ok: true, mode: request.params.mode }
+      : { ok: true, sessionId: request.params?.sessionId || "session" };
+  process.stdout.write(JSON.stringify({ id: request.id, ok: true, result }) + "\\n");
+});
+`);
+    const provider = new CommandRunnerProvider({ id: "queue-mode", label: "Queue mode", command: process.execPath, args: [fakeRunner], cwd, kind: "local", modelBroker: false });
+    try {
+      await expect(provider.prompt("session", "later", [], "followUp")).resolves.toMatchObject({ mode: "followUp" });
+      await expect(provider.prompt("session", "interrupt", [], "steer")).resolves.toMatchObject({ mode: "steer" });
+    } finally {
+      provider.stop();
+    }
+  });
+
   it("can use an arbitrary command transport", async () => {
     const cwd = await tempWorkspace();
     const provider = new CommandRunnerProvider({ id: "cmd:test", label: "Command test", command: process.execPath, args: ["--import", "tsx", "server/runner.ts"], cwd, kind: "local", modelBroker: false, env: { ...process.env, PI_RUNNER_CWD: cwd, PI_CODING_AGENT_DIR: join(cwd, ".pi", "agent") } });

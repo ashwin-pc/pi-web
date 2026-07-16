@@ -101,7 +101,7 @@ export async function verifyGuidedContainerIsolation(
   target: string,
   run: RunCommand = async (command, args) => execFileAsync(command, args, { timeout: 30_000, maxBuffer: 4 * 1024 * 1024 }),
   commandOverride?: string,
-): Promise<{ network: string; networkPolicy: "none" | "host-only"; containerId: string }> {
+): Promise<{ network: string; networkPolicy: "none" | "host-only"; containerId: string; networkVerifiedAt: string }> {
   const command = commandOverride || (adapter === "apple" ? "container" : adapter);
   const containerInspect = parseJson((await run(command, ["inspect", target])).stdout, `${adapter} container inspection`);
   const { container, networks } = inspectBasics(adapter, target, containerInspect);

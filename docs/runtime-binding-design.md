@@ -106,7 +106,7 @@ The runner forwards every pi event through the same host enrichment and browser 
 
 ### Typed capability contract
 
-Runtime summaries and session state carry a typed capability map. The current runner advertises message branching but explicitly reports session rename, slash commands, shell commands, full session statistics, git sync, extension UI, and compaction cancellation as unavailable. The browser disables or explains those controls instead of attempting a local fallback or discovering the gap through a failed request. Missing capability metadata remains backward-compatible for Local and older servers; explicit `false` is authoritative.
+Runtime summaries and session state carry a typed capability map. The current runner advertises message branching but explicitly reports session rename, slash commands, shell commands, full session statistics, the full Git panel (including history/image previews/sync), extension UI, and compaction cancellation as unavailable. The browser disables or explains those controls instead of attempting a local fallback or discovering the gap through a failed request. Missing capability metadata remains backward-compatible for Local and older servers; explicit `false` is authoritative.
 
 ## Host model broker
 

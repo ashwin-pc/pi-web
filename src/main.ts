@@ -118,7 +118,10 @@ async function handleMessageAction(context: MessageActionContext) {
 }
 
 messages = createMessageList({ messagesEl: elements.messagesEl, markdown, onMessageAction: handleMessageAction });
-const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers);
+const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, () => ({
+  sessionId: state.currentSessionId,
+  runtimeId: state.currentRuntimeRef?.id,
+}));
 
 const webHeaderActions = createWebHeaderActions({
   container: elements.headerActionsEl,
@@ -170,6 +173,9 @@ function updateMeta(data: any) {
   else if ("sessionName" in data) statusBar.setStatusTitle(data.sessionName?.trim() || "New session");
   const runtimeLabel = state.currentRuntimeRef?.id && state.currentRuntimeRef.id !== "local" ? state.currentRuntimeRef.label || state.currentRuntimeRef.id : "";
   elements.statusPathEl.textContent = runtimeLabel ? `${runtimeLabel}: ${state.currentCwd}` : state.currentCwd;
+  const gitPanelSupported = state.currentRuntimeRef?.capabilities?.gitPanel !== false;
+  elements.gitButton.disabled = !gitPanelSupported;
+  elements.gitButton.title = gitPanelSupported ? "Git" : "The full Git panel is not supported by this runtime";
   modelSettings.updateSummary();
   if (sessions) {
     if (data.sessionUiState) sessions.applySessionUiState(data.sessionUiState);

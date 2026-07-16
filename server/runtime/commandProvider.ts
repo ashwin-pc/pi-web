@@ -268,10 +268,10 @@ export class CommandRunnerProvider {
 
   messages(sessionId: string) { return this.start().request("sessions.messages", this.sessionParams(sessionId)); }
 
-  async prompt(sessionId: string, message: string, images?: unknown[]) {
+  async prompt(sessionId: string, message: string, images?: unknown[], mode: "followUp" | "steer" = "steer") {
     await this.subscribe(sessionId).catch((error) => console.warn(`Failed to subscribe runtime session ${sessionId}:`, error));
     const timeout = images?.length ? 120_000 : 30_000;
-    return this.start().request("sessions.prompt", { ...this.sessionParams(sessionId), message, images: images || [] }, timeout);
+    return this.start().request("sessions.prompt", { ...this.sessionParams(sessionId), message, images: images || [], mode }, timeout);
   }
 
   release(sessionId: string) {
