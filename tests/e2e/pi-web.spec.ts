@@ -566,6 +566,10 @@ test.describe("composer layout", () => {
     await expect(page.locator("#runtimeConnectKind")).toHaveValue("apple");
     await expect(page.locator("#runtimeAdvancedDetails")).not.toHaveAttribute("open", "");
 
+    await page.locator("#runtimeConnectButton").click();
+    await expect(page.locator("#runtimePanelStatus")).toContainText("Choose how this runtime should access models");
+    expect(connectedBodies).toHaveLength(0);
+
     await page.locator("#runtimeConnectKind").selectOption("ssh");
     await page.locator("#runtimeConnectModelAccess").selectOption("runtime");
     await page.locator("#runtimeConnectLabel").fill("SSH test");
