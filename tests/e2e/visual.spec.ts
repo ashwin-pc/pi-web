@@ -18,7 +18,10 @@ async function startEmptySession(page: import("@playwright/test").Page) {
   await page.locator("#sessionButton").click();
   await page.locator("#sessionNewButton").click();
   await expect(page.locator("#statusTitle")).toHaveText("New session");
-  if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+  if (await page.locator("#sessionDrawer").isVisible()) {
+    await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
+  }
 }
 
 async function seedSessionShowcaseState(page: import("@playwright/test").Page, currentSessionId = "mock-current", currentLabel = "Current mock session") {
