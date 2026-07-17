@@ -511,14 +511,17 @@ test.describe("composer layout", () => {
     await expect(page.locator("#settingLoadingAnimationSelect")).toHaveValue("pulse");
   });
 
-  test("keeps the local workbench selector in the session drawer footer", async ({ page }) => {
+  test("shows the current workbench runtime in the session drawer footer", async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem("pi-web-active-runtime", JSON.stringify({ id: "cmd-api", label: "Command API" })));
     await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
       { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+      { id: "cmd-api", label: "Command API", kind: "container", cwd: "/workspace" },
     ] } }));
     await page.goto("/");
     await page.locator("#sessionButton").click();
     await expect(page.locator("#workbenchRuntimeButton")).toBeVisible();
-    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Local");
+    await expect(page.locator("#workbenchRuntimeLabel")).toBeVisible();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Command API");
   });
 
   test("recovers a stale per-tab runtime selection after that runtime was forgotten", async ({ page }) => {

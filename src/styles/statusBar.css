@@ -173,7 +173,7 @@
     justify-content: center;
   }
 
-  #workbenchRuntimeLabel { display: none; }
+  .statusBar #workbenchRuntimeLabel { display: none; }
 
   .statusTitle {
     max-width: 28vw;
