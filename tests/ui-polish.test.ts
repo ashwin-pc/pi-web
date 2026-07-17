@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { createContextMeter } from "../src/composer/contextMeter.js";
-import { createModelSettings, thinkingLevelFill } from "../src/models/modelSettings.js";
+import { createModelSettings, modelSummaryParts, thinkingLevelFill } from "../src/models/modelSettings.js";
 import type { AppElements } from "../src/app/elements.js";
 import type { AppState } from "../src/app/types.js";
 
@@ -15,9 +15,17 @@ class MockElement {
   attributes = new Map<string, string>();
   style = { values: new Map<string, string>(), setProperty: (key: string, value: string) => this.style.values.set(key, value) };
   children: unknown[] = [];
-  selectedOptions: Array<{ textContent?: string | null }> = [];
-  append(...nodes: unknown[]) { this.children.push(...nodes); }
-  appendChild(node: unknown) { this.children.push(node); return node; }
+  selectedOptions: Array<{ textContent?: string | null; dataset?: Record<string, string> }> = [];
+  append(...nodes: unknown[]) {
+    this.children.push(...nodes);
+    this.textContent += nodes.map((node) => typeof node === "object" && node && "textContent" in node ? String(node.textContent || "") : String(node)).join("");
+  }
+  appendChild(node: unknown) { this.append(node); return node; }
+  replaceChildren(...nodes: unknown[]) {
+    this.children = [];
+    this.textContent = "";
+    this.append(...nodes);
+  }
   setAttribute(key: string, value: string) { this.attributes.set(key, value); }
   addEventListener() {}
 }
@@ -67,12 +75,30 @@ describe("context meter compaction polish", () => {
 });
 
 describe("model settings summary", () => {
+  it("splits provider/model labels for the compact summary", () => {
+    expect(modelSummaryParts("aws-bedrock/us.anthropic.claude-3-7-sonnet (Claude 3.7 Sonnet)")).toEqual({
+      fullLabel: "aws-bedrock/us.anthropic.claude-3-7-sonnet (Claude 3.7 Sonnet)",
+      model: "Claude 3.7 Sonnet",
+      provider: "aws-bedrock",
+      id: "us.anthropic.claude-3-7-sonnet",
+      name: "Claude 3.7 Sonnet",
+    });
+    expect(modelSummaryParts("mock/model")).toEqual({ fullLabel: "mock/model", model: "model", provider: "mock", id: "model", name: "" });
+    expect(modelSummaryParts("custom/model (preview)", { provider: "custom", id: "model (preview)" })).toEqual({
+      fullLabel: "custom/model (preview)",
+      model: "model (preview)",
+      provider: "custom",
+      id: "model (preview)",
+      name: "",
+    });
+  });
+
   it("uses the selected model option instead of deriving a No model label", () => {
     const modelSettingsLabel = new MockElement();
     const modelSettingsThinking = new MockElement();
     const modelSettingsButton = new MockElement();
     const modelSelectEl = new MockElement();
-    modelSelectEl.selectedOptions = [{ textContent: "aws-bedrock/us.anthropic.claude-3-7-sonnet" }];
+    modelSelectEl.selectedOptions = [{ textContent: "aws-bedrock/us.anthropic.claude-3-7-sonnet", dataset: { provider: "aws-bedrock", modelId: "us.anthropic.claude-3-7-sonnet" } }];
     const controller = createModelSettings({
       state: { currentModelDisplay: "", currentModelKey: "", currentThinkingLevel: "off" } as AppState,
       elements: {
@@ -89,7 +115,10 @@ describe("model settings summary", () => {
 
     controller.updateSummary();
 
-    expect(modelSettingsLabel.textContent).toBe("aws-bedrock/us.anthropic.claude-3-7-sonnet");
+    expect(modelSettingsLabel.title).toBe("aws-bedrock/us.anthropic.claude-3-7-sonnet");
+    expect(modelSettingsLabel.children).toMatchObject([
+      { className: "modelSettingsModelName", textContent: "us.anthropic.claude-3-7-sonnet" },
+    ]);
   });
 
   it("stores dynamic thinking fill from the API-provided option order", () => {
@@ -279,6 +308,12 @@ describe("compact inactive composer styling", () => {
 
   it("keeps model, thinking, attachment, and active stop controls available", () => {
     expect(css).toContain(`${compactSelector} .modelSettingsButton {`);
+    expect(css).toContain("width: fit-content;");
+    expect(css).toContain("display: inline-flex;");
+    expect(css).toContain("justify-content: flex-start;");
+    expect(css).toContain(".modelSettingsModelName,");
+    expect(css).toContain(".modelSettingsCurrent {");
+    expect(css).toContain(".modelSettingsCurrentValue {");
     expect(css).toContain(`${compactSelector} #attachButton,\n${compactSelector} #stopButton {`);
     expect(css).not.toContain(`${compactSelector} #stopButton {\n  display: none !important;`);
   });
@@ -291,7 +326,7 @@ describe("compact inactive composer styling", () => {
 
   it("preserves model label width and thinking icon in compact mobile layout", () => {
     const responsiveCss = readFileSync(new URL("../src/styles/responsive.css", import.meta.url), "utf8");
-    expect(responsiveCss).toContain(`${compactSelector} .modelControl {\n    flex: 0 1 auto;\n    width: clamp(150px, 42vw, 240px);\n  }`);
+    expect(responsiveCss).toContain(`${compactSelector} .modelControl {\n    flex: 0 1 auto;\n    width: fit-content;\n    max-width: clamp(104px, 34vw, 170px);\n  }`);
     expect(responsiveCss).toContain(".modelSettingsThinking {\n    display: inline-flex;\n  }");
     expect(responsiveCss).toContain(".modelSettingsThinkingText {");
   });

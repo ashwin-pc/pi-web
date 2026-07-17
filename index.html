@@ -41,6 +41,10 @@
         <button id="sessionButton" class="iconButton statusBarButton" type="button" aria-label="Sessions" title="Sessions">
           <span data-icon="menu"></span>
         </button>
+        <button id="workbenchRuntimeButton" class="workbenchRuntimeButton" type="button" aria-label="Workbench runtime: Local machine" title="Change workbench runtime" hidden>
+          <span data-icon="server"></span>
+          <span id="workbenchRuntimeLabel">Local</span>
+        </button>
         <span id="statusTitle" class="statusTitle"></span>
         <span id="statusPath" class="statusPath"></span>
         <span id="activityStatus" class="activityStatus" hidden></span>
@@ -57,6 +61,9 @@
         </button>
         <button id="currentSessionBucketButton" class="iconButton statusBarButton sessionBucketButton" type="button" aria-label="Set session bucket" title="Set session bucket" aria-haspopup="menu">
           <span data-icon="flag"></span>
+        </button>
+        <button id="runtimeButton" class="iconButton statusBarButton" type="button" aria-label="Runtimes" title="Runtimes">
+          <span data-icon="server"></span>
         </button>
         <button id="settingsButton" class="iconButton statusBarButton" type="button" aria-label="Settings" title="Settings">
           <span data-icon="settings"></span>
@@ -80,10 +87,18 @@
 
       <section id="messages" class="messages" aria-live="polite"></section>
       <div id="emptyCwdChooser" class="emptyCwdChooser" hidden>
+        <video class="newChatLoadingAnimation" muted playsinline preload="auto" aria-hidden="true">
+          <source src="/new-chat-loading.mp4" type="video/mp4">
+        </video>
         <div class="emptyCwdInner">
-          <div class="emptyCwdLabel">Working directory</div>
-          <div class="emptyCwdPath"></div>
-          <button type="button" class="emptyCwdButton">Change folder</button>
+          <span class="emptyCwdLabel">Working directory</span>
+          <div class="emptyWorkspaceControls">
+            <button type="button" class="emptyCwdButton" aria-label="Change working directory" title="Change working directory">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h6l2 2h10v10H3z"></path></svg>
+              <span class="emptyCwdPath"></span>
+              <span class="emptyControlChevron" aria-hidden="true">⌄</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -95,6 +110,79 @@
         </div>
         <div id="sessionList" class="sessionList" aria-live="polite"></div>
         <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+      </aside>
+
+      <div id="runtimeBackdrop" class="settingsBackdrop" hidden></div>
+      <aside id="runtimePanel" class="settingsPanel runtimePanel" aria-label="Runtimes" hidden>
+        <div class="settingsHeader runtimeHeader">
+          <h2>Runtimes</h2>
+          <button id="runtimeCloseButton" class="iconButton" type="button" aria-label="Close runtimes" title="Close runtimes">×</button>
+        </div>
+        <section class="settingsSection runtimeIntroSection">
+          <h3>Connect to existing places pi can run</h3>
+          <p class="settingsHint">Runtime comes before folder: paths are interpreted inside the selected runtime. pi-web registers and connects to runtimes; it does not create containers or SSH hosts.</p>
+        </section>
+        <section class="settingsSection runtimeSection">
+          <div class="runtimeSectionHeader">
+            <h3>Available runtimes</h3>
+            <button id="runtimeRefreshButton" type="button">Refresh</button>
+          </div>
+          <div id="runtimeList" class="runtimeList" aria-live="polite"></div>
+        </section>
+        <section class="settingsSection runtimeSection">
+          <h3>Connect existing runtime</h3>
+          <p class="settingsHint">Choose how to reach a runtime that already exists. Docker/Podman require network none; Apple requires a host-only network with DNS disabled. SSH uses the remote machine's own network policy.</p>
+          <label class="settingsField">
+            <span>Connection type</span>
+            <select id="runtimeConnectKind">
+              <option value="apple">Apple container</option>
+              <option value="docker">Docker container</option>
+              <option value="podman">Podman container</option>
+              <option value="ssh">SSH host</option>
+            </select>
+          </label>
+          <label class="settingsField">
+            <span>Model access</span>
+            <select id="runtimeConnectModelAccess" required>
+              <option value="" selected>Choose model access…</option>
+              <option value="host">Host credentials (typed broker)</option>
+              <option value="runtime">Runtime's own credentials/models</option>
+            </select>
+            <small>Host access lets code in the runtime spend—but not read—host credentials while connected. Runtime access never uses host credentials and only exposes models available inside the runtime.</small>
+          </label>
+          <label class="settingsField">
+            <span>Display name</span>
+            <input id="runtimeConnectLabel" value="Apple container: pi-web-runtime" />
+          </label>
+          <label class="settingsField">
+            <span id="runtimeConnectTargetLabel">Container name</span>
+            <input id="runtimeConnectTarget" value="pi-web-runtime" autocomplete="off" />
+          </label>
+          <label class="settingsField">
+            <span>Runtime workspace</span>
+            <input id="runtimeConnectCwd" value="/workspace" autocomplete="off" />
+          </label>
+          <label class="settingsField">
+            <span>Runner source directory inside runtime</span>
+            <input id="runtimeConnectRunnerDir" value="/workspace/pi-web" autocomplete="off" />
+          </label>
+          <div class="settingsActions">
+            <button id="runtimeConnectButton" type="button">Connect and use</button>
+          </div>
+          <details id="runtimeAdvancedDetails" class="runtimeAdvancedDetails">
+            <summary>Advanced command JSON</summary>
+            <p class="settingsHint">Custom commands are privileged host command execution. Their network isolation cannot be verified and persistent custom runtimes require the server opt-in.</p>
+            <textarea id="runtimeConnectJson" class="runtimeConnectJson" rows="11" spellcheck="false" aria-label="Runtime JSON configuration"></textarea>
+            <div class="settingsActions">
+              <button id="runtimeAdvancedConnectButton" type="button">Connect JSON configuration</button>
+            </div>
+          </details>
+        </section>
+        <section class="settingsSection runtimeSection">
+          <h3>Examples and diagnostics</h3>
+          <div id="runtimeExamples" class="runtimeExamples"></div>
+        </section>
+        <span id="runtimePanelStatus" class="settingsStatus" aria-live="polite"></span>
       </aside>
 
       <div id="settingsBackdrop" class="settingsBackdrop" hidden></div>
@@ -202,13 +290,13 @@
             <span>Keep composer expanded</span>
           </label>
         </section>
-        <section class="settingsSection">
-          <h3>New sessions</h3>
+        <section id="settingSessionDefaultsSection" class="settingsSection">
+          <h3 id="settingSessionDefaultsTitle">Local machine new sessions</h3>
           <label class="settingsField">
             <span>Default bucket</span>
             <select id="settingDefaultBucketColorSelect" aria-label="Default session bucket color"></select>
           </label>
-          <p class="settingsHint">Choose a bucket color and saved model defaults for sessions you start from now on. Existing sessions are unchanged.</p>
+          <p id="settingSessionDefaultsHint" class="settingsHint">Choose a bucket color and saved model defaults for local sessions you start from now on. Existing sessions are unchanged.</p>
           <div class="settingsValue" id="settingModelDefaultsValue">No default model saved</div>
           <div class="settingsActions">
             <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>

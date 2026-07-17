@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -511,6 +511,82 @@ test.describe("composer layout", () => {
     await expect(page.locator("#settingLoadingAnimationSelect")).toHaveValue("pulse");
   });
 
+  test("shows the current workbench runtime in the session drawer footer", async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem("pi-web-active-runtime", JSON.stringify({ id: "cmd-api", label: "Command API" })));
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
+      { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+      { id: "cmd-api", label: "Command API", kind: "container", cwd: "/workspace" },
+    ] } }));
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#workbenchRuntimeButton")).toBeVisible();
+    await expect(page.locator("#workbenchRuntimeLabel")).toBeVisible();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Command API");
+  });
+
+  test("recovers a stale per-tab runtime selection after that runtime was forgotten", async ({ page }) => {
+    await page.addInitScript(() => sessionStorage.setItem("pi-web-active-runtime", JSON.stringify({ id: "cmd-api", label: "Command API" })));
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
+      { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+    ] } }));
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Local");
+    await expect(page.locator("#sessionList")).toContainText("Current mock session");
+  });
+
+  test("runtime panel lists runtimes and populates connect examples", async ({ page }) => {
+    let runtimes = [
+      { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+      { id: "mock-container", label: "Mock container", kind: "container", cwd: "/workspace", command: "mock-runtime", args: ["run"], disconnectable: true, capabilities: { messageBranching: true, sessionRename: false, slashCommands: false, shellCommands: false, sessionStats: false, gitPanel: false, gitSync: false, extensionUi: false, compactionCancel: false } },
+    ];
+    const connectedBodies: any[] = [];
+    await page.route("**/api/runtimes/connect", async (route) => {
+      const connectedBody = JSON.parse(route.request().postData() || "{}");
+      connectedBodies.push(connectedBody);
+      const runtime = {
+        id: connectedBody.id,
+        label: connectedBody.label,
+        kind: connectedBody.adapter === "ssh" ? "ssh" : connectedBody.kind || "container",
+        cwd: connectedBody.cwd,
+        command: connectedBody.command || (connectedBody.adapter === "apple" ? "container" : connectedBody.adapter),
+        args: connectedBody.args || [],
+        disconnectable: true,
+      };
+      runtimes = [...runtimes, runtime];
+      await route.fulfill({ status: 201, json: { ok: true, runtime } });
+    });
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes } }));
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await page.locator("#workbenchRuntimeButton").click();
+    await page.locator(".runtimePicker", { hasText: "Switch workbench runtime" }).getByRole("button", { name: "Manage runtimes…" }).click();
+    await expect(page.locator("#runtimePanel")).toBeVisible();
+    await expect(page.locator("#runtimeList")).toContainText("Local machine");
+    await expect(page.locator("#runtimeList")).toContainText("Mock container");
+    await expect(page.locator("#runtimeList")).toContainText("Unavailable: rename, slash commands, shell commands, full stats, Git panel, git sync, extension UI, compaction cancel");
+    await expect(page.locator("#runtimeConnectKind")).toHaveValue("apple");
+    await expect(page.locator("#runtimeAdvancedDetails")).not.toHaveAttribute("open", "");
+
+    await page.locator("#runtimeConnectButton").click();
+    await expect(page.locator("#runtimePanelStatus")).toContainText("Choose how this runtime should access models");
+    expect(connectedBodies).toHaveLength(0);
+
+    await page.locator("#runtimeConnectKind").selectOption("ssh");
+    await page.locator("#runtimeConnectModelAccess").selectOption("runtime");
+    await page.locator("#runtimeConnectLabel").fill("SSH test");
+    await page.locator("#runtimeConnectTarget").fill("test-host");
+    await page.locator("#runtimeConnectButton").click();
+    await expect(page.locator("#runtimePanelStatus")).toContainText("Connected SSH test");
+    expect(connectedBodies.at(-1)).toMatchObject({ id: "ssh:test-host", label: "SSH test", adapter: "ssh", target: "test-host", cwd: "~/workspace", runnerDir: "~/pi-web-runner", modelBroker: false });
+    await expect(page.locator("#runtimeList")).toContainText("SSH test");
+
+    await page.locator(".runtimeExample", { hasText: "SSH host" }).locator(".runtimeExampleUse").click();
+    await expect(page.locator("#runtimeAdvancedDetails")).toHaveAttribute("open", "");
+    await expect(page.locator("#runtimeConnectJson")).toHaveValue(/"id": "ssh:devbox"/);
+  });
+
   test("context meter shows known usage details without low-usage label", async ({ page }) => {
     await page.goto("/");
 
@@ -575,7 +651,8 @@ test.describe("composer layout", () => {
   test("model settings popover changes reasoning level explicitly", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("#modelSettingsButton")).toContainText("mock/model");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Mock Model");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/model/);
     await expect(page.locator("#modelSettingsThinking")).toContainText("medium");
     await expect(page.locator("#modelSettingsThinking")).not.toContainText("reasoning");
 
@@ -629,7 +706,8 @@ test.describe("composer layout", () => {
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
     await expect(page.locator("#modelSettingsButton")).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
-    await expect(page.locator("#modelSettingsButton")).toContainText("mock/other");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Other Mock Model");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/other/);
 
     await page.mouse.click(5, 5);
     await expect(page.locator("#modelSettingsPopover")).toBeHidden();
@@ -758,6 +836,71 @@ test.describe("sessions drawer", () => {
     await page.locator("#sessionButton").click();
     await expect.poll(() => sessionsUrl).toContain("/api/sessions?");
     expect(new URL(sessionsUrl).searchParams.getAll("cwd")).toContain(rememberedCwd);
+  });
+
+  test("workbench runtime scopes new-session folder browsing", async ({ page }) => {
+    const dirRequests: Array<{ runtimeId: string | null; path: string | null }> = [];
+    const sessionListRequests: URL[] = [];
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
+      { id: "local", label: "Local machine", kind: "local", cwd: "/Users/test/project" },
+      { id: "container:test", label: "Test container", kind: "container", cwd: "/workspace" },
+    ] } }));
+    await page.route("**/api/sessions?**", async (route) => {
+      sessionListRequests.push(new URL(route.request().url()));
+      await route.continue();
+    });
+    await page.route("**/api/sessions/new", async (route) => {
+      const body = JSON.parse(route.request().postData() || "{}");
+      if (body.runtimeId !== "container:test") return route.continue();
+      await route.fulfill({ json: { ok: true, sessionId: "runtime-session", cwd: body.cwd || "/workspace", sessionFile: "/runtime/session.jsonl", runtimeRef: { id: "container:test", kind: "container", label: "Test container", cwd: body.cwd || "/workspace" }, model: null, thinkingLevel: "off", thinkingLevels: ["off"], isStreaming: false, isCompacting: false } });
+    });
+    await page.route("**/api/state*", async (route) => {
+      if (route.request().headers()["x-pi-web-runtime-id"] !== "container:test") return route.continue();
+      await route.fulfill({ json: { ok: true, sessionId: "runtime-session", cwd: "/workspace", sessionFile: "/runtime/session.jsonl", runtimeRef: { id: "container:test", kind: "container", label: "Test container", cwd: "/workspace" }, model: null, thinkingLevel: "off", thinkingLevels: ["off"], isStreaming: false, isCompacting: false } });
+    });
+    await page.route("**/api/messages?**", async (route) => {
+      if (route.request().headers()["x-pi-web-runtime-id"] !== "container:test") return route.continue();
+      await route.fulfill({ json: { ok: true, messages: [] } });
+    });
+    await page.route("**/api/fs/dirs?**", async (route) => {
+      const url = new URL(route.request().url());
+      const path = url.searchParams.get("path") || "/";
+      dirRequests.push({ runtimeId: url.searchParams.get("runtimeId"), path });
+      await route.fulfill({ json: { ok: true, path, parent: path === "/" ? "/" : "/", dirs: [{ name: "app", path: `${path.replace(/\/$/, "")}/app` }] } });
+    });
+
+    page.on("dialog", (dialog) => dialog.accept());
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#workbenchRuntimeButton")).toBeVisible();
+    await page.locator("#sessionNewButton").click();
+    await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();
+    if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
+
+    await page.locator("#workbenchRuntimeButton").click();
+    await page.locator(".runtimePicker .folderPickerRow", { hasText: "Test container" }).click();
+    await page.locator(".runtimePicker .primaryAction").click();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Test container");
+    await expect(page.locator("#sessionList")).not.toContainText("Current mock session");
+    await expect.poll(() => sessionListRequests.some((url) => url.searchParams.get("runtimeId") === "container:test" && url.searchParams.get("cached") === "1")).toBe(true);
+    await expect.poll(() => sessionListRequests.some((url) => url.searchParams.get("runtimeId") === "container:test" && !url.searchParams.has("cached"))).toBe(true);
+
+    if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
+    await page.locator("#settingsButton").click();
+    await expect(page.locator("#settingSessionDefaultsTitle")).toHaveText("Test container new sessions");
+    await expect(page.locator("#settingSessionDefaultsHint")).toContainText("owns its model authentication and defaults");
+    await expect(page.locator("#settingSaveModelDefaultsButton")).toBeDisabled();
+    await page.locator("#settingsCloseButton").click();
+
+    await page.locator(".emptyCwdButton").evaluate((button: HTMLButtonElement) => button.click());
+    await expect(page.locator(".folderPickerRuntimeSelect")).toBeHidden();
+    await expect(page.locator(".folderPickerInput")).toHaveValue("/workspace");
+    await expect.poll(() => dirRequests.at(-1)?.runtimeId).toBe("container:test");
+    await expect(page.locator(".folderPickerList")).toContainText("app");
+
+    await page.keyboard.press("Escape");
+    await page.reload();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Test container");
   });
 
   test("pinned folders stay first and folder labels disambiguate on one row", async ({ page }) => {
@@ -1201,7 +1344,6 @@ test.describe("code block copy button", () => {
     await expect(copyBtn).toBeHidden();
 
     await pre.hover();
-    await copyBtn.evaluate((el) => (el as HTMLElement).focus());
     await expect(copyBtn).toBeVisible();
 
     // before click: copy state
@@ -1219,9 +1361,10 @@ test.describe("code block copy button", () => {
     await page.locator("#primaryButton").click();
 
     const pre = page.locator(".message.assistant .markdownBody pre").last();
+    await expect(pre).toBeVisible();
     await pre.hover();
     const copyBtn = pre.locator(".copyCode");
-    await copyBtn.evaluate((el) => (el as HTMLElement).focus());
+    await expect(copyBtn).toBeVisible();
     await copyBtn.click();
     await expect(copyBtn).toHaveAttribute("data-icon", "check");
 
@@ -1308,6 +1451,12 @@ test.describe("context compaction", () => {
 });
 
 test.describe("image rendering", () => {
+  async function submitPrompt(page: Page) {
+    const send = page.locator("#primaryButton");
+    await expect(send).toBeEnabled();
+    await send.click();
+  }
+
   test.beforeAll(async () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     const htmlPreview = `<!doctype html><html><body>
@@ -1359,7 +1508,7 @@ test.describe("image rendering", () => {
 
   test("renders markdown artifact links inline", async ({ page }) => {
     await page.locator("#prompt").fill("show markdown artifact");
-    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await submitPrompt(page);
 
     const preview = page.locator(".artifactPreview--markdown").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("report.md");
@@ -1370,7 +1519,7 @@ test.describe("image rendering", () => {
 
   test("opens markdown artifacts in a rendered preview page", async ({ page }) => {
     await page.locator("#prompt").fill("show markdown artifact");
-    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await submitPrompt(page);
 
     const open = page.locator(".artifactPreview--markdown").last().getByRole("link", { name: "Open" });
     await expect(open).toHaveAttribute("href", /\/artifact-preview\.html\?src=%2Fapi%2Fartifacts%2Freport\.md/);
@@ -1391,7 +1540,7 @@ test.describe("image rendering", () => {
 
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {
     await page.locator("#prompt").fill("show html artifact");
-    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await submitPrompt(page);
 
     const preview = page.locator(".artifactPreview--html").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("preview.html");
@@ -1408,7 +1557,7 @@ test.describe("image rendering", () => {
 
   test("renders video artifact links inline", async ({ page }) => {
     await page.locator("#prompt").fill("show video artifact");
-    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await submitPrompt(page);
 
     const preview = page.locator(".artifactPreview--video").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-video-artifact.webm");

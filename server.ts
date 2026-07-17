@@ -26,6 +26,19 @@ import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessi
 import { createSettingsStore } from "./server/settings.js";
 import type { PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
 import type { PiWebSession } from "./server/types.js";
+import { RuntimeBindingStore, type SessionRuntimeBinding } from "./server/runtime/bindings.js";
+import { localRuntime, RuntimeRegistry } from "./server/runtime/registry.js";
+import { StdioRunnerProvider } from "./server/runtime/stdioProvider.js";
+import { DockerRunnerProvider } from "./server/runtime/dockerProvider.js";
+import { CommandRunnerProvider, type CommandRunnerConfig, type RunnerSessionInfo } from "./server/runtime/commandProvider.js";
+import { HostModelBroker } from "./server/runtime/modelBroker.js";
+import { guidedContainerTarget, verifyGuidedContainerIsolation, verifyGuidedContainerIsolationSync } from "./server/runtime/networkIsolation.js";
+import { RuntimeStore } from "./server/runtime/runtimeStore.js";
+import { routeRuntimeArtifactUrls } from "./server/runtime/artifactRouting.js";
+import { RUNNER_RUNTIME_CAPABILITIES } from "./server/runtime/protocol.js";
+import { artifactDirForCwd, legacyArtifactDirForCwd, safeArtifactName } from "./server/shared/artifacts.js";
+import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
+import { git, gitBuffer, gitDiff, gitStatus, isGitRepo, safeGitPath } from "./server/shared/git.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const distDir = join(appDir, "dist");
@@ -36,8 +49,6 @@ const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
-let artifactDir = join(piCwd, ".pi", "web", "artifacts");
-let legacyArtifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
 const knownCwds = new Set<string>([piCwd]);
 
 const webUiContextFile = join(appDir, "contexts", "web-ui.md");
@@ -115,21 +126,37 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
-function safeArtifactName(name: string) {
-  return name.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 160);
-}
-
-function serveArtifact(req: IncomingMessage, res: ServerResponse) {
+async function serveArtifact(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const rawName = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
   const name = safeArtifactName(rawName);
   if (!name || rawName.includes("..") || rawName.includes("/") || name !== rawName) return sendJson(res, 400, { ok: false, error: "Invalid artifact name" });
 
+  const sessionId = url.searchParams.get("sessionId") || "";
+  const runtimeId = url.searchParams.get("runtimeId") || runtimeIdFromRequest(req);
+  const artifactHost = sessionId ? await sessionHostForSession(sessionId, undefined, runtimeId) : undefined;
+  if (artifactHost?.readArtifactBase64) {
+    try {
+      const artifact = await artifactHost.readArtifactBase64(name);
+      const bytes = Buffer.from(artifact.base64, "base64");
+      res.writeHead(200, {
+        "content-type": contentTypes[extname(name).toLowerCase()] || "application/octet-stream",
+        "cache-control": "no-store",
+        "content-length": bytes.length,
+      });
+      res.end(bytes);
+      return;
+    } catch {
+      return sendJson(res, 404, { ok: false, error: "Artifact not found" });
+    }
+  }
+  if (artifactHost && artifactHost.kind !== "local") return sendJson(res, 404, { ok: false, error: "Artifact not found" });
+
   let resolvedFile = "";
   const artifactRoots = Array.from(new Set([piCwd, ...knownCwds]));
   for (const cwd of artifactRoots) {
-    const currentArtifactDir = join(cwd, ".pi", "web", "artifacts");
-    const currentLegacyArtifactDir = join(cwd, ".pi-web-uploads", "artifacts");
+    const currentArtifactDir = artifactDirForCwd(cwd);
+    const currentLegacyArtifactDir = legacyArtifactDirForCwd(cwd);
     const file = resolve(currentArtifactDir, name);
     const legacyFile = resolve(currentLegacyArtifactDir, name);
     if (file.startsWith(currentArtifactDir) && existsSync(file)) {
@@ -190,58 +217,6 @@ function simplifyModel(model: any) {
   };
 }
 
-async function git(args: string[], timeout = 15_000, cwd = piCwd) {
-  return execFileAsync("git", args, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 });
-}
-
-async function gitBuffer(args: string[], timeout = 15_000, cwd = piCwd) {
-  return new Promise<Buffer>((resolvePromise, reject) => {
-    execFile("git", args, { cwd, timeout, maxBuffer: 50 * 1024 * 1024, encoding: "buffer" }, (error, stdout) => {
-      if (error) {
-        (error as any).stdout = stdout;
-        reject(error);
-        return;
-      }
-      resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
-    });
-  });
-}
-
-async function isGitRepo(cwd = piCwd) {
-  try { await git(["rev-parse", "--is-inside-work-tree"], 15_000, cwd); return true; } catch { return false; }
-}
-
-async function assertDirectory(path: string) {
-  const resolved = resolve(path || piCwd);
-  const info = await stat(resolved);
-  if (!info.isDirectory()) throw new Error("Path is not a directory");
-  return resolved;
-}
-
-async function listDirectories(path: string) {
-  const resolved = await assertDirectory(path);
-  const entries = await readdir(resolved, { withFileTypes: true });
-  const dirs = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => ({ name: entry.name, path: join(resolved, entry.name) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  return { ok: true, path: resolved, parent: resolve(resolved, ".."), dirs };
-}
-
-async function createDirectory(parent: string, name: string) {
-  const trimmedName = name.trim();
-  if (!trimmedName) throw new Error("Folder name is required");
-  if (isAbsolute(trimmedName) || trimmedName === "." || trimmedName === ".." || trimmedName.includes("/") || trimmedName.includes("\\")) {
-    throw new Error("Folder name must be a single directory name");
-  }
-  const parentDir = await assertDirectory(parent);
-  const target = resolve(parentDir, trimmedName);
-  const rel = relative(parentDir, target);
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error("Folder name must stay inside the selected directory");
-  await mkdir(target);
-  return listDirectories(target);
-}
-
 function hasUserMessages(value: PiWebSession) {
   return value.messages.some((message: any) => message?.role === "user");
 }
@@ -256,69 +231,7 @@ async function ensurePiWebStorage(cwd = piCwd) {
 async function setPiCwd(path: string) {
   piCwd = await assertDirectory(path);
   knownCwds.add(piCwd);
-  artifactDir = join(piCwd, ".pi", "web", "artifacts");
-  legacyArtifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
   await ensurePiWebStorage(piCwd);
-}
-
-function gitLabel(indexStatus: string, worktreeStatus: string) {
-  if (indexStatus === "?" && worktreeStatus === "?") return "untracked";
-  if (indexStatus === "U" || worktreeStatus === "U" || indexStatus === "A" && worktreeStatus === "A" || indexStatus === "D" && worktreeStatus === "D") return "conflicted";
-  if (indexStatus === "R" || worktreeStatus === "R") return "renamed";
-  if (indexStatus === "A" || worktreeStatus === "A") return "added";
-  if (indexStatus === "D" || worktreeStatus === "D") return "deleted";
-  if (indexStatus !== " " && indexStatus !== "?") return "staged";
-  return "modified";
-}
-
-function parseStatusLine(line: string) {
-  const indexStatus = line[0] || " ";
-  const worktreeStatus = line[1] || " ";
-  const rawPath = line.slice(3);
-  const renamed = rawPath.includes(" -> ");
-  const [oldPath, path] = renamed ? rawPath.split(" -> ") : [undefined, rawPath];
-  return { path: path || rawPath, oldPath, indexStatus, worktreeStatus, label: gitLabel(indexStatus, worktreeStatus), staged: indexStatus !== " " && indexStatus !== "?" };
-}
-
-async function gitStatus(cwd = piCwd, fetchRemote = false) {
-  if (!await isGitRepo(cwd)) return { ok: true, isRepo: false, ahead: 0, behind: 0, files: [] };
-  if (fetchRemote) await git(["fetch", "--prune"], 60_000, cwd).catch(() => undefined);
-  const [{ stdout: root }, { stdout: branchOut }, { stdout: porcelain }, upstreamResult, defaultResult] = await Promise.all([
-    git(["rev-parse", "--show-toplevel"], 15_000, cwd),
-    git(["branch", "--show-current"], 15_000, cwd).catch(() => ({ stdout: "" })),
-    git(["status", "--porcelain=v1", "-b"], 15_000, cwd),
-    git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 15_000, cwd).catch(() => ({ stdout: "" })),
-    git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], 15_000, cwd).catch(() => ({ stdout: "" })),
-  ]);
-  const lines = porcelain.trimEnd().split("\n").filter(Boolean);
-  const header = lines[0] || "";
-  const ahead = Number(header.match(/ahead (\d+)/)?.[1] || 0);
-  const behind = Number(header.match(/behind (\d+)/)?.[1] || 0);
-  const trackedFiles = lines.slice(1).map(parseStatusLine).filter((file) => file.label !== "untracked");
-  const { stdout: untrackedOut } = await git(["ls-files", "--others", "--exclude-standard"], 15_000, cwd).catch(() => ({ stdout: "" }));
-  const untrackedFiles = untrackedOut.split("\n").map((path) => path.trim()).filter(Boolean).map((path) => ({
-    path,
-    indexStatus: "?",
-    worktreeStatus: "?",
-    label: "untracked",
-    staged: false,
-  }));
-  return {
-    ok: true,
-    isRepo: true,
-    root: root.trim(),
-    branch: branchOut.trim(),
-    upstream: upstreamResult.stdout.trim(),
-    defaultRemoteBranch: defaultResult.stdout.trim(),
-    ahead,
-    behind,
-    files: [...trackedFiles, ...untrackedFiles],
-  };
-}
-
-function safeGitPath(path: string) {
-  if (!path || path.startsWith("/") || path.includes("..") || path.includes("\0")) throw new Error("Invalid path");
-  return path;
 }
 
 function isImageGitPath(path: string) {
@@ -876,27 +789,43 @@ function sessionCwd(targetSession: PiWebSession | any = session) {
   return String(targetSession?.sessionManager?.getCwd?.() || targetSession?.cwd || piCwd);
 }
 
+function runtimeMapKey(sessionId?: unknown, sessionFile?: unknown) {
+  const id = typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : "";
+  if (id) return id;
+  const file = typeof sessionFile === "string" && sessionFile.trim() ? sessionFile.trim() : "";
+  return file;
+}
+
+function runtimeMapKeyForSession(targetSession: any, fallbackFile = sessionPathKey(targetSession)) {
+  return runtimeMapKey(targetSession?.sessionId, fallbackFile || targetSession?.sessionFile);
+}
+
 function runtimeStartedAtForPath(path: string, isRunning: boolean) {
   if (!isRunning) return undefined;
-  const liveStartedAt = liveSessions.get(path)?.session?.runtimeStartedAt;
-  return typeof liveStartedAt === "string" && liveStartedAt.trim() ? liveStartedAt : runtimeStartedAts.get(path);
+  const live = liveSessions.get(path)?.session;
+  const key = runtimeMapKeyForSession(live, path);
+  const liveStartedAt = live?.runtimeStartedAt;
+  return typeof liveStartedAt === "string" && liveStartedAt.trim() ? liveStartedAt : runtimeStartedAts.get(key) || runtimeStartedAts.get(path);
 }
 
 function runtimeLastActivityAtForPath(path: string, isRunning: boolean) {
   if (!isRunning) return undefined;
-  const liveLastActivityAt = liveSessions.get(path)?.session?.runtimeLastActivityAt;
+  const live = liveSessions.get(path)?.session;
+  const key = runtimeMapKeyForSession(live, path);
+  const liveLastActivityAt = live?.runtimeLastActivityAt;
   return typeof liveLastActivityAt === "string" && liveLastActivityAt.trim()
     ? liveLastActivityAt
-    : runtimeLastActivityAts.get(path) || runtimeStartedAtForPath(path, isRunning);
+    : runtimeLastActivityAts.get(key) || runtimeLastActivityAts.get(path) || runtimeStartedAtForPath(path, isRunning);
 }
 
-function ensureRuntimeStartedAt(targetSession: any, startedAt = new Date().toISOString()) {
-  const key = sessionPathKey(targetSession);
+function ensureRuntimeStartedAt(targetSession: any, startedAt = new Date().toISOString(), mode?: "streaming" | "compacting") {
+  const key = runtimeMapKeyForSession(targetSession);
   const existing = key ? runtimeStartedAts.get(key) : undefined;
   const value = typeof targetSession?.runtimeStartedAt === "string" ? targetSession.runtimeStartedAt : existing || startedAt;
   if (key) {
     runtimeStartedAts.set(key, value);
     if (!runtimeLastActivityAts.has(key)) runtimeLastActivityAts.set(key, value);
+    if (mode) runtimeRunningModes.set(key, mode);
   }
   if (targetSession && typeof targetSession === "object") {
     targetSession.runtimeStartedAt = value;
@@ -906,15 +835,19 @@ function ensureRuntimeStartedAt(targetSession: any, startedAt = new Date().toISO
 }
 
 function markRuntimeActivity(targetSession: any, activityAt = new Date().toISOString(), sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) runtimeLastActivityAts.set(sessionFile, activityAt);
+  const key = runtimeMapKeyForSession(targetSession, sessionFile);
+  if (key) runtimeLastActivityAts.set(key, activityAt);
+  if (sessionFile && sessionFile !== key) runtimeLastActivityAts.set(sessionFile, activityAt);
   if (targetSession && typeof targetSession === "object") targetSession.runtimeLastActivityAt = activityAt;
   return activityAt;
 }
 
 function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) {
-    runtimeStartedAts.delete(sessionFile);
-    runtimeLastActivityAts.delete(sessionFile);
+  const key = runtimeMapKeyForSession(targetSession, sessionFile);
+  for (const item of new Set([key, sessionFile].filter(Boolean))) {
+    runtimeStartedAts.delete(item);
+    runtimeLastActivityAts.delete(item);
+    runtimeRunningModes.delete(item);
   }
   if (targetSession && typeof targetSession === "object") {
     delete targetSession.runtimeStartedAt;
@@ -1076,6 +1009,22 @@ function runtimeForPath(path: string, overrides: { isRetrying?: boolean } = {}) 
   };
 }
 
+function runtimeForSessionKey(sessionId: string, sessionFile: string, event?: any, loaded = true) {
+  const key = runtimeMapKey(sessionId, sessionFile);
+  const isTerminal = event?.type === "agent_end" || event?.type === "compaction_end";
+  const mode = key ? runtimeRunningModes.get(key) : undefined;
+  const isRunning = !isTerminal && Boolean(key && runtimeStartedAts.has(key));
+  return {
+    loaded,
+    isRunning,
+    isStreaming: isRunning && mode !== "compacting",
+    isCompacting: isRunning && mode === "compacting",
+    startedAt: isRunning && key ? runtimeStartedAts.get(key) : undefined,
+    lastActivityAt: isRunning && key ? runtimeLastActivityAts.get(key) || runtimeStartedAts.get(key) : undefined,
+    pendingMessageCount: 0,
+  };
+}
+
 function stoppedRuntimeForPath(path: string) {
   const live = liveSessions.get(path)?.session;
   return {
@@ -1091,11 +1040,17 @@ function stoppedRuntimeForPath(path: string) {
   };
 }
 
-function runtimeForEvent(path: string, event: any) {
-  if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
+function runtimeForEvent(path: string, event: any, sessionId?: string) {
+  const isTerminal = event?.type === "agent_end" || event?.type === "compaction_end";
+  if (isTerminal && event?.willRetry) {
+    if (sessionId && !liveSessions.has(path)) {
+      const runtime = runtimeForSessionKey(sessionId, path, undefined, true);
+      return { ...runtime, isRunning: true, isStreaming: false, isRetrying: true, isCompacting: false };
+    }
     return runtimeForPath(path, { isRetrying: true });
   }
-  return event?.type === "agent_end" || event?.type === "compaction_end"
+  if (sessionId && !liveSessions.has(path)) return runtimeForSessionKey(sessionId, path, event, true);
+  return isTerminal
     ? stoppedRuntimeForPath(path)
     : runtimeForPath(path);
 }
@@ -1136,6 +1091,7 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     cwd: info.cwd || cwd,
     isCurrent: false,
     runtime: runtimeForPath(info.path),
+    runtimeRef: { ...localRuntime, cwd: info.cwd || cwd },
   };
 }
 
@@ -1147,23 +1103,146 @@ function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessio
   });
 }
 
-async function listSessionInfos(extraCwds: string[] = []) {
-  if (noSession) return [];
+function runtimeSessionInfoFromBinding(binding: SessionRuntimeBinding, provider?: RunnerProvider, error?: unknown) {
+  const unavailable = Boolean(error || !provider);
+  return {
+    id: binding.sessionId,
+    name: binding.name,
+    firstMessage: binding.firstMessage,
+    created: binding.createdAt || binding.updatedAt,
+    modified: binding.updatedAt,
+    messageCount: Number(binding.messageCount || 0),
+    cwd: binding.cwd,
+    isCurrent: false,
+    runtime: {
+      loaded: !unavailable,
+      isRunning: false,
+      isStreaming: false,
+      isCompacting: false,
+      pendingMessageCount: 0,
+      ...(unavailable ? { error: runtimeUnavailableMessage(error || `Runtime is not registered: ${binding.runtimeId}`) } : {}),
+    },
+    runtimeRef: runtimeRefForBinding(binding, provider),
+  };
+}
+
+function runtimeSessionInfoFromRunner(item: RunnerSessionInfo, provider: RunnerProvider, binding: SessionRuntimeBinding) {
+  return {
+    id: item.sessionId,
+    name: item.sessionName,
+    firstMessage: item.firstMessage,
+    created: item.created || binding.createdAt || binding.updatedAt,
+    modified: binding.updatedAt,
+    messageCount: Number(item.messages || 0),
+    cwd: item.cwd,
+    isCurrent: false,
+    runtime: {
+      loaded: true,
+      isRunning: Boolean(item.isStreaming || item.isCompacting),
+      isStreaming: Boolean(item.isStreaming),
+      isCompacting: Boolean(item.isCompacting),
+      pendingMessageCount: 0,
+    },
+    runtimeRef: runtimeRefForProvider(provider, item.cwd),
+  };
+}
+
+async function reconcileRunnerSessionInfo(provider: RunnerProvider, item: RunnerSessionInfo, observedAt = new Date().toISOString()) {
+  const existing = await runtimeBindingStore.get(item.sessionId);
+  const runtimeChanged = existing?.runtimeModifiedAt !== item.modified;
+  const binding = await runtimeBindingStore.set({
+    sessionId: item.sessionId,
+    runtimeId: provider.id,
+    cwd: item.cwd,
+    sessionFile: item.sessionFile,
+    name: item.sessionName,
+    firstMessage: item.firstMessage,
+    createdAt: item.created,
+    runtimeModifiedAt: item.modified,
+    messageCount: item.messages,
+    updatedAt: existing && !runtimeChanged ? existing.updatedAt : observedAt,
+  });
+  rememberRunnerBinding(provider, binding);
+  return runtimeSessionInfoFromRunner(item, provider, binding);
+}
+
+async function runtimeBoundSessionInfos(bindings: SessionRuntimeBinding[], options: { runtimeId?: string; cachedOnly?: boolean; limit?: number; cursor?: string; all?: boolean } = {}) {
+  const runtimeBindings = bindings.filter((binding) => binding.runtimeId !== "local" && (!options.runtimeId || binding.runtimeId === options.runtimeId));
+  const grouped = new Map<string, SessionRuntimeBinding[]>();
+  for (const binding of runtimeBindings) grouped.set(binding.runtimeId, [...(grouped.get(binding.runtimeId) || []), binding]);
+  const runtimeIds = options.runtimeId ? [options.runtimeId] : Array.from(new Set([...grouped.keys(), ...runtimeRunnerProviders.map((provider) => provider.id)]));
+  const sessions: any[] = [];
+  let nextCursor: string | undefined;
+
+  for (const runtimeId of runtimeIds) {
+    const provider = runnerProviderById(runtimeId);
+    const cached = grouped.get(runtimeId) || [];
+    if (!provider || options.cachedOnly) {
+      const statusError = provider?.status.state === "disconnected" ? provider.status.error || "Runtime disconnected" : undefined;
+      sessions.push(...cached.map((binding) => runtimeSessionInfoFromBinding(binding, provider, statusError || (provider ? undefined : `Runtime is not registered: ${runtimeId}`))));
+      continue;
+    }
+    try {
+      const listed: RunnerSessionInfo[] = [];
+      let cursor = options.cursor;
+      let page: Awaited<ReturnType<RunnerProvider["listSessions"]>>;
+      do {
+        page = await provider.listSessions({ limit: options.limit, cursor });
+        listed.push(...page.sessions);
+        cursor = options.all ? page.nextCursor : undefined;
+      } while (cursor);
+      const observedAt = Date.now();
+      for (let index = 0; index < listed.length; index += 1) {
+        try {
+          sessions.push(await reconcileRunnerSessionInfo(provider, listed[index], new Date(observedAt - index).toISOString()));
+        } catch (error) {
+          console.warn(`Ignoring conflicting session locator from runtime ${provider.id}:`, error);
+        }
+      }
+      if (options.all && !options.cursor) {
+        const authoritativeIds = new Set(listed.map((item) => item.sessionId));
+        for (const binding of await runtimeBindingStore.removeMissingForRuntime(provider.id, authoritativeIds)) {
+          runnerSessionRuntimeIds.delete(binding.sessionId);
+          await sessionUiStateStore.removeSession(binding.sessionId);
+          broadcast({ type: "session_removed", sessionId: binding.sessionId, runtimeId: provider.id, disposition: "authoritative-missing" });
+        }
+      } else if (options.runtimeId) {
+        nextCursor = page.nextCursor;
+      }
+    } catch (error) {
+      sessions.push(...cached.map((binding) => runtimeSessionInfoFromBinding(binding, provider, error)));
+    }
+  }
+
+  return { sessions: sessions.sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified)), nextCursor };
+}
+
+async function listLocalSessionInfos(extraCwds: string[] = []) {
   if (mockMode) return mockSessions.map((info) => simplifySessionInfo(info as any, info.cwd || piCwd));
+  if (noSession) return [];
   const cwds = new Set<string>(knownCwds);
   for (const cwd of extraCwds) {
-    if (typeof cwd !== "string" || !cwd.trim()) continue;
-    cwds.add(resolve(cwd));
+    if (typeof cwd === "string" && cwd.trim()) cwds.add(resolve(cwd));
   }
   const groups = await Promise.all(Array.from(cwds).map(async (cwd) => {
     try {
-      const sessions = await SessionManager.list(cwd);
-      return sessions.map((info) => simplifySessionInfo(info, cwd));
+      return (await SessionManager.list(cwd)).map((info) => simplifySessionInfo(info, cwd));
     } catch {
       return [];
     }
   }));
   return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+}
+
+async function listSessionInfos(extraCwds: string[] = [], options: { runtimeId?: string; cachedOnly?: boolean; limit?: number; cursor?: string; all?: boolean } = {}) {
+  const bindings = (await runtimeBindingStore.read()).bindings;
+  if (options.runtimeId === "local") return { sessions: await listLocalSessionInfos(extraCwds), nextCursor: undefined };
+  if (options.runtimeId) return runtimeBoundSessionInfos(bindings, options);
+  const [localSessions, runtimeSessions] = await Promise.all([
+    listLocalSessionInfos(extraCwds),
+    runtimeBoundSessionInfos(bindings, options),
+  ]);
+  return { sessions: [...localSessions, ...runtimeSessions.sessions].sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified)), nextCursor: undefined };
 }
 
 function finiteNumber(value: unknown) {
@@ -1241,8 +1320,9 @@ function currentState(targetSession: PiWebSession = session) {
   const isRetrying = sessionIsRetrying(targetSession);
   const isRunning = Boolean(targetSession.isStreaming || isRetrying || targetSession.isCompacting);
   const runtime = runtimeForPath(targetSession.sessionFile);
+  const cwd = sessionCwd(targetSession);
   return {
-    cwd: sessionCwd(targetSession),
+    cwd,
     sessionFile: targetSession.sessionFile,
     sessionId: targetSession.sessionId,
     sessionName: sessionDisplayName(targetSession),
@@ -1257,6 +1337,7 @@ function currentState(targetSession: PiWebSession = session) {
       ? (targetSession as any).runtimeLastActivityAt
       : runtimeLastActivityAtForPath(targetSession.sessionFile, isRunning),
     runtime,
+    runtimeRef: { ...localRuntime, cwd },
     model: simplifyModel(targetSession.model),
     thinkingLevel: targetSession.thinkingLevel,
     stats: sessionStats(targetSession),
@@ -1509,10 +1590,609 @@ async function switchToSessionId(id: string, cwd?: string) {
   return target;
 }
 
+function defaultRuntimeDataFile(fileName: string) {
+  return mockMode ? join(piCwd, ".pi", `${fileName.replace(/\.json$/, "")}-${port}.json`) : join(getAgentDir(), fileName);
+}
+
+type GuidedRuntimeConnectConfig = {
+  id?: unknown;
+  label?: unknown;
+  adapter?: unknown;
+  target?: unknown;
+  cwd?: unknown;
+  runnerDir?: unknown;
+  modelBroker?: unknown;
+};
+
+function runtimeShellPath(value: string) {
+  const quote = (part: string) => `'${part.replace(/'/g, `'\\''`)}'`;
+  return value.startsWith("~/") ? `"$HOME"/${quote(value.slice(2))}` : quote(value);
+}
+
+function guidedAdapterCommand(adapter: string): string {
+  const configured = adapter === "apple"
+    ? process.env.PI_WEB_APPLE_CONTAINER_COMMAND
+    : adapter === "docker"
+      ? process.env.PI_WEB_DOCKER_COMMAND
+      : adapter === "podman"
+        ? process.env.PI_WEB_PODMAN_COMMAND
+        : undefined;
+  if (configured?.trim()) return configured.trim();
+  const executable = adapter === "apple" ? "container" : adapter;
+  const candidates = [
+    join(getAgentDir(), "bin", executable),
+    join("/opt/homebrew/bin", executable),
+    join("/usr/local/bin", executable),
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) || executable;
+}
+
+function guidedContainerPreflight(config: CommandRunnerConfig) {
+  const target = guidedContainerTarget(config);
+  return target ? () => { verifyGuidedContainerIsolationSync(target.adapter, target.target, config.command); } : undefined;
+}
+
+function pinGuidedContainerTarget(config: CommandRunnerConfig, target: string, containerId: string): CommandRunnerConfig {
+  if (!containerId || containerId === target) return config;
+  const args = [...config.args];
+  const index = args.findIndex((arg, position) => position > 0 && arg === target);
+  if (index >= 0) args[index] = containerId;
+  return { ...config, args };
+}
+
+function commandConfigForGuidedRuntime(body: GuidedRuntimeConnectConfig): CommandRunnerConfig {
+  const adapter = String(body.adapter || "");
+  if (!new Set(["apple", "docker", "podman", "ssh"]).has(adapter)) throw new Error("Unsupported guided runtime adapter");
+  const id = String(body.id || "").trim();
+  const label = String(body.label || id).trim();
+  const target = String(body.target || "").trim();
+  const cwd = String(body.cwd || "").trim();
+  const runnerDir = String(body.runnerDir || "").trim();
+  if (!target || !/^[a-zA-Z0-9_.@:-]+$/.test(target)) throw new Error("Target must be a container name or SSH host alias without command options");
+  if (!cwd || !runnerDir) throw new Error("Runtime workspace and runner source directory are required");
+  if (cwd.includes("\u0000") || runnerDir.includes("\u0000")) throw new Error("Runtime paths are invalid");
+  const runnerCommand = `cd ${runtimeShellPath(runnerDir)} && PI_RUNNER_CWD=${runtimeShellPath(cwd)} npm exec --yes tsx server/runner.ts`;
+  const modelBroker = body.modelBroker === true;
+  if (adapter === "ssh") return { id, label, kind: "ssh", command: "ssh", args: [target, runnerCommand], cwd, modelBroker };
+  return {
+    id,
+    label,
+    kind: "container",
+    command: guidedAdapterCommand(adapter),
+    args: ["exec", "-i", target, "sh", "-lc", runnerCommand],
+    cwd,
+    modelBroker,
+  };
+}
+
 const authStorage = AuthStorage.create();
 const modelRegistry = ModelRegistry.create(authStorage);
+const hostModelBroker = new HostModelBroker(modelRegistry);
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
+const runtimeRegistry = new RuntimeRegistry([localRuntime]);
+const runtimeBindingStore = new RuntimeBindingStore(process.env.PI_WEB_RUNTIME_BINDINGS_FILE || defaultRuntimeDataFile("pi-web-runtime-bindings.json"));
+const runtimeStore = new RuntimeStore(process.env.PI_WEB_RUNTIMES_FILE || defaultRuntimeDataFile("pi-web-runtimes.json"));
+const allowCustomRuntimes = process.env.PI_WEB_ALLOW_CUSTOM_RUNTIMES === "1" || isDev || mockMode;
+const localRunnerProvider = process.env.PI_WEB_LOCAL_RUNNER === "1" ? new StdioRunnerProvider({ cwd: piCwd, agentDir: join(getAgentDir(), "runtimes", "local-runner") }) : undefined;
+const dockerRunnerProvider = process.env.PI_WEB_DOCKER_WORKSPACE_HOST
+  ? new DockerRunnerProvider({
+    appDir,
+    hostWorkspace: process.env.PI_WEB_DOCKER_WORKSPACE_HOST,
+    containerWorkspace: process.env.PI_WEB_DOCKER_WORKSPACE_CONTAINER || "/workspace",
+    image: process.env.PI_WEB_DOCKER_IMAGE,
+    network: "none",
+    readOnly: process.env.PI_WEB_DOCKER_READONLY === "1",
+    sessionVolume: process.env.PI_WEB_DOCKER_SESSION_VOLUME,
+    envAllowlist: process.env.PI_WEB_DOCKER_ENV_ALLOWLIST?.split(",").map((item) => item.trim()).filter(Boolean),
+  })
+  : undefined;
+const runnerSessionRuntimeIds = new Map<string, string>();
+type RunnerProvider = CommandRunnerProvider;
+const runtimeRunnerProviders: RunnerProvider[] = [...(localRunnerProvider ? [localRunnerProvider] : []), ...(dockerRunnerProvider ? [dockerRunnerProvider] : [])];
+function attachRuntimeProvider(provider: RunnerProvider) {
+  provider.setRuntimeRequestHandlerFactory(provider.modelBroker ? () => hostModelBroker.createRequestHandler() : undefined);
+  provider.onStatus((status) => handleRuntimeProviderStatus(provider, status));
+  provider.onEvent((event) => handleRunnerEvent(provider, event));
+}
+function registerRuntimeProvider(provider: RunnerProvider) {
+  const existing = runtimeRunnerProviders.findIndex((item) => item.id === provider.id);
+  if (existing >= 0) runtimeRunnerProviders.splice(existing, 1, provider);
+  else runtimeRunnerProviders.push(provider);
+  attachRuntimeProvider(provider);
+}
+function unregisterRuntimeProvider(id: string) {
+  const index = runtimeRunnerProviders.findIndex((provider) => provider.id === id);
+  if (index < 0) return undefined;
+  const [provider] = runtimeRunnerProviders.splice(index, 1);
+  handleRuntimeProviderStatus(provider, { state: "disconnected", attempt: 0, error: "Runtime disconnected" });
+  provider.stop();
+  for (const [sessionId, runtimeId] of Array.from(runnerSessionRuntimeIds.entries())) {
+    if (runtimeId === id) runnerSessionRuntimeIds.delete(sessionId);
+  }
+  return provider;
+}
+async function hydrateCommandRuntimes() {
+  const data = await runtimeStore.read();
+  for (const config of data.commandRuntimes) {
+    const guidedTarget = guidedContainerTarget(config);
+    if (!guidedTarget) {
+      registerRuntimeProvider(new CommandRunnerProvider(config));
+      continue;
+    }
+    try {
+      const { containerId, ...isolation } = await verifyGuidedContainerIsolation(guidedTarget.adapter, guidedTarget.target, undefined, config.command);
+      const pinnedConfig = pinGuidedContainerTarget(config, guidedTarget.target, containerId);
+      const verifiedConfig: CommandRunnerConfig = { ...pinnedConfig, ...isolation };
+      if (JSON.stringify(verifiedConfig) !== JSON.stringify(config)) await runtimeStore.upsert(verifiedConfig);
+      registerRuntimeProvider(new CommandRunnerProvider({ ...verifiedConfig, preflight: guidedContainerPreflight(verifiedConfig) }));
+    } catch (error) {
+      const reason = `Runtime blocked: ${error instanceof Error ? error.message : String(error)}`;
+      registerRuntimeProvider(new CommandRunnerProvider({ ...config, networkPolicy: "unverified", blockedReason: reason }));
+    }
+  }
+}
+async function hydrateRunnerRuntimeBindings() {
+  const data = await runtimeBindingStore.read();
+  for (const binding of data.bindings) {
+    const provider = runnerProviderById(binding.runtimeId);
+    if (!provider) continue;
+    rememberRunnerBinding(provider, binding);
+  }
+}
+const runtimeHydrationReady = (async () => {
+  await hydrateCommandRuntimes();
+  await hydrateRunnerRuntimeBindings();
+})().catch((error) => console.warn("Failed to hydrate runtimes", error));
+function runnerProviderById(id: string) {
+  return runtimeRunnerProviders.find((provider) => provider.id === id);
+}
+function defaultCwdForRunnerProvider(provider: RunnerProvider) {
+  return provider.cwd;
+}
+function runtimeKindForProvider(provider: RunnerProvider) {
+  return provider.kind;
+}
+function runtimeRefForProvider(provider: RunnerProvider, cwd = defaultCwdForRunnerProvider(provider)) {
+  return { id: provider.id, kind: runtimeKindForProvider(provider), label: provider.label, cwd, experimental: provider.experimental, capabilities: provider.capabilities };
+}
+function runtimeSummaryForProvider(provider: RunnerProvider) {
+  return {
+    ...runtimeRefForProvider(provider),
+    cwd: provider.cwd,
+    command: provider.command,
+    args: provider.args,
+    processCwd: provider.processCwd,
+    disconnectable: provider.disconnectable,
+    connection: provider.status,
+    ...provider.metadata,
+  };
+}
+function rememberRunnerBinding(provider: RunnerProvider, binding: SessionRuntimeBinding) {
+  provider.rememberSession(binding.sessionId, binding.sessionFile, binding.cwd);
+  runnerSessionRuntimeIds.set(binding.sessionId, provider.id);
+}
+function runtimeUnavailableMessage(error?: unknown) {
+  return error instanceof Error ? error.message : error ? String(error) : "Runtime unavailable";
+}
+function runtimeRefForBinding(binding: SessionRuntimeBinding, provider?: RunnerProvider) {
+  return provider ? runtimeRefForProvider(provider, binding.cwd) : { id: binding.runtimeId, kind: "container", label: binding.runtimeId, cwd: binding.cwd, experimental: false, capabilities: RUNNER_RUNTIME_CAPABILITIES };
+}
+function runtimeUnavailableSessionInfo(binding: SessionRuntimeBinding, provider: RunnerProvider | undefined, error?: unknown) {
+  const runtimeRef = runtimeRefForBinding(binding, provider);
+  return {
+    id: binding.sessionId,
+    name: undefined,
+    firstMessage: undefined,
+    created: binding.updatedAt,
+    modified: binding.updatedAt,
+    messageCount: 0,
+    cwd: binding.cwd,
+    isCurrent: false,
+    runtime: { loaded: false, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0, error: runtimeUnavailableMessage(error) },
+    runtimeRef,
+  };
+}
+function runtimeUnavailableWebState(binding: SessionRuntimeBinding, provider: RunnerProvider | undefined, error?: unknown) {
+  const runtimeRef = runtimeRefForBinding(binding, provider);
+  return {
+    cwd: binding.cwd,
+    sessionFile: binding.sessionFile || "",
+    sessionId: binding.sessionId,
+    sessionName: "Runtime unavailable",
+    sessionTitle: "Runtime unavailable",
+    isStreaming: false,
+    isCompacting: false,
+    runtimeStartedAt: undefined,
+    runtimeLastActivityAt: undefined,
+    runtime: { loaded: false, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0, error: runtimeUnavailableMessage(error) },
+    runtimeRef,
+    model: null,
+    thinkingLevel: "off",
+    thinkingLevels: [],
+    stats: null,
+    webFooters: [],
+    webHeaderActions: [],
+  };
+}
+
+function simplifiedMessagesForSession(targetSession: any) {
+  const msgs = Array.isArray(targetSession?.messages) ? targetSession.messages : [];
+  const toolCallArgs = new Map<string, Record<string, unknown>>();
+  for (const m of msgs) {
+    const msg = m as any;
+    if (msg.role === "assistant" && Array.isArray(msg.content)) {
+      for (const part of msg.content) {
+        if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
+      }
+    }
+  }
+  const refs = messageEntryRefs(targetSession);
+  return msgs.map((m: unknown, index: number) => simplifyMessage(m, toolCallArgs, targetSession.sessionFile, refs[index]?.entryId));
+}
+
+function runnerWebState(runnerState: any, provider: RunnerProvider) {
+  const cwd = String(runnerState?.cwd || piCwd);
+  const sessionId = String(runnerState?.sessionId || "");
+  const sessionName = String(runnerState?.sessionName || runnerState?.firstMessage || "").trim() || "Runner session";
+  const models = runnerState?.models && typeof runnerState.models === "object" ? runnerState.models : undefined;
+  return {
+    cwd,
+    sessionFile: String(runnerState?.sessionFile || ""),
+    sessionId,
+    sessionName,
+    sessionTitle: sessionName,
+    isStreaming: Boolean(runnerState?.isStreaming),
+    isCompacting: Boolean(runnerState?.isCompacting),
+    runtimeStartedAt: undefined,
+    runtimeLastActivityAt: undefined,
+    runtime: { loaded: true, isRunning: Boolean(runnerState?.isStreaming || runnerState?.isCompacting), isStreaming: Boolean(runnerState?.isStreaming), isCompacting: Boolean(runnerState?.isCompacting), pendingMessageCount: 0 },
+    runtimeRef: runtimeRefForProvider(provider, cwd),
+    model: models?.current || runnerState?.model || null,
+    thinkingLevel: models?.thinkingLevel || runnerState?.thinkingLevel || "off",
+    thinkingLevels: Array.isArray(models?.thinkingLevels) ? models.thinkingLevels : Array.isArray(runnerState?.thinkingLevels) ? runnerState.thinkingLevels : [],
+    stats: null,
+    webFooters: [],
+    webHeaderActions: [],
+  };
+}
+
+type PromptImage = { type: "image"; data: string; mimeType: string; name?: string };
+
+type SessionHost = {
+  kind: "local" | "runner" | "unavailable";
+  sessionId: string;
+  runtimeId: string;
+  binding?: SessionRuntimeBinding;
+  provider?: RunnerProvider;
+  targetSession?: PiWebSession;
+  state(): Promise<Record<string, any>>;
+  messages(): Promise<Record<string, any>>;
+  getCwd(): Promise<string>;
+  prompt?: (message: string, images: PromptImage[], mode: "followUp" | "steer") => Promise<Record<string, any>>;
+  abort?: () => Promise<Record<string, any>>;
+  gitStatus?: (fetchRemote?: boolean) => Promise<Record<string, any>>;
+  gitDiff?: (path: string, staged: boolean) => Promise<Record<string, any>>;
+  listModels?: () => Promise<Record<string, any>>;
+  setModel?: (provider: string, id: string, thinkingLevel?: string) => Promise<Record<string, any>>;
+  readArtifactBase64?: (name: string) => Promise<{ ok: true; name: string; base64: string }>;
+  sessionStats?: () => Promise<Record<string, any>>;
+  conversationTree?: () => Promise<Record<string, any>>;
+  navigateTree?: (body: Record<string, unknown>) => Promise<Record<string, any>>;
+  abortBranchSummary?: () => Promise<Record<string, any>>;
+  deleteSession?: (cwd?: string) => Promise<Record<string, any>>;
+  slashCommands?: () => Promise<Record<string, any>>;
+  executeSlashCommand?: (command: string, req: IncomingMessage) => Promise<Record<string, any>>;
+  executeShell?: (command: string, excludeFromContext: boolean) => Promise<Record<string, any>>;
+  abortCompaction?: () => Promise<Record<string, any>>;
+  rename?: (name: string) => Promise<Record<string, any>>;
+  invokeHeaderAction?: (key: unknown) => Promise<Record<string, any>>;
+};
+
+function makeUnavailableSessionHost(binding: SessionRuntimeBinding, provider: RunnerProvider | undefined, error?: unknown): SessionHost {
+  return {
+    kind: "unavailable",
+    sessionId: binding.sessionId,
+    runtimeId: binding.runtimeId,
+    binding,
+    provider,
+    async state() { return runtimeUnavailableWebState(binding, provider, error || `Runtime is not registered: ${binding.runtimeId}`); },
+    async messages() { return { ok: true, messages: [], runtimeUnavailable: true, error: runtimeUnavailableMessage(error || `Runtime is not registered: ${binding.runtimeId}`), runtimeRef: runtimeRefForBinding(binding, provider) }; },
+    async getCwd() { return binding.cwd; },
+  };
+}
+
+function makeRunnerSessionHost(sessionId: string, provider: RunnerProvider, binding?: SessionRuntimeBinding): SessionHost {
+  return {
+    kind: "runner",
+    sessionId,
+    runtimeId: provider.id,
+    binding,
+    provider,
+    async state() {
+      const runnerState = await provider.state(sessionId);
+      return runnerWebState(runnerState, provider);
+    },
+    async messages() {
+      const result = await provider.messages(sessionId) as any;
+      const messages = Array.isArray(result?.messages) ? result.messages : [];
+      const entryIds = Array.isArray(result?.entryIds) ? result.entryIds : [];
+      const toolCallArgs = new Map<string, Record<string, unknown>>();
+      for (const message of messages as any[]) {
+        if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+        for (const part of message.content) {
+          if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
+        }
+      }
+      const sessionFile = typeof result?.sessionFile === "string" ? result.sessionFile : binding?.sessionFile;
+      return {
+        ok: true,
+        messages: messages.map((message: unknown, index: number) => routeRuntimeArtifactUrls(
+          simplifyMessage(message, toolCallArgs, sessionFile, typeof entryIds[index] === "string" ? entryIds[index] : undefined),
+          sessionId,
+          provider.id,
+        )),
+      };
+    },
+    async getCwd() {
+      const runnerState = await provider.state(sessionId) as any;
+      return String(runnerState.cwd || binding?.cwd || provider.cwd);
+    },
+    async prompt(message, images, mode) {
+      await provider.prompt(sessionId, message || "Please review the attached image.", images.map(({ type, data, mimeType }) => ({ type, data, mimeType })), mode);
+      return { ok: true, sessionId };
+    },
+    async abort() {
+      await provider.abort(sessionId);
+      return { ok: true, sessionId };
+    },
+    async gitStatus(fetchRemote = false) {
+      const runnerState = await provider.state(sessionId) as any;
+      return provider.gitStatus(String(runnerState.cwd || binding?.cwd || provider.cwd), fetchRemote) as Promise<Record<string, any>>;
+    },
+    async gitDiff(path, staged) {
+      const runnerState = await provider.state(sessionId) as any;
+      return provider.gitDiff({ cwd: String(runnerState.cwd || binding?.cwd || provider.cwd), path, staged }) as Promise<Record<string, any>>;
+    },
+    async listModels() {
+      return provider.listModels(sessionId) as Promise<Record<string, any>>;
+    },
+    async setModel(modelProvider, id, thinkingLevel) {
+      const runnerState = await provider.setModel(sessionId, modelProvider, id, thinkingLevel) as any;
+      return runnerWebState(runnerState, provider);
+    },
+    async readArtifactBase64(name) {
+      const runnerState = await provider.state(sessionId) as any;
+      return provider.readArtifactBase64(String(runnerState.cwd || binding?.cwd || provider.cwd), name);
+    },
+    async conversationTree() {
+      return provider.conversationTree(sessionId) as Promise<Record<string, any>>;
+    },
+    async navigateTree(body) {
+      return provider.navigateTree(sessionId, body) as Promise<Record<string, any>>;
+    },
+    async abortBranchSummary() {
+      return provider.abortBranchSummary(sessionId) as Promise<Record<string, any>>;
+    },
+    async deleteSession() {
+      await provider.deleteSession(sessionId, binding?.sessionFile);
+      await runtimeBindingStore.remove(sessionId);
+      runnerSessionRuntimeIds.delete(sessionId);
+      return { id: sessionId, disposition: "deleted" };
+    },
+  };
+}
+
+function makeLocalSessionHost(targetSession: PiWebSession): SessionHost {
+  return {
+    kind: "local",
+    sessionId: targetSession.sessionId,
+    runtimeId: "local",
+    targetSession,
+    async state() { return currentStateWithThinkingLevels(targetSession); },
+    async messages() { return { ok: true, messages: simplifiedMessagesForSession(targetSession) }; },
+    async getCwd() { return sessionCwd(targetSession); },
+    async prompt(message, images, mode) {
+      const imageFileNote = await persistPromptImages(images, sessionCwd(targetSession));
+      const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
+      const wasAlreadyRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+      if (!wasAlreadyRunning) ensureRuntimeStartedAt(targetSession, undefined, "streaming");
+      const promptSessionFile = targetSession.sessionFile;
+      const releaseWorkLease = acquireWorkLease(targetSession);
+      void targetSession.prompt(promptText, {
+        ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
+        ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
+      })
+        .catch((error: unknown) => {
+          broadcast({ type: "server_error", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, error: error instanceof Error ? error.message : String(error) });
+        })
+        .finally(() => {
+          const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+          const missedTerminalEvent = Boolean(promptSessionFile && runtimeStartedAts.has(runtimeMapKey(targetSession.sessionId, promptSessionFile)) && !isRunning);
+          if (missedTerminalEvent) {
+            clearRuntimeStartedAt(targetSession, promptSessionFile);
+            markSessionUnreadCompleted(targetSession.sessionId);
+          }
+          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+          releaseWorkLease();
+        });
+      return { ok: true, sessionId: targetSession.sessionId };
+    },
+    async abort() {
+      void targetSession.abort().catch((error: unknown) => broadcast({ type: "server_error", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, error: error instanceof Error ? error.message : String(error) }));
+      return { ok: true, sessionId: targetSession.sessionId };
+    },
+    async gitStatus(fetchRemote = false) { return gitStatus(sessionCwd(targetSession), fetchRemote); },
+    async gitDiff(path, staged) { return gitDiff({ cwd: sessionCwd(targetSession), path, staged }); },
+    async listModels() {
+      return { ok: true, cwd: sessionCwd(targetSession), current: simplifyModel(targetSession.model), thinkingLevel: targetSession.thinkingLevel, thinkingLevels: targetSession.getAvailableThinkingLevels(), models: getAvailableModels(targetSession).map(simplifyModel) };
+    },
+    async setModel(modelProvider, id, thinkingLevel) {
+      const model = targetSession.modelRegistry.find(modelProvider, id);
+      if (!model) {
+        const error = new Error("Model not found");
+        (error as any).status = 404;
+        throw error;
+      }
+      await targetSession.setModel(model);
+      if (typeof thinkingLevel === "string") targetSession.setThinkingLevel(thinkingLevel as any);
+      return currentStateWithThinkingLevels(targetSession);
+    },
+    async sessionStats() { return { ok: true, sessionId: targetSession.sessionId, stats: sessionStats(targetSession) }; },
+    async conversationTree() { return conversationTreeForSession(targetSession); },
+    async navigateTree(body) {
+      if (targetSession.isStreaming) {
+        const error = new Error("Wait for the current response to finish before navigating the tree");
+        (error as any).status = 409;
+        throw error;
+      }
+      if (targetSession.isCompacting) {
+        const error = new Error("Wait for the current compaction to finish before navigating the tree");
+        (error as any).status = 409;
+        throw error;
+      }
+      if (typeof targetSession.navigateTree !== "function") {
+        const error = new Error("Tree navigation is not available");
+        (error as any).status = 400;
+        throw error;
+      }
+      const targetId = String(body.targetId || "").trim();
+      if (!targetId) {
+        const error = new Error("targetId is required");
+        (error as any).status = 400;
+        throw error;
+      }
+      const releaseWorkLease = acquireWorkLease(targetSession);
+      try {
+        const navigation = targetSession.navigateTree(targetId, {
+          summarize: Boolean(body.summarize),
+          customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
+          replaceInstructions: Boolean(body.replaceInstructions),
+          label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
+        });
+        broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+        const result = await navigation;
+        const state = currentStateWithThinkingLevels(targetSession);
+        broadcast({ type: "state_changed", ...state });
+        return { ok: true, ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state };
+      } finally {
+        releaseWorkLease();
+        broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+      }
+    },
+    async abortBranchSummary() { targetSession.abortBranchSummary?.(); return { ok: true, sessionId: targetSession.sessionId }; },
+    async deleteSession(cwd) { return deleteSessionById(targetSession.sessionId, cwd); },
+    async slashCommands() { return { ok: true, commands: getSlashCommands(targetSession) }; },
+    async executeSlashCommand(command, req) {
+      const result = await executeSlashCommand(command, targetSession);
+      const stateSessionId = (result as any)?.state?.sessionId;
+      const stateSession = typeof stateSessionId === "string" ? await getOrCreateLiveSessionById(stateSessionId) : undefined;
+      noteViewerLeaseFromRequest(req, stateSession || targetSession);
+      return { ok: true, ...result };
+    },
+    async executeShell(command, excludeFromContext) {
+      if (typeof targetSession.executeBash !== "function") {
+        const error = new Error("Bash execution is not available in this session.");
+        (error as any).status = 400;
+        throw error;
+      }
+      const result = await targetSession.executeBash(command, undefined, { excludeFromContext });
+      return { ok: true, command, cwd: sessionCwd(targetSession), ...result, excludeFromContext };
+    },
+    async abortCompaction() {
+      if (typeof targetSession.abortCompaction !== "function") {
+        const error = new Error("Compaction cancellation is not available");
+        (error as any).status = 400;
+        throw error;
+      }
+      targetSession.abortCompaction();
+      return { ok: true, sessionId: targetSession.sessionId };
+    },
+    async rename(name) {
+      if (typeof targetSession.setSessionName !== "function") {
+        const error = new Error("Renaming sessions is not available");
+        (error as any).status = 400;
+        throw error;
+      }
+      targetSession.setSessionName(name);
+      return currentStateWithThinkingLevels(targetSession);
+    },
+    async invokeHeaderAction(key) {
+      const actionKey = cleanHeaderActionKey(key);
+      if (!actionKey) {
+        const error = new Error("key is required");
+        (error as any).status = 400;
+        throw error;
+      }
+      const action = getWebHeaderActionState(targetSession).actions.get(actionKey);
+      if (!action) {
+        const error = new Error("Header action not found");
+        (error as any).status = 404;
+        throw error;
+      }
+      const result = await action.invoke();
+      const markdown = cleanFooterText(result?.markdown, 200_000);
+      if (!markdown) {
+        const error = new Error("Header action returned no markdown");
+        (error as any).status = 400;
+        throw error;
+      }
+      return { ok: true, label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || actionKey, markdown };
+    },
+  };
+}
+
+async function sessionHostForSession(sessionId: string, cwd?: string, runtimeId?: string): Promise<SessionHost | undefined> {
+  await runtimeHydrationReady;
+  const requestedRuntimeId = runtimeId?.trim();
+  if (requestedRuntimeId && requestedRuntimeId !== "local") {
+    const existing = await runtimeBindingStore.get(sessionId);
+    if (existing && existing.runtimeId !== requestedRuntimeId) {
+      return makeUnavailableSessionHost(existing, runnerProviderById(existing.runtimeId), `Session is bound to runtime ${existing.runtimeId}, not ${requestedRuntimeId}`);
+    }
+    const binding = existing;
+    const provider = runnerProviderById(requestedRuntimeId);
+    if (!provider) {
+      const locator = binding || { sessionId, runtimeId: requestedRuntimeId, cwd: cwd || "", updatedAt: new Date().toISOString() };
+      return makeUnavailableSessionHost(locator, undefined, `Runtime is not registered: ${requestedRuntimeId}`);
+    }
+    if (binding) {
+      rememberRunnerBinding(provider, binding);
+      return makeRunnerSessionHost(sessionId, provider, binding);
+    }
+    try {
+      let cursor: string | undefined;
+      do {
+        const page = await provider.listSessions({ limit: 500, cursor });
+        const match = page.sessions.find((item) => item.sessionId === sessionId);
+        if (match) {
+          const info = await reconcileRunnerSessionInfo(provider, match);
+          const locator = await runtimeBindingStore.get(info.id);
+          return makeRunnerSessionHost(sessionId, provider, locator);
+        }
+        cursor = page.nextCursor;
+      } while (cursor);
+    } catch {
+      // Return a recoverable runtime host below; state() will surface the transport error.
+    }
+    return makeRunnerSessionHost(sessionId, provider, binding);
+  }
+  // The selected workbench runtime must be explicit. Requests without a runtime
+  // are local for backward compatibility; stale locator metadata must never
+  // hijack a local session and route it to a former runtime.
+  const targetSession = sessionId === session.sessionId ? session : await getOrCreateLiveSessionById(sessionId, cwd);
+  return targetSession ? makeLocalSessionHost(targetSession) : undefined;
+}
+
+function unsupportedHostCapability(res: ServerResponse, host: SessionHost | undefined, feature: string) {
+  if (!host) return sendJson(res, 404, { ok: false, error: "Session not found" });
+  const runtimeId = host.runtimeId || host.binding?.runtimeId || host.provider?.id || "runtime";
+  const status = host.kind === "unavailable" ? 503 : 501;
+  const error = host.kind === "unavailable"
+    ? `Runtime is not available: ${runtimeUnavailableMessage(host.binding ? undefined : "Runtime unavailable")}`
+    : `${feature} is not supported for runtime sessions yet.`;
+  return sendJson(res, status, { ok: false, error, runtimeId });
+}
 type LiveSessionEntry = {
   session: any;
   unsubscribe?: () => void;
@@ -1542,6 +2222,7 @@ const liveSessions = new Map<string, LiveSessionEntry>();
 const viewerLeases = new Map<string, ViewerLease>();
 const runtimeStartedAts = new Map<string, string>();
 const runtimeLastActivityAts = new Map<string, string>();
+const runtimeRunningModes = new Map<string, "streaming" | "compacting">();
 const toolStartedAts = new Map<string, Map<string, string>>();
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
@@ -1559,6 +2240,150 @@ function recordRealtimeMessage(value: unknown): RealtimeEnvelope {
   if (realtimeEventLog.length > maxRealtimeEventLogSize) realtimeEventLog.splice(0, realtimeEventLog.length - maxRealtimeEventLogSize);
   return envelope;
 }
+
+function enrichPiEventForBroadcast(sessionId: string, sessionFile: string, event: any, targetSession?: any) {
+  const e = event as any;
+  let eventForClient = e;
+  const key = runtimeMapKey(sessionId, sessionFile);
+  const runtimeTarget = targetSession || { sessionId, sessionFile };
+
+  if (e?.type === "agent_start" || e?.type === "compaction_start") {
+    const mode = e.type === "compaction_start" ? "compacting" : "streaming";
+    const startedAt = ensureRuntimeStartedAt(runtimeTarget, typeof e.startedAt === "string" ? e.startedAt : undefined, mode);
+    eventForClient = { ...e, startedAt };
+  } else if (e?.type === "agent_end" || e?.type === "compaction_end") {
+    if (!e.willRetry) clearRuntimeStartedAt(runtimeTarget, sessionFile);
+  }
+
+  if (e?.type === "tool_execution_start") {
+    const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
+    const startedAt = typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString();
+    if (toolKey && key) {
+      let sessionToolStarts = toolStartedAts.get(key);
+      if (!sessionToolStarts) {
+        sessionToolStarts = new Map();
+        toolStartedAts.set(key, sessionToolStarts);
+      }
+      sessionToolStarts.set(toolKey, startedAt);
+    }
+    eventForClient = { ...e, startedAt };
+  } else if (e?.type === "tool_execution_update" || e?.type === "tool_execution_end") {
+    const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
+    const startedAt = toolKey && key ? toolStartedAts.get(key)?.get(toolKey) : undefined;
+    if (startedAt) eventForClient = { ...e, startedAt };
+    if (e?.type === "tool_execution_end" && toolKey && key) toolStartedAts.get(key)?.delete(toolKey);
+  }
+
+  if (isRuntimeActivityEvent(e)) {
+    const lastActivityAt = markRuntimeActivity(runtimeTarget, runtimeActivityTimestamp(eventForClient), sessionFile);
+    eventForClient = { ...eventForClient, lastActivityAt };
+  }
+
+  return eventForClient;
+}
+
+function broadcastPiEvent(sessionId: string, sessionFile: string, event: any, options: { targetSession?: any; provider?: RunnerProvider } = {}) {
+  const runtimeId = options.provider?.id || "local";
+  const eventForClient = enrichPiEventForBroadcast(sessionId, sessionFile, event, options.targetSession);
+  broadcast({ type: "pi_event", runtimeId, sessionId, sessionFile, event: eventForClient });
+  broadcast({
+    type: "session_runtime_changed",
+    runtimeId,
+    sessionId,
+    sessionFile,
+    runtime: options.targetSession ? runtimeForEvent(sessionFile, event, sessionId) : runtimeForSessionKey(sessionId, sessionFile, event, true),
+  });
+
+  if (event?.type === "session_info_changed") {
+    if (options.targetSession) broadcast({ type: "state_changed", ...currentState(options.targetSession) });
+    else if (options.provider) void options.provider.state(sessionId).then((runnerState) => broadcast({ type: "state_changed", ...runnerWebState(runnerState, options.provider!) })).catch(() => undefined);
+  }
+
+  if (event?.type === "message_end" || event?.type === "agent_end" || event?.type === "compaction_end") {
+    broadcast({ type: "session_stats_changed", sessionId, sessionFile, stats: options.targetSession ? sessionStats(options.targetSession) : null });
+  }
+
+  if (options.targetSession && (event?.type === "message_end" || event?.type === "turn_end")) {
+    const msg = event?.message ?? event?.toolResults?.[0];
+    const err: string = msg?.errorMessage || msg?.message?.errorMessage || "";
+    const modelId: string = msg?.model || msg?.message?.model || "";
+    if (modelId && (err.includes("model_not_supported") || err.includes("model_not_available"))) {
+      if (!blockedModelIds.has(modelId)) {
+        blockedModelIds.add(modelId);
+        broadcast({ type: "models_updated", sessionId, models: getAvailableModels(options.targetSession).map(simplifyModel) });
+      }
+    }
+  }
+}
+
+function handleRuntimeProviderStatus(provider: RunnerProvider, status: { state: "connecting" | "connected" | "disconnected"; attempt: number; error?: string }) {
+  broadcast({ type: "runtime_connection_changed", runtimeId: provider.id, runtimeRef: runtimeRefForProvider(provider), ...status });
+  if (status.state !== "disconnected") return;
+  void runtimeBindingStore.read().then(({ bindings }) => {
+    for (const binding of bindings) {
+      if (binding.runtimeId !== provider.id) continue;
+      const key = runtimeMapKey(binding.sessionId, binding.sessionFile);
+      if (key) {
+        runtimeStartedAts.delete(key);
+        runtimeLastActivityAts.delete(key);
+        runtimeRunningModes.delete(key);
+        toolStartedAts.delete(key);
+      }
+      broadcast({
+        type: "session_runtime_changed",
+        runtimeId: provider.id,
+        sessionId: binding.sessionId,
+        sessionFile: binding.sessionFile || "",
+        runtime: { loaded: false, isRunning: false, isStreaming: false, isCompacting: false, pendingMessageCount: 0, error: status.error || "Runtime disconnected" },
+      });
+    }
+  }).catch(() => undefined);
+}
+
+async function rememberRunnerState(provider: RunnerProvider, data: any, observedAt = new Date().toISOString()) {
+  const sessionId = String(data?.sessionId || "");
+  if (!sessionId) return;
+  const existing = await runtimeBindingStore.get(sessionId);
+  const binding = await runtimeBindingStore.set({
+    sessionId,
+    runtimeId: provider.id,
+    cwd: String(data?.cwd || existing?.cwd || provider.cwd),
+    sessionFile: String(data?.sessionFile || existing?.sessionFile || "") || undefined,
+    name: typeof data?.sessionName === "string" && data.sessionName.trim() ? data.sessionName.trim() : existing?.name,
+    firstMessage: typeof data?.firstMessage === "string" && data.firstMessage.trim() ? data.firstMessage.trim() : existing?.firstMessage,
+    messageCount: Number.isFinite(Number(data?.messages)) ? Number(data.messages) : existing?.messageCount,
+    updatedAt: observedAt,
+  });
+  rememberRunnerBinding(provider, binding);
+}
+
+function handleRunnerEvent(provider: RunnerProvider, event: any) {
+  const data = event.data as any;
+  if (event.event === "session.event") {
+    const sessionId = String(data?.sessionId || "");
+    const sessionFile = String(data?.sessionFile || "");
+    const piEvent = data?.event;
+    if (sessionId) runnerSessionRuntimeIds.set(sessionId, provider.id);
+    broadcastPiEvent(sessionId, sessionFile, piEvent, { provider });
+    if (piEvent?.type === "agent_end" || piEvent?.type === "compaction_end") {
+      void provider.state(sessionId).then(async (runnerState) => {
+        await rememberRunnerState(provider, runnerState);
+        broadcast({ type: "state_changed", ...runnerWebState(runnerState, provider) });
+      }).catch(() => undefined);
+    }
+    return;
+  }
+  if (event.event === "session.created" || event.event === "session.prompt.start" || event.event === "session.prompt.done") {
+    if (data?.sessionId) runnerSessionRuntimeIds.set(String(data.sessionId), provider.id);
+    void rememberRunnerState(provider, data);
+    const state = runnerWebState(data, provider);
+    broadcast({ type: "state_changed", ...state });
+    broadcast({ type: "session_runtime_changed", runtimeId: provider.id, sessionId: state.sessionId, sessionFile: state.sessionFile, runtime: state.runtime });
+  } else if (event.event === "session.prompt.error") {
+    broadcast({ type: "server_error", runtimeId: provider.id, sessionId: data?.sessionId, error: data?.error || "Runner prompt failed" });
+  }
+}
+for (const provider of runtimeRunnerProviders) attachRuntimeProvider(provider);
 
 function broadcast(value: unknown) {
   const envelope = recordRealtimeMessage(value);
@@ -1606,26 +2431,30 @@ function shouldClearSessionUnreadEvent(event: any) {
 }
 
 function noteRuntimeEventForUnreadRecovery(data: Record<string, any>) {
+  const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
   const sessionFile = typeof data.sessionFile === "string" ? data.sessionFile.trim() : "";
-  if (!sessionFile) return;
+  const key = runtimeMapKey(sessionId, sessionFile);
+  if (!key) return;
   const event = data.event;
   switch (event?.type) {
     case "agent_start":
     case "compaction_start": {
       const startedAt = typeof event.startedAt === "string" && event.startedAt.trim() ? event.startedAt.trim() : new Date().toISOString();
-      runtimeStartedAts.set(sessionFile, startedAt);
-      runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event, startedAt));
+      runtimeStartedAts.set(key, startedAt);
+      runtimeLastActivityAts.set(key, runtimeActivityTimestamp(event, startedAt));
+      runtimeRunningModes.set(key, event.type === "compaction_start" ? "compacting" : "streaming");
       return;
     }
     case "agent_end":
     case "compaction_end":
       if (!event.willRetry) {
-        runtimeStartedAts.delete(sessionFile);
-        runtimeLastActivityAts.delete(sessionFile);
+        runtimeStartedAts.delete(key);
+        runtimeLastActivityAts.delete(key);
+        runtimeRunningModes.delete(key);
       }
       return;
     default:
-      if (isRuntimeActivityEvent(event)) runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event));
+      if (isRuntimeActivityEvent(event)) runtimeLastActivityAts.set(key, runtimeActivityTimestamp(event));
       return;
   }
 }
@@ -2066,6 +2895,17 @@ function cleanClientId(value: unknown) {
   return value.trim().slice(0, 120).replace(/[^a-zA-Z0-9_.:-]/g, "");
 }
 
+function cleanRuntimeId(value: unknown) {
+  if (typeof value !== "string") return "";
+  return value.trim().slice(0, 200).replace(/[\u0000-\u001f\u007f]/g, "");
+}
+
+function runtimeIdFromRequest(req: IncomingMessage, fallback?: unknown) {
+  const raw = req.headers["x-pi-web-runtime-id"];
+  const headerValue = Array.isArray(raw) ? raw[0] : raw;
+  return cleanRuntimeId(fallback) || cleanRuntimeId(headerValue);
+}
+
 function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
   const raw = req.headers["x-pi-web-client-id"];
   const headerValue = Array.isArray(raw) ? raw[0] : raw;
@@ -2110,14 +2950,13 @@ async function emitSessionShutdown(value: any) {
 }
 
 function clearSessionRuntimeMaps(key: string, value: any) {
-  runtimeStartedAts.delete(key);
-  runtimeLastActivityAts.delete(key);
-  toolStartedAts.delete(key);
+  const sessionId = typeof value?.sessionId === "string" ? value.sessionId : "";
   const file = typeof value?.sessionFile === "string" ? value.sessionFile : "";
-  if (file && file !== key) {
-    runtimeStartedAts.delete(file);
-    runtimeLastActivityAts.delete(file);
-    toolStartedAts.delete(file);
+  for (const item of new Set([key, sessionId, file].filter(Boolean))) {
+    runtimeStartedAts.delete(item);
+    runtimeLastActivityAts.delete(item);
+    runtimeRunningModes.delete(item);
+    toolStartedAts.delete(item);
   }
 }
 
@@ -2243,73 +3082,10 @@ function acquireWorkLease(value: any) {
 function registerLiveSession(value: any) {
   const key = sessionPathKey(value);
   if (!key || liveSessions.get(key)?.session === value) return value;
+  if (value?.sessionId) void runtimeBindingStore.ensureLocal(String(value.sessionId), sessionCwd(value)).catch((error) => console.warn("Failed to persist runtime binding", error));
 
   const unsubscribe = value.subscribe?.((event: unknown) => {
-    const eventSessionFile = value.sessionFile;
-    const eventSessionId = value.sessionId;
-
-    // Track models that fail with model_not_supported and remove them from the list.
-    const e = event as any;
-    let eventForClient = e;
-    if (e?.type === "agent_start" || e?.type === "compaction_start") {
-      const startedAt = ensureRuntimeStartedAt(value, typeof e.startedAt === "string" ? e.startedAt : undefined);
-      eventForClient = { ...e, startedAt };
-    } else if (e?.type === "agent_end" || e?.type === "compaction_end") {
-      if (!e.willRetry) clearRuntimeStartedAt(value, eventSessionFile);
-    }
-
-    if (e?.type === "tool_execution_start") {
-      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString();
-      if (toolKey) {
-        let sessionToolStarts = toolStartedAts.get(eventSessionFile);
-        if (!sessionToolStarts) {
-          sessionToolStarts = new Map();
-          toolStartedAts.set(eventSessionFile, sessionToolStarts);
-        }
-        sessionToolStarts.set(toolKey, startedAt);
-      }
-      eventForClient = { ...e, startedAt };
-    } else if (e?.type === "tool_execution_update" || e?.type === "tool_execution_end") {
-      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = toolKey ? toolStartedAts.get(eventSessionFile)?.get(toolKey) : undefined;
-      if (startedAt) eventForClient = { ...e, startedAt };
-      if (e?.type === "tool_execution_end" && toolKey) toolStartedAts.get(eventSessionFile)?.delete(toolKey);
-    }
-
-    if (isRuntimeActivityEvent(e)) {
-      const lastActivityAt = markRuntimeActivity(value, runtimeActivityTimestamp(eventForClient), eventSessionFile);
-      eventForClient = { ...eventForClient, lastActivityAt };
-    }
-
-    broadcast({ type: "pi_event", sessionId: eventSessionId, sessionFile: eventSessionFile, event: eventForClient });
-    broadcast({
-      type: "session_runtime_changed",
-      sessionId: eventSessionId,
-      sessionFile: eventSessionFile,
-      runtime: runtimeForEvent(eventSessionFile, e),
-    });
-
-    // Broadcast state update when session name changes
-    if (e?.type === "session_info_changed") {
-      broadcast({ type: "state_changed", ...currentState(value) });
-    }
-
-    if (e?.type === "message_end" || e?.type === "agent_end" || e?.type === "compaction_end") {
-      broadcast({ type: "session_stats_changed", sessionId: eventSessionId, sessionFile: eventSessionFile, stats: sessionStats(value) });
-    }
-
-    if (e?.type === "message_end" || e?.type === "turn_end") {
-      const msg = e?.message ?? e?.toolResults?.[0];
-      const err: string = msg?.errorMessage || msg?.message?.errorMessage || "";
-      const modelId: string = msg?.model || msg?.message?.model || "";
-      if (modelId && (err.includes("model_not_supported") || err.includes("model_not_available"))) {
-        if (!blockedModelIds.has(modelId)) {
-          blockedModelIds.add(modelId);
-          broadcast({ type: "models_updated", sessionId: eventSessionId, models: getAvailableModels(value).map(simplifyModel) });
-        }
-      }
-    }
+    broadcastPiEvent(value.sessionId, value.sessionFile, event, { targetSession: value });
   });
   liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0 });
   queueMicrotask(() => scheduleLiveSessionCleanup(key));
@@ -2472,6 +3248,7 @@ const server = createServer(async (req, res) => {
       }
 
       if (!isAuthorized(req)) return unauthorized(res);
+      await runtimeHydrationReady;
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
         await Promise.all(Array.from(liveSessions.keys()).map((key) => disposeLiveSession(key, "reset", true)));
@@ -2507,6 +3284,10 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/fs/dirs") {
         try {
+          const fsProvider = runnerProviderById(url.searchParams.get("runtimeId") || "");
+          if (fsProvider) {
+            return sendJson(res, 200, await fsProvider.listDirectories(url.searchParams.get("path") || defaultCwdForRunnerProvider(fsProvider)));
+          }
           return sendJson(res, 200, await listDirectories(url.searchParams.get("path") || piCwd));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -2514,8 +3295,14 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/fs/dirs") {
-        const body = await readBody(req) as { parent?: unknown; name?: unknown };
+        const body = await readBody(req) as { parent?: unknown; name?: unknown; runtimeId?: unknown };
         try {
+          const fsProvider = runnerProviderById(typeof body.runtimeId === "string" ? body.runtimeId : "");
+          if (fsProvider) {
+            const parent = String(body.parent || defaultCwdForRunnerProvider(fsProvider));
+            await fsProvider.start().request("fs.mkdir", { parent, name: String(body.name || "") });
+            return sendJson(res, 201, await fsProvider.listDirectories(parent));
+          }
           return sendJson(res, 201, await createDirectory(String(body.parent || piCwd), String(body.name || "")));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -2523,13 +3310,20 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/git/repos") {
-        return sendJson(res, 200, await listGitRepos(await requestCwdFromSessionId(url.searchParams.get("sessionId"))));
+        const requestedSessionId = url.searchParams.get("sessionId") || "";
+        const host = requestedSessionId ? await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req)) : undefined;
+        if (host && host.kind !== "local") return unsupportedHostCapability(res, host, "Git repository discovery");
+        return sendJson(res, 200, await listGitRepos(host ? await host.getCwd() : await requestCwdFromSessionId(url.searchParams.get("sessionId"))));
       }
 
       if (method === "GET" && url.pathname === "/api/git/status") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
-          return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd), url.searchParams.get("fetch") === "1"));
+          const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+          const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+          if (!host?.gitStatus) return unsupportedHostCapability(res, host, "Git status");
+          if (host.kind === "runner") return sendJson(res, 200, await host.gitStatus(url.searchParams.get("fetch") === "1"));
+          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), await host.getCwd());
+          return sendJson(res, 200, await gitStatus(cwd, url.searchParams.get("fetch") === "1"));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -2537,7 +3331,10 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/log") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const requestedSessionId = url.searchParams.get("sessionId") || "";
+          const host = requestedSessionId ? await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req)) : undefined;
+          if (host && host.kind !== "local") return unsupportedHostCapability(res, host, "Git log");
+          const baseCwd = host ? await host.getCwd() : await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           return sendJson(res, 200, await gitLog(await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd)));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -2546,7 +3343,10 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/commit") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const requestedSessionId = url.searchParams.get("sessionId") || "";
+          const host = requestedSessionId ? await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req)) : undefined;
+          if (host && host.kind !== "local") return unsupportedHostCapability(res, host, "Git commit details");
+          const baseCwd = host ? await host.getCwd() : await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           return sendJson(res, 200, await gitCommitDetails(url.searchParams.get("hash") || "", await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd)));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -2555,19 +3355,15 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/diff") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
-          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
-          if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
+          const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+          const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+          if (!host?.gitDiff) return unsupportedHostCapability(res, host, "Git diff");
           const filePath = safeGitPath(url.searchParams.get("path") || "");
           const staged = url.searchParams.get("staged") === "1";
-          const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-          let { stdout } = await git(args, 15_000, cwd);
-          if (!stdout) {
-            const status = await gitStatus(cwd) as any;
-            const file = status.files?.find((f: any) => f.path === filePath);
-            if (file?.label === "untracked") stdout = (await git(["diff", "--no-index", "--", "/dev/null", filePath], 15_000, cwd).catch((error: any) => ({ stdout: error.stdout || "" }))).stdout;
-          }
-          return sendJson(res, 200, { ok: true, path: filePath, staged, diff: stdout });
+          if (host.kind === "runner") return sendJson(res, 200, await host.gitDiff(filePath, staged));
+          const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), await host.getCwd());
+          if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
+          return sendJson(res, 200, await gitDiff({ cwd, path: filePath, staged }));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -2575,7 +3371,10 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/git/image") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const requestedSessionId = url.searchParams.get("sessionId") || "";
+          const host = requestedSessionId ? await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req)) : undefined;
+          if (host && host.kind !== "local") return unsupportedHostCapability(res, host, "Git image preview");
+          const baseCwd = host ? await host.getCwd() : await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           await sendGitImage(res, {
@@ -2593,7 +3392,10 @@ const server = createServer(async (req, res) => {
 
       if (method === "POST" && url.pathname === "/api/git/sync") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const requestedSessionId = url.searchParams.get("sessionId") || "";
+          const host = requestedSessionId ? await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req)) : undefined;
+          if (host && host.kind !== "local") return unsupportedHostCapability(res, host, "Git sync");
+          const baseCwd = host ? await host.getCwd() : await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           const status = await gitStatus(cwd) as any;
@@ -2607,35 +3409,185 @@ const server = createServer(async (req, res) => {
         }
       }
 
+      if (method === "GET" && url.pathname === "/api/runtimes") {
+        return sendJson(res, 200, { ok: true, runtimes: [...runtimeRegistry.list(), ...runtimeRunnerProviders.map(runtimeSummaryForProvider)] });
+      }
+
+      if (method === "POST" && url.pathname === "/api/runtimes/connect") {
+        const body = await readBody(req) as Partial<CommandRunnerConfig> & GuidedRuntimeConnectConfig;
+        const guided = typeof body.adapter === "string" && body.adapter.trim().length > 0;
+        if (typeof body.modelBroker !== "boolean") return sendJson(res, 400, { ok: false, error: "modelBroker is required: choose host-brokered models or runtime-owned models explicitly" });
+        if (!guided && !allowCustomRuntimes) return sendJson(res, 403, { ok: false, error: "Custom runtime connections are disabled. Use a guided adapter or set PI_WEB_ALLOW_CUSTOM_RUNTIMES=1 to enable persistent command runtimes." });
+        try {
+          let guidedConfig: CommandRunnerConfig | undefined;
+          if (guided) {
+            try {
+              guidedConfig = commandConfigForGuidedRuntime(body);
+              const adapter = String(body.adapter || "") as "apple" | "docker" | "podman" | "ssh";
+              if (adapter !== "ssh") {
+                const target = String(body.target || "");
+                const { containerId, ...isolation } = await verifyGuidedContainerIsolation(adapter, target, undefined, guidedConfig.command);
+                guidedConfig = { ...pinGuidedContainerTarget(guidedConfig, target, containerId), ...isolation };
+              }
+            } catch (error) {
+              return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+            }
+          }
+          const id = String(guidedConfig?.id || body.id || "").trim();
+          const label = String(guidedConfig?.label || body.label || id).trim();
+          const command = String(guidedConfig?.command || body.command || "").trim();
+          const args = guidedConfig?.args || (Array.isArray(body.args) ? body.args.map(String) : []);
+          const cwd = String(guidedConfig?.cwd || body.cwd || "").trim();
+          const kind = guidedConfig?.kind || (body.kind === "ssh" ? "ssh" : body.kind === "local" ? "local" : "container");
+          if (!id || !/^[a-zA-Z0-9:_.-]+$/.test(id)) return sendJson(res, 400, { ok: false, error: "id is required and may contain letters, numbers, colon, dot, underscore, or dash" });
+          if (id === "local" || runnerProviderById(id)) return sendJson(res, 409, { ok: false, error: "Runtime id already exists" });
+          if (!command) return sendJson(res, 400, { ok: false, error: "command is required" });
+          if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
+          const agentDir = kind === "local"
+            ? (typeof body.agentDir === "string" && body.agentDir.trim() ? body.agentDir.trim() : join(getAgentDir(), "runtimes", id))
+            : undefined;
+          const config: CommandRunnerConfig = {
+            id,
+            label,
+            command,
+            args,
+            cwd,
+            processCwd: guidedConfig?.processCwd || (typeof body.processCwd === "string" ? body.processCwd : undefined),
+            ...(agentDir ? { agentDir } : {}),
+            kind,
+            modelBroker: body.modelBroker,
+            network: guidedConfig?.network,
+            networkPolicy: guidedConfig?.networkPolicy || (kind === "container" ? "unverified" : kind === "ssh" ? "unknown" : undefined),
+          };
+          const provider = new CommandRunnerProvider({ ...config, preflight: guidedContainerPreflight(config) });
+          registerRuntimeProvider(provider);
+          try {
+            await provider.health();
+          } catch (error) {
+            unregisterRuntimeProvider(id);
+            return sendJson(res, 400, { ok: false, error: `Runtime health check failed: ${error instanceof Error ? error.message : String(error)}` });
+          }
+          await runtimeStore.upsert(provider.toConfig());
+          return sendJson(res, 201, { ok: true, runtime: runtimeSummaryForProvider(provider) });
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/runtimes/model-access") {
+        const body = await readBody(req) as { id?: unknown; modelBroker?: unknown };
+        const id = String(body.id || "").trim();
+        if (typeof body.modelBroker !== "boolean") return sendJson(res, 400, { ok: false, error: "modelBroker must be boolean" });
+        const previous = runnerProviderById(id);
+        if (!previous) return sendJson(res, 404, { ok: false, error: "Runtime not found" });
+        if (!previous.disconnectable) return sendJson(res, 400, { ok: false, error: "This runtime's model access is configured by the server" });
+        const config = { ...previous.toConfig(), modelBroker: body.modelBroker };
+        unregisterRuntimeProvider(id);
+        const provider = new CommandRunnerProvider({ ...config, preflight: guidedContainerPreflight(config) });
+        try {
+          registerRuntimeProvider(provider);
+          await provider.health();
+          await runtimeStore.upsert(provider.toConfig());
+          return sendJson(res, 200, { ok: true, runtime: runtimeSummaryForProvider(provider) });
+        } catch (error) {
+          if (runnerProviderById(id) === provider) unregisterRuntimeProvider(id);
+          runtimeRunnerProviders.push(previous);
+          void previous.health().catch(() => undefined);
+          return sendJson(res, 400, { ok: false, error: `Could not reconnect runtime: ${error instanceof Error ? error.message : String(error)}` });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/runtimes/disconnect") {
+        const body = await readBody(req) as { id?: unknown };
+        const id = String(body.id || "").trim();
+        const provider = runnerProviderById(id);
+        if (!provider) return sendJson(res, 404, { ok: false, error: "Runtime not found" });
+        if (!provider.disconnectable) return sendJson(res, 400, { ok: false, error: "This runtime cannot be disconnected from the UI" });
+        unregisterRuntimeProvider(id);
+        await runtimeStore.remove(id);
+        const removedLocators = await runtimeBindingStore.removeRuntime(id);
+        return sendJson(res, 200, { ok: true, id, removedLocators });
+      }
+
+      if (method === "GET" && url.pathname === "/api/runtime-runner/health") {
+        if (!localRunnerProvider) return sendJson(res, 404, { ok: false, error: "Local runner is disabled. Set PI_WEB_LOCAL_RUNNER=1 to enable it." });
+        try {
+          return sendJson(res, 200, { ok: true, runtime: await localRunnerProvider.health() });
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/runtime-runner/sessions/new") {
+        if (!localRunnerProvider) return sendJson(res, 404, { ok: false, error: "Local runner is disabled. Set PI_WEB_LOCAL_RUNNER=1 to enable it." });
+        const body = await readBody(req) as { cwd?: unknown };
+        try {
+          return sendJson(res, 200, { ok: true, state: await localRunnerProvider.createSession(typeof body.cwd === "string" ? body.cwd : piCwd) });
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/runtime-runner/session/state") {
+        if (!localRunnerProvider) return sendJson(res, 404, { ok: false, error: "Local runner is disabled. Set PI_WEB_LOCAL_RUNNER=1 to enable it." });
+        try {
+          return sendJson(res, 200, { ok: true, state: await localRunnerProvider.state(url.searchParams.get("sessionId") || "") });
+        } catch (error) {
+          return sendJson(res, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/runtime-runner/messages") {
+        if (!localRunnerProvider) return sendJson(res, 404, { ok: false, error: "Local runner is disabled. Set PI_WEB_LOCAL_RUNNER=1 to enable it." });
+        try {
+          return sendJson(res, 200, await localRunnerProvider.messages(url.searchParams.get("sessionId") || ""));
+        } catch (error) {
+          return sendJson(res, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/runtime-runner/prompt") {
+        if (!localRunnerProvider) return sendJson(res, 404, { ok: false, error: "Local runner is disabled. Set PI_WEB_LOCAL_RUNNER=1 to enable it." });
+        const body = await readBody(req) as { sessionId?: unknown; message?: unknown };
+        try {
+          return sendJson(res, 202, await localRunnerProvider.prompt(String(body.sessionId || ""), String(body.message || "")));
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/runtime-runner/abort") {
+        if (!localRunnerProvider) return sendJson(res, 404, { ok: false, error: "Local runner is disabled. Set PI_WEB_LOCAL_RUNNER=1 to enable it." });
+        const body = await readBody(req) as { sessionId?: unknown };
+        try {
+          return sendJson(res, 202, await localRunnerProvider.abort(String(body.sessionId || "")));
+        } catch (error) {
+          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
       if (method === "GET" && url.pathname === "/api/state") {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        noteViewerLeaseFromRequest(req, targetSession, url.searchParams.get("clientId"));
-        return sendJson(res, 200, {
-          ok: true,
-          ...currentStateWithThinkingLevels(targetSession),
-          sessionUiState: await sessionUiStateStore.read(),
-          tokenRequired: Boolean(token),
-        });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        if (host.targetSession) noteViewerLeaseFromRequest(req, host.targetSession, url.searchParams.get("clientId"));
+        try {
+          return sendJson(res, 200, { ok: true, ...await host.state(), sessionUiState: await sessionUiStateStore.read(), tokenRequired: Boolean(token) });
+        } catch (error) {
+          if (host.kind === "runner" && host.binding) return sendJson(res, 200, { ok: true, ...runtimeUnavailableWebState(host.binding, host.provider, error), sessionUiState: await sessionUiStateStore.read(), tokenRequired: Boolean(token) });
+          throw error;
+        }
       }
 
       if (method === "POST" && url.pathname === "/api/web-header-action/invoke") {
         const body = await readBody(req) as { sessionId?: unknown; key?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const actionKey = cleanHeaderActionKey(body.key);
-        if (!actionKey) return sendJson(res, 400, { ok: false, error: "key is required" });
-        const action = getWebHeaderActionState(targetSession).actions.get(actionKey);
-        if (!action) return sendJson(res, 404, { ok: false, error: "Header action not found" });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.invokeHeaderAction) return unsupportedHostCapability(res, host, "Web header actions");
         try {
-          const result = await action.invoke();
-          const markdown = cleanFooterText(result?.markdown, 200_000);
-          if (!markdown) return sendJson(res, 400, { ok: false, error: "Header action returned no markdown" });
-          return sendJson(res, 200, { ok: true, label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || actionKey, markdown });
-        } catch (error) {
-          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, 200, await host.invokeHeaderAction(body.key));
+        } catch (error: any) {
+          return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
@@ -2669,17 +3621,17 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/session/stats") {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, { ok: true, sessionId: targetSession.sessionId, stats: sessionStats(targetSession) });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.sessionStats) return unsupportedHostCapability(res, host, "Session stats");
+        return sendJson(res, 200, await host.sessionStats());
       }
 
       if (method === "GET" && url.pathname === "/api/session/tree") {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.conversationTree) return unsupportedHostCapability(res, host, "Conversation tree");
         try {
-          return sendJson(res, 200, conversationTreeForSession(targetSession));
+          return sendJson(res, 200, await host.conversationTree());
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -2688,70 +3640,46 @@ const server = createServer(async (req, res) => {
       if (method === "POST" && url.pathname === "/api/session/tree/navigate") {
         const body = await readBody(req) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (targetSession.isStreaming) return sendJson(res, 409, { ok: false, error: "Wait for the current response to finish before navigating the tree" });
-        if (targetSession.isCompacting) return sendJson(res, 409, { ok: false, error: "Wait for the current compaction to finish before navigating the tree" });
-        if (typeof targetSession.navigateTree !== "function") return sendJson(res, 400, { ok: false, error: "Tree navigation is not available" });
-
-        const targetId = String(body.targetId || "").trim();
-        if (!targetId) return sendJson(res, 400, { ok: false, error: "targetId is required" });
-
-        const releaseWorkLease = acquireWorkLease(targetSession);
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.navigateTree) return unsupportedHostCapability(res, host, "Conversation tree navigation");
         try {
-          const navigation = targetSession.navigateTree(targetId, {
-            summarize: Boolean(body.summarize),
-            customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
-            replaceInstructions: Boolean(body.replaceInstructions),
-            label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
-          });
-          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
-          const result = await navigation;
-          const state = currentStateWithThinkingLevels(targetSession);
-          broadcast({ type: "state_changed", ...state });
-          return sendJson(res, 200, { ok: true, ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state });
-        } catch (error) {
-          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
-        } finally {
-          releaseWorkLease();
-          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+          return sendJson(res, 200, await host.navigateTree(body as Record<string, unknown>));
+        } catch (error: any) {
+          return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/abort-summary") {
         const body = await readBody(req) as { sessionId?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        targetSession.abortBranchSummary?.();
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.abortBranchSummary) return unsupportedHostCapability(res, host, "Branch summary cancellation");
+        return sendJson(res, 202, await host.abortBranchSummary());
       }
 
       if (method === "GET" && url.pathname === "/api/messages") {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const msgs = targetSession.messages;
-        // Build toolCallId -> args map from assistant messages
-        const toolCallArgs = new Map<string, Record<string, unknown>>();
-        for (const m of msgs) {
-          const msg = m as any;
-          if (msg.role === "assistant" && Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-              if (part?.type === "toolCall" && part.id) {
-                toolCallArgs.set(part.id, part.arguments || {});
-              }
-            }
-          }
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        try {
+          return sendJson(res, 200, await host.messages());
+        } catch (error) {
+          if (host.kind === "runner") return sendJson(res, 200, { ok: true, messages: [], runtimeUnavailable: true, error: error instanceof Error ? error.message : String(error), runtimeRef: host.provider ? runtimeRefForProvider(host.provider, host.binding?.cwd) : undefined });
+          throw error;
         }
-        const refs = messageEntryRefs(targetSession);
-        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown, index: number) => simplifyMessage(m, toolCallArgs, targetSession.sessionFile, refs[index]?.entryId)) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
         const extraCwds = url.searchParams.getAll("cwd");
+        const runtimeId = url.searchParams.get("runtimeId") || undefined;
+        const cachedOnly = url.searchParams.get("cached") === "1";
+        const requestedLimit = Number(url.searchParams.get("limit") || 100);
+        const limit = Math.max(1, Math.min(500, Number.isFinite(requestedLimit) ? Math.floor(requestedLimit) : 100));
+        const cursor = url.searchParams.get("cursor") || undefined;
+        const all = url.searchParams.get("all") === "1";
         const sessionUiState = await sessionUiStateStore.read();
-        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(await listSessionInfos(extraCwds), sessionUiState) });
+        const result = await listSessionInfos(extraCwds, { runtimeId, cachedOnly, limit, cursor, all });
+        return sendJson(res, 200, { ok: true, runtimeId: runtimeId || "all", sessions: applySessionUnreadState(result.sessions, sessionUiState), nextCursor: result.nextCursor });
       }
 
       if (method === "GET" && url.pathname === "/api/session-ui-state") {
@@ -2772,14 +3700,35 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, sessionUiState });
       }
 
+      if (method === "POST" && url.pathname === "/api/sessions/remove") {
+        const body = await readBody(req) as { sessionId?: unknown; id?: unknown; runtimeId?: unknown; activeSessionId?: unknown };
+        const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
+        const activeSessionId = typeof body.activeSessionId === "string" ? body.activeSessionId : "";
+        if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
+        if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before removing the current session." });
+        const binding = await runtimeBindingStore.get(requestedId);
+        const requestedRuntimeId = typeof body.runtimeId === "string" ? body.runtimeId : "";
+        if (!binding || binding.runtimeId === "local" || requestedRuntimeId && binding.runtimeId !== requestedRuntimeId) {
+          return sendJson(res, 404, { ok: false, error: "Runtime session locator not found" });
+        }
+        await runtimeBindingStore.remove(requestedId);
+        runnerSessionRuntimeIds.delete(requestedId);
+        const sessionUiState = await sessionUiStateStore.removeSession(requestedId);
+        broadcast({ type: "session_removed", sessionId: requestedId, runtimeId: binding.runtimeId, disposition: "removed" });
+        broadcast({ type: "session_ui_state_changed", sessionUiState });
+        return sendJson(res, 200, { ok: true, id: requestedId, runtimeId: binding.runtimeId, disposition: "removed" });
+      }
+
       if (method === "POST" && url.pathname === "/api/sessions/delete") {
-        const body = await readBody(req) as { sessionId?: unknown; id?: unknown; cwd?: unknown; activeSessionId?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; id?: unknown; cwd?: unknown; runtimeId?: unknown; activeSessionId?: unknown };
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
         const activeSessionId = typeof body.activeSessionId === "string" ? body.activeSessionId : "";
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
         if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
+        const host = await sessionHostForSession(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined, runtimeIdFromRequest(req, body.runtimeId));
+        if (!host?.deleteSession) return unsupportedHostCapability(res, host, "Deleting runtime sessions");
         try {
-          const result = await deleteSessionById(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
+          const result = await host.deleteSession(typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
           const sessionUiState = await sessionUiStateStore.removeSession(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
           broadcast({ type: "session_ui_state_changed", sessionUiState });
@@ -2802,71 +3751,61 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/commands") {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, { ok: true, commands: getSlashCommands(targetSession) });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.slashCommands) return unsupportedHostCapability(res, host, "Slash commands");
+        return sendJson(res, 200, await host.slashCommands());
       }
 
       if (method === "GET" && url.pathname === "/api/models") {
         const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, {
-          ok: true,
-          cwd: sessionCwd(targetSession),
-          current: simplifyModel(targetSession.model),
-          thinkingLevel: targetSession.thinkingLevel,
-          thinkingLevels: targetSession.getAvailableThinkingLevels(),
-          models: getAvailableModels(targetSession).map(simplifyModel),
-        });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.listModels) return unsupportedHostCapability(res, host, "Model listing");
+        try {
+          return sendJson(res, 200, await host.listModels());
+        } catch (error) {
+          return sendJson(res, 503, { ok: false, error: error instanceof Error ? error.message : String(error), runtimeRef: host.provider ? runtimeRefForProvider(host.provider, host.binding?.cwd) : undefined });
+        }
       }
 
       if (method === "POST" && url.pathname === "/api/model") {
         const body = await readBody(req) as { sessionId?: unknown; provider?: unknown; id?: unknown; thinkingLevel?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const provider = String(body.provider || "").trim();
         const id = String(body.id || "").trim();
         if (!provider || !id) return sendJson(res, 400, { ok: false, error: "provider and id are required" });
-
-        const model = targetSession.modelRegistry.find(provider, id);
-        if (!model) return sendJson(res, 404, { ok: false, error: "Model not found" });
-
-        await targetSession.setModel(model);
-        if (typeof body.thinkingLevel === "string") targetSession.setThinkingLevel(body.thinkingLevel as any);
-
-        const state = currentStateWithThinkingLevels(targetSession);
-        broadcast({ type: "state_changed", ...state });
-        return sendJson(res, 200, { ok: true, ...state });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.setModel) return unsupportedHostCapability(res, host, "Model switching");
+        try {
+          const state = await host.setModel(provider, id, typeof body.thinkingLevel === "string" ? body.thinkingLevel : undefined);
+          broadcast({ type: "state_changed", ...state });
+          return sendJson(res, 200, { ok: true, ...state });
+        } catch (error: any) {
+          return sendJson(res, Number(error?.status) || (host.kind === "runner" ? 503 : 500), { ok: false, error: error instanceof Error ? error.message : String(error), runtimeRef: host.provider ? runtimeRefForProvider(host.provider, host.binding?.cwd) : undefined });
+        }
       }
 
       if (method === "POST" && url.pathname === "/api/command") {
         const body = await readBody(req) as { sessionId?: unknown; command?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.executeSlashCommand) return unsupportedHostCapability(res, host, "Slash command execution");
         const command = String(body.command || "").trim();
         if (!command.startsWith("/")) return sendJson(res, 400, { ok: false, error: "Slash command is required" });
-
-        const result = await executeSlashCommand(command, targetSession);
-        const stateSessionId = (result as any)?.state?.sessionId;
-        const stateSession = typeof stateSessionId === "string" ? await getOrCreateLiveSessionById(stateSessionId) : undefined;
-        noteViewerLeaseFromRequest(req, stateSession || targetSession);
-        return sendJson(res, 200, { ok: true, ...result });
+        return sendJson(res, 200, await host.executeSlashCommand(command, req));
       }
 
       if (method === "POST" && url.pathname === "/api/shell") {
         const body = await readBody(req) as { sessionId?: unknown; command?: unknown; excludeFromContext?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.executeShell) return unsupportedHostCapability(res, host, "Shell commands");
         const command = String(body.command || "").trim();
         if (!command) return sendJson(res, 400, { ok: false, error: "command is required" });
-        if (typeof targetSession.executeBash !== "function") return sendJson(res, 400, { ok: false, error: "Bash execution is not available in this session." });
-        const excludeFromContext = Boolean(body.excludeFromContext);
-        const result = await targetSession.executeBash(command, undefined, { excludeFromContext });
-        return sendJson(res, 200, { ok: true, command, cwd: sessionCwd(targetSession), ...result, excludeFromContext });
+        try {
+          return sendJson(res, 200, await host.executeShell(command, Boolean(body.excludeFromContext)));
+        } catch (error: any) {
+          return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       if (method === "POST" && url.pathname === "/api/extension-ui/respond") {
@@ -2883,7 +3822,7 @@ const server = createServer(async (req, res) => {
         const body = await readBody(req) as { sessionId?: unknown; message?: unknown; mode?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
         const images = Array.isArray(body.images)
-          ? body.images.filter((image): image is { type: "image"; data: string; mimeType: string; name?: string } => {
+          ? body.images.filter((image): image is PromptImage => {
             if (!image || typeof image !== "object") return false;
             const value = image as Record<string, unknown>;
             return value.type === "image"
@@ -2896,43 +3835,13 @@ const server = createServer(async (req, res) => {
 
         const mode = body.mode === "followUp" ? "followUp" : "steer";
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const imageFileNote = await persistPromptImages(images, sessionCwd(targetSession));
-        const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
-        const wasAlreadyRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-        if (!wasAlreadyRunning) ensureRuntimeStartedAt(targetSession);
-        const promptSessionFile = targetSession.sessionFile;
-        const releaseWorkLease = acquireWorkLease(targetSession);
-        void targetSession.prompt(promptText, {
-          ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
-          ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
-        })
-          .catch((error: unknown) => {
-            broadcast({
-              type: "server_error",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          })
-          .finally(() => {
-            const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(promptSessionFile && runtimeStartedAts.has(promptSessionFile) && !isRunning);
-            if (missedTerminalEvent) {
-              clearRuntimeStartedAt(targetSession, promptSessionFile);
-              markSessionUnreadCompleted(targetSession.sessionId);
-            }
-            broadcast({
-              type: "session_runtime_changed",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              runtime: runtimeForPath(targetSession.sessionFile),
-            });
-            releaseWorkLease();
-          });
-
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.prompt) return unsupportedHostCapability(res, host, "Prompting runtime sessions");
+        try {
+          return sendJson(res, 202, await host.prompt(message, images, mode));
+        } catch (error) {
+          return sendJson(res, host.kind === "runner" ? 503 : 500, { ok: false, error: error instanceof Error ? error.message : String(error), runtimeRef: host.provider ? runtimeRefForProvider(host.provider, host.binding?.cwd) : undefined });
+        }
       }
 
       if (method === "POST" && url.pathname === "/api/session/retry") {
@@ -2981,42 +3890,58 @@ const server = createServer(async (req, res) => {
       if (method === "POST" && url.pathname === "/api/abort") {
         const body = await readBody(req) as { sessionId?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        void targetSession.abort().catch((error: unknown) => broadcast({
-          type: "server_error",
-          sessionId: targetSession.sessionId,
-          sessionFile: targetSession.sessionFile,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.abort) return unsupportedHostCapability(res, host, "Aborting runtime sessions");
+        try {
+          return sendJson(res, 202, await host.abort());
+        } catch (error) {
+          return sendJson(res, host.kind === "runner" ? 503 : 500, { ok: false, error: error instanceof Error ? error.message : String(error), runtimeRef: host.provider ? runtimeRefForProvider(host.provider, host.binding?.cwd) : undefined });
+        }
       }
 
       if (method === "POST" && url.pathname === "/api/compaction/abort") {
         const body = await readBody(req) as { sessionId?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (typeof targetSession.abortCompaction !== "function") return sendJson(res, 400, { ok: false, error: "Compaction cancellation is not available" });
-        targetSession.abortCompaction();
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.abortCompaction) return unsupportedHostCapability(res, host, "Compaction cancellation");
+        try {
+          return sendJson(res, 202, await host.abortCompaction());
+        } catch (error: any) {
+          return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       if (method === "POST" && url.pathname === "/api/session/name") {
         const body = await readBody(req) as { sessionId?: unknown; name?: unknown };
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (typeof targetSession.setSessionName !== "function") return sendJson(res, 400, { ok: false, error: "Renaming sessions is not available" });
-
-        const name = String(body.name || "").trim();
-        targetSession.setSessionName(name);
-        const state = currentStateWithThinkingLevels(targetSession);
-        return sendJson(res, 200, { ok: true, ...state });
+        const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req));
+        if (!host?.rename) return unsupportedHostCapability(res, host, "Renaming runtime sessions");
+        try {
+          const state = await host.rename(String(body.name || "").trim());
+          return sendJson(res, 200, { ok: true, ...state });
+        } catch (error: any) {
+          return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
-        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown };
+        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; runtimeId?: unknown; runtime?: unknown };
+        const requestedRuntimeId = typeof body.runtimeId === "string" ? body.runtimeId : typeof (body.runtime as any)?.id === "string" ? (body.runtime as any).id : "";
+        const requestedProvider = requestedRuntimeId && requestedRuntimeId !== "local" ? runnerProviderById(requestedRuntimeId) : undefined;
+        if (requestedRuntimeId && requestedRuntimeId !== "local" && !requestedProvider) return sendJson(res, 404, { ok: false, error: `Runtime not found: ${requestedRuntimeId}` });
+        if (requestedProvider) {
+          try {
+            const targetCwd = typeof body.cwd === "string" ? body.cwd : defaultCwdForRunnerProvider(requestedProvider);
+            const runnerState = await requestedProvider.createSession(targetCwd) as any;
+            runnerSessionRuntimeIds.set(runnerState.sessionId, requestedProvider.id);
+            await runtimeBindingStore.set({ sessionId: runnerState.sessionId, runtimeId: requestedProvider.id, cwd: runnerState.cwd, sessionFile: runnerState.sessionFile });
+            const state = runnerWebState(runnerState, requestedProvider);
+            broadcast({ type: "state_changed", ...state });
+            return sendJson(res, 200, { ok: true, ...state });
+          } catch (error) {
+            return sendJson(res, 503, { ok: false, error: error instanceof Error ? error.message : String(error), runtimeRef: runtimeRefForProvider(requestedProvider) });
+          }
+        }
         const previousSession = typeof body.sessionId === "string" ? await getOrCreateLiveSessionById(body.sessionId) : session;
         const targetCwd = typeof body.cwd === "string" ? body.cwd : previousSession ? sessionCwd(previousSession) : undefined;
         const newSession = await createNewLiveSession(targetCwd, previousSession?.sessionFile);
@@ -3027,10 +3952,25 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/session/cwd") {
-        const body = await readBody(req) as { sessionId?: unknown; cwd?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; cwd?: unknown; runtimeId?: unknown };
         const cwd = String(body.cwd || "").trim();
         if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
         const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
+        const requestedRuntimeId = typeof body.runtimeId === "string" ? body.runtimeId : "";
+        const requestedProvider = requestedRuntimeId && requestedRuntimeId !== "local" ? runnerProviderById(requestedRuntimeId) : undefined;
+        if (requestedRuntimeId && requestedRuntimeId !== "local" && !requestedProvider) return sendJson(res, 404, { ok: false, error: `Runtime not found: ${requestedRuntimeId}` });
+        if (requestedProvider) {
+          try {
+            const runnerState = await requestedProvider.createSession(cwd) as any;
+            runnerSessionRuntimeIds.set(runnerState.sessionId, requestedProvider.id);
+            await runtimeBindingStore.set({ sessionId: runnerState.sessionId, runtimeId: requestedProvider.id, cwd: runnerState.cwd, sessionFile: runnerState.sessionFile });
+            const state = runnerWebState(runnerState, requestedProvider);
+            broadcast({ type: "state_changed", ...state });
+            return sendJson(res, 200, { ok: true, ...state });
+          } catch (error) {
+            return sendJson(res, 503, { ok: false, error: error instanceof Error ? error.message : String(error), runtimeRef: runtimeRefForProvider(requestedProvider) });
+          }
+        }
         const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
         if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         try {
@@ -3045,19 +3985,19 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/sessions/open") {
-        const body = await readBody(req) as { id?: unknown; sessionId?: unknown; cwd?: unknown; clientId?: unknown };
+        const body = await readBody(req) as { id?: unknown; sessionId?: unknown; cwd?: unknown; runtimeId?: unknown; clientId?: unknown };
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
-
-        let targetSession: PiWebSession | undefined;
+        const routeRuntimeId = Object.prototype.hasOwnProperty.call(body, "runtimeId") ? cleanRuntimeId(body.runtimeId) || undefined : runtimeIdFromRequest(req);
+        const host = await sessionHostForSession(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined, routeRuntimeId);
+        if (!host) return sendJson(res, 404, { ok: false, error: "Session not found" });
+        if (host.targetSession) noteViewerLeaseFromRequest(req, host.targetSession, body.clientId);
         try {
-          targetSession = await switchToSessionId(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
-        } catch {
-          return sendJson(res, 404, { ok: false, error: "Session not found" });
+          return sendJson(res, 200, { ok: true, ...await host.state() });
+        } catch (error) {
+          if (host.kind === "runner" && host.binding) return sendJson(res, 200, { ok: true, ...runtimeUnavailableWebState(host.binding, host.provider, error) });
+          return sendJson(res, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
-        noteViewerLeaseFromRequest(req, targetSession, body.clientId);
-        const state = currentStateWithThinkingLevels(targetSession);
-        return sendJson(res, 200, { ok: true, ...state });
       }
 
       return sendJson(res, 404, { ok: false, error: "Unknown API route" });
@@ -3096,36 +4036,63 @@ wss.on("connection", async (ws, req) => {
   realtimeWs.on("pong", () => {
     realtimeWs.missedPongs = 0;
   });
+  realtimeWs.on("close", () => clients.delete(realtimeWs));
   clients.add(realtimeWs);
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
-  const latestSeq = nextRealtimeSeq - 1;
-  const oldestSeq = realtimeEventLog[0]?.seq || nextRealtimeSeq;
 
-  if (Number.isFinite(lastSeq) && lastSeq > 0) {
-    if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
-      ws.send(JSON.stringify({ type: "sync_required", latestSeq }));
-    } else {
-      for (const event of realtimeEventLog) {
-        if (event.seq > lastSeq) ws.send(JSON.stringify({ ...event, replay: true }));
+  let requestedSessionId = "";
+  let requestedRuntimeId = "";
+  try {
+    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
+    const latestSeq = nextRealtimeSeq - 1;
+    const oldestSeq = realtimeEventLog[0]?.seq || nextRealtimeSeq;
+
+    if (Number.isFinite(lastSeq) && lastSeq > 0) {
+      if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
+        ws.send(JSON.stringify({ type: "sync_required", latestSeq }));
+      } else {
+        for (const event of realtimeEventLog) {
+          if (event.seq > lastSeq) ws.send(JSON.stringify({ ...event, replay: true }));
+        }
       }
     }
-  }
 
-  const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-  const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-  const clientId = cleanClientId(url.searchParams.get("clientId") || "");
-  if (clientId) {
-    acquireViewerLease(clientId, targetSession || session);
-    bindViewerSocket(clientId, realtimeWs);
+    requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
+    requestedRuntimeId = cleanRuntimeId(url.searchParams.get("runtimeId") || "");
+    const clientId = cleanClientId(url.searchParams.get("clientId") || "");
+    let helloState: any;
+
+    const host = await sessionHostForSession(requestedSessionId, undefined, runtimeIdFromRequest(req, requestedRuntimeId));
+    if (host?.targetSession && clientId) {
+      acquireViewerLease(clientId, host.targetSession);
+      bindViewerSocket(clientId, realtimeWs);
+    }
+    helloState = host ? await host.state() : currentState();
+
+    realtimeWs.send(JSON.stringify({
+      type: "hello",
+      seq: latestSeq,
+      ...helloState,
+    }));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("WebSocket initialization failed", error);
+    if (realtimeWs.readyState === realtimeWs.OPEN) {
+      realtimeWs.send(JSON.stringify({ type: "server_error", runtimeId: requestedRuntimeId || undefined, sessionId: requestedSessionId || undefined, error: message }));
+      const unavailableState = requestedRuntimeId && requestedRuntimeId !== "local"
+        ? runtimeUnavailableWebState(
+          { sessionId: requestedSessionId, runtimeId: requestedRuntimeId, cwd: "", updatedAt: new Date().toISOString() },
+          runnerProviderById(requestedRuntimeId),
+          error,
+        )
+        : currentState();
+      realtimeWs.send(JSON.stringify({
+        type: "hello",
+        seq: nextRealtimeSeq - 1,
+        ...unavailableState,
+      }));
+    }
   }
-  const helloState = targetSession ? currentState(targetSession) : currentState();
-  realtimeWs.send(JSON.stringify({
-    type: "hello",
-    seq: latestSeq,
-    ...helloState,
-  }));
-  realtimeWs.on("close", () => clients.delete(realtimeWs));
 });
 
 if (isDev) {

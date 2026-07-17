@@ -966,6 +966,7 @@ export function createMessageList(options: {
       clearActiveToolCards();
       const allMessages = data.messages || [];
       const runtimeState = transcriptRuntimeState(allMessages, isStreaming);
+      if (data.runtimeUnavailable) addMessage("system", data.error ? `Runtime unavailable: ${data.error}` : "Runtime unavailable", "error");
       bulkRendering = true;
       const completedToolResults = new Map<string, any>();
       const renderedToolResultIds = new Set<string>();

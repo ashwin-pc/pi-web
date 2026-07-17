@@ -184,6 +184,24 @@ export function createSettings(options: {
     return true;
   }
 
+  function renderRuntimeSettingsScope(settings = state.settings) {
+    const runtime = state.activeRuntimeRef;
+    const runtimeId = runtime.id || "local";
+    const runtimeLabel = runtime.label || runtimeId || "Local machine";
+    const isLocal = runtimeId === "local";
+    const usesHostBroker = runtime.modelTransport === "host-broker";
+    elements.settingSessionDefaultsTitle.textContent = `${isLocal ? "Local machine" : runtimeLabel} new sessions`;
+    elements.settingSessionDefaultsHint.textContent = isLocal
+      ? "Choose a bucket color and saved model defaults for local sessions you start from now on. Existing sessions are unchanged."
+      : usesHostBroker
+        ? `${runtimeLabel} uses Local machine model authentication through pi-web's host broker. Credentials are not copied into the runtime.`
+        : `${runtimeLabel} owns its model authentication and defaults. Configure those on the runtime; pi-web will not apply Local machine defaults.`;
+    elements.settingDefaultBucketColorSelect.disabled = !isLocal;
+    elements.settingSaveModelDefaultsButton.disabled = !isLocal;
+    elements.settingClearModelDefaultsButton.disabled = !isLocal;
+    elements.settingModelDefaultsValue.textContent = isLocal ? settingsLabel(settings) : "Managed by runtime";
+  }
+
   function applySettings(rawSettings: PiWebSettings) {
     const settings = normalizeSettings(rawSettings);
     const storedExpanded = (() => {
@@ -210,7 +228,7 @@ export function createSettings(options: {
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
-    elements.settingModelDefaultsValue.textContent = settingsLabel(settings);
+    renderRuntimeSettingsScope(settings);
 
     updateQueueToggle();
     updateExpandedComposer();
@@ -341,6 +359,7 @@ export function createSettings(options: {
   }
 
   function prepareOpenSettings() {
+    renderRuntimeSettingsScope();
     const hasToken = !!state.token.trim();
     elements.tokenShareSection.hidden = !hasToken;
     elements.tokenShareQr.replaceChildren();
@@ -384,6 +403,7 @@ export function createSettings(options: {
   function init() {
     populateBucketColorSelect(elements.settingDefaultBucketColorSelect);
     applySettings(state.settings);
+    window.addEventListener("pi-web:workbench-runtime-changed", () => renderRuntimeSettingsScope());
 
     settingsPanelHandle = rightPanels?.register({
       id: "settings",

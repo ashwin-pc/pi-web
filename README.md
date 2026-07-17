@@ -203,6 +203,18 @@ Then open:
 http://<machine-name>:8787
 ```
 
+## Bundled session orchestration tool
+
+pi-web includes a bundled `pi_web_session` tool for orchestrator/verifier agents. It can list sessions, read state/messages, wait for a target session to become idle, send a follow-up nudge, open/create sessions, or abort a runaway response. Use normal `bash`, `read`, and `grep` tools for verification, diffs, tests, and Docker smoke checks.
+
+## Runtime workbenches
+
+pi-web can connect once to an existing Apple container, Docker/Podman container, SSH host, or advanced command-backed runner. Each browser tab has one explicit VS Code-style workbench runtime: its tabs, session drawer, folders, model selection, git, artifacts, composer, and tools switch together. Existing sessions remain bound to their authoritative runtime; cross-runtime navigation requires an explicit workbench switch and never falls back to local.
+
+Guided Docker/Podman runtimes must have inspected `--network none`; guided Apple runtimes must use an inspected `hostOnly` network with DNS disabled (host services remain reachable). Every connection requires an explicit model-access choice: typed host broker, where provider credentials never enter the runtime, or credentials/models owned by the runtime. SSH networking remains owned by the remote machine and can use either model mode explicitly.
+
+See [docs/runtime-binding-design.md](docs/runtime-binding-design.md) for the ownership/routing and model-broker design, and [docs/docker-runtime.md](docs/docker-runtime.md) for durable Docker setup.
+
 ## Environment variables
 
 - `HOST` - bind host, default `127.0.0.1`
@@ -213,6 +225,15 @@ http://<machine-name>:8787
 - `PI_WEB_CHILD_HOST` - supervised child bind host, default `127.0.0.1`
 - `PI_WEB_CHILD_PORT` - supervised child port, default `PORT + 1` (for example `8788` when `PORT=8787`)
 - `PI_WEB_RESTART_GRACE_MS` - delay between child stop/start, default `250`
+- `PI_WEB_INTERNAL_BASE_URL` / `PI_WEB_BASE_URL` - optional base URL used by the bundled `pi_web_session` tool when it needs to call pi-web from inside a non-default runtime
+- `PI_WEB_SESSION_TOOL=0` - disable the bundled `pi_web_session` tool
+- `PI_WEB_LOCAL_RUNNER=1` - expose the development-only local stdio runner
+- `PI_WEB_ALLOW_CUSTOM_RUNTIMES=1` - permit persistent advanced command JSON runtimes; guided adapters remain available without this opt-in
+- `PI_WEB_DOCKER_WORKSPACE_HOST` - expose one built-in Docker workspace runtime
+- `PI_WEB_DOCKER_WORKSPACE_CONTAINER` - runtime workspace path, default `/workspace`
+- `PI_WEB_DOCKER_SESSION_VOLUME` - persistent Docker volume mounted at `/root/.pi/agent`
+- `PI_RUNNER_MAX_ARTIFACT_BYTES` - maximum artifact size returned as base64, default 20 MiB
+- `PI_RUNNER_MAX_LIVE_SESSIONS` - runner live-session LRU cap, default 50
 
 ## Development architecture
 

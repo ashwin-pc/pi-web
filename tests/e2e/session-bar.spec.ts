@@ -1,14 +1,14 @@
 import { expect, test } from "@playwright/test";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
-  pinnedSessions?: Array<{ id: string; cwd?: string }>;
+  pinnedSessions?: Array<{ id: string; cwd?: string; runtimeId?: string }>;
   sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
   sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string; updatedAt: string }>;
 }) {
   await page.request.patch("/api/session-ui-state", { data: state });
 }
 
-async function seedServerPinned(page: import("@playwright/test").Page, ...sessions: Array<{ id: string; cwd?: string }>) {
+async function seedServerPinned(page: import("@playwright/test").Page, ...sessions: Array<{ id: string; cwd?: string; runtimeId?: string }>) {
   await seedServerSessionUiState(page, { pinnedSessions: sessions });
 }
 
@@ -526,6 +526,27 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).toHaveClass(/\bactive\b/);
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).not.toHaveClass(/\bactive\b/);
+  });
+
+  test("shows quick tabs only for the selected workbench runtime", async ({ page }) => {
+    await seedServerPinned(
+      page,
+      { id: "mock-current", runtimeId: "local" },
+      { id: "mock-runtime", cwd: "/workspace", runtimeId: "mock-runtime-provider" },
+    );
+
+    await page.route("**/api/runtimes", (route) => route.fulfill({ json: { ok: true, runtimes: [
+      { id: "local", label: "Local machine", kind: "local", cwd: process.cwd() },
+      { id: "mock-runtime-provider", kind: "container", label: "Mock runtime", cwd: "/workspace" },
+    ] } }));
+
+    await page.goto("/");
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).toBeVisible();
+    await expect(page.locator(".sessionBarTab").filter({ hasText: "mock-runtime" })).toHaveCount(0);
+
+    await page.locator("#sessionButton").click();
+    await expect(page.locator("#workbenchRuntimeButton")).toBeVisible();
+    await expect(page.locator("#workbenchRuntimeLabel")).toHaveText("Local");
   });
 
   test("clicked tab highlights immediately before the server responds", async ({ page }) => {

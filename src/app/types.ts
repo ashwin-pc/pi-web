@@ -85,7 +85,7 @@ export type AttachedImage = {
   path?: string;
 };
 
-export type PinnedSession = { id: string; cwd?: string };
+export type PinnedSession = { id: string; cwd?: string; runtimeId?: string };
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
 export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
 export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
@@ -146,7 +146,8 @@ export function normalizePinnedSessions(value: unknown): PinnedSession[] {
     if (!id || seen.has(id)) continue;
     seen.add(id);
     const cwd = typeof item?.cwd === "string" && item.cwd.trim() ? item.cwd.trim() : undefined;
-    result.push({ id, ...(cwd ? { cwd } : {}) });
+    const runtimeId = typeof item?.runtimeId === "string" && item.runtimeId.trim() ? item.runtimeId.trim() : undefined;
+    result.push({ id, ...(cwd ? { cwd } : {}), ...(runtimeId ? { runtimeId } : {}) });
   }
   return result;
 }
@@ -235,6 +236,20 @@ export function readLegacySelectedMarkerColor(): SessionMarkerColorId | undefine
   return normalizeMarkerColor(localStorage.getItem(selectedMarkerColorKey));
 }
 
+export type RuntimeCapabilities = import("../../server/runtime/protocol.js").RuntimeCapabilities;
+
+export type RuntimeRef = {
+  id: string;
+  kind?: "local" | "container" | "ssh" | string;
+  label?: string;
+  cwd?: string;
+  experimental?: boolean;
+  modelTransport?: "runtime" | "host-broker";
+  networkPolicy?: "none" | "host-only" | "provider-only" | "unrestricted" | "unverified" | "unknown";
+  networkVerifiedAt?: string;
+  capabilities?: RuntimeCapabilities;
+};
+
 export type SessionInfo = {
   id: string;
   name?: string;
@@ -253,7 +268,9 @@ export type SessionInfo = {
     startedAt?: string;
     lastActivityAt?: string;
     pendingMessageCount: number;
+    error?: string;
   };
+  runtimeRef?: RuntimeRef;
   unread?: boolean;
   unreadAt?: string;
 };
@@ -268,6 +285,8 @@ export type AppState = {
   currentSessionId: string;
   currentCwd: string;
   currentSessionTitle: string;
+  currentRuntimeRef?: RuntimeRef;
+  activeRuntimeRef: RuntimeRef;
   statusTitleEditing: boolean;
   isStreaming: boolean;
   isRetrying: boolean;
@@ -308,7 +327,9 @@ export const defaultPiWebSettings: PiWebSettings = {
 
 const tokenStorageKey = "pi-web-token";
 const collapsedFoldersStorageKey = "pi-web-collapsed-session-folders";
+const activeRuntimeStorageKey = "pi-web-active-runtime";
 const sessionIdUrlParam = "sessionId";
+const sessionRuntimeUrlParam = "runtimeId";
 
 function consumeUrlToken() {
   const urlToken = new URLSearchParams(location.search).get("token");
@@ -324,12 +345,30 @@ export function readActiveSessionIdFromUrl() {
   return new URLSearchParams(location.search).get(sessionIdUrlParam) || "";
 }
 
-export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "replace" = "push") {
+export function readActiveSessionRuntimeIdFromUrl() {
+  return new URLSearchParams(location.search).get(sessionRuntimeUrlParam) || "";
+}
+
+export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "replace" = "push", runtimeId?: string) {
   const url = new URL(location.href);
   if (sessionId) url.searchParams.set(sessionIdUrlParam, sessionId);
   else url.searchParams.delete(sessionIdUrlParam);
+  if (sessionId && runtimeId && runtimeId !== "local") url.searchParams.set(sessionRuntimeUrlParam, runtimeId);
+  else url.searchParams.delete(sessionRuntimeUrlParam);
   if (url.href === location.href) return;
   history[mode === "replace" ? "replaceState" : "pushState"](null, "", url.toString());
+}
+
+function readActiveRuntimeRef(): RuntimeRef {
+  try {
+    const parsed = JSON.parse(sessionStorage.getItem(activeRuntimeStorageKey) || "null");
+    if (parsed && typeof parsed === "object" && typeof parsed.id === "string" && parsed.id.trim()) return parsed as RuntimeRef;
+  } catch { /* use local default */ }
+  return { id: "local", kind: "local", label: "Local machine" };
+}
+
+export function persistActiveRuntimeRef(runtime: RuntimeRef) {
+  try { sessionStorage.setItem(activeRuntimeStorageKey, JSON.stringify(runtime)); } catch { /* per-tab persistence is best effort */ }
 }
 
 function readCollapsedSessionFolders() {
@@ -347,15 +386,22 @@ export function persistCollapsedSessionFolders(folders: Set<string>) {
 
 export function createAppState(): AppState {
   consumeUrlToken();
+  const linkedSessionId = readActiveSessionIdFromUrl();
+  const linkedRuntimeId = readActiveSessionRuntimeIdFromUrl();
+  const persistedRuntime = readActiveRuntimeRef();
 
   return {
     token: localStorage.getItem(tokenStorageKey) || "",
     currentModelKey: "",
     currentModelDisplay: "",
     currentThinkingLevel: "off",
-    currentSessionId: readActiveSessionIdFromUrl(),
+    currentSessionId: linkedSessionId,
     currentCwd: "",
     currentSessionTitle: "New session",
+    currentRuntimeRef: linkedRuntimeId ? { id: linkedRuntimeId } : undefined,
+    activeRuntimeRef: linkedRuntimeId
+      ? { id: linkedRuntimeId, label: linkedRuntimeId }
+      : persistedRuntime,
     statusTitleEditing: false,
     isStreaming: false,
     isRetrying: false,

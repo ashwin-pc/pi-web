@@ -225,6 +225,7 @@ export function textFromToolResult(result: unknown): string {
 }
 
 type ToolImage = { src: string; alt: string; needsAuth?: boolean };
+type ArtifactRouteContext = { sessionId?: string; runtimeId?: string };
 
 export function collectToolImages(result: unknown): ToolImage[] {
   result = parseJsonLikeResult(result);
@@ -257,7 +258,15 @@ export function collectToolImages(result: unknown): ToolImage[] {
   return images;
 }
 
-function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?: ApiHeaders) {
+function routedArtifactSrc(src: string, context?: ArtifactRouteContext) {
+  if (!src.startsWith("/api/artifacts/") || !context?.sessionId || !context.runtimeId || context.runtimeId === "local") return src;
+  const url = new URL(src, window.location.origin);
+  url.searchParams.set("sessionId", context.sessionId);
+  url.searchParams.set("runtimeId", context.runtimeId);
+  return `${url.pathname}${url.search}`;
+}
+
+function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?: ApiHeaders, artifactContext?: () => ArtifactRouteContext) {
   const images = collectToolImages(result);
   if (images.length === 0) return;
   const wrap = document.createElement("div");
@@ -265,8 +274,9 @@ function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?
   for (const image of images) {
     const img = document.createElement("img");
     img.alt = image.alt;
+    const src = routedArtifactSrc(image.src, artifactContext?.());
     if (image.needsAuth && apiHeaders) {
-      fetch(image.src, { headers: apiHeaders() })
+      fetch(src, { headers: apiHeaders() })
         .then((res) => res.ok ? res.blob() : Promise.reject(new Error(res.statusText)))
         .then((blob) => {
           const objectUrl = URL.createObjectURL(blob);
@@ -274,7 +284,7 @@ function addToolImagePreviews(card: HTMLDivElement, result: unknown, apiHeaders?
           img.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
         })
         .catch(() => { img.alt = `${image.alt} (failed to load)`; });
-    } else img.src = image.src;
+    } else img.src = src;
     wrap.append(img);
   }
   card.append(wrap);
@@ -324,7 +334,7 @@ function finalizePartialToolOutput(card: HTMLDivElement) {
 
 export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () => void = () => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
-}, apiHeaders?: ApiHeaders): ToolCards {
+}, apiHeaders?: ApiHeaders, artifactContext?: () => ArtifactRouteContext): ToolCards {
   const activeToolCards = new Map<string, HTMLDivElement>();
   const knownToolStartedAts = new Map<string, number>();
   const runningToolStates = new WeakMap<HTMLDivElement, { startedAt?: number; lastActivityAt: number; timer: number }>();
@@ -436,7 +446,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     } else {
       finalizePartialToolOutput(card);
     }
-    addToolImagePreviews(card, result, apiHeaders);
+    addToolImagePreviews(card, result, apiHeaders, artifactContext);
 
     scrollToBottom();
   }
@@ -449,7 +459,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     const resultStr = textFromToolResult(result);
     if (toolName === "edit" && args) renderEditDiff(card, args);
     else if (resultStr) addToolResultBody(card, resultStr);
-    addToolImagePreviews(card, result, apiHeaders);
+    addToolImagePreviews(card, result, apiHeaders, artifactContext);
     messagesEl.append(card);
   }
 

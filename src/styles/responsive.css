@@ -79,6 +79,10 @@
     width: min(420px, calc(100vw - 32px));
   }
 
+  .modelSettingsCurrent {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .composerFooter .iconButton {
     width: 40px;
     min-width: 40px;
@@ -92,7 +96,8 @@
 
   .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl {
     flex: 0 1 auto;
-    width: clamp(150px, 42vw, 240px);
+    width: fit-content;
+    max-width: clamp(104px, 34vw, 170px);
   }
 
   .message { max-width: 96%; }

@@ -10,7 +10,7 @@ function allowedArtifactPath(value: string | null) {
     if (!url.pathname.startsWith("/api/artifacts/")) return "";
     const lower = url.pathname.toLowerCase();
     if (!lower.endsWith(".md") && !lower.endsWith(".markdown")) return "";
-    return url.pathname;
+    return `${url.pathname}${url.search}`;
   } catch {
     return "";
   }

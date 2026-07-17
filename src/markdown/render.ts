@@ -250,6 +250,7 @@ function enhanceArtifactLinks(root: ParentNode) {
     const url = new URL(link.href, window.location.origin);
     const kind = artifactKind(url.pathname);
     if (!kind) continue;
+    const artifactUrl = `${url.pathname}${url.search}`;
     link.dataset.artifactPreviewEnhanced = "true";
 
     const card = document.createElement("div");
@@ -261,8 +262,8 @@ function enhanceArtifactLinks(root: ParentNode) {
     title.textContent = artifactName(url.pathname);
     const open = document.createElement("a");
     open.href = kind === "markdown"
-      ? `/artifact-preview.html?src=${encodeURIComponent(url.pathname)}&name=${encodeURIComponent(artifactName(url.pathname))}`
-      : url.pathname;
+      ? `/artifact-preview.html?src=${encodeURIComponent(artifactUrl)}&name=${encodeURIComponent(artifactName(url.pathname))}`
+      : artifactUrl;
     if (isStandalonePwa()) {
       open.target = "_top";
     } else {
@@ -283,7 +284,7 @@ function enhanceArtifactLinks(root: ParentNode) {
       content.textContent = "";
       const iframe = document.createElement("iframe");
       iframe.className = "artifactPreviewFrame";
-      iframe.src = url.pathname;
+      iframe.src = artifactUrl;
       iframe.title = `Preview of ${title.textContent}`;
       // Allow artifact scripts (for diagrams and interactive previews) while omitting
       // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
@@ -300,14 +301,14 @@ function enhanceArtifactLinks(root: ParentNode) {
       video.playsInline = true;
       video.preload = "metadata";
       const source = document.createElement("source");
-      source.src = url.pathname;
+      source.src = artifactUrl;
       source.type = videoMimeType(url.pathname);
       video.append(source);
       content.append(video);
       continue;
     }
 
-    fetch(url.pathname)
+    fetch(artifactUrl)
       .then(async (res) => {
         if (!res.ok) throw new Error(`Preview failed (${res.status})`);
         return res.text();

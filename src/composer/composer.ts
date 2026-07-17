@@ -140,6 +140,11 @@ export function createComposer(options: {
   }
 
   async function refreshSlashCommands(force = false) {
+    if (state.currentRuntimeRef?.capabilities?.slashCommands === false) {
+      slashCommands = [];
+      slashCommandsLoadedAt = Date.now();
+      return slashCommands;
+    }
     const now = Date.now();
     if (!force && slashCommands.length > 0 && now - slashCommandsLoadedAt < slashCommandCacheMs) return slashCommands;
     const res = await fetch(`/api/commands?sessionId=${encodeURIComponent(state.currentSessionId)}`, { headers: api.headers() });
@@ -195,7 +200,9 @@ export function createComposer(options: {
     if (commands.length === 0) {
       const empty = document.createElement("div");
       empty.className = "slashCommandsEmpty";
-      empty.textContent = slashCommands.length === 0 ? "Loading slash commands…" : "No matching slash commands";
+      empty.textContent = state.currentRuntimeRef?.capabilities?.slashCommands === false
+        ? "Slash commands are not supported by this runtime"
+        : slashCommands.length === 0 ? "Loading slash commands…" : "No matching slash commands";
       elements.slashCommandsEl.append(empty);
     } else {
       commands.forEach((command, index) => {
@@ -365,8 +372,10 @@ export function createComposer(options: {
 
     const sessionId = scanned.url?.searchParams.get("sessionId")?.trim();
     if (sessionId) {
+      const runtimeId = scanned.url?.searchParams.get("runtimeId")?.trim() || "local";
       state.currentSessionId = sessionId;
-      writeActiveSessionIdToUrl(sessionId, "replace");
+      state.currentRuntimeRef = { id: runtimeId };
+      writeActiveSessionIdToUrl(sessionId, "replace", runtimeId);
     }
     connectWithToken(scanned.token);
     return true;
@@ -464,7 +473,7 @@ export function createComposer(options: {
     if (!res.ok || data.ok === false) throw new Error(data.error || text);
     if (data.state) {
       updateMeta(data.state);
-      if ((name === "new" || name === "clear") && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
+      if ((name === "new" || name === "clear") && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId, "push", data.state.runtimeRef?.id || state.currentRuntimeRef?.id);
       state.isStreaming = Boolean(data.state.isStreaming);
       state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
       updatePrimaryAction();
@@ -487,6 +496,10 @@ export function createComposer(options: {
       if (!message && images.length === 0) return;
 
       if (rawMessage.startsWith("!") && images.length === 0) {
+        if (state.currentRuntimeRef?.capabilities?.shellCommands === false) {
+          addMessage("system", "Shell commands are not supported by this runtime.", "error");
+          return;
+        }
         elements.promptEl.value = "";
         clearDraft();
         hideSlashCommands();
@@ -502,6 +515,10 @@ export function createComposer(options: {
       }
 
       if (rawMessage.startsWith("/") && images.length === 0) {
+        if (state.currentRuntimeRef?.capabilities?.slashCommands === false && slashCommandName(message) !== "logout") {
+          addMessage("system", "Slash commands are not supported by this runtime.", "error");
+          return;
+        }
         let commandInfo: SlashCommand | undefined;
         try {
           commandInfo = await commandInfoForMessage(message);

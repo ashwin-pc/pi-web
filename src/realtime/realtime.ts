@@ -249,7 +249,12 @@ export function createRealtime(options: {
       cancelButton.type = "button";
       cancelButton.className = "compactionCancel";
       cancelButton.textContent = "Cancel";
-      cancelButton.addEventListener("click", () => abortCompaction(cancelButton));
+      if (state.currentRuntimeRef?.capabilities?.compactionCancel === false) {
+        cancelButton.disabled = true;
+        cancelButton.title = "Compaction cancellation is not supported by this runtime";
+      } else {
+        cancelButton.addEventListener("click", () => abortCompaction(cancelButton));
+      }
       target.append(cancelButton);
     }
     messages.scrollToBottom();
@@ -747,8 +752,13 @@ export function createRealtime(options: {
         }
         return;
       }
-      if (data.type === "session_deleted") {
+      if (data.type === "session_deleted" || data.type === "session_removed") {
         if (!isReplay) scheduleSessionRefresh();
+        return;
+      }
+      if (data.type === "runtime_connection_changed") {
+        window.dispatchEvent(new CustomEvent("pi-web:runtimes-changed"));
+        if (!isReplay && data.runtimeId === state.activeRuntimeRef.id) scheduleSessionRefresh();
         return;
       }
       if (data.type === "session_runtime_changed") {

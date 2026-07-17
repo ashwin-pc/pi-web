@@ -24,6 +24,8 @@ pnpm-debug.log*
 test-results/
 playwright-report/
 .pi/playwright-session-ui-state-*.json
+.pi/pi-web-runtime-bindings-*.json
+.pi/pi-web-runtimes-*.json
 
 # OS / editor
 .DS_Store
