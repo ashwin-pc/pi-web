@@ -11,6 +11,9 @@ interface MockSessionOptions {
 export function createMockHarness(options: MockSessionOptions) {
   const { piCwd, broadcast, isCurrentSession, currentState } = options;
   const mockModel = { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 };
+  // Test-only fixture modes exercise compatibility paths that real sessions need.
+  const legacyRetryMode = process.env.PI_WEB_MOCK_LEGACY_RETRY === "1";
+  const eventTimestampsOnly = process.env.PI_WEB_MOCK_EVENT_TIMESTAMPS_ONLY === "1";
 
   function initialMockSessions(): PiWebSessionInfo[] {
     return [
@@ -105,13 +108,14 @@ export function createMockHarness(options: MockSessionOptions) {
         { type: "message", id: "mock-u-alt", parentId: "mock-u1", timestamp: "2026-05-07T10:02:00Z", message: { role: "user", content: "Actually, make the attachment picker mobile-first.", timestamp: "2026-05-07T10:02:00Z" } },
         { type: "message", id: "mock-a-alt", parentId: "mock-u-alt", timestamp: "2026-05-07T10:03:00Z", message: { role: "assistant", content: "Use a bottom sheet with large tap targets for image actions.", timestamp: "2026-05-07T10:03:00Z" } },
       );
+      if (legacyRetryMode) entries.push({ type: "message", id: "mock-legacy-retry-failure", parentId: "mock-a1", timestamp: "2026-05-07T10:01:30Z", message: { role: "assistant", content: "Legacy retry failure", stopReason: "error", errorMessage: "Legacy retry failure", timestamp: "2026-05-07T10:01:30Z" } });
     }
     return entries;
   }
 
   function createMockSession(path = mockSessions[0].path): PiWebSession {
     let mockEntries = createInitialEntries(path);
-    let mockLeafId: string | null = "mock-a1";
+    let mockLeafId: string | null = legacyRetryMode && path === mockSessions[0].path ? "mock-legacy-retry-failure" : "mock-a1";
     let entrySequence = 2;
     const labelsById = new Map<string, string>();
     const mockMessages: unknown[] = [];
@@ -180,17 +184,20 @@ export function createMockHarness(options: MockSessionOptions) {
     let compactionAbortRequested = false;
     let runtimeStartedAt: string | undefined;
     let runtimeLastActivityAt: string | undefined;
+    let extensionBindings: any;
 
     function setRuntimeStartedAt(startedAt = new Date().toISOString(), lastActivityAt = startedAt) {
       runtimeStartedAt = startedAt;
       runtimeLastActivityAt = lastActivityAt;
-      (mockSession as any).runtimeStartedAt = runtimeStartedAt;
-      (mockSession as any).runtimeLastActivityAt = runtimeLastActivityAt;
+      if (!eventTimestampsOnly) {
+        (mockSession as any).runtimeStartedAt = runtimeStartedAt;
+        (mockSession as any).runtimeLastActivityAt = runtimeLastActivityAt;
+      }
     }
 
     function markRuntimeActivity(activityAt = new Date().toISOString()) {
       runtimeLastActivityAt = activityAt;
-      (mockSession as any).runtimeLastActivityAt = runtimeLastActivityAt;
+      if (!eventTimestampsOnly) (mockSession as any).runtimeLastActivityAt = runtimeLastActivityAt;
       return runtimeLastActivityAt;
     }
 
@@ -319,6 +326,10 @@ export function createMockHarness(options: MockSessionOptions) {
       return removed;
     }
 
+    async function continueLegacyRetry() {
+      appendMockMessage({ role: "assistant", content: "Recovered through legacy retry continuation.", timestamp: new Date().toISOString() });
+    }
+
     async function runMockRetryFromFailure() {
       const lastMessage = mockMessages[mockMessages.length - 1];
       if (isMockAssistantFailure(lastMessage)) branchBeforeTrailingMockMessages(isMockAssistantFailure);
@@ -346,7 +357,7 @@ export function createMockHarness(options: MockSessionOptions) {
       model: mockModel,
       thinkingLevel: "medium",
       messages: mockMessages,
-      agent: { state: { messages: mockMessages } },
+      agent: { state: { messages: mockMessages }, ...(legacyRetryMode ? { continue: continueLegacyRetry } : {}) } as any,
       sessionManager: mockSessionManager,
       modelRegistry: {
         getAvailable: () => [mockModel],
@@ -357,6 +368,10 @@ export function createMockHarness(options: MockSessionOptions) {
           invocationName: "mock-extension",
           description: "Mock extension command",
           sourceInfo: { path: "<mock-extension>", source: "mock", scope: "temporary", origin: "top-level" },
+        }, {
+          name: "mock-named-extension",
+          description: "Mock extension command registered by name",
+          sourceInfo: { path: "<mock-named-extension>", source: "mock", scope: "temporary", origin: "top-level" },
         }],
         hasHandlers: (eventType: string) => eventType === "session_shutdown",
         emit: async (event: { type?: string }) => {
@@ -432,6 +447,7 @@ export function createMockHarness(options: MockSessionOptions) {
         appendMockMessage({ role: "bashExecution", command, ...result, excludeFromContext: Boolean(options?.excludeFromContext), timestamp: new Date().toISOString() });
         return result;
       },
+      bindExtensions: async (bindings: unknown) => { extensionBindings = bindings; },
       prompt: async (message: string, promptOptions?: { images?: unknown[] }) => {
         const runGeneration = mockGeneration;
         const isCurrentMockRun = () => runGeneration === mockGeneration;
@@ -451,6 +467,8 @@ export function createMockHarness(options: MockSessionOptions) {
         }
         const slow = /slow|running/i.test(message);
         const withShowcase = /showcase/i.test(message);
+        const withExtensionUiEvents = /extension ui events/i.test(message);
+        const withExtensionNewSession = /extension new session/i.test(message);
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
         const withRetryFailure = /retry failure|retry exhausted|throttle failure/i.test(message);
         const withRetrySuccess = !withRetryFailure && /retry demo|retry success|throttle retry/i.test(message);
@@ -475,6 +493,13 @@ export function createMockHarness(options: MockSessionOptions) {
         }
         broadcastRuntimeChanged();
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
+        if (withExtensionUiEvents) {
+          const web = extensionBindings?.uiContext?.web;
+          web?.setFooter("mock-footer", { kind: "text", lines: ["Mock extension footer"] });
+          web?.setHeaderAction("mock-header", { title: "Mock header action", label: "Mock action", invoke: () => ({ markdown: "Mock header result" }) });
+          web?.setGitTab("mock-git", { title: "Mock Git tab", label: "Mock Git", render: () => ({ html: "<p>Mock extension Git tab</p>" }) });
+        }
+        if (withExtensionNewSession) await extensionBindings?.commandContextActions?.newSession?.();
         if (withQuietRuntime) {
           if (!(await waitForMockRun(60_000))) return;
         } else if (slow && !(await waitForMockRun(750))) return;
@@ -647,7 +672,7 @@ export function createMockHarness(options: MockSessionOptions) {
           });
         }
       },
-      retryFromFailure: async () => runMockRetryFromFailure(),
+      ...(legacyRetryMode ? {} : { retryFromFailure: async () => runMockRetryFromFailure() }),
       abort: async () => { mockSession.isStreaming = false; mockSession.isRetrying = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,

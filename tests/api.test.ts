@@ -74,7 +74,7 @@ describe("pi-web mock API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_MOCK_EVENT_TIMESTAMPS_ONLY: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -101,6 +101,68 @@ describe("pi-web mock API", () => {
     const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
     expect(sessions.sessions).toHaveLength(2);
     expect(sessions.sessions.every((item: any) => item.isCurrent === false)).toBe(true);
+  });
+
+  it("keeps the original route-default session after creating another session", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const initial = await (await fetch(`${baseUrl}/api/state`)).json();
+    const created = await (await fetch(`${baseUrl}/api/sessions/new`, { method: "POST" })).json();
+    expect(created.sessionId).not.toBe(initial.sessionId);
+    expect((await (await fetch(`${baseUrl}/api/state`)).json()).sessionId).toBe(initial.sessionId);
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+  });
+
+  it("decorates both state timestamp forms from session activity events", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    void fetch(`${baseUrl}/api/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "slow timestamp characterization" }),
+    });
+    await waitForCondition(async () => {
+      const state = await (await fetch(`${baseUrl}/api/state`)).json();
+      return Boolean(state.runtime?.isRunning && state.runtimeStartedAt && state.runtimeLastActivityAt && state.runtime?.startedAt && state.runtime?.lastActivityAt);
+    });
+    const state = await (await fetch(`${baseUrl}/api/state`)).json();
+    expect(state.runtimeStartedAt).toBe(state.runtime.startedAt);
+    expect(state.runtimeLastActivityAt).toBe(state.runtime.lastActivityAt);
+    await fetch(`${baseUrl}/api/abort`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+  });
+
+  it("forwards dynamic extension UI events and complete state_changed payloads", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const events: Array<Record<string, unknown>> = [];
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws`);
+    try {
+      await new Promise<void>((resolve, reject) => {
+        ws.once("message", (data) => {
+          const event = JSON.parse(String(data)) as Record<string, unknown>;
+          events.push(event);
+          event.type === "hello" ? resolve() : reject(new Error("Expected websocket hello"));
+        });
+        ws.once("error", reject);
+      });
+      ws.on("message", (data) => events.push(JSON.parse(String(data)) as Record<string, unknown>));
+      const prompt = await fetch(`${baseUrl}/api/prompt`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message: "extension ui events extension new session" }),
+      });
+      expect(prompt.status).toBe(202);
+      await waitForCondition(() => ["web_footer_changed", "web_header_actions_changed", "web_git_tabs_changed"].every((type) => events.some((event) => event.type === type)));
+      await waitForCondition(() => events.some((event) => event.type === "state_changed"));
+
+      expect(events.find((event) => event.type === "web_footer_changed")).toMatchObject({ sessionId: "mock-current", webFooters: [{ key: "mock-footer" }] });
+      expect(events.find((event) => event.type === "web_header_actions_changed")).toMatchObject({ sessionId: "mock-current", webHeaderActions: [{ key: "mock-header" }] });
+      expect(events.find((event) => event.type === "web_git_tabs_changed")).toMatchObject({ sessionId: "mock-current", webGitTabs: [{ key: "mock-git" }] });
+      const stateChanges = events.filter((event) => event.type === "state_changed");
+      expect(stateChanges.length).toBeGreaterThan(0);
+      expect(stateChanges.every((event) => typeof event.sessionId === "string" && typeof event.sessionFile === "string")).toBe(true);
+    } finally {
+      ws.terminate();
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    }
   });
 
   it("deletes a requested session", async () => {
@@ -364,6 +426,13 @@ describe("pi-web mock API", () => {
       body: JSON.stringify({ command: "/does-not-exist" }),
     });
     expect(invalidRes.status).toBe(500);
+
+    const malformedModel = await fetch(`${baseUrl}/api/command`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ command: "/model malformed" }),
+    });
+    expect(malformedModel.status).toBe(500);
   });
 
   it("executes shell commands in the requested session cwd", async () => {
@@ -467,6 +536,39 @@ describe("pi-web mock API", () => {
   });
 });
 
+describe("legacy retry API compatibility", () => {
+  let child: ChildProcess;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    const port = await freePort();
+    baseUrl = `http://127.0.0.1:${port}`;
+    child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
+      env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_MOCK_LEGACY_RETRY: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stderr?.on("data", (data) => process.stderr.write(data));
+    await waitForServer(baseUrl);
+  }, 20_000);
+
+  afterAll(() => child?.kill());
+
+  it("repairs the failed branch and continues when retryFromFailure is unavailable", async () => {
+    const retry = await fetch(`${baseUrl}/api/session/retry`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current" }),
+    });
+    expect(retry.status).toBe(202);
+    await waitForCondition(async () => {
+      const messages = await (await fetch(`${baseUrl}/api/messages?sessionId=mock-current`)).json();
+      return messages.messages.some((message: { text?: string }) => message.text === "Recovered through legacy retry continuation.");
+    });
+    const messages = await (await fetch(`${baseUrl}/api/messages?sessionId=mock-current`)).json();
+    expect(messages.messages.some((message: { text?: string }) => message.text === "Legacy retry failure")).toBe(false);
+  });
+});
+
 describe("git repo discovery API", () => {
   let child: ChildProcess;
   let baseUrl: string;
@@ -514,6 +616,10 @@ describe("git repo discovery API", () => {
 
     const invalid = await fetch(`${baseUrl}/api/git/status?repo=../repo-b`);
     expect(invalid.status).toBe(400);
+
+    const unknownSession = await fetch(`${baseUrl}/api/git/status?sessionId=does-not-exist&repo=repo-b`);
+    expect(unknownSession.status).toBe(400);
+    expect((await unknownSession.json()).error).toBe("Session not found");
   });
 });
 
@@ -748,6 +854,7 @@ describe("additional API coverage", () => {
     expect(names).toContain("clear");
     expect(names).not.toContain("new-chat");
     expect(names).toContain("mock-extension");
+    expect(names).toContain("mock-named-extension");
     expect(names).toContain("mock-prompt");
     expect(names).toContain("skill:mock-skill");
   });
@@ -827,6 +934,7 @@ describe("Live session lifecycle", () => {
       env: {
         ...process.env,
         PI_WEB_MOCK: "1",
+        PI_WEB_MOCK_EVENT_TIMESTAMPS_ONLY: "1",
         PI_WEB_DEV: "1",
         HOST: "127.0.0.1",
         PORT: String(port),
@@ -882,6 +990,50 @@ describe("Live session lifecycle", () => {
 
     const state = await lifecycleState();
     expect(state.liveSessions.some((item) => item.sessionId === "mock-current")).toBe(true);
+  }, 10_000);
+
+  it("clears host activity maps when an idle session is disposed", async () => {
+    await reset();
+    const opened = await fetch(`${baseUrl}/api/sessions/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pi-web-client-id": "activity-cleanup" },
+      body: JSON.stringify({ sessionId: "mock-older", clientId: "activity-cleanup" }),
+    });
+    expect(opened.status).toBe(200);
+    void fetch(`${baseUrl}/api/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-older", message: "slow no agent end" }),
+    });
+    await waitForCondition(async () => {
+      const state = await (await fetch(`${baseUrl}/api/state?sessionId=mock-older`)).json();
+      return Boolean(state.runtime?.isRunning && state.runtime?.startedAt);
+    });
+    const first = await (await fetch(`${baseUrl}/api/state?sessionId=mock-older`)).json();
+    const firstStartedAt = first.runtime.startedAt;
+    await waitForCondition(async () => !(await (await fetch(`${baseUrl}/api/state?sessionId=mock-older`)).json()).runtime?.isRunning, 3_000);
+    await waitForCondition(async () => {
+      const state = await lifecycleState();
+      return !state.liveSessions.some((item) => item.sessionId === "mock-older");
+    }, 3_000);
+
+    expect((await fetch(`${baseUrl}/api/sessions/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-older" }),
+    })).status).toBe(200);
+    void fetch(`${baseUrl}/api/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-older", message: "slow fresh activity" }),
+    });
+    await waitForCondition(async () => {
+      const state = await (await fetch(`${baseUrl}/api/state?sessionId=mock-older`)).json();
+      return Boolean(state.runtime?.isRunning && state.runtime?.startedAt);
+    });
+    const second = await (await fetch(`${baseUrl}/api/state?sessionId=mock-older`)).json();
+    expect(second.runtime.startedAt).not.toBe(firstStartedAt);
+    await fetch(`${baseUrl}/api/abort`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "mock-older" }) });
   }, 10_000);
 
   it("terminates stale WebSockets with missed heartbeats and releases their session lease", async () => {

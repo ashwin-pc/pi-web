@@ -1076,7 +1076,11 @@ function additionalExtensionPaths(cwd = piCwd) {
 }
 
 async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent, cwd = piCwd) {
-  if (mockMode) return { session: createMockSession(path), modelFallbackMessage: undefined };
+  if (mockMode) {
+    const session = createMockSession(path);
+    await webUi.bindWebExtensions(session as unknown as WebUiSession);
+    return { session, modelFallbackMessage: undefined };
+  }
 
   const targetCwd = await assertDirectory(cwd);
   const sessionManager = noSession
@@ -1229,7 +1233,9 @@ const server = createServer(async (req, res) => {
         await Promise.all(Array.from(liveSessions.keys()).map((key) => disposeLiveSession(key, "reset", true)));
         resetMockSessions();
         await sessionUiStateStore.write(defaultSessionUiState);
-        session = registerLiveSession(createMockSession());
+        const mockSession = createMockSession();
+        await webUi.bindWebExtensions(mockSession as unknown as WebUiSession);
+        session = registerLiveSession(mockSession);
         broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
         broadcast({ type: "state_changed", ...currentState(session) });
         return sendJson(res, 200, { ok: true });
