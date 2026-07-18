@@ -29,6 +29,7 @@ import type { SlashCommandDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createWebUiBridge } from "./server/extensions/webUi.js";
+import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -1028,6 +1029,64 @@ async function switchEmptySessionCwd(targetSession: PiWebSession, cwd: string) {
   return currentStateWithThinkingLevels(newSession);
 }
 
+async function navigateSession(targetSession: PiWebSession, targetId: string, options: Record<string, unknown>) {
+  if (targetSession.isStreaming) throw new SessionServiceError("Wait for the current response to finish before navigating the tree", 409);
+  if (targetSession.isCompacting) throw new SessionServiceError("Wait for the current compaction to finish before navigating the tree", 409);
+  if (!targetSession.navigateTree) throw new SessionServiceError("Tree navigation is not available");
+  const releaseWorkLease = acquireWorkLease(targetSession);
+  try {
+    const navigation = targetSession.navigateTree(targetId, options as any);
+    broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
+    const result = await navigation;
+    const state = currentStateWithThinkingLevels(targetSession);
+    broadcast({ type: "state_changed", ...state });
+    return { ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state };
+  } finally {
+    releaseWorkLease();
+    broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
+  }
+}
+
+async function startSessionPrompt(targetSession: PiWebSession, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }> }) {
+  const imageFileNote = await persistPromptImages(input.images, sessionCwd(targetSession));
+  const promptText = `${input.message || "Please review the attached image."}${imageFileNote}`;
+  if (!targetSession.isStreaming && !targetSession.isCompacting) sessionActivity.ensureStarted(targetSession);
+  const promptSessionFile = targetSession.sessionFile;
+  const releaseWorkLease = acquireWorkLease(targetSession);
+  void targetSession.prompt(promptText, {
+    ...(targetSession.isStreaming ? { streamingBehavior: input.mode } : {}),
+    ...(input.images.length ? { images: input.images.map(({ data, mimeType }) => ({ type: "image", data, mimeType })) } : {}),
+  }).catch((error: unknown) => broadcast({ type: "server_error", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, error: error instanceof Error ? error.message : String(error) }))
+    .finally(() => {
+      const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+      if (promptSessionFile && sessionActivity.hasStarted(promptSessionFile) && !isRunning) {
+        sessionActivity.clearStarted(targetSession, promptSessionFile);
+        markSessionUnreadCompleted(targetSession.sessionId);
+      }
+      broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
+      releaseWorkLease();
+    });
+}
+
+async function startSessionRetry(targetSession: PiWebSession) {
+  try { assertCanRetryFromFailure(targetSession); } catch (error) { throw new SessionServiceError(error instanceof Error ? error.message : String(error), 409); }
+  sessionActivity.ensureStarted(targetSession);
+  const retrySessionFile = targetSession.sessionFile;
+  const releaseWorkLease = acquireWorkLease(targetSession);
+  void retrySessionFromFailure(targetSession).catch((error: unknown) => {
+    sessionActivity.clearStarted(targetSession, retrySessionFile);
+    broadcast({ type: "server_error", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, error: error instanceof Error ? error.message : String(error) });
+  }).finally(() => {
+    const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+    if (retrySessionFile && sessionActivity.hasStarted(retrySessionFile) && !isRunning) {
+      sessionActivity.clearStarted(targetSession, retrySessionFile);
+      markSessionUnreadCompleted(targetSession.sessionId);
+    }
+    broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
+    releaseWorkLease();
+  });
+}
+
 const webUiBridge = createWebUiBridge({
   emit: broadcast,
   clientCount: () => realtimeHub.clientCount,
@@ -1035,6 +1094,28 @@ const webUiBridge = createWebUiBridge({
   createNewSession: createNewLiveSession,
   sessionCwd: (value) => sessionCwd(value),
   state: (value) => currentStateWithThinkingLevels(value),
+});
+
+const sessionService = new LocalSessionService({
+  currentSessionId: () => session.sessionId,
+  resolve: (id) => getOrCreateLiveSessionById(id),
+  cwd: (value) => sessionCwd(value),
+  decorateState: (value) => currentStateWithThinkingLevels(value),
+  decorateMessageContent: (content, sessionFile) => sessionActivity.decorateMessageContent(content, sessionFile),
+  availableModels: (value) => getAvailableModels(value),
+  webCommands: webSlashCommands,
+  list: listSessionInfos,
+  create: createNewLiveSession,
+  open: switchToSessionId,
+  delete: deleteSessionById,
+  switchCwd: switchEmptySessionCwd,
+  executeCommand: executeSlashCommand,
+  prompt: startSessionPrompt,
+  retry: startSessionRetry,
+  navigate: navigateSession,
+  invokeHeaderAction: (value, key) => webUiBridge.invokeHeaderAction(value, key),
+  invokeGitTab: (value, input) => webUiBridge.invokeGitTab(value, input),
+  reportError: (value, error) => broadcast({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: error instanceof Error ? error.message : String(error) }),
 });
 
 await ensurePiWebStorage();
@@ -1192,13 +1273,11 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/state") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        noteViewerLeaseFromRequest(req, targetSession, url.searchParams.get("clientId"));
+        const requestedSessionId = url.searchParams.get("sessionId") || undefined;
+        noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), url.searchParams.get("clientId"));
         return sendJson(res, 200, {
           ok: true,
-          ...currentStateWithThinkingLevels(targetSession),
+          ...await sessionService.state(requestedSessionId),
           sessionUiState: await sessionUiStateStore.read(),
           tokenRequired: Boolean(token),
         });
@@ -1206,11 +1285,8 @@ const server = createServer(async (req, res) => {
 
       if (method === "POST" && url.pathname === "/api/web-header-action/invoke") {
         const body = await readBody(req) as { sessionId?: unknown; key?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         try {
-          return sendJson(res, 200, { ok: true, ...await webUiBridge.invokeHeaderAction(targetSession, body.key) });
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeHeaderAction(typeof body.sessionId === "string" ? body.sessionId : undefined, body.key) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const status = message === "key is required" || message === "Header action returned no markdown" ? 400 : message === "Header action not found" ? 404 : 500;
@@ -1220,11 +1296,8 @@ const server = createServer(async (req, res) => {
 
       if (method === "POST" && url.pathname === "/api/web-git-tab/invoke") {
         const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         try {
-          return sendJson(res, 200, { ok: true, ...await webUiBridge.invokeGitTab(targetSession, body) });
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeGitTab(typeof body.sessionId === "string" ? body.sessionId : undefined, body) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const status = message === "key is required" || message === "Git tab returned no HTML" ? 400 : message === "Git tab not found" ? 404 : 500;
@@ -1233,90 +1306,39 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/session/stats") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, { ok: true, sessionId: targetSession.sessionId, stats: sessionStats(targetSession) });
+        return sendJson(res, 200, { ok: true, ...await sessionService.stats(url.searchParams.get("sessionId") || undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/session/tree") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        try {
-          return sendJson(res, 200, conversationTreeForSession(targetSession));
-        } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
-        }
+        return sendJson(res, 200, await sessionService.tree(url.searchParams.get("sessionId") || undefined));
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/navigate") {
         const body = await readBody(req) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (targetSession.isStreaming) return sendJson(res, 409, { ok: false, error: "Wait for the current response to finish before navigating the tree" });
-        if (targetSession.isCompacting) return sendJson(res, 409, { ok: false, error: "Wait for the current compaction to finish before navigating the tree" });
-        if (typeof targetSession.navigateTree !== "function") return sendJson(res, 400, { ok: false, error: "Tree navigation is not available" });
-
         const targetId = String(body.targetId || "").trim();
         if (!targetId) return sendJson(res, 400, { ok: false, error: "targetId is required" });
-
-        const releaseWorkLease = acquireWorkLease(targetSession);
-        try {
-          const navigation = targetSession.navigateTree(targetId, {
-            summarize: Boolean(body.summarize),
-            customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
-            replaceInstructions: Boolean(body.replaceInstructions),
-            label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
-          });
-          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
-          const result = await navigation;
-          const state = currentStateWithThinkingLevels(targetSession);
-          broadcast({ type: "state_changed", ...state });
-          return sendJson(res, 200, { ok: true, ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state });
-        } catch (error) {
-          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
-        } finally {
-          releaseWorkLease();
-          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
-        }
+        const result = await sessionService.navigate(typeof body.sessionId === "string" ? body.sessionId : undefined, targetId, {
+          summarize: Boolean(body.summarize),
+          customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
+          replaceInstructions: Boolean(body.replaceInstructions),
+          label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
+        });
+        return sendJson(res, 200, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/abort-summary") {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        targetSession.abortBranchSummary?.();
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        return sendJson(res, 202, { ok: true, ...await sessionService.abortBranchSummary(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/messages") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const msgs = targetSession.messages;
-        // Build toolCallId -> args map from assistant messages
-        const toolCallArgs = new Map<string, Record<string, unknown>>();
-        for (const m of msgs) {
-          const msg = m as any;
-          if (msg.role === "assistant" && Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-              if (part?.type === "toolCall" && part.id) {
-                toolCallArgs.set(part.id, part.arguments || {});
-              }
-            }
-          }
-        }
-        const refs = messageEntryRefs(targetSession);
-        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown, index: number) => simplifyMessage(m, { toolCallArgs, decorateContent: (content) => sessionActivity.decorateMessageContent(content, targetSession.sessionFile), entryId: refs[index]?.entryId })) });
+        return sendJson(res, 200, { ok: true, messages: await sessionService.messages(url.searchParams.get("sessionId") || undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
         const extraCwds = url.searchParams.getAll("cwd");
         const sessionUiState = await sessionUiStateStore.read();
-        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(await listSessionInfos(extraCwds), sessionUiState) });
+        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(await sessionService.list(extraCwds), sessionUiState) });
       }
 
       if (method === "GET" && url.pathname === "/api/session-ui-state") {
@@ -1344,7 +1366,7 @@ const server = createServer(async (req, res) => {
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
         if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
         try {
-          const result = await deleteSessionById(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
+          const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
           const sessionUiState = await sessionUiStateStore.removeSession(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
           broadcast({ type: "session_ui_state_changed", sessionUiState });
@@ -1366,72 +1388,40 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/commands") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, { ok: true, commands: getSlashCommands(targetSession) });
+        return sendJson(res, 200, { ok: true, commands: await sessionService.commands(url.searchParams.get("sessionId") || undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/models") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, {
-          ok: true,
-          cwd: sessionCwd(targetSession),
-          current: simplifyModel(targetSession.model),
-          thinkingLevel: targetSession.thinkingLevel,
-          thinkingLevels: targetSession.getAvailableThinkingLevels(),
-          models: getAvailableModels(targetSession).map(simplifyModel),
-        });
+        return sendJson(res, 200, { ok: true, ...await sessionService.models(url.searchParams.get("sessionId") || undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/model") {
         const body = await readBody(req) as { sessionId?: unknown; provider?: unknown; id?: unknown; thinkingLevel?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const provider = String(body.provider || "").trim();
         const id = String(body.id || "").trim();
         if (!provider || !id) return sendJson(res, 400, { ok: false, error: "provider and id are required" });
-
-        const model = targetSession.modelRegistry.find(provider, id);
-        if (!model) return sendJson(res, 404, { ok: false, error: "Model not found" });
-
-        await targetSession.setModel(model);
-        if (typeof body.thinkingLevel === "string") targetSession.setThinkingLevel(body.thinkingLevel as any);
-
-        const state = currentStateWithThinkingLevels(targetSession);
+        const state = await sessionService.setModel(typeof body.sessionId === "string" ? body.sessionId : undefined, provider, id, typeof body.thinkingLevel === "string" ? body.thinkingLevel : undefined);
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (method === "POST" && url.pathname === "/api/command") {
         const body = await readBody(req) as { sessionId?: unknown; command?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const command = String(body.command || "").trim();
         if (!command.startsWith("/")) return sendJson(res, 400, { ok: false, error: "Slash command is required" });
 
-        const result = await executeSlashCommand(command, targetSession);
+        const result = await sessionService.executeCommand(typeof body.sessionId === "string" ? body.sessionId : undefined, command);
         const stateSessionId = (result as any)?.state?.sessionId;
         const stateSession = typeof stateSessionId === "string" ? await getOrCreateLiveSessionById(stateSessionId) : undefined;
-        noteViewerLeaseFromRequest(req, stateSession || targetSession);
+        noteViewerLeaseFromRequest(req, stateSession || await sessionService.require(typeof body.sessionId === "string" ? body.sessionId : undefined));
         return sendJson(res, 200, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/shell") {
         const body = await readBody(req) as { sessionId?: unknown; command?: unknown; excludeFromContext?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const command = String(body.command || "").trim();
         if (!command) return sendJson(res, 400, { ok: false, error: "command is required" });
-        if (typeof targetSession.executeBash !== "function") return sendJson(res, 400, { ok: false, error: "Bash execution is not available in this session." });
-        const excludeFromContext = Boolean(body.excludeFromContext);
-        const result = await targetSession.executeBash(command, undefined, { excludeFromContext });
-        return sendJson(res, 200, { ok: true, command, cwd: sessionCwd(targetSession), ...result, excludeFromContext });
+        return sendJson(res, 200, { ok: true, ...await sessionService.executeShell(typeof body.sessionId === "string" ? body.sessionId : undefined, command, Boolean(body.excludeFromContext)) });
       }
 
       if (method === "POST" && url.pathname === "/api/extension-ui/respond") {
@@ -1445,146 +1435,46 @@ const server = createServer(async (req, res) => {
       if (method === "POST" && url.pathname === "/api/prompt") {
         const body = await readBody(req) as { sessionId?: unknown; message?: unknown; mode?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
-        const images = Array.isArray(body.images)
-          ? body.images.filter((image): image is { type: "image"; data: string; mimeType: string; name?: string } => {
-            if (!image || typeof image !== "object") return false;
-            const value = image as Record<string, unknown>;
-            return value.type === "image"
-              && typeof value.data === "string"
-              && typeof value.mimeType === "string"
-              && value.mimeType.startsWith("image/");
-          })
-          : [];
+        const images = Array.isArray(body.images) ? body.images.flatMap((image) => {
+          if (!image || typeof image !== "object") return [];
+          const value = image as Record<string, unknown>;
+          return value.type === "image" && typeof value.data === "string" && typeof value.mimeType === "string" && value.mimeType.startsWith("image/")
+            ? [{ data: value.data, mimeType: value.mimeType, ...(typeof value.name === "string" ? { name: value.name } : {}) }]
+            : [];
+        }) : [];
         if (!message && images.length === 0) return sendJson(res, 400, { ok: false, error: "message or image is required" });
-
-        const mode = body.mode === "followUp" ? "followUp" : "steer";
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const imageFileNote = await persistPromptImages(images, sessionCwd(targetSession));
-        const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
-        const wasAlreadyRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-        if (!wasAlreadyRunning) sessionActivity.ensureStarted(targetSession);
-        const promptSessionFile = targetSession.sessionFile;
-        const releaseWorkLease = acquireWorkLease(targetSession);
-        void targetSession.prompt(promptText, {
-          ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
-          ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
-        })
-          .catch((error: unknown) => {
-            broadcast({
-              type: "server_error",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          })
-          .finally(() => {
-            const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(promptSessionFile && sessionActivity.hasStarted(promptSessionFile) && !isRunning);
-            if (missedTerminalEvent) {
-              sessionActivity.clearStarted(targetSession, promptSessionFile);
-              markSessionUnreadCompleted(targetSession.sessionId);
-            }
-            broadcast({
-              type: "session_runtime_changed",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              runtime: sessionActivity.runtimeForPath(targetSession.sessionFile),
-            });
-            releaseWorkLease();
-          });
-
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        const result = await sessionService.prompt(typeof body.sessionId === "string" ? body.sessionId : undefined, { message, mode: body.mode === "followUp" ? "followUp" : "steer", images });
+        return sendJson(res, 202, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/session/retry") {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        try {
-          assertCanRetryFromFailure(targetSession);
-        } catch (error) {
-          return sendJson(res, 409, { ok: false, error: error instanceof Error ? error.message : String(error) });
-        }
-
-        sessionActivity.ensureStarted(targetSession);
-        const retrySessionFile = targetSession.sessionFile;
-        const releaseWorkLease = acquireWorkLease(targetSession);
-        void retrySessionFromFailure(targetSession)
-          .catch((error: unknown) => {
-            sessionActivity.clearStarted(targetSession, retrySessionFile);
-            broadcast({
-              type: "server_error",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          })
-          .finally(() => {
-            const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(retrySessionFile && sessionActivity.hasStarted(retrySessionFile) && !isRunning);
-            if (missedTerminalEvent) {
-              sessionActivity.clearStarted(targetSession, retrySessionFile);
-              markSessionUnreadCompleted(targetSession.sessionId);
-            }
-            broadcast({
-              type: "session_runtime_changed",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              runtime: sessionActivity.runtimeForPath(targetSession.sessionFile),
-            });
-            releaseWorkLease();
-          });
-
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        return sendJson(res, 202, { ok: true, ...await sessionService.retry(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/abort") {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        void targetSession.abort().catch((error: unknown) => broadcast({
-          type: "server_error",
-          sessionId: targetSession.sessionId,
-          sessionFile: targetSession.sessionFile,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        return sendJson(res, 202, { ok: true, ...await sessionService.abort(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/compaction/abort") {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (typeof targetSession.abortCompaction !== "function") return sendJson(res, 400, { ok: false, error: "Compaction cancellation is not available" });
-        targetSession.abortCompaction();
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        return sendJson(res, 202, { ok: true, ...await sessionService.abortCompaction(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/session/name") {
         const body = await readBody(req) as { sessionId?: unknown; name?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (typeof targetSession.setSessionName !== "function") return sendJson(res, 400, { ok: false, error: "Renaming sessions is not available" });
-
         const name = String(body.name || "").trim();
-        targetSession.setSessionName(name);
-        const state = currentStateWithThinkingLevels(targetSession);
+        if (!name) return sendJson(res, 400, { ok: false, error: "name is required" });
+        const state = await sessionService.rename(typeof body.sessionId === "string" ? body.sessionId : undefined, name);
+        broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
         const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown };
-        const previousSession = typeof body.sessionId === "string" ? await getOrCreateLiveSessionById(body.sessionId) : session;
-        const targetCwd = typeof body.cwd === "string" ? body.cwd : previousSession ? sessionCwd(previousSession) : undefined;
-        const newSession = await createNewLiveSession(targetCwd, previousSession?.sessionFile);
-        noteViewerLeaseFromRequest(req, newSession);
-        const state = currentStateWithThinkingLevels(newSession);
+        const state = await sessionService.create(typeof body.sessionId === "string" ? body.sessionId : undefined, typeof body.cwd === "string" ? body.cwd : undefined);
+        noteViewerLeaseFromRequest(req, await sessionService.require(String(state.sessionId)));
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
@@ -1593,12 +1483,9 @@ const server = createServer(async (req, res) => {
         const body = await readBody(req) as { sessionId?: unknown; cwd?: unknown };
         const cwd = String(body.cwd || "").trim();
         if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         try {
-          const state = await switchEmptySessionCwd(targetSession, cwd);
-          const stateSession = state.sessionId ? await getOrCreateLiveSessionById(state.sessionId) : undefined;
+          const state = await sessionService.switchCwd(typeof body.sessionId === "string" ? body.sessionId : undefined, cwd);
+          const stateSession = state.sessionId ? await getOrCreateLiveSessionById(String(state.sessionId)) : undefined;
           if (stateSession) noteViewerLeaseFromRequest(req, stateSession);
           broadcast({ type: "state_changed", ...state });
           return sendJson(res, 200, { ok: true, ...state });
@@ -1612,14 +1499,8 @@ const server = createServer(async (req, res) => {
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
-        let targetSession: PiWebSession | undefined;
-        try {
-          targetSession = await switchToSessionId(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
-        } catch {
-          return sendJson(res, 404, { ok: false, error: "Session not found" });
-        }
-        noteViewerLeaseFromRequest(req, targetSession, body.clientId);
-        const state = currentStateWithThinkingLevels(targetSession);
+        const state = await sessionService.open(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
+        noteViewerLeaseFromRequest(req, await sessionService.require(requestedId), body.clientId);
         return sendJson(res, 200, { ok: true, ...state });
       }
 
@@ -1635,7 +1516,8 @@ const server = createServer(async (req, res) => {
 
     serveStatic(req, res);
   } catch (error) {
-    sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    const status = error instanceof SessionServiceError ? error.status : 500;
+    sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 });
 
