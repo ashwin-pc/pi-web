@@ -1,7 +1,9 @@
 import type {
   ConversationTreeDTO,
   ConversationTreeNodeDTO,
+  JsonValue,
   MessageEntryRefDTO,
+  WebSessionRuntimeDTO,
   SessionStateDTO,
   SessionStateProjectionInput,
   SessionStatsDTO,
@@ -34,12 +36,12 @@ export function simplifyModel(model: unknown): SimplifiedModelDTO | undefined {
   if (!model) return undefined;
   const value = model as UnknownRecord;
   return {
-    provider: value.provider,
-    id: value.id,
-    name: value.name || value.id,
+    provider: value.provider as string,
+    id: value.id as string,
+    name: (value.name || value.id) as string,
     reasoning: Boolean(value.reasoning),
-    contextWindow: value.contextWindow,
-    maxTokens: value.maxTokens,
+    contextWindow: value.contextWindow as number | undefined,
+    maxTokens: value.maxTokens as number | undefined,
   };
 }
 
@@ -431,7 +433,7 @@ export function projectSessionStats(entries: readonly unknown[], contextUsage: u
     totalMessages: entries.length,
     tokens: { input, output, cacheRead, cacheWrite, total: input + output + cacheRead + cacheWrite },
     cost,
-    contextUsage,
+    contextUsage: contextUsage as JsonValue | undefined,
   };
 }
 
@@ -447,7 +449,22 @@ export function projectSessionTitle(sessionName: string | undefined, messages: r
 
 export function projectSessionState(input: SessionStateProjectionInput): SessionStateDTO {
   return {
-    ...input,
+    cwd: input.cwd,
+    sessionFile: input.sessionFile,
+    sessionId: input.sessionId,
+    sessionName: input.sessionName,
+    sessionTitle: input.sessionTitle,
+    isStreaming: input.isStreaming as boolean,
+    isRetrying: input.isRetrying,
+    isCompacting: input.isCompacting,
+    runtimeStartedAt: input.runtimeStartedAt,
+    runtimeLastActivityAt: input.runtimeLastActivityAt,
+    runtime: input.runtime as WebSessionRuntimeDTO,
     model: simplifyModel(input.model),
+    thinkingLevel: input.thinkingLevel as string,
+    stats: input.stats,
+    webFooters: input.webFooters as JsonValue,
+    webHeaderActions: input.webHeaderActions as JsonValue,
+    webGitTabs: input.webGitTabs as JsonValue,
   };
 }

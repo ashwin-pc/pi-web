@@ -1,10 +1,27 @@
+/** Values that can cross a SessionService process boundary without adaptation. */
+export type JsonPrimitive = null | boolean | number | string;
+export type JsonValue = JsonPrimitive | JsonValue[] | JsonObject;
+export interface JsonObject { [key: string]: JsonValue }
+
+/** Browser projection of a model already simplified from the pi runtime. */
 export interface SimplifiedModelDTO {
-  provider: unknown;
-  id: unknown;
-  name: unknown;
+  provider: string;
+  id: string;
+  name: string;
   reasoning: boolean;
-  contextWindow: unknown;
-  maxTokens: unknown;
+  contextWindow?: number;
+  maxTokens?: number;
+}
+
+/** Lossless, box-local model fact carried by the transport protocol. */
+export interface SessionModelDTO {
+  provider: string;
+  id: string;
+  name: string;
+  reasoning: boolean;
+  contextWindow: number | null;
+  maxTokens: number | null;
+  metadata: JsonObject;
 }
 
 export interface MessageEntryRefDTO {
@@ -12,30 +29,40 @@ export interface MessageEntryRefDTO {
 }
 
 export interface SimplifiedToolCallDTO {
-  id: unknown;
-  toolName: unknown;
-  args: unknown;
-  startedAt: unknown;
+  id?: JsonValue;
+  toolName?: JsonValue;
+  args: JsonValue;
+  startedAt?: JsonValue;
 }
 
+/** Existing browser message projection, including host-decorated tool timestamps. */
 export interface SimplifiedMessageDTO {
   entryId?: string;
-  role: unknown;
+  role?: JsonValue;
   text?: string;
   toolCalls?: SimplifiedToolCallDTO[];
   isError?: boolean;
-  timestamp?: unknown;
-  raw: Record<string, unknown>;
-  command?: unknown;
-  output?: unknown;
-  exitCode?: unknown;
+  timestamp?: JsonValue;
+  raw: JsonObject;
+  command?: JsonValue;
+  output?: JsonValue;
+  exitCode?: JsonValue;
   cancelled?: boolean;
   truncated?: boolean;
-  fullOutputPath?: unknown;
+  fullOutputPath?: JsonValue;
   excludeFromContext?: boolean;
-  toolCallId?: unknown;
-  toolName?: unknown;
-  toolArgs?: Record<string, unknown>;
+  toolCallId?: JsonValue;
+  toolName?: JsonValue;
+  toolArgs?: JsonObject;
+}
+
+/** Raw box-local message fact. The host derives activity decoration from pi events. */
+export interface SessionMessageFactDTO {
+  entryId: string | null;
+  role: string;
+  content: JsonValue;
+  timestamp: string | null;
+  attributes: JsonObject;
 }
 
 export interface ConversationTreeNodeDTO {
@@ -76,9 +103,70 @@ export interface SessionStatsDTO {
     total: number;
   };
   cost: number;
-  contextUsage: unknown;
+  contextUsage?: JsonValue;
 }
 
+/** JSON-only stats fact carried by the transport protocol. */
+export interface SessionStatsFactDTO {
+  userMessages: number;
+  assistantMessages: number;
+  toolResults: number;
+  totalMessages: number;
+  tokens: {
+    input: number;
+    output: number;
+    cacheRead: number;
+    cacheWrite: number;
+    total: number;
+  };
+  cost: number;
+  contextUsage: JsonValue | null;
+}
+
+/** Raw facts from the box. It deliberately has no activity timestamps. */
+export interface SessionRuntimeFactDTO {
+  loaded: boolean;
+  isRunning: boolean;
+  isStreaming: boolean;
+  isRetrying: boolean;
+  isCompacting: boolean;
+  pendingMessageCount: number;
+  model: SessionModelDTO | null;
+}
+
+/** Raw box-local session facts. The host decorates these into WebState. */
+export interface SessionStateFactDTO {
+  cwd: string;
+  sessionFile: string;
+  sessionId: string;
+  sessionName: string | null;
+  sessionTitle: string;
+  isStreaming: boolean;
+  isRetrying: boolean;
+  isCompacting: boolean;
+  runtime: SessionRuntimeFactDTO;
+  model: SessionModelDTO | null;
+  thinkingLevel: string;
+  stats: SessionStatsFactDTO;
+  webFooters: JsonValue;
+  webHeaderActions: JsonValue;
+  webGitTabs: JsonValue;
+}
+
+/** Browser-only runtime projection. The host adds timestamps from pi events. */
+export interface WebSessionRuntimeDTO {
+  loaded: boolean;
+  isRunning: boolean;
+  isStreaming: boolean;
+  isRetrying: boolean;
+  isCompacting: boolean;
+  startedAt?: string;
+  lastActivityAt?: string;
+  pendingMessageCount: number;
+  model?: SimplifiedModelDTO;
+}
+
+/** Internal projection input may be sourced from the pi runtime. */
 export interface SessionStateProjectionInput {
   cwd: string;
   sessionFile: string;
@@ -99,6 +187,26 @@ export interface SessionStateProjectionInput {
   webGitTabs: unknown;
 }
 
-export interface SessionStateDTO extends Omit<SessionStateProjectionInput, "model"> {
-  model: SimplifiedModelDTO | undefined;
+/** Existing browser WebState projection; not the SessionService transport state. */
+export interface WebSessionStateDTO {
+  cwd: string;
+  sessionFile: string;
+  sessionId: string;
+  sessionName?: string;
+  sessionTitle: string;
+  isStreaming: boolean;
+  isRetrying: boolean;
+  isCompacting: boolean;
+  runtimeStartedAt?: string;
+  runtimeLastActivityAt?: string;
+  runtime: WebSessionRuntimeDTO;
+  model?: SimplifiedModelDTO;
+  thinkingLevel: string;
+  stats: SessionStatsDTO;
+  webFooters: JsonValue;
+  webHeaderActions: JsonValue;
+  webGitTabs: JsonValue;
 }
+
+/** Backwards-compatible name used by the current browser projection. */
+export type SessionStateDTO = WebSessionStateDTO;

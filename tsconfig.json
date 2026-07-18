@@ -10,5 +10,5 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["server.ts", "supervisor.ts", "vite.config.ts", "src/**/*.ts", ".pi/extensions/**/*.ts"]
+  "include": ["server.ts", "supervisor.ts", "vite.config.ts", "src/**/*.ts", ".pi/extensions/**/*.ts", "tests/session-api.contract.ts"]
 }
