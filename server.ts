@@ -29,6 +29,8 @@ import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitS
 import type { PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
 import type { PiWebSession } from "./server/types.js";
 import type { SlashCommandDto } from "./server/session/dto.js";
+import { SessionActivity } from "./server/session/activity.js";
+import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -245,77 +247,8 @@ async function persistPromptImages(images: Array<{ data: string; mimeType: strin
   return `\n\nAttached image file${images.length === 1 ? "" : "s"}:\n${lines.join("\n")}`;
 }
 
-function toolRuntimeKey(toolCallId: unknown, toolName: unknown) {
-  const id = typeof toolCallId === "string" ? toolCallId.trim() : "";
-  if (id) return id;
-  return typeof toolName === "string" && toolName.trim() ? toolName.trim() : "";
-}
-
-function toolStartedAtFor(sessionFile: string | undefined, toolCallId: unknown, toolName: unknown) {
-  const key = toolRuntimeKey(toolCallId, toolName);
-  return sessionFile && key ? toolStartedAts.get(sessionFile)?.get(key) : undefined;
-}
-
-function contentWithToolStartedAts(content: unknown, sessionFile?: string) {
-  if (!sessionFile || !Array.isArray(content)) return content;
-  return content.map((part) => {
-    if (!part || typeof part !== "object") return part;
-    const value = part as Record<string, unknown>;
-    if (value.type !== "toolCall") return part;
-    const toolName = value.toolName || value.name;
-    const startedAt = toolStartedAtFor(sessionFile, value.id, toolName);
-    return startedAt && !value.startedAt ? { ...value, startedAt } : part;
-  });
-}
-
 function sessionCwd(targetSession: PiWebSession | any = session) {
   return String(targetSession?.sessionManager?.getCwd?.() || targetSession?.cwd || piCwd);
-}
-
-function runtimeStartedAtForPath(path: string, isRunning: boolean) {
-  if (!isRunning) return undefined;
-  const liveStartedAt = liveSessions.get(path)?.session?.runtimeStartedAt;
-  return typeof liveStartedAt === "string" && liveStartedAt.trim() ? liveStartedAt : runtimeStartedAts.get(path);
-}
-
-function runtimeLastActivityAtForPath(path: string, isRunning: boolean) {
-  if (!isRunning) return undefined;
-  const liveLastActivityAt = liveSessions.get(path)?.session?.runtimeLastActivityAt;
-  return typeof liveLastActivityAt === "string" && liveLastActivityAt.trim()
-    ? liveLastActivityAt
-    : runtimeLastActivityAts.get(path) || runtimeStartedAtForPath(path, isRunning);
-}
-
-function ensureRuntimeStartedAt(targetSession: any, startedAt = new Date().toISOString()) {
-  const key = sessionPathKey(targetSession);
-  const existing = key ? runtimeStartedAts.get(key) : undefined;
-  const value = typeof targetSession?.runtimeStartedAt === "string" ? targetSession.runtimeStartedAt : existing || startedAt;
-  if (key) {
-    runtimeStartedAts.set(key, value);
-    if (!runtimeLastActivityAts.has(key)) runtimeLastActivityAts.set(key, value);
-  }
-  if (targetSession && typeof targetSession === "object") {
-    targetSession.runtimeStartedAt = value;
-    if (typeof targetSession.runtimeLastActivityAt !== "string") targetSession.runtimeLastActivityAt = value;
-  }
-  return value;
-}
-
-function markRuntimeActivity(targetSession: any, activityAt = new Date().toISOString(), sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) runtimeLastActivityAts.set(sessionFile, activityAt);
-  if (targetSession && typeof targetSession === "object") targetSession.runtimeLastActivityAt = activityAt;
-  return activityAt;
-}
-
-function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) {
-    runtimeStartedAts.delete(sessionFile);
-    runtimeLastActivityAts.delete(sessionFile);
-  }
-  if (targetSession && typeof targetSession === "object") {
-    delete targetSession.runtimeStartedAt;
-    delete targetSession.runtimeLastActivityAt;
-  }
 }
 
 type RetrySessionTarget =
@@ -419,76 +352,6 @@ async function retrySessionFromFailure(targetSession: PiWebSession) {
   }
 }
 
-function runtimeForPath(path: string, overrides: { isRetrying?: boolean } = {}) {
-  const live = liveSessions.get(path)?.session;
-  const isStreaming = Boolean(live?.isStreaming);
-  const isRetrying = overrides.isRetrying ?? sessionIsRetrying(live);
-  const isCompacting = Boolean(live?.isCompacting);
-  const isRunning = isStreaming || isRetrying || isCompacting;
-  const startedAt = runtimeStartedAtForPath(path, isRunning);
-  const lastActivityAt = runtimeLastActivityAtForPath(path, isRunning);
-  return {
-    loaded: Boolean(live),
-    isRunning,
-    isStreaming,
-    isRetrying,
-    isCompacting,
-    startedAt,
-    lastActivityAt,
-    pendingMessageCount: Number(live?.pendingMessageCount || 0),
-    model: simplifyModel(live?.model),
-  };
-}
-
-function stoppedRuntimeForPath(path: string) {
-  const live = liveSessions.get(path)?.session;
-  return {
-    loaded: Boolean(live),
-    isRunning: false,
-    isStreaming: false,
-    isRetrying: false,
-    isCompacting: false,
-    startedAt: undefined,
-    lastActivityAt: undefined,
-    pendingMessageCount: Number(live?.pendingMessageCount || 0),
-    model: simplifyModel(live?.model),
-  };
-}
-
-function runtimeForEvent(path: string, event: any) {
-  if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
-    return runtimeForPath(path, { isRetrying: true });
-  }
-  return event?.type === "agent_end" || event?.type === "compaction_end"
-    ? stoppedRuntimeForPath(path)
-    : runtimeForPath(path);
-}
-
-function isRuntimeActivityEvent(event: any) {
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start":
-    case "message_update":
-    case "message_end":
-    case "turn_end":
-    case "tool_execution_start":
-    case "tool_execution_update":
-    case "tool_execution_end":
-    case "auto_retry_start":
-    case "auto_retry_end":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function runtimeActivityTimestamp(event: any, fallback = new Date().toISOString()) {
-  for (const value of [event?.lastActivityAt, event?.timestamp, event?.startedAt]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return fallback;
-}
-
 function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd) {
   return {
     id: info.id,
@@ -499,7 +362,7 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     messageCount: info.messageCount,
     cwd: info.cwd || cwd,
     isCurrent: false,
-    runtime: runtimeForPath(info.path),
+    runtime: sessionActivity.runtimeForPath(info.path),
   };
 }
 
@@ -538,11 +401,11 @@ function currentState(targetSession: PiWebSession = session) {
     ...base,
     runtimeStartedAt: typeof (targetSession as any).runtimeStartedAt === "string"
       ? (targetSession as any).runtimeStartedAt
-      : runtimeStartedAtForPath(targetSession.sessionFile, isRunning),
+      : sessionActivity.startedAtForPath(targetSession.sessionFile, isRunning),
     runtimeLastActivityAt: typeof (targetSession as any).runtimeLastActivityAt === "string"
       ? (targetSession as any).runtimeLastActivityAt
-      : runtimeLastActivityAtForPath(targetSession.sessionFile, isRunning),
-    runtime: runtimeForPath(targetSession.sessionFile),
+      : sessionActivity.lastActivityAtForPath(targetSession.sessionFile, isRunning),
+    runtime: sessionActivity.runtimeForPath(targetSession.sessionFile),
     webFooters: webFooterEntries(targetSession),
     webHeaderActions: webHeaderActionEntries(targetSession),
     webGitTabs: webGitTabEntries(targetSession),
@@ -658,10 +521,10 @@ async function executeSlashCommand(input: string, targetSession: PiWebSession = 
       if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before compacting.");
       if (targetSession.isCompacting) throw new Error("Compaction is already running.");
       if (typeof targetSession.compact !== "function") throw new Error("Compaction is not available in this session.");
-      ensureRuntimeStartedAt(targetSession);
+      sessionActivity.ensureStarted(targetSession);
       const releaseWorkLease = acquireWorkLease(targetSession);
       void targetSession.compact(args || undefined).catch((error: unknown) => {
-        clearRuntimeStartedAt(targetSession);
+        sessionActivity.clearStarted(targetSession);
         broadcast({
           type: "server_error",
           sessionId: targetSession.sessionId,
@@ -790,144 +653,24 @@ const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 const liveSessions = new Map<string, LiveSessionEntry>();
 const viewerLeases = new Map<string, ViewerLease>();
-const runtimeStartedAts = new Map<string, string>();
-const runtimeLastActivityAts = new Map<string, string>();
-const toolStartedAts = new Map<string, Map<string, string>>();
+const sessionActivity = new SessionActivity((path) => liveSessions.get(path)?.session);
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
 
-type RealtimeSocket = WebSocket & { missedPongs?: number };
-const clients = new Set<RealtimeSocket>();
-type RealtimeEnvelope = Record<string, unknown> & { seq: number };
-const realtimeEventLog: RealtimeEnvelope[] = [];
-const maxRealtimeEventLogSize = 1000;
-let nextRealtimeSeq = 1;
-
-function recordRealtimeMessage(value: unknown): RealtimeEnvelope {
-  const envelope = { ...(typeof value === "object" && value !== null ? value as Record<string, unknown> : { value }), seq: nextRealtimeSeq++ };
-  realtimeEventLog.push(envelope);
-  if (realtimeEventLog.length > maxRealtimeEventLogSize) realtimeEventLog.splice(0, realtimeEventLog.length - maxRealtimeEventLogSize);
-  return envelope;
-}
+let realtimeHub: RealtimeHub;
+const unreadTracker = new SessionUnreadTracker(sessionUiStateStore, sessionActivity, (value) => realtimeHub.broadcast(value));
+realtimeHub = new RealtimeHub(websocketHeartbeatMs, websocketMaxMissedHeartbeats, (value) => unreadTracker.handle(value));
 
 function broadcast(value: unknown) {
-  const envelope = recordRealtimeMessage(value);
-  const data = JSON.stringify(envelope);
-  for (const client of clients) {
-    if (client.readyState === client.OPEN) client.send(data);
-  }
-  queueUnreadStateFromBroadcast(value);
-}
-
-function checkRealtimeHeartbeats() {
-  for (const client of clients) {
-    if (client.readyState === client.CLOSED || client.readyState === client.CLOSING) {
-      clients.delete(client);
-      continue;
-    }
-    if (client.readyState !== client.OPEN) continue;
-    const missedPongs = client.missedPongs || 0;
-    if (missedPongs >= websocketMaxMissedHeartbeats) {
-      client.terminate();
-      continue;
-    }
-    client.missedPongs = missedPongs + 1;
-    try {
-      client.ping();
-    } catch {
-      client.terminate();
-    }
-  }
-}
-
-if (websocketHeartbeatMs > 0) {
-  const realtimeHeartbeat = setInterval(checkRealtimeHeartbeats, websocketHeartbeatMs);
-  realtimeHeartbeat.unref?.();
-}
-
-function shouldClearSessionUnreadEvent(event: any) {
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function noteRuntimeEventForUnreadRecovery(data: Record<string, any>) {
-  const sessionFile = typeof data.sessionFile === "string" ? data.sessionFile.trim() : "";
-  if (!sessionFile) return;
-  const event = data.event;
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start": {
-      const startedAt = typeof event.startedAt === "string" && event.startedAt.trim() ? event.startedAt.trim() : new Date().toISOString();
-      runtimeStartedAts.set(sessionFile, startedAt);
-      runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event, startedAt));
-      return;
-    }
-    case "agent_end":
-    case "compaction_end":
-      if (!event.willRetry) {
-        runtimeStartedAts.delete(sessionFile);
-        runtimeLastActivityAts.delete(sessionFile);
-      }
-      return;
-    default:
-      if (isRuntimeActivityEvent(event)) runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event));
-      return;
-  }
-}
-
-function broadcastSessionUiStateUpdate(operation: Promise<unknown>, warning: string) {
-  void operation
-    .then((sessionUiState) => broadcast({ type: "session_ui_state_changed", sessionUiState }))
-    .catch((error) => console.warn(warning, error));
+  realtimeHub.broadcast(value);
 }
 
 function markSessionUnreadCompleted(sessionId: string, unreadAt = new Date().toISOString()) {
-  broadcastSessionUiStateUpdate(sessionUiStateStore.markUnread(sessionId, unreadAt), "Could not mark session unread:");
+  unreadTracker.markCompleted(sessionId, unreadAt);
 }
 
 function clearSessionUnread(sessionId: string) {
-  broadcastSessionUiStateUpdate(sessionUiStateStore.markRead(sessionId), "Could not clear session unread state:");
-}
-
-function shouldMarkSessionUnreadEvent(event: any) {
-  // Unread means a background session completed and may need attention.
-  // Do not mark on message_end: pi can emit it for the user's submitted
-  // message before the assistant response has finished.
-  if (!event || event.aborted || event.willRetry) return false;
-  switch (event.type) {
-    case "agent_end":
-    case "compaction_end":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function unreadTimestampForEvent(event: any) {
-  for (const value of [event?.timestamp, event?.endedAt, event?.startedAt]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return new Date().toISOString();
-}
-
-function queueUnreadStateFromBroadcast(value: unknown) {
-  if (!value || typeof value !== "object") return;
-  const data = value as Record<string, any>;
-  if (data.type !== "pi_event") return;
-  noteRuntimeEventForUnreadRecovery(data);
-  const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
-  if (!sessionId) return;
-  if (shouldClearSessionUnreadEvent(data.event)) {
-    clearSessionUnread(sessionId);
-    return;
-  }
-  if (!shouldMarkSessionUnreadEvent(data.event)) return;
-  markSessionUnreadCompleted(sessionId, unreadTimestampForEvent(data.event));
+  unreadTracker.clear(sessionId);
 }
 
 const plainExtensionTheme = {
@@ -1147,7 +890,7 @@ function requestExtensionUi<T>(
   defaultValue: T,
   parse: (response: Record<string, unknown>) => T,
 ): Promise<T> {
-  if (opts?.signal?.aborted || clients.size === 0) return Promise.resolve(defaultValue);
+  if (opts?.signal?.aborted || realtimeHub.clientCount === 0) return Promise.resolve(defaultValue);
 
   return new Promise<T>((resolvePromise) => {
     const id = randomUUID();
@@ -1359,18 +1102,6 @@ async function emitSessionShutdown(value: any) {
   await runner.emit({ type: "session_shutdown", reason: "quit" });
 }
 
-function clearSessionRuntimeMaps(key: string, value: any) {
-  runtimeStartedAts.delete(key);
-  runtimeLastActivityAts.delete(key);
-  toolStartedAts.delete(key);
-  const file = typeof value?.sessionFile === "string" ? value.sessionFile : "";
-  if (file && file !== key) {
-    runtimeStartedAts.delete(file);
-    runtimeLastActivityAts.delete(file);
-    toolStartedAts.delete(file);
-  }
-}
-
 async function disposeLiveSession(key: string, reason: "idle" | "delete" | "reset" = "idle", force = false) {
   const entry = liveSessions.get(key);
   if (!entry || entry.disposing) return;
@@ -1407,10 +1138,10 @@ async function disposeLiveSession(key: string, reason: "idle" | "delete" | "rese
   }
 
   liveSessions.delete(key);
-  clearSessionRuntimeMaps(key, value);
+  sessionActivity.clearSession(key, value);
 
   if (sessionId) {
-    broadcast({ type: "session_runtime_changed", sessionId, sessionFile, runtime: runtimeForPath(sessionFile) });
+    broadcast({ type: "session_runtime_changed", sessionId, sessionFile, runtime: sessionActivity.runtimeForPath(sessionFile) });
   }
 }
 
@@ -1495,49 +1226,20 @@ function registerLiveSession(value: any) {
   if (!key || liveSessions.get(key)?.session === value) return value;
 
   const unsubscribe = value.subscribe?.((event: unknown) => {
-    const eventSessionFile = value.sessionFile;
-    const eventSessionId = value.sessionId;
+    const e = event as any;
+    const enriched = sessionActivity.enrichEvent(value, event);
+    const eventSessionFile = enriched.sessionFile;
+    const eventSessionId = enriched.sessionId;
+    const eventForClient = enriched.event;
 
     // Track models that fail with model_not_supported and remove them from the list.
-    const e = event as any;
-    let eventForClient = e;
-    if (e?.type === "agent_start" || e?.type === "compaction_start") {
-      const startedAt = ensureRuntimeStartedAt(value, typeof e.startedAt === "string" ? e.startedAt : undefined);
-      eventForClient = { ...e, startedAt };
-    } else if (e?.type === "agent_end" || e?.type === "compaction_end") {
-      if (!e.willRetry) clearRuntimeStartedAt(value, eventSessionFile);
-    }
-
-    if (e?.type === "tool_execution_start") {
-      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString();
-      if (toolKey) {
-        let sessionToolStarts = toolStartedAts.get(eventSessionFile);
-        if (!sessionToolStarts) {
-          sessionToolStarts = new Map();
-          toolStartedAts.set(eventSessionFile, sessionToolStarts);
-        }
-        sessionToolStarts.set(toolKey, startedAt);
-      }
-      eventForClient = { ...e, startedAt };
-    } else if (e?.type === "tool_execution_update" || e?.type === "tool_execution_end") {
-      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = toolKey ? toolStartedAts.get(eventSessionFile)?.get(toolKey) : undefined;
-      if (startedAt) eventForClient = { ...e, startedAt };
-      if (e?.type === "tool_execution_end" && toolKey) toolStartedAts.get(eventSessionFile)?.delete(toolKey);
-    }
-
-    if (isRuntimeActivityEvent(e)) {
-      const lastActivityAt = markRuntimeActivity(value, runtimeActivityTimestamp(eventForClient), eventSessionFile);
-      eventForClient = { ...eventForClient, lastActivityAt };
-    }
 
     broadcast({ type: "pi_event", sessionId: eventSessionId, sessionFile: eventSessionFile, event: eventForClient });
     broadcast({
       type: "session_runtime_changed",
       sessionId: eventSessionId,
       sessionFile: eventSessionFile,
-      runtime: runtimeForEvent(eventSessionFile, e),
+      runtime: sessionActivity.runtimeForEvent(eventSessionFile, e),
     });
 
     // Broadcast state update when session name changes
@@ -1951,7 +1653,7 @@ const server = createServer(async (req, res) => {
             replaceInstructions: Boolean(body.replaceInstructions),
             label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
           });
-          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
           const result = await navigation;
           const state = currentStateWithThinkingLevels(targetSession);
           broadcast({ type: "state_changed", ...state });
@@ -1960,7 +1662,7 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         } finally {
           releaseWorkLease();
-          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
         }
       }
 
@@ -1991,7 +1693,7 @@ const server = createServer(async (req, res) => {
           }
         }
         const refs = messageEntryRefs(targetSession);
-        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown, index: number) => simplifyMessage(m, { toolCallArgs, decorateContent: (content) => contentWithToolStartedAts(content, targetSession.sessionFile), entryId: refs[index]?.entryId })) });
+        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown, index: number) => simplifyMessage(m, { toolCallArgs, decorateContent: (content) => sessionActivity.decorateMessageContent(content, targetSession.sessionFile), entryId: refs[index]?.entryId })) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
@@ -2147,7 +1849,7 @@ const server = createServer(async (req, res) => {
         const imageFileNote = await persistPromptImages(images, sessionCwd(targetSession));
         const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
         const wasAlreadyRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-        if (!wasAlreadyRunning) ensureRuntimeStartedAt(targetSession);
+        if (!wasAlreadyRunning) sessionActivity.ensureStarted(targetSession);
         const promptSessionFile = targetSession.sessionFile;
         const releaseWorkLease = acquireWorkLease(targetSession);
         void targetSession.prompt(promptText, {
@@ -2164,16 +1866,16 @@ const server = createServer(async (req, res) => {
           })
           .finally(() => {
             const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(promptSessionFile && runtimeStartedAts.has(promptSessionFile) && !isRunning);
+            const missedTerminalEvent = Boolean(promptSessionFile && sessionActivity.hasStarted(promptSessionFile) && !isRunning);
             if (missedTerminalEvent) {
-              clearRuntimeStartedAt(targetSession, promptSessionFile);
+              sessionActivity.clearStarted(targetSession, promptSessionFile);
               markSessionUnreadCompleted(targetSession.sessionId);
             }
             broadcast({
               type: "session_runtime_changed",
               sessionId: targetSession.sessionId,
               sessionFile: targetSession.sessionFile,
-              runtime: runtimeForPath(targetSession.sessionFile),
+              runtime: sessionActivity.runtimeForPath(targetSession.sessionFile),
             });
             releaseWorkLease();
           });
@@ -2192,12 +1894,12 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 409, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
 
-        ensureRuntimeStartedAt(targetSession);
+        sessionActivity.ensureStarted(targetSession);
         const retrySessionFile = targetSession.sessionFile;
         const releaseWorkLease = acquireWorkLease(targetSession);
         void retrySessionFromFailure(targetSession)
           .catch((error: unknown) => {
-            clearRuntimeStartedAt(targetSession, retrySessionFile);
+            sessionActivity.clearStarted(targetSession, retrySessionFile);
             broadcast({
               type: "server_error",
               sessionId: targetSession.sessionId,
@@ -2207,16 +1909,16 @@ const server = createServer(async (req, res) => {
           })
           .finally(() => {
             const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(retrySessionFile && runtimeStartedAts.has(retrySessionFile) && !isRunning);
+            const missedTerminalEvent = Boolean(retrySessionFile && sessionActivity.hasStarted(retrySessionFile) && !isRunning);
             if (missedTerminalEvent) {
-              clearRuntimeStartedAt(targetSession, retrySessionFile);
+              sessionActivity.clearStarted(targetSession, retrySessionFile);
               markSessionUnreadCompleted(targetSession.sessionId);
             }
             broadcast({
               type: "session_runtime_changed",
               sessionId: targetSession.sessionId,
               sessionFile: targetSession.sessionFile,
-              runtime: runtimeForPath(targetSession.sessionFile),
+              runtime: sessionActivity.runtimeForPath(targetSession.sessionFile),
             });
             releaseWorkLease();
           });
@@ -2337,26 +2039,10 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 wss.on("connection", async (ws, req) => {
-  const realtimeWs = ws as RealtimeSocket;
-  realtimeWs.missedPongs = 0;
-  realtimeWs.on("pong", () => {
-    realtimeWs.missedPongs = 0;
-  });
-  clients.add(realtimeWs);
+  const realtimeWs = ws;
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
-  const latestSeq = nextRealtimeSeq - 1;
-  const oldestSeq = realtimeEventLog[0]?.seq || nextRealtimeSeq;
-
-  if (Number.isFinite(lastSeq) && lastSeq > 0) {
-    if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
-      ws.send(JSON.stringify({ type: "sync_required", latestSeq }));
-    } else {
-      for (const event of realtimeEventLog) {
-        if (event.seq > lastSeq) ws.send(JSON.stringify({ ...event, replay: true }));
-      }
-    }
-  }
+  const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
   const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
@@ -2371,7 +2057,6 @@ wss.on("connection", async (ws, req) => {
     seq: latestSeq,
     ...helloState,
   }));
-  realtimeWs.on("close", () => clients.delete(realtimeWs));
 });
 
 if (isDev) {
