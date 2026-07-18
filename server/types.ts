@@ -14,6 +14,8 @@ export interface PiWebSession {
   isRetrying?: boolean;
   isCompacting?: boolean;
   pendingMessageCount?: number;
+  runtimeStartedAt?: string;
+  runtimeLastActivityAt?: string;
   model: PiWebModel;
   thinkingLevel: string;
   messages: unknown[];
@@ -63,6 +65,7 @@ export interface PiWebSession {
   retryFromFailure?(): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): void;
+  dispose?(): void;
   subscribe?(listener: (event: unknown) => void): (() => void) | undefined;
 }
 

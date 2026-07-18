@@ -29,6 +29,8 @@ import { assertDirectory, createDirectory, listDirectories } from "./server/shar
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitImageBase64, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos } from "./server/shared/git.js";
 import type { PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
 import type { PiWebSession } from "./server/types.js";
+import { RealtimeHub, UnreadEventBookkeeper, ViewerLeaseBookkeeper, type RealtimeSocket } from "./server/realtime.js";
+import { SessionActivityTracker } from "./server/session/activity.js";
 import {
   hasUserMessages,
   isAssistantAbortedMessage,
@@ -272,29 +274,6 @@ async function persistPromptImages(images: Array<{ data: string; mimeType: strin
   return `\n\nAttached image file${images.length === 1 ? "" : "s"}:\n${lines.join("\n")}`;
 }
 
-function toolRuntimeKey(toolCallId: unknown, toolName: unknown) {
-  const id = typeof toolCallId === "string" ? toolCallId.trim() : "";
-  if (id) return id;
-  return typeof toolName === "string" && toolName.trim() ? toolName.trim() : "";
-}
-
-function toolStartedAtFor(sessionFile: string | undefined, toolCallId: unknown, toolName: unknown) {
-  const key = toolRuntimeKey(toolCallId, toolName);
-  return sessionFile && key ? toolStartedAts.get(sessionFile)?.get(key) : undefined;
-}
-
-function contentWithToolStartedAts(content: unknown, sessionFile?: string) {
-  if (!sessionFile || !Array.isArray(content)) return content;
-  return content.map((part) => {
-    if (!part || typeof part !== "object") return part;
-    const value = part as Record<string, unknown>;
-    if (value.type !== "toolCall") return part;
-    const toolName = value.toolName || value.name;
-    const startedAt = toolStartedAtFor(sessionFile, value.id, toolName);
-    return startedAt && !value.startedAt ? { ...value, startedAt } : part;
-  });
-}
-
 function messageEntryRefs(targetSession: PiWebSession) {
   const getBranch = targetSession.sessionManager?.getBranch;
   if (typeof getBranch !== "function") return [];
@@ -310,7 +289,7 @@ function messageEntryRefs(targetSession: PiWebSession) {
 function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<string, unknown>>, sessionFile?: string, entryId?: string) {
   if (!message || typeof message !== "object") return projectSimplifiedMessage(message, toolCallArgs, entryId);
   const value = message as Record<string, unknown>;
-  const content = contentWithToolStartedAts(value.content, sessionFile);
+  const content = activity.decorateMessageContent(value.content, sessionFile);
   return projectSimplifiedMessage(content === value.content ? message : { ...value, content }, toolCallArgs, entryId);
 }
 
@@ -329,52 +308,6 @@ function conversationTreeForSession(targetSession: PiWebSession) {
 
 function sessionCwd(targetSession: PiWebSession | any) {
   return String(targetSession?.sessionManager?.getCwd?.() || targetSession?.cwd || piCwd);
-}
-
-function runtimeStartedAtForPath(path: string, isRunning: boolean) {
-  if (!isRunning) return undefined;
-  const liveStartedAt = liveSessions.get(path)?.session?.runtimeStartedAt;
-  return typeof liveStartedAt === "string" && liveStartedAt.trim() ? liveStartedAt : runtimeStartedAts.get(path);
-}
-
-function runtimeLastActivityAtForPath(path: string, isRunning: boolean) {
-  if (!isRunning) return undefined;
-  const liveLastActivityAt = liveSessions.get(path)?.session?.runtimeLastActivityAt;
-  return typeof liveLastActivityAt === "string" && liveLastActivityAt.trim()
-    ? liveLastActivityAt
-    : runtimeLastActivityAts.get(path) || runtimeStartedAtForPath(path, isRunning);
-}
-
-function ensureRuntimeStartedAt(targetSession: any, startedAt = new Date().toISOString()) {
-  const key = sessionPathKey(targetSession);
-  const existing = key ? runtimeStartedAts.get(key) : undefined;
-  const value = typeof targetSession?.runtimeStartedAt === "string" ? targetSession.runtimeStartedAt : existing || startedAt;
-  if (key) {
-    runtimeStartedAts.set(key, value);
-    if (!runtimeLastActivityAts.has(key)) runtimeLastActivityAts.set(key, value);
-  }
-  if (targetSession && typeof targetSession === "object") {
-    targetSession.runtimeStartedAt = value;
-    if (typeof targetSession.runtimeLastActivityAt !== "string") targetSession.runtimeLastActivityAt = value;
-  }
-  return value;
-}
-
-function markRuntimeActivity(targetSession: any, activityAt = new Date().toISOString(), sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) runtimeLastActivityAts.set(sessionFile, activityAt);
-  if (targetSession && typeof targetSession === "object") targetSession.runtimeLastActivityAt = activityAt;
-  return activityAt;
-}
-
-function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) {
-    runtimeStartedAts.delete(sessionFile);
-    runtimeLastActivityAts.delete(sessionFile);
-  }
-  if (targetSession && typeof targetSession === "object") {
-    delete targetSession.runtimeStartedAt;
-    delete targetSession.runtimeLastActivityAt;
-  }
 }
 
 type RetrySessionTarget =
@@ -479,7 +412,7 @@ async function retrySessionFromFailure(targetSession: PiWebSession) {
 }
 
 function sessionIsRetrying(live: PiWebSession | undefined) {
-  return Boolean((live as any)?.isRetrying);
+  return Boolean(live?.isRetrying);
 }
 
 function runtimeForPath(path: string, overrides: { isRetrying?: boolean } = {}) {
@@ -488,8 +421,8 @@ function runtimeForPath(path: string, overrides: { isRetrying?: boolean } = {}) 
   const isRetrying = overrides.isRetrying ?? sessionIsRetrying(live);
   const isCompacting = Boolean(live?.isCompacting);
   const isRunning = isStreaming || isRetrying || isCompacting;
-  const startedAt = runtimeStartedAtForPath(path, isRunning);
-  const lastActivityAt = runtimeLastActivityAtForPath(path, isRunning);
+  const startedAt = activity.runtimeStartedAtForPath(path, isRunning, live);
+  const lastActivityAt = activity.runtimeLastActivityAtForPath(path, isRunning, live);
   return {
     loaded: Boolean(live),
     isRunning,
@@ -518,38 +451,14 @@ function stoppedRuntimeForPath(path: string) {
   };
 }
 
-function runtimeForEvent(path: string, event: any) {
-  if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
+function runtimeForEvent(path: string, event: unknown) {
+  const value = event && typeof event === "object" ? event as Record<string, unknown> : undefined;
+  if ((value?.type === "agent_end" || value?.type === "compaction_end") && value.willRetry) {
     return runtimeForPath(path, { isRetrying: true });
   }
-  return event?.type === "agent_end" || event?.type === "compaction_end"
+  return value?.type === "agent_end" || value?.type === "compaction_end"
     ? stoppedRuntimeForPath(path)
     : runtimeForPath(path);
-}
-
-function isRuntimeActivityEvent(event: any) {
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start":
-    case "message_update":
-    case "message_end":
-    case "turn_end":
-    case "tool_execution_start":
-    case "tool_execution_update":
-    case "tool_execution_end":
-    case "auto_retry_start":
-    case "auto_retry_end":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function runtimeActivityTimestamp(event: any, fallback = new Date().toISOString()) {
-  for (const value of [event?.lastActivityAt, event?.timestamp, event?.startedAt]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return fallback;
 }
 
 function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd) {
@@ -625,12 +534,12 @@ function currentState(targetSession: PiWebSession) {
     isStreaming: targetSession.isStreaming,
     isRetrying,
     isCompacting: Boolean(targetSession.isCompacting),
-    runtimeStartedAt: typeof (targetSession as any).runtimeStartedAt === "string"
-      ? (targetSession as any).runtimeStartedAt
-      : runtimeStartedAtForPath(targetSession.sessionFile, isRunning),
-    runtimeLastActivityAt: typeof (targetSession as any).runtimeLastActivityAt === "string"
-      ? (targetSession as any).runtimeLastActivityAt
-      : runtimeLastActivityAtForPath(targetSession.sessionFile, isRunning),
+    runtimeStartedAt: typeof targetSession.runtimeStartedAt === "string"
+      ? targetSession.runtimeStartedAt
+      : activity.runtimeStartedAtForPath(targetSession.sessionFile, isRunning, targetSession),
+    runtimeLastActivityAt: typeof targetSession.runtimeLastActivityAt === "string"
+      ? targetSession.runtimeLastActivityAt
+      : activity.runtimeLastActivityAtForPath(targetSession.sessionFile, isRunning, targetSession),
     runtime,
     model: targetSession.model,
     thinkingLevel: targetSession.thinkingLevel,
@@ -889,18 +798,12 @@ const modelRegistry = ModelRegistry.create(authStorage);
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
 type LiveSessionEntry = {
-  session: any;
+  session: PiWebSession;
   unsubscribe?: () => void;
   viewerClientIds: Set<string>;
   workLeases: number;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
-};
-
-type ViewerLease = {
-  sessionKey: string;
-  sockets: Set<WebSocket>;
-  releaseTimer?: ReturnType<typeof setTimeout>;
 };
 
 function envMs(name: string, fallback: number) {
@@ -914,95 +817,39 @@ const viewerLeaseGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 const liveSessions = new Map<string, LiveSessionEntry>();
-const viewerLeases = new Map<string, ViewerLease>();
-const runtimeStartedAts = new Map<string, string>();
-const runtimeLastActivityAts = new Map<string, string>();
-const toolStartedAts = new Map<string, Map<string, string>>();
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
 
-type RealtimeSocket = WebSocket & { missedPongs?: number };
-const clients = new Set<RealtimeSocket>();
-type RealtimeEnvelope = Record<string, unknown> & { seq: number };
-const realtimeEventLog: RealtimeEnvelope[] = [];
-const maxRealtimeEventLogSize = 1000;
-let nextRealtimeSeq = 1;
-
-function recordRealtimeMessage(value: unknown): RealtimeEnvelope {
-  const envelope = { ...(typeof value === "object" && value !== null ? value as Record<string, unknown> : { value }), seq: nextRealtimeSeq++ };
-  realtimeEventLog.push(envelope);
-  if (realtimeEventLog.length > maxRealtimeEventLogSize) realtimeEventLog.splice(0, realtimeEventLog.length - maxRealtimeEventLogSize);
-  return envelope;
-}
+const activity = new SessionActivityTracker();
+const viewerLeases = new ViewerLeaseBookkeeper(
+  viewerLeaseGraceMs,
+  (sessionKey, clientId) => {
+    const entry = liveSessions.get(sessionKey);
+    if (!entry) return;
+    entry.viewerClientIds.add(clientId);
+    cancelLiveSessionCleanup(entry);
+  },
+  (sessionKey, clientId) => {
+    const entry = liveSessions.get(sessionKey);
+    if (!entry) return;
+    entry.viewerClientIds.delete(clientId);
+    scheduleLiveSessionCleanup(sessionKey);
+  },
+);
+const unreadEvents = new UnreadEventBookkeeper({
+  notePiEvent: (sessionFile, event) => activity.noteEventForUnreadRecovery(sessionFile, event),
+  clearUnread: (sessionId) => clearSessionUnread(sessionId),
+  markUnread: (sessionId, unreadAt) => markSessionUnreadCompleted(sessionId, unreadAt),
+});
+const realtime = new RealtimeHub(1000, (value) => unreadEvents.handleBroadcast(value));
 
 function broadcast(value: unknown) {
-  const envelope = recordRealtimeMessage(value);
-  const data = JSON.stringify(envelope);
-  for (const client of clients) {
-    if (client.readyState === client.OPEN) client.send(data);
-  }
-  queueUnreadStateFromBroadcast(value);
-}
-
-function checkRealtimeHeartbeats() {
-  for (const client of clients) {
-    if (client.readyState === client.CLOSED || client.readyState === client.CLOSING) {
-      clients.delete(client);
-      continue;
-    }
-    if (client.readyState !== client.OPEN) continue;
-    const missedPongs = client.missedPongs || 0;
-    if (missedPongs >= websocketMaxMissedHeartbeats) {
-      client.terminate();
-      continue;
-    }
-    client.missedPongs = missedPongs + 1;
-    try {
-      client.ping();
-    } catch {
-      client.terminate();
-    }
-  }
+  realtime.broadcast(value);
 }
 
 if (websocketHeartbeatMs > 0) {
-  const realtimeHeartbeat = setInterval(checkRealtimeHeartbeats, websocketHeartbeatMs);
+  const realtimeHeartbeat = setInterval(() => realtime.checkHeartbeats(websocketMaxMissedHeartbeats), websocketHeartbeatMs);
   realtimeHeartbeat.unref?.();
-}
-
-function shouldClearSessionUnreadEvent(event: any) {
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function noteRuntimeEventForUnreadRecovery(data: Record<string, any>) {
-  const sessionFile = typeof data.sessionFile === "string" ? data.sessionFile.trim() : "";
-  if (!sessionFile) return;
-  const event = data.event;
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start": {
-      const startedAt = typeof event.startedAt === "string" && event.startedAt.trim() ? event.startedAt.trim() : new Date().toISOString();
-      runtimeStartedAts.set(sessionFile, startedAt);
-      runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event, startedAt));
-      return;
-    }
-    case "agent_end":
-    case "compaction_end":
-      if (!event.willRetry) {
-        runtimeStartedAts.delete(sessionFile);
-        runtimeLastActivityAts.delete(sessionFile);
-      }
-      return;
-    default:
-      if (isRuntimeActivityEvent(event)) runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event));
-      return;
-  }
 }
 
 function broadcastSessionUiStateUpdate(operation: Promise<unknown>, warning: string) {
@@ -1017,42 +864,6 @@ function markSessionUnreadCompleted(sessionId: string, unreadAt = new Date().toI
 
 function clearSessionUnread(sessionId: string) {
   broadcastSessionUiStateUpdate(sessionUiStateStore.markRead(sessionId), "Could not clear session unread state:");
-}
-
-function shouldMarkSessionUnreadEvent(event: any) {
-  // Unread means a background session completed and may need attention.
-  // Do not mark on message_end: pi can emit it for the user's submitted
-  // message before the assistant response has finished.
-  if (!event || event.aborted || event.willRetry) return false;
-  switch (event.type) {
-    case "agent_end":
-    case "compaction_end":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function unreadTimestampForEvent(event: any) {
-  for (const value of [event?.timestamp, event?.endedAt, event?.startedAt]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return new Date().toISOString();
-}
-
-function queueUnreadStateFromBroadcast(value: unknown) {
-  if (!value || typeof value !== "object") return;
-  const data = value as Record<string, any>;
-  if (data.type !== "pi_event") return;
-  noteRuntimeEventForUnreadRecovery(data);
-  const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
-  if (!sessionId) return;
-  if (shouldClearSessionUnreadEvent(data.event)) {
-    clearSessionUnread(sessionId);
-    return;
-  }
-  if (!shouldMarkSessionUnreadEvent(data.event)) return;
-  markSessionUnreadCompleted(sessionId, unreadTimestampForEvent(data.event));
 }
 
 const plainExtensionTheme = {
@@ -1272,7 +1083,7 @@ function requestExtensionUi<T>(
   defaultValue: T,
   parse: (response: Record<string, unknown>) => T,
 ): Promise<T> {
-  if (opts?.signal?.aborted || clients.size === 0) return Promise.resolve(defaultValue);
+  if (opts?.signal?.aborted || realtime.clientCount === 0) return Promise.resolve(defaultValue);
 
   return new Promise<T>((resolvePromise) => {
     const id = randomUUID();
@@ -1432,8 +1243,16 @@ const mockHarness = createMockHarness({
 });
 const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle } = mockHarness;
 
-function sessionPathKey(value: any) {
+function sessionPathKey(value: Pick<PiWebSession, "sessionFile" | "sessionId">) {
   return String(value.sessionFile || value.sessionId || "");
+}
+
+function ensureRuntimeStartedAt(targetSession: PiWebSession, startedAt?: string) {
+  return activity.ensureRuntimeStartedAt(targetSession, sessionPathKey(targetSession), startedAt);
+}
+
+function clearRuntimeStartedAt(targetSession: PiWebSession, sessionFile = sessionPathKey(targetSession)) {
+  activity.clearRuntimeStartedAt(targetSession, sessionFile);
 }
 
 function cleanClientId(value: unknown) {
@@ -1484,16 +1303,8 @@ async function emitSessionShutdown(value: any) {
   await runner.emit({ type: "session_shutdown", reason: "quit" });
 }
 
-function clearSessionRuntimeMaps(key: string, value: any) {
-  runtimeStartedAts.delete(key);
-  runtimeLastActivityAts.delete(key);
-  toolStartedAts.delete(key);
-  const file = typeof value?.sessionFile === "string" ? value.sessionFile : "";
-  if (file && file !== key) {
-    runtimeStartedAts.delete(file);
-    runtimeLastActivityAts.delete(file);
-    toolStartedAts.delete(file);
-  }
+function clearSessionRuntimeMaps(key: string, value: PiWebSession) {
+  activity.clearSessionPaths(key, value.sessionFile);
 }
 
 async function disposeLiveSession(key: string, reason: "idle" | "delete" | "reset" = "idle", force = false) {
@@ -1504,14 +1315,9 @@ async function disposeLiveSession(key: string, reason: "idle" | "delete" | "rese
   entry.disposing = true;
   cancelLiveSessionCleanup(entry);
   const value = entry.session;
-  const sessionId = String(value?.sessionId || "");
-  const sessionFile = String(value?.sessionFile || key || "");
-
-  for (const [clientId, lease] of viewerLeases) {
-    if (lease.sessionKey !== key) continue;
-    clearTimer(lease.releaseTimer);
-    viewerLeases.delete(clientId);
-  }
+  const sessionId = String(value.sessionId || "");
+  const sessionFile = String(value.sessionFile || key || "");
+  viewerLeases.releaseSession(key);
 
   try {
     await emitSessionShutdown(value);
@@ -1526,7 +1332,7 @@ async function disposeLiveSession(key: string, reason: "idle" | "delete" | "rese
   }
 
   try {
-    value?.dispose?.();
+    value.dispose?.();
   } catch (error) {
     console.warn(`Could not dispose session after ${reason}:`, error);
   }
@@ -1539,63 +1345,18 @@ async function disposeLiveSession(key: string, reason: "idle" | "delete" | "rese
   }
 }
 
-function scheduleViewerLeaseRelease(clientId: string) {
-  const lease = viewerLeases.get(clientId);
-  if (!lease || lease.sockets.size > 0) return;
-  clearTimer(lease.releaseTimer);
-  lease.releaseTimer = setTimeout(() => releaseViewerLease(clientId), viewerLeaseGraceMs);
-}
-
-function releaseViewerLease(clientId: string) {
-  const lease = viewerLeases.get(clientId);
-  if (!lease) return;
-  clearTimer(lease.releaseTimer);
-  viewerLeases.delete(clientId);
-  const entry = liveSessions.get(lease.sessionKey);
-  if (entry) {
-    entry.viewerClientIds.delete(clientId);
-    scheduleLiveSessionCleanup(lease.sessionKey);
-  }
-}
-
-function acquireViewerLease(clientId: string, value: any) {
+function acquireViewerLease(clientId: string, value: PiWebSession | undefined) {
   if (!clientId || !value) return undefined;
   const key = sessionPathKey(value);
-  const entry = liveSessions.get(key);
-  if (!key || !entry) return undefined;
-
-  let lease = viewerLeases.get(clientId);
-  const sockets = lease?.sockets || new Set<WebSocket>();
-  clearTimer(lease?.releaseTimer);
-  if (lease && lease.sessionKey !== key) {
-    const previous = liveSessions.get(lease.sessionKey);
-    previous?.viewerClientIds.delete(clientId);
-    scheduleLiveSessionCleanup(lease.sessionKey);
-  }
-
-  lease = { sessionKey: key, sockets };
-  viewerLeases.set(clientId, lease);
-  entry.viewerClientIds.add(clientId);
-  cancelLiveSessionCleanup(entry);
-  if (sockets.size === 0) scheduleViewerLeaseRelease(clientId);
-  return lease;
+  if (!key || !liveSessions.has(key)) return undefined;
+  return viewerLeases.acquire(clientId, key);
 }
 
-function bindViewerSocket(clientId: string, ws: WebSocket) {
-  const lease = viewerLeases.get(clientId);
-  if (!lease) return;
-  clearTimer(lease.releaseTimer);
-  lease.releaseTimer = undefined;
-  lease.sockets.add(ws);
-  ws.on("close", () => {
-    const current = viewerLeases.get(clientId);
-    current?.sockets.delete(ws);
-    if (!current || current.sockets.size > 0) return;
-    releaseViewerLease(clientId);
-  });
+function bindViewerSocket(clientId: string, ws: RealtimeSocket) {
+  viewerLeases.bindSocket(clientId, ws);
 }
 
-function noteViewerLeaseFromRequest(req: IncomingMessage, value: any, fallbackClientId?: unknown) {
+function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession | undefined, fallbackClientId?: unknown) {
   const clientId = clientIdFromRequest(req, fallbackClientId);
   if (clientId) acquireViewerLease(clientId, value);
 }
@@ -1615,76 +1376,52 @@ function acquireWorkLease(value: any) {
   };
 }
 
-function registerLiveSession(value: any) {
+function sessionEventRecord(event: unknown): Record<string, unknown> | undefined {
+  return event && typeof event === "object" ? event as Record<string, unknown> : undefined;
+}
+
+// Session reads are deliberately isolated from host timestamp enrichment for the later event-service conversion.
+function broadcastSessionReadFollowUps(value: PiWebSession, event: unknown, sessionId: string, sessionFile: string) {
+  const source = sessionEventRecord(event);
+  if (!source) return;
+  if (source.type === "session_info_changed") {
+    broadcast({ type: "state_changed", ...currentState(value) });
+  }
+
+  if (source.type === "message_end" || source.type === "agent_end" || source.type === "compaction_end") {
+    broadcast({ type: "session_stats_changed", sessionId, sessionFile, stats: sessionStats(value) });
+  }
+
+  if (source.type !== "message_end" && source.type !== "turn_end") return;
+  const toolResults = Array.isArray(source.toolResults) ? source.toolResults : [];
+  const message = sessionEventRecord(source.message ?? toolResults[0]);
+  const nestedMessage = sessionEventRecord(message?.message);
+  const error = String(message?.errorMessage || nestedMessage?.errorMessage || "");
+  const modelId = String(message?.model || nestedMessage?.model || "");
+  if (!modelId || (!error.includes("model_not_supported") && !error.includes("model_not_available"))) return;
+  if (blockedModelIds.has(modelId)) return;
+  blockedModelIds.add(modelId);
+  broadcast({ type: "models_updated", sessionId, models: getAvailableModels(value).map(simplifyModel) });
+}
+
+function registerLiveSession(value: PiWebSession) {
   const key = sessionPathKey(value);
   if (!key || liveSessions.get(key)?.session === value) return value;
 
   const unsubscribe = value.subscribe?.((event: unknown) => {
     const eventSessionFile = value.sessionFile;
     const eventSessionId = value.sessionId;
-
-    // Track models that fail with model_not_supported and remove them from the list.
-    const e = event as any;
-    let eventForClient = e;
-    if (e?.type === "agent_start" || e?.type === "compaction_start") {
-      const startedAt = ensureRuntimeStartedAt(value, typeof e.startedAt === "string" ? e.startedAt : undefined);
-      eventForClient = { ...e, startedAt };
-    } else if (e?.type === "agent_end" || e?.type === "compaction_end") {
-      if (!e.willRetry) clearRuntimeStartedAt(value, eventSessionFile);
-    }
-
-    if (e?.type === "tool_execution_start") {
-      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString();
-      if (toolKey) {
-        let sessionToolStarts = toolStartedAts.get(eventSessionFile);
-        if (!sessionToolStarts) {
-          sessionToolStarts = new Map();
-          toolStartedAts.set(eventSessionFile, sessionToolStarts);
-        }
-        sessionToolStarts.set(toolKey, startedAt);
-      }
-      eventForClient = { ...e, startedAt };
-    } else if (e?.type === "tool_execution_update" || e?.type === "tool_execution_end") {
-      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = toolKey ? toolStartedAts.get(eventSessionFile)?.get(toolKey) : undefined;
-      if (startedAt) eventForClient = { ...e, startedAt };
-      if (e?.type === "tool_execution_end" && toolKey) toolStartedAts.get(eventSessionFile)?.delete(toolKey);
-    }
-
-    if (isRuntimeActivityEvent(e)) {
-      const lastActivityAt = markRuntimeActivity(value, runtimeActivityTimestamp(eventForClient), eventSessionFile);
-      eventForClient = { ...eventForClient, lastActivityAt };
-    }
+    // Host-only maps decorate outbound events before any session-reading follow-ups.
+    const eventForClient = activity.decorateSessionEvent(value, key, event);
 
     broadcast({ type: "pi_event", sessionId: eventSessionId, sessionFile: eventSessionFile, event: eventForClient });
     broadcast({
       type: "session_runtime_changed",
       sessionId: eventSessionId,
       sessionFile: eventSessionFile,
-      runtime: runtimeForEvent(eventSessionFile, e),
+      runtime: runtimeForEvent(eventSessionFile, event),
     });
-
-    // Broadcast state update when session name changes
-    if (e?.type === "session_info_changed") {
-      broadcast({ type: "state_changed", ...currentState(value) });
-    }
-
-    if (e?.type === "message_end" || e?.type === "agent_end" || e?.type === "compaction_end") {
-      broadcast({ type: "session_stats_changed", sessionId: eventSessionId, sessionFile: eventSessionFile, stats: sessionStats(value) });
-    }
-
-    if (e?.type === "message_end" || e?.type === "turn_end") {
-      const msg = e?.message ?? e?.toolResults?.[0];
-      const err: string = msg?.errorMessage || msg?.message?.errorMessage || "";
-      const modelId: string = msg?.model || msg?.message?.model || "";
-      if (modelId && (err.includes("model_not_supported") || err.includes("model_not_available"))) {
-        if (!blockedModelIds.has(modelId)) {
-          blockedModelIds.add(modelId);
-          broadcast({ type: "models_updated", sessionId: eventSessionId, models: getAvailableModels(value).map(simplifyModel) });
-        }
-      }
-    }
+    broadcastSessionReadFollowUps(value, event, eventSessionId, eventSessionFile);
   });
   liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0 });
   queueMicrotask(() => scheduleLiveSessionCleanup(key));
@@ -1746,7 +1483,7 @@ async function getOrCreateLiveSession(path: string) {
   }
   const created = await makeAgentSession(path);
   if (created.modelFallbackMessage) console.warn(created.modelFallbackMessage);
-  return registerLiveSession(created.session);
+  return registerLiveSession(created.session as PiWebSession);
 }
 
 async function applyDefaultSessionSettings(value: any) {
@@ -1787,7 +1524,7 @@ async function createNewLiveSession(cwd?: string, previousSessionFile?: string) 
     value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
   }
   await applyDefaultSessionSettings(value);
-  const liveSession = registerLiveSession(value);
+  const liveSession = registerLiveSession(value as PiWebSession);
   await applyDefaultSessionBucket(liveSession.sessionId);
   return liveSession;
 }
@@ -1827,7 +1564,7 @@ async function switchEmptySessionCwd(targetSession: PiWebSession, cwd: string) {
 await ensurePiWebStorage();
 
 const createdSession = await makeAgentSession();
-session = registerLiveSession(createdSession.session);
+session = registerLiveSession(createdSession.session as PiWebSession);
 modelFallbackMessage = createdSession.modelFallbackMessage;
 
 if (modelFallbackMessage) {
@@ -1870,12 +1607,7 @@ const server = createServer(async (req, res) => {
             isStreaming: Boolean(entry.session?.isStreaming),
             isCompacting: Boolean(entry.session?.isCompacting),
           })),
-          viewerLeases: Array.from(viewerLeases.entries()).map(([clientId, lease]) => ({
-            clientId,
-            sessionKey: lease.sessionKey,
-            sockets: lease.sockets.size,
-            hasReleaseTimer: Boolean(lease.releaseTimer),
-          })),
+          viewerLeases: viewerLeases.snapshots(),
           lifecycle: getMockLifecycle(),
         });
       }
@@ -2278,7 +2010,7 @@ const server = createServer(async (req, res) => {
           })
           .finally(() => {
             const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(promptSessionFile && runtimeStartedAts.has(promptSessionFile) && !isRunning);
+            const missedTerminalEvent = Boolean(promptSessionFile && activity.hasRuntimeStartedAt(promptSessionFile) && !isRunning);
             if (missedTerminalEvent) {
               clearRuntimeStartedAt(targetSession, promptSessionFile);
               markSessionUnreadCompleted(targetSession.sessionId);
@@ -2321,7 +2053,7 @@ const server = createServer(async (req, res) => {
           })
           .finally(() => {
             const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(retrySessionFile && runtimeStartedAts.has(retrySessionFile) && !isRunning);
+            const missedTerminalEvent = Boolean(retrySessionFile && activity.hasRuntimeStartedAt(retrySessionFile) && !isRunning);
             if (missedTerminalEvent) {
               clearRuntimeStartedAt(targetSession, retrySessionFile);
               markSessionUnreadCompleted(targetSession.sessionId);
@@ -2452,24 +2184,15 @@ server.on("upgrade", (req, socket, head) => {
 
 wss.on("connection", async (ws, req) => {
   const realtimeWs = ws as RealtimeSocket;
-  realtimeWs.missedPongs = 0;
-  realtimeWs.on("pong", () => {
-    realtimeWs.missedPongs = 0;
-  });
-  clients.add(realtimeWs);
+  realtime.attach(realtimeWs);
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
-  const latestSeq = nextRealtimeSeq - 1;
-  const oldestSeq = realtimeEventLog[0]?.seq || nextRealtimeSeq;
+  const replay = realtime.replaySince(Number(url.searchParams.get("lastSeq") || 0));
+  const latestSeq = replay.latestSeq;
 
-  if (Number.isFinite(lastSeq) && lastSeq > 0) {
-    if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
-      ws.send(JSON.stringify({ type: "sync_required", latestSeq }));
-    } else {
-      for (const event of realtimeEventLog) {
-        if (event.seq > lastSeq) ws.send(JSON.stringify({ ...event, replay: true }));
-      }
-    }
+  if (replay.syncRequired) {
+    ws.send(JSON.stringify({ type: "sync_required", latestSeq }));
+  } else {
+    for (const event of replay.events) ws.send(JSON.stringify(event));
   }
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
@@ -2485,7 +2208,7 @@ wss.on("connection", async (ws, req) => {
     seq: latestSeq,
     ...helloState,
   }));
-  realtimeWs.on("close", () => clients.delete(realtimeWs));
+  realtimeWs.on("close", () => realtime.detach(realtimeWs));
 });
 
 if (isDev) {
