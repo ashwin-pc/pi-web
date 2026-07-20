@@ -1098,6 +1098,7 @@ const webUiBridge = createWebUiBridge({
 
 const sessionService = new LocalSessionService({
   currentSessionId: () => session.sessionId,
+  globalCwd: () => piCwd,
   resolve: (id) => getOrCreateLiveSessionById(id),
   cwd: (value) => sessionCwd(value),
   decorateState: (value) => currentStateWithThinkingLevels(value),
@@ -1254,7 +1255,8 @@ const server = createServer(async (req, res) => {
             "content-type": contentTypes[extname(image.displayPath).toLowerCase()] || "application/octet-stream",
             "cache-control": "no-store",
           });
-          res.end(image.data);
+          if ("file" in image && typeof image.file === "string") pipeReadStream(res, image.file);
+          else res.end(image.data);
           return;
         } catch (error) {
           return sendJson(res, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -1289,7 +1291,7 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeHeaderAction(typeof body.sessionId === "string" ? body.sessionId : undefined, body.key) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = message === "key is required" || message === "Header action returned no markdown" ? 400 : message === "Header action not found" ? 404 : 500;
+          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Header action returned no markdown" ? 400 : message === "Header action not found" ? 404 : 500;
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -1300,7 +1302,7 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeGitTab(typeof body.sessionId === "string" ? body.sessionId : undefined, body) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = message === "key is required" || message === "Git tab returned no HTML" ? 400 : message === "Git tab not found" ? 404 : 500;
+          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Git tab returned no HTML" ? 400 : message === "Git tab not found" ? 404 : 500;
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -1315,9 +1317,11 @@ const server = createServer(async (req, res) => {
 
       if (method === "POST" && url.pathname === "/api/session/tree/navigate") {
         const body = await readBody(req) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+        await sessionService.require(requestedSessionId);
         const targetId = String(body.targetId || "").trim();
         if (!targetId) return sendJson(res, 400, { ok: false, error: "targetId is required" });
-        const result = await sessionService.navigate(typeof body.sessionId === "string" ? body.sessionId : undefined, targetId, {
+        const result = await sessionService.navigate(requestedSessionId, targetId, {
           summarize: Boolean(body.summarize),
           customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
           replaceInstructions: Boolean(body.replaceInstructions),
@@ -1465,9 +1469,7 @@ const server = createServer(async (req, res) => {
       if (method === "POST" && url.pathname === "/api/session/name") {
         const body = await readBody(req) as { sessionId?: unknown; name?: unknown };
         const name = String(body.name || "").trim();
-        if (!name) return sendJson(res, 400, { ok: false, error: "name is required" });
         const state = await sessionService.rename(typeof body.sessionId === "string" ? body.sessionId : undefined, name);
-        broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
 
@@ -1490,7 +1492,8 @@ const server = createServer(async (req, res) => {
           broadcast({ type: "state_changed", ...state });
           return sendJson(res, 200, { ok: true, ...state });
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          const status = error instanceof SessionServiceError ? error.status : 400;
+          return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 

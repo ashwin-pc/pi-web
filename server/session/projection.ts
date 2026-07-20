@@ -530,4 +530,3 @@ export function getSessionSlashCommands(value: PiWebSession): SlashCommandDto[] 
 
   return commands.filter((command) => typeof command.name === "string" && command.name.length > 0);
 }
-

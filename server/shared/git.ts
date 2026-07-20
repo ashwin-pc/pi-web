@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { readdir, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -124,7 +124,7 @@ export async function readGitImage(options: { cwd: string; path: string; oldPath
   if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Image path is outside the repository");
   const info = await stat(resolved);
   if (!info.isFile()) throw new Error("Image not found");
-  return { data: await readFile(resolved), displayPath };
+  return { file: resolved, displayPath };
 }
 
 export async function gitCwdFromRepoParam(repo: string | null, baseCwd: string) {

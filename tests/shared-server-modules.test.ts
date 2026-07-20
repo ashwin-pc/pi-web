@@ -122,7 +122,7 @@ describe("shared Git helpers", () => {
     const beforeImage = await readGitImage({ cwd, path: "image.png", version: "before", staged: false });
     const afterImage = await readGitImage({ cwd, path: "image.png", version: "after", staged: false });
     expect(beforeImage?.data).toEqual(Buffer.from([1, 2, 3]));
-    expect(afterImage?.data).toEqual(Buffer.from([4, 5, 6]));
+    expect(afterImage).toMatchObject({ file: join(cwd, "image.png"), displayPath: "image.png" });
     expect(await readGitImage({ cwd, path: "tracked.txt", version: "after", staged: false })).toBeUndefined();
 
     const child = join(cwd, "child");

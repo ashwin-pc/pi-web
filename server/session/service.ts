@@ -1,5 +1,5 @@
 import type { PiWebSession } from "../types.js";
-import type { SlashCommandDto } from "./dto.js";
+import type { SessionService, SlashCommandDto } from "./dto.js";
 import { conversationTreeForSession, getSessionSlashCommands, messageEntryRefs, sessionStats, simplifyMessage, simplifyModel } from "./projection.js";
 
 export class SessionServiceError extends Error {
@@ -8,6 +8,7 @@ export class SessionServiceError extends Error {
 
 export interface LocalSessionServiceDependencies {
   currentSessionId(): string;
+  globalCwd(): string;
   resolve(sessionId: string): Promise<PiWebSession | undefined>;
   cwd(session: PiWebSession): string;
   decorateState(session: PiWebSession): Record<string, unknown>;
@@ -28,7 +29,7 @@ export interface LocalSessionServiceDependencies {
   reportError(session: PiWebSession, error: unknown): void;
 }
 
-export class LocalSessionService {
+export class LocalSessionService implements SessionService {
   constructor(private readonly deps: LocalSessionServiceDependencies) {}
 
   defaultSessionId(): string { return this.deps.currentSessionId(); }
@@ -50,7 +51,9 @@ export class LocalSessionService {
   }
 
   async tree(sessionId?: string) {
-    return conversationTreeForSession(await this.require(sessionId));
+    const session = await this.require(sessionId);
+    try { return conversationTreeForSession(session); }
+    catch (error) { throw new SessionServiceError(error instanceof Error ? error.message : String(error), 400); }
   }
 
   async messages(sessionId?: string) {
@@ -60,7 +63,7 @@ export class LocalSessionService {
     for (const message of messages as any[]) {
       if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
       for (const part of message.content) {
-        if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || part.args || {});
+        if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
       }
     }
     const refs = messageEntryRefs(session);
@@ -92,7 +95,7 @@ export class LocalSessionService {
     const model = session.modelRegistry.find(provider, id);
     if (!model) throw new SessionServiceError("Model not found", 404);
     await session.setModel(model);
-    if (thinkingLevel) session.setThinkingLevel(thinkingLevel);
+    if (thinkingLevel !== undefined) session.setThinkingLevel(thinkingLevel);
     return this.deps.decorateState(session);
   }
 
@@ -159,13 +162,14 @@ export class LocalSessionService {
   list(extraCwds: string[] = []) { return this.deps.list(extraCwds); }
 
   async create(sessionId?: string, cwd?: string) {
-    const previous = await this.require(sessionId);
-    const created = await this.deps.create(cwd || this.deps.cwd(previous), previous.sessionFile);
+    const previous = sessionId ? await this.deps.resolve(sessionId) : undefined;
+    const created = await this.deps.create(cwd || (previous ? this.deps.cwd(previous) : this.deps.globalCwd()), previous?.sessionFile);
     return this.deps.decorateState(created);
   }
 
   async open(sessionId: string, cwd?: string) {
-    return this.deps.decorateState(await this.deps.open(sessionId, cwd));
+    try { return this.deps.decorateState(await this.deps.open(sessionId, cwd)); }
+    catch (error) { throw new SessionServiceError(error instanceof Error ? error.message : String(error), 404); }
   }
 
   delete(sessionId: string, cwd?: string) { return this.deps.delete(sessionId, cwd); }

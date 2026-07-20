@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PiWebSession } from "../server/types.js";
+import { jsonRoundTrip } from "../server/session/dto.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -10,10 +11,6 @@ import {
   simplifyModel,
   textFromContent,
 } from "../server/session/projection.js";
-
-function roundTrip<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
-}
 
 function fixtureSession(): PiWebSession {
   const branch = [
@@ -86,6 +83,6 @@ describe("pure session projections", () => {
       conversationTreeForSession(session),
       getSessionSlashCommands(session),
     ];
-    for (const result of results) expect(roundTrip(result)).toStrictEqual(result);
+    for (const result of results) expect(jsonRoundTrip(result)).toStrictEqual(result);
   });
 });
