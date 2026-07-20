@@ -35,20 +35,6 @@ export interface BaseSessionStateDto {
   stats: SessionStatsDto;
 }
 
-export interface MessageDto {
-  entryId?: string;
-  role?: string;
-  text?: string;
-  toolCalls?: Array<{ id?: string; toolName: string; args: JsonValue; startedAt?: string }>;
-  toolCallId?: string;
-  toolName?: string;
-  toolArgs?: JsonValue;
-  isError?: boolean;
-  timestamp?: string;
-  raw?: JsonValue;
-  [key: string]: JsonValue | undefined;
-}
-
 export interface TreeNodeDto {
   id: string;
   parentId: string | null;
@@ -80,25 +66,6 @@ export interface SlashCommandDto {
   source: "web" | "extension" | "prompt" | "skill";
   sourceInfo?: JsonValue;
 }
-
-export interface SessionInfoDto {
-  id: string;
-  name?: string;
-  firstMessage?: string;
-  created: string;
-  modified: string;
-  messageCount: number;
-  cwd: string;
-}
-
-export interface SessionRefDto { sessionId: string; sessionFile: string; cwd: string }
-export interface CreateSessionResultDto extends SessionRefDto { state: BaseSessionStateDto; previousSessionFile?: string }
-export interface DeleteSessionResultDto { id: string; disposition: "trashed" | "deleted" }
-export interface NavigateTreeResultDto { cancelled: boolean; aborted?: boolean; editorText?: string; summaryEntry?: JsonValue; leafId: string | null; state: BaseSessionStateDto }
-export interface ShellResultDto { output: string; exitCode?: number; cancelled: boolean; truncated: boolean; fullOutputPath?: string }
-export interface ArtifactDto { name: string; base64: string }
-export interface GitImageDto { path: string; base64: string }
-export interface DirectoryListingDto { path: string; parent: string; dirs: Array<{ name: string; path: string }> }
 
 export interface SessionService {
   defaultSessionId(): string;

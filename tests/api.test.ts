@@ -446,9 +446,20 @@ describe("pi-web mock API", () => {
   });
 
   it("creates and opens sessions through validated session APIs", async () => {
+    const currentState = await (await fetch(`${baseUrl}/api/state`)).json();
     const newRes = await fetch(`${baseUrl}/api/sessions/new`, { method: "POST" });
     expect(newRes.status).toBe(200);
-    expect((await newRes.json()).sessionId).toMatch(/^mock-/);
+    const created = await newRes.json();
+    expect(created.sessionId).toMatch(/^mock-/);
+    expect(created.cwd).toBe(currentState.cwd);
+
+    const unknownSourceRes = await fetch(`${baseUrl}/api/sessions/new`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "missing-source" }),
+    });
+    expect(unknownSourceRes.status).toBe(200);
+    expect((await unknownSourceRes.json()).cwd).toBe(currentState.cwd);
 
     const openRes = await fetch(`${baseUrl}/api/sessions/open`, {
       method: "POST",

@@ -162,7 +162,7 @@ export class LocalSessionService implements SessionService {
   list(extraCwds: string[] = []) { return this.deps.list(extraCwds); }
 
   async create(sessionId?: string, cwd?: string) {
-    const previous = sessionId ? await this.deps.resolve(sessionId) : undefined;
+    const previous = await this.deps.resolve(sessionId || this.deps.currentSessionId());
     const created = await this.deps.create(cwd || (previous ? this.deps.cwd(previous) : this.deps.globalCwd()), previous?.sessionFile);
     return this.deps.decorateState(created);
   }
