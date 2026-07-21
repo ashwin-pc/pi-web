@@ -1,5 +1,5 @@
 import type { PiWebSession } from "../types.js";
-import type { SessionService, SlashCommandDto } from "./dto.js";
+import type { NavigationResult, SessionService, SlashCommandDto } from "./dto.js";
 import { conversationTreeForSession, getSessionSlashCommands, messageEntryRefs, sessionStats, simplifyMessage, simplifyModel } from "./projection.js";
 
 export class SessionServiceError extends Error {
@@ -23,7 +23,7 @@ export interface LocalSessionServiceDependencies {
   executeCommand(command: string, session: PiWebSession): Promise<{ message: string; state: Record<string, unknown> }>;
   prompt(session: PiWebSession, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }> }): Promise<void>;
   retry(session: PiWebSession): Promise<void>;
-  navigate(session: PiWebSession, targetId: string, options: Record<string, unknown>): Promise<Record<string, unknown>>;
+  navigate(session: PiWebSession, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
   invokeHeaderAction(session: PiWebSession, key: unknown): Promise<Record<string, unknown>>;
   invokeGitTab(session: PiWebSession, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   reportError(session: PiWebSession, error: unknown): void;

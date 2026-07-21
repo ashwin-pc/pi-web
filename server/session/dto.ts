@@ -67,6 +67,8 @@ export interface SlashCommandDto {
   sourceInfo?: JsonValue;
 }
 
+export type NavigationResult = Record<string, unknown> & { finish(): void };
+
 export interface SessionService {
   defaultSessionId(): string;
   state(sessionId?: string): Promise<Record<string, unknown>>;
@@ -84,7 +86,7 @@ export interface SessionService {
   abortCompaction(sessionId?: string): Promise<{ sessionId: string }>;
   abortBranchSummary(sessionId?: string): Promise<{ sessionId: string }>;
   rename(sessionId: string | undefined, name: string): Promise<Record<string, unknown>>;
-  navigate(sessionId: string | undefined, targetId: string, options: Record<string, unknown>): Promise<Record<string, unknown>>;
+  navigate(sessionId: string | undefined, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
   invokeHeaderAction(sessionId: string | undefined, key: unknown): Promise<Record<string, unknown>>;
   invokeGitTab(sessionId: string | undefined, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   list(extraCwds?: string[]): Promise<Array<{ id: string } & Record<string, unknown>>>;

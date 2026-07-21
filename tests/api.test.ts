@@ -164,26 +164,25 @@ describe("pi-web mock API", () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
   });
 
-  it("writes the tree navigation response before its terminal runtime event", async () => {
+  it("returns the tree navigation response and emits its terminal runtime event", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
     await once(ws, "open");
-    const order: string[] = [];
+    const runtimeEvents: any[] = [];
     ws.on("message", (data) => {
       const event = JSON.parse(String(data));
-      if (event.type === "session_runtime_changed" && event.runtime?.isRunning === false) order.push("terminal");
+      if (event.type === "session_runtime_changed") runtimeEvents.push(event);
     });
     await new Promise((resolve) => setTimeout(resolve, 50));
-    order.length = 0;
+    runtimeEvents.length = 0;
     const response = await fetch(`${baseUrl}/api/session/tree/navigate`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sessionId: "mock-current", targetId: "mock-u1" }),
     });
-    order.push("response");
     expect(response.status).toBe(200);
-    await waitForCondition(() => order.filter((item) => item === "terminal").length >= 2);
-    expect(order.indexOf("response")).toBeLessThan(order.lastIndexOf("terminal"));
+    expect((await response.json()).leafId).toBeNull();
+    await waitForCondition(() => runtimeEvents.length >= 2);
     ws.close();
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
   });

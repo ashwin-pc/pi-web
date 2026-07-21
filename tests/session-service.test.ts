@@ -30,7 +30,7 @@ function fixtureService() {
     decorateMessageContent: (content) => content, availableModels: () => [session.model], webCommands: [{ name: "web", source: "web" }],
     list: async () => [], create: async (cwd, previous) => { creates.push({ cwd, previous }); return session; }, open: async () => session,
     delete: async () => ({}), switchCwd: async () => ({}), executeCommand: async () => ({ message: "ok", state: {} }), prompt: async () => undefined,
-    retry: async () => undefined, navigate: async () => ({}), invokeHeaderAction: async () => ({}), invokeGitTab: async () => ({}), reportError: () => undefined,
+    retry: async () => undefined, navigate: async () => ({ finish() {} }), invokeHeaderAction: async () => ({}), invokeGitTab: async () => ({}), reportError: () => undefined,
   };
   return { service: new LocalSessionService(deps), session, creates };
 }
@@ -73,5 +73,14 @@ describe("session route boundary", () => {
     const source = await readFile(new URL("../server.ts", import.meta.url), "utf8");
     const routes = source.slice(source.indexOf("const server = createServer"));
     expect(routes).not.toContain("targetSession.");
+  });
+
+  it("writes a navigation response before calling its finalizer", async () => {
+    const source = await readFile(new URL("../server.ts", import.meta.url), "utf8");
+    const start = source.indexOf('url.pathname === "/api/session/tree/navigate"');
+    const route = source.slice(start, source.indexOf('url.pathname === "/api/session/tree/abort-summary"', start));
+    expect(route.indexOf("sendJson(res, 200")).toBeGreaterThan(-1);
+    expect(route.indexOf("sendJson(res, 200")).toBeLessThan(route.indexOf("finish();"));
+    expect(route).not.toContain("setTimeout");
   });
 });

@@ -1034,8 +1034,10 @@ async function navigateSession(targetSession: PiWebSession, targetId: string, op
   if (targetSession.isCompacting) throw new SessionServiceError("Wait for the current compaction to finish before navigating the tree", 409);
   if (!targetSession.navigateTree) throw new SessionServiceError("Tree navigation is not available");
   const releaseWorkLease = acquireWorkLease(targetSession);
-  let finishAfterResponse = false;
+  let finished = false;
   const finish = () => {
+    if (finished) return;
+    finished = true;
     releaseWorkLease();
     broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
   };
@@ -1045,12 +1047,10 @@ async function navigateSession(targetSession: PiWebSession, targetId: string, op
     const result = await navigation;
     const state = currentStateWithThinkingLevels(targetSession);
     broadcast({ type: "state_changed", ...state });
-    finishAfterResponse = true;
-    // Defer the terminal runtime event so the HTTP route can write the navigation response first.
-    setTimeout(finish, 10);
-    return { ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state };
-  } finally {
-    if (!finishAfterResponse) finish();
+    return { ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state, finish };
+  } catch (error) {
+    finish();
+    throw error;
   }
 }
 
@@ -1328,13 +1328,17 @@ const server = createServer(async (req, res) => {
         await sessionService.require(requestedSessionId);
         const targetId = String(body.targetId || "").trim();
         if (!targetId) return sendJson(res, 400, { ok: false, error: "targetId is required" });
-        const result = await sessionService.navigate(requestedSessionId, targetId, {
+        const { finish, ...result } = await sessionService.navigate(requestedSessionId, targetId, {
           summarize: Boolean(body.summarize),
           customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
           replaceInstructions: Boolean(body.replaceInstructions),
           label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
         });
-        return sendJson(res, 200, { ok: true, ...result });
+        try {
+          return sendJson(res, 200, { ok: true, ...result });
+        } finally {
+          finish();
+        }
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/abort-summary") {
