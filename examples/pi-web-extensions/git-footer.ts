@@ -15,6 +15,7 @@ type GitSnapshot = {
 
 type SessionState = {
   ctx: PiWebExtensionContext;
+  sessionManager: PiWebExtensionContext["sessionManager"];
   interval: ReturnType<typeof setInterval>;
   lastHtml?: string;
 };
@@ -114,13 +115,17 @@ function startRefreshing(ctx: PiWebExtensionContext) {
   const key = sessionKey(ctx);
   const existing = sessions.get(key);
   if (existing) {
+    const runtimeChanged = existing.sessionManager !== ctx.sessionManager;
     existing.ctx = ctx;
+    existing.sessionManager = ctx.sessionManager;
+    if (runtimeChanged) existing.lastHtml = undefined;
     refresh(ctx);
     return;
   }
 
   const state: SessionState = {
     ctx,
+    sessionManager: ctx.sessionManager,
     interval: setInterval(() => refresh(state.ctx), REFRESH_MS),
   };
   sessions.set(key, state);
@@ -130,7 +135,7 @@ function startRefreshing(ctx: PiWebExtensionContext) {
 function stopRefreshing(ctx: PiWebExtensionContext) {
   const key = sessionKey(ctx);
   const state = sessions.get(key);
-  if (!state) return;
+  if (!state || state.sessionManager !== ctx.sessionManager) return;
   clearInterval(state.interval);
   sessions.delete(key);
   ctx.ui.web.setFooter(FOOTER_KEY, undefined);

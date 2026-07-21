@@ -1,8 +1,9 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { discoverExtensionEntryPaths, resolveBundledExtensionPaths } from "../server/extensions.js";
+import gitFooterExtension from "../examples/pi-web-extensions/git-footer.js";
 
 const tempDirs: string[] = [];
 
@@ -60,5 +61,48 @@ describe("bundled extension path discovery", () => {
     await writeFile(join(bundledExtensionsDir, "auto-session-name.ts"), "export default () => {};\n");
 
     expect(resolveBundledExtensionPaths({ piCwd: appDir, appDir, bundledExtensionsDir })).toEqual([]);
+  });
+
+  it("re-emits a footer when the same session id gets a new runtime", async () => {
+    vi.useFakeTimers();
+    try {
+      const handlers = new Map<string, Array<(event: unknown, context: any) => unknown>>();
+      gitFooterExtension({
+        on(event: string, handler: (event: unknown, context: any) => unknown) {
+          const list = handlers.get(event) || [];
+          list.push(handler);
+          handlers.set(event, list);
+        },
+      } as any);
+
+      const makeContext = () => {
+        const calls: Array<[string, unknown]> = [];
+        const sessionManager = { getSessionId: () => "same-session", getCwd: () => process.cwd() };
+        return {
+          calls,
+          context: {
+            cwd: process.cwd(),
+            sessionManager,
+            ui: { web: { setFooter: (key: string, footer: unknown) => calls.push([key, footer]) } },
+          },
+        };
+      };
+      const first = makeContext();
+      const replacement = makeContext();
+      const start = handlers.get("session_start")![0];
+      const shutdown = handlers.get("session_shutdown")![0];
+
+      await start({}, first.context);
+      await start({}, replacement.context);
+      expect(first.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
+      expect(replacement.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
+
+      await shutdown({}, first.context);
+      expect(replacement.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
+      await shutdown({}, replacement.context);
+      expect(replacement.calls.at(-1)).toEqual(["local-git-footer", undefined]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
