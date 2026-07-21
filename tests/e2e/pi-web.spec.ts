@@ -818,7 +818,13 @@ test.describe("sessions drawer", () => {
     await page.locator("#sessionNewButton").click();
     if (isMobile) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
-    await expect(page.locator(".emptyCwdChooser", { hasText: "Working directory" })).toBeVisible();
+    const emptyState = page.locator(".emptyCwdChooser", { hasText: "Working directory" });
+    await expect(emptyState).toBeVisible();
+    const animation = emptyState.locator(".newChatLoadingAnimation");
+    await expect(animation).toBeVisible();
+    await expect(animation).not.toHaveClass(/resetting/);
+    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+    await expect(emptyState.getByRole("button", { name: "Change working directory" })).toContainText(/pi-web/);
   });
 
   test("deletes a non-current session from the row actions menu", async ({ page }) => {

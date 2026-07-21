@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { createContextMeter } from "../src/composer/contextMeter.js";
 import { createModelSettings, thinkingLevelFill } from "../src/models/modelSettings.js";
 import type { AppElements } from "../src/app/elements.js";
@@ -222,6 +222,29 @@ describe("configurable accent color", () => {
     expect(sessionsCss).toContain(':root[data-loading-animation="pulse"] .sessionBarTab.running::before');
     expect(sessionsCss).toContain(':root[data-loading-animation="glow"] .sessionBarTab.running::after');
     expect(sessionsCss).not.toContain("linear-gradient(\n    60deg,");
+  });
+});
+
+describe("new session empty state", () => {
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  const css = readFileSync(new URL("../src/styles/folderPicker.css", import.meta.url), "utf8");
+  const sessionsTs = readFileSync(new URL("../src/sessions/sessionDrawer.ts", import.meta.url), "utf8");
+
+  it("shows and replays the restored new-chat animation after transcript loading", () => {
+    expect(statSync(new URL("../public/new-chat-loading.mp4", import.meta.url)).size).toBeGreaterThan(0);
+    expect(html).toContain('class="newChatLoadingAnimation"');
+    expect(html).toContain('src="/new-chat-loading.mp4"');
+    expect(css).toContain(".newChatLoadingAnimation.resetting");
+    expect(sessionsTs).toContain("function finishTranscriptLoading()");
+    expect(sessionsTs).toContain("video.currentTime = 0;");
+    expect(sessionsTs).toContain("void video.play()");
+  });
+
+  it("makes the working directory a compact accessible control", () => {
+    expect(html).toContain('class="emptyCwdButton" aria-label="Change working directory"');
+    expect(html).toContain('class="emptyCwdPath"');
+    expect(css).toContain("text-overflow: ellipsis;");
+    expect(css).toContain("max-width: min(330px, 65vw);");
   });
 });
 

@@ -166,6 +166,28 @@ test.describe("visual regression", () => {
     });
   });
 
+  test("new session", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
+
+    await page.goto("/");
+    await startEmptySession(page);
+    const emptyState = page.locator("#emptyCwdChooser");
+    const animation = emptyState.locator(".newChatLoadingAnimation");
+    await expect(emptyState).toBeVisible();
+    await expect(animation).toBeVisible();
+    await expect(emptyState.getByRole("button", { name: "Change working directory" })).toBeVisible();
+
+    // A PNG cannot represent motion. Wait for the one-shot animation to finish
+    // naturally, then capture its settled final frame.
+    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.ended), { timeout: 3_000 }).toBe(true);
+    await animation.evaluate((video: HTMLVideoElement) => video.pause());
+
+    await expect(page).toHaveScreenshot(`new-session-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+    });
+  });
+
   test("sessions drawer", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1600, height: 1000 });

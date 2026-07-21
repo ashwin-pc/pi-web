@@ -78,7 +78,7 @@ export type AppElements = {
   tokenShareFullscreenCloseButton: HTMLButtonElement;
   gitPanel: HTMLElement;
   emptyCwdChooserEl: HTMLDivElement;
-  emptyCwdPathEl: HTMLDivElement;
+  emptyCwdPathEl: HTMLSpanElement;
   emptyCwdButton: HTMLButtonElement;
 };
 
@@ -169,7 +169,7 @@ export function getAppElements(): AppElements {
     tokenShareFullscreenCloseButton: requiredElement<HTMLButtonElement>("#tokenShareFullscreenCloseButton"),
     gitPanel: requiredElement<HTMLElement>("#gitPanel"),
     emptyCwdChooserEl: requiredElement<HTMLDivElement>("#emptyCwdChooser"),
-    emptyCwdPathEl: requiredElement<HTMLDivElement>("#emptyCwdChooser .emptyCwdPath"),
+    emptyCwdPathEl: requiredElement<HTMLSpanElement>("#emptyCwdChooser .emptyCwdPath"),
     emptyCwdButton: requiredElement<HTMLButtonElement>("#emptyCwdChooser .emptyCwdButton"),
   };
 }

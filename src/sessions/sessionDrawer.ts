@@ -12,7 +12,9 @@ export type SessionsController = {
   setSessionDrawerOpen: (open: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
+  beginTranscriptLoading: () => void;
   updateEmptyCwdChooser: () => void;
+  finishTranscriptLoading: () => void;
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
@@ -157,6 +159,9 @@ export function createSessions(options: {
   let closeCurrentSessionBucketMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
   let unreadFilterActive = false;
+  let transcriptLoading = true;
+  let transcriptLoadGeneration = 0;
+  let lastReplayedGeneration = -1;
   type SessionRowTool = "pin" | SessionMarkerColorId;
   let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
 
@@ -170,9 +175,61 @@ export function createSessions(options: {
     run: () => Promise<void> | void;
   };
 
+  function beginTranscriptLoading() {
+    transcriptLoading = true;
+    transcriptLoadGeneration += 1;
+    updateEmptyCwdChooser();
+  }
+
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = state.currentCwd;
-    elements.emptyCwdChooserEl.hidden = elements.messagesEl.children.length > 0 || state.isStreaming;
+    elements.emptyCwdChooserEl.hidden = transcriptLoading || elements.messagesEl.children.length > 0 || state.isStreaming;
+  }
+
+  function finishTranscriptLoading() {
+    if (!transcriptLoading) {
+      updateEmptyCwdChooser();
+      return;
+    }
+    if (elements.messagesEl.children.length === 0 && !state.isStreaming) {
+      const generation = transcriptLoadGeneration;
+      if (lastReplayedGeneration !== generation) {
+        lastReplayedGeneration = generation;
+        void restartNewChatAnimation(generation);
+      }
+      return;
+    }
+    transcriptLoading = false;
+    updateEmptyCwdChooser();
+  }
+
+  async function restartNewChatAnimation(generation: number) {
+    const video = elements.emptyCwdChooserEl.querySelector<HTMLVideoElement>(".newChatLoadingAnimation");
+    if (!video) {
+      if (generation !== transcriptLoadGeneration) return;
+      transcriptLoading = false;
+      updateEmptyCwdChooser();
+      return;
+    }
+
+    video.classList.add("resetting");
+    video.pause();
+    video.currentTime = 0;
+    if (video.seeking) {
+      await new Promise<void>((resolve) => {
+        const timeout = window.setTimeout(resolve, 150);
+        video.addEventListener("seeked", () => {
+          window.clearTimeout(timeout);
+          resolve();
+        }, { once: true });
+      });
+    }
+    if (generation !== transcriptLoadGeneration) return;
+
+    transcriptLoading = false;
+    updateEmptyCwdChooser();
+    video.addEventListener("playing", () => video.classList.remove("resetting"), { once: true });
+    void video.play().catch(() => video.classList.remove("resetting"));
   }
 
   async function selectSessionCwd(cwd: string) {
@@ -301,6 +358,7 @@ export function createSessions(options: {
     const data = await res.json();
     if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
     rememberSessionCwd(cwd || data.cwd || state.currentCwd);
+    beginTranscriptLoading();
     clearMessages();
     updateMeta(data);
     await refreshState();
@@ -1031,6 +1089,7 @@ export function createSessions(options: {
       state.currentSessionTitle = knownTitle || "Session";
       renderSessionBar();
       renderCurrentSessionBucketButton();
+      beginTranscriptLoading();
       clearMessages();
     }
     try {
@@ -1578,6 +1637,7 @@ export function createSessions(options: {
         state.currentSessionId = item.id;
         renderSessionBar();
         renderCurrentSessionBucketButton();
+        beginTranscriptLoading();
         clearMessages();
       }
       try {
@@ -1715,7 +1775,9 @@ export function createSessions(options: {
     refreshSessions,
     setSessionDrawerOpen,
     startNewSession,
+    beginTranscriptLoading,
     updateEmptyCwdChooser,
+    finishTranscriptLoading,
     updateSessionRuntime,
     renderSessionBar,
     renderCurrentSessionBucketButton,

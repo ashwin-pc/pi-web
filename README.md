@@ -120,6 +120,14 @@ See [pi-web extensions](docs/pi-web-extensions.md) for locations, types, and exa
 
 The README references the same deterministic Playwright visual snapshots used by `tests/e2e/visual.spec.ts`. Desktop and mobile captures are shown side by side, and when visual snapshots are intentionally updated, these images update with them.
 
+### New session
+
+New sessions open with a lightweight animated empty state and a compact working-directory control. The visual baseline waits for the animation’s settled final frame so screenshot comparisons stay deterministic.
+
+| Desktop | Mobile |
+| --- | --- |
+| ![pi-web new session desktop](tests/e2e/visual.spec.ts-snapshots/new-session-desktop.png) | ![pi-web new session mobile](tests/e2e/visual.spec.ts-snapshots/new-session-mobile.png) |
+
 ### Diff review
 
 | Desktop | Mobile |

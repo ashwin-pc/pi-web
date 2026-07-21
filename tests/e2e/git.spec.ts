@@ -104,7 +104,9 @@ test("git commit detail shows changed files, diff, and layout toggle", async ({ 
   await page.goto("/");
   await page.locator("#gitButton").click();
   await page.locator("#gitGraphTab").click();
-  await page.locator(".gitCommitItem").first().click();
+  // Plain `git show` has no combined patch for merge commits, so exercise a
+  // regular commit when the repository's newest entry is a PR merge.
+  await page.locator(".gitCommitItem").filter({ hasNotText: /^Merge / }).first().click();
 
   await expect(page.locator(".gitCommitDetails")).toBeVisible();
   await expect(page.locator(".gitCommitFiles")).toBeVisible();

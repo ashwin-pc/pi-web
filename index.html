@@ -80,10 +80,18 @@
 
       <section id="messages" class="messages" aria-live="polite"></section>
       <div id="emptyCwdChooser" class="emptyCwdChooser" hidden>
+        <video class="newChatLoadingAnimation" muted playsinline preload="auto" aria-hidden="true">
+          <source src="/new-chat-loading.mp4" type="video/mp4">
+        </video>
         <div class="emptyCwdInner">
-          <div class="emptyCwdLabel">Working directory</div>
-          <div class="emptyCwdPath"></div>
-          <button type="button" class="emptyCwdButton">Change folder</button>
+          <span class="emptyCwdLabel">Working directory</span>
+          <div class="emptyWorkspaceControls">
+            <button type="button" class="emptyCwdButton" aria-label="Change working directory" title="Change working directory">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 6h6l2 2h10v10H3z"></path></svg>
+              <span class="emptyCwdPath"></span>
+              <span class="emptyControlChevron" aria-hidden="true">⌄</span>
+            </button>
+          </div>
         </div>
       </div>
 
