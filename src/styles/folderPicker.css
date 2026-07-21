@@ -116,7 +116,8 @@
   }
 
   .emptyCwdButton {
-    flex: 1 1 auto;
+    flex: 0 1 auto;
+    width: fit-content;
     max-width: 100%;
   }
 }

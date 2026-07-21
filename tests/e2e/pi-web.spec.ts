@@ -824,7 +824,14 @@ test.describe("sessions drawer", () => {
     await expect(animation).toBeVisible();
     await expect(animation).not.toHaveClass(/resetting/);
     await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
-    await expect(emptyState.getByRole("button", { name: "Change working directory" })).toContainText(/pi-web/);
+    const cwdButton = emptyState.getByRole("button", { name: "Change working directory" });
+    await expect(cwdButton).toContainText(/pi-web/);
+    const trailingSpace = await cwdButton.evaluate((button) => {
+      const buttonRect = button.getBoundingClientRect();
+      const chevronRect = button.querySelector(".emptyControlChevron")!.getBoundingClientRect();
+      return buttonRect.right - chevronRect.right;
+    });
+    expect(trailingSpace).toBeLessThan(16);
   });
 
   test("deletes a non-current session from the row actions menu", async ({ page }) => {
