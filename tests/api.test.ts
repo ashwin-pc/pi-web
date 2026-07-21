@@ -164,6 +164,29 @@ describe("pi-web mock API", () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
   });
 
+  it("returns the tree navigation response and emits its terminal runtime event", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    await once(ws, "open");
+    const runtimeEvents: any[] = [];
+    ws.on("message", (data) => {
+      const event = JSON.parse(String(data));
+      if (event.type === "session_runtime_changed") runtimeEvents.push(event);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    runtimeEvents.length = 0;
+    const response = await fetch(`${baseUrl}/api/session/tree/navigate`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", targetId: "mock-u1" }),
+    });
+    expect(response.status).toBe(200);
+    expect((await response.json()).leafId).toBeNull();
+    await waitForCondition(() => runtimeEvents.length >= 2);
+    ws.close();
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+  });
+
   it("returns a very deep conversation tree without overflowing the stack", async () => {
     const port = await freePort();
     const deepChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
@@ -305,21 +328,29 @@ describe("pi-web mock API", () => {
     }
   });
 
-  it("renames the current session", async () => {
-    const res = await fetch(`${baseUrl}/api/session/name`, {
+  it("renames and clears the current session without duplicate state broadcasts", async () => {
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    await once(ws, "open");
+    const events: any[] = [];
+    ws.on("message", (data) => events.push(JSON.parse(String(data))));
+
+    const rename = async (name: string) => fetch(`${baseUrl}/api/session/name`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: "mock-current", name: "Renamed mock session" }),
+      body: JSON.stringify({ sessionId: "mock-current", name }),
     });
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.sessionName).toBe("Renamed mock session");
+    expect((await rename("Renamed mock session")).status).toBe(200);
+    await waitForCondition(() => events.some((event) => event.type === "state_changed"));
+    events.length = 0;
+    const clearRes = await rename("");
+    expect(clearRes.status).toBe(200);
+    expect((await clearRes.json()).sessionName).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(events.filter((event) => event.type === "state_changed")).toHaveLength(1);
+    ws.close();
 
     const state = await (await fetch(`${baseUrl}/api/state`)).json();
-    expect(state.sessionName).toBe("Renamed mock session");
-
-    const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
-    expect(sessions.sessions.find((item: any) => item.id === "mock-current").name).toBe("Renamed mock session");
+    expect(state.sessionName).toBeUndefined();
   });
 
   it("rejects empty prompts", async () => {
@@ -445,10 +476,38 @@ describe("pi-web mock API", () => {
     expect(older.isCurrent).toBe(false);
   });
 
+  it("preserves missing-session status codes across session routes", async () => {
+    const missing = "does-not-exist";
+    const cases: Array<[string, RequestInit, number]> = [
+      [`/api/state?sessionId=${missing}`, {}, 404],
+      [`/api/messages?sessionId=${missing}`, {}, 404],
+      ["/api/sessions/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: missing }) }, 404],
+      ["/api/session/cwd", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, cwd: "/tmp" }) }, 404],
+      ["/api/web-header-action/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, key: "recap" }) }, 404],
+      ["/api/web-git-tab/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, key: "status" }) }, 404],
+      [`/api/session/tree?sessionId=${missing}`, {}, 404],
+      ["/api/session/tree/navigate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, targetId: "" }) }, 404],
+      ["/api/session/tree/navigate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "mock-current", targetId: "" }) }, 400],
+      ["/api/session/name", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, name: "" }) }, 404],
+    ];
+    for (const [path, init, status] of cases) expect((await fetch(`${baseUrl}${path}`, init)).status, path).toBe(status);
+  });
+
   it("creates and opens sessions through validated session APIs", async () => {
+    const currentState = await (await fetch(`${baseUrl}/api/state`)).json();
     const newRes = await fetch(`${baseUrl}/api/sessions/new`, { method: "POST" });
     expect(newRes.status).toBe(200);
-    expect((await newRes.json()).sessionId).toMatch(/^mock-/);
+    const created = await newRes.json();
+    expect(created.sessionId).toMatch(/^mock-/);
+    expect(created.cwd).toBe(currentState.cwd);
+
+    const unknownSourceRes = await fetch(`${baseUrl}/api/sessions/new`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "missing-source" }),
+    });
+    expect(unknownSourceRes.status).toBe(200);
+    expect((await unknownSourceRes.json()).cwd).toBe(currentState.cwd);
 
     const openRes = await fetch(`${baseUrl}/api/sessions/open`, {
       method: "POST",

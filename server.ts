@@ -1,10 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { extname, join, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -15,17 +15,35 @@ import {
   getAgentDir,
   ModelRegistry,
   SessionManager,
-  type ExtensionUIDialogOptions,
-  type ExtensionUIContext,
   type SessionStartEvent,
-  type SlashCommandInfo,
 } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
-import type { PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebUi } from "./src/extensions.js";
+import { findArtifactFile, isValidArtifactName, safeArtifactName } from "./server/shared/artifacts.js";
+import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
+import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import type { PiWebSession } from "./server/types.js";
+import type { SlashCommandDto } from "./server/session/dto.js";
+import { SessionActivity } from "./server/session/activity.js";
+import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
+import { createWebUiBridge } from "./server/extensions/webUi.js";
+import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
+import {
+  conversationTreeForSession,
+  getSessionSlashCommands,
+  isAssistantAbortedMessage,
+  isAssistantFailureMessage,
+  isIncompleteToolResultMessage,
+  messageEntryRefs,
+  projectSessionState,
+  sessionIsRetrying,
+  sessionStats,
+  simplifyMessage,
+  simplifyModel,
+  textFromContent,
+} from "./server/session/projection.js";
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const distDir = join(appDir, "dist");
@@ -36,8 +54,6 @@ const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
-let artifactDir = join(piCwd, ".pi", "web", "artifacts");
-let legacyArtifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
 const knownCwds = new Set<string>([piCwd]);
 
 const webUiContextFile = join(appDir, "contexts", "web-ui.md");
@@ -46,7 +62,7 @@ const noSession = process.env.PI_WEB_NO_SESSION === "1";
 const mockMode = process.env.PI_WEB_MOCK === "1";
 const execFileAsync = promisify(execFile);
 
-type WebSlashCommandInfo = Omit<SlashCommandInfo, "source"> & { source: SlashCommandInfo["source"] | "web" };
+type WebSlashCommandInfo = SlashCommandDto;
 
 const webSlashCommands: WebSlashCommandInfo[] = [
   { name: "help", description: "Show slash command help", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
@@ -115,32 +131,14 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
-function safeArtifactName(name: string) {
-  return name.replace(/[^a-zA-Z0-9._-]+/g, "_").replace(/^\.+/, "").slice(0, 160);
-}
-
 function serveArtifact(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const rawName = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
   const name = safeArtifactName(rawName);
-  if (!name || rawName.includes("..") || rawName.includes("/") || name !== rawName) return sendJson(res, 400, { ok: false, error: "Invalid artifact name" });
+  if (!isValidArtifactName(rawName) || name !== rawName) return sendJson(res, 400, { ok: false, error: "Invalid artifact name" });
 
-  let resolvedFile = "";
-  const artifactRoots = Array.from(new Set([piCwd, ...knownCwds]));
-  for (const cwd of artifactRoots) {
-    const currentArtifactDir = join(cwd, ".pi", "web", "artifacts");
-    const currentLegacyArtifactDir = join(cwd, ".pi-web-uploads", "artifacts");
-    const file = resolve(currentArtifactDir, name);
-    const legacyFile = resolve(currentLegacyArtifactDir, name);
-    if (file.startsWith(currentArtifactDir) && existsSync(file)) {
-      resolvedFile = file;
-      break;
-    }
-    if (legacyFile.startsWith(currentLegacyArtifactDir) && existsSync(legacyFile)) {
-      resolvedFile = legacyFile;
-      break;
-    }
-  }
+  const artifactRoots = new Set([piCwd, ...knownCwds]);
+  const resolvedFile = findArtifactFile(artifactRoots, name);
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
   res.writeHead(200, {
@@ -165,83 +163,6 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
   pipeReadStream(res, file);
 }
 
-function textFromContent(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  return content.map((part) => {
-    if (!part || typeof part !== "object") return "";
-    const p = part as Record<string, unknown>;
-    if (p.type === "text" && typeof p.text === "string") return p.text;
-    if (p.type === "image") return "[image]";
-    // toolCall parts are rendered as tool cards in the UI — omit from text
-    return "";
-  }).filter(Boolean).join("\n");
-}
-
-function simplifyModel(model: any) {
-  if (!model) return undefined;
-  return {
-    provider: model.provider,
-    id: model.id,
-    name: model.name || model.id,
-    reasoning: Boolean(model.reasoning),
-    contextWindow: model.contextWindow,
-    maxTokens: model.maxTokens,
-  };
-}
-
-async function git(args: string[], timeout = 15_000, cwd = piCwd) {
-  return execFileAsync("git", args, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 });
-}
-
-async function gitBuffer(args: string[], timeout = 15_000, cwd = piCwd) {
-  return new Promise<Buffer>((resolvePromise, reject) => {
-    execFile("git", args, { cwd, timeout, maxBuffer: 50 * 1024 * 1024, encoding: "buffer" }, (error, stdout) => {
-      if (error) {
-        (error as any).stdout = stdout;
-        reject(error);
-        return;
-      }
-      resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
-    });
-  });
-}
-
-async function isGitRepo(cwd = piCwd) {
-  try { await git(["rev-parse", "--is-inside-work-tree"], 15_000, cwd); return true; } catch { return false; }
-}
-
-async function assertDirectory(path: string) {
-  const resolved = resolve(path || piCwd);
-  const info = await stat(resolved);
-  if (!info.isDirectory()) throw new Error("Path is not a directory");
-  return resolved;
-}
-
-async function listDirectories(path: string) {
-  const resolved = await assertDirectory(path);
-  const entries = await readdir(resolved, { withFileTypes: true });
-  const dirs = entries
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => ({ name: entry.name, path: join(resolved, entry.name) }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  return { ok: true, path: resolved, parent: resolve(resolved, ".."), dirs };
-}
-
-async function createDirectory(parent: string, name: string) {
-  const trimmedName = name.trim();
-  if (!trimmedName) throw new Error("Folder name is required");
-  if (isAbsolute(trimmedName) || trimmedName === "." || trimmedName === ".." || trimmedName.includes("/") || trimmedName.includes("\\")) {
-    throw new Error("Folder name must be a single directory name");
-  }
-  const parentDir = await assertDirectory(parent);
-  const target = resolve(parentDir, trimmedName);
-  const rel = relative(parentDir, target);
-  if (!rel || rel.startsWith("..") || isAbsolute(rel)) throw new Error("Folder name must stay inside the selected directory");
-  await mkdir(target);
-  return listDirectories(target);
-}
-
 function hasUserMessages(value: PiWebSession) {
   return value.messages.some((message: any) => message?.role === "user");
 }
@@ -254,161 +175,9 @@ async function ensurePiWebStorage(cwd = piCwd) {
 }
 
 async function setPiCwd(path: string) {
-  piCwd = await assertDirectory(path);
+  piCwd = await assertDirectory(path, piCwd);
   knownCwds.add(piCwd);
-  artifactDir = join(piCwd, ".pi", "web", "artifacts");
-  legacyArtifactDir = join(piCwd, ".pi-web-uploads", "artifacts");
   await ensurePiWebStorage(piCwd);
-}
-
-function gitLabel(indexStatus: string, worktreeStatus: string) {
-  if (indexStatus === "?" && worktreeStatus === "?") return "untracked";
-  if (indexStatus === "U" || worktreeStatus === "U" || indexStatus === "A" && worktreeStatus === "A" || indexStatus === "D" && worktreeStatus === "D") return "conflicted";
-  if (indexStatus === "R" || worktreeStatus === "R") return "renamed";
-  if (indexStatus === "A" || worktreeStatus === "A") return "added";
-  if (indexStatus === "D" || worktreeStatus === "D") return "deleted";
-  if (indexStatus !== " " && indexStatus !== "?") return "staged";
-  return "modified";
-}
-
-function parseStatusLine(line: string) {
-  const indexStatus = line[0] || " ";
-  const worktreeStatus = line[1] || " ";
-  const rawPath = line.slice(3);
-  const renamed = rawPath.includes(" -> ");
-  const [oldPath, path] = renamed ? rawPath.split(" -> ") : [undefined, rawPath];
-  return { path: path || rawPath, oldPath, indexStatus, worktreeStatus, label: gitLabel(indexStatus, worktreeStatus), staged: indexStatus !== " " && indexStatus !== "?" };
-}
-
-async function gitStatus(cwd = piCwd, fetchRemote = false) {
-  if (!await isGitRepo(cwd)) return { ok: true, isRepo: false, ahead: 0, behind: 0, files: [] };
-  if (fetchRemote) await git(["fetch", "--prune"], 60_000, cwd).catch(() => undefined);
-  const [{ stdout: root }, { stdout: branchOut }, { stdout: porcelain }, upstreamResult, defaultResult] = await Promise.all([
-    git(["rev-parse", "--show-toplevel"], 15_000, cwd),
-    git(["branch", "--show-current"], 15_000, cwd).catch(() => ({ stdout: "" })),
-    git(["status", "--porcelain=v1", "-b"], 15_000, cwd),
-    git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], 15_000, cwd).catch(() => ({ stdout: "" })),
-    git(["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], 15_000, cwd).catch(() => ({ stdout: "" })),
-  ]);
-  const lines = porcelain.trimEnd().split("\n").filter(Boolean);
-  const header = lines[0] || "";
-  const ahead = Number(header.match(/ahead (\d+)/)?.[1] || 0);
-  const behind = Number(header.match(/behind (\d+)/)?.[1] || 0);
-  const trackedFiles = lines.slice(1).map(parseStatusLine).filter((file) => file.label !== "untracked");
-  const { stdout: untrackedOut } = await git(["ls-files", "--others", "--exclude-standard"], 15_000, cwd).catch(() => ({ stdout: "" }));
-  const untrackedFiles = untrackedOut.split("\n").map((path) => path.trim()).filter(Boolean).map((path) => ({
-    path,
-    indexStatus: "?",
-    worktreeStatus: "?",
-    label: "untracked",
-    staged: false,
-  }));
-  return {
-    ok: true,
-    isRepo: true,
-    root: root.trim(),
-    branch: branchOut.trim(),
-    upstream: upstreamResult.stdout.trim(),
-    defaultRemoteBranch: defaultResult.stdout.trim(),
-    ahead,
-    behind,
-    files: [...trackedFiles, ...untrackedFiles],
-  };
-}
-
-function safeGitPath(path: string) {
-  if (!path || path.startsWith("/") || path.includes("..") || path.includes("\0")) throw new Error("Invalid path");
-  return path;
-}
-
-function isImageGitPath(path: string) {
-  return [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(extname(path).toLowerCase());
-}
-
-async function sendGitImage(res: ServerResponse, options: { cwd: string; path: string; oldPath?: string; version: string; staged: boolean }) {
-  const filePath = safeGitPath(options.path);
-  const oldPath = options.oldPath ? safeGitPath(options.oldPath) : undefined;
-  const displayPath = options.version === "before" ? oldPath || filePath : filePath;
-  if (!isImageGitPath(displayPath)) return sendJson(res, 415, { ok: false, error: "Not an image file" });
-
-  const contentType = contentTypes[extname(displayPath).toLowerCase()] || "application/octet-stream";
-  if (options.version === "before") {
-    const data = await gitBuffer(["show", `HEAD:${oldPath || filePath}`], 15_000, options.cwd);
-    res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
-    res.end(data);
-    return;
-  }
-
-  if (options.version !== "after") throw new Error("Invalid image version");
-  if (options.staged) {
-    const data = await gitBuffer(["show", `:${filePath}`], 15_000, options.cwd);
-    res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
-    res.end(data);
-    return;
-  }
-
-  const resolved = resolve(options.cwd, filePath);
-  const rel = relative(options.cwd, resolved);
-  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Image path is outside the repository");
-  const info = await stat(resolved);
-  if (!info.isFile()) throw new Error("Image not found");
-  res.writeHead(200, { "content-type": contentType, "cache-control": "no-store" });
-  pipeReadStream(res, resolved);
-}
-
-async function gitCwdFromRepoParam(repo: string | null, baseCwd = piCwd) {
-  if (!repo || repo === ".") return baseCwd;
-  if (repo.includes("\0") || isAbsolute(repo)) throw new Error("Invalid repository path");
-  const resolved = resolve(baseCwd, repo);
-  const rel = relative(baseCwd, resolved);
-  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Repository path is outside the workspace");
-  const info = await stat(resolved);
-  if (!info.isDirectory()) throw new Error("Repository path is not a directory");
-  return resolved;
-}
-
-const ignoredGitRepoDirs = new Set([".git", ".pi", ".pi-web-uploads", "node_modules", "dist", "build", ".cache", ".next", "target", "vendor"]);
-
-async function gitRepoSummary(path: string, cwd: string) {
-  const status = await gitStatus(cwd) as any;
-  return {
-    path,
-    root: status.root || cwd,
-    branch: status.branch || "",
-    upstream: status.upstream || "",
-    ahead: status.ahead || 0,
-    behind: status.behind || 0,
-    dirtyCount: status.files?.length || 0,
-    isCurrent: path === ".",
-  };
-}
-
-async function listGitRepos(cwd = piCwd) {
-  const repos: Array<Awaited<ReturnType<typeof gitRepoSummary>>> = [];
-  const seenRoots = new Set<string>();
-  async function addRepo(path: string, cwd: string) {
-    if (!await isGitRepo(cwd)) return;
-    const { stdout } = await git(["rev-parse", "--show-toplevel"], 15_000, cwd);
-    const root = resolve(stdout.trim());
-    if (seenRoots.has(root)) return;
-    seenRoots.add(root);
-    repos.push(await gitRepoSummary(path, cwd));
-  }
-
-  await addRepo(".", cwd);
-  const entries = await readdir(cwd, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isDirectory() || ignoredGitRepoDirs.has(entry.name)) continue;
-    const repoCwd = join(cwd, entry.name);
-    if (!existsSync(join(repoCwd, ".git"))) continue;
-    await addRepo(entry.name, repoCwd);
-  }
-  return { ok: true, cwd, depth: 1, repos };
-}
-
-function parseCommit(entry: string) {
-  const [hash = "", shortHash = "", parents = "", author = "", date = "", refs = "", subject = ""] = entry.split("\x1f");
-  return { hash, shortHash, parents: parents ? parents.split(" ").filter(Boolean) : [], author, date, refs: refs ? refs.split(", ").filter(Boolean) : [], subject };
 }
 
 async function requestCwdFromSessionId(sessionId: string | null) {
@@ -420,36 +189,6 @@ async function requestCwdFromSessionId(sessionId: string | null) {
   const info = await findSessionInfoById(sessionId);
   if (!info) throw new Error("Session not found");
   return info.cwd || piCwd;
-}
-
-async function gitLog(cwd = piCwd) {
-  if (!await isGitRepo(cwd)) return { ok: true, isRepo: false, commits: [] };
-  const { stdout } = await git(["log", "--all", "-n", "200", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s%x1e"], 15_000, cwd);
-  const commits = stdout.split("\x1e").map((entry) => entry.trim()).filter(Boolean).map(parseCommit);
-  return { ok: true, isRepo: true, commits };
-}
-
-async function gitCommitDetails(hash: string, cwd = piCwd) {
-  if (!await isGitRepo(cwd)) throw new Error("Not a Git repository");
-  if (!/^[a-f0-9]{7,40}$/i.test(hash)) throw new Error("Invalid commit hash");
-  const [{ stdout: commitOut }, { stdout: nameOut }, { stdout: numstatOut }, { stdout: diff }] = await Promise.all([
-    git(["show", "-s", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s", hash], 15_000, cwd),
-    git(["show", "--name-status", "--format=", hash], 15_000, cwd),
-    git(["show", "--numstat", "--format=", hash], 15_000, cwd),
-    git(["show", "--format=", "--patch", "--find-renames", hash], 15_000, cwd),
-  ]);
-  const stats = new Map<string, { additions?: number; deletions?: number }>();
-  for (const line of numstatOut.split("\n").filter(Boolean)) {
-    const [add, del, ...pathParts] = line.split("\t");
-    const path = pathParts.join("\t");
-    stats.set(path, { additions: Number(add) || 0, deletions: Number(del) || 0 });
-  }
-  const files = nameOut.split("\n").filter(Boolean).map((line) => {
-    const [status, ...parts] = line.split("\t");
-    const path = parts.at(-1) || "";
-    return { path, status, ...(stats.get(path) || {}) };
-  });
-  return { ok: true, commit: parseCommit(commitOut.trim()), files, diff };
 }
 
 // Models confirmed broken with this Copilot integration — tracked at runtime.
@@ -507,447 +246,8 @@ async function persistPromptImages(images: Array<{ data: string; mimeType: strin
   return `\n\nAttached image file${images.length === 1 ? "" : "s"}:\n${lines.join("\n")}`;
 }
 
-function toolRuntimeKey(toolCallId: unknown, toolName: unknown) {
-  const id = typeof toolCallId === "string" ? toolCallId.trim() : "";
-  if (id) return id;
-  return typeof toolName === "string" && toolName.trim() ? toolName.trim() : "";
-}
-
-function toolStartedAtFor(sessionFile: string | undefined, toolCallId: unknown, toolName: unknown) {
-  const key = toolRuntimeKey(toolCallId, toolName);
-  return sessionFile && key ? toolStartedAts.get(sessionFile)?.get(key) : undefined;
-}
-
-function contentWithToolStartedAts(content: unknown, sessionFile?: string) {
-  if (!sessionFile || !Array.isArray(content)) return content;
-  return content.map((part) => {
-    if (!part || typeof part !== "object") return part;
-    const value = part as Record<string, unknown>;
-    if (value.type !== "toolCall") return part;
-    const toolName = value.toolName || value.name;
-    const startedAt = toolStartedAtFor(sessionFile, value.id, toolName);
-    return startedAt && !value.startedAt ? { ...value, startedAt } : part;
-  });
-}
-
-function appendMessageEntryRef(refs: Array<{ entryId?: string }>, entry: any) {
-  if (!entry || typeof entry !== "object") return;
-  if (entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary" && entry.summary) {
-    const entryId = typeof entry.id === "string" && entry.id.trim() ? entry.id : undefined;
-    refs.push({ entryId });
-  }
-}
-
-function messageEntryRefs(targetSession: PiWebSession): Array<{ entryId?: string }> {
-  const getBranch = targetSession.sessionManager?.getBranch;
-  if (typeof getBranch !== "function") return [];
-
-  let branch: any[];
-  try {
-    branch = getBranch.call(targetSession.sessionManager);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(branch)) return [];
-
-  const refs: Array<{ entryId?: string }> = [];
-  let compaction: any | undefined;
-  for (const entry of branch) {
-    if (entry?.type === "compaction") compaction = entry;
-  }
-
-  if (!compaction) {
-    for (const entry of branch) appendMessageEntryRef(refs, entry);
-    return refs;
-  }
-
-  const compactionId = typeof compaction.id === "string" && compaction.id.trim() ? compaction.id : undefined;
-  refs.push({ entryId: compactionId });
-  const compactionIndex = branch.findIndex((entry) => entry?.type === "compaction" && entry?.id === compaction.id);
-  let foundFirstKept = false;
-  for (let index = 0; index < compactionIndex; index += 1) {
-    const entry = branch[index];
-    if (entry?.id === compaction.firstKeptEntryId) foundFirstKept = true;
-    if (foundFirstKept) appendMessageEntryRef(refs, entry);
-  }
-  for (let index = compactionIndex + 1; index < branch.length; index += 1) appendMessageEntryRef(refs, branch[index]);
-  return refs;
-}
-
-function simplifyMessage(message: unknown, toolCallArgs?: Map<string, Record<string, unknown>>, sessionFile?: string, entryId?: string) {
-  if (!message || typeof message !== "object") return message;
-  const m = message as Record<string, unknown>;
-  const content = contentWithToolStartedAts(m.content, sessionFile);
-  const entry = entryId ? { entryId } : {};
-  if (m.role === "bashExecution") {
-    return {
-      ...entry,
-      role: "bashExecution",
-      command: m.command,
-      output: m.output,
-      exitCode: m.exitCode,
-      cancelled: Boolean(m.cancelled),
-      truncated: Boolean(m.truncated),
-      fullOutputPath: m.fullOutputPath,
-      excludeFromContext: Boolean(m.excludeFromContext),
-      timestamp: m.timestamp,
-      raw: m,
-    };
-  }
-  if (m.role === "toolResult") {
-    const args = toolCallArgs?.get(m.toolCallId as string);
-    return {
-      ...entry,
-      role: "toolResult",
-      toolCallId: m.toolCallId,
-      toolName: m.toolName,
-      toolArgs: args,
-      isError: Boolean(m.isError),
-      text: textFromContent(m.content),
-      timestamp: m.timestamp,
-      raw: m,
-    };
-  }
-  const text = textFromContent(content);
-  const errorText = m.role === "assistant" && m.errorMessage ? assistantErrorPreview(m) : "";
-  const stopReasonText = m.role === "assistant" && !errorText ? assistantStopReasonPreview(m) : "";
-  const displayText = errorText || (text && stopReasonText ? `${text}\n\n${stopReasonText}` : stopReasonText || text);
-  const toolCalls = m.role === "assistant" && Array.isArray(content)
-    ? content.filter((part: any) => part?.type === "toolCall").map((part: any) => ({
-      id: part.id,
-      toolName: part.toolName || part.name || "tool",
-      args: part.arguments || part.args || {},
-      startedAt: part.startedAt,
-    }))
-    : undefined;
-  return {
-    ...entry,
-    role: m.role,
-    text: displayText,
-    toolCalls,
-    isError: Boolean(m.errorMessage || m.stopReason === "error" || stopReasonText),
-    timestamp: m.timestamp,
-    raw: content === m.content ? m : { ...m, content },
-  };
-}
-
-function truncatePreview(value: string, max = 220) {
-  const text = value.replace(/\s+/g, " ").trim();
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function entryMessage(entry: any) {
-  if (entry?.type === "message") return entry.message;
-  if (entry?.type === "custom_message") return { role: "custom", content: entry.content, timestamp: entry.timestamp };
-  return undefined;
-}
-
-function messageToolCalls(message: any) {
-  return Array.isArray(message?.content)
-    ? message.content.filter((part: any) => part?.type === "toolCall")
-    : [];
-}
-
-function toolCallName(part: any) {
-  return String(part?.toolName || part?.name || "tool");
-}
-
-function toolCallArgs(part: any) {
-  const args = part?.arguments || part?.args;
-  return args && typeof args === "object" ? args as Record<string, unknown> : {};
-}
-
-function shortArg(value: unknown, max = 90) {
-  const text = typeof value === "string" ? value : JSON.stringify(value ?? "");
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
-}
-
-function toolCallPreview(part: any) {
-  const name = toolCallName(part);
-  const args = toolCallArgs(part);
-  if (name === "bash" && typeof args.command === "string") return `Tool call: bash ${shortArg(args.command, 120)}`;
-  if (typeof args.path === "string") return `Tool call: ${name} ${shortArg(args.path, 120)}`;
-  if (typeof args.query === "string") return `Tool call: ${name} ${shortArg(args.query, 120)}`;
-  if (typeof args.pattern === "string") return `Tool call: ${name} ${shortArg(args.pattern, 120)}`;
-  const first = Object.entries(args).find(([, value]) => typeof value === "string" || typeof value === "number" || typeof value === "boolean");
-  return first ? `Tool call: ${name} ${first[0]}=${shortArg(first[1], 90)}` : `Tool call: ${name}`;
-}
-
-function toolCallsPreview(message: any) {
-  const calls = messageToolCalls(message);
-  if (calls.length === 0) return "";
-  const [first] = calls;
-  const suffix = calls.length > 1 ? ` + ${calls.length - 1} more` : "";
-  return `${toolCallPreview(first)}${suffix}`;
-}
-
-function messageTextPreview(message: any) {
-  return textFromContent(message?.content || "");
-}
-
-const assistantHttpErrorLabels: Record<string, string> = {
-  "429": "Throttling error",
-  "500": "Server error",
-  "502": "Bad gateway",
-  "503": "Service unavailable",
-  "504": "Gateway timeout",
-  "529": "Overloaded",
-};
-
-function isAssistantHttpErrorStatus(code: string) {
-  return code in assistantHttpErrorLabels || /^[45]\d\d$/.test(code);
-}
-
-function assistantStatusLabel(label: string | undefined, code: string) {
-  const clean = (label || "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
-  if (!clean || /^(?:http|status|error|request failed|model request failed)$/i.test(clean)) return assistantHttpErrorLabels[code] || `HTTP ${code}`;
-  return clean;
-}
-
-function assistantStatusErrorPreview(text: string) {
-  const labelled = text.match(/^([A-Za-z][A-Za-z0-9 _/-]*?):\s*(\d{3})(?=$|[\s:,-])/);
-  if (labelled && isAssistantHttpErrorStatus(labelled[2])) return `${assistantStatusLabel(labelled[1], labelled[2])} (${labelled[2]})`;
-  const leading = text.match(/^(?:HTTP\s*)?(\d{3})(?=$|[\s:,-])/i);
-  if (leading && isAssistantHttpErrorStatus(leading[1])) return `${assistantStatusLabel(undefined, leading[1])} (${leading[1]})`;
-  const generic = text.match(/^(Error|Request failed|Model request failed)\s*:?\s*(\d{3})(?=$|[\s:,-])/i);
-  if (generic && isAssistantHttpErrorStatus(generic[2])) return `${assistantStatusLabel(generic[1], generic[2])} (${generic[2]})`;
-  return "";
-}
-
-function assistantParsedErrorDetail(parsed: any) {
-  if (typeof parsed === "string") return parsed.trim();
-  if (!parsed || typeof parsed !== "object") return "";
-  if (parsed.error && typeof parsed.error === "object") return parsed.error.message || parsed.error.type || "";
-  return parsed.message || parsed.detail || parsed.error_description || "";
-}
-
-function assistantJsonErrorPreview(text: string) {
-  const trimmed = text.trim();
-  if (!((trimmed.startsWith("{") && trimmed.endsWith("}")) || (trimmed.startsWith("[") && trimmed.endsWith("]")))) return "";
-  try {
-    const detail = assistantParsedErrorDetail(JSON.parse(trimmed));
-    return detail ? `Error: ${detail}` : "";
-  } catch {
-    return "";
-  }
-}
-
-function assistantErrorPreview(message: any) {
-  const raw = String(message?.errorMessage || "").trim();
-  if (!raw) return "";
-  const jsonText = raw.replace(/^Codex error:\s*/i, "").trim();
-  return assistantJsonErrorPreview(jsonText)
-    || assistantStatusErrorPreview(jsonText)
-    || assistantStatusErrorPreview(raw)
-    || (raw.length > 180 ? `${raw.slice(0, 179)}…` : raw);
-}
-
-function assistantStopReasonPreview(message: any) {
-  const reason = String(message?.stopReason || "").trim();
-  if (!reason || reason === "stop" || reason === "toolUse") return "";
-  if (reason === "length") return "Response stopped because the model hit its output length limit.";
-  if (reason === "aborted") return "Response was aborted.";
-  return `Response stopped unexpectedly: ${reason}`;
-}
-
-function entryRole(entry: any) {
-  const message = entryMessage(entry);
-  if (message?.role === "assistant" && !messageTextPreview(message).trim()) {
-    if (messageToolCalls(message).length > 0) return "toolCall";
-    if (message.errorMessage || assistantStopReasonPreview(message)) return "error";
-  }
-  if (message?.role) return String(message.role);
-  switch (entry?.type) {
-    case "branch_summary": return "branchSummary";
-    case "compaction": return "compaction";
-    case "model_change": return "model";
-    case "thinking_level_change": return "thinking";
-    case "session_info": return "session";
-    case "label": return "label";
-    case "custom": return "custom";
-    default: return String(entry?.type || "entry");
-  }
-}
-
-function entryPreview(entry: any) {
-  const message = entryMessage(entry);
-  if (message) {
-    if (message.role === "toolResult") {
-      const text = textFromContent(message.content);
-      return `Tool result: ${message.toolName || "tool"}${text ? ` — ${text}` : ""}`;
-    }
-    const text = messageTextPreview(message);
-    if (text.trim()) return text;
-    const calls = toolCallsPreview(message);
-    if (calls) return calls;
-    const error = assistantErrorPreview(message);
-    if (error) return error;
-    const stopReason = assistantStopReasonPreview(message);
-    if (stopReason) return stopReason;
-    return message.role === "assistant" ? "Empty assistant message" : `${message.role || "Message"} message`;
-  }
-  switch (entry?.type) {
-    case "branch_summary": return entry.summary || "Branch summary";
-    case "compaction": return entry.summary || "Compaction summary";
-    case "model_change": return `Model changed to ${entry.provider || "provider"}/${entry.modelId || "model"}`;
-    case "thinking_level_change": return `Thinking level changed to ${entry.thinkingLevel || "unknown"}`;
-    case "session_info": return entry.name ? `Session named ${entry.name}` : "Session name cleared";
-    case "label": return entry.label ? `Label ${entry.targetId || "entry"} as ${entry.label}` : `Clear label on ${entry.targetId || "entry"}`;
-    case "custom": return `Custom entry${entry.customType ? `: ${entry.customType}` : ""}`;
-    default: return String(entry?.type || "Entry");
-  }
-}
-
-function countTreeNodes(nodes: any[]): number {
-  let count = 0;
-  const stack = [...nodes];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    count += 1;
-    const children = Array.isArray(node?.children) ? node.children : [];
-    for (const child of children) stack.push(child);
-  }
-  return count;
-}
-
-function countBranchPoints(nodes: any[]): number {
-  let count = 0;
-  const stack = [...nodes];
-  while (stack.length > 0) {
-    const node = stack.pop();
-    const children = Array.isArray(node?.children) ? node.children : [];
-    if (children.length > 1) count += 1;
-    for (const child of children) stack.push(child);
-  }
-  return count;
-}
-
-function simpleTreeNode(node: any, activePathIds: Set<string>, leafId: string | null, childCount: number): any {
-  const entry = node?.entry || node;
-  const id = String(entry?.id || "");
-  return {
-    id,
-    parentId: typeof entry?.parentId === "string" ? entry.parentId : null,
-    type: String(entry?.type || "entry"),
-    role: entryRole(entry),
-    preview: truncatePreview(entryPreview(entry)),
-    timestamp: String(entry?.timestamp || ""),
-    label: typeof node?.label === "string" ? node.label : undefined,
-    labelTimestamp: typeof node?.labelTimestamp === "string" ? node.labelTimestamp : undefined,
-    childCount,
-    isOnActivePath: activePathIds.has(id),
-    isCurrentLeaf: Boolean(leafId && id === leafId),
-    children: [],
-  };
-}
-
-function simplifyTreeNodesFlat(roots: any[], activePathIds: Set<string>, leafId: string | null): any[] {
-  const nodes: any[] = [];
-  const stack = [...roots].reverse();
-  while (stack.length > 0) {
-    const node = stack.pop();
-    const children = Array.isArray(node?.children) ? node.children : [];
-    nodes.push(simpleTreeNode(node, activePathIds, leafId, children.length));
-    for (let index = children.length - 1; index >= 0; index -= 1) stack.push(children[index]);
-  }
-  return nodes;
-}
-
-function conversationTreeForSession(targetSession: PiWebSession) {
-  const manager = targetSession.sessionManager;
-  if (typeof manager.getTree !== "function") throw new Error("Session tree is not available");
-  const leafId = typeof manager.getLeafId === "function" ? manager.getLeafId() : null;
-  const activePath = typeof manager.getBranch === "function" ? manager.getBranch() : [];
-  const activePathIds = new Set(activePath.map((entry: any) => String(entry?.id || "")).filter(Boolean));
-  const roots = manager.getTree();
-  const nodes = simplifyTreeNodesFlat(roots, activePathIds, leafId);
-  return {
-    ok: true,
-    sessionId: targetSession.sessionId,
-    leafId,
-    activePathIds: Array.from(activePathIds),
-    entryCount: nodes.length,
-    branchPointCount: nodes.filter((node: any) => node.childCount > 1).length,
-    nodes,
-  };
-}
-
 function sessionCwd(targetSession: PiWebSession | any = session) {
   return String(targetSession?.sessionManager?.getCwd?.() || targetSession?.cwd || piCwd);
-}
-
-function runtimeStartedAtForPath(path: string, isRunning: boolean) {
-  if (!isRunning) return undefined;
-  const liveStartedAt = liveSessions.get(path)?.session?.runtimeStartedAt;
-  return typeof liveStartedAt === "string" && liveStartedAt.trim() ? liveStartedAt : runtimeStartedAts.get(path);
-}
-
-function runtimeLastActivityAtForPath(path: string, isRunning: boolean) {
-  if (!isRunning) return undefined;
-  const liveLastActivityAt = liveSessions.get(path)?.session?.runtimeLastActivityAt;
-  return typeof liveLastActivityAt === "string" && liveLastActivityAt.trim()
-    ? liveLastActivityAt
-    : runtimeLastActivityAts.get(path) || runtimeStartedAtForPath(path, isRunning);
-}
-
-function ensureRuntimeStartedAt(targetSession: any, startedAt = new Date().toISOString()) {
-  const key = sessionPathKey(targetSession);
-  const existing = key ? runtimeStartedAts.get(key) : undefined;
-  const value = typeof targetSession?.runtimeStartedAt === "string" ? targetSession.runtimeStartedAt : existing || startedAt;
-  if (key) {
-    runtimeStartedAts.set(key, value);
-    if (!runtimeLastActivityAts.has(key)) runtimeLastActivityAts.set(key, value);
-  }
-  if (targetSession && typeof targetSession === "object") {
-    targetSession.runtimeStartedAt = value;
-    if (typeof targetSession.runtimeLastActivityAt !== "string") targetSession.runtimeLastActivityAt = value;
-  }
-  return value;
-}
-
-function markRuntimeActivity(targetSession: any, activityAt = new Date().toISOString(), sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) runtimeLastActivityAts.set(sessionFile, activityAt);
-  if (targetSession && typeof targetSession === "object") targetSession.runtimeLastActivityAt = activityAt;
-  return activityAt;
-}
-
-function clearRuntimeStartedAt(targetSession: any, sessionFile = sessionPathKey(targetSession)) {
-  if (sessionFile) {
-    runtimeStartedAts.delete(sessionFile);
-    runtimeLastActivityAts.delete(sessionFile);
-  }
-  if (targetSession && typeof targetSession === "object") {
-    delete targetSession.runtimeStartedAt;
-    delete targetSession.runtimeLastActivityAt;
-  }
-}
-
-function messageRole(message: any) {
-  return String(message?.role || message?.raw?.role || "");
-}
-
-function messageStopReason(message: any) {
-  return String(message?.stopReason || message?.raw?.stopReason || "");
-}
-
-function messageErrorText(message: any) {
-  return typeof message?.errorMessage === "string"
-    ? message.errorMessage
-    : typeof message?.raw?.errorMessage === "string"
-      ? message.raw.errorMessage
-      : "";
-}
-
-function isAssistantFailureMessage(message: any) {
-  return messageRole(message) === "assistant" && (messageStopReason(message) === "error" || Boolean(messageErrorText(message).trim()));
-}
-
-function isAssistantAbortedMessage(message: any) {
-  return messageRole(message) === "assistant" && messageStopReason(message) === "aborted";
-}
-
-function isIncompleteToolResultMessage(message: any) {
-  return messageRole(message) === "toolResult";
 }
 
 type RetrySessionTarget =
@@ -1051,80 +351,6 @@ async function retrySessionFromFailure(targetSession: PiWebSession) {
   }
 }
 
-function sessionIsRetrying(live: PiWebSession | undefined) {
-  return Boolean((live as any)?.isRetrying);
-}
-
-function runtimeForPath(path: string, overrides: { isRetrying?: boolean } = {}) {
-  const live = liveSessions.get(path)?.session;
-  const isStreaming = Boolean(live?.isStreaming);
-  const isRetrying = overrides.isRetrying ?? sessionIsRetrying(live);
-  const isCompacting = Boolean(live?.isCompacting);
-  const isRunning = isStreaming || isRetrying || isCompacting;
-  const startedAt = runtimeStartedAtForPath(path, isRunning);
-  const lastActivityAt = runtimeLastActivityAtForPath(path, isRunning);
-  return {
-    loaded: Boolean(live),
-    isRunning,
-    isStreaming,
-    isRetrying,
-    isCompacting,
-    startedAt,
-    lastActivityAt,
-    pendingMessageCount: Number(live?.pendingMessageCount || 0),
-    model: simplifyModel(live?.model),
-  };
-}
-
-function stoppedRuntimeForPath(path: string) {
-  const live = liveSessions.get(path)?.session;
-  return {
-    loaded: Boolean(live),
-    isRunning: false,
-    isStreaming: false,
-    isRetrying: false,
-    isCompacting: false,
-    startedAt: undefined,
-    lastActivityAt: undefined,
-    pendingMessageCount: Number(live?.pendingMessageCount || 0),
-    model: simplifyModel(live?.model),
-  };
-}
-
-function runtimeForEvent(path: string, event: any) {
-  if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
-    return runtimeForPath(path, { isRetrying: true });
-  }
-  return event?.type === "agent_end" || event?.type === "compaction_end"
-    ? stoppedRuntimeForPath(path)
-    : runtimeForPath(path);
-}
-
-function isRuntimeActivityEvent(event: any) {
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start":
-    case "message_update":
-    case "message_end":
-    case "turn_end":
-    case "tool_execution_start":
-    case "tool_execution_update":
-    case "tool_execution_end":
-    case "auto_retry_start":
-    case "auto_retry_end":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function runtimeActivityTimestamp(event: any, fallback = new Date().toISOString()) {
-  for (const value of [event?.lastActivityAt, event?.timestamp, event?.startedAt]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return fallback;
-}
-
 function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd) {
   return {
     id: info.id,
@@ -1135,7 +361,7 @@ function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list
     messageCount: info.messageCount,
     cwd: info.cwd || cwd,
     isCurrent: false,
-    runtime: runtimeForPath(info.path),
+    runtime: sessionActivity.runtimeForPath(info.path),
   };
 }
 
@@ -1166,103 +392,20 @@ async function listSessionInfos(extraCwds: string[] = []) {
   return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
 }
 
-function finiteNumber(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function sessionDisplayName(targetSession: PiWebSession) {
-  return targetSession.getSessionName?.()?.trim()
-    || targetSession.sessionName?.trim()
-    || targetSession.sessionManager.getSessionName?.()?.trim()
-    || undefined;
-}
-
-function liveSessionTitle(targetSession: PiWebSession) {
-  const name = sessionDisplayName(targetSession);
-  if (name) return name;
-
-  for (const message of targetSession.messages as any[]) {
-    const text = textFromContent(message?.content).trim();
-    if (message?.role === "user" && text) return truncatePreview(text, 80);
-  }
-  return "New session";
-}
-
-function sessionStats(targetSession: PiWebSession) {
-  let input = 0;
-  let output = 0;
-  let cacheRead = 0;
-  let cacheWrite = 0;
-  let cost = 0;
-  let userMessages = 0;
-  let assistantMessages = 0;
-  let toolResults = 0;
-
-  const branch = targetSession.sessionManager.getBranch?.();
-  const entries = Array.isArray(branch) && branch.length > 0
-    ? branch.map((entry: any) => entry?.message ?? entry)
-    : targetSession.messages;
-
-  for (const message of entries as any[]) {
-    if (!message || typeof message !== "object") continue;
-    if (message.role === "user") userMessages++;
-    if (message.role === "toolResult") toolResults++;
-    if (message.role !== "assistant") continue;
-    assistantMessages++;
-    const usage = message.usage || {};
-    input += finiteNumber(usage.input);
-    output += finiteNumber(usage.output);
-    cacheRead += finiteNumber(usage.cacheRead);
-    cacheWrite += finiteNumber(usage.cacheWrite);
-    const usageCost = usage.cost || {};
-    const totalCost = finiteNumber(usageCost.total);
-    cost += totalCost || finiteNumber(usageCost.input) + finiteNumber(usageCost.output) + finiteNumber(usageCost.cacheRead) + finiteNumber(usageCost.cacheWrite);
-  }
-
-  const contextUsage = targetSession.getContextUsage?.() || undefined;
-  return {
-    userMessages,
-    assistantMessages,
-    toolResults,
-    totalMessages: entries.length,
-    tokens: {
-      input,
-      output,
-      cacheRead,
-      cacheWrite,
-      total: input + output + cacheRead + cacheWrite,
-    },
-    cost,
-    contextUsage,
-  };
-}
-
 function currentState(targetSession: PiWebSession = session) {
-  const isRetrying = sessionIsRetrying(targetSession);
-  const isRunning = Boolean(targetSession.isStreaming || isRetrying || targetSession.isCompacting);
-  const runtime = runtimeForPath(targetSession.sessionFile);
+  const projected = projectSessionState(targetSession, sessionCwd(targetSession));
+  const { thinkingLevels: _thinkingLevels, ...base } = projected;
+  const isRunning = Boolean(projected.isStreaming || projected.isRetrying || projected.isCompacting);
   return {
-    cwd: sessionCwd(targetSession),
-    sessionFile: targetSession.sessionFile,
-    sessionId: targetSession.sessionId,
-    sessionName: sessionDisplayName(targetSession),
-    sessionTitle: liveSessionTitle(targetSession),
-    isStreaming: targetSession.isStreaming,
-    isRetrying,
-    isCompacting: Boolean(targetSession.isCompacting),
+    ...base,
     runtimeStartedAt: typeof (targetSession as any).runtimeStartedAt === "string"
       ? (targetSession as any).runtimeStartedAt
-      : runtimeStartedAtForPath(targetSession.sessionFile, isRunning),
+      : sessionActivity.startedAtForPath(targetSession.sessionFile, isRunning),
     runtimeLastActivityAt: typeof (targetSession as any).runtimeLastActivityAt === "string"
       ? (targetSession as any).runtimeLastActivityAt
-      : runtimeLastActivityAtForPath(targetSession.sessionFile, isRunning),
-    runtime,
-    model: simplifyModel(targetSession.model),
-    thinkingLevel: targetSession.thinkingLevel,
-    stats: sessionStats(targetSession),
-    webFooters: webFooterEntries(targetSession),
-    webHeaderActions: webHeaderActionEntries(targetSession),
-    webGitTabs: webGitTabEntries(targetSession),
+      : sessionActivity.lastActivityAtForPath(targetSession.sessionFile, isRunning),
+    runtime: sessionActivity.runtimeForPath(targetSession.sessionFile),
+    ...webUiBridge.entries(targetSession),
   };
 }
 
@@ -1271,39 +414,6 @@ function currentStateWithThinkingLevels(targetSession: PiWebSession = session) {
     ...currentState(targetSession),
     thinkingLevels: targetSession.getAvailableThinkingLevels(),
   };
-}
-
-function getSessionSlashCommands(value: any): WebSlashCommandInfo[] {
-  const commands: WebSlashCommandInfo[] = [];
-
-  for (const command of value.extensionRunner?.getRegisteredCommands?.() || []) {
-    commands.push({
-      name: command.invocationName || command.name,
-      description: command.description,
-      source: "extension",
-      sourceInfo: command.sourceInfo,
-    });
-  }
-
-  for (const template of value.promptTemplates || value.resourceLoader?.getPrompts?.().prompts || []) {
-    commands.push({
-      name: template.name,
-      description: template.description,
-      source: "prompt",
-      sourceInfo: template.sourceInfo,
-    });
-  }
-
-  for (const skill of value.resourceLoader?.getSkills?.().skills || []) {
-    commands.push({
-      name: `skill:${skill.name}`,
-      description: skill.description,
-      source: "skill",
-      sourceInfo: skill.sourceInfo,
-    });
-  }
-
-  return commands.filter((command) => typeof command.name === "string" && command.name.length > 0);
 }
 
 function getSlashCommands(value: any = session): WebSlashCommandInfo[] {
@@ -1408,10 +518,10 @@ async function executeSlashCommand(input: string, targetSession: PiWebSession = 
       if (targetSession.isStreaming) throw new Error("Wait for the current response to finish before compacting.");
       if (targetSession.isCompacting) throw new Error("Compaction is already running.");
       if (typeof targetSession.compact !== "function") throw new Error("Compaction is not available in this session.");
-      ensureRuntimeStartedAt(targetSession);
+      sessionActivity.ensureStarted(targetSession);
       const releaseWorkLease = acquireWorkLease(targetSession);
       void targetSession.compact(args || undefined).catch((error: unknown) => {
-        clearRuntimeStartedAt(targetSession);
+        sessionActivity.clearStarted(targetSession);
         broadcast({
           type: "server_error",
           sessionId: targetSession.sessionId,
@@ -1540,513 +650,24 @@ const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 const liveSessions = new Map<string, LiveSessionEntry>();
 const viewerLeases = new Map<string, ViewerLease>();
-const runtimeStartedAts = new Map<string, string>();
-const runtimeLastActivityAts = new Map<string, string>();
-const toolStartedAts = new Map<string, Map<string, string>>();
+const sessionActivity = new SessionActivity((path) => liveSessions.get(path)?.session);
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
 
-type RealtimeSocket = WebSocket & { missedPongs?: number };
-const clients = new Set<RealtimeSocket>();
-type RealtimeEnvelope = Record<string, unknown> & { seq: number };
-const realtimeEventLog: RealtimeEnvelope[] = [];
-const maxRealtimeEventLogSize = 1000;
-let nextRealtimeSeq = 1;
-
-function recordRealtimeMessage(value: unknown): RealtimeEnvelope {
-  const envelope = { ...(typeof value === "object" && value !== null ? value as Record<string, unknown> : { value }), seq: nextRealtimeSeq++ };
-  realtimeEventLog.push(envelope);
-  if (realtimeEventLog.length > maxRealtimeEventLogSize) realtimeEventLog.splice(0, realtimeEventLog.length - maxRealtimeEventLogSize);
-  return envelope;
-}
+let realtimeHub: RealtimeHub;
+const unreadTracker = new SessionUnreadTracker(sessionUiStateStore, sessionActivity, (value) => realtimeHub.broadcast(value));
+realtimeHub = new RealtimeHub(websocketHeartbeatMs, websocketMaxMissedHeartbeats, (value) => unreadTracker.handle(value));
 
 function broadcast(value: unknown) {
-  const envelope = recordRealtimeMessage(value);
-  const data = JSON.stringify(envelope);
-  for (const client of clients) {
-    if (client.readyState === client.OPEN) client.send(data);
-  }
-  queueUnreadStateFromBroadcast(value);
-}
-
-function checkRealtimeHeartbeats() {
-  for (const client of clients) {
-    if (client.readyState === client.CLOSED || client.readyState === client.CLOSING) {
-      clients.delete(client);
-      continue;
-    }
-    if (client.readyState !== client.OPEN) continue;
-    const missedPongs = client.missedPongs || 0;
-    if (missedPongs >= websocketMaxMissedHeartbeats) {
-      client.terminate();
-      continue;
-    }
-    client.missedPongs = missedPongs + 1;
-    try {
-      client.ping();
-    } catch {
-      client.terminate();
-    }
-  }
-}
-
-if (websocketHeartbeatMs > 0) {
-  const realtimeHeartbeat = setInterval(checkRealtimeHeartbeats, websocketHeartbeatMs);
-  realtimeHeartbeat.unref?.();
-}
-
-function shouldClearSessionUnreadEvent(event: any) {
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function noteRuntimeEventForUnreadRecovery(data: Record<string, any>) {
-  const sessionFile = typeof data.sessionFile === "string" ? data.sessionFile.trim() : "";
-  if (!sessionFile) return;
-  const event = data.event;
-  switch (event?.type) {
-    case "agent_start":
-    case "compaction_start": {
-      const startedAt = typeof event.startedAt === "string" && event.startedAt.trim() ? event.startedAt.trim() : new Date().toISOString();
-      runtimeStartedAts.set(sessionFile, startedAt);
-      runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event, startedAt));
-      return;
-    }
-    case "agent_end":
-    case "compaction_end":
-      if (!event.willRetry) {
-        runtimeStartedAts.delete(sessionFile);
-        runtimeLastActivityAts.delete(sessionFile);
-      }
-      return;
-    default:
-      if (isRuntimeActivityEvent(event)) runtimeLastActivityAts.set(sessionFile, runtimeActivityTimestamp(event));
-      return;
-  }
-}
-
-function broadcastSessionUiStateUpdate(operation: Promise<unknown>, warning: string) {
-  void operation
-    .then((sessionUiState) => broadcast({ type: "session_ui_state_changed", sessionUiState }))
-    .catch((error) => console.warn(warning, error));
+  realtimeHub.broadcast(value);
 }
 
 function markSessionUnreadCompleted(sessionId: string, unreadAt = new Date().toISOString()) {
-  broadcastSessionUiStateUpdate(sessionUiStateStore.markUnread(sessionId, unreadAt), "Could not mark session unread:");
+  unreadTracker.markCompleted(sessionId, unreadAt);
 }
 
 function clearSessionUnread(sessionId: string) {
-  broadcastSessionUiStateUpdate(sessionUiStateStore.markRead(sessionId), "Could not clear session unread state:");
-}
-
-function shouldMarkSessionUnreadEvent(event: any) {
-  // Unread means a background session completed and may need attention.
-  // Do not mark on message_end: pi can emit it for the user's submitted
-  // message before the assistant response has finished.
-  if (!event || event.aborted || event.willRetry) return false;
-  switch (event.type) {
-    case "agent_end":
-    case "compaction_end":
-      return true;
-    default:
-      return false;
-  }
-}
-
-function unreadTimestampForEvent(event: any) {
-  for (const value of [event?.timestamp, event?.endedAt, event?.startedAt]) {
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return new Date().toISOString();
-}
-
-function queueUnreadStateFromBroadcast(value: unknown) {
-  if (!value || typeof value !== "object") return;
-  const data = value as Record<string, any>;
-  if (data.type !== "pi_event") return;
-  noteRuntimeEventForUnreadRecovery(data);
-  const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
-  if (!sessionId) return;
-  if (shouldClearSessionUnreadEvent(data.event)) {
-    clearSessionUnread(sessionId);
-    return;
-  }
-  if (!shouldMarkSessionUnreadEvent(data.event)) return;
-  markSessionUnreadCompleted(sessionId, unreadTimestampForEvent(data.event));
-}
-
-const plainExtensionTheme = {
-  fg: (_color: string, text: string) => text,
-  bg: (_color: string, text: string) => text,
-  bold: (text: string) => text,
-  italic: (text: string) => text,
-  underline: (text: string) => text,
-  inverse: (text: string) => text,
-  strikethrough: (text: string) => text,
-  getFgAnsi: () => "",
-  getBgAnsi: () => "",
-  getColorMode: () => "truecolor",
-  getThinkingBorderColor: () => (text: string) => text,
-  getBashModeBorderColor: () => (text: string) => text,
-};
-
-type PendingExtensionUiRequest = {
-  resolve: (response: Record<string, unknown>) => void;
-  cleanup: () => void;
-};
-const pendingExtensionUiRequests = new Map<string, PendingExtensionUiRequest>();
-
-type WebFooterState = {
-  footers: Map<string, PiWebFooter>;
-};
-
-type WebHeaderActionState = {
-  actions: Map<string, PiWebHeaderAction>;
-};
-
-type WebGitTabState = {
-  tabs: Map<string, PiWebGitTab>;
-};
-
-const webFooterStates = new WeakMap<object, WebFooterState>();
-const webHeaderActionStates = new WeakMap<object, WebHeaderActionState>();
-const webGitTabStates = new WeakMap<object, WebGitTabState>();
-
-function getWebFooterState(value: any): WebFooterState {
-  const key = value as object;
-  let state = webFooterStates.get(key);
-  if (!state) {
-    state = { footers: new Map() };
-    webFooterStates.set(key, state);
-  }
-  return state;
-}
-
-function cleanFooterKey(value: unknown) {
-  if (typeof value !== "string") return undefined;
-  const cleaned = value.trim().slice(0, 80).replace(/[^a-zA-Z0-9_.:-]/g, "-");
-  return cleaned || undefined;
-}
-
-const cleanHeaderActionKey = cleanFooterKey;
-const cleanGitTabKey = cleanFooterKey;
-
-function cleanHeaderActionText(value: unknown, maxLength = 200) {
-  if (typeof value !== "string") return undefined;
-  const cleaned = value.replace(/[\u0000-\u001F\u007F]/g, "").trim();
-  return cleaned ? cleaned.slice(0, maxLength) : undefined;
-}
-
-function getWebHeaderActionState(value: any): WebHeaderActionState {
-  const key = value as object;
-  let state = webHeaderActionStates.get(key);
-  if (!state) {
-    state = { actions: new Map() };
-    webHeaderActionStates.set(key, state);
-  }
-  return state;
-}
-
-function getWebGitTabState(value: any): WebGitTabState {
-  const key = value as object;
-  let state = webGitTabStates.get(key);
-  if (!state) {
-    state = { tabs: new Map() };
-    webGitTabStates.set(key, state);
-  }
-  return state;
-}
-
-function cleanFooterText(value: unknown, maxLength = 2_000) {
-  if (typeof value !== "string") return undefined;
-  const cleaned = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trimEnd();
-  return cleaned ? cleaned.slice(0, maxLength) : undefined;
-}
-
-function normalizeTextLines(value: unknown) {
-  const rawLines = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
-  const lines = rawLines.slice(0, 8).map((line) => cleanFooterText(line)).filter((line): line is string => Boolean(line));
-  return lines.length ? { kind: "text" as const, lines } : undefined;
-}
-
-function normalizePiWebFooter(value: unknown): PiWebFooter | undefined {
-  if (typeof value === "string" || Array.isArray(value)) return normalizeTextLines(value);
-  if (!value || typeof value !== "object") return undefined;
-  const footer = value as Record<string, unknown>;
-  if (footer.kind === "text") return normalizeTextLines(footer.lines);
-  if (footer.kind === "html") {
-    const html = cleanFooterText(footer.html, 20_000);
-    return html ? { kind: "html", html } : undefined;
-  }
-  return undefined;
-}
-
-function webFooterEntries(value: any) {
-  return Array.from(getWebFooterState(value).footers.entries()).map(([key, footer]) => ({ key, footer }));
-}
-
-function broadcastWebFooters(value: any) {
-  const webFooters = webFooterEntries(value);
-  broadcast({
-    type: "web_footer_changed",
-    sessionId: value.sessionId,
-    sessionFile: value.sessionFile,
-    webFooters,
-  });
-  return webFooters;
-}
-
-function webHeaderActionEntries(value: any) {
-  return Array.from(getWebHeaderActionState(value).actions.entries()).map(([key, action]) => ({
-    key,
-    icon: cleanHeaderActionText(action.icon, 80),
-    title: cleanHeaderActionText(action.title) || key,
-    label: cleanHeaderActionText(action.label),
-  }));
-}
-
-function broadcastWebHeaderActions(value: any) {
-  const webHeaderActions = webHeaderActionEntries(value);
-  broadcast({
-    type: "web_header_actions_changed",
-    sessionId: value.sessionId,
-    sessionFile: value.sessionFile,
-    webHeaderActions,
-  });
-  return webHeaderActions;
-}
-
-function webGitTabEntries(value: any) {
-  return Array.from(getWebGitTabState(value).tabs.entries()).map(([key, tab]) => ({
-    key,
-    title: cleanHeaderActionText(tab.title) || key,
-    label: cleanHeaderActionText(tab.label, 80),
-  }));
-}
-
-function broadcastWebGitTabs(value: any) {
-  const webGitTabs = webGitTabEntries(value);
-  broadcast({
-    type: "web_git_tabs_changed",
-    sessionId: value.sessionId,
-    sessionFile: value.sessionFile,
-    webGitTabs,
-  });
-  return webGitTabs;
-}
-
-function createPiWebUi(value: any): PiWebUi {
-  return {
-    setFooter(key, footer) {
-      const footerKey = cleanFooterKey(key);
-      if (!footerKey) return;
-      const footerState = getWebFooterState(value);
-      const normalized = normalizePiWebFooter(footer);
-      if (normalized) footerState.footers.set(footerKey, normalized);
-      else footerState.footers.delete(footerKey);
-      broadcastWebFooters(value);
-    },
-    setHeaderAction(key, action) {
-      const actionKey = cleanHeaderActionKey(key);
-      if (!actionKey) return;
-      const actionState = getWebHeaderActionState(value);
-      if (action && typeof action === "object" && typeof action.invoke === "function") {
-        actionState.actions.set(actionKey, action);
-      } else {
-        actionState.actions.delete(actionKey);
-      }
-      broadcastWebHeaderActions(value);
-    },
-    setGitTab(key, tab) {
-      const tabKey = cleanGitTabKey(key);
-      if (!tabKey) return;
-      const tabState = getWebGitTabState(value);
-      if (tab && typeof tab === "object" && typeof tab.render === "function") {
-        tabState.tabs.set(tabKey, tab);
-      } else {
-        tabState.tabs.delete(tabKey);
-      }
-      broadcastWebGitTabs(value);
-    },
-  };
-}
-
-function broadcastExtensionUiRequest(value: any, method: string, payload: Record<string, unknown>) {
-  const id = randomUUID();
-  broadcast({
-    type: "extension_ui_request",
-    id,
-    method,
-    sessionId: value.sessionId,
-    sessionFile: value.sessionFile,
-    ...payload,
-  });
-  return id;
-}
-
-function requestExtensionUi<T>(
-  value: any,
-  method: string,
-  payload: Record<string, unknown>,
-  opts: ExtensionUIDialogOptions | undefined,
-  defaultValue: T,
-  parse: (response: Record<string, unknown>) => T,
-): Promise<T> {
-  if (opts?.signal?.aborted || clients.size === 0) return Promise.resolve(defaultValue);
-
-  return new Promise<T>((resolvePromise) => {
-    const id = randomUUID();
-    const releaseWorkLease = acquireWorkLease(value);
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-
-    const cleanup = () => {
-      if (timeoutId) clearTimeout(timeoutId);
-      opts?.signal?.removeEventListener("abort", onAbort);
-      pendingExtensionUiRequests.delete(id);
-      releaseWorkLease();
-    };
-    const finish = (result: T) => {
-      cleanup();
-      resolvePromise(result);
-    };
-    const onAbort = () => finish(defaultValue);
-
-    opts?.signal?.addEventListener("abort", onAbort, { once: true });
-    if (opts?.timeout) timeoutId = setTimeout(() => finish(defaultValue), opts.timeout);
-
-    pendingExtensionUiRequests.set(id, {
-      cleanup,
-      resolve: (response) => finish(parse(response)),
-    });
-
-    broadcast({
-      type: "extension_ui_request",
-      id,
-      method,
-      sessionId: value.sessionId,
-      sessionFile: value.sessionFile,
-      timeout: opts?.timeout,
-      ...payload,
-    });
-  });
-}
-
-function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: PiWebUi } {
-  return {
-    web: createPiWebUi(value),
-    select: (title, options, opts) => requestExtensionUi(
-      value,
-      "select",
-      { title, options },
-      opts,
-      undefined,
-      (response) => response.cancelled ? undefined : typeof response.value === "string" ? response.value : undefined,
-    ),
-    confirm: (title, message, opts) => requestExtensionUi(
-      value,
-      "confirm",
-      { title, message },
-      opts,
-      false,
-      (response) => response.cancelled ? false : Boolean(response.confirmed),
-    ),
-    input: (title, placeholder, opts) => requestExtensionUi(
-      value,
-      "input",
-      { title, placeholder },
-      opts,
-      undefined,
-      (response) => response.cancelled ? undefined : typeof response.value === "string" ? response.value : undefined,
-    ),
-    notify(message, type = "info") {
-      broadcastExtensionUiRequest(value, "notify", { message, notifyType: type });
-    },
-    onTerminalInput: () => () => undefined,
-    setStatus(key, text) {
-      broadcastExtensionUiRequest(value, "setStatus", { statusKey: key, statusText: text });
-    },
-    setWorkingMessage: () => undefined,
-    setWorkingVisible: () => undefined,
-    setWorkingIndicator: () => undefined,
-    setHiddenThinkingLabel: () => undefined,
-    setWidget(key, content, options) {
-      if (content === undefined || Array.isArray(content)) {
-        broadcastExtensionUiRequest(value, "setWidget", { widgetKey: key, widgetLines: content, widgetPlacement: options?.placement });
-      }
-    },
-    setFooter: () => undefined,
-    setHeader: () => undefined,
-    setTitle(title) {
-      broadcastExtensionUiRequest(value, "setTitle", { title });
-    },
-    async custom() {
-      return undefined as never;
-    },
-    pasteToEditor(text) {
-      this.setEditorText(text);
-    },
-    setEditorText(text) {
-      broadcastExtensionUiRequest(value, "set_editor_text", { text });
-    },
-    getEditorText: () => "",
-    editor: (title, prefill) => requestExtensionUi(
-      value,
-      "editor",
-      { title, prefill },
-      undefined,
-      undefined,
-      (response) => response.cancelled ? undefined : typeof response.value === "string" ? response.value : undefined,
-    ),
-    addAutocompleteProvider: () => undefined,
-    setEditorComponent: () => undefined,
-    getEditorComponent: () => undefined,
-    theme: plainExtensionTheme as any,
-    getAllThemes: () => [],
-    getTheme: () => undefined,
-    setTheme: () => ({ success: false, error: "Theme switching is not supported in pi-web yet" }),
-    getToolsExpanded: () => false,
-    setToolsExpanded: () => undefined,
-  };
-}
-
-async function bindWebExtensions(value: any) {
-  if (typeof value.bindExtensions !== "function") return;
-  await value.bindExtensions({
-    uiContext: createWebExtensionUiContext(value),
-    commandContextActions: {
-      waitForIdle: () => value.agent.waitForIdle(),
-      newSession: async () => {
-        const newSession = await createNewLiveSession(sessionCwd(value), value.sessionFile);
-        const state = currentStateWithThinkingLevels(newSession);
-        broadcast({ type: "state_changed", ...state });
-        return { cancelled: false };
-      },
-      fork: async () => {
-        throw new Error("Extension-initiated fork is not supported in pi-web yet.");
-      },
-      navigateTree: async (targetId: string, options: any) => {
-        const result = await value.navigateTree(targetId, options);
-        return { cancelled: Boolean(result?.cancelled) };
-      },
-      switchSession: async () => {
-        throw new Error("Extension-initiated session switching is not supported in pi-web yet.");
-      },
-      reload: async () => {
-        await value.reload?.();
-      },
-    },
-    shutdownHandler: () => {
-      broadcast({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: "An extension requested shutdown; pi-web ignored the request." });
-    },
-    onError: (error: any) => {
-      broadcast({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: `Extension error (${error.extensionPath}): ${error.error}` });
-    },
-  });
+  unreadTracker.clear(sessionId);
 }
 
 const mockHarness = createMockHarness({
@@ -2109,18 +730,6 @@ async function emitSessionShutdown(value: any) {
   await runner.emit({ type: "session_shutdown", reason: "quit" });
 }
 
-function clearSessionRuntimeMaps(key: string, value: any) {
-  runtimeStartedAts.delete(key);
-  runtimeLastActivityAts.delete(key);
-  toolStartedAts.delete(key);
-  const file = typeof value?.sessionFile === "string" ? value.sessionFile : "";
-  if (file && file !== key) {
-    runtimeStartedAts.delete(file);
-    runtimeLastActivityAts.delete(file);
-    toolStartedAts.delete(file);
-  }
-}
-
 async function disposeLiveSession(key: string, reason: "idle" | "delete" | "reset" = "idle", force = false) {
   const entry = liveSessions.get(key);
   if (!entry || entry.disposing) return;
@@ -2157,10 +766,10 @@ async function disposeLiveSession(key: string, reason: "idle" | "delete" | "rese
   }
 
   liveSessions.delete(key);
-  clearSessionRuntimeMaps(key, value);
+  sessionActivity.clearSession(key, value);
 
   if (sessionId) {
-    broadcast({ type: "session_runtime_changed", sessionId, sessionFile, runtime: runtimeForPath(sessionFile) });
+    broadcast({ type: "session_runtime_changed", sessionId, sessionFile, runtime: sessionActivity.runtimeForPath(sessionFile) });
   }
 }
 
@@ -2245,49 +854,20 @@ function registerLiveSession(value: any) {
   if (!key || liveSessions.get(key)?.session === value) return value;
 
   const unsubscribe = value.subscribe?.((event: unknown) => {
-    const eventSessionFile = value.sessionFile;
-    const eventSessionId = value.sessionId;
+    const e = event as any;
+    const enriched = sessionActivity.enrichEvent(value, event);
+    const eventSessionFile = enriched.sessionFile;
+    const eventSessionId = enriched.sessionId;
+    const eventForClient = enriched.event;
 
     // Track models that fail with model_not_supported and remove them from the list.
-    const e = event as any;
-    let eventForClient = e;
-    if (e?.type === "agent_start" || e?.type === "compaction_start") {
-      const startedAt = ensureRuntimeStartedAt(value, typeof e.startedAt === "string" ? e.startedAt : undefined);
-      eventForClient = { ...e, startedAt };
-    } else if (e?.type === "agent_end" || e?.type === "compaction_end") {
-      if (!e.willRetry) clearRuntimeStartedAt(value, eventSessionFile);
-    }
-
-    if (e?.type === "tool_execution_start") {
-      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString();
-      if (toolKey) {
-        let sessionToolStarts = toolStartedAts.get(eventSessionFile);
-        if (!sessionToolStarts) {
-          sessionToolStarts = new Map();
-          toolStartedAts.set(eventSessionFile, sessionToolStarts);
-        }
-        sessionToolStarts.set(toolKey, startedAt);
-      }
-      eventForClient = { ...e, startedAt };
-    } else if (e?.type === "tool_execution_update" || e?.type === "tool_execution_end") {
-      const toolKey = toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = toolKey ? toolStartedAts.get(eventSessionFile)?.get(toolKey) : undefined;
-      if (startedAt) eventForClient = { ...e, startedAt };
-      if (e?.type === "tool_execution_end" && toolKey) toolStartedAts.get(eventSessionFile)?.delete(toolKey);
-    }
-
-    if (isRuntimeActivityEvent(e)) {
-      const lastActivityAt = markRuntimeActivity(value, runtimeActivityTimestamp(eventForClient), eventSessionFile);
-      eventForClient = { ...eventForClient, lastActivityAt };
-    }
 
     broadcast({ type: "pi_event", sessionId: eventSessionId, sessionFile: eventSessionFile, event: eventForClient });
     broadcast({
       type: "session_runtime_changed",
       sessionId: eventSessionId,
       sessionFile: eventSessionFile,
-      runtime: runtimeForEvent(eventSessionFile, e),
+      runtime: sessionActivity.runtimeForEvent(eventSessionFile, e),
     });
 
     // Broadcast state update when session name changes
@@ -2326,7 +906,7 @@ function additionalExtensionPaths(cwd = piCwd) {
 async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartEvent, cwd = piCwd) {
   if (mockMode) return { session: createMockSession(path), modelFallbackMessage: undefined };
 
-  const targetCwd = await assertDirectory(cwd);
+  const targetCwd = await assertDirectory(cwd, piCwd);
   const sessionManager = noSession
     ? SessionManager.inMemory(targetCwd)
     : path
@@ -2359,7 +939,7 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
     resourceLoader: loader,
     sessionStartEvent,
   });
-  await bindWebExtensions(result.session);
+  await webUiBridge.bind(result.session);
   return result;
 }
 
@@ -2401,7 +981,7 @@ async function applyDefaultSessionBucket(sessionId: string) {
 }
 
 async function createNewLiveSession(cwd?: string, previousSessionFile?: string) {
-  const targetCwd = cwd ? await assertDirectory(cwd) : piCwd;
+  const targetCwd = cwd ? await assertDirectory(cwd, piCwd) : piCwd;
   knownCwds.add(targetCwd);
   await ensurePiWebStorage(targetCwd);
   const created = await makeAgentSession(undefined, { type: "session_start", reason: "new", previousSessionFile }, targetCwd);
@@ -2448,6 +1028,103 @@ async function switchEmptySessionCwd(targetSession: PiWebSession, cwd: string) {
   const newSession = await createNewLiveSession(cwd, targetSession.sessionFile);
   return currentStateWithThinkingLevels(newSession);
 }
+
+async function navigateSession(targetSession: PiWebSession, targetId: string, options: Record<string, unknown>) {
+  if (targetSession.isStreaming) throw new SessionServiceError("Wait for the current response to finish before navigating the tree", 409);
+  if (targetSession.isCompacting) throw new SessionServiceError("Wait for the current compaction to finish before navigating the tree", 409);
+  if (!targetSession.navigateTree) throw new SessionServiceError("Tree navigation is not available");
+  const releaseWorkLease = acquireWorkLease(targetSession);
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    releaseWorkLease();
+    broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
+  };
+  try {
+    const navigation = targetSession.navigateTree(targetId, options as any);
+    broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
+    const result = await navigation;
+    const state = currentStateWithThinkingLevels(targetSession);
+    broadcast({ type: "state_changed", ...state });
+    return { ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state, finish };
+  } catch (error) {
+    finish();
+    throw error;
+  }
+}
+
+async function startSessionPrompt(targetSession: PiWebSession, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }> }) {
+  const imageFileNote = await persistPromptImages(input.images, sessionCwd(targetSession));
+  const promptText = `${input.message || "Please review the attached image."}${imageFileNote}`;
+  if (!targetSession.isStreaming && !targetSession.isCompacting) sessionActivity.ensureStarted(targetSession);
+  const promptSessionFile = targetSession.sessionFile;
+  const releaseWorkLease = acquireWorkLease(targetSession);
+  void targetSession.prompt(promptText, {
+    ...(targetSession.isStreaming ? { streamingBehavior: input.mode } : {}),
+    ...(input.images.length ? { images: input.images.map(({ data, mimeType }) => ({ type: "image", data, mimeType })) } : {}),
+  }).catch((error: unknown) => broadcast({ type: "server_error", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, error: error instanceof Error ? error.message : String(error) }))
+    .finally(() => {
+      const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+      if (promptSessionFile && sessionActivity.hasStarted(promptSessionFile) && !isRunning) {
+        sessionActivity.clearStarted(targetSession, promptSessionFile);
+        markSessionUnreadCompleted(targetSession.sessionId);
+      }
+      broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
+      releaseWorkLease();
+    });
+}
+
+async function startSessionRetry(targetSession: PiWebSession) {
+  try { assertCanRetryFromFailure(targetSession); } catch (error) { throw new SessionServiceError(error instanceof Error ? error.message : String(error), 409); }
+  sessionActivity.ensureStarted(targetSession);
+  const retrySessionFile = targetSession.sessionFile;
+  const releaseWorkLease = acquireWorkLease(targetSession);
+  void retrySessionFromFailure(targetSession).catch((error: unknown) => {
+    sessionActivity.clearStarted(targetSession, retrySessionFile);
+    broadcast({ type: "server_error", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, error: error instanceof Error ? error.message : String(error) });
+  }).finally(() => {
+    const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
+    if (retrySessionFile && sessionActivity.hasStarted(retrySessionFile) && !isRunning) {
+      sessionActivity.clearStarted(targetSession, retrySessionFile);
+      markSessionUnreadCompleted(targetSession.sessionId);
+    }
+    broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: sessionActivity.runtimeForPath(targetSession.sessionFile) });
+    releaseWorkLease();
+  });
+}
+
+const webUiBridge = createWebUiBridge({
+  emit: broadcast,
+  clientCount: () => realtimeHub.clientCount,
+  acquireWorkLease,
+  createNewSession: createNewLiveSession,
+  sessionCwd: (value) => sessionCwd(value),
+  state: (value) => currentStateWithThinkingLevels(value),
+});
+
+const sessionService = new LocalSessionService({
+  currentSessionId: () => session.sessionId,
+  globalCwd: () => piCwd,
+  resolve: (id) => getOrCreateLiveSessionById(id),
+  cwd: (value) => sessionCwd(value),
+  decorateState: (value) => currentStateWithThinkingLevels(value),
+  decorateMessageContent: (content, sessionFile) => sessionActivity.decorateMessageContent(content, sessionFile),
+  availableModels: (value) => getAvailableModels(value),
+  webCommands: webSlashCommands,
+  list: listSessionInfos,
+  create: createNewLiveSession,
+  open: switchToSessionId,
+  delete: deleteSessionById,
+  switchCwd: switchEmptySessionCwd,
+  executeCommand: executeSlashCommand,
+  prompt: startSessionPrompt,
+  retry: startSessionRetry,
+  navigate: navigateSession,
+  invokeHeaderAction: (value, key) => webUiBridge.invokeHeaderAction(value, key),
+  invokeGitTab: (value, input) => webUiBridge.invokeGitTab(value, input),
+  reportError: (value, error) => broadcast({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: error instanceof Error ? error.message : String(error) }),
+});
 
 await ensurePiWebStorage();
 
@@ -2507,7 +1184,7 @@ const server = createServer(async (req, res) => {
 
       if (method === "GET" && url.pathname === "/api/fs/dirs") {
         try {
-          return sendJson(res, 200, await listDirectories(url.searchParams.get("path") || piCwd));
+          return sendJson(res, 200, await listDirectories(url.searchParams.get("path") || piCwd, piCwd));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -2516,7 +1193,7 @@ const server = createServer(async (req, res) => {
       if (method === "POST" && url.pathname === "/api/fs/dirs") {
         const body = await readBody(req) as { parent?: unknown; name?: unknown };
         try {
-          return sendJson(res, 201, await createDirectory(String(body.parent || piCwd), String(body.name || "")));
+          return sendJson(res, 201, await createDirectory(String(body.parent || piCwd), String(body.name || ""), piCwd));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -2558,16 +1235,11 @@ const server = createServer(async (req, res) => {
           const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
-          const filePath = safeGitPath(url.searchParams.get("path") || "");
-          const staged = url.searchParams.get("staged") === "1";
-          const args = staged ? ["diff", "--cached", "--", filePath] : ["diff", "--", filePath];
-          let { stdout } = await git(args, 15_000, cwd);
-          if (!stdout) {
-            const status = await gitStatus(cwd) as any;
-            const file = status.files?.find((f: any) => f.path === filePath);
-            if (file?.label === "untracked") stdout = (await git(["diff", "--no-index", "--", "/dev/null", filePath], 15_000, cwd).catch((error: any) => ({ stdout: error.stdout || "" }))).stdout;
-          }
-          return sendJson(res, 200, { ok: true, path: filePath, staged, diff: stdout });
+          return sendJson(res, 200, await gitDiff({
+            cwd,
+            path: url.searchParams.get("path") || "",
+            staged: url.searchParams.get("staged") === "1",
+          }));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -2578,13 +1250,20 @@ const server = createServer(async (req, res) => {
           const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
-          await sendGitImage(res, {
+          const image = await readGitImage({
             cwd,
             path: url.searchParams.get("path") || "",
             oldPath: url.searchParams.get("oldPath") || undefined,
             version: url.searchParams.get("version") || "",
             staged: url.searchParams.get("staged") === "1",
           });
+          if (!image) return sendJson(res, 415, { ok: false, error: "Not an image file" });
+          res.writeHead(200, {
+            "content-type": contentTypes[extname(image.displayPath).toLowerCase()] || "application/octet-stream",
+            "cache-control": "no-store",
+          });
+          if ("file" in image && typeof image.file === "string") pipeReadStream(res, image.file);
+          else res.end(image.data);
           return;
         } catch (error) {
           return sendJson(res, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -2596,25 +1275,18 @@ const server = createServer(async (req, res) => {
           const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
-          const status = await gitStatus(cwd) as any;
-          const branch = status.branch;
-          if (!branch) return sendJson(res, 400, { ok: false, error: "Cannot sync detached HEAD" });
-          const fetchResult = await git(["fetch", "--prune", "origin"], 60_000, cwd);
-          const pullResult = await git(["pull", "--rebase", "--autostash", "origin", branch], 120_000, cwd);
-          return sendJson(res, 200, { ok: true, output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`, status: await gitStatus(cwd) });
+          return sendJson(res, 200, await gitSync(cwd));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/state") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        noteViewerLeaseFromRequest(req, targetSession, url.searchParams.get("clientId"));
+        const requestedSessionId = url.searchParams.get("sessionId") || undefined;
+        noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), url.searchParams.get("clientId"));
         return sendJson(res, 200, {
           ok: true,
-          ...currentStateWithThinkingLevels(targetSession),
+          ...await sessionService.state(requestedSessionId),
           sessionUiState: await sessionUiStateStore.read(),
           tokenRequired: Boolean(token),
         });
@@ -2622,136 +1294,66 @@ const server = createServer(async (req, res) => {
 
       if (method === "POST" && url.pathname === "/api/web-header-action/invoke") {
         const body = await readBody(req) as { sessionId?: unknown; key?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const actionKey = cleanHeaderActionKey(body.key);
-        if (!actionKey) return sendJson(res, 400, { ok: false, error: "key is required" });
-        const action = getWebHeaderActionState(targetSession).actions.get(actionKey);
-        if (!action) return sendJson(res, 404, { ok: false, error: "Header action not found" });
         try {
-          const result = await action.invoke();
-          const markdown = cleanFooterText(result?.markdown, 200_000);
-          if (!markdown) return sendJson(res, 400, { ok: false, error: "Header action returned no markdown" });
-          return sendJson(res, 200, { ok: true, label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || actionKey, markdown });
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeHeaderAction(typeof body.sessionId === "string" ? body.sessionId : undefined, body.key) });
         } catch (error) {
-          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          const message = error instanceof Error ? error.message : String(error);
+          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Header action returned no markdown" ? 400 : message === "Header action not found" ? 404 : 500;
+          return sendJson(res, status, { ok: false, error: message });
         }
       }
 
       if (method === "POST" && url.pathname === "/api/web-git-tab/invoke") {
         const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const tabKey = cleanGitTabKey(body.key);
-        if (!tabKey) return sendJson(res, 400, { ok: false, error: "key is required" });
-        const tab = getWebGitTabState(targetSession).tabs.get(tabKey);
-        if (!tab) return sendJson(res, 404, { ok: false, error: "Git tab not found" });
         try {
-          const repo = body.repo && typeof body.repo === "object" ? body.repo as Record<string, unknown> : undefined;
-          const result = await tab.render({
-            action: typeof body.action === "string" ? body.action : undefined,
-            payload: body.payload,
-            repo: repo ? {
-              path: typeof repo.path === "string" ? repo.path : undefined,
-              root: typeof repo.root === "string" ? repo.root : undefined,
-              branch: typeof repo.branch === "string" ? repo.branch : undefined,
-            } : undefined,
-          });
-          const html = cleanFooterText(result?.html, 500_000);
-          if (!html) return sendJson(res, 400, { ok: false, error: "Git tab returned no HTML" });
-          return sendJson(res, 200, { ok: true, title: cleanHeaderActionText(result?.title) || cleanHeaderActionText(tab.title) || tabKey, html });
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeGitTab(typeof body.sessionId === "string" ? body.sessionId : undefined, body) });
         } catch (error) {
-          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          const message = error instanceof Error ? error.message : String(error);
+          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Git tab returned no HTML" ? 400 : message === "Git tab not found" ? 404 : 500;
+          return sendJson(res, status, { ok: false, error: message });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/session/stats") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, { ok: true, sessionId: targetSession.sessionId, stats: sessionStats(targetSession) });
+        return sendJson(res, 200, { ok: true, ...await sessionService.stats(url.searchParams.get("sessionId") || undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/session/tree") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        try {
-          return sendJson(res, 200, conversationTreeForSession(targetSession));
-        } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
-        }
+        return sendJson(res, 200, await sessionService.tree(url.searchParams.get("sessionId") || undefined));
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/navigate") {
         const body = await readBody(req) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (targetSession.isStreaming) return sendJson(res, 409, { ok: false, error: "Wait for the current response to finish before navigating the tree" });
-        if (targetSession.isCompacting) return sendJson(res, 409, { ok: false, error: "Wait for the current compaction to finish before navigating the tree" });
-        if (typeof targetSession.navigateTree !== "function") return sendJson(res, 400, { ok: false, error: "Tree navigation is not available" });
-
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : undefined;
+        await sessionService.require(requestedSessionId);
         const targetId = String(body.targetId || "").trim();
         if (!targetId) return sendJson(res, 400, { ok: false, error: "targetId is required" });
-
-        const releaseWorkLease = acquireWorkLease(targetSession);
+        const { finish, ...result } = await sessionService.navigate(requestedSessionId, targetId, {
+          summarize: Boolean(body.summarize),
+          customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
+          replaceInstructions: Boolean(body.replaceInstructions),
+          label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
+        });
         try {
-          const navigation = targetSession.navigateTree(targetId, {
-            summarize: Boolean(body.summarize),
-            customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
-            replaceInstructions: Boolean(body.replaceInstructions),
-            label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
-          });
-          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
-          const result = await navigation;
-          const state = currentStateWithThinkingLevels(targetSession);
-          broadcast({ type: "state_changed", ...state });
-          return sendJson(res, 200, { ok: true, ...result, leafId: targetSession.sessionManager.getLeafId?.() || null, state });
-        } catch (error) {
-          return sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, 200, { ok: true, ...result });
         } finally {
-          releaseWorkLease();
-          broadcast({ type: "session_runtime_changed", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, runtime: runtimeForPath(targetSession.sessionFile) });
+          finish();
         }
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/abort-summary") {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        targetSession.abortBranchSummary?.();
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        return sendJson(res, 202, { ok: true, ...await sessionService.abortBranchSummary(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/messages") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const msgs = targetSession.messages;
-        // Build toolCallId -> args map from assistant messages
-        const toolCallArgs = new Map<string, Record<string, unknown>>();
-        for (const m of msgs) {
-          const msg = m as any;
-          if (msg.role === "assistant" && Array.isArray(msg.content)) {
-            for (const part of msg.content) {
-              if (part?.type === "toolCall" && part.id) {
-                toolCallArgs.set(part.id, part.arguments || {});
-              }
-            }
-          }
-        }
-        const refs = messageEntryRefs(targetSession);
-        return sendJson(res, 200, { ok: true, messages: msgs.map((m: unknown, index: number) => simplifyMessage(m, toolCallArgs, targetSession.sessionFile, refs[index]?.entryId)) });
+        return sendJson(res, 200, { ok: true, messages: await sessionService.messages(url.searchParams.get("sessionId") || undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
         const extraCwds = url.searchParams.getAll("cwd");
         const sessionUiState = await sessionUiStateStore.read();
-        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(await listSessionInfos(extraCwds), sessionUiState) });
+        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(await sessionService.list(extraCwds), sessionUiState) });
       }
 
       if (method === "GET" && url.pathname === "/api/session-ui-state") {
@@ -2779,7 +1381,7 @@ const server = createServer(async (req, res) => {
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
         if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
         try {
-          const result = await deleteSessionById(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
+          const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
           const sessionUiState = await sessionUiStateStore.removeSession(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
           broadcast({ type: "session_ui_state_changed", sessionUiState });
@@ -2801,227 +1403,91 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "GET" && url.pathname === "/api/commands") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, { ok: true, commands: getSlashCommands(targetSession) });
+        return sendJson(res, 200, { ok: true, commands: await sessionService.commands(url.searchParams.get("sessionId") || undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/models") {
-        const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        return sendJson(res, 200, {
-          ok: true,
-          cwd: sessionCwd(targetSession),
-          current: simplifyModel(targetSession.model),
-          thinkingLevel: targetSession.thinkingLevel,
-          thinkingLevels: targetSession.getAvailableThinkingLevels(),
-          models: getAvailableModels(targetSession).map(simplifyModel),
-        });
+        return sendJson(res, 200, { ok: true, ...await sessionService.models(url.searchParams.get("sessionId") || undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/model") {
         const body = await readBody(req) as { sessionId?: unknown; provider?: unknown; id?: unknown; thinkingLevel?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const provider = String(body.provider || "").trim();
         const id = String(body.id || "").trim();
         if (!provider || !id) return sendJson(res, 400, { ok: false, error: "provider and id are required" });
-
-        const model = targetSession.modelRegistry.find(provider, id);
-        if (!model) return sendJson(res, 404, { ok: false, error: "Model not found" });
-
-        await targetSession.setModel(model);
-        if (typeof body.thinkingLevel === "string") targetSession.setThinkingLevel(body.thinkingLevel as any);
-
-        const state = currentStateWithThinkingLevels(targetSession);
+        const state = await sessionService.setModel(typeof body.sessionId === "string" ? body.sessionId : undefined, provider, id, typeof body.thinkingLevel === "string" ? body.thinkingLevel : undefined);
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (method === "POST" && url.pathname === "/api/command") {
         const body = await readBody(req) as { sessionId?: unknown; command?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const command = String(body.command || "").trim();
         if (!command.startsWith("/")) return sendJson(res, 400, { ok: false, error: "Slash command is required" });
 
-        const result = await executeSlashCommand(command, targetSession);
+        const result = await sessionService.executeCommand(typeof body.sessionId === "string" ? body.sessionId : undefined, command);
         const stateSessionId = (result as any)?.state?.sessionId;
         const stateSession = typeof stateSessionId === "string" ? await getOrCreateLiveSessionById(stateSessionId) : undefined;
-        noteViewerLeaseFromRequest(req, stateSession || targetSession);
+        noteViewerLeaseFromRequest(req, stateSession || await sessionService.require(typeof body.sessionId === "string" ? body.sessionId : undefined));
         return sendJson(res, 200, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/shell") {
         const body = await readBody(req) as { sessionId?: unknown; command?: unknown; excludeFromContext?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         const command = String(body.command || "").trim();
         if (!command) return sendJson(res, 400, { ok: false, error: "command is required" });
-        if (typeof targetSession.executeBash !== "function") return sendJson(res, 400, { ok: false, error: "Bash execution is not available in this session." });
-        const excludeFromContext = Boolean(body.excludeFromContext);
-        const result = await targetSession.executeBash(command, undefined, { excludeFromContext });
-        return sendJson(res, 200, { ok: true, command, cwd: sessionCwd(targetSession), ...result, excludeFromContext });
+        return sendJson(res, 200, { ok: true, ...await sessionService.executeShell(typeof body.sessionId === "string" ? body.sessionId : undefined, command, Boolean(body.excludeFromContext)) });
       }
 
       if (method === "POST" && url.pathname === "/api/extension-ui/respond") {
         const body = await readBody(req) as { id?: unknown } & Record<string, unknown>;
         const id = String(body.id || "").trim();
         if (!id) return sendJson(res, 400, { ok: false, error: "id is required" });
-        const pending = pendingExtensionUiRequests.get(id);
-        if (!pending) return sendJson(res, 404, { ok: false, error: "Extension UI request not found" });
-        pending.resolve(body);
+        if (!webUiBridge.respond(id, body)) return sendJson(res, 404, { ok: false, error: "Extension UI request not found" });
         return sendJson(res, 200, { ok: true });
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {
         const body = await readBody(req) as { sessionId?: unknown; message?: unknown; mode?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
-        const images = Array.isArray(body.images)
-          ? body.images.filter((image): image is { type: "image"; data: string; mimeType: string; name?: string } => {
-            if (!image || typeof image !== "object") return false;
-            const value = image as Record<string, unknown>;
-            return value.type === "image"
-              && typeof value.data === "string"
-              && typeof value.mimeType === "string"
-              && value.mimeType.startsWith("image/");
-          })
-          : [];
+        const images = Array.isArray(body.images) ? body.images.flatMap((image) => {
+          if (!image || typeof image !== "object") return [];
+          const value = image as Record<string, unknown>;
+          return value.type === "image" && typeof value.data === "string" && typeof value.mimeType === "string" && value.mimeType.startsWith("image/")
+            ? [{ data: value.data, mimeType: value.mimeType, ...(typeof value.name === "string" ? { name: value.name } : {}) }]
+            : [];
+        }) : [];
         if (!message && images.length === 0) return sendJson(res, 400, { ok: false, error: "message or image is required" });
-
-        const mode = body.mode === "followUp" ? "followUp" : "steer";
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        const imageFileNote = await persistPromptImages(images, sessionCwd(targetSession));
-        const promptText = `${message || "Please review the attached image."}${imageFileNote}`;
-        const wasAlreadyRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-        if (!wasAlreadyRunning) ensureRuntimeStartedAt(targetSession);
-        const promptSessionFile = targetSession.sessionFile;
-        const releaseWorkLease = acquireWorkLease(targetSession);
-        void targetSession.prompt(promptText, {
-          ...(targetSession.isStreaming ? { streamingBehavior: mode } : {}),
-          ...(images.length ? { images: images.map(({ type, data, mimeType }) => ({ type, data, mimeType })) } : {}),
-        })
-          .catch((error: unknown) => {
-            broadcast({
-              type: "server_error",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          })
-          .finally(() => {
-            const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(promptSessionFile && runtimeStartedAts.has(promptSessionFile) && !isRunning);
-            if (missedTerminalEvent) {
-              clearRuntimeStartedAt(targetSession, promptSessionFile);
-              markSessionUnreadCompleted(targetSession.sessionId);
-            }
-            broadcast({
-              type: "session_runtime_changed",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              runtime: runtimeForPath(targetSession.sessionFile),
-            });
-            releaseWorkLease();
-          });
-
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        const result = await sessionService.prompt(typeof body.sessionId === "string" ? body.sessionId : undefined, { message, mode: body.mode === "followUp" ? "followUp" : "steer", images });
+        return sendJson(res, 202, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/session/retry") {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        try {
-          assertCanRetryFromFailure(targetSession);
-        } catch (error) {
-          return sendJson(res, 409, { ok: false, error: error instanceof Error ? error.message : String(error) });
-        }
-
-        ensureRuntimeStartedAt(targetSession);
-        const retrySessionFile = targetSession.sessionFile;
-        const releaseWorkLease = acquireWorkLease(targetSession);
-        void retrySessionFromFailure(targetSession)
-          .catch((error: unknown) => {
-            clearRuntimeStartedAt(targetSession, retrySessionFile);
-            broadcast({
-              type: "server_error",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          })
-          .finally(() => {
-            const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
-            const missedTerminalEvent = Boolean(retrySessionFile && runtimeStartedAts.has(retrySessionFile) && !isRunning);
-            if (missedTerminalEvent) {
-              clearRuntimeStartedAt(targetSession, retrySessionFile);
-              markSessionUnreadCompleted(targetSession.sessionId);
-            }
-            broadcast({
-              type: "session_runtime_changed",
-              sessionId: targetSession.sessionId,
-              sessionFile: targetSession.sessionFile,
-              runtime: runtimeForPath(targetSession.sessionFile),
-            });
-            releaseWorkLease();
-          });
-
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        return sendJson(res, 202, { ok: true, ...await sessionService.retry(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/abort") {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        void targetSession.abort().catch((error: unknown) => broadcast({
-          type: "server_error",
-          sessionId: targetSession.sessionId,
-          sessionFile: targetSession.sessionFile,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        return sendJson(res, 202, { ok: true, ...await sessionService.abort(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/compaction/abort") {
         const body = await readBody(req) as { sessionId?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (typeof targetSession.abortCompaction !== "function") return sendJson(res, 400, { ok: false, error: "Compaction cancellation is not available" });
-        targetSession.abortCompaction();
-        return sendJson(res, 202, { ok: true, sessionId: targetSession.sessionId });
+        return sendJson(res, 202, { ok: true, ...await sessionService.abortCompaction(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/session/name") {
         const body = await readBody(req) as { sessionId?: unknown; name?: unknown };
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
-        if (typeof targetSession.setSessionName !== "function") return sendJson(res, 400, { ok: false, error: "Renaming sessions is not available" });
-
         const name = String(body.name || "").trim();
-        targetSession.setSessionName(name);
-        const state = currentStateWithThinkingLevels(targetSession);
+        const state = await sessionService.rename(typeof body.sessionId === "string" ? body.sessionId : undefined, name);
         return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
         const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown };
-        const previousSession = typeof body.sessionId === "string" ? await getOrCreateLiveSessionById(body.sessionId) : session;
-        const targetCwd = typeof body.cwd === "string" ? body.cwd : previousSession ? sessionCwd(previousSession) : undefined;
-        const newSession = await createNewLiveSession(targetCwd, previousSession?.sessionFile);
-        noteViewerLeaseFromRequest(req, newSession);
-        const state = currentStateWithThinkingLevels(newSession);
+        const state = await sessionService.create(typeof body.sessionId === "string" ? body.sessionId : undefined, typeof body.cwd === "string" ? body.cwd : undefined);
+        noteViewerLeaseFromRequest(req, await sessionService.require(String(state.sessionId)));
         broadcast({ type: "state_changed", ...state });
         return sendJson(res, 200, { ok: true, ...state });
       }
@@ -3030,17 +1496,15 @@ const server = createServer(async (req, res) => {
         const body = await readBody(req) as { sessionId?: unknown; cwd?: unknown };
         const cwd = String(body.cwd || "").trim();
         if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
-        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId : session.sessionId;
-        const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
-        if (!targetSession) return sendJson(res, 404, { ok: false, error: "Session not found" });
         try {
-          const state = await switchEmptySessionCwd(targetSession, cwd);
-          const stateSession = state.sessionId ? await getOrCreateLiveSessionById(state.sessionId) : undefined;
+          const state = await sessionService.switchCwd(typeof body.sessionId === "string" ? body.sessionId : undefined, cwd);
+          const stateSession = state.sessionId ? await getOrCreateLiveSessionById(String(state.sessionId)) : undefined;
           if (stateSession) noteViewerLeaseFromRequest(req, stateSession);
           broadcast({ type: "state_changed", ...state });
           return sendJson(res, 200, { ok: true, ...state });
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          const status = error instanceof SessionServiceError ? error.status : 400;
+          return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
@@ -3049,14 +1513,8 @@ const server = createServer(async (req, res) => {
         const requestedId = typeof body.sessionId === "string" ? body.sessionId : typeof body.id === "string" ? body.id : "";
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
-        let targetSession: PiWebSession | undefined;
-        try {
-          targetSession = await switchToSessionId(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
-        } catch {
-          return sendJson(res, 404, { ok: false, error: "Session not found" });
-        }
-        noteViewerLeaseFromRequest(req, targetSession, body.clientId);
-        const state = currentStateWithThinkingLevels(targetSession);
+        const state = await sessionService.open(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
+        noteViewerLeaseFromRequest(req, await sessionService.require(requestedId), body.clientId);
         return sendJson(res, 200, { ok: true, ...state });
       }
 
@@ -3072,7 +1530,8 @@ const server = createServer(async (req, res) => {
 
     serveStatic(req, res);
   } catch (error) {
-    sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    const status = error instanceof SessionServiceError ? error.status : 500;
+    sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 });
 
@@ -3091,26 +1550,10 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 wss.on("connection", async (ws, req) => {
-  const realtimeWs = ws as RealtimeSocket;
-  realtimeWs.missedPongs = 0;
-  realtimeWs.on("pong", () => {
-    realtimeWs.missedPongs = 0;
-  });
-  clients.add(realtimeWs);
+  const realtimeWs = ws;
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
-  const latestSeq = nextRealtimeSeq - 1;
-  const oldestSeq = realtimeEventLog[0]?.seq || nextRealtimeSeq;
-
-  if (Number.isFinite(lastSeq) && lastSeq > 0) {
-    if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
-      ws.send(JSON.stringify({ type: "sync_required", latestSeq }));
-    } else {
-      for (const event of realtimeEventLog) {
-        if (event.seq > lastSeq) ws.send(JSON.stringify({ ...event, replay: true }));
-      }
-    }
-  }
+  const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
   const targetSession = requestedSessionId === session.sessionId ? session : await getOrCreateLiveSessionById(requestedSessionId);
@@ -3125,7 +1568,6 @@ wss.on("connection", async (ws, req) => {
     seq: latestSeq,
     ...helloState,
   }));
-  realtimeWs.on("close", () => clients.delete(realtimeWs));
 });
 
 if (isDev) {
