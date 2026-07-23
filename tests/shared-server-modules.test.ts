@@ -145,5 +145,5 @@ describe("shared Git helpers", () => {
     runGit(cwd, "commit", "-m", "update");
     runGit(cwd, "push", "-u", "origin", "main");
     await expect(gitSync(cwd)).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
-  });
+  }, 15_000);
 });

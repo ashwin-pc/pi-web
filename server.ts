@@ -9,11 +9,10 @@ import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
-  AuthStorage,
   createAgentSession,
   DefaultResourceLoader,
   getAgentDir,
-  ModelRegistry,
+  ModelRuntime,
   SessionManager,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -692,8 +691,7 @@ async function switchToSessionId(id: string, cwd?: string) {
   return target;
 }
 
-const authStorage = AuthStorage.create();
-const modelRegistry = ModelRegistry.create(authStorage);
+const modelRuntime = await ModelRuntime.create();
 const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
 type LiveSessionEntry = {
@@ -1013,8 +1011,7 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
   const result = await createAgentSession({
     cwd: resolvedCwd,
     sessionManager,
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     resourceLoader: loader,
     sessionStartEvent,
   });
