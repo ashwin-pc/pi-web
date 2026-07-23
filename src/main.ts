@@ -286,6 +286,7 @@ composer = createComposer({
   refreshModels: () => modelSettings.refreshModels(),
   refreshMessages,
   refreshState,
+  beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,
 });

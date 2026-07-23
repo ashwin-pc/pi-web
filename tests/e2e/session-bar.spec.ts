@@ -169,6 +169,28 @@ test.describe("session quick bar", () => {
     await other.close();
   });
 
+  test("/clear returns to the new-session animation and current folder picker", async ({ page }) => {
+    await page.goto("/");
+    const currentCwd = (await page.locator("#statusPath").textContent()) || "";
+
+    await page.locator("#prompt").fill("/clear");
+    await page.locator("#primaryButton").click();
+
+    await expect(page.locator("#statusTitle")).toHaveText("New session");
+    await expect(page.getByText("Cleared tab. Previous session remains in history.")).toHaveCount(0);
+    const emptyState = page.locator("#emptyCwdChooser");
+    await expect(emptyState).toBeVisible();
+    const animation = emptyState.locator(".newChatLoadingAnimation");
+    await expect(animation).toBeVisible();
+    await expect(animation).not.toHaveClass(/resetting/);
+    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+
+    const folderButton = emptyState.getByRole("button", { name: "Change working directory" });
+    await expect(folderButton.locator(".emptyCwdPath")).toHaveText(currentCwd);
+    await folderButton.click();
+    await expect(page.locator(".folderPickerInput")).toHaveValue(currentCwd);
+  });
+
   test("/clear reuses the current tab pin and marker while releasing the old session", async ({ page }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [
@@ -188,7 +210,6 @@ test.describe("session quick bar", () => {
     await page.locator("#primaryButton").click();
 
     await expect(page.locator("#statusTitle")).toHaveText("New session");
-    await expect(page.getByText("Cleared tab. Previous session remains in history.")).toBeVisible();
 
     const activeAfter = page.locator(".sessionBarTab.active");
     await expect(activeAfter).toContainText("New session");

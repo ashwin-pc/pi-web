@@ -47,10 +47,11 @@ export function createComposer(options: {
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
 }): ComposerController {
-  const { state, elements, api, addMessage, addToolHistoryCard, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginStreamFollow, endStreamFollow } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
@@ -521,9 +522,11 @@ export function createComposer(options: {
     const text = await res.text();
     const data = text ? JSON.parse(text) : {};
     if (!res.ok || data.ok === false) throw new Error(data.error || text);
+    const resetsSession = name === "new" || name === "clear";
+    if (resetsSession) beginTranscriptLoading?.();
     if (data.state) {
       updateMeta(data.state);
-      if ((name === "new" || name === "clear") && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
+      if (resetsSession && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
       state.isStreaming = Boolean(data.state.isStreaming);
       state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
       updatePrimaryAction();
@@ -531,8 +534,8 @@ export function createComposer(options: {
     }
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
-    if (name === "new" || name === "clear") await refreshMessages();
-    if (data.message) addMessage("system", data.message);
+    if (resetsSession) await refreshMessages();
+    if (data.message && !resetsSession) addMessage("system", data.message);
   }
 
   function init() {
