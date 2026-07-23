@@ -145,6 +145,7 @@ export function createSessions(options: {
   } = options;
 
   let cachedSessions: SessionInfo[] = [];
+  let sessionRefreshPromise: Promise<void> | undefined;
   // Tracks runtime state for pinned sessions independently of cachedSessions so
   // session_runtime_changed events can update the bar even before the first
   // refreshSessions() completes.
@@ -401,29 +402,43 @@ export function createSessions(options: {
       ?.scrollIntoView({ block: "nearest" });
   }
 
-  async function refreshSessions() {
-    rememberSessionCwd(state.currentCwd);
-    const params = new URLSearchParams();
-    for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
-    const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
-    const res = await fetch(url, { headers: api.headers() });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
-    for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
-    let pinnedCwdsChanged = false;
-    state.pinnedSessions = state.pinnedSessions.map((pinned) => {
-      const live = cachedSessions.find((s) => s.id === pinned.id);
-      if (live?.cwd && live.cwd !== pinned.cwd) {
-        pinnedCwdsChanged = true;
-        return { ...pinned, cwd: live.cwd };
-      }
-      return pinned;
-    });
-    if (pinnedCwdsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
-    renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
+  function refreshSessions() {
+    if (sessionRefreshPromise) return sessionRefreshPromise;
+    sessionRefreshPromise = (async () => {
+      rememberSessionCwd(state.currentCwd);
+      const params = new URLSearchParams();
+      for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
+      const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
+      const res = await fetch(url, { headers: api.headers() });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
+      for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
+      let pinnedCwdsChanged = false;
+      state.pinnedSessions = state.pinnedSessions.map((pinned) => {
+        const live = cachedSessions.find((s) => s.id === pinned.id);
+        if (live?.cwd && live.cwd !== pinned.cwd) {
+          pinnedCwdsChanged = true;
+          return { ...pinned, cwd: live.cwd };
+        }
+        return pinned;
+      });
+      if (pinnedCwdsChanged) persistSessionUiState({ pinnedSessions: state.pinnedSessions });
+      renderSessionList(cachedSessions);
+      renderSessionBar();
+      updateSessionButtonUnread();
+    })().finally(() => { sessionRefreshPromise = undefined; });
+    return sessionRefreshPromise;
+  }
+
+  async function applyOpenedSession(openRes: Response) {
+    const data = await openRes.json();
+    updateMeta(data);
+    state.isStreaming = Boolean(data.isStreaming);
+    state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
+    state.isCompacting = Boolean(data.isCompacting);
+    if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
+    await Promise.all([refreshModels(), refreshMessages()]);
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -1102,12 +1117,11 @@ export function createSessions(options: {
         body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
       if (!openRes.ok) throw new Error(await openRes.text());
+      await applyOpenedSession(openRes);
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       markSessionReadBestEffort(sessionId);
-      await refreshState();
-      if (switchingSessions) await refreshMessages();
     } catch (error) {
       state.currentSessionId = previousSessionId;
       renderSessionBar();
@@ -1878,13 +1892,12 @@ export function createSessions(options: {
           body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
         });
         if (!openRes.ok) throw new Error(await openRes.text());
+        await applyOpenedSession(openRes);
         writeActiveSessionIdToUrl(item.id);
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         markSessionReadBestEffort(item.id);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
-        await refreshState();
-        if (switchingSessions) await refreshMessages();
       } catch (error) {
         if (switchingSessions) {
           state.currentSessionId = previousSessionId;

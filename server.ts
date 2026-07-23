@@ -1,10 +1,10 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { extname, join, resolve } from "node:path";
+import { dirname, extname, join, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -351,7 +351,12 @@ async function retrySessionFromFailure(targetSession: PiWebSession) {
   }
 }
 
+function rememberSessionLocation(info: { id: string; path: string; cwd?: string }, cwd = piCwd) {
+  if (info.id && info.path) sessionLocations.set(info.id, { path: resolve(info.path), cwd: resolve(info.cwd || cwd) });
+}
+
 function simplifySessionInfo(info: Awaited<ReturnType<typeof SessionManager.list>>[number], cwd = piCwd) {
+  rememberSessionLocation(info, cwd);
   return {
     id: info.id,
     name: info.name,
@@ -373,6 +378,8 @@ function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessio
   });
 }
 
+const sessionListRequests = new Map<string, Promise<ReturnType<typeof simplifySessionInfo>[]>>();
+
 async function listSessionInfos(extraCwds: string[] = []) {
   if (noSession) return [];
   if (mockMode) return mockSessions.map((info) => simplifySessionInfo(info as any, info.cwd || piCwd));
@@ -381,15 +388,24 @@ async function listSessionInfos(extraCwds: string[] = []) {
     if (typeof cwd !== "string" || !cwd.trim()) continue;
     cwds.add(resolve(cwd));
   }
-  const groups = await Promise.all(Array.from(cwds).map(async (cwd) => {
-    try {
-      const sessions = await SessionManager.list(cwd);
-      return sessions.map((info) => simplifySessionInfo(info, cwd));
-    } catch {
-      return [];
-    }
-  }));
-  return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+  const orderedCwds = Array.from(cwds).sort();
+  const key = orderedCwds.join("\n");
+  const existing = sessionListRequests.get(key);
+  if (existing) return existing;
+  const request = (async () => {
+    const groups = await Promise.all(orderedCwds.map(async (cwd) => {
+      try {
+        const sessions = await SessionManager.list(cwd);
+        return sessions.map((info) => simplifySessionInfo(info, cwd));
+      } catch {
+        return [];
+      }
+    }));
+    return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+  })();
+  sessionListRequests.set(key, request);
+  try { return await request; }
+  finally { sessionListRequests.delete(key); }
 }
 
 function currentState(targetSession: PiWebSession = session) {
@@ -604,13 +620,70 @@ async function deleteSessionById(id: string, cwd?: string) {
   return { id, disposition: await trashOrRemoveSessionFile(info.path) };
 }
 
-async function getOrCreateLiveSessionById(id: string, cwd?: string) {
+function liveSessionById(id: string) {
   if (id === session.sessionId) return session;
-  for (const entry of liveSessions.values()) {
-    if (entry.session.sessionId === id) return entry.session;
+  return liveById.get(id);
+}
+
+function defaultSessionDir(cwd: string) {
+  const resolvedCwd = resolve(cwd);
+  const safePath = `--${resolvedCwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`;
+  return join(getAgentDir(), "sessions", safePath);
+}
+
+async function resolveSessionLocation(id: string, cwd = piCwd) {
+  if (!id || noSession) return undefined;
+  if (mockMode) {
+    const info = mockSessions.find((item) => item.id === id);
+    if (info) rememberSessionLocation(info as any, info.cwd || cwd);
+    return info ? sessionLocations.get(id) : undefined;
   }
-  const info = await findSessionInfoById(id, cwd);
-  return info ? getOrCreateLiveSession(info.path) : undefined;
+
+  const candidateCwds = new Set([resolve(cwd), ...knownCwds]);
+  const suffix = `_${id}.jsonl`;
+  for (const resolvedCwd of candidateCwds) {
+    const directory = defaultSessionDir(resolvedCwd);
+    let names: string[];
+    try { names = await readdir(directory); } catch { continue; }
+    const name = names.find((entry) => entry.endsWith(suffix));
+    if (!name) continue;
+    const location = { path: join(directory, name), cwd: resolvedCwd };
+    sessionLocations.set(id, location);
+    knownCwds.add(resolvedCwd);
+    return location;
+  }
+  return undefined;
+}
+
+async function openSessionAtLocation(id: string, location: { path: string; cwd: string }) {
+  if (!mockMode && dirname(resolve(location.path)) !== defaultSessionDir(location.cwd)) throw new Error("Invalid session location");
+  const target = await getOrCreateLiveSession(location.path);
+  if (target.sessionId !== id) {
+    if (target !== session) await disposeLiveSession(sessionPathKey(target), "reset", true);
+    throw new Error("Session location did not match requested ID");
+  }
+  sessionLocations.set(id, { path: resolve(location.path), cwd: resolve(location.cwd) });
+  return target;
+}
+
+async function getOrCreateLiveSessionById(id: string, cwd?: string) {
+  const existing = liveSessionById(id);
+  if (existing) return existing;
+  const pending = openingById.get(id);
+  if (pending) return pending;
+
+  const opening = (async () => {
+    const remembered = sessionLocations.get(id);
+    if (remembered) {
+      try { return await openSessionAtLocation(id, remembered); }
+      catch { sessionLocations.delete(id); }
+    }
+    const resolved = await resolveSessionLocation(id, cwd);
+    return resolved ? openSessionAtLocation(id, resolved) : undefined;
+  })();
+  openingById.set(id, opening);
+  try { return await opening; }
+  finally { openingById.delete(id); }
 }
 
 async function switchToSessionId(id: string, cwd?: string) {
@@ -649,6 +722,9 @@ const viewerLeaseGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 const liveSessions = new Map<string, LiveSessionEntry>();
+const liveById = new Map<string, PiWebSession>();
+const sessionLocations = new Map<string, { path: string; cwd: string }>();
+const openingById = new Map<string, Promise<PiWebSession | undefined>>();
 const viewerLeases = new Map<string, ViewerLease>();
 const sessionActivity = new SessionActivity((path) => liveSessions.get(path)?.session);
 let session: PiWebSession;
@@ -766,6 +842,7 @@ async function disposeLiveSession(key: string, reason: "idle" | "delete" | "rese
   }
 
   liveSessions.delete(key);
+  if (liveById.get(sessionId) === value) liveById.delete(sessionId);
   sessionActivity.clearSession(key, value);
 
   if (sessionId) {
@@ -892,6 +969,8 @@ function registerLiveSession(value: any) {
     }
   });
   liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0 });
+  liveById.set(value.sessionId, value);
+  if (value.sessionFile) sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: sessionCwd(value) });
   queueMicrotask(() => scheduleLiveSessionCleanup(key));
   return value;
 }
