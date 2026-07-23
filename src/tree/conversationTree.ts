@@ -12,7 +12,7 @@ export type ConversationTreeController = {
   setOpen: (open: boolean) => void;
 };
 
-type ConversationTreeNode = {
+export type ConversationTreeNode = {
   id: string;
   parentId: string | null;
   type: string;
@@ -44,7 +44,7 @@ type NavigateOptions = {
   customInstructions?: string;
 };
 
-type ConversationGraphRow = {
+export type ConversationGraphRow = {
   node: ConversationTreeNode;
   lane: number;
   depth: number;
@@ -55,9 +55,17 @@ type ConversationGraphRow = {
   element?: HTMLButtonElement;
 };
 
+type ConversationGraphChain = {
+  order: number;
+  startRow: number;
+  endRow: number;
+  lane: number;
+};
+
 type ConversationGraphFrame = {
   node: ConversationTreeNode;
-  lane: number;
+  chain?: ConversationGraphChain;
+  chainStart?: number;
   depth: number;
   parentId?: string;
   branchIndex?: number;
@@ -244,48 +252,77 @@ function graphColour(lane: number) {
   return graphColours[Math.max(0, lane) % graphColours.length];
 }
 
-function flattenGraphRows(nodes: ConversationTreeNode[]) {
+export function flattenGraphRows(nodes: ConversationTreeNode[]) {
   const rows: ConversationGraphRow[] = [];
+  const rowChains: ConversationGraphChain[] = [];
+  const chains: ConversationGraphChain[] = [];
   const activeByNode = activeSubtreeMap(nodes);
-  const stack: ConversationGraphFrame[] = [...nodes].reverse().map((node) => ({ node, lane: 0, depth: 0 }));
+  const stack: ConversationGraphFrame[] = [...nodes].reverse().map((node) => ({ node, depth: 0 }));
 
+  // First emit graph rows and group them into chains. Alternate children are
+  // visited before the active child so they stay close to their fork and the
+  // current path remains at the end of the graph.
   while (stack.length > 0) {
     const frame = stack.pop()!;
-    const row: ConversationGraphRow = {
+    const rowIndex = rows.length;
+    const chain = frame.chain || {
+      order: chains.length,
+      startRow: frame.chainStart ?? rowIndex,
+      endRow: rowIndex,
+      lane: 0,
+    };
+    if (!frame.chain) chains.push(chain);
+    chain.endRow = rowIndex;
+
+    rows.push({
       node: frame.node,
-      lane: frame.lane,
+      lane: 0,
       depth: frame.depth,
       hasActiveSubtree: activeByNode.get(frame.node) || false,
       ...(frame.parentId ? { parentId: frame.parentId } : {}),
       ...(frame.branchIndex && frame.branchCount ? { branchIndex: frame.branchIndex, branchCount: frame.branchCount } : {}),
-    };
-    rows.push(row);
+    });
+    rowChains.push(chain);
 
     const children = frame.node.children || [];
     if (children.length === 0) continue;
     if (children.length === 1) {
-      stack.push({ node: children[0], lane: frame.lane, depth: frame.depth + 1, parentId: frame.node.id });
+      stack.push({ node: children[0], chain, depth: frame.depth + 1, parentId: frame.node.id });
       continue;
     }
 
-    const activeIndex = Math.max(0, children.findIndex((child) => activeByNode.get(child)));
-    const childLanes = children.map((_, index) => frame.lane + index + 1);
-    childLanes[activeIndex] = frame.lane;
-    let nextLane = frame.lane + 1;
-    for (let index = 0; index < children.length; index += 1) {
-      if (index !== activeIndex) childLanes[index] = nextLane++;
+    const activeIndex = children.findIndex((child) => activeByNode.get(child));
+    const childIndexes = children.map((_, index) => index);
+    if (activeIndex >= 0) {
+      childIndexes.splice(activeIndex, 1);
+      childIndexes.push(activeIndex);
     }
-    for (let index = children.length - 1; index >= 0; index -= 1) {
+    for (let orderIndex = childIndexes.length - 1; orderIndex >= 0; orderIndex -= 1) {
+      const childIndex = childIndexes[orderIndex];
       stack.push({
-        node: children[index],
-        lane: childLanes[index],
+        node: children[childIndex],
+        ...(childIndex === activeIndex ? { chain } : { chainStart: rowIndex }),
         depth: frame.depth + 1,
         parentId: frame.node.id,
-        branchIndex: index + 1,
+        branchIndex: childIndex + 1,
         branchCount: children.length,
       });
     }
   }
+
+  // Then greedily color the chain intervals. A chain begins at its fork row,
+  // because its connector occupies that lane before the child row appears.
+  // Interval graphs are optimally colored by assigning the first free lane in
+  // start-row order.
+  const laneEnds: number[] = [];
+  chains.sort((left, right) => left.startRow - right.startRow || left.order - right.order);
+  for (const chain of chains) {
+    let lane = laneEnds.findIndex((endRow) => endRow < chain.startRow);
+    if (lane < 0) lane = laneEnds.length;
+    chain.lane = lane;
+    laneEnds[lane] = chain.endRow;
+  }
+  for (let index = 0; index < rows.length; index += 1) rows[index].lane = rowChains[index].lane;
 
   return rows;
 }

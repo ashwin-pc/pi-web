@@ -39,6 +39,50 @@ async function seedSessionShowcaseState(page: import("@playwright/test").Page, c
   } });
 }
 
+async function mockConversationTreeApi(page: import("@playwright/test").Page) {
+  const timestamp = "2026-05-07T10:00:00Z";
+  const treeNode = (
+    id: string,
+    parentId: string | null,
+    preview: string,
+    childCount: number,
+    options: { role?: string; active?: boolean; current?: boolean } = {},
+  ) => ({
+    id,
+    parentId,
+    type: "message",
+    role: options.role || "assistant",
+    preview,
+    timestamp,
+    childCount,
+    isOnActivePath: Boolean(options.active),
+    isCurrentLeaf: Boolean(options.current),
+  });
+  const nodes = [
+    treeNode("tree-root", null, "Plan the conversation tree layout", 4, { role: "user", active: true }),
+    treeNode("outer-1", "tree-root", "Explore compact branch rendering", 1, { role: "custom" }),
+    treeNode("nested-fork", "outer-1", "Compare nested lane strategies", 4, { role: "user" }),
+    treeNode("nested-1", "nested-fork", "Reserve every visible connector lane", 0),
+    treeNode("nested-2", "nested-fork", "Pack chains by their row intervals", 0),
+    treeNode("nested-3", "nested-fork", "Keep nested fans from colliding", 0),
+    treeNode("nested-4", "nested-fork", "Reuse lanes only after branches end", 0),
+    treeNode("outer-2", "tree-root", "Try chronological branch ordering", 0),
+    treeNode("outer-3", "tree-root", "Test an abandoned early branch", 0),
+    treeNode("outer-4", "tree-root", "Keep the active continuation last", 1, { active: true }),
+    treeNode("tree-current", "outer-4", "Nested branch graph is ready", 0, { active: true, current: true }),
+  ];
+
+  await page.route("**/api/session/tree**", (route) => route.fulfill({ json: {
+    ok: true,
+    sessionId: "mock-current",
+    leafId: "tree-current",
+    activePathIds: ["tree-root", "outer-4", "tree-current"],
+    entryCount: nodes.length,
+    branchPointCount: 2,
+    nodes,
+  } }));
+}
+
 async function mockGitApi(page: import("@playwright/test").Page) {
   const commit = {
     hash: "debd35dbb8ba41a56c3e6b22dbf7ed93a310443a",
@@ -216,16 +260,26 @@ test.describe("visual regression", () => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 1000 });
 
+    await mockConversationTreeApi(page);
     await page.goto("/");
     await page.locator("#conversationTreeButton").click();
-    await expect(page.locator(".conversationTreePanel")).toBeVisible();
-    await expect(page.locator(".conversationTreeGraphPath")).toHaveCount(3);
-    await expect(page.locator(".conversationTreeBadge.branch")).toHaveText("2 branches");
+    const panel = page.locator(".conversationTreePanel");
+    await expect(panel).toBeVisible();
+    await expect(panel.locator(".conversationTreeNode")).toHaveCount(11);
+    await expect(panel.locator(".conversationTreeGraphPath")).toHaveCount(10);
+    await expect(panel.locator(".conversationTreeBadge.branch")).toHaveText(["4 branches", "4 branches"]);
+    await expect(panel.locator(".conversationTreeNode").last()).toHaveAttribute("data-node-id", "tree-current");
 
-    await expect(page).toHaveScreenshot(`conversation-tree-${testInfo.project.name}.png`, {
-      fullPage: true,
-      animations: "disabled",
-    });
+    if (testInfo.project.name === "desktop") {
+      await expect(page).toHaveScreenshot("conversation-tree-desktop.png", {
+        fullPage: true,
+        animations: "disabled",
+      });
+    } else {
+      await expect(panel).toHaveScreenshot("conversation-tree-mobile.png", {
+        animations: "disabled",
+      });
+    }
   });
 
   test("diff review", async ({ page }, testInfo) => {

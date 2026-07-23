@@ -152,9 +152,9 @@ Desktop uses a split master/detail layout; mobile switches between status, graph
 
 ### Conversation tree
 
-Navigate in-file pi session branches with a compact tree drawer. The default view keeps tool noise hidden, while the full session structure remains available from the filter.
+Navigate even elaborate, nested pi session branches with a compact tree drawer. Alternate paths stay grouped beside their fork, globally packed graph lanes keep nested branch fans from colliding, and the highlighted current path remains easy to follow. The default view keeps tool noise hidden, while the full session structure remains available from the filter.
 
-| Desktop | Mobile |
+| Nested branches · Desktop | Nested branches · Mobile |
 | --- | --- |
 | ![pi-web conversation tree desktop](tests/e2e/visual.spec.ts-snapshots/conversation-tree-desktop.png) | ![pi-web conversation tree mobile](tests/e2e/visual.spec.ts-snapshots/conversation-tree-mobile.png) |
 
