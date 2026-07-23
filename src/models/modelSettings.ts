@@ -22,6 +22,40 @@ export function modelLabel(model: any): string {
   return `${model.provider}/${model.id}${name}`;
 }
 
+type ModelSummarySource = { provider?: unknown; id?: unknown; modelId?: unknown; name?: unknown; modelName?: unknown };
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+export function modelSummaryParts(label: string, source?: ModelSummarySource) {
+  const provider = stringValue(source?.provider);
+  const id = stringValue(source?.id) || stringValue(source?.modelId);
+  const name = stringValue(source?.name) || stringValue(source?.modelName);
+  const fullLabel = label.trim() || (provider && id ? modelLabel({ provider, id, name }) : name || id || provider);
+
+  if (provider || id || name) {
+    return {
+      fullLabel,
+      model: name && name !== id ? name : id || name || fullLabel,
+      provider,
+      id,
+      name,
+    };
+  }
+
+  if (!fullLabel) return { fullLabel: "", model: "", provider: "", id: "", name: "" };
+  const slashIndex = fullLabel.indexOf("/");
+  if (slashIndex <= 0) return { fullLabel, model: fullLabel, provider: "", id: fullLabel, name: "" };
+
+  const fallbackProvider = fullLabel.slice(0, slashIndex).trim();
+  const idWithName = fullLabel.slice(slashIndex + 1).trim();
+  const nameMatch = idWithName.match(/^(.*?)\s+\(([^()]+)\)$/);
+  const fallbackId = (nameMatch?.[1] || idWithName).trim();
+  const fallbackName = (nameMatch?.[2] || "").trim();
+  return { fullLabel, model: fallbackName || fallbackId, provider: fallbackProvider, id: fallbackId, name: fallbackName };
+}
+
 const offThinkingLevels = new Set(["", "off", "none", "disabled", "false", "no", "0"]);
 
 function normalizeThinkingLevel(level: string | undefined | null) {
@@ -76,11 +110,64 @@ export function createModelSettings(options: {
 }): ModelSettings {
   const { state, elements, api, updateMeta, addMessage } = options;
 
+  function ensureCurrentModelSummary() {
+    const popover = elements.modelSettingsPopover as HTMLElement | undefined;
+    if (!popover?.querySelector) return undefined;
+    const existing = popover.querySelector<HTMLElement>(".modelSettingsCurrent");
+    if (existing) return existing;
+
+    const summary = document.createElement("div");
+    summary.className = "modelSettingsCurrent";
+    summary.setAttribute("aria-label", "Current model details");
+    for (const [key, label] of [["name", "Name"], ["provider", "Provider"], ["id", "Model ID"]] as const) {
+      const item = document.createElement("div");
+      item.className = "modelSettingsCurrentItem";
+      const itemLabel = document.createElement("span");
+      itemLabel.className = "modelSettingsCurrentLabel";
+      itemLabel.textContent = label;
+      const value = document.createElement("strong");
+      value.className = "modelSettingsCurrentValue";
+      value.dataset.modelSummaryValue = key;
+      value.textContent = "—";
+      item.append(itemLabel, value);
+      summary.append(item);
+    }
+    const firstField = popover.querySelector(".modelSettingsField");
+    popover.insertBefore(summary, firstField || popover.firstChild);
+    return summary;
+  }
+
+  function updateCurrentModelSummary(summary: ReturnType<typeof modelSummaryParts>) {
+    const container = ensureCurrentModelSummary();
+    if (!container) return;
+    const values = {
+      name: summary.name || "—",
+      provider: summary.provider || "—",
+      id: summary.id || "—",
+    };
+    for (const [key, value] of Object.entries(values)) {
+      const element = container.querySelector<HTMLElement>(`[data-model-summary-value="${key}"]`);
+      if (!element) continue;
+      element.textContent = value;
+      element.title = value === "—" ? "" : value;
+    }
+  }
+
   function updateSummary() {
     const level = elements.thinkingSelectEl.value || state.currentThinkingLevel || "off";
-    const selectedModelLabel = elements.modelSelectEl.selectedOptions[0]?.textContent?.trim();
+    const selectedModelOption = elements.modelSelectEl.selectedOptions[0] as HTMLOptionElement | undefined;
+    const selectedModelLabel = selectedModelOption?.textContent?.trim();
     const label = state.currentModelDisplay || selectedModelLabel || state.currentModelKey || "";
-    elements.modelSettingsLabel.textContent = label;
+    const summary = modelSummaryParts(label, selectedModelOption?.dataset);
+    elements.modelSettingsLabel.replaceChildren();
+    elements.modelSettingsLabel.title = summary.fullLabel;
+    if (summary.model) {
+      const model = document.createElement("span");
+      model.className = "modelSettingsModelName";
+      model.textContent = summary.model;
+      elements.modelSettingsLabel.append(model);
+    }
+    updateCurrentModelSummary(summary);
     const fill = thinkingLevelFill(level, thinkingOptionsFromSelect(elements.thinkingSelectEl));
     elements.modelSettingsThinking.textContent = "";
     elements.modelSettingsThinking.style.setProperty("--thinking-fill", `${Math.round(fill * 100)}%`);
@@ -91,8 +178,10 @@ export function createModelSettings(options: {
     elements.modelSettingsThinking.dataset.thinkingLevel = level;
     elements.modelSettingsThinking.dataset.thinkingActive = fill > 0 ? "true" : "false";
     elements.modelSettingsButton.dataset.thinkingLevel = level;
-    elements.modelSettingsButton.title = `${label} · reasoning: ${level}`;
-    elements.modelSettingsButton.setAttribute("aria-label", `Model and reasoning settings: ${label}, reasoning ${level}`);
+    elements.modelSettingsButton.title = summary.fullLabel ? `${summary.fullLabel} · reasoning: ${level}` : `Reasoning: ${level}`;
+    elements.modelSettingsButton.setAttribute("aria-label", summary.fullLabel
+      ? `Model and reasoning settings: ${summary.fullLabel}, reasoning ${level}`
+      : `Model and reasoning settings: reasoning ${level}`);
   }
 
   function setModelSettingsOpen(open: boolean) {
@@ -121,6 +210,9 @@ export function createModelSettings(options: {
       const option = document.createElement("option");
       option.value = modelKey(model);
       option.textContent = modelLabel(model);
+      option.dataset.provider = stringValue(model.provider);
+      option.dataset.modelId = stringValue(model.id);
+      option.dataset.modelName = stringValue(model.name);
       elements.modelSelectEl.append(option);
     }
     elements.modelSelectEl.value = activeKey;
@@ -128,6 +220,9 @@ export function createModelSettings(options: {
       const option = document.createElement("option");
       option.value = activeKey;
       option.textContent = activeKey;
+      const [provider, ...idParts] = activeKey.split("/");
+      option.dataset.provider = provider || "";
+      option.dataset.modelId = idParts.join("/");
       elements.modelSelectEl.prepend(option);
       elements.modelSelectEl.value = activeKey;
     }

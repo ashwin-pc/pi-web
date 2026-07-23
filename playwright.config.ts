@@ -22,13 +22,13 @@ export default defineConfig({
     {
       command: `PI_WEB_MOCK=1 PI_WEB_DEV=1 HOST=127.0.0.1 PORT=${port} PI_WEB_TOKEN= PI_WEB_CWD=$PWD PI_WEB_SESSION_UI_STATE_FILE=.pi/playwright-session-ui-state-${port}.json node --import tsx server.ts`,
       url: `http://127.0.0.1:${port}`,
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       timeout: 20_000,
     },
     {
       command: `PI_WEB_MOCK=1 PI_WEB_DEV=1 HOST=127.0.0.1 PORT=${authPort} PI_WEB_TOKEN=test-secret PI_WEB_CWD=$PWD PI_WEB_SESSION_UI_STATE_FILE=.pi/playwright-session-ui-state-${authPort}.json node --import tsx server.ts`,
       url: `http://127.0.0.1:${authPort}`,
-      reuseExistingServer: true,
+      reuseExistingServer: false,
       timeout: 20_000,
     },
   ],

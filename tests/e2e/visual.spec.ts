@@ -160,6 +160,10 @@ test.describe("visual regression", () => {
     await expect(page.locator(".message.assistant .imageFrame")).toBeVisible();
     if (testInfo.project.name === "mobile") await scrollMessagesToBottom(page);
 
+    await expect(page.locator("#modelSettingsButton")).toHaveScreenshot(`model-picker-${testInfo.project.name}.png`, {
+      animations: "disabled",
+      maxDiffPixelRatio: 0.001,
+    });
     await expect(page).toHaveScreenshot(`hero-showcase-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",

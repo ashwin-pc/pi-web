@@ -575,7 +575,8 @@ test.describe("composer layout", () => {
   test("model settings popover changes reasoning level explicitly", async ({ page }) => {
     await page.goto("/");
 
-    await expect(page.locator("#modelSettingsButton")).toContainText("mock/model");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Mock Model");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/model/);
     await expect(page.locator("#modelSettingsThinking")).toContainText("medium");
     await expect(page.locator("#modelSettingsThinking")).not.toContainText("reasoning");
 
@@ -629,7 +630,8 @@ test.describe("composer layout", () => {
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
     await expect(page.locator("#modelSettingsButton")).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
-    await expect(page.locator("#modelSettingsButton")).toContainText("mock/other");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Other Mock Model");
+    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/other/);
 
     await page.mouse.click(5, 5);
     await expect(page.locator("#modelSettingsPopover")).toBeHidden();
