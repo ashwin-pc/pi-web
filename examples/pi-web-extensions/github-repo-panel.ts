@@ -297,6 +297,8 @@ function styles() {
     .ghColWho { width:84px; }
     .ghColUpdated { width:68px; }
     .ghNumberCell { color:var(--muted); font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:11px; }
+    .ghPanel .ghNumberButton { border:0; background:transparent; border-radius:4px; padding:1px 2px; color:var(--accent); font-family:inherit; font-size:inherit; }
+    .ghPanel .ghNumberButton:hover { border:0; background:color-mix(in srgb, var(--accent) 14%, transparent); text-decoration:underline; }
     .ghTitleCell { width:auto; }
     .ghWhoCell, .ghUpdatedCell { color:var(--muted); font-size:11px; }
     .ghRowTitle { display:block; max-width:100%; font-weight:650; color:var(--text); overflow-wrap:anywhere; word-break:break-word; }
@@ -385,7 +387,7 @@ function issueRow(issue: GhIssue) {
     labelsHtml(issue.labels),
   ].filter(Boolean).join("");
   return `<tr class="ghRow" role="button" tabindex="0" data-web-git-tab-action="open" data-web-git-tab-payload="${payload}">
-    <td class="ghNumberCell">#${number}</td>
+    <td class="ghNumberCell"><button type="button" class="ghNumberButton" title="Add issue #${number} to composer context" aria-label="Add issue #${number} to composer context" data-web-git-tab-action="attach-context" data-web-git-tab-payload="${payload}">#${number}</button></td>
     <td class="ghTitleCell"><span class="ghRowTitle">${escapeHtml(issue.title || "Untitled issue")}</span>${sub ? `<div class="ghRowSub">${sub}</div>` : ""}</td>
     <td class="ghWhoCell">${userLabel(issue.author)}</td>
     <td class="ghUpdatedCell">${updated ? escapeHtml(updated) : ""}</td>
@@ -404,7 +406,7 @@ function prRow(pr: GhPullRequest) {
     review ? `<span class="ghPill review">${escapeHtml(review)}</span>` : "",
   ].filter(Boolean).join("");
   return `<tr class="ghRow" role="button" tabindex="0" data-web-git-tab-action="open" data-web-git-tab-payload="${payload}">
-    <td class="ghNumberCell">#${number}</td>
+    <td class="ghNumberCell"><button type="button" class="ghNumberButton" title="Add pull request #${number} to composer context" aria-label="Add pull request #${number} to composer context" data-web-git-tab-action="attach-context" data-web-git-tab-payload="${payload}">#${number}</button></td>
     <td class="ghTitleCell"><span class="ghRowTitle">${escapeHtml(pr.title || "Untitled pull request")}</span>${sub ? `<div class="ghRowSub">${sub}</div>` : ""}</td>
     <td class="ghWhoCell">${userLabel(pr.author)}</td>
     <td class="ghUpdatedCell">${updated ? escapeHtml(updated) : ""}</td>
@@ -484,8 +486,8 @@ function requestedTab(event?: PiWebGitTabEvent): Tab {
   return payload.tab === "issues" ? "issues" : "prs";
 }
 
-function openRequest(event?: PiWebGitTabEvent): { kind: ItemKind; number: number; tab: Tab } | undefined {
-  if (event?.action !== "open" || !event.payload || typeof event.payload !== "object") return undefined;
+function itemRequest(event: PiWebGitTabEvent | undefined, action: "open" | "attach-context"): { kind: ItemKind; number: number; tab: Tab } | undefined {
+  if (event?.action !== action || !event.payload || typeof event.payload !== "object") return undefined;
   const payload = event.payload as { kind?: unknown; number?: unknown; tab?: unknown };
   const kind: ItemKind | undefined = payload.kind === "issue" ? "issue" : payload.kind === "pr" ? "pr" : undefined;
   const number = typeof payload.number === "number" ? payload.number : Number(payload.number);
@@ -493,21 +495,63 @@ function openRequest(event?: PiWebGitTabEvent): { kind: ItemKind; number: number
   return { kind, number, tab: payload.tab === "issues" ? "issues" : "prs" };
 }
 
+function composerContext(repo: RepoInfo, kind: ItemKind, item: GhIssue | GhPullRequest) {
+  const number = Number(item.number || 0);
+  const isPr = kind === "pr";
+  const pr = item as GhPullRequest;
+  const metadata = [
+    `GitHub ${isPr ? "pull request" : "issue"}: ${repo.nameWithOwner}#${number}`,
+    `Title: ${item.title || "Untitled"}`,
+    item.state ? `State: ${item.state}` : "",
+    item.url ? `URL: ${item.url}` : "",
+    item.author?.login ? `Author: @${item.author.login}` : "",
+    item.assignees?.length ? `Assignees: ${item.assignees.map((user) => user.login ? `@${user.login}` : "").filter(Boolean).join(", ")}` : "",
+    item.labels?.length ? `Labels: ${item.labels.map((label) => label.name).filter(Boolean).join(", ")}` : "",
+    item.createdAt ? `Created: ${item.createdAt}` : "",
+    item.updatedAt ? `Updated: ${item.updatedAt}` : "",
+    isPr && pr.headRefName && pr.baseRefName ? `Branches: ${pr.headRefName} → ${pr.baseRefName}` : "",
+  ].filter(Boolean);
+  const lines = [
+    ...metadata,
+    "",
+    "Description:",
+    normalizeMarkdownText(item.body).trim() || "No description.",
+  ];
+
+  if (item.comments?.length) {
+    lines.push("", "Comments:");
+    for (const comment of item.comments) {
+      const author = comment.author?.login ? `@${comment.author.login}` : "unknown";
+      lines.push(`\n${author}${comment.createdAt ? ` (${comment.createdAt})` : ""}:`, normalizeMarkdownText(comment.body).trim() || "(empty comment)");
+    }
+  }
+
+  return {
+    id: `github:${repo.nameWithOwner}:${kind}:${number}`,
+    label: `${isPr ? "GitHub PR" : "GitHub issue"} #${number}`,
+    title: item.title || (isPr ? "Untitled pull request" : "Untitled issue"),
+    content: lines.join("\n").trim(),
+  };
+}
+
 async function renderGitTab(pi: PiWebExtensionAPI, ctx: PiWebExtensionContext, event?: PiWebGitTabEvent) {
   const cwd = event?.repo?.root || sessionCwd(ctx);
   const repo = await findGithubRepo(pi, cwd);
   if (!repo) return { title: "GitHub", html: `${styles()}<div class="ghEmpty">No GitHub remote was found for this repository.</div>` };
 
-  const open = openRequest(event);
-  if (open) {
-    const result = open.kind === "pr"
-      ? await viewPullRequest(pi, cwd, repo, open.number)
-      : await viewIssue(pi, cwd, repo, open.number);
+  const request = itemRequest(event, "open") || itemRequest(event, "attach-context");
+  if (request) {
+    const result = request.kind === "pr"
+      ? await viewPullRequest(pi, cwd, repo, request.number)
+      : await viewIssue(pi, cwd, repo, request.number);
     if (result.error || !result.items) {
-      return { title: "GitHub", html: shell(repo, open.tab, `<div class="ghError">${escapeHtml(result.error || "Item not found")}</div>`) };
+      return { title: "GitHub", html: shell(repo, request.tab, `<div class="ghError">${escapeHtml(result.error || "Item not found")}</div>`) };
     }
-    const title = `${open.kind === "pr" ? "PR" : "Issue"} #${open.number}`;
-    return { title, html: shell(repo, open.tab, await detailBody(pi, cwd, repo, open.kind, result.items, open.tab)) };
+    if (event?.action === "attach-context") {
+      return { composerContext: composerContext(repo, request.kind, result.items) };
+    }
+    const title = `${request.kind === "pr" ? "PR" : "Issue"} #${request.number}`;
+    return { title, html: shell(repo, request.tab, await detailBody(pi, cwd, repo, request.kind, result.items, request.tab)) };
   }
 
   const tab = event?.action === "tab" ? requestedTab(event) : "prs";

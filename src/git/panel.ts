@@ -4,6 +4,7 @@ import { renderCommitView } from "./commitView.js";
 import { renderDiffView } from "./diffView.js";
 import { renderGraphView } from "./graphView.js";
 import { renderStatusView } from "./statusView.js";
+import type { ComposerContextAttachment } from "../app/types.js";
 import type { GitCommit, GitFileStatus, GitPrimaryView, GitRepo, GitState, GitStatusResponse } from "./types.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 
@@ -16,8 +17,15 @@ export type GitPanelController = {
   isOpen(): boolean;
 };
 
-export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLElement; rightPanels?: RightPanelManager; apiHeaders: () => HeadersInit; getSessionId?: () => string }): GitPanelController {
-  const { button, panel, rightPanels, apiHeaders, getSessionId } = options;
+export function initGitPanel(options: {
+  button: HTMLButtonElement;
+  panel: HTMLElement;
+  rightPanels?: RightPanelManager;
+  apiHeaders: () => HeadersInit;
+  getSessionId?: () => string;
+  onComposerContext?: (context: ComposerContextAttachment) => void;
+}): GitPanelController {
+  const { button, panel, rightPanels, apiHeaders, getSessionId, onComposerContext } = options;
   const primary = panel.querySelector<HTMLElement>("#gitPrimaryPane")!;
   const detail = panel.querySelector<HTMLElement>("#gitDetailPane")!;
   const statusTab = panel.querySelector<HTMLButtonElement>("#gitStatusTab")!;
@@ -249,7 +257,8 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
   async function loadExtensionTab(key: string, event?: { action?: string; payload?: unknown }) {
     state.primaryView = extensionViewKey(key);
     state.mobileView = extensionViewKey(key);
-    extensionTabView = { key, loading: true };
+    if (!event) extensionTabView = { key, loading: true };
+    panel.setAttribute("aria-busy", "true");
     render();
     try {
       const res = await fetch("/api/web-git-tab/invoke", {
@@ -265,10 +274,20 @@ export function initGitPanel(options: { button: HTMLButtonElement; panel: HTMLEl
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
-      extensionTabView = { key, loading: false, title: String(data.title || ""), html: String(data.html || "") };
+      if (data.composerContext && typeof data.composerContext === "object") {
+        if (panelHandle) panelHandle.close(false);
+        else setOpen(false);
+        onComposerContext?.(data.composerContext as ComposerContextAttachment);
+      }
+      if (typeof data.html === "string" && data.html) {
+        extensionTabView = { key, loading: false, title: String(data.title || ""), html: data.html };
+      } else if (!data.composerContext) {
+        throw new Error("Git tab returned no content");
+      }
     } catch (error) {
       extensionTabView = { key, loading: false, error: error instanceof Error ? error.message : String(error) };
     } finally {
+      panel.removeAttribute("aria-busy");
       render();
     }
   }

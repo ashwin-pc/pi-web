@@ -53,9 +53,22 @@ export type PiWebGitTabEvent = {
   };
 };
 
+export type PiWebComposerContext = {
+  /** Stable identity used to avoid adding the same context more than once. */
+  id?: string;
+  /** Short source label shown in the composer attachment pill. */
+  label: string;
+  /** Optional detail shown alongside the label, such as an issue title. */
+  title?: string;
+  /** Plain-text content included with the next prompt. */
+  content: string;
+};
+
 export type PiWebGitTabView = {
   title?: string;
-  html: string;
+  /** Omit HTML for actions that only add composer context and keep the current tab view. */
+  html?: string;
+  composerContext?: PiWebComposerContext;
 };
 
 export type PiWebGitTab = {

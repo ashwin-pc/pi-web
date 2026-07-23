@@ -326,6 +326,33 @@ textarea:focus { border-bottom-color: var(--accent); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.contextAttachmentChip {
+  max-width: min(380px, 100%);
+  padding-left: 7px;
+  color: var(--text);
+}
+.contextAttachmentIcon {
+  display: inline-grid;
+  flex: 0 0 20px;
+  width: 20px;
+  height: 20px;
+  place-items: center;
+  color: var(--accent);
+}
+.contextAttachmentIcon svg { width: 14px; height: 14px; }
+.contextAttachmentText {
+  display: grid;
+  min-width: 0;
+  line-height: 1.15;
+}
+.contextAttachmentText strong,
+.contextAttachmentText small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.contextAttachmentText strong { font-size: 11px; }
+.contextAttachmentText small { color: var(--muted); font-size: 11px; }
 .removeAttachment {
   display: inline-grid;
   width: 22px;
@@ -335,6 +362,7 @@ textarea:focus { border-bottom-color: var(--accent); }
   border-radius: 999px;
   padding: 0;
 }
+.attachmentChip .removeAttachment { border: 0; }
 .removeAttachment svg { width: 13px; height: 13px; }
 .composerFooter {
   display: flex;

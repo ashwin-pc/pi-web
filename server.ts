@@ -1309,7 +1309,7 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeGitTab(typeof body.sessionId === "string" ? body.sessionId : undefined, body) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Git tab returned no HTML" ? 400 : message === "Git tab not found" ? 404 : 500;
+          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Git tab returned no HTML or composer context" ? 400 : message === "Git tab not found" ? 404 : 500;
           return sendJson(res, status, { ok: false, error: message });
         }
       }

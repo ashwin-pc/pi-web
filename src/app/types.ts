@@ -29,6 +29,13 @@ export type ImageAttachment = {
   name: string;
 };
 
+export type ComposerContextAttachment = {
+  id?: string;
+  label: string;
+  title?: string;
+  content: string;
+};
+
 export type PiWebModelSetting = {
   provider: string;
   id: string;

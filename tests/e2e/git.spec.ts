@@ -4,6 +4,58 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
 });
 
+test("GitHub issue numbers attach issue details to the composer context", async ({ page }) => {
+  await page.route("**/api/state**", async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    await route.fulfill({ response, json: {
+      ...data,
+      webGitTabs: [{ key: "github", title: "GitHub issues", label: "GitHub" }],
+    } });
+  });
+  await page.route("**/api/web-git-tab/invoke", async (route) => {
+    const request = route.request().postDataJSON();
+    if (request.action === "attach-context") {
+      await route.fulfill({ json: {
+        ok: true,
+        title: "GitHub",
+        composerContext: {
+          id: "github:ashwin-pc/pi-web:issue:123",
+          label: "GitHub issue #123",
+          title: "Fix the mobile composer",
+          content: "GitHub issue: ashwin-pc/pi-web#123\nState: OPEN\nDescription:\nThe composer overlaps the issue panel.",
+        },
+      } });
+      return;
+    }
+    await route.fulfill({ json: {
+      ok: true,
+      title: "GitHub",
+      html: `<button type="button" class="testIssueNumber" data-web-git-tab-action="attach-context" data-web-git-tab-payload='{"kind":"issue","number":123,"tab":"issues"}'>#123</button>`,
+    } });
+  });
+
+  await page.goto("/");
+  await page.locator("#gitButton").click();
+  await expect(page.locator(".gitExtensionTab", { hasText: "GitHub" })).toBeVisible();
+  await page.locator(".gitExtensionTab", { hasText: "GitHub" }).click();
+  await page.locator(".testIssueNumber").click();
+
+  const contextChip = page.locator(".contextAttachmentChip");
+  await expect(contextChip).toContainText("GitHub issue #123");
+  await expect(contextChip).toContainText("Fix the mobile composer");
+
+  await page.locator("#prompt").fill("Please implement this.");
+  const promptRequest = page.waitForRequest((request) => request.url().endsWith("/api/prompt") && request.method() === "POST");
+  await page.locator("#primaryButton").click();
+  const body = (await promptRequest).postDataJSON();
+  expect(body.message).toContain("GitHub issue: ashwin-pc/pi-web#123");
+  expect(body.message).toContain("The composer overlaps the issue panel.");
+  expect(body.message).toContain("Please implement this.");
+  await expect(contextChip).toHaveCount(0);
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 test("git panel opens, switches views, and commit rows do not overlap", async ({ page }) => {
   await page.goto("/");
   await page.locator("#gitButton").click();

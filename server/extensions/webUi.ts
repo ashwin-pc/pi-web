@@ -409,8 +409,23 @@ async function bindWebExtensions(value: any) {
       } : undefined,
     });
     const html = cleanFooterText(result?.html, 500_000);
-    if (!html) throw new Error("Git tab returned no HTML");
-    return { title: cleanHeaderActionText(result?.title) || cleanHeaderActionText(tab.title) || key, html };
+    const rawContext = result?.composerContext && typeof result.composerContext === "object"
+      ? result.composerContext as Record<string, unknown>
+      : undefined;
+    const contextLabel = cleanHeaderActionText(rawContext?.label, 200);
+    const contextContent = cleanFooterText(rawContext?.content, 200_000);
+    const composerContext = contextLabel && contextContent ? {
+      ...(cleanHeaderActionText(rawContext?.id, 500) ? { id: cleanHeaderActionText(rawContext?.id, 500) } : {}),
+      label: contextLabel,
+      ...(cleanHeaderActionText(rawContext?.title, 500) ? { title: cleanHeaderActionText(rawContext?.title, 500) } : {}),
+      content: contextContent,
+    } : undefined;
+    if (!html && !composerContext) throw new Error("Git tab returned no HTML or composer context");
+    return {
+      title: cleanHeaderActionText(result?.title) || cleanHeaderActionText(tab.title) || key,
+      ...(html ? { html } : {}),
+      ...(composerContext ? { composerContext } : {}),
+    };
   }
 
   function respond(id: string, response: Record<string, unknown>): boolean {

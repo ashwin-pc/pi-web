@@ -124,18 +124,25 @@ The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../
 
 `ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer; extensions own provider detection, data fetching, and trusted HTML rendering.
 
-Elements inside the HTML can call back into the extension by using `data-web-git-tab-action` and optional JSON in `data-web-git-tab-payload`.
+Elements inside the HTML can call back into the extension by using `data-web-git-tab-action` and optional JSON in `data-web-git-tab-payload`. An action can also return `composerContext` without `html`; pi-web keeps the current tab visible and adds the plain-text context as a removable composer pill. The context content is included with the next prompt.
 
 ```ts
 ctx.ui.web.setGitTab("github", {
   title: "GitHub",
   label: "GitHub",
   render: async (event) => {
-    if (event?.action === "issue") {
-      return { title: "Issue #123", html: "<button data-web-git-tab-action=\"back\">Back</button>" };
+    if (event?.action === "attach-issue") {
+      return {
+        composerContext: {
+          id: "github:owner/repo:issue:123",
+          label: "GitHub issue #123",
+          title: "Fix the mobile layout",
+          content: "GitHub issue: owner/repo#123\n...full issue details...",
+        },
+      };
     }
     return {
-      html: `<button data-web-git-tab-action="issue" data-web-git-tab-payload='{"number":123}'>Issue #123</button>`,
+      html: `<button data-web-git-tab-action="attach-issue" data-web-git-tab-payload='{"number":123}'>#123</button>`,
     };
   },
 });

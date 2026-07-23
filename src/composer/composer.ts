@@ -1,8 +1,8 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
-import type { AppState, ImageAttachment, SlashCommand } from "../app/types.js";
-import { setIcon } from "../app/icons.js";
+import type { AppState, ComposerContextAttachment, ImageAttachment, SlashCommand } from "../app/types.js";
+import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
@@ -15,6 +15,7 @@ type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => Barc
 
 export type ComposerController = {
   init: () => void;
+  addContextAttachment: (context: ComposerContextAttachment) => void;
   renderAttachments: () => void;
   setPromptText: (text: string) => void;
   stopStreaming: () => Promise<void>;
@@ -61,9 +62,10 @@ export function createComposer(options: {
   let tokenScanStream: MediaStream | undefined;
   let tokenScanFrame = 0;
   let tokenScanActive = false;
+  let contextAttachments: ComposerContextAttachment[] = [];
 
   function updatePrimaryAction() {
-    const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0;
+    const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0;
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
     elements.primaryButton.disabled = !hasInput || !initialRealtimeReady;
     elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
@@ -128,7 +130,7 @@ export function createComposer(options: {
 
   function slashCommandQuery() {
     const value = elements.promptEl.value;
-    if (!value.startsWith("/") || state.attachedImages.length > 0) return undefined;
+    if (!value.startsWith("/") || state.attachedImages.length > 0 || contextAttachments.length > 0) return undefined;
     const withoutSlash = value.slice(1);
     if (/\s/.test(withoutSlash) || withoutSlash.includes("\n")) return undefined;
     return withoutSlash.toLowerCase();
@@ -282,9 +284,56 @@ export function createComposer(options: {
     elements.formEl.classList.toggle("dragOver", active);
   }
 
+  function addContextAttachment(context: ComposerContextAttachment) {
+    const existingIndex = context.id
+      ? contextAttachments.findIndex((attachment) => attachment.id === context.id)
+      : -1;
+    if (existingIndex >= 0) contextAttachments[existingIndex] = context;
+    else contextAttachments.push(context);
+    renderAttachments();
+    updatePrimaryAction();
+    hideSlashCommands();
+    focusIfKeyboardFriendly(elements.promptEl);
+  }
+
   function renderAttachments() {
     elements.attachmentsEl.textContent = "";
-    elements.attachmentsEl.hidden = state.attachedImages.length === 0;
+    elements.attachmentsEl.hidden = state.attachedImages.length === 0 && contextAttachments.length === 0;
+    contextAttachments.forEach((context, index) => {
+      const chip = document.createElement("div");
+      chip.className = "attachmentChip contextAttachmentChip";
+      chip.title = context.title ? `${context.label}: ${context.title}` : context.label;
+
+      const sourceIcon = document.createElement("span");
+      sourceIcon.className = "contextAttachmentIcon";
+      sourceIcon.append(iconElement("git-branch"));
+
+      const text = document.createElement("span");
+      text.className = "contextAttachmentText";
+      const label = document.createElement("strong");
+      label.textContent = context.label;
+      text.append(label);
+      if (context.title) {
+        const title = document.createElement("small");
+        title.textContent = context.title;
+        text.append(title);
+      }
+
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "removeAttachment";
+      remove.title = `Remove ${context.label}`;
+      remove.setAttribute("aria-label", remove.title);
+      remove.addEventListener("click", () => {
+        contextAttachments.splice(index, 1);
+        renderAttachments();
+        updatePrimaryAction();
+      });
+      setIcon(remove, "x");
+
+      chip.append(sourceIcon, text, remove);
+      elements.attachmentsEl.append(chip);
+    });
     state.attachedImages.forEach((image, index) => {
       const chip = document.createElement("div");
       chip.className = "attachmentChip";
@@ -311,6 +360,16 @@ export function createComposer(options: {
       chip.append(preview, name, remove);
       elements.attachmentsEl.append(chip);
     });
+  }
+
+  function messageWithAttachedContext(message: string, contexts: ComposerContextAttachment[]) {
+    if (contexts.length === 0) return message;
+    const attachedContext = contexts.map((context) => [
+      `--- Attached context: ${context.label} ---`,
+      context.content,
+      `--- End attached context: ${context.label} ---`,
+    ].join("\n")).join("\n\n");
+    return message ? `${attachedContext}\n\n${message}` : attachedContext;
   }
 
   function isShellError(data: { exitCode?: unknown; cancelled?: unknown }) {
@@ -479,14 +538,16 @@ export function createComposer(options: {
   function init() {
     elements.formEl.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if ((state.isStreaming || state.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0) return;
+      if ((state.isStreaming || state.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0) return;
 
       const rawMessage = elements.promptEl.value;
-      const message = rawMessage.trim();
+      const promptMessage = rawMessage.trim();
+      const contexts = [...contextAttachments];
+      const message = messageWithAttachedContext(promptMessage, contexts);
       const images = state.attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
       if (!message && images.length === 0) return;
 
-      if (rawMessage.startsWith("!") && images.length === 0) {
+      if (rawMessage.startsWith("!") && images.length === 0 && contexts.length === 0) {
         elements.promptEl.value = "";
         clearDraft();
         hideSlashCommands();
@@ -501,13 +562,13 @@ export function createComposer(options: {
         return;
       }
 
-      if (rawMessage.startsWith("/") && images.length === 0) {
+      if (rawMessage.startsWith("/") && images.length === 0 && contexts.length === 0) {
         let commandInfo: SlashCommand | undefined;
         try {
-          commandInfo = await commandInfoForMessage(message);
+          commandInfo = await commandInfoForMessage(promptMessage);
         } catch {
-          commandInfo = webSlashCommandNames.has(slashCommandName(message))
-            ? { name: slashCommandName(message), source: "web" }
+          commandInfo = webSlashCommandNames.has(slashCommandName(promptMessage))
+            ? { name: slashCommandName(promptMessage), source: "web" }
             : undefined;
         }
 
@@ -516,9 +577,9 @@ export function createComposer(options: {
           clearDraft();
           hideSlashCommands();
           updatePrimaryAction();
-          addMessage("system", `› ${message}`);
+          addMessage("system", `› ${promptMessage}`);
           try {
-            await runSlashCommand(message);
+            await runSlashCommand(promptMessage);
           } catch (error) {
             addMessage("system", error instanceof Error ? error.message : String(error), "error");
           } finally {
@@ -532,6 +593,7 @@ export function createComposer(options: {
       clearDraft();
       hideSlashCommands();
       state.attachedImages = [];
+      contextAttachments = [];
       renderAttachments();
       state.isStreaming = true;
       state.isRetrying = false;
@@ -695,6 +757,7 @@ export function createComposer(options: {
 
   return {
     init,
+    addContextAttachment,
     renderAttachments,
     setPromptText,
     stopStreaming,
