@@ -120,6 +120,36 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Older mock session" })).not.toHaveClass(/\bactive\b/);
   });
 
+  test("mouse drag reorders pinned tabs and persists the order", async ({ page }) => {
+    await seedServerPinned(
+      page,
+      { id: "mock-current" },
+      { id: "mock-older" },
+    );
+    await page.goto("/");
+
+    const tabs = page.locator(".sessionBarTab.pinned");
+    await expect(tabs).toHaveCount(2);
+    await expect(tabs.nth(0)).toBeVisible();
+    const firstBox = await tabs.nth(0).boundingBox();
+    const secondBox = await tabs.nth(1).boundingBox();
+    expect(firstBox).not.toBeNull();
+    expect(secondBox).not.toBeNull();
+
+    await page.mouse.move(firstBox!.x + firstBox!.width / 2, firstBox!.y + firstBox!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(secondBox!.x + secondBox!.width / 2, secondBox!.y + secondBox!.height / 2, { steps: 4 });
+    await expect(tabs.nth(0)).toHaveClass(/\bdragging\b/);
+    await page.mouse.up();
+
+    await expect(tabs.nth(0)).toContainText("Older mock session");
+    await expect(tabs.nth(1)).toContainText("Current mock session");
+    await expect.poll(async () => {
+      const uiState = await (await page.request.get("/api/session-ui-state")).json();
+      return uiState.sessionUiState.pinnedSessions.map((entry: { id: string }) => entry.id);
+    }).toEqual(["mock-older", "mock-current"]);
+  });
+
   test("shows unread indicators in tabs and session drawer rows", async ({ page }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [

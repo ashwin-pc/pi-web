@@ -780,7 +780,26 @@
   height: 28px;
   border-top: 2px solid transparent;
   color: var(--muted);
-  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, transform 0.2s cubic-bezier(0.2, 0, 0, 1);
+}
+.sessionBarTab.pinned {
+  touch-action: pan-x;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.sessionBar.reordering {
+  overflow-x: hidden;
+}
+.sessionBarTab.dragging,
+.sessionBarTab.settling {
+  z-index: 4;
+  background: color-mix(in srgb, var(--panel) 82%, var(--text)) !important;
+  box-shadow: 0 7px 18px rgba(0, 0, 0, .38) !important;
+}
+.sessionBarTab.dragging {
+  cursor: grabbing;
+  transition: none;
 }
 .sessionBarTab:hover {
   background: color-mix(in srgb, var(--text) 6%, transparent);
