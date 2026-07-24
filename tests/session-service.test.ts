@@ -14,7 +14,7 @@ function fixtureSession(): PiWebSession {
     sessionId: "current", sessionFile: "/tmp/current.jsonl", isStreaming: false, isCompacting: false,
     model, thinkingLevel: "medium", messages: entries.map((entry) => entry.message), agent: { state: { messages: entries.map((entry) => entry.message) } },
     sessionManager: { newSession() {}, getBranch: () => entries, getLeafId: () => "result", getTree: () => [{ entry: entries[0], children: [{ entry: entries[1], children: [] }] }] },
-    modelRegistry: { getAvailable: () => [model], find: () => model },
+    modelRuntime: { getAvailableSnapshot: () => [model], getModel: () => model },
     extensionRunner: { getRegisteredCommands: () => [] }, promptTemplates: [], resourceLoader: { getSkills: () => ({ skills: [] }) },
     getAvailableThinkingLevels: () => ["off", "medium"], getSessionName: () => "Fixture", getContextUsage: () => ({ tokens: 1, contextWindow: 1000, percent: 0.1 }),
     setModel: vi.fn(async () => undefined), setThinkingLevel: vi.fn(), prompt: async () => undefined, abort: async () => undefined,

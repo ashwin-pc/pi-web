@@ -34,9 +34,9 @@ export interface PiWebSession {
     resetLeaf?(): void;
     appendLabelChange?(targetId: string, label: string | undefined): string;
   };
-  modelRegistry: {
-    getAvailable(): PiWebModel[];
-    find(provider: string, id: string): PiWebModel | undefined;
+  modelRuntime: {
+    getAvailableSnapshot(): readonly PiWebModel[];
+    getModel(provider: string, id: string): PiWebModel | undefined;
   };
   extensionRunner?: {
     getRegisteredCommands?(): unknown[];

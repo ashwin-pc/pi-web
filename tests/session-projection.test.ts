@@ -36,7 +36,7 @@ function fixtureSession(): PiWebSession {
       getLeafId: () => "assistant-1",
       getTree: () => tree,
     },
-    modelRegistry: { getAvailable: () => [], find: () => undefined },
+    modelRuntime: { getAvailableSnapshot: () => [], getModel: () => undefined },
     extensionRunner: { getRegisteredCommands: () => [{ invocationName: "ext", description: "Extension command", sourceInfo: { path: "/tmp/ext.ts", source: "extension", scope: "user", origin: "top-level" } }] },
     promptTemplates: [{ name: "prompt", description: "Prompt command", sourceInfo: { path: "/tmp/prompt.md", source: "prompt", scope: "user", origin: "top-level" } }],
     resourceLoader: { getSkills: () => ({ skills: [{ name: "demo", description: "Demo skill", sourceInfo: { path: "/tmp/SKILL.md", source: "skill", scope: "user", origin: "top-level" } }] }) },

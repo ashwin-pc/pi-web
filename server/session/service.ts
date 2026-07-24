@@ -92,7 +92,7 @@ export class LocalSessionService implements SessionService {
 
   async setModel(sessionId: string | undefined, provider: string, id: string, thinkingLevel?: string) {
     const session = await this.require(sessionId);
-    const model = session.modelRegistry.find(provider, id);
+    const model = session.modelRuntime.getModel(provider, id);
     if (!model) throw new SessionServiceError("Model not found", 404);
     await session.setModel(model);
     if (thinkingLevel !== undefined) session.setThinkingLevel(thinkingLevel);

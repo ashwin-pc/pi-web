@@ -348,9 +348,9 @@ export function createMockHarness(options: MockSessionOptions) {
       messages: mockMessages,
       agent: { state: { messages: mockMessages } },
       sessionManager: mockSessionManager,
-      modelRegistry: {
-        getAvailable: () => [mockModel],
-        find: (provider: string, id: string) => provider === mockModel.provider && id === mockModel.id ? mockModel : undefined,
+      modelRuntime: {
+        getAvailableSnapshot: () => [mockModel],
+        getModel: (provider: string, id: string) => provider === mockModel.provider && id === mockModel.id ? mockModel : undefined,
       },
       extensionRunner: {
         getRegisteredCommands: () => [{

@@ -209,7 +209,7 @@ function copilotAllowedIdsFromSession(targetSession: PiWebSession = session): Se
 }
 
 function getAvailableModels(targetSession: PiWebSession = session) {
-  const all = targetSession.modelRegistry.getAvailable();
+  const all = targetSession.modelRuntime.getAvailableSnapshot();
   const allowed = copilotAllowedIdsFromSession(targetSession);
   return all.filter((m: any) => {
     if (blockedModelIds.has(m.id)) return false;
@@ -495,7 +495,7 @@ async function executeSlashCommand(input: string, targetSession: PiWebSession = 
       if (slashIndex <= 0) throw new Error("Usage: /model <provider/model-id>");
       const provider = args.slice(0, slashIndex);
       const id = args.slice(slashIndex + 1);
-      const model = targetSession.modelRegistry.find(provider, id);
+      const model = targetSession.modelRuntime.getModel(provider, id);
       if (!model) throw new Error(`Model not found: ${args}`);
       await targetSession.setModel(model);
       return { message: `Model set to ${provider}/${id}.`, state: currentStateWithThinkingLevels(targetSession) };
@@ -1034,7 +1034,7 @@ async function applyDefaultSessionSettings(value: any) {
   const settings = await settingsStore.read();
   const modelSetting = settings.defaults.model;
   if (modelSetting) {
-    const model = value.modelRegistry.find(modelSetting.provider, modelSetting.id);
+    const model = value.modelRuntime.getModel(modelSetting.provider, modelSetting.id);
     if (model) await value.setModel(model);
   }
   const thinkingLevel = settings.defaults.thinkingLevel;
