@@ -131,6 +131,7 @@ test.describe("session quick bar", () => {
     const tabs = page.locator(".sessionBarTab.pinned");
     await expect(tabs).toHaveCount(2);
     await expect(tabs.nth(0)).toBeVisible();
+    await expect(tabs.nth(1)).toBeVisible();
     const firstBox = await tabs.nth(0).boundingBox();
     const secondBox = await tabs.nth(1).boundingBox();
     expect(firstBox).not.toBeNull();
