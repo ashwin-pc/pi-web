@@ -1,8 +1,8 @@
 # pi-web
 
-A minimal, mobile-first local/Tailscale web UI for [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent).
+A focused web UI for [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), designed for mobile, desktop, and tablet.
 
-pi-web is designed to feel like the core pi agent in a browser: small, direct, self-aware about its environment, and focused on helping you work with code rather than becoming a heavyweight IDE. It runs locally, works comfortably from a phone over Tailscale, and gives pi the web-specific context it needs to render artifacts, images, sessions, diffs, and tool output clearly.
+pi-web's goal is simple: provide the best interface for pi on every device. It stays close to the core agent experience while giving pi the web-specific context it needs to render artifacts, images, sessions, diffs, diagrams, and tool output clearly.
 
 | Desktop | Mobile |
 | --- | --- |
@@ -10,23 +10,26 @@ pi-web is designed to feel like the core pi agent in a browser: small, direct, s
 
 ## Why pi-web?
 
-- Mobile-first: use pi from a phone, tablet, or desktop browser
+- Every-device UI: a responsive experience for phone, tablet, and desktop browsers
 - Minimal by design: a focused agent UI, not a full IDE replacement
-- Local-first: run it on your machine and optionally expose it through Tailscale
 - Self-aware: pi-web injects web UI context so sessions understand artifacts, images, restarts, and browser-specific behavior
 - Code-review friendly: inspect tool output, edits, Git status, commits, and diffs
-- Session-oriented: manage ongoing work with tabs, drawers, pins, buckets, filters, and conversation navigation
+- Session-oriented: organize ongoing work with reorderable pinned tabs, drawers, colors, filters, metadata, and conversation navigation
+- Rich output: preview artifacts and open Mermaid diagrams in a full-screen viewer
 
-## What changed in 0.4.1?
+## What changed in 0.5.0?
 
-0.4.1 makes first-run setup easier for new users:
+0.5.0 expands the session workspace and improves everyday interaction across devices:
 
-- `pi-web` detects when no Pi provider login, API key, or custom model config is available
-- first run prompts in the terminal to open the bundled Pi CLI
-- run `/login` there, connect your LLM provider, exit Pi, and pi-web continues starting
-- set `PI_WEB_SKIP_PROVIDER_ONBOARDING=1` to skip the provider onboarding prompt
+- reorder pinned session tabs and assign colors directly from the tab menu
+- inspect session metadata and use new artifact actions
+- open Mermaid diagrams in a dedicated full-screen viewer
+- see queued steering and follow-up messages before they are sent
+- use the improved model picker and tighter mobile folder selector
+- recover more easily from connection warnings and session switches
+- benefit from more reliable conversation-tree layouts and updated Pi 0.82.0 runtime support
 
-See the [0.4.1 release notes](docs/releases/0.4.1.md) for the fuller changelog.
+See the [0.5.0 release notes](docs/releases/0.5.0.md) for the fuller changelog.
 
 ## Install
 
@@ -167,9 +170,11 @@ npm start
 
 `npm start` serves the compiled `dist/` app and API from one process.
 
-## Run on Tailscale with MagicDNS
+## Remote access
 
-Recommended: keep the Node app localhost-only and expose it with Tailscale Serve.
+pi-web binds to localhost by default. If you want remote access, place it behind a secure networking or reverse-proxy solution of your choice and set `PI_WEB_TOKEN`.
+
+For example, with Tailscale Serve you can keep the Node app localhost-only:
 
 ```bash
 npm run build
@@ -194,7 +199,7 @@ https://<machine-name>.<tailnet>.ts.net
 
 Enter `PI_WEB_TOKEN` on the token screen, or use **Scan QR** if another signed-in pi-web tab is showing the Settings → Token sharing QR code.
 
-## Direct Tailnet bind
+### Direct Tailnet bind
 
 You can also bind directly to your Tailscale IP:
 
@@ -234,4 +239,4 @@ The app is TypeScript end-to-end:
 
 ## Security
 
-This app can drive Pi tools such as `bash`, `write`, and `edit`. Use Tailscale ACLs and set `PI_WEB_TOKEN`.
+This app can drive Pi tools such as `bash`, `write`, and `edit`. Restrict network access with your chosen security controls and set `PI_WEB_TOKEN`.

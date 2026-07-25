@@ -1,7 +1,7 @@
 {
   "name": "@ashwin-pc/pi-web",
-  "version": "0.4.2",
-  "description": "Local/Tailscale web UI for pi coding agent.",
+  "version": "0.5.0",
+  "description": "A responsive web UI for the pi coding agent on mobile, desktop, and tablet.",
   "license": "MIT",
   "repository": {
     "type": "git",
