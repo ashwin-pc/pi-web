@@ -3,6 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
+import { messageText } from "../messages/content.js";
 import type { MessageList, TranscriptRuntimeState, TranscriptIncomplete } from "../messages/messageList.js";
 import type { ModelSettings } from "../models/modelSettings.js";
 import type { SessionsController } from "../sessions/sessionDrawer.js";
@@ -607,7 +608,14 @@ export function createRealtime(options: {
         tools.endTool(event.toolCallId, event.toolName || "tool", Boolean(event.isError), event.result);
         status.markActivityProgress("waiting for assistant", event.lastActivityAt);
         break;
+      case "queue_update":
+        composer.updatePendingQueue(event.steering, event.followUp);
+        break;
       case "message_end": {
+        const deliveredMessage = messageFromEvent(event.message);
+        if (String(deliveredMessage?.role || deliveredMessage?.raw?.role || "") === "user") {
+          composer.handleUserMessage(messageText(deliveredMessage));
+        }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {
           lastAssistantError = errorInfo;

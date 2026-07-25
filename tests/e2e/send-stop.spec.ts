@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
+  await page.request.patch("/api/settings", { data: { composer: { queueMode: "steer" } } });
   await page.goto("/");
   await expect(page.locator("#connectionStatus")).toBeHidden();
 });
@@ -120,19 +121,68 @@ test.describe("send while streaming", () => {
     await expect(page.locator("#primaryButton")).toBeDisabled();
   });
 
-  test("sending a steer message while streaming queues it", async ({ page }) => {
-    await page.locator("#prompt").fill("slow running task");
+  test("holds steering above the composer until it enters session history", async ({ page }) => {
+    await page.locator("#prompt").fill("slow queue demo");
     await page.locator("#primaryButton").click();
-
     await expect(page.locator("#stopButton")).toBeVisible();
+    await page.waitForTimeout(200);
 
     await page.locator("#prompt").fill("steer it this way");
     await page.locator("#primaryButton").click();
 
-    // the steer message should appear as a user message
-    await expect(page.locator(".message.user", { hasText: "steer it this way" })).toBeVisible();
+    const pending = page.locator('.pendingMessage[data-mode="steer"]', { hasText: "steer it this way" });
+    await expect(pending).toBeVisible();
+    await expect(pending).toHaveAttribute("aria-label", "Steering: steer it this way");
+    await expect(page.locator(".message.user", { hasText: "steer it this way" })).toHaveCount(0);
 
-    // streaming eventually ends
+    await expect(pending).toHaveCount(0, { timeout: 5000 });
+    await expect(page.locator(".message.user", { hasText: "steer it this way" })).toBeVisible();
+  });
+
+  test("holds follow-ups until the current run finishes", async ({ page }) => {
+    await page.locator("#prompt").focus();
+    await page.locator("#queueToggle").click();
+    await page.locator("#prompt").fill("slow queue demo");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await page.waitForTimeout(200);
+
+    await page.locator("#prompt").fill("summarize after that");
+    await page.locator("#primaryButton").click();
+
+    const pending = page.locator('.pendingMessage[data-mode="followUp"]', { hasText: "summarize after that" });
+    await expect(pending).toBeVisible();
+    await expect(pending).toHaveAttribute("aria-label", "Follow up: summarize after that");
+    await expect(page.locator(".message.user", { hasText: "summarize after that" })).toHaveCount(0);
+
     await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
+    await expect(pending).toHaveCount(0);
+    await expect(page.locator(".message.user", { hasText: "summarize after that" })).toBeVisible();
+  });
+
+  test("shows multiple pending messages while the composer is focused and blurred", async ({ page }) => {
+    await page.locator("#prompt").fill("slow queue demo");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await page.waitForTimeout(200);
+
+    for (const text of ["first queued steer", "second queued steer", "third queued steer"]) {
+      await page.locator("#prompt").fill(text);
+      await page.locator("#primaryButton").click();
+    }
+    const pendingMessages = page.locator('.pendingMessage[data-mode="steer"]');
+    await expect(pendingMessages).toHaveCount(3);
+    await expect(page.locator("#runtimeStatus")).toBeVisible();
+    const lastPendingBox = await pendingMessages.last().boundingBox();
+    const runtimeBox = await page.locator("#runtimeStatus").boundingBox();
+    expect(lastPendingBox).toBeTruthy();
+    expect(runtimeBox).toBeTruthy();
+    expect(lastPendingBox!.y + lastPendingBox!.height).toBeLessThanOrEqual(runtimeBox!.y);
+    await page.locator("#prompt").focus();
+    await expect(page.locator("#prompt")).toBeFocused();
+
+    await page.locator("#messages").click({ position: { x: 4, y: 4 } });
+    await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+    await expect(page.locator('.pendingMessage[data-mode="steer"]')).toHaveCount(3);
   });
 });

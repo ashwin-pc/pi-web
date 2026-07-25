@@ -751,7 +751,7 @@
 
 /* ── Session quick bar ── */
 .sessionBar {
-  grid-row: 5;
+  grid-row: 6;
   display: flex;
   align-items: stretch;
   margin-top: 8px;

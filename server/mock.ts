@@ -180,6 +180,20 @@ export function createMockHarness(options: MockSessionOptions) {
     let compactionAbortRequested = false;
     let runtimeStartedAt: string | undefined;
     let runtimeLastActivityAt: string | undefined;
+    const steeringQueue: string[] = [];
+    const followUpQueue: string[] = [];
+
+    function broadcastQueueUpdate() {
+      broadcastPiEvent({ type: "queue_update", steering: [...steeringQueue], followUp: [...followUpQueue] });
+    }
+
+    function deliverQueuedMessage(queue: string[]) {
+      const message = queue.shift();
+      if (!message) return;
+      appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
+      broadcastQueueUpdate();
+      broadcastPiEvent({ type: "message_end", message: { role: "user", content: message } });
+    }
 
     function setRuntimeStartedAt(startedAt = new Date().toISOString(), lastActivityAt = startedAt) {
       runtimeStartedAt = startedAt;
@@ -432,7 +446,12 @@ export function createMockHarness(options: MockSessionOptions) {
         appendMockMessage({ role: "bashExecution", command, ...result, excludeFromContext: Boolean(options?.excludeFromContext), timestamp: new Date().toISOString() });
         return result;
       },
-      prompt: async (message: string, promptOptions?: { images?: unknown[] }) => {
+      prompt: async (message: string, promptOptions?: { images?: unknown[]; streamingBehavior?: string }) => {
+        if (mockSession.isStreaming && promptOptions?.streamingBehavior) {
+          (promptOptions.streamingBehavior === "followUp" ? followUpQueue : steeringQueue).push(message);
+          broadcastQueueUpdate();
+          return;
+        }
         const runGeneration = mockGeneration;
         const isCurrentMockRun = () => runGeneration === mockGeneration;
         const waitForMockRun = async (ms: number) => {
@@ -444,6 +463,7 @@ export function createMockHarness(options: MockSessionOptions) {
           return isCurrentMockRun() && Boolean(mockSession.isStreaming || mockSession.isRetrying || mockSession.isCompacting);
         };
         appendMockMessage({ role: "user", content: message, timestamp: new Date().toISOString() });
+        broadcastPiEvent({ type: "message_end", message: { role: "user", content: message } });
         const withCompaction = /compact|compaction/i.test(message);
         if (withCompaction) {
           await runMockCompaction(undefined, /slow/i.test(message));
@@ -477,7 +497,7 @@ export function createMockHarness(options: MockSessionOptions) {
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
         if (withQuietRuntime) {
           if (!(await waitForMockRun(60_000))) return;
-        } else if (slow && !(await waitForMockRun(750))) return;
+        } else if (slow && !(await waitForMockRun(/queue demo/i.test(message) ? 2_500 : 750))) return;
         if (withProviderError) {
           appendMockMessage({
             role: "assistant",
@@ -624,6 +644,7 @@ export function createMockHarness(options: MockSessionOptions) {
         } else {
           appendMockMessage({ role: "assistant", content: `Mock response${promptOptions?.images?.length ? " with image" : ""}.`, timestamp: new Date().toISOString() });
         }
+        while (steeringQueue.length) deliverQueuedMessage(steeringQueue);
         mockSession.isStreaming = false;
         mockSession.isRetrying = false;
         clearRuntimeTimestamps();
@@ -631,6 +652,7 @@ export function createMockHarness(options: MockSessionOptions) {
         if (!withoutAgentEnd) {
           broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
         }
+        while (followUpQueue.length) deliverQueuedMessage(followUpQueue);
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
         if (withStaleRuntimeAfterEnd) {
           broadcast({

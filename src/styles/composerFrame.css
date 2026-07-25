@@ -1,5 +1,53 @@
-.composer {
+.pendingMessages {
   grid-row: 3;
+  display: grid;
+  max-height: min(34vh, 260px);
+  margin: 8px 16px -9px;
+  padding: 5px 8px 24px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-bottom: 0;
+  border-radius: 16px 16px 0 0;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: 0 12px 36px rgba(0, 0, 0, .2);
+  scrollbar-width: thin;
+}
+.pendingMessages[hidden] { display: none; }
+.pendingMessage {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  min-height: 30px;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+}
+.pendingMessage > svg {
+  width: 14px;
+  height: 14px;
+  margin-left: 2px;
+  color: var(--accent);
+}
+.pendingMessageText {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pendingMessage.followUp > svg { color: color-mix(in srgb, var(--accent) 62%, var(--muted)); }
+.pendingMessageSeparator {
+  height: 1px;
+  margin: 3px 6px;
+  background: color-mix(in srgb, var(--border) 78%, transparent);
+}
+.pendingMessages:not([hidden]) + .composer { margin-top: 0; }
+.pendingMessages:not([hidden]) + .composer .runtimeStatus,
+.pendingMessages:not([hidden]) + .composer .contextMeterLabel { top: -8px; }
+
+.composer {
+  grid-row: 4;
   min-width: 0;
   overflow: visible;
   background: color-mix(in srgb, var(--panel) 92%, transparent);
@@ -11,7 +59,7 @@
 }
 
 .extensionFooter {
-  grid-row: 4;
+  grid-row: 5;
   min-width: 0;
   margin: 6px 16px 0;
   color: var(--muted);

@@ -21,6 +21,8 @@ export type ComposerController = {
   stopStreaming: () => Promise<void>;
   updatePrimaryAction: () => void;
   updateQueueToggle: () => void;
+  updatePendingQueue: (steering: unknown, followUp: unknown) => void;
+  handleUserMessage: (text: string, images?: any[]) => boolean;
 };
 
 function fileToImageAttachment(file: File): Promise<ImageAttachment> {
@@ -64,6 +66,55 @@ export function createComposer(options: {
   let tokenScanFrame = 0;
   let tokenScanActive = false;
   let contextAttachments: ComposerContextAttachment[] = [];
+  let pendingSteering: string[] = [];
+  let pendingFollowUp: string[] = [];
+  const optimisticUserMessages = new Map<string, number>();
+
+  function renderPendingQueue() {
+    const entries = [
+      ...pendingSteering.map((text) => ({ text, mode: "steer" as const })),
+      ...pendingFollowUp.map((text) => ({ text, mode: "followUp" as const })),
+    ];
+    elements.pendingMessagesEl.replaceChildren();
+    elements.pendingMessagesEl.hidden = entries.length === 0;
+    let previousMode: typeof entries[number]["mode"] | undefined;
+    for (const entry of entries) {
+      if (previousMode && previousMode !== entry.mode) {
+        const separator = document.createElement("div");
+        separator.className = "pendingMessageSeparator";
+        separator.setAttribute("role", "separator");
+        elements.pendingMessagesEl.append(separator);
+      }
+      const item = document.createElement("article");
+      item.className = `pendingMessage ${entry.mode}`;
+      item.dataset.mode = entry.mode;
+      item.setAttribute("aria-label", `${entry.mode === "steer" ? "Steering" : "Follow up"}: ${entry.text}`);
+      const icon = iconElement(entry.mode === "steer" ? "route" : "corner-down-right");
+      const text = document.createElement("span");
+      text.className = "pendingMessageText";
+      text.textContent = entry.text;
+      item.append(icon, text);
+      elements.pendingMessagesEl.append(item);
+      previousMode = entry.mode;
+    }
+  }
+
+  function updatePendingQueue(steering: unknown, followUp: unknown) {
+    pendingSteering = Array.isArray(steering) ? steering.filter((item): item is string => typeof item === "string") : [];
+    pendingFollowUp = Array.isArray(followUp) ? followUp.filter((item): item is string => typeof item === "string") : [];
+    renderPendingQueue();
+  }
+
+  function handleUserMessage(text: string, images: any[] = []) {
+    const optimisticCount = optimisticUserMessages.get(text) || 0;
+    if (optimisticCount > 0) {
+      if (optimisticCount === 1) optimisticUserMessages.delete(text);
+      else optimisticUserMessages.set(text, optimisticCount - 1);
+      return true;
+    }
+    addMessage("user", text, "", images);
+    return true;
+  }
 
   function updatePrimaryAction() {
     const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0;
@@ -598,11 +649,15 @@ export function createComposer(options: {
       state.attachedImages = [];
       contextAttachments = [];
       renderAttachments();
+      const submittedWhileRunning = state.isStreaming || state.isRetrying;
       state.isStreaming = true;
       state.isRetrying = false;
       updatePrimaryAction();
       beginStreamFollow?.();
-      addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
+      if (!submittedWhileRunning) {
+        optimisticUserMessages.set(message, (optimisticUserMessages.get(message) || 0) + 1);
+        addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
+      }
 
       try {
         const res = await fetch("/api/prompt", {
@@ -766,5 +821,7 @@ export function createComposer(options: {
     stopStreaming,
     updatePrimaryAction,
     updateQueueToggle,
+    updatePendingQueue,
+    handleUserMessage,
   };
 }
