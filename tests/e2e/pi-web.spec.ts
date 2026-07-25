@@ -28,7 +28,10 @@ test.describe("composer layout", () => {
     const readLayout = () =>
       page.locator("#statusBar").evaluate((bar) => {
         const rect = bar.getBoundingClientRect();
-        const lastActionRect = bar.querySelector("#currentSessionBucketButton")?.getBoundingClientRect();
+        const visibleActions = Array.from(bar.querySelectorAll<HTMLElement>(".statusBarButton"))
+          .map((element) => element.getBoundingClientRect())
+          .filter((actionRect) => actionRect.width > 0);
+        const lastActionRect = visibleActions.at(-1);
         return {
           scrollWidth: bar.scrollWidth,
           clientWidth: bar.clientWidth,

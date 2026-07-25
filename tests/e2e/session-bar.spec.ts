@@ -267,33 +267,30 @@ test.describe("session quick bar", () => {
     ]);
   });
 
-  test("current session bucket menu sets and unsets marker colors", async ({ page }) => {
+  test("pinned tab context menu sets and unsets session colors", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" });
     await page.goto("/");
-    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
 
-    const bucketButton = page.locator("#currentSessionBucketButton");
-    await expect(bucketButton).toHaveAttribute("title", "Set current session bucket");
-
-    await bucketButton.click();
+    await expect(page.locator("#currentSessionBucketButton")).toBeHidden();
+    const tab = page.locator(".sessionBarTab.pinned").filter({ hasText: "Current mock session" });
+    await tab.click({ button: "right" });
     const menu = page.locator(".sessionBucketMenu");
     await expect(menu).toBeVisible();
-    await expect(menu).toContainText("Session bucket");
+    await expect(menu).toContainText("Session color");
     await expect(menu.locator(".sessionColorFilterMenuItem")).toHaveCount(6);
 
     await menu.locator(".sessionColorFilterMenuItem.marker-green").click();
-    await expect(bucketButton).toHaveClass(/\bmarked\b/);
-    await expect(bucketButton).toHaveClass(/marker-green/);
-    await expect(bucketButton).toHaveAttribute("title", /Green/);
+    await expect(tab).toHaveClass(/\bmarked\b/);
+    await expect(tab).toHaveClass(/marker-green/);
 
     let uiState = await (await page.request.get("/api/session-ui-state")).json();
     expect(uiState.sessionUiState.sessionMarkers).toEqual([
       expect.objectContaining({ sessionId: "mock-current", color: "green" }),
     ]);
 
-    await bucketButton.click();
+    await tab.click({ button: "right" });
     await page.locator(".sessionBucketMenu .sessionColorFilterMenuItem", { hasText: "No bucket" }).click();
-    await expect(bucketButton).not.toHaveClass(/\bmarked\b/);
-    await expect(bucketButton).toHaveAttribute("title", "Set current session bucket");
+    await expect(tab).not.toHaveClass(/\bmarked\b/);
 
     uiState = await (await page.request.get("/api/session-ui-state")).json();
     expect(uiState.sessionUiState.sessionMarkers).toEqual([]);

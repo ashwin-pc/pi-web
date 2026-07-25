@@ -806,13 +806,11 @@ export function createSessions(options: {
     button.setAttribute("aria-expanded", String(Boolean(closeCurrentSessionBucketMenu)));
   }
 
-  function openCurrentSessionBucketMenu(anchor: HTMLButtonElement) {
-    if (!state.currentSessionId) return;
+  function openSessionTabMenu(sessionId: string, anchor: HTMLElement) {
     closeOpenSessionActionsMenu();
     closeOpenSessionColorFilterMenu();
     closeOpenCurrentSessionBucketMenu();
 
-    const sessionId = state.currentSessionId;
     const marker = markerForSession(sessionId);
     const menu = document.createElement("div");
     menu.className = "sessionColorFilterMenu sessionBucketMenu";
@@ -820,7 +818,7 @@ export function createSessions(options: {
 
     const title = document.createElement("div");
     title.className = "sessionColorFilterTitle";
-    title.textContent = "Session bucket";
+    title.textContent = "Session color";
     menu.append(title);
 
     const clearButton = document.createElement("button");
@@ -1367,7 +1365,15 @@ export function createSessions(options: {
       window.addEventListener("pointermove", onPointerMove, { passive: false });
       window.addEventListener("pointerup", onPointerUp);
       window.addEventListener("pointercancel", onPointerCancel);
-      if (downEvent.pointerType !== "mouse") holdTimer = window.setTimeout(lift, holdDelayMs);
+      if (downEvent.pointerType !== "mouse") {
+        holdTimer = window.setTimeout(() => {
+          if (!pressActive) return;
+          suppressTabClickUntil = performance.now() + 400;
+          navigator.vibrate?.(10);
+          finishPress();
+          openSessionTabMenu(tab.dataset.sessionId!, tab);
+        }, holdDelayMs);
+      }
     });
 
     tab.addEventListener("touchmove", (event) => {
@@ -1411,7 +1417,14 @@ export function createSessions(options: {
       const tab = document.createElement("div");
       tab.className = `sessionBarTab${isActive ? " active" : ""}${unread ? " unread" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
       tab.dataset.sessionId = sessionId;
-      if (options.pinned && pinned.length >= 2) attachPinnedTabReorder(tab);
+      if (options.pinned) attachPinnedTabReorder(tab);
+      if (options.pinned) {
+        tab.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          if (tab.classList.contains("dragging")) return;
+          openSessionTabMenu(sessionId, tab);
+        });
+      }
       if (isActive) activeTab = tab;
       if (options.running) {
         for (let i = 1; i <= 12; i += 1) {
@@ -1977,7 +1990,9 @@ export function createSessions(options: {
       focusOnClose: elements.sessionButton,
     });
     if (!sessionPanelHandle) elements.sessionButton.addEventListener("click", () => setSessionDrawerOpen(true));
-    elements.currentSessionBucketButton.addEventListener("click", () => openCurrentSessionBucketMenu(elements.currentSessionBucketButton));
+    elements.currentSessionBucketButton.addEventListener("click", () => {
+      if (state.currentSessionId) openSessionTabMenu(state.currentSessionId, elements.currentSessionBucketButton);
+    });
     renderCurrentSessionBucketButton();
     elements.newSessionHeaderButton.addEventListener("click", async () => {
       try {

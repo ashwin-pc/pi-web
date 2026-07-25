@@ -29,6 +29,10 @@
   width: 15px;
   height: 15px;
 }
+.sessionBucketButton[hidden] {
+  display: none;
+}
+
 .sessionBucketButton.marked {
   color: var(--session-marker-color);
   background: color-mix(in srgb, var(--session-marker-color) 10%, transparent);
