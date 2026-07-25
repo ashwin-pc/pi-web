@@ -133,7 +133,7 @@ export function initGitPanel(options: {
 
   async function loadSelectedRepoData() {
     if (!state.selectedRepo) {
-      state.status = { ok: true, isRepo: false, ahead: 0, behind: 0, files: [] };
+      state.status = { ok: true, isRepo: false, ahead: 0, behind: 0, files: [], diffStats: { staged: { files: 0, additions: 0, deletions: 0 }, unstaged: { files: 0, additions: 0, deletions: 0 } } };
       state.statusesByRepo = {};
       state.commits = [];
       state.selectedFile = undefined;

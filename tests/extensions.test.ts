@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { discoverExtensionEntryPaths, resolveBundledExtensionPaths } from "../server/extensions.js";
+import { createWebUiBridge } from "../server/extensions/webUi.js";
+import downloadArtifactExtension from "../examples/pi-web-extensions/download-artifact.js";
 import gitFooterExtension from "../examples/pi-web-extensions/git-footer.js";
 
 const tempDirs: string[] = [];
@@ -61,6 +63,51 @@ describe("bundled extension path discovery", () => {
     await writeFile(join(bundledExtensionsDir, "auto-session-name.ts"), "export default () => {};\n");
 
     expect(resolveBundledExtensionPaths({ piCwd: appDir, appDir, bundledExtensionsDir })).toEqual([]);
+  });
+
+  it("registers the download example for every artifact and clears it on shutdown", async () => {
+    const handlers = new Map<string, (event: unknown, context: any) => unknown>();
+    downloadArtifactExtension({ on: (event: string, handler: (event: unknown, context: any) => unknown) => handlers.set(event, handler) } as any);
+    const calls: Array<[string, any]> = [];
+    const context = { ui: { web: { setArtifactAction: (key: string, action: unknown) => calls.push([key, action]) } } };
+
+    await handlers.get("session_start")?.({}, context);
+    const action = calls.at(-1)?.[1];
+    expect(calls.at(-1)?.[0]).toBe("download-artifact");
+    expect(action).toMatchObject({ title: "Download artifact to this device", label: "Download" });
+    expect(await action.invoke({ name: "report.md", path: "/api/artifacts/report.md", kind: "markdown" })).toEqual({ download: { filename: "report.md" } });
+
+    await handlers.get("session_shutdown")?.({}, context);
+    expect(calls.at(-1)).toEqual(["download-artifact", undefined]);
+  });
+
+  it("serializes and securely invokes artifact actions through the web bridge", async () => {
+    let ui: any;
+    const emitted: any[] = [];
+    const bridge = createWebUiBridge({
+      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+    ui.web.setArtifactAction("download", {
+      title: "Download", kinds: ["html"], extensions: [".html"],
+      invoke: ({ name }: { name: string }) => ({ download: { filename: `saved-${name}` } }),
+    });
+
+    expect(bridge.entries(session).webArtifactActions).toEqual([{
+      key: "download", title: "Download", label: undefined, kinds: ["html"], extensions: [".html"],
+    }]);
+    expect(emitted.at(-1)).toMatchObject({ type: "web_artifact_actions_changed", sessionId: "session" });
+    await expect(bridge.invokeArtifactAction(session, { key: "download", name: "page.html", path: "/api/artifacts/page.html", kind: "html" }))
+      .resolves.toMatchObject({ download: { path: "/api/artifacts/page.html", filename: "saved-page.html" } });
+    await expect(bridge.invokeArtifactAction(session, { key: "download", name: "notes.md", path: "/api/artifacts/notes.md", kind: "markdown" }))
+      .rejects.toThrow("does not match this artifact");
+    await expect(bridge.invokeArtifactAction(session, { key: "download", name: "page.html", path: "/api/artifacts/other.html", kind: "html" }))
+      .rejects.toThrow("Invalid artifact context");
   });
 
   it("re-emits a footer when the same session id gets a new runtime", async () => {

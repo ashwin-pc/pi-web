@@ -36,7 +36,8 @@ test("GitHub issue numbers attach issue details to the composer context", async 
   });
 
   await page.goto("/");
-  await page.locator("#gitButton").click();
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
   await expect(page.locator(".gitExtensionTab", { hasText: "GitHub" })).toBeVisible();
   await page.locator(".gitExtensionTab", { hasText: "GitHub" }).click();
   await page.locator(".testIssueNumber").click();
@@ -58,7 +59,8 @@ test("GitHub issue numbers attach issue details to the composer context", async 
 
 test("git panel opens, switches views, and commit rows do not overlap", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#gitButton").click();
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
   await expect(page.locator("#gitPanel")).toBeVisible();
   await expect(page.locator("#gitStatusTab")).toHaveClass(/active/);
 
@@ -101,7 +103,8 @@ test("git status repo accordions switch the selected file", async ({ page }) => 
   await page.route("**/api/git/diff?**", (route) => route.fulfill({ json: { ok: true, path: "file.txt", staged: false, diff: "" } }));
 
   await page.goto("/");
-  await page.locator("#gitButton").click();
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
   await expect(page.locator(".gitRepoChangesAccordion .gitRepoName")).toHaveText(["repo-a", "repo-b"]);
   await expect(page.locator(".gitRepoChangesAccordion").first().locator("summary")).not.toContainText("↑0");
   await expect(page.locator(".gitRepoChangesAccordion").first().locator("summary")).not.toContainText("↓0");
@@ -141,7 +144,8 @@ test("git panel switches to a single visible pane when its container is narrow",
   } }));
 
   await page.goto("/");
-  await page.locator("#gitButton").click();
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
 
   await expect(page.locator("#gitPrimaryPane")).toBeVisible();
   await expect(page.locator("#gitDetailPane")).toBeHidden();
@@ -154,7 +158,8 @@ test("git panel switches to a single visible pane when its container is narrow",
 
 test("git commit detail shows changed files, diff, and layout toggle", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#gitButton").click();
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
   await page.locator("#gitGraphTab").click();
   // Plain `git show` has no combined patch for merge commits, so exercise a
   // regular commit when the repository's newest entry is a PR merge.

@@ -284,9 +284,10 @@ body.artifactPreviewDocument {
 }
 .markdownBody a { color: var(--accent); }
 .artifactPreview {
-  margin: 10px 0 14px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
+  width: calc(100% + 28px);
+  margin: 10px -14px 14px;
+  border: 0;
+  border-radius: 0;
   background: var(--panel);
   overflow: hidden;
 }
@@ -295,14 +296,20 @@ body.artifactPreviewDocument {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+  padding: 9px 14px;
+  border-bottom: 0;
+  background: color-mix(in srgb, var(--text) 4%, var(--panel));
   color: var(--muted);
   font-size: 12px;
 }
-.artifactPreviewTitle { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artifactPreviewTitle { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: auto; }
+.artifactPreviewBuiltInActions, .artifactPreviewActions { display: inline-flex; align-items: center; gap: 8px; }
+.artifactPreviewAction { border: 0; padding: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.artifactPreviewAction:hover { text-decoration: underline; }
+.artifactPreviewAction:disabled { color: var(--muted); cursor: wait; text-decoration: none; }
+.artifactPreviewActionResult { padding: 10px; border-bottom: 1px solid var(--border); }
 .artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: auto; }
-.artifactPreview--html .artifactPreviewContent { padding: 0; }
+.artifactPreview--html .artifactPreviewContent { padding: 0; overflow: hidden; }
 .artifactPreviewFrame { display: block; width: 100%; height: min(70vh, 720px); border: 0; background: #fff; border-radius: 0; }
 .artifactPreviewVideo { display: block; width: 100%; max-height: min(70vh, 720px); border-radius: 0 0 12px 12px; background: #000; }
 .artifactPreview--video .artifactPreviewContent { padding: 0; overflow: hidden; }

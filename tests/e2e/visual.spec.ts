@@ -303,7 +303,8 @@ test.describe("visual regression", () => {
     await mockGitApi(page);
 
     await page.goto("/");
-    await page.locator("#gitButton").click();
+    await page.locator("#sessionInfoButton").click();
+    await page.locator("#sessionInfoGit").click();
     await page.locator("#gitGraphTab").click();
     await page.locator(".gitCommitItem").first().click();
     await expect(page.locator(".gitCommitDetails")).toBeVisible();

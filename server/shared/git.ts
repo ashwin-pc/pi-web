@@ -60,8 +60,20 @@ export function parseStatusLine(line: string): GitFileStatus {
   return { path: path || rawPath, oldPath, indexStatus, worktreeStatus, label: gitLabel(indexStatus, worktreeStatus), staged: indexStatus !== " " && indexStatus !== "?" };
 }
 
+function parseNumstat(output: string) {
+  let additions = 0;
+  let deletions = 0;
+  for (const line of output.split("\n").filter(Boolean)) {
+    const [added = "0", deleted = "0"] = line.split("\t");
+    additions += Number(added) || 0;
+    deletions += Number(deleted) || 0;
+  }
+  return { additions, deletions };
+}
+
 export async function gitStatus(cwd = process.cwd(), fetchRemote = false) {
-  if (!await isGitRepo(cwd)) return { ok: true as const, isRepo: false as const, ahead: 0, behind: 0, files: [] as GitFileStatus[] };
+  const emptyDiffStats = { staged: { files: 0, additions: 0, deletions: 0 }, unstaged: { files: 0, additions: 0, deletions: 0 } };
+  if (!await isGitRepo(cwd)) return { ok: true as const, isRepo: false as const, ahead: 0, behind: 0, files: [] as GitFileStatus[], diffStats: emptyDiffStats };
   if (fetchRemote) await git(["fetch", "--prune"], 60_000, cwd).catch(() => undefined);
   const [{ stdout: root }, { stdout: branchOut }, { stdout: porcelain }, upstreamResult, defaultResult] = await Promise.all([
     git(["rev-parse", "--show-toplevel"], 15_000, cwd),
@@ -75,7 +87,11 @@ export async function gitStatus(cwd = process.cwd(), fetchRemote = false) {
   const ahead = Number(header.match(/ahead (\d+)/)?.[1] || 0);
   const behind = Number(header.match(/behind (\d+)/)?.[1] || 0);
   const trackedFiles = lines.slice(1).map(parseStatusLine).filter((file) => file.label !== "untracked");
-  const { stdout: untrackedOut } = await git(["ls-files", "--others", "--exclude-standard"], 15_000, cwd).catch(() => ({ stdout: "" }));
+  const [{ stdout: untrackedOut }, { stdout: stagedNumstat }, { stdout: unstagedNumstat }] = await Promise.all([
+    git(["ls-files", "--others", "--exclude-standard"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["diff", "--cached", "--numstat"], 15_000, cwd).catch(() => ({ stdout: "" })),
+    git(["diff", "--numstat"], 15_000, cwd).catch(() => ({ stdout: "" })),
+  ]);
   const untrackedFiles: GitFileStatus[] = untrackedOut.split("\n").map((path) => path.trim()).filter(Boolean).map((path) => ({
     path,
     indexStatus: "?",
@@ -93,6 +109,10 @@ export async function gitStatus(cwd = process.cwd(), fetchRemote = false) {
     ahead,
     behind,
     files: [...trackedFiles, ...untrackedFiles],
+    diffStats: {
+      staged: { files: trackedFiles.filter((file) => file.indexStatus !== " " && file.indexStatus !== "?").length, ...parseNumstat(stagedNumstat) },
+      unstaged: { files: trackedFiles.filter((file) => file.worktreeStatus !== " ").length + untrackedFiles.length, ...parseNumstat(unstagedNumstat) },
+    },
   };
 }
 

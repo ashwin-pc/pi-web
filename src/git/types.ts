@@ -46,6 +46,10 @@ export type GitStatusResponse = {
   ahead: number;
   behind: number;
   files: GitFileStatus[];
+  diffStats: {
+    staged: { files: number; additions: number; deletions: number };
+    unstaged: { files: number; additions: number; deletions: number };
+  };
 };
 
 export type GitLogResponse = { ok: true; isRepo: boolean; commits: GitCommit[] };

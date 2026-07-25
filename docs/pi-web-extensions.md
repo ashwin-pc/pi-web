@@ -120,6 +120,40 @@ ctx.ui.web.setHeaderAction("recap", undefined);
 
 The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../examples/pi-web-extensions/recap.ts).
 
+## Artifact preview action API
+
+`ctx.ui.web.setArtifactAction(key, action)` adds an action to matching Markdown, HTML, or video artifact preview cards. Match by preview kind, filename extension, or both. The handler receives the artifact's name, `/api/artifacts/...` path, and kind, and may return Markdown or a plain-text message shown in the card.
+
+```ts
+ctx.ui.web.setArtifactAction("publish", {
+  title: "Publish HTML preview",
+  label: "Publish",
+  kinds: ["html"],
+  extensions: [".html", ".htm"],
+  invoke: async ({ name, path, kind }) => ({
+    markdown: `Published **${name}** (${kind}) from \`${path}\`.`,
+  }),
+});
+```
+
+An action can also trigger an authenticated browser download of the current artifact:
+
+```ts
+ctx.ui.web.setArtifactAction("download", {
+  title: "Download artifact",
+  label: "Download",
+  invoke: ({ name }) => ({ download: { filename: name } }),
+});
+```
+
+The repo includes this as an installable example at [`examples/pi-web-extensions/download-artifact.ts`](../examples/pi-web-extensions/download-artifact.ts).
+
+Omit `kinds` and `extensions` to show the action on every artifact preview. Clear it with:
+
+```ts
+ctx.ui.web.setArtifactAction("publish", undefined);
+```
+
 ## Git panel tab API
 
 `ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer; extensions own provider detection, data fetching, and trusted HTML rendering.

@@ -30,7 +30,7 @@ function fixtureService() {
     decorateMessageContent: (content) => content, availableModels: () => [session.model], webCommands: [{ name: "web", source: "web" }],
     list: async () => [], create: async (cwd, previous) => { creates.push({ cwd, previous }); return session; }, open: async () => session,
     delete: async () => ({}), switchCwd: async () => ({}), executeCommand: async () => ({ message: "ok", state: {} }), prompt: async () => undefined,
-    retry: async () => undefined, navigate: async () => ({ finish() {} }), invokeHeaderAction: async () => ({}), invokeGitTab: async () => ({}), reportError: () => undefined,
+    retry: async () => undefined, navigate: async () => ({ finish() {} }), invokeHeaderAction: async () => ({}), invokeArtifactAction: async (_session, input) => input, invokeGitTab: async () => ({}), reportError: () => undefined,
   };
   return { service: new LocalSessionService(deps), session, creates };
 }
@@ -41,6 +41,12 @@ describe("LocalSessionService contract", () => {
     for (const result of await Promise.all([service.state(), service.stats(), service.tree(), service.messages(), service.models(), service.commands()])) {
       expect(jsonRoundTrip(result)).toStrictEqual(result);
     }
+  });
+
+  it("delegates artifact action invocation for the resolved session", async () => {
+    const { service } = fixtureService();
+    await expect(service.invokeArtifactAction(undefined, { key: "download", path: "/api/artifacts/report.md" }))
+      .resolves.toEqual({ key: "download", path: "/api/artifacts/report.md" });
   });
 
   it("maps unavailable conversation trees to the legacy 400 status", async () => {

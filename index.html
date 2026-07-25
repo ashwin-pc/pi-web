@@ -46,13 +46,27 @@
         <span id="activityStatus" class="activityStatus" hidden></span>
         <span id="connectionStatus" class="connectionStatus" aria-live="polite" hidden></span>
         <span id="headerActions" class="headerActions"></span>
+        <div class="sessionInfoWrap">
+          <button id="sessionInfoButton" class="iconButton statusBarButton" type="button" aria-label="Session info" title="Session info" aria-expanded="false">
+            <span data-icon="info"></span>
+          </button>
+          <div id="sessionInfoPopover" class="sessionInfoPopover" role="dialog" aria-label="Session info" hidden>
+            <div class="sessionInfoHeading">Session info</div>
+            <button id="sessionInfoId" class="sessionInfoRow" type="button"><span><small>Session ID</small><strong></strong></span><span data-icon="copy"></span></button>
+            <button id="sessionInfoCwd" class="sessionInfoRow" type="button"><span><small>Working directory</small><strong></strong></span><span data-icon="copy"></span></button>
+            <button id="sessionInfoGit" class="sessionInfoRow sessionInfoGitRow" type="button">
+              <span><small>Git changes</small><strong>Open source control</strong></span>
+              <span id="sessionInfoGitCount" class="sessionInfoDiffStats">—</span>
+            </button>
+          </div>
+        </div>
         <button id="newSessionHeaderButton" class="iconButton statusBarButton" type="button" aria-label="New session" title="New session">
           <span data-icon="square-pen"></span>
         </button>
         <button id="conversationTreeButton" class="iconButton statusBarButton" type="button" aria-label="Conversation tree" title="Conversation tree">
           <span data-icon="git-fork"></span>
         </button>
-        <button id="gitButton" class="iconButton statusBarButton" type="button" aria-label="Git" title="Git">
+        <button id="gitButton" class="iconButton statusBarButton headerGitButton" type="button" aria-label="Git" title="Git" hidden>
           <span data-icon="git-branch"></span>
         </button>
         <button id="currentSessionBucketButton" class="iconButton statusBarButton sessionBucketButton" type="button" aria-label="Set session bucket" title="Set session bucket" aria-haspopup="menu">

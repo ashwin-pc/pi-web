@@ -23,6 +23,23 @@ const allowedMarkdownTags = new Set([
 ]);
 const allowedMarkdownAttributes = new Set(["alt", "class", "href", "rel", "src", "target", "title"]);
 
+type ArtifactPreviewAction = { key?: unknown; title?: unknown; label?: unknown; kinds?: unknown; extensions?: unknown };
+let artifactPreviewActions: ArtifactPreviewAction[] = [];
+let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type": "application/json" });
+let artifactActionSessionId = () => "";
+
+export function configureArtifactPreviewActions(options: { headers: () => Record<string, string>; getSessionId: () => string }) {
+  artifactActionHeaders = options.headers;
+  artifactActionSessionId = options.getSessionId;
+}
+
+export function setArtifactPreviewActions(value: unknown) {
+  artifactPreviewActions = Array.isArray(value) ? value : [];
+  for (const card of document.querySelectorAll<HTMLElement>(".artifactPreview[data-artifact-path]")) {
+    renderArtifactActions(card, card.dataset.artifactName || "artifact", card.dataset.artifactPath || "", card.dataset.artifactKind || "");
+  }
+}
+
 export type MarkdownRenderer = {
   renderAssistantMarkdown: (body: HTMLElement, text: string) => void;
   queueAssistantMarkdownRender: (body: HTMLElement, text: string) => void;
@@ -250,6 +267,80 @@ function isStandalonePwa() {
     (navigator as Navigator & { standalone?: boolean }).standalone === true;
 }
 
+function matchingArtifactActions(name: string, kind: string) {
+  return artifactPreviewActions.flatMap((raw) => {
+    if (typeof raw.key !== "string" || !raw.key) return [];
+    if (Array.isArray(raw.kinds) && raw.kinds.length && !raw.kinds.includes(kind)) return [];
+    if (Array.isArray(raw.extensions) && raw.extensions.length && !raw.extensions.some((extension) => typeof extension === "string" && name.toLowerCase().endsWith(extension.toLowerCase()))) return [];
+    return [{ key: raw.key, title: typeof raw.title === "string" ? raw.title : raw.key, label: typeof raw.label === "string" ? raw.label : undefined }];
+  });
+}
+
+async function downloadArtifact(path: string, filename: string) {
+  const response = await fetch(path, { headers: artifactActionHeaders() });
+  if (!response.ok) throw new Error(`Download failed (${response.status})`);
+  const objectUrl = URL.createObjectURL(await response.blob());
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename || "artifact";
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1_000);
+}
+
+function renderArtifactActions(card: HTMLElement, name: string, path: string, kind: string) {
+  card.querySelector(".artifactPreviewActions")?.remove();
+  const actions = matchingArtifactActions(name, kind);
+  if (!actions.length) return;
+  const container = document.createElement("span");
+  container.className = "artifactPreviewActions";
+  for (const action of actions) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "artifactPreviewAction";
+    button.textContent = action.label || action.title;
+    button.title = action.title;
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      const original = button.textContent;
+      button.textContent = "Working…";
+      try {
+        const res = await fetch("/api/web-artifact-action/invoke", { method: "POST", headers: artifactActionHeaders(), body: JSON.stringify({ sessionId: artifactActionSessionId(), key: action.key, name, path, kind }) });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
+        if (data.download && typeof data.download.path === "string") {
+          await downloadArtifact(data.download.path, typeof data.download.filename === "string" ? data.download.filename : name);
+          if (typeof data.markdown !== "string" && typeof data.message !== "string") {
+            card.querySelector(".artifactPreviewActionResult")?.remove();
+            button.textContent = "Downloaded";
+            window.setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1_500);
+            return;
+          }
+        }
+        let result = card.querySelector<HTMLElement>(".artifactPreviewActionResult");
+        if (!result) {
+          result = document.createElement("div");
+          result.className = "artifactPreviewActionResult markdownBody";
+          card.querySelector(".artifactPreviewHeader")?.insertAdjacentElement("afterend", result);
+        }
+        if (typeof data.markdown === "string") result.innerHTML = markdownHtml(data.markdown);
+        else result.textContent = String(data.message || (data.download ? `Downloaded ${data.download.filename || name}` : "Done"));
+      } catch (error) {
+        button.title = error instanceof Error ? error.message : String(error);
+        button.textContent = "Failed";
+        return;
+      } finally {
+        button.disabled = false;
+      }
+      button.textContent = original;
+    });
+    container.append(button);
+  }
+  card.querySelector(".artifactPreviewHeader")?.append(container);
+}
+
 function enhanceArtifactLinks(root: ParentNode) {
   for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/api/artifacts/"]'))) {
     if (link.dataset.artifactPreviewEnhanced) continue;
@@ -276,11 +367,18 @@ function enhanceArtifactLinks(root: ParentNode) {
       open.rel = "noopener noreferrer";
     }
     open.textContent = "Open";
-    header.append(title, open);
+    const builtInActions = document.createElement("span");
+    builtInActions.className = "artifactPreviewBuiltInActions";
+    builtInActions.append(open);
+    header.append(title, builtInActions);
     const content = document.createElement("div");
     content.className = "artifactPreviewContent";
     content.textContent = "Loading preview…";
     card.append(header, content);
+    card.dataset.artifactName = title.textContent;
+    card.dataset.artifactPath = url.pathname;
+    card.dataset.artifactKind = kind;
+    renderArtifactActions(card, title.textContent, url.pathname, kind);
 
     const container = link.closest("p") || link;
     container.insertAdjacentElement("afterend", card);

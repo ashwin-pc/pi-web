@@ -1198,6 +1198,7 @@ const sessionService = new LocalSessionService({
   retry: startSessionRetry,
   navigate: navigateSession,
   invokeHeaderAction: (value, key) => webUiBridge.invokeHeaderAction(value, key),
+  invokeArtifactAction: (value, input) => webUiBridge.invokeArtifactAction(value, input),
   invokeGitTab: (value, input) => webUiBridge.invokeGitTab(value, input),
   reportError: (value, error) => broadcast({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: error instanceof Error ? error.message : String(error) }),
 });
@@ -1375,6 +1376,17 @@ const server = createServer(async (req, res) => {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Header action returned no markdown" ? 400 : message === "Header action not found" ? 404 : 500;
+          return sendJson(res, status, { ok: false, error: message });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/web-artifact-action/invoke") {
+        const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
+        try {
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeArtifactAction(typeof body.sessionId === "string" ? body.sessionId : undefined, body) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const status = error instanceof SessionServiceError ? error.status : message === "Artifact action not found" ? 404 : message === "Invalid artifact context" || message === "Artifact action does not match this artifact" || message === "key is required" || message === "Artifact action returned no result" ? 400 : 500;
           return sendJson(res, status, { ok: false, error: message });
         }
       }

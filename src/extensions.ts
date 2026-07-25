@@ -43,6 +43,29 @@ export type PiWebHeaderAction = {
   invoke: () => Promise<{ markdown: string }> | { markdown: string };
 };
 
+export type PiWebArtifactContext = {
+  name: string;
+  path: string;
+  kind: "markdown" | "html" | "video";
+};
+
+export type PiWebArtifactAction = {
+  title: string;
+  label?: string;
+  /** Limit the action to these preview kinds. Omit to match every kind. */
+  kinds?: PiWebArtifactContext["kind"][];
+  /** Limit the action to filenames ending in one of these extensions (for example, ".html"). */
+  extensions?: string[];
+  invoke: (artifact: PiWebArtifactContext) => Promise<PiWebArtifactActionResult> | PiWebArtifactActionResult;
+};
+
+export type PiWebArtifactActionResult = {
+  markdown?: string;
+  message?: string;
+  /** Download the current artifact in the browser, optionally with a different filename. */
+  download?: { filename?: string };
+};
+
 export type PiWebGitTabEvent = {
   action?: string;
   payload?: unknown;
@@ -91,6 +114,9 @@ export type PiWebUi = {
 
   /** Set or clear a status-bar icon button contributed by a pi-web extension. */
   setHeaderAction(key: string, action: PiWebHeaderAction | undefined): void;
+
+  /** Set or clear an action shown on matching inline artifact preview cards. */
+  setArtifactAction(key: string, action: PiWebArtifactAction | undefined): void;
 
   /** Set or clear a provider-specific tab in the built-in Git panel. */
   setGitTab(key: string, tab: PiWebGitTab | undefined): void;

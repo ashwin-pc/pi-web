@@ -129,18 +129,24 @@ test.describe("session quick bar", () => {
     await page.goto("/");
 
     const tabs = page.locator(".sessionBarTab.pinned");
+    const draggedTab = tabs.filter({ hasText: "Current mock session" });
+    const targetTab = tabs.filter({ hasText: "Older mock session" });
     await expect(tabs).toHaveCount(2);
-    await expect(tabs.nth(0)).toBeVisible();
-    await expect(tabs.nth(1)).toBeVisible();
-    const firstBox = await tabs.nth(0).boundingBox();
-    const secondBox = await tabs.nth(1).boundingBox();
-    expect(firstBox).not.toBeNull();
-    expect(secondBox).not.toBeNull();
+    await expect(draggedTab).toBeVisible();
+    await expect(targetTab).toBeVisible();
+    let firstBox = await draggedTab.boundingBox();
+    let secondBox = await targetTab.boundingBox();
+    await expect.poll(async () => {
+      firstBox = await draggedTab.boundingBox();
+      secondBox = await targetTab.boundingBox();
+      return Boolean(firstBox && secondBox);
+    }).toBe(true);
 
     await page.mouse.move(firstBox!.x + firstBox!.width / 2, firstBox!.y + firstBox!.height / 2);
     await page.mouse.down();
-    await page.mouse.move(secondBox!.x + secondBox!.width / 2, secondBox!.y + secondBox!.height / 2, { steps: 4 });
-    await expect(tabs.nth(0)).toHaveClass(/\bdragging\b/);
+    await page.mouse.move(firstBox!.x + firstBox!.width / 2 + 12, firstBox!.y + firstBox!.height / 2, { steps: 2 });
+    await expect(draggedTab).toHaveClass(/\bdragging\b/);
+    await page.mouse.move(secondBox!.x + secondBox!.width * 0.75, secondBox!.y + secondBox!.height / 2, { steps: 6 });
     await page.mouse.up();
 
     await expect(tabs.nth(0)).toContainText("Older mock session");
@@ -202,7 +208,9 @@ test.describe("session quick bar", () => {
 
   test("/clear returns to the new-session animation and current folder picker", async ({ page }) => {
     await page.goto("/");
-    const currentCwd = (await page.locator("#statusPath").textContent()) || "";
+    const statusPath = page.locator("#statusPath");
+    await expect(statusPath).not.toHaveText("");
+    const currentCwd = await statusPath.innerText();
 
     await page.locator("#prompt").fill("/clear");
     await page.locator("#primaryButton").click();
