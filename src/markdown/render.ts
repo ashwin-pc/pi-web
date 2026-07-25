@@ -2,6 +2,7 @@ import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
 import { Check, Copy, createElement } from "lucide";
 import { attachImageActions } from "../components/imageActions.js";
+import { attachDiagramViewer } from "../components/diagramViewer.js";
 
 marked.setOptions({
   async: false,
@@ -157,12 +158,17 @@ function enhanceMermaid(root: ParentNode) {
     container.textContent = "Rendering diagram…";
     pre.replaceWith(container);
 
+    const setSvg = (svg: string) => {
+      container.innerHTML = svg;
+      const renderedSvg = container.querySelector<SVGSVGElement>("svg");
+      if (renderedSvg) attachDiagramViewer(container, renderedSvg);
+    };
     const render = async () => {
       if (!container.isConnected) return;
       try {
         const cached = mermaidCachedSvg(source);
         if (cached !== undefined) {
-          container.innerHTML = cached;
+          setSvg(cached);
           return;
         }
 
@@ -170,7 +176,7 @@ function enhanceMermaid(root: ParentNode) {
         const id = `mermaid-${++mermaidRenderCounter}`;
         const { svg } = await mermaid.default.render(id, source);
         cacheMermaidSvg(source, svg);
-        if (container.isConnected) container.innerHTML = svg;
+        if (container.isConnected) setSvg(svg);
       } catch {
         if (!container.isConnected) return;
         container.replaceWith(pre);

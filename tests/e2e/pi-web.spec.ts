@@ -1168,8 +1168,71 @@ test.describe("assistant markdown rendering", () => {
     await page.locator("#primaryButton").click();
 
     const latestAssistant = page.locator(".message.assistant", { hasText: "Here is a Mermaid diagram" }).last();
-    await expect(latestAssistant.locator(".mermaidDiagram svg")).toBeVisible({ timeout: 10_000 });
+    await expect(latestAssistant.locator(".mermaidDiagram > svg")).toBeVisible({ timeout: 10_000 });
     await expect(latestAssistant.locator("pre > code.language-mermaid")).toHaveCount(0);
+    await expect(latestAssistant.getByRole("button", { name: "Open diagram viewer" })).toBeVisible();
+  });
+
+  test("opens and operates the full-screen Mermaid viewer", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return mermaid");
+    await page.locator("#primaryButton").click();
+
+    const latestAssistant = page.locator(".message.assistant", { hasText: "Here is a Mermaid diagram" }).last();
+    const trigger = latestAssistant.getByRole("button", { name: "Open diagram viewer" });
+    await expect(trigger).toBeVisible({ timeout: 10_000 });
+    await trigger.click();
+
+    const viewer = page.getByRole("dialog", { name: "Diagram viewer" });
+    const canvas = viewer.locator(".diagramViewerCanvas");
+    const layer = viewer.locator(".diagramViewerLayer");
+    const zoom = viewer.locator(".diagramViewerZoom");
+    await expect(viewer).toBeVisible();
+    await expect(latestAssistant.locator(".mermaidDiagram > svg")).toHaveCount(0);
+    await expect(layer.locator(":scope > svg")).toHaveCount(1);
+    await expect(zoom).toHaveText("100%");
+
+    const viewerBox = await viewer.boundingBox();
+    expect(viewerBox?.width).toBe(page.viewportSize()?.width);
+    expect(viewerBox?.height).toBe(page.viewportSize()?.height);
+
+    await viewer.getByRole("button", { name: "Zoom in" }).click();
+    await expect(zoom).toHaveText("125%");
+    await viewer.getByRole("button", { name: "Zoom out" }).click();
+    await expect(zoom).toHaveText("100%");
+
+    const canvasBox = await canvas.boundingBox();
+    if (!canvasBox) throw new Error("Diagram canvas has no bounds");
+    await canvas.dispatchEvent("wheel", {
+      deltaY: -120,
+      clientX: canvasBox.x + canvasBox.width / 2,
+      clientY: canvasBox.y + canvasBox.height / 2,
+    });
+    await expect(zoom).not.toHaveText("100%");
+    await viewer.getByRole("button", { name: "Fit diagram" }).click();
+    await expect(zoom).toHaveText("100%");
+    await viewer.getByRole("button", { name: "Zoom in" }).click();
+    await viewer.getByRole("button", { name: "Zoom in" }).click();
+
+    const transformBeforePan = await layer.evaluate((element) => getComputedStyle(element).transform);
+    await canvas.dispatchEvent("pointerdown", { pointerId: 1, pointerType: "mouse", clientX: 200, clientY: 200 });
+    await canvas.dispatchEvent("pointermove", { pointerId: 1, pointerType: "mouse", clientX: 230, clientY: 220 });
+    await canvas.dispatchEvent("pointerup", { pointerId: 1, pointerType: "mouse", clientX: 230, clientY: 220 });
+    await expect.poll(() => layer.evaluate((element) => getComputedStyle(element).transform)).not.toBe(transformBeforePan);
+
+    await canvas.dispatchEvent("pointerdown", { pointerId: 11, pointerType: "touch", clientX: 200, clientY: 300 });
+    await canvas.dispatchEvent("pointerdown", { pointerId: 12, pointerType: "touch", clientX: 300, clientY: 300 });
+    await canvas.dispatchEvent("pointermove", { pointerId: 12, pointerType: "touch", clientX: 400, clientY: 300 });
+    await canvas.dispatchEvent("pointerup", { pointerId: 11, pointerType: "touch", clientX: 200, clientY: 300 });
+    await canvas.dispatchEvent("pointerup", { pointerId: 12, pointerType: "touch", clientX: 400, clientY: 300 });
+    await expect(zoom).not.toHaveText("100%");
+
+    await page.keyboard.press("0");
+    await expect(zoom).toHaveText("100%");
+    await page.keyboard.press("Escape");
+    await expect(viewer).toHaveCount(0);
+    await expect(latestAssistant.locator(".mermaidDiagram > svg")).toHaveCount(1);
+    await expect(trigger).toBeFocused();
   });
 
   test("renders collapsed long assistant messages as markdown before and after show more", async ({ page }) => {

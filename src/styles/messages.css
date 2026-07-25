@@ -150,6 +150,7 @@ body.artifactPreviewDocument {
   padding: 0;
 }
 .mermaidDiagram {
+  position: relative;
   margin: 0 0 .8em;
   overflow: auto;
   border: 1px solid var(--border);
@@ -163,6 +164,114 @@ body.artifactPreviewDocument {
   max-width: 100%;
   height: auto;
   margin: 0 auto;
+}
+.diagramViewerOpen {
+  position: absolute;
+  z-index: 1;
+  top: 8px;
+  right: 8px;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border), transparent 20%);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  color: var(--text);
+  box-shadow: 0 4px 16px rgba(0,0,0,.24);
+  backdrop-filter: blur(8px);
+  cursor: pointer;
+  transition: background .15s ease, box-shadow .15s ease, transform .15s ease;
+}
+.diagramViewerOpen:hover { background: var(--panel); box-shadow: 0 6px 20px rgba(0,0,0,.32); transform: translateY(-1px); }
+.diagramViewerOpen:active { transform: scale(.96); }
+.diagramViewerOpen svg { width: 19px; height: 19px; }
+.diagramViewer {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  width: 100dvw;
+  max-width: none;
+  height: 100vh;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+.diagramViewer::backdrop { background: var(--bg); }
+.diagramViewerToolbar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  height: calc(56px + env(safe-area-inset-top));
+  padding: env(safe-area-inset-top) calc(12px + env(safe-area-inset-right)) 0 calc(12px + env(safe-area-inset-left));
+  border-bottom: 1px solid color-mix(in srgb, var(--border), transparent 35%);
+  box-sizing: border-box;
+  background: color-mix(in srgb, var(--panel) 90%, transparent);
+  backdrop-filter: blur(12px);
+}
+.diagramViewerToolbar button {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.diagramViewerToolbar button:hover {
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.diagramViewerToolbar button:active { transform: scale(.94); }
+.diagramViewerToolbar button:focus-visible, .diagramViewerOpen:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.diagramViewerToolbar button svg { width: 19px; height: 19px; }
+.diagramViewerToolbar button:last-child {
+  margin-left: 4px;
+  border-color: var(--border);
+  background: var(--panel-2);
+}
+.diagramViewerZoom {
+  min-width: 4.5ch;
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.diagramViewerCanvas {
+  position: absolute;
+  inset: calc(56px + env(safe-area-inset-top)) 0 0;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+  cursor: grab;
+  outline-offset: -3px;
+}
+.diagramViewerCanvas:active { cursor: grabbing; }
+.diagramViewerLayer {
+  position: absolute;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+.diagramViewerLayer svg { width: 100%; height: 100%; max-width: none; }
+@media (max-width: 480px) {
+  .diagramViewerToolbar { gap: 4px; padding-left: 6px; padding-right: 6px; }
+  .diagramViewerToolbar button { min-width: 40px; padding: 4px 7px; }
 }
 .markdownBody table {
   display: block;
