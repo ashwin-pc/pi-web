@@ -30,16 +30,15 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Network-first: always try server, fall back to cache
-        // Only precache the app shell assets
-        navigateFallback: "/index.html",
-        navigateFallbackDenylist: [/^\/api\//],
-        globPatterns: ["index.html", "artifact-preview.html", "assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
+        // Always send document navigations through the server. Serving cached HTML
+        // can bypass an auth proxy (such as Codespaces) after its session expires,
+        // leaving a visible app shell whose authenticated API requests all fail.
+        // Immutable assets remain precached, but HTML is deliberately excluded.
+        globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
         runtimeCaching: [
           {
             urlPattern: ({ request }) => request.mode === "navigate",
-            handler: "NetworkFirst",
-            options: { cacheName: "pages" },
+            handler: "NetworkOnly",
           },
         ],
       },
