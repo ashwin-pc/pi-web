@@ -140,11 +140,60 @@ async function loadMermaid() {
     mod.default.initialize({
       startOnLoad: false,
       securityLevel: "strict",
+      theme: "dark",
+      themeVariables: {
+        background: "#18181b",
+        primaryColor: "#27272a",
+        primaryTextColor: "#f2f2f2",
+        primaryBorderColor: "#71717a",
+        lineColor: "#a1a1aa",
+        secondaryColor: "#3f3f46",
+        tertiaryColor: "#27272a",
+        textColor: "#f2f2f2",
+        edgeLabelBackground: "#18181b",
+      },
       flowchart: { htmlLabels: false },
     });
     return mod;
   });
   return mermaidImportPromise;
+}
+
+function parseRgb(color: string): [number, number, number] | null {
+  const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number);
+  return values?.length === 3 ? values as [number, number, number] : null;
+}
+
+function relativeLuminance(rgb: [number, number, number]) {
+  const channels = rgb.map((value) => {
+    const channel = value / 255;
+    return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(first: [number, number, number], second: [number, number, number]) {
+  const [lighter, darker] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a);
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
+function ensureMermaidNodeContrast(svg: SVGSVGElement) {
+  const dark: [number, number, number] = [17, 24, 39];
+  const light: [number, number, number] = [248, 250, 252];
+  for (const node of svg.querySelectorAll<SVGGElement>("g.node")) {
+    const shape = node.querySelector<SVGElement>("rect, polygon, ellipse, circle, path");
+    const labels = Array.from(node.querySelectorAll<HTMLElement | SVGElement>(".label text, .label tspan, .label foreignObject *"));
+    if (!shape || labels.length === 0) continue;
+    const background = parseRgb(getComputedStyle(shape).fill);
+    const labelStyle = getComputedStyle(labels[0]);
+    const foreground = parseRgb(labels[0] instanceof SVGElement ? labelStyle.fill : labelStyle.color);
+    if (!background || !foreground || contrastRatio(background, foreground) >= 4.5) continue;
+    const replacement = contrastRatio(background, dark) >= contrastRatio(background, light) ? "#111827" : "#f8fafc";
+    for (const label of labels) {
+      label.style.setProperty("fill", replacement, "important");
+      label.style.setProperty("color", replacement, "important");
+    }
+  }
 }
 
 function scheduleMermaidRender(container: HTMLElement, render: () => void) {
@@ -178,7 +227,10 @@ function enhanceMermaid(root: ParentNode) {
     const setSvg = (svg: string) => {
       container.innerHTML = svg;
       const renderedSvg = container.querySelector<SVGSVGElement>("svg");
-      if (renderedSvg) attachDiagramViewer(container, renderedSvg);
+      if (renderedSvg) {
+        ensureMermaidNodeContrast(renderedSvg);
+        attachDiagramViewer(container, renderedSvg);
+      }
     };
     const render = async () => {
       if (!container.isConnected) return;

@@ -1196,9 +1196,19 @@ test.describe("assistant markdown rendering", () => {
     await page.locator("#primaryButton").click();
 
     const latestAssistant = page.locator(".message.assistant", { hasText: "Here is a Mermaid diagram" }).last();
-    await expect(latestAssistant.locator(".mermaidDiagram > svg")).toBeVisible({ timeout: 10_000 });
+    const diagram = latestAssistant.locator(".mermaidDiagram > svg");
+    await expect(diagram).toBeVisible({ timeout: 10_000 });
     await expect(latestAssistant.locator("pre > code.language-mermaid")).toHaveCount(0);
     await expect(latestAssistant.getByRole("button", { name: "Open diagram viewer" })).toBeVisible();
+
+    const labelColor = async (text: string) => diagram.locator("g.node", { hasText: text }).locator(".label").evaluate((label) => {
+      const content = label.querySelector("text, p");
+      if (!content) throw new Error("Mermaid node has no label content");
+      const style = getComputedStyle(content);
+      return content instanceof SVGElement ? style.fill : style.color;
+    });
+    expect(await labelColor("Default dark node")).toBe("rgb(242, 242, 242)");
+    expect(await labelColor("Pastel node")).toBe("rgb(17, 24, 39)");
   });
 
   test("opens and operates the full-screen Mermaid viewer", async ({ page }) => {
