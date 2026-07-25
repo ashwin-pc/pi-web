@@ -153,6 +153,31 @@ test.describe("composer layout", () => {
     await expect(page.locator("#connectionStatus")).toBeHidden();
   });
 
+  test("connection warning badges refresh the page by click and keyboard", async ({ page }) => {
+    await page.goto("/");
+
+    const showWarning = async (kind: "offline" | "syncRequired", text: string) => {
+      await page.evaluate(({ kind, text }) => {
+        const badge = document.querySelector<HTMLElement>("#connectionStatus")!;
+        badge.className = `connectionStatus ${kind}`;
+        badge.textContent = text;
+        badge.hidden = false;
+      }, { kind, text });
+    };
+
+    await showWarning("offline", "Live updates unavailable");
+    const clickReload = page.waitForEvent("framenavigated");
+    await page.locator("#connectionStatus").click();
+    await clickReload;
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+
+    await showWarning("syncRequired", "Sync needed");
+    const keyboardReload = page.waitForEvent("framenavigated");
+    await page.locator("#connectionStatus").press("Enter");
+    await keyboardReload;
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+  });
+
   test("restores unsent composer draft after page refresh", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("draft survives refresh");

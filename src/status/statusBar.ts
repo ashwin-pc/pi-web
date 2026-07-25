@@ -139,6 +139,10 @@ export function createStatusBar(options: {
     elements.connectionStatusEl.className = `connectionStatus ${kind}`;
     elements.connectionStatusEl.textContent = text;
     elements.connectionStatusEl.title = title;
+    const reloadable = kind === "offline" || kind === "syncRequired";
+    elements.connectionStatusEl.toggleAttribute("role", reloadable);
+    elements.connectionStatusEl.tabIndex = reloadable ? 0 : -1;
+    elements.connectionStatusEl.setAttribute("aria-label", reloadable ? `${text}. Refresh page.` : text);
     elements.connectionStatusEl.hidden = false;
   }
 
@@ -148,6 +152,9 @@ export function createStatusBar(options: {
     elements.connectionStatusEl.textContent = "";
     elements.connectionStatusEl.title = "";
     elements.connectionStatusEl.className = "connectionStatus";
+    elements.connectionStatusEl.removeAttribute("role");
+    elements.connectionStatusEl.removeAttribute("aria-label");
+    elements.connectionStatusEl.tabIndex = -1;
   }
 
   function activityKey() {
@@ -285,7 +292,7 @@ export function createStatusBar(options: {
   }
 
   function markSyncRequired() {
-    setConnectionStatus("syncRequired", "Sync needed", "Some live updates were missed. Click to sync when you are ready.");
+    setConnectionStatus("syncRequired", "Sync needed", "Some live updates were missed. Click to refresh the page.");
   }
 
   async function refreshSessionTitle(sessionId = state.currentSessionId) {
@@ -309,9 +316,15 @@ export function createStatusBar(options: {
       event.preventDefault();
       beginRenameSessionTitle();
     });
-    elements.connectionStatusEl.addEventListener("click", () => {
-      if (!elements.connectionStatusEl.classList.contains("syncRequired")) return;
-      void refreshState().then(hideConnectionStatus).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+    const reloadForConnectionStatus = () => {
+      if (!elements.connectionStatusEl.classList.contains("syncRequired") && !elements.connectionStatusEl.classList.contains("offline")) return;
+      window.location.reload();
+    };
+    elements.connectionStatusEl.addEventListener("click", reloadForConnectionStatus);
+    elements.connectionStatusEl.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      reloadForConnectionStatus();
     });
   }
 

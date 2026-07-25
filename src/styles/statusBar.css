@@ -118,6 +118,9 @@
 .connectionStatus.syncRequired {
   border-color: color-mix(in srgb, var(--accent) 50%, transparent);
   color: var(--accent);
+}
+.connectionStatus.syncRequired,
+.connectionStatus.offline {
   cursor: pointer;
 }
 
