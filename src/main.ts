@@ -181,6 +181,19 @@ async function refreshMessages() {
   });
 }
 
+function applyRuntimeState(data: any) {
+  state.isStreaming = Boolean(data.isStreaming || data.runtime?.isStreaming);
+  state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
+  state.isCompacting = Boolean(data.isCompacting || data.runtime?.isCompacting);
+  if (state.isStreaming || state.isRetrying || state.isCompacting) statusBar.markActivityStart(
+    state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
+    data.runtimeStartedAt || data.runtime?.startedAt,
+    data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
+  );
+  else statusBar.markActivityEnd();
+  composer.updatePrimaryAction();
+}
+
 async function refreshState() {
   const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
   const res = await fetch(`/api/state${query}`, { headers: api.headers() });
@@ -192,17 +205,8 @@ async function refreshState() {
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   updateMeta(data);
-  state.isStreaming = Boolean(data.isStreaming);
-  state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
-  state.isCompacting = Boolean(data.isCompacting);
-  if (state.isStreaming || state.isRetrying || state.isCompacting) statusBar.markActivityStart(
-    state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
-    data.runtimeStartedAt || data.runtime?.startedAt,
-    data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
-  );
-  else statusBar.markActivityEnd();
+  applyRuntimeState(data);
   contextMeter.update(state.stats);
-  composer.updatePrimaryAction();
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -267,6 +271,7 @@ sessions = createSessions({
   refreshModels: () => modelSettings.refreshModels(),
   refreshMessages,
   refreshState,
+  applyRuntimeState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
   clearMessages: () => {
     tools.clearActiveToolCards();
@@ -318,6 +323,7 @@ realtime = createRealtime({
   updateSessionStats,
   refreshMessages,
   refreshState,
+  applyRuntimeState,
   addMessage: messages.addMessage,
 });
 

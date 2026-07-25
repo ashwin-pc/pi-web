@@ -125,6 +125,7 @@ export function createSessions(options: {
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  applyRuntimeState: (data: any) => void;
   refreshSessionTitle: () => Promise<void>;
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
@@ -139,6 +140,7 @@ export function createSessions(options: {
     refreshModels,
     refreshMessages,
     refreshState,
+    applyRuntimeState,
     refreshSessionTitle,
     clearMessages,
     addMessage,
@@ -434,9 +436,7 @@ export function createSessions(options: {
   async function applyOpenedSession(openRes: Response) {
     const data = await openRes.json();
     updateMeta(data);
-    state.isStreaming = Boolean(data.isStreaming);
-    state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
-    state.isCompacting = Boolean(data.isCompacting);
+    applyRuntimeState(data);
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await Promise.all([refreshModels(), refreshMessages()]);
   }

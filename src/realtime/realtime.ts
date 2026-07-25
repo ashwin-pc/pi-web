@@ -45,9 +45,10 @@ export function createRealtime(options: {
   updateSessionStats: (stats: any) => void;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  applyRuntimeState: (data: any) => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, applyRuntimeState, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -722,17 +723,8 @@ export function createRealtime(options: {
       if (data.type === "hello" || data.type === "state_changed") {
         if (data.sessionId && state.currentSessionId && data.sessionId !== state.currentSessionId) return;
         updateMeta(data);
-        state.isStreaming = Boolean(data.isStreaming);
-        state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
-        state.isCompacting = Boolean(data.isCompacting);
-        if (state.isStreaming || state.isRetrying || state.isCompacting) status.markActivityStart(
-          state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
-          data.runtimeStartedAt || data.runtime?.startedAt,
-          data.runtimeLastActivityAt || data.runtime?.lastActivityAt,
-        );
-        else status.markActivityEnd();
+        applyRuntimeState(data);
         updateSessionStats(state.stats);
-        composer.updatePrimaryAction();
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
         if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
