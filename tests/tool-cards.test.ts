@@ -42,6 +42,11 @@ describe("tool card image previews", () => {
     expect(images).toEqual([{ src: "data:image/png;base64,abc123", alt: "screenshot.png" }]);
   });
 
+  it("preserves nested artifact paths in image results", () => {
+    expect(collectToolImages({ content: [{ type: "image", path: "/project/.pi/web/artifacts/image-edits/run-1/output.png" }] }))
+      .toEqual([{ src: "/api/artifacts/image-edits/run-1/output.png", alt: "tool result image", needsAuth: true }]);
+  });
+
   it("extracts Bedrock-style image source data", () => {
     const images = collectToolImages({
       content: [{ type: "image", source: { media_type: "image/jpeg", data: "jpegdata" } }],

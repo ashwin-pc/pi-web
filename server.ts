@@ -20,7 +20,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
-import { findArtifactFile, isValidArtifactName, safeArtifactName } from "./server/shared/artifacts.js";
+import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import type { PiWebSession } from "./server/types.js";
@@ -132,12 +132,11 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
 
 function serveArtifact(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const rawName = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
-  const name = safeArtifactName(rawName);
-  if (!isValidArtifactName(rawName) || name !== rawName) return sendJson(res, 400, { ok: false, error: "Invalid artifact name" });
+  const artifactPath = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
+  if (!isValidArtifactPath(artifactPath)) return sendJson(res, 400, { ok: false, error: "Invalid artifact path" });
 
   const artifactRoots = new Set([piCwd, ...knownCwds]);
-  const resolvedFile = findArtifactFile(artifactRoots, name);
+  const resolvedFile = findArtifactFile(artifactRoots, artifactPath);
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
   res.writeHead(200, {

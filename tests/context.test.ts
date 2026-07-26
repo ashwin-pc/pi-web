@@ -15,7 +15,7 @@ describe("agent context organization", () => {
 
     expect(context).toContain("pi-web UI context");
     expect(context).toContain(".pi/web/artifacts/");
-    expect(context).toContain("/api/artifacts/<filename>");
+    expect(context).toContain("/api/artifacts/<path>/<filename>");
     expect(context).toContain("Markdown image syntax");
   });
 

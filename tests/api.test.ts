@@ -590,6 +590,8 @@ describe("artifact serving", () => {
     await mkdir(artifactDir, { recursive: true });
     await mkdir(legacyArtifactDir, { recursive: true });
     await writeFile(join(artifactDir, "test.png"), Buffer.from("PNG"));
+    await mkdir(join(artifactDir, "image-edits", "run-1"), { recursive: true });
+    await writeFile(join(artifactDir, "image-edits", "run-1", "output.png"), Buffer.from("NESTED"));
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
@@ -604,6 +606,7 @@ describe("artifact serving", () => {
     child?.kill();
     await rm(join(artifactDir, "test.png"), { force: true });
     await rm(join(artifactDir, "e2e-test.png"), { force: true });
+    await rm(join(artifactDir, "image-edits"), { recursive: true, force: true });
     await rm(join(legacyArtifactDir, "legacy.png"), { force: true });
   });
 
@@ -613,6 +616,12 @@ describe("artifact serving", () => {
     expect(res.headers.get("content-type")).toContain("image/png");
     const body = await res.arrayBuffer();
     expect(Buffer.from(body).toString()).toBe("PNG");
+  });
+
+  it("serves artifacts from nested folders", async () => {
+    const res = await fetch(`${baseUrl}/api/artifacts/image-edits/run-1/output.png`);
+    expect(res.status).toBe(200);
+    expect(Buffer.from(await res.arrayBuffer()).toString()).toBe("NESTED");
   });
 
   it("serves legacy artifacts as a read-only fallback", async () => {

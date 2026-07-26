@@ -445,7 +445,7 @@ async function bindWebExtensions(value: any) {
     const kind = input.kind === "markdown" || input.kind === "html" || input.kind === "video" ? input.kind : undefined;
     let pathName: string | undefined;
     try {
-      if (path && path.startsWith("/api/artifacts/") && !path.slice("/api/artifacts/".length).includes("/")) pathName = decodeURIComponent(path.slice("/api/artifacts/".length));
+      if (path && path.startsWith("/api/artifacts/")) pathName = decodeURIComponent(path.slice("/api/artifacts/".length)).split("/").at(-1);
     } catch { /* invalid encoded artifact path */ }
     if (!name || !path || !kind || pathName !== name) throw new Error("Invalid artifact context");
     if (Array.isArray(action.kinds) && action.kinds.length && !action.kinds.includes(kind)) throw new Error("Artifact action does not match this artifact");

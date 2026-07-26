@@ -7,6 +7,7 @@ import {
   artifactDirForCwd,
   findArtifactFile,
   isValidArtifactName,
+  isValidArtifactPath,
   legacyArtifactDirForCwd,
   readArtifactBase64,
   safeArtifactName,
@@ -84,12 +85,17 @@ describe("shared artifact helpers", () => {
     await mkdir(currentDir, { recursive: true });
     await mkdir(legacyDir, { recursive: true });
     await writeFile(join(currentDir, "report.txt"), "current");
+    await mkdir(join(currentDir, "image-edits", "run-1"), { recursive: true });
+    await writeFile(join(currentDir, "image-edits", "run-1", "output.png"), "nested");
     await writeFile(join(legacyDir, "report.txt"), "legacy");
 
     expect(safeArtifactName("../report.txt")).toBe("_report.txt");
     expect(isValidArtifactName("report.txt")).toBe(true);
     expect(isValidArtifactName("../report.txt")).toBe(false);
+    expect(isValidArtifactPath("image-edits/run-1/output.png")).toBe(true);
+    expect(isValidArtifactPath("image-edits/../report.txt")).toBe(false);
     expect(findArtifactFile([root], "report.txt")).toBe(join(currentDir, "report.txt"));
+    expect(findArtifactFile([root], "image-edits/run-1/output.png")).toBe(join(currentDir, "image-edits", "run-1", "output.png"));
     expect(await readArtifactBase64(root, "report.txt")).toEqual({
       ok: true,
       name: "report.txt",
