@@ -75,6 +75,71 @@ test("git panel opens, switches views, and commit rows do not overlap", async ({
   expect(overlaps).toBe(false);
 });
 
+test("git graph renders nested branches and merges with continuous, stable-colour lanes", async ({ page }) => {
+  const definitions: Array<[string, string[], string[]?]> = [
+    ["merge-release", ["main-five", "hotfix-two"], ["HEAD -> main", "tag: v2.0.0"]],
+    ["main-five", ["merge-feature"]],
+    ["merge-feature", ["main-four", "feature-three"]],
+    ["main-four", ["main-three"]],
+    ["main-three", ["base-three"]],
+    ["feature-three", ["feature-two"], ["origin/feature"]],
+    ["feature-two", ["feature-one", "nested-two"]],
+    ["feature-one", ["base-two"]],
+    ["nested-two", ["nested-one"]],
+    ["nested-one", ["base-two"]],
+    ["hotfix-two", ["hotfix-one"], ["origin/hotfix"]],
+    ["hotfix-one", ["base-three"]],
+    ["base-three", ["base-two"]],
+    ["base-two", ["base-one"]],
+    ["base-one", []],
+  ];
+  const hash = (id: string) => id.padEnd(40, "0");
+  await page.route("**/api/git/log?**", (route) => route.fulfill({ json: {
+    ok: true,
+    isRepo: true,
+    commits: definitions.map(([id, parents, refs], index) => ({
+      hash: hash(id),
+      shortHash: id.slice(0, 7),
+      parents: parents.map(hash),
+      author: "Example Dev",
+      date: `2026-07-${String(25 - index).padStart(2, "0")}T12:00:00Z`,
+      refs: refs || [],
+      subject: id.replaceAll("-", " ").replace(/^./, (value) => value.toUpperCase()),
+    })),
+  } }));
+
+  await page.goto("/");
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
+  await page.locator("#gitGraphTab").click();
+  const rows = page.locator(".gitCommitItem");
+  await expect(rows).toHaveCount(definitions.length);
+
+  const metrics = await rows.evaluateAll((items) => items.map((item) => {
+    const box = item.getBoundingClientRect();
+    const svg = item.querySelector("svg")!;
+    const dot = svg.querySelector("circle")!;
+    const cx = dot.getAttribute("cx");
+    const incoming = [...svg.querySelectorAll("path")].some((path) => {
+      const data = path.getAttribute("d") || "";
+      return data.startsWith(`M ${cx} -1 `) && data.endsWith(`${cx} 18`);
+    });
+    return { top: box.top, bottom: box.bottom, width: Number(svg.getAttribute("width")), colour: dot.getAttribute("fill"), incoming };
+  }));
+  expect(new Set(metrics.map(({ colour }) => colour)).size).toBe(4);
+  expect(metrics.every(({ width }) => width === 64)).toBe(true);
+  expect(metrics.slice(1).every(({ incoming }) => incoming)).toBe(true);
+  expect(metrics.slice(1).every(({ top }, index) => Math.abs(top - metrics[index].bottom) < 0.5)).toBe(true);
+
+  const hotfixColour = await rows.filter({ hasText: "Hotfix one" }).evaluate((row) => {
+    const svg = row.querySelector("svg")!;
+    const dotColour = svg.querySelector("circle")!.getAttribute("fill");
+    const outgoing = [...svg.querySelectorAll("path")].find((path) => /M \d+ 18 /.test(path.getAttribute("d") || ""));
+    return { dotColour, edgeColour: outgoing?.getAttribute("stroke") };
+  });
+  expect(hotfixColour.edgeColour).toBe(hotfixColour.dotColour);
+});
+
 test("git status repo accordions switch the selected file", async ({ page }) => {
   await page.route("**/api/git/repos**", (route) => route.fulfill({ json: {
     ok: true,

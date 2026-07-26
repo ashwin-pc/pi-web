@@ -204,7 +204,7 @@ function parseCommit(entry: string) {
 
 export async function gitLog(cwd = process.cwd()) {
   if (!await isGitRepo(cwd)) return { ok: true as const, isRepo: false as const, commits: [] };
-  const { stdout } = await git(["log", "--all", "-n", "200", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s%x1e"], 15_000, cwd);
+  const { stdout } = await git(["log", "--branches", "--remotes", "--tags", "--topo-order", "-n", "200", "--date=iso-strict", "--pretty=format:%H%x1f%h%x1f%P%x1f%an%x1f%ad%x1f%D%x1f%s%x1e"], 15_000, cwd);
   const commits = stdout.split("\x1e").map((entry) => entry.trim()).filter(Boolean).map(parseCommit);
   return { ok: true as const, isRepo: true as const, commits };
 }
