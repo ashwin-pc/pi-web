@@ -1,3 +1,4 @@
+import { ArrowLeft, createElement } from "lucide";
 import { renderUnifiedDiff } from "./diffView.js";
 import type { GitCommit, GitCommitFile } from "./types.js";
 
@@ -17,7 +18,9 @@ export function renderCommitView(options: {
     const back = document.createElement("button");
     back.type = "button";
     back.className = "gitBackButton";
-    back.textContent = "← Back";
+    back.replaceChildren(createElement(ArrowLeft, { "aria-hidden": "true" }));
+    back.setAttribute("aria-label", "Back to commit graph");
+    back.title = "Back to commit graph";
     back.addEventListener("click", onBack);
     header.append(back);
   }

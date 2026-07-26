@@ -1,5 +1,15 @@
 import { Columns2, createElement, Rows2 } from "lucide";
-import { diffHunkLineCount, renderDiffHunks, setDiffLayout } from "./diff.js";
+import { diffHunkLineCount, renderDiffHunks, renderNumberedDiff, setDiffLayout } from "./diff.js";
+
+const editArgsByCard = new WeakMap<HTMLDivElement, Record<string, unknown>>();
+
+function resultDiff(result: unknown) {
+  if (!result || typeof result !== "object") return undefined;
+  const value = result as Record<string, unknown>;
+  const raw = value.raw && typeof value.raw === "object" ? value.raw as Record<string, unknown> : undefined;
+  const details = (value.details && typeof value.details === "object" ? value.details : raw?.details) as Record<string, unknown> | undefined;
+  return typeof details?.diff === "string" ? details.diff : undefined;
+}
 
 function normalizeEditHunks(args: Record<string, unknown>) {
   let edits = args.edits;
@@ -33,10 +43,13 @@ function updateCollapseToggle(button: HTMLButtonElement, collapsed: boolean) {
   button.setAttribute("aria-expanded", String(!collapsed));
 }
 
-export function renderEditDiff(card: HTMLDivElement, args: Record<string, unknown>) {
-  const edits = normalizeEditHunks(args);
-  if (edits.length === 0) return;
+export function renderEditDiff(card: HTMLDivElement, args: Record<string, unknown>, result?: unknown) {
+  if (Object.keys(args).length > 0) editArgsByCard.set(card, args);
+  const edits = normalizeEditHunks(editArgsByCard.get(card) || args);
+  const numberedDiff = resultDiff(result);
+  if (edits.length === 0 && !numberedDiff) return;
 
+  card.querySelectorAll(":scope > .diffToolbar, :scope > .diffContainer, :scope > .toolCardCollapseToggle").forEach((element) => element.remove());
   const toolbar = document.createElement("div");
   toolbar.className = "diffToolbar";
   const label = document.createElement("span");
@@ -45,8 +58,8 @@ export function renderEditDiff(card: HTMLDivElement, args: Record<string, unknow
   layout.type = "button";
   layout.className = "diffLayoutToggle";
 
-  const container = renderDiffHunks(edits);
-  let stacked = false;
+  let stacked = window.matchMedia("(max-width: 700px)").matches;
+  const container = numberedDiff ? renderNumberedDiff(numberedDiff, { stacked }) : renderDiffHunks(edits, { stacked });
   updateLayoutToggle(layout, stacked);
   layout.addEventListener("click", () => {
     stacked = !stacked;
@@ -55,7 +68,7 @@ export function renderEditDiff(card: HTMLDivElement, args: Record<string, unknow
   });
   toolbar.append(label, layout);
 
-  const collapsible = diffHunkLineCount(edits) > 20;
+  const collapsible = numberedDiff ? numberedDiff.split("\n").length > 20 : diffHunkLineCount(edits) > 20;
   if (collapsible) container.classList.add("collapsed");
   card.append(toolbar, container);
 

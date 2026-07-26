@@ -579,6 +579,7 @@ export function createMockHarness(options: MockSessionOptions) {
           ], timestamp: new Date().toISOString() });
         } else if (withShowcase) {
           const editArgs = { path: "/Users/ashwin/projects/pi-web/src/style.css", edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };
+          const editDetails = { diff: " 118 .sessionList { overflow-y: auto; }\n 119 \n 120 .sessionItem {\n-121   min-height: 40px;\n+121   height: auto;\n+122   min-height: 0;\n 123 }\n+124 \n+125 @media (max-width: 700px) {\n+126   .sessionDrawer { width: 100vw; }\n+127 }", firstChangedLine: 121 };
           appendMockMessage({ role: "assistant", content: [
             { type: "text", text: "## Mobile-first coding UI\n\nI reviewed the session drawer, checked the CSS, and tightened the responsive layout.\n\n```ts\nawait runVisualRegression({ projects: [\"mobile\", \"desktop\"] });\n```" },
             { type: "toolCall", id: "call-showcase-read", toolName: "read", arguments: { path: "/Users/ashwin/projects/pi-web/src/style.css" } },
@@ -587,18 +588,19 @@ export function createMockHarness(options: MockSessionOptions) {
             { type: "text", text: "Visual snapshots now cover the polished desktop and mobile states.\n\n![pi-web workflow](/api/artifacts/e2e-test.jpg)" },
           ], timestamp: new Date().toISOString() });
           appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-read", toolName: "read", content: "session drawer CSS and responsive composer styles", timestamp: new Date().toISOString() });
-          appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", details: editDetails, timestamp: new Date().toISOString() });
         } else if (withEditTool || withFlatEditTool || withMalformedEditTool) {
           const editArgs = withMalformedEditTool
             ? { path: "/some/file.ts", edits: [{ newText: "const answer = 42;" }, { oldText: "console.log(answer);" }] }
             : withFlatEditTool
               ? { path: "/some/file.ts", oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }
               : { path: "/some/file.ts", edits: [{ oldText: "const answer = 41;\nconsole.log(answer);", newText: "const answer = 42;\nconsole.info(answer);" }] };
+          const editDetails = { diff: " 38 export function run() {\n 39   const ready = true;\n 40 \n-41   const answer = 41;\n+41   const answer = 42;\n-42   console.log(answer);\n+42   console.info(answer);\n 43 }", firstChangedLine: 41 };
           broadcastPiEvent({ type: "tool_execution_start", toolName: "edit", toolCallId: "call-edit", args: editArgs });
           if (!(await waitForMockRun(80))) return;
-          broadcastPiEvent({ type: "tool_execution_end", toolName: "edit", toolCallId: "call-edit", isError: false, result: "Successfully replaced 1 block(s) in /some/file.ts." });
+          broadcastPiEvent({ type: "tool_execution_end", toolName: "edit", toolCallId: "call-edit", isError: false, result: { content: [{ type: "text", text: "Successfully replaced 1 block(s) in /some/file.ts." }], details: editDetails } });
           appendMockMessage({ role: "assistant", content: [{ type: "toolCall", id: "call-edit", toolName: "edit", arguments: editArgs }], timestamp: new Date().toISOString() });
-          appendMockMessage({ role: "toolResult", toolCallId: "call-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /some/file.ts.", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /some/file.ts.", details: editDetails, timestamp: new Date().toISOString() });
         } else if (withTools) {
           const toolCallId = withPendingToolRefresh ? `call-pending-${Date.now()}` : "call-1";
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Let me check that for you. " } });

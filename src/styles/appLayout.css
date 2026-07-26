@@ -64,7 +64,7 @@
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-@media (min-width: 641px) and (min-height: 521px) {
+@media (min-width: 641px) {
   body.appLeftPanelOpen {
     --app-layout-left-width: min(var(--app-side-left-active-width), calc(100vw - var(--app-chat-min-width)));
   }
@@ -225,14 +225,14 @@
   }
 }
 
-@media (min-width: 1280px) and (min-height: 521px) {
+@media (min-width: 1280px) {
   body.appLeftPanelOpen.appRightPanelOpen {
     --app-layout-left-width: min(var(--app-side-left-active-width), 32vw);
     --app-layout-right-width: min(var(--app-side-right-active-width), calc(100vw - var(--app-layout-left-width) - var(--app-chat-min-width)));
   }
 }
 
-@media (max-width: 640px), (max-height: 520px) {
+@media (max-width: 640px) {
   .appSidePanel {
     padding-top: max(0px, env(safe-area-inset-top));
     padding-bottom: max(0px, env(safe-area-inset-bottom));

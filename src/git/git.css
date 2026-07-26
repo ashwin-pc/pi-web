@@ -39,7 +39,7 @@
 }
 .gitTabs { display: flex; gap: 2px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
 .gitTabs::-webkit-scrollbar { display: none; }
-.gitTab, .gitBackButton, .gitRebaseButton {
+.gitTab, .gitRebaseButton {
   height: 30px;
   min-height: 30px;
   border: 0;
@@ -49,7 +49,26 @@
   padding: 3px 9px;
   cursor: pointer;
 }
-.gitTab.active, .gitTab:hover, .gitBackButton:hover, .gitRebaseButton:hover { color: var(--text); background: var(--panel-2); }
+.gitBackButton {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 72%, transparent);
+  color: var(--muted);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.04), 0 4px 14px rgba(0,0,0,.16);
+  cursor: pointer;
+  transition: color .14s ease, background .14s ease, border-color .14s ease, transform .14s ease;
+}
+.gitBackButton svg { width: 16px; height: 16px; stroke-width: 2.25; }
+.gitBackButton:hover { color: var(--text); background: var(--panel-2); border-color: color-mix(in srgb, var(--accent) 38%, var(--border)); transform: translateX(-1px); }
+.gitBackButton:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent); outline-offset: 2px; }
+.gitTab.active, .gitTab:hover, .gitRebaseButton:hover { color: var(--text); background: var(--panel-2); }
 .statusBarButton.active { color: var(--accent); border-color: transparent; }
 .gitPanelBody { min-height: 0; display: grid; grid-template-columns: minmax(260px, 340px) minmax(0, 1fr); }
 .gitPrimaryPane, .gitDetailPane { min-width: 0; min-height: 0; overflow: auto; padding: 12px; }

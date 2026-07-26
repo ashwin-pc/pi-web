@@ -434,6 +434,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
 
     card.querySelector(".toolCardBadge")?.remove();
 
+    if (toolName === "edit" && !isError) renderEditDiff(card, {}, result);
     const resultStr = textFromToolResult(result);
     if (resultStr && (isError || card.dataset.toolName !== "edit")) {
       removePartialToolOutput(card);
@@ -452,7 +453,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     if (toolName === "bash") addBashHeader(card, result, args);
     else addToolHeader(card, toolName, args);
     const resultStr = textFromToolResult(result);
-    if (toolName === "edit" && args) renderEditDiff(card, args);
+    if (toolName === "edit" && args) renderEditDiff(card, args, result);
     else if (resultStr) addToolResultBody(card, resultStr);
     addToolImagePreviews(card, result, apiHeaders);
     messagesEl.append(card);

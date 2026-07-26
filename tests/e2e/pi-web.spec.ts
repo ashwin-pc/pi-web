@@ -1122,7 +1122,7 @@ test.describe("tool cards", () => {
     expect(expandedHeight).toBeGreaterThan(collapsedHeight);
   });
 
-  test("renders edit tool calls as a side-by-side intraline diff with an icon layout toggle", async ({ page }) => {
+  test("renders edit tool calls as a responsive intraline diff with an icon layout toggle", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("edit diff");
     await page.locator("#primaryButton").click();
@@ -1131,8 +1131,9 @@ test.describe("tool cards", () => {
     await expect(card).toBeVisible();
     await expect(card.locator(".toolCardName")).toHaveText("edit");
     await expect(card.locator(".toolCardSubtitle")).toHaveText("/some/file.ts");
-    await expect(card.locator(".diffContainer")).toHaveClass(/diffContainer--sideBySide/);
-    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", "Switch to top/bottom diff view");
+    const startsStacked = (page.viewportSize()?.width || 0) <= 700;
+    await expect(card.locator(".diffContainer")).toHaveClass(startsStacked ? /diffContainer--stacked/ : /diffContainer--sideBySide/);
+    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", startsStacked ? "Switch to side-by-side diff view" : "Switch to top/bottom diff view");
     await expect(card.locator(".diffLayoutToggle svg")).toHaveCount(1);
     await expect(card.locator(".diffLine--changed")).toHaveCount(2);
     await expect(card.locator(".diffWord--del", { hasText: "41" })).toBeVisible();
@@ -1142,8 +1143,8 @@ test.describe("tool cards", () => {
     await expect(card.locator(".toolCardBody")).toHaveCount(0);
 
     await card.locator(".diffLayoutToggle").click();
-    await expect(card.locator(".diffContainer")).toHaveClass(/diffContainer--stacked/);
-    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", "Switch to side-by-side diff view");
+    await expect(card.locator(".diffContainer")).toHaveClass(startsStacked ? /diffContainer--sideBySide/ : /diffContainer--stacked/);
+    await expect(card.locator(".diffLayoutToggle")).toHaveAttribute("aria-label", startsStacked ? "Switch to top/bottom diff view" : "Switch to side-by-side diff view");
   });
 
   test("renders edit diffs for flat oldText/newText args", async ({ page }) => {

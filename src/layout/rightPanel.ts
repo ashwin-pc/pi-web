@@ -53,8 +53,10 @@ type RegisteredPanel = AppPanelRegistration & {
   resizeHandle: HTMLDivElement;
 };
 
-const paneModeQuery = "(min-width: 641px) and (min-height: 521px)";
-const multiSideQuery = "(min-width: 1280px) and (min-height: 521px)";
+// Width determines whether panels share the screen. The visual viewport height
+// shrinks when a software keyboard opens and must not turn a split pane into an overlay.
+const paneModeQuery = "(min-width: 641px)";
+const multiSideQuery = "(min-width: 1280px)";
 const defaultMinWidth = 280;
 const defaultMaxWidth = 980;
 const minChatWidth = 360;

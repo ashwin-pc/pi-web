@@ -57,6 +57,37 @@ test("GitHub issue numbers attach issue details to the composer context", async 
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("extension tabs remain available in split view with a reduced viewport height", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 500 });
+  await page.route("**/api/state**", async (route) => {
+    const response = await route.fetch();
+    const data = await response.json();
+    await route.fulfill({ response, json: {
+      ...data,
+      webGitTabs: [{ key: "github", title: "GitHub issues", label: "GitHub" }],
+    } });
+  });
+  await page.route("**/api/web-git-tab/invoke", (route) => route.fulfill({ json: {
+    ok: true,
+    title: "GitHub",
+    html: "<div class=\"testGitHubExtension\">GitHub extension content</div>",
+  } }));
+
+  await page.goto("/");
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
+  const extensionTab = page.locator(".gitExtensionTab", { hasText: "GitHub" });
+  await expect(extensionTab).toBeVisible();
+  await extensionTab.click();
+  await expect(page.locator(".testGitHubExtension")).toBeVisible();
+
+  const panelWidth = (await page.locator("#gitPanel").boundingBox())?.width || 0;
+  const appWidth = (await page.locator(".app").boundingBox())?.width || 0;
+  expect(panelWidth).toBeLessThan(900);
+  expect(appWidth).toBeGreaterThanOrEqual(360);
+  await page.unrouteAll({ behavior: "wait" });
+});
+
 test("git panel opens, switches views, and commit rows do not overlap", async ({ page }) => {
   await page.goto("/");
   await page.locator("#sessionInfoButton").click();
@@ -222,6 +253,26 @@ test("git panel switches to a single visible pane when its container is narrow",
 
   await expect(page.locator("#gitPrimaryPane")).toBeHidden();
   await expect(page.locator("#gitDetailPane")).toBeVisible();
+  const back = page.locator(".gitBackButton");
+  await expect(back).toHaveAttribute("aria-label", "Back to changed files");
+  await expect(back.locator("svg")).toHaveCount(1);
+  await expect(back).toHaveText("");
+});
+
+test("git panel remains split when the software keyboard reduces viewport height", async ({ page }) => {
+  await page.setViewportSize({ width: 900, height: 500 });
+  await page.goto("/");
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
+
+  const panel = page.locator("#gitPanel");
+  const app = page.locator(".app");
+  await expect(panel).toBeVisible();
+  await expect.poll(async () => {
+    const panelWidth = (await panel.boundingBox())?.width || 0;
+    const appWidth = (await app.boundingBox())?.width || 0;
+    return panelWidth < 900 && appWidth >= 360;
+  }).toBe(true);
 });
 
 test("git commit detail shows changed files, diff, and layout toggle", async ({ page }) => {

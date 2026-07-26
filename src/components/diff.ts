@@ -87,7 +87,13 @@ function patchKind(raw: string) {
   return "same";
 }
 
-function makePatchRow(kind: "add" | "del" | "same" | "meta" | "changed", oldText = "", newText = "") {
+function makePatchRow(
+  kind: "add" | "del" | "same" | "meta" | "changed",
+  oldText = "",
+  newText = "",
+  oldLine?: number,
+  newLine?: number,
+) {
   const tr = document.createElement("tr");
   tr.className = `diffLine diffLine--${kind === "meta" ? "same gitPatchMeta" : kind}`;
   const oldGutter = document.createElement("td");
@@ -99,15 +105,14 @@ function makePatchRow(kind: "add" | "del" | "same" | "meta" | "changed", oldText
   const newCell = document.createElement("td");
   newCell.className = "diffCode diffCode--new";
 
-  if (kind === "add") { newGutter.textContent = "+"; newCell.textContent = newText; }
-  else if (kind === "del") { oldGutter.textContent = "-"; oldCell.textContent = oldText; }
+  oldGutter.textContent = oldLine === undefined ? "" : String(oldLine);
+  newGutter.textContent = newLine === undefined ? "" : String(newLine);
+  if (kind === "add") { newCell.textContent = newText; }
+  else if (kind === "del") { oldCell.textContent = oldText; }
   else if (kind === "changed") {
-    oldGutter.textContent = "-"; newGutter.textContent = "+";
     appendWordDiff(oldCell, oldText, newText, "old");
     appendWordDiff(newCell, oldText, newText, "new");
   } else {
-    oldGutter.textContent = kind === "same" ? " " : "";
-    newGutter.textContent = kind === "same" ? " " : "";
     oldCell.textContent = oldText;
     newCell.textContent = newText || oldText;
   }
@@ -128,17 +133,60 @@ function appendLineDiffRows(table: HTMLTableElement, lines: LineDiff[]) {
 }
 
 function appendPatchRows(table: HTMLTableElement, lines: string[]) {
+  let oldLine: number | undefined;
+  let newLine: number | undefined;
   for (let i = 0; i < lines.length; i++) {
     const raw = lines[i];
     const kind = patchKind(raw);
-    if (kind === "del" && patchKind(lines[i + 1] || "") === "add") {
-      table.append(makePatchRow("changed", raw.slice(1), lines[i + 1].slice(1)));
+    const hunk = raw.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (hunk) {
+      oldLine = Number(hunk[1]);
+      newLine = Number(hunk[2]);
+      table.append(makePatchRow("meta", raw, raw));
+    } else if (kind === "del" && patchKind(lines[i + 1] || "") === "add") {
+      table.append(makePatchRow("changed", raw.slice(1), lines[i + 1].slice(1), oldLine, newLine));
+      if (oldLine !== undefined) oldLine++;
+      if (newLine !== undefined) newLine++;
       i++;
-    } else if (kind === "add") table.append(makePatchRow("add", "", raw.slice(1)));
-    else if (kind === "del") table.append(makePatchRow("del", raw.slice(1), ""));
-    else if (kind === "meta") table.append(makePatchRow("meta", raw, raw));
-    else table.append(makePatchRow("same", raw.startsWith(" ") ? raw.slice(1) : raw, raw.startsWith(" ") ? raw.slice(1) : raw));
+    } else if (kind === "add") {
+      table.append(makePatchRow("add", "", raw.slice(1), undefined, newLine));
+      if (newLine !== undefined) newLine++;
+    } else if (kind === "del") {
+      table.append(makePatchRow("del", raw.slice(1), "", oldLine, undefined));
+      if (oldLine !== undefined) oldLine++;
+    } else if (kind === "meta") table.append(makePatchRow("meta", raw, raw));
+    else {
+      const text = raw.startsWith(" ") ? raw.slice(1) : raw;
+      table.append(makePatchRow("same", text, text, oldLine, newLine));
+      if (oldLine !== undefined) oldLine++;
+      if (newLine !== undefined) newLine++;
+    }
   }
+}
+
+export function renderNumberedDiff(diff: string, options: { stacked?: boolean } = {}) {
+  const container = document.createElement("div");
+  container.className = "diffContainer";
+  setDiffLayout(container, Boolean(options.stacked));
+  const table = document.createElement("table");
+  table.className = "diffTable";
+  const lines = diff.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^([ +\-])(\s*\d+|\s+)\s(.*)$/);
+    if (!match) continue;
+    const line = Number(match[2].trim());
+    const number = Number.isFinite(line) ? line : undefined;
+    const next = lines[i + 1]?.match(/^\+(\s*\d+|\s+)\s(.*)$/);
+    if (match[1] === "-" && next) {
+      const nextLine = Number(next[1].trim());
+      table.append(makePatchRow("changed", match[3], next[2], number, Number.isFinite(nextLine) ? nextLine : undefined));
+      i++;
+    } else if (match[1] === "+") table.append(makePatchRow("add", "", match[3], undefined, number));
+    else if (match[1] === "-") table.append(makePatchRow("del", match[3], "", number, undefined));
+    else table.append(makePatchRow("same", match[3], match[3], number, number));
+  }
+  container.append(table);
+  return container;
 }
 
 export function setDiffLayout(container: HTMLElement, stacked: boolean) {

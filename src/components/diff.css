@@ -65,10 +65,12 @@
 .diffLine--changed .diffCode--new { background: rgba(60, 210, 100, 0.12); }
 .diffLine--same { opacity: .75; }
 .diffGutter {
-  width: 18px;
-  min-width: 18px;
-  text-align: center;
-  padding: 0 4px;
+  width: 44px;
+  min-width: 44px;
+  box-sizing: border-box;
+  white-space: nowrap;
+  text-align: right;
+  padding: 0 8px 0 4px;
   user-select: none;
   font-weight: 700;
   opacity: 0.75;
@@ -87,9 +89,8 @@
 }
 .diffWord--del { background: rgba(248, 113, 113, .35); border-radius: 2px; }
 .diffWord--add { background: rgba(74, 222, 128, .30); border-radius: 2px; }
-@media (max-width: 700px) { .diffTable { min-width: 0; } }
 .diffContainer--stacked .diffTable { min-width: 0; }
-.diffContainer--stacked .diffLine { display: grid; grid-template-columns: 24px 1fr; }
+.diffContainer--stacked .diffLine { display: grid; grid-template-columns: 44px minmax(0, 1fr); }
 .diffContainer--stacked .diffGutter:nth-child(3) { grid-column: 1; }
 .diffContainer--stacked .diffCode--new { grid-column: 2; }
 .diffContainer--stacked .diffLine--same .diffGutter:nth-child(3),

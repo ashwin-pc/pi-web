@@ -1,4 +1,4 @@
-import { Columns2, createElement, Rows2 } from "lucide";
+import { ArrowLeft, Columns2, createElement, Rows2 } from "lucide";
 import { renderUnifiedPatch, setDiffLayout } from "../components/diff.js";
 import type { GitFileStatus } from "./types.js";
 
@@ -123,7 +123,9 @@ export function renderDiffView(options: {
     const back = document.createElement("button");
     back.type = "button";
     back.className = "gitBackButton";
-    back.textContent = "← Back";
+    back.replaceChildren(createElement(ArrowLeft, { "aria-hidden": "true" }));
+    back.setAttribute("aria-label", "Back to changed files");
+    back.title = "Back to changed files";
     back.addEventListener("click", onBack);
     header.append(back);
   }
