@@ -759,6 +759,16 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Older mock session" }).locator(".sessionSpinner")).toHaveCount(0);
   });
 
+  test("desktop session view uses the full width without side panels", async ({ page }) => {
+    await page.setViewportSize({ width: 1600, height: 900 });
+    await page.goto("/");
+
+    const appBox = await page.locator(".app").boundingBox();
+    expect(appBox).toBeTruthy();
+    expect(appBox!.x).toBeCloseTo(0, 1);
+    expect(appBox!.width).toBeCloseTo(1600, 1);
+  });
+
   test("desktop push mode uses the full space beside the drawer", async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 900 });
     await page.goto("/");

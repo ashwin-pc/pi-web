@@ -65,7 +65,7 @@ body {
   width: 100%;
   min-width: 0;
   height: var(--app-height);
-  max-width: 1100px;
+  max-width: none;
   margin: 0 auto;
   padding: 0 0 16px;
   gap: 0;
