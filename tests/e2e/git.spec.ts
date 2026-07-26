@@ -119,22 +119,25 @@ test("git graph renders nested branches and merges with continuous, stable-colou
     const box = item.getBoundingClientRect();
     const svg = item.querySelector("svg")!;
     const dot = svg.querySelector("circle")!;
+    const subjectBox = item.querySelector(".gitCommitSubject")!.getBoundingClientRect();
+    const metaBox = item.querySelector(".gitCommitMetaLine")!.getBoundingClientRect();
     const cx = dot.getAttribute("cx");
     const incoming = [...svg.querySelectorAll("path")].some((path) => {
       const data = path.getAttribute("d") || "";
-      return data.startsWith(`M ${cx} -1 `) && data.endsWith(`${cx} 18`);
+      return data.startsWith(`M ${cx} -1 `) && data.endsWith(`${cx} 20`);
     });
-    return { top: box.top, bottom: box.bottom, width: Number(svg.getAttribute("width")), colour: dot.getAttribute("fill"), incoming };
+    return { top: box.top, bottom: box.bottom, width: Number(svg.getAttribute("width")), colour: dot.getAttribute("fill"), incoming, linesAligned: Math.abs(subjectBox.left - metaBox.left) < 0.5 };
   }));
   expect(new Set(metrics.map(({ colour }) => colour)).size).toBe(4);
   expect(metrics.every(({ width }) => width === 64)).toBe(true);
   expect(metrics.slice(1).every(({ incoming }) => incoming)).toBe(true);
+  expect(metrics.every(({ linesAligned }) => linesAligned)).toBe(true);
   expect(metrics.slice(1).every(({ top }, index) => Math.abs(top - metrics[index].bottom) < 0.5)).toBe(true);
 
   const hotfixColour = await rows.filter({ hasText: "Hotfix one" }).evaluate((row) => {
     const svg = row.querySelector("svg")!;
     const dotColour = svg.querySelector("circle")!.getAttribute("fill");
-    const outgoing = [...svg.querySelectorAll("path")].find((path) => /M \d+ 18 /.test(path.getAttribute("d") || ""));
+    const outgoing = [...svg.querySelectorAll("path")].find((path) => /M \d+ 20 /.test(path.getAttribute("d") || ""));
     return { dotColour, edgeColour: outgoing?.getAttribute("stroke") };
   });
   expect(hotfixColour.edgeColour).toBe(hotfixColour.dotColour);

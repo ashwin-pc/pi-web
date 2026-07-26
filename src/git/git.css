@@ -115,16 +115,18 @@
 .gitPatchFile .diffTable { min-width: 0; }
 .gitPatchMeta .diffCode { color: var(--muted); background: rgba(125,211,252,.06); }
 .gitCommitList { display: grid; gap: 0; }
-.gitCommitItem { position: relative; display: grid; align-items: center; height: 36px; min-height: 36px; margin: 0; padding: 0 8px; border: 0; border-radius: 6px; appearance: none; -webkit-appearance: none; white-space: nowrap; overflow: visible; }
+.gitCommitItem { position: relative; display: grid; align-items: center; height: 40px; min-height: 40px; margin: 0; padding: 0 8px; border: 0; border-radius: 6px; appearance: none; -webkit-appearance: none; white-space: nowrap; overflow: visible; }
 .gitCommitItem:hover, .gitCommitItem.selected { border: 0; box-shadow: inset 0 0 0 1px var(--border); }
-.gitCommitRail { display: block; height: 36px; overflow: visible; }
+.gitCommitRail { display: block; height: 40px; overflow: visible; }
 .gitCommitEdge { fill: none; stroke-width: 2; }
 .gitCommitDot { stroke: var(--panel); stroke-width: 2; }
-.gitCommitBody { display: flex; align-items: baseline; min-width: 0; gap: 7px; overflow: hidden; }
-.gitCommitSubject, .gitCommitMeta, .gitCommitRefs { display: block; position: static; min-width: 0; }
-.gitCommitSubject { flex: 1 1 auto; font-size: 13px; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }
-.gitCommitMeta, .gitCommitRefs { flex: 0 0 auto; color: var(--muted); font-size: 11px; line-height: 1.3; }
-.gitCommitRefs { max-width: 35%; overflow: hidden; text-overflow: ellipsis; color: #fde68a; }
+.gitCommitBody { display: grid; grid-template-rows: min-content min-content; align-content: center; min-width: 0; row-gap: 0; overflow: hidden; }
+.gitCommitSubject, .gitCommitMeta, .gitCommitRefs { display: block; position: static; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.gitCommitSubject { font-size: 13px; line-height: 1.25; }
+.gitCommitMetaLine { display: flex; align-items: baseline; min-width: 0; gap: 7px; overflow: hidden; }
+.gitCommitMeta, .gitCommitRefs { color: var(--muted); font-size: 11px; line-height: 1.2; }
+.gitCommitMeta { flex: 0 0 auto; }
+.gitCommitRefs { flex: 0 1 auto; color: #fde68a; }
 .gitCommitDetails { border: 1px solid var(--border); border-radius: 12px; padding: 12px; background: var(--panel-2); }
 .gitCommitDetails h4 { margin: 0 0 8px; }
 .gitCommitDetails code { display: block; overflow: auto; color: var(--accent); overflow-wrap: anywhere; white-space: normal; }

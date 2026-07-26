@@ -12,14 +12,14 @@ describe("git graph layout", () => {
     expect(graph.laneCount).toBe(1);
     expect(graph.rows.map((row) => row.lane)).toEqual([0, 0, 0]);
     expect(graph.rows[0].edges).toEqual([
-      { from: 0, to: 0, fromY: 18, toY: 36, colourLane: 0 },
+      { from: 0, to: 0, fromY: 20, toY: 40, colourLane: 0 },
     ]);
     expect(graph.rows[1].edges).toEqual([
-      { from: 0, to: 0, fromY: 0, toY: 18, colourLane: 0 },
-      { from: 0, to: 0, fromY: 18, toY: 36, colourLane: 0 },
+      { from: 0, to: 0, fromY: 0, toY: 20, colourLane: 0 },
+      { from: 0, to: 0, fromY: 20, toY: 40, colourLane: 0 },
     ]);
     expect(graph.rows[2].edges).toEqual([
-      { from: 0, to: 0, fromY: 0, toY: 18, colourLane: 0 },
+      { from: 0, to: 0, fromY: 0, toY: 20, colourLane: 0 },
     ]);
   });
 
@@ -34,7 +34,7 @@ describe("git graph layout", () => {
     expect(graph.rows.map((row) => row.lane)).toEqual([0, 0, 1, 0]);
     expect(graph.rows[0].edges.map((edge) => edge.to)).toEqual([0, 1]);
     expect(graph.rows[2].edges).toEqual(expect.arrayContaining([
-      expect.objectContaining({ from: 1, to: 0, fromY: 18, toY: 36, colourLane: 1 }),
+      expect.objectContaining({ from: 1, to: 0, fromY: 20, toY: 40, colourLane: 1 }),
     ]));
   });
 
@@ -74,11 +74,11 @@ describe("git graph layout", () => {
         from: row.lane,
         to: row.lane,
         fromY: 0,
-        toY: 18,
+        toY: 20,
         colourLane: row.colour,
       });
     }
-    const hotfixJoin = graph.rows[11].edges.find((edge) => edge.fromY === 18);
+    const hotfixJoin = graph.rows[11].edges.find((edge) => edge.fromY === 20);
     expect(hotfixJoin).toMatchObject({ from: 2, to: 0, colourLane: 1 });
   });
 });

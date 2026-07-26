@@ -3,7 +3,7 @@ import type { GitCommit } from "./types.js";
 const laneGap = 16;
 const railPadding = 8;
 const graphColours = ["#7dd3fc", "#a78bfa", "#fbbf24", "#34d399", "#fb7185", "#60a5fa"];
-const rowHeight = 36;
+const rowHeight = 40;
 
 export type GitGraphEdge = { from: number; to: number; fromY: number; toY: number; colourLane: number };
 export type GitGraphRow = { lane: number; colour: number; edges: GitGraphEdge[] };
@@ -135,14 +135,16 @@ export function renderGraphView(options: {
     const meta = document.createElement("span");
     meta.className = "gitCommitMeta";
     meta.textContent = `${commit.shortHash} · ${commit.author} · ${formatDate(commit.date)}`;
-    body.append(subject);
+    const metaLine = document.createElement("span");
+    metaLine.className = "gitCommitMetaLine";
     if (commit.refs.length) {
       const refs = document.createElement("span");
       refs.className = "gitCommitRefs";
       refs.textContent = commit.refs.join(" ");
-      body.append(refs);
+      metaLine.append(refs);
     }
-    body.append(meta);
+    metaLine.append(meta);
+    body.append(subject, metaLine);
     button.append(rail, body);
     button.addEventListener("click", () => onSelectCommit(commit));
     list.append(button);
