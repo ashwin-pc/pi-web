@@ -1,6 +1,7 @@
 import "./style.css";
 import "./components/diff.css";
 import "./git/git.css";
+import "./files/files.css";
 import "./styles/appLayout.css";
 import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
@@ -15,6 +16,7 @@ import { createContextMeter, type ContextMeterController } from "./composer/cont
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
+import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
@@ -44,6 +46,7 @@ let settings: SettingsController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
 let gitPanel: GitPanelController;
+let filesPanel: FilesPanelController;
 let realtime: RealtimeController;
 async function submitPromptFromMessageAction(message: string) {
   const promptText = message.trim();
@@ -197,6 +200,7 @@ function updateMeta(data: any) {
   state.currentThinkingLevel = data.thinkingLevel || "off";
   state.currentSessionId = data.sessionId || state.currentSessionId;
   state.currentCwd = data.cwd || state.currentCwd;
+  filesPanel?.sessionChanged();
   if ("stats" in data) contextMeter.update(data.stats);
   if ("webFooters" in data) renderWebFooters(elements.extensionFooterEl, data.webFooters);
   if ("webHeaderActions" in data) webHeaderActions.render(data.webHeaderActions);
@@ -239,9 +243,9 @@ async function refreshMessages() {
 }
 
 function applyRuntimeState(data: any) {
+  if (data.queue) composer.updatePendingQueue(data.queue.steering, data.queue.followUp);
   state.isStreaming = Boolean(data.isStreaming || data.runtime?.isStreaming);
   state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
-  if (data.queue) composer.updatePendingQueue(data.queue.steering, data.queue.followUp);
   state.isCompacting = Boolean(data.isCompacting || data.runtime?.isCompacting);
   if (state.isStreaming || state.isRetrying || state.isCompacting) statusBar.markActivityStart(
     state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
@@ -282,6 +286,7 @@ function initStaticIcons() {
   setIcon(elements.sessionButton, "menu");
   setIcon(elements.newSessionHeaderButton, "square-pen");
   setIcon(elements.conversationTreeButton, "git-fork");
+  setIcon(elements.filesButton, "folder-tree");
   setIcon(elements.attachButton, "paperclip");
   setIcon(elements.primaryButton, "send-horizontal");
   setIcon(elements.expandButton, "maximize-2");
@@ -424,11 +429,20 @@ initKeyboardShortcuts([
     if (document.activeElement === elements.promptEl) scopes.push("composer");
     if (!elements.sessionDrawer.hidden) scopes.push("sessions");
     if (!elements.gitPanel.hidden) scopes.push("git");
+    if (!elements.filesPanel.hidden) scopes.push("files");
     return scopes;
   },
   onError: showSystemError,
 });
 composer.updateQueueToggle();
+filesPanel = initFilesPanel({
+  button: elements.filesButton,
+  panel: elements.filesPanel,
+  rightPanels,
+  apiHeaders: api.headers,
+  getSessionId: () => state.currentSessionId,
+  onError: showSystemError,
+});
 gitPanel = initGitPanel({
   button: elements.gitButton,
   panel: elements.gitPanel,

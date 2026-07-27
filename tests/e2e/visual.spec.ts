@@ -83,6 +83,35 @@ async function mockConversationTreeApi(page: import("@playwright/test").Page) {
   } }));
 }
 
+async function mockFilesApi(page: import("@playwright/test").Page) {
+  await page.route("**/api/files/tree**", async (route) => {
+    const path = new URL(route.request().url()).searchParams.get("path") || "";
+    await route.fulfill({ json: path === "src" ? {
+      ok: true, path, entries: [
+        { name: "app", path: "src/app", kind: "directory" },
+        { name: "main.ts", path: "src/main.ts", kind: "file", size: 152 },
+        { name: "styles.css", path: "src/styles.css", kind: "file", size: 84 },
+      ],
+    } : {
+      ok: true, path: "", entries: [
+        { name: "src", path: "src", kind: "directory" },
+        { name: "tests", path: "tests", kind: "directory" },
+        { name: "package.json", path: "package.json", kind: "file", size: 418 },
+        { name: "README.md", path: "README.md", kind: "file", size: 226 },
+      ],
+    } });
+  });
+  await page.route("**/api/files/read**", (route) => route.fulfill({ json: {
+    ok: true,
+    path: "README.md",
+    size: 226,
+    readOnly: false,
+    language: "markdown",
+    revision: "showcase-readme",
+    content: "# pi-web\n\nA focused, responsive web UI for the pi coding agent.\n\n## Workspace Explorer\n\n- Browse the active session directory\n- Edit files with syntax highlighting\n- Save safely with revision conflict detection\n- Preview images without leaving the workspace\n",
+  } }));
+}
+
 async function mockGitApi(page: import("@playwright/test").Page) {
   const commit = {
     hash: "debd35dbb8ba41a56c3e6b22dbf7ed93a310443a",
@@ -280,6 +309,25 @@ test.describe("visual regression", () => {
         animations: "disabled",
       });
     }
+  });
+
+  test("workspace explorer", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
+    if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1600, height: 1000 });
+    await mockFilesApi(page);
+
+    await page.goto("/");
+    await page.locator("#filesButton").click();
+    await page.locator(".fileTreeDirectory summary", { hasText: "src" }).click();
+    await expect(page.locator('.fileTreeFile[title="src/main.ts"]')).toBeVisible();
+    await page.locator('.fileTreeFile[title="README.md"]').click();
+    await expect(page.locator(".fileTab.active")).toContainText("README.md");
+    await expect(page.locator(".cm-editor")).toBeVisible();
+
+    await expect(page).toHaveScreenshot(`workspace-explorer-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+    });
   });
 
   test("diff review", async ({ page }, testInfo) => {

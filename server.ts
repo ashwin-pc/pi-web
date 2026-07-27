@@ -23,6 +23,7 @@ import { createSettingsStore } from "./server/settings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
+import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, WorkspaceFileError, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
 import type { PiWebSession } from "./server/types.js";
 import type { SlashCommandDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
@@ -1362,6 +1363,46 @@ const server = createServer(async (req, res) => {
           return sendJson(res, 201, await createDirectory(String(body.parent || piCwd), String(body.name || ""), piCwd));
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/files/tree") {
+        try {
+          const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          return sendJson(res, 200, await listWorkspaceDirectory(cwd, url.searchParams.get("path") || "", url.searchParams.get("hidden") === "1"));
+        } catch (error) {
+          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/files/read") {
+        try {
+          const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          return sendJson(res, 200, await readWorkspaceFile(cwd, url.searchParams.get("path") || ""));
+        } catch (error) {
+          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/files/image") {
+        try {
+          const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const image = await readWorkspaceImage(cwd, url.searchParams.get("path") || "");
+          res.writeHead(200, { "content-type": image.mimeType, "content-length": image.data.length, "cache-control": "no-store" });
+          res.end(image.data);
+          return;
+        } catch (error) {
+          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "PUT" && url.pathname === "/api/files/write") {
+        const body = await readBody(req) as { sessionId?: unknown; path?: unknown; content?: unknown; expectedRevision?: unknown };
+        try {
+          const cwd = await requestCwdFromSessionId(typeof body.sessionId === "string" ? body.sessionId : null);
+          return sendJson(res, 200, await writeWorkspaceFile(cwd, body.path, body.content, body.expectedRevision));
+        } catch (error) {
+          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 

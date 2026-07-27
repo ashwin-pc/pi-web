@@ -63,6 +63,9 @@
         <button id="newSessionHeaderButton" class="iconButton statusBarButton" type="button" aria-label="New session" title="New session">
           <span data-icon="square-pen"></span>
         </button>
+        <button id="filesButton" class="iconButton statusBarButton" type="button" aria-label="Files" title="Files">
+          <span data-icon="folder-tree"></span>
+        </button>
         <button id="conversationTreeButton" class="iconButton statusBarButton" type="button" aria-label="Conversation tree" title="Conversation tree">
           <span data-icon="git-fork"></span>
         </button>
@@ -76,6 +79,40 @@
           <span data-icon="settings"></span>
         </button>
       </div>
+
+      <aside id="filesPanel" class="filesPanel" aria-label="Workspace files" data-mobile-view="tree" hidden>
+        <div class="filesPanelHeader">
+          <button id="fileBackButton" class="fileHeaderBackButton" type="button" aria-label="Back to files" title="Back to files">‹</button>
+          <div class="filesPanelHeading">
+            <span class="filesPanelHeadingIcon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h6l2 2h10v10H3z"/><path d="M8 12v4m0-2h5m0-2v4m0-2h3"/></svg></span>
+            <h2>Explorer</h2>
+          </div>
+          <span id="fileStatus" class="fileStatus" aria-live="polite"></span>
+          <button id="fileSaveButton" class="fileHeaderSaveButton" type="button" disabled>Save</button>
+          <button id="filesRefreshButton" class="iconButton" type="button" aria-label="Refresh files" title="Refresh files">↻</button>
+          <button id="filesCloseButton" class="iconButton" type="button" aria-label="Close files" title="Close files">×</button>
+        </div>
+        <div class="filesPanelBody">
+          <nav class="filesExplorer" aria-label="File tree"><div id="filesTree" class="filesTree"></div></nav>
+          <div id="filesTreeResize" class="filesTreeResize" role="separator" aria-label="Resize file tree" aria-orientation="vertical" tabindex="0"><button id="filesTreeCollapse" type="button" aria-label="Collapse file tree" title="Collapse file tree">‹</button></div>
+          <section class="fileWorkspace">
+            <div class="fileTabsBar">
+              <div id="fileTabs" class="fileTabs"></div>
+            </div>
+            <div id="fileEditor" class="fileEditor">
+              <div class="fileEditorEmpty"><img src="/file-editor-waiting-v3.png" alt="" /></div>
+            </div>
+            <div class="fileEditorStatusBar" aria-label="Editor controls">
+              <button id="fileWrapToggle" class="fileWrapControl" type="button" aria-pressed="true">Wrap</button>
+              <label class="fileFontControl">
+                <span class="fileFontA" aria-hidden="true">A</span>
+                <input id="fileFontSlider" type="range" min="11" max="22" step="0.5" aria-label="Editor font size" />
+                <output id="fileFontValue" for="fileFontSlider">14px</output>
+              </label>
+            </div>
+          </section>
+        </div>
+      </aside>
 
       <aside id="gitPanel" class="gitPanel" aria-label="Git" hidden>
         <div class="gitPanelHeader">

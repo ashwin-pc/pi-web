@@ -101,6 +101,12 @@ PI_WEB_CWD=/Users/ashwin/projects/comfy-lan-webapp npm run dev
 
 The session UI is built for small screens first, then scales up to desktop. Tabs, the session drawer, pinned sessions, bucket filters, and conversation navigation are designed to keep long-running pi work reachable from a phone without hiding the desktop workflow.
 
+### Workspace Explorer
+
+The responsive Explorer opens the active session's working directory as a lazy-loaded file tree and a full CodeMirror editor. It supports syntax highlighting, multiple closeable tabs, conflict-aware saves, search and editor shortcuts, line wrapping, pinch or slider font resizing, and a resizable or collapsible tree. Desktop keeps chat, tree, and editor visible together; phones and touch-first foldables switch cleanly between the tree and editor without summoning the keyboard until the editor is tapped.
+
+File access stays scoped to the session working directory. The server rejects path traversal and escaping symlinks, detects binary and oversized files, writes atomically, and uses revisions to prevent silently overwriting changes made elsewhere.
+
 ### Diffs and tool review
 
 A shared diff viewer supports side-by-side or stacked layouts with intraline highlighting. It is used by both edit tool cards and Git diffs, so code review feels consistent across agent changes and repository history.
@@ -130,6 +136,14 @@ New sessions open with a lightweight animated empty state and a compact working-
 | Desktop | Mobile |
 | --- | --- |
 | ![pi-web new session desktop](tests/e2e/visual.spec.ts-snapshots/new-session-desktop.png) | ![pi-web new session mobile](tests/e2e/visual.spec.ts-snapshots/new-session-mobile.png) |
+
+### Workspace Explorer
+
+The Explorer uses the same session-scoped file tree and CodeMirror editor on every device. Desktop keeps the conversation and workspace side by side, while mobile switches to a focused editor view with a compact back control and touch-safe keyboard behavior.
+
+| Desktop | Mobile |
+| --- | --- |
+| ![pi-web Workspace Explorer desktop](tests/e2e/visual.spec.ts-snapshots/workspace-explorer-desktop.png) | ![pi-web Workspace Explorer mobile](tests/e2e/visual.spec.ts-snapshots/workspace-explorer-mobile.png) |
 
 ### Diff review
 
