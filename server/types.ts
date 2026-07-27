@@ -63,6 +63,8 @@ export interface PiWebSession {
   retryFromFailure?(): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): void;
+  getSteeringMessages?(): readonly string[];
+  getFollowUpMessages?(): readonly string[];
   subscribe?(listener: (event: unknown) => void): (() => void) | undefined;
 }
 

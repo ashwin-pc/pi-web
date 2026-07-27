@@ -29,6 +29,7 @@ export interface BaseSessionStateDto {
   isStreaming: boolean;
   isRetrying: boolean;
   isCompacting: boolean;
+  queue: { steering: string[]; followUp: string[] };
   model?: ModelDto;
   thinkingLevel: string;
   thinkingLevels: string[];

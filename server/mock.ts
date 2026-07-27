@@ -391,6 +391,8 @@ export function createMockHarness(options: MockSessionOptions) {
         }] }),
       },
       getAvailableThinkingLevels: () => ["off", "low", "medium", "high"],
+      getSteeringMessages: () => steeringQueue,
+      getFollowUpMessages: () => followUpQueue,
       get sessionName() { return mockSessions.find((info) => info.path === mockSession.sessionFile)?.name; },
       getContextUsage: () => {
         const lastAssistant = [...mockMessages].reverse().find((message: any) => message?.role === "assistant" && message?.usage) as any;

@@ -491,6 +491,10 @@ export function projectSessionState(targetSession: PiWebSession, cwd: string): B
     isStreaming: targetSession.isStreaming,
     isRetrying: sessionIsRetrying(targetSession),
     isCompacting: Boolean(targetSession.isCompacting),
+    queue: {
+      steering: [...(targetSession.getSteeringMessages?.() || [])],
+      followUp: [...(targetSession.getFollowUpMessages?.() || [])],
+    },
     model: simplifyModel(targetSession.model),
     thinkingLevel: targetSession.thinkingLevel,
     thinkingLevels: targetSession.getAvailableThinkingLevels(),

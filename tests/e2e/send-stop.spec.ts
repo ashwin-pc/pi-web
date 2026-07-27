@@ -139,6 +139,21 @@ test.describe("send while streaming", () => {
     await expect(page.locator(".message.user", { hasText: "steer it this way" })).toBeVisible();
   });
 
+  test("restores pending messages after a refresh", async ({ page }) => {
+    await page.locator("#prompt").fill("slow queue demo");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await page.waitForTimeout(200);
+
+    await page.locator("#prompt").fill("keep this queued through refresh");
+    await page.locator("#primaryButton").click();
+    const pending = page.locator('.pendingMessage[data-mode="steer"]', { hasText: "keep this queued through refresh" });
+    await expect(pending).toBeVisible();
+
+    await page.reload();
+    await expect(pending).toBeVisible();
+  });
+
   test("holds follow-ups until the current run finishes", async ({ page }) => {
     await page.locator("#prompt").focus();
     await page.locator("#queueToggle").click();

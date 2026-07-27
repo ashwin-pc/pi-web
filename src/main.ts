@@ -241,6 +241,7 @@ async function refreshMessages() {
 function applyRuntimeState(data: any) {
   state.isStreaming = Boolean(data.isStreaming || data.runtime?.isStreaming);
   state.isRetrying = Boolean(data.isRetrying || data.runtime?.isRetrying);
+  if (data.queue) composer.updatePendingQueue(data.queue.steering, data.queue.followUp);
   state.isCompacting = Boolean(data.isCompacting || data.runtime?.isCompacting);
   if (state.isStreaming || state.isRetrying || state.isCompacting) statusBar.markActivityStart(
     state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active",
