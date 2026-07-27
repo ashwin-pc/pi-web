@@ -13,6 +13,7 @@ const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
 let child: ChildProcess | undefined;
 let childStarting = false;
 let childGeneration = 0;
+const intentionalStops = new Set<number>();
 
 function requestToken(req: IncomingMessage): string {
   const auth = req.headers.authorization || "";
@@ -65,10 +66,12 @@ function startChild(): void {
 
   nextChild.on("exit", (code, signal) => {
     if (child?.pid === undefined || childGeneration !== generation) return;
+    const wasIntentional = nextChild.pid !== undefined && intentionalStops.delete(nextChild.pid);
     console.log(`[supervisor] child #${generation} exited code=${code ?? ""} signal=${signal ?? ""}`);
     child = undefined;
     childStarting = false;
-    if (code !== 0 && signal !== "SIGTERM" && signal !== "SIGINT") {
+    if (!wasIntentional) {
+      console.warn(`[supervisor] child #${generation} stopped unexpectedly; restarting in 1s`);
       setTimeout(startChild, 1000);
     }
   });
@@ -77,7 +80,8 @@ function startChild(): void {
 function stopChild(): Promise<void> {
   return new Promise((resolve) => {
     const current = child;
-    if (!current || current.killed) return resolve();
+    if (!current || current.pid === undefined || current.exitCode !== null) return resolve();
+    intentionalStops.add(current.pid);
 
     const timeout = setTimeout(() => {
       current.kill("SIGKILL");
@@ -89,7 +93,7 @@ function stopChild(): Promise<void> {
       resolve();
     });
 
-    current.kill("SIGTERM");
+    if (!current.killed) current.kill("SIGTERM");
   });
 }
 
