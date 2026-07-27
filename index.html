@@ -237,6 +237,17 @@
             <button id="settingClearModelDefaultsButton" type="button">Clear model</button>
           </div>
         </section>
+        <section class="settingsSection settingsExtensions">
+          <div class="settingsExtensionHeader">
+            <h3>Extensions</h3>
+            <span id="extensionStatusBadge" class="extensionStatusBadge loading">Checking…</span>
+          </div>
+          <p id="extensionStatusMessage" class="settingsHint">Checking extension status…</p>
+          <div id="extensionStatusDetails" class="extensionStatusDetails" hidden></div>
+          <div class="settingsActions">
+            <button id="extensionReloadButton" type="button">Retry extensions</button>
+          </div>
+        </section>
         <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
           <h3>Token sharing</h3>
           <p class="settingsHint">Use Show QR or Copy link to open pi web on another trusted device with this browser’s saved token.</p>

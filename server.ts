@@ -10,7 +10,6 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
   createAgentSession,
-  DefaultResourceLoader,
   getAgentDir,
   ModelRuntime,
   SessionManager,
@@ -18,6 +17,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
+import { ResilientResourceLoader } from "./server/extensions/resilientLoader.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { createSettingsStore } from "./server/settings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
@@ -720,6 +720,7 @@ const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 const liveSessions = new Map<string, LiveSessionEntry>();
 const liveById = new Map<string, PiWebSession>();
+const extensionLoaders = new WeakMap<object, ResilientResourceLoader>();
 const sessionLocations = new Map<string, { path: string; cwd: string }>();
 const openingById = new Map<string, Promise<PiWebSession | undefined>>();
 const viewerLeases = new Map<string, ViewerLease>();
@@ -996,14 +997,18 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
 
   const webUiContext = existsSync(webUiContextFile) ? readFileSync(webUiContextFile, "utf-8") : "";
 
-  const loader = new DefaultResourceLoader({
-    cwd: resolvedCwd,
-    agentDir: getAgentDir(),
-    additionalExtensionPaths: additionalExtensionPaths(resolvedCwd),
-    appendSystemPromptOverride: (base) => [
-      ...base,
-      webUiContext,
-    ].filter(Boolean),
+  const loader = new ResilientResourceLoader({
+    loadTimeoutMs: envMs("PI_WEB_EXTENSION_LOAD_TIMEOUT_MS", 8_000),
+    fetchTimeoutMs: envMs("PI_WEB_EXTENSION_FETCH_TIMEOUT_MS", 3_000),
+    loaderOptions: {
+      cwd: resolvedCwd,
+      agentDir: getAgentDir(),
+      additionalExtensionPaths: additionalExtensionPaths(resolvedCwd),
+      appendSystemPromptOverride: (base) => [
+        ...base,
+        webUiContext,
+      ].filter(Boolean),
+    },
   });
   await loader.reload();
 
@@ -1014,8 +1019,36 @@ async function makeAgentSession(path?: string, sessionStartEvent?: SessionStartE
     resourceLoader: loader,
     sessionStartEvent,
   });
+  extensionLoaders.set(result.session, loader);
   await webUiBridge.bind(result.session);
   return result;
+}
+
+function openExtensionSession(requestedSessionId?: string): PiWebSession {
+  const id = requestedSessionId?.trim() || session.sessionId;
+  const value = id === session.sessionId ? session : liveById.get(id);
+  if (!value) throw new SessionServiceError("Session is not currently open.", 404);
+  return value;
+}
+
+function extensionStatusForSession(requestedSessionId?: string) {
+  const loader = extensionLoaders.get(openExtensionSession(requestedSessionId));
+  if (!loader) throw new SessionServiceError("Extension status is not available for this session.", 404);
+  return loader.getStatus();
+}
+
+async function reloadExtensionsForSession(requestedSessionId?: string) {
+  const value = openExtensionSession(requestedSessionId);
+  if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before retrying extensions.", 409);
+  if (value.isCompacting) throw new SessionServiceError("Wait for compaction to finish before retrying extensions.", 409);
+  const loader = extensionLoaders.get(value);
+  if (!loader || typeof value.reload !== "function") {
+    throw new SessionServiceError("Extension reload is not available for this session.", 404);
+  }
+  await value.reload();
+  const status = loader.getStatus();
+  broadcast({ type: "extensions_reloaded", sessionId: value.sessionId, status });
+  return status;
 }
 
 async function getOrCreateLiveSession(path: string) {
@@ -1487,6 +1520,15 @@ const server = createServer(async (req, res) => {
         const settings = await settingsStore.patch(await readBody(req));
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });
+      }
+
+      if (method === "GET" && url.pathname === "/api/extensions/status") {
+        return sendJson(res, 200, { ok: true, status: extensionStatusForSession(url.searchParams.get("sessionId") || undefined) });
+      }
+
+      if (method === "POST" && url.pathname === "/api/extensions/reload") {
+        const body = await readBody(req) as { sessionId?: unknown };
+        return sendJson(res, 200, { ok: true, status: await reloadExtensionsForSession(typeof body.sessionId === "string" ? body.sessionId : undefined) });
       }
 
       if (method === "GET" && url.pathname === "/api/commands") {

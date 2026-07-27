@@ -74,6 +74,10 @@ export type AppElements = {
   settingModelDefaultsValue: HTMLSpanElement;
   settingSaveModelDefaultsButton: HTMLButtonElement;
   settingClearModelDefaultsButton: HTMLButtonElement;
+  extensionStatusBadge: HTMLSpanElement;
+  extensionStatusMessage: HTMLParagraphElement;
+  extensionStatusDetails: HTMLDivElement;
+  extensionReloadButton: HTMLButtonElement;
   settingsStatusEl: HTMLSpanElement;
   tokenShareSection: HTMLElement;
   tokenShareQr: HTMLDivElement;
@@ -172,6 +176,10 @@ export function getAppElements(): AppElements {
     settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
     settingClearModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingClearModelDefaultsButton"),
+    extensionStatusBadge: requiredElement<HTMLSpanElement>("#extensionStatusBadge"),
+    extensionStatusMessage: requiredElement<HTMLParagraphElement>("#extensionStatusMessage"),
+    extensionStatusDetails: requiredElement<HTMLDivElement>("#extensionStatusDetails"),
+    extensionReloadButton: requiredElement<HTMLButtonElement>("#extensionReloadButton"),
     settingsStatusEl: requiredElement<HTMLSpanElement>("#settingsStatus"),
     tokenShareSection: requiredElement<HTMLElement>("#tokenShareSection"),
     tokenShareQr: requiredElement<HTMLDivElement>("#tokenShareQr"),

@@ -13,6 +13,15 @@ export type SettingsController = {
   applySettings: (settings: PiWebSettings) => void;
 };
 
+type ExtensionLoadStatus = {
+  state: "loading" | "ready" | "degraded";
+  attempt: number;
+  durationMs?: number;
+  extensionCount: number;
+  errors: Array<{ path: string; error: string }>;
+  message: string;
+};
+
 function cloneSettings(settings: PiWebSettings): PiWebSettings {
   return JSON.parse(JSON.stringify(settings)) as PiWebSettings;
 }
@@ -221,6 +230,66 @@ export function createSettings(options: {
     elements.settingsStatusEl.classList.toggle("error", isError);
   }
 
+  function renderExtensionStatus(status: ExtensionLoadStatus) {
+    const badge = elements.extensionStatusBadge;
+    badge.className = `extensionStatusBadge ${status.state}`;
+    badge.textContent = status.state === "ready" ? "Ready" : status.state === "degraded" ? "Degraded" : "Loading…";
+    elements.extensionStatusMessage.textContent = status.message;
+    elements.extensionReloadButton.disabled = status.state === "loading";
+    elements.extensionStatusDetails.replaceChildren();
+
+    const facts = document.createElement("div");
+    const duration = typeof status.durationMs === "number" ? ` · ${status.durationMs}ms` : "";
+    facts.textContent = `${status.extensionCount} loaded · attempt ${status.attempt}${duration}`;
+    elements.extensionStatusDetails.append(facts);
+    for (const error of status.errors) {
+      const row = document.createElement("div");
+      row.className = "extensionStatusError";
+      row.textContent = `${error.path}: ${error.error}`;
+      elements.extensionStatusDetails.append(row);
+    }
+    elements.extensionStatusDetails.hidden = status.state === "ready" && status.errors.length === 0;
+  }
+
+  function renderExtensionStatusError(error: unknown) {
+    elements.extensionStatusBadge.className = "extensionStatusBadge degraded";
+    elements.extensionStatusBadge.textContent = "Unavailable";
+    elements.extensionStatusMessage.textContent = error instanceof Error ? error.message : String(error);
+    elements.extensionStatusDetails.hidden = true;
+    elements.extensionReloadButton.disabled = false;
+  }
+
+  async function refreshExtensionStatus() {
+    const params = new URLSearchParams();
+    if (state.currentSessionId) params.set("sessionId", state.currentSessionId);
+    const res = await fetch(`/api/extensions/status?${params}`, { headers: api.headers() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || `Unable to read extension status (${res.status})`);
+    renderExtensionStatus(data.status as ExtensionLoadStatus);
+  }
+
+  async function reloadExtensions() {
+    elements.extensionStatusBadge.className = "extensionStatusBadge loading";
+    elements.extensionStatusBadge.textContent = "Retrying…";
+    elements.extensionStatusMessage.textContent = "Reloading extensions and models without restarting pi-web…";
+    elements.extensionStatusDetails.hidden = true;
+    elements.extensionReloadButton.disabled = true;
+    try {
+      const res = await fetch("/api/extensions/reload", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ sessionId: state.currentSessionId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `Unable to reload extensions (${res.status})`);
+      renderExtensionStatus(data.status as ExtensionLoadStatus);
+      setSettingsStatus(data.status?.state === "ready" ? "Extensions reloaded" : "Extension reload completed with errors", data.status?.state !== "ready");
+    } catch (error) {
+      renderExtensionStatusError(error);
+      setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+    }
+  }
+
   function tokenShareUrl() {
     const token = state.token.trim();
     return token ? createTokenShareUrl(token) : "";
@@ -347,6 +416,11 @@ export function createSettings(options: {
     elements.tokenShareUrl.value = "";
     setTokenShareGenerated(false);
     setSettingsStatus("");
+    elements.extensionStatusBadge.className = "extensionStatusBadge loading";
+    elements.extensionStatusBadge.textContent = "Checking…";
+    elements.extensionStatusMessage.textContent = "Checking extension status…";
+    elements.extensionStatusDetails.hidden = true;
+    void refreshExtensionStatus().catch(renderExtensionStatusError);
   }
 
   function afterOpenSettings() {
@@ -509,6 +583,9 @@ export function createSettings(options: {
         setSettingsStatus(error instanceof Error ? error.message : String(error), true);
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       });
+    });
+    elements.extensionReloadButton.addEventListener("click", () => {
+      void reloadExtensions();
     });
   }
 

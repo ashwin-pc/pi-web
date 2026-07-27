@@ -320,6 +320,42 @@
   font-size: 12px;
 }
 .settingsStatus.error { color: var(--danger); }
+.settingsExtensionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.extensionStatusBadge {
+  border: 1px solid color-mix(in srgb, var(--accent) 48%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.extensionStatusBadge.degraded {
+  border-color: color-mix(in srgb, var(--danger) 52%, var(--border));
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+}
+.extensionStatusBadge.loading { color: var(--muted); }
+.extensionStatusDetails {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+  padding: 8px 10px;
+  color: var(--muted);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+.extensionStatusDetails[hidden] { display: none; }
+.extensionStatusError {
+  color: var(--danger);
+}
 .tokenShareSection[hidden] { display: none; }
 .tokenShareQr[hidden] { display: none; }
 .tokenShareUrl[hidden] { display: none; }
