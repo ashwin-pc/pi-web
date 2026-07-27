@@ -80,7 +80,7 @@ export interface SessionService {
   setModel(sessionId: string | undefined, provider: string, id: string, thinkingLevel?: string): Promise<Record<string, unknown>>;
   executeShell(sessionId: string | undefined, command: string, excludeFromContext: boolean): Promise<Record<string, unknown>>;
   executeCommand(sessionId: string | undefined, command: string): Promise<Record<string, unknown>>;
-  prompt(sessionId: string | undefined, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }> }): Promise<{ sessionId: string }>;
+  prompt(sessionId: string | undefined, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }): Promise<{ sessionId: string }>;
   retry(sessionId?: string): Promise<{ sessionId: string }>;
   abort(sessionId?: string): Promise<{ sessionId: string }>;
   abortCompaction(sessionId?: string): Promise<{ sessionId: string }>;

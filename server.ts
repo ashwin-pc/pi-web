@@ -728,11 +728,57 @@ const sessionActivity = new SessionActivity((path) => liveSessions.get(path)?.se
 let session: PiWebSession;
 let modelFallbackMessage: string | undefined;
 
+type PendingPromptCorrelation = {
+  clientMessageId: string;
+  sourceClientId: string;
+  createdAt: number;
+};
+const pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
+
+function userMessageFromEvent(event: any) {
+  const value = event?.message;
+  const message = value?.message && typeof value.message === "object" ? value.message : value;
+  const raw = message?.raw || message;
+  return String(message?.role || raw?.role || "") === "user" ? raw : undefined;
+}
+
+function takePromptCorrelation(sessionKey: string, event: any) {
+  if (event?.type !== "message_end" || !userMessageFromEvent(event)) return undefined;
+  const pending = pendingPromptCorrelations.get(sessionKey);
+  if (!pending?.length) return undefined;
+  const cutoff = Date.now() - 60 * 60 * 1000;
+  while (pending[0] && pending[0].createdAt < cutoff) pending.shift();
+  const match = pending.shift();
+  if (!pending.length) pendingPromptCorrelations.delete(sessionKey);
+  return match;
+}
+
+function rememberPromptCorrelation(sessionKey: string, correlation: PendingPromptCorrelation) {
+  const pending = pendingPromptCorrelations.get(sessionKey) || [];
+  pending.push(correlation);
+  pendingPromptCorrelations.set(sessionKey, pending);
+}
+
+function forgetPromptCorrelation(sessionKey: string, clientMessageId: string) {
+  const pending = pendingPromptCorrelations.get(sessionKey)?.filter((item) => item.clientMessageId !== clientMessageId) || [];
+  if (pending.length) pendingPromptCorrelations.set(sessionKey, pending);
+  else pendingPromptCorrelations.delete(sessionKey);
+}
+
 let realtimeHub: RealtimeHub;
 const unreadTracker = new SessionUnreadTracker(sessionUiStateStore, sessionActivity, (value) => realtimeHub.broadcast(value));
 realtimeHub = new RealtimeHub(websocketHeartbeatMs, websocketMaxMissedHeartbeats, (value) => unreadTracker.handle(value));
 
 function broadcast(value: unknown) {
+  if (value && typeof value === "object" && (value as any).type === "pi_event") {
+    const envelope = value as Record<string, any>;
+    const correlation = takePromptCorrelation(String(envelope.sessionFile || envelope.sessionId || ""), envelope.event);
+    realtimeHub.broadcast({
+      ...envelope,
+      ...(correlation ? { clientMessageId: correlation.clientMessageId, sourceClientId: correlation.sourceClientId } : {}),
+    });
+    return;
+  }
   realtimeHub.broadcast(value);
 }
 
@@ -840,6 +886,7 @@ async function disposeLiveSession(key: string, reason: "idle" | "delete" | "rese
   }
 
   liveSessions.delete(key);
+  pendingPromptCorrelations.delete(key);
   if (liveById.get(sessionId) === value) liveById.delete(sessionId);
   sessionActivity.clearSession(key, value);
 
@@ -1162,16 +1209,26 @@ async function navigateSession(targetSession: PiWebSession, targetId: string, op
   }
 }
 
-async function startSessionPrompt(targetSession: PiWebSession, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }> }) {
+async function startSessionPrompt(targetSession: PiWebSession, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }) {
   const imageFileNote = await persistPromptImages(input.images, sessionCwd(targetSession));
   const promptText = `${input.message || "Please review the attached image."}${imageFileNote}`;
+  if (input.clientMessageId && input.sourceClientId) {
+    rememberPromptCorrelation(sessionPathKey(targetSession), {
+      clientMessageId: input.clientMessageId,
+      sourceClientId: input.sourceClientId,
+      createdAt: Date.now(),
+    });
+  }
   if (!targetSession.isStreaming && !targetSession.isCompacting) sessionActivity.ensureStarted(targetSession);
   const promptSessionFile = targetSession.sessionFile;
   const releaseWorkLease = acquireWorkLease(targetSession);
   void targetSession.prompt(promptText, {
     ...(targetSession.isStreaming ? { streamingBehavior: input.mode } : {}),
     ...(input.images.length ? { images: input.images.map(({ data, mimeType }) => ({ type: "image", data, mimeType })) } : {}),
-  }).catch((error: unknown) => broadcast({ type: "server_error", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, error: error instanceof Error ? error.message : String(error) }))
+  }).catch((error: unknown) => {
+    if (input.clientMessageId) forgetPromptCorrelation(sessionPathKey(targetSession), input.clientMessageId);
+    broadcast({ type: "server_error", sessionId: targetSession.sessionId, sessionFile: targetSession.sessionFile, error: error instanceof Error ? error.message : String(error) });
+  })
     .finally(() => {
       const isRunning = Boolean(targetSession.isStreaming || targetSession.isCompacting);
       if (promptSessionFile && sessionActivity.hasStarted(promptSessionFile) && !isRunning) {
@@ -1577,7 +1634,7 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { sessionId?: unknown; message?: unknown; mode?: unknown; images?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
         const images = Array.isArray(body.images) ? body.images.flatMap((image) => {
           if (!image || typeof image !== "object") return [];
@@ -1587,7 +1644,13 @@ const server = createServer(async (req, res) => {
             : [];
         }) : [];
         if (!message && images.length === 0) return sendJson(res, 400, { ok: false, error: "message or image is required" });
-        const result = await sessionService.prompt(typeof body.sessionId === "string" ? body.sessionId : undefined, { message, mode: body.mode === "followUp" ? "followUp" : "steer", images });
+        const result = await sessionService.prompt(typeof body.sessionId === "string" ? body.sessionId : undefined, {
+          message,
+          mode: body.mode === "followUp" ? "followUp" : "steer",
+          images,
+          clientMessageId: cleanClientId(body.clientMessageId),
+          sourceClientId: clientIdFromRequest(req),
+        });
         return sendJson(res, 202, { ok: true, ...result });
       }
 

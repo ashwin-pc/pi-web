@@ -22,7 +22,9 @@ export type ComposerController = {
   updatePrimaryAction: () => void;
   updateQueueToggle: () => void;
   updatePendingQueue: (steering: unknown, followUp: unknown) => void;
-  handleUserMessage: (text: string, images?: any[]) => boolean;
+  trackOptimisticUserMessage: (clientMessageId: string) => void;
+  discardOptimisticUserMessage: (clientMessageId: string) => void;
+  handleUserMessage: (text: string, clientMessageId?: string, sourceClientId?: string, images?: any[]) => boolean;
 };
 
 function fileToImageAttachment(file: File): Promise<ImageAttachment> {
@@ -68,7 +70,7 @@ export function createComposer(options: {
   let contextAttachments: ComposerContextAttachment[] = [];
   let pendingSteering: string[] = [];
   let pendingFollowUp: string[] = [];
-  const optimisticUserMessages = new Map<string, number>();
+  const optimisticUserMessages = new Set<string>();
 
   function renderPendingQueue() {
     const entries = [
@@ -105,13 +107,16 @@ export function createComposer(options: {
     renderPendingQueue();
   }
 
-  function handleUserMessage(text: string, images: any[] = []) {
-    const optimisticCount = optimisticUserMessages.get(text) || 0;
-    if (optimisticCount > 0) {
-      if (optimisticCount === 1) optimisticUserMessages.delete(text);
-      else optimisticUserMessages.set(text, optimisticCount - 1);
-      return true;
-    }
+  function trackOptimisticUserMessage(clientMessageId: string) {
+    optimisticUserMessages.add(clientMessageId);
+  }
+
+  function discardOptimisticUserMessage(clientMessageId: string) {
+    optimisticUserMessages.delete(clientMessageId);
+  }
+
+  function handleUserMessage(text: string, clientMessageId?: string, sourceClientId?: string, images: any[] = []) {
+    if (clientMessageId && sourceClientId === api.clientId && optimisticUserMessages.delete(clientMessageId)) return true;
     addMessage("user", text, "", images);
     return true;
   }
@@ -654,8 +659,9 @@ export function createComposer(options: {
       state.isRetrying = false;
       updatePrimaryAction();
       beginStreamFollow?.();
+      const clientMessageId = crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       if (!submittedWhileRunning) {
-        optimisticUserMessages.set(message, (optimisticUserMessages.get(message) || 0) + 1);
+        optimisticUserMessages.add(clientMessageId);
         addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
       }
 
@@ -663,10 +669,11 @@ export function createComposer(options: {
         const res = await fetch("/api/prompt", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId: state.currentSessionId, message, mode: state.queueMode, images }),
+          body: JSON.stringify({ sessionId: state.currentSessionId, clientMessageId, message, mode: state.queueMode, images }),
         });
         if (!res.ok) throw new Error(await res.text());
       } catch (error) {
+        optimisticUserMessages.delete(clientMessageId);
         state.isStreaming = false;
         state.isRetrying = false;
         updatePrimaryAction();
@@ -822,6 +829,8 @@ export function createComposer(options: {
     updatePrimaryAction,
     updateQueueToggle,
     updatePendingQueue,
+    trackOptimisticUserMessage,
+    discardOptimisticUserMessage,
     handleUserMessage,
   };
 }

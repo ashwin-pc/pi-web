@@ -985,6 +985,24 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator("#primaryButton")).toBeEnabled();
   });
 
+  test("reconciles an image prompt without briefly duplicating its server-enriched message", async ({ page }) => {
+    const file = {
+      name: "tiny.png",
+      mimeType: "image/png",
+      buffer: VALID_PNG,
+    };
+    await page.locator("#imageInput").setInputFiles(file);
+    await page.locator("#prompt").fill("slow image correlation");
+    await page.locator("#primaryButton").click();
+
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
+    await expect(page.locator(".message.user .messageImageThumb")).toHaveCount(1);
+    await expect(page.locator("#messages")).not.toContainText("Attached image file:");
+    await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
+    await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
+  });
+
   test("supports image-only prompt and attachment removal", async ({ page }) => {
     const file = {
       name: "tiny.png",

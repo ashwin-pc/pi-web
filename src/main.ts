@@ -53,17 +53,20 @@ async function submitPromptFromMessageAction(message: string) {
   state.isRetrying = false;
   composer.updatePrimaryAction();
   messages.beginStreamFollow();
+  const clientMessageId = crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  composer.trackOptimisticUserMessage(clientMessageId);
   messages.addMessage("user", promptText);
 
   try {
     const res = await fetch("/api/prompt", {
       method: "POST",
       headers: api.headers(),
-      body: JSON.stringify({ sessionId: state.currentSessionId, message: promptText, mode: state.queueMode, images: [] }),
+      body: JSON.stringify({ sessionId: state.currentSessionId, clientMessageId, message: promptText, mode: state.queueMode, images: [] }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
   } catch (error) {
+    composer.discardOptimisticUserMessage(clientMessageId);
     state.isStreaming = false;
     state.isRetrying = false;
     composer.updatePrimaryAction();

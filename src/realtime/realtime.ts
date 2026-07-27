@@ -570,7 +570,7 @@ export function createRealtime(options: {
     rememberIncompleteResponse(transcriptState.incomplete || null);
   }
 
-  function handlePiEvent(event: PiEvent, isReplay = false) {
+  function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string }) {
     switch (event.type) {
       case "session_info_changed":
         if ("name" in event) status.setStatusTitle(event.name || "New session");
@@ -614,7 +614,7 @@ export function createRealtime(options: {
       case "message_end": {
         const deliveredMessage = messageFromEvent(event.message);
         if (String(deliveredMessage?.role || deliveredMessage?.raw?.role || "") === "user") {
-          composer.handleUserMessage(messageText(deliveredMessage));
+          composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId);
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {
@@ -836,7 +836,7 @@ export function createRealtime(options: {
             sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: eventWillRetry(data.event), isStreaming: false, isRetrying: eventWillRetry(data.event), isCompacting: false, pendingMessageCount: 0 });
           }
         }
-        if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay);
+        if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay, data);
         return;
       }
       if (data.type === "server_error" && (!data.sessionId || data.sessionId === state.currentSessionId)) addMessage("system", data.error, "error");

@@ -21,7 +21,7 @@ export interface LocalSessionServiceDependencies {
   delete(sessionId: string, cwd?: string): Promise<unknown>;
   switchCwd(session: PiWebSession, cwd: string): Promise<Record<string, unknown>>;
   executeCommand(command: string, session: PiWebSession): Promise<{ message: string; state: Record<string, unknown> }>;
-  prompt(session: PiWebSession, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }> }): Promise<void>;
+  prompt(session: PiWebSession, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }): Promise<void>;
   retry(session: PiWebSession): Promise<void>;
   navigate(session: PiWebSession, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
   invokeHeaderAction(session: PiWebSession, key: unknown): Promise<Record<string, unknown>>;
@@ -110,7 +110,7 @@ export class LocalSessionService implements SessionService {
     return this.deps.executeCommand(command, await this.require(sessionId));
   }
 
-  async prompt(sessionId: string | undefined, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }> }) {
+  async prompt(sessionId: string | undefined, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }) {
     const session = await this.require(sessionId);
     await this.deps.prompt(session, input);
     return { sessionId: session.sessionId };
