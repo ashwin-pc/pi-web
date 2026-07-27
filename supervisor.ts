@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createServer, request, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
+import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 
 const publicHost = process.env.HOST || "127.0.0.1";
 const publicPort = Number(process.env.PORT || 8787);
@@ -103,32 +104,6 @@ function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Err
   socket.destroy?.(error);
 }
 
-function proxyHttp(req: IncomingMessage, res: ServerResponse): void {
-  const headers = { ...req.headers, host: `${childHost}:${childPort}` };
-  const upstream = request({
-    host: childHost,
-    port: childPort,
-    method: req.method,
-    path: req.url,
-    headers,
-  }, (upstreamRes) => {
-    res.writeHead(upstreamRes.statusCode || 502, upstreamRes.headers);
-    upstreamRes.pipe(res);
-  });
-
-  upstream.on("error", (error) => {
-    if (!res.headersSent && !res.destroyed) {
-      sendJson(res, 502, { ok: false, error: `pi-web child unavailable: ${error.message}` });
-    } else {
-      destroyQuietly(res, error);
-    }
-  });
-
-  req.on("error", (error) => destroyQuietly(upstream, error));
-  res.on("error", (error) => destroyQuietly(upstream, error));
-  req.pipe(upstream);
-}
-
 const supervisor = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
@@ -150,7 +125,7 @@ const supervisor = createServer(async (req, res) => {
     });
   }
 
-  proxyHttp(req, res);
+  proxyHttpRequest(req, res, { host: childHost, port: childPort });
 });
 
 supervisor.on("upgrade", (req, socket, head) => {
