@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { discoverExtensionEntryPaths, resolveBundledExtensionPaths } from "../server/extensions.js";
 import { createWebUiBridge } from "../server/extensions/webUi.js";
 import downloadArtifactExtension from "../examples/pi-web-extensions/download-artifact.js";
-import gitFooterExtension from "../examples/pi-web-extensions/git-footer.js";
+import { createGitFooterExtension } from "../examples/pi-web-extensions/git-footer.js";
 
 const tempDirs: string[] = [];
 
@@ -114,7 +114,14 @@ describe("bundled extension path discovery", () => {
     vi.useFakeTimers();
     try {
       const handlers = new Map<string, Array<(event: unknown, context: any) => unknown>>();
-      gitFooterExtension({
+      const extension = createGitFooterExtension({
+        git: async (args) => {
+          if (args[0] === "rev-parse") return { ok: true, output: "true" };
+          if (args[0] === "branch") return { ok: true, output: "main" };
+          return { ok: true, output: "" };
+        },
+      });
+      extension({
         on(event: string, handler: (event: unknown, context: any) => unknown) {
           const list = handlers.get(event) || [];
           list.push(handler);
@@ -140,7 +147,9 @@ describe("bundled extension path discovery", () => {
       const shutdown = handlers.get("session_shutdown")![0];
 
       await start({}, first.context);
+      await vi.advanceTimersByTimeAsync(0);
       await start({}, replacement.context);
+      await vi.advanceTimersByTimeAsync(0);
       expect(first.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
       expect(replacement.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
 
@@ -148,6 +157,35 @@ describe("bundled extension path discovery", () => {
       expect(replacement.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
       await shutdown({}, replacement.context);
       expect(replacement.calls.at(-1)).toEqual(["local-git-footer", undefined]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not overlap footer refreshes when a Git command stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      const handlers = new Map<string, (event: unknown, context: any) => unknown>();
+      const git = vi.fn(() => new Promise<{ ok: boolean; output: string }>(() => undefined));
+      createGitFooterExtension({ git, refreshMs: 10 })({
+        on: (event: string, handler: (event: unknown, context: any) => unknown) => handlers.set(event, handler),
+      } as any);
+      const calls: Array<[string, unknown]> = [];
+      const sessionManager = { getSessionId: () => "stalled-git", getCwd: () => process.cwd() };
+      const context = {
+        cwd: process.cwd(),
+        sessionManager,
+        ui: { web: { setFooter: (key: string, footer: unknown) => calls.push([key, footer]) } },
+      };
+
+      handlers.get("session_start")?.({}, context);
+      await vi.advanceTimersByTimeAsync(100);
+
+      expect(git).toHaveBeenCalledTimes(1);
+      expect(calls).toEqual([]);
+
+      handlers.get("session_shutdown")?.({}, context);
+      expect(calls).toEqual([["local-git-footer", undefined]]);
     } finally {
       vi.useRealTimers();
     }
