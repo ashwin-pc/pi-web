@@ -197,6 +197,31 @@ describe("tool card expand chevrons", () => {
   });
 });
 
+describe("connected transcript and header styling", () => {
+  const toolCss = readFileSync(new URL("../src/styles/toolCards.css", import.meta.url), "utf8");
+  const messagesCss = readFileSync(new URL("../src/styles/messages.css", import.meta.url), "utf8");
+  const statusCss = readFileSync(new URL("../src/styles/statusBar.css", import.meta.url), "utf8");
+
+  it("uses the midnight and champagne treatment for adjacent tool cards", () => {
+    expect(toolCss).toContain(".toolCard--success { background: #15201e; }");
+    expect(toolCss).toContain(".toolCard--thinking { background: #171b25; }");
+    expect(toolCss).toContain("--tool-stitch-metal: #c7a86d;");
+    expect(toolCss).toContain("width: 60px;");
+  });
+
+  it("keeps artifact headers compact with a pinstripe treatment", () => {
+    expect(messagesCss).toContain("min-height: 16px;");
+    expect(messagesCss).toContain("padding: 0 16px;");
+    expect(messagesCss).toContain("repeating-linear-gradient(\n      90deg,");
+  });
+
+  it("lets the session title use free header space before truncating", () => {
+    expect(statusCss).toContain(".statusTitle {\n  flex: 1 1 auto;\n  min-width: 0;");
+    expect(statusCss).not.toContain("max-width: 240px;");
+    expect(statusCss).not.toContain("max-width: 28vw;");
+  });
+});
+
 describe("configurable accent color", () => {
   const baseCss = readFileSync(new URL("../src/styles/base.css", import.meta.url), "utf8");
   const composerCss = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
@@ -304,6 +329,7 @@ describe("slash command compact styling", () => {
     expect(css).toContain("clip-path: inset(calc(100% - var(--thinking-fill, 0%)) 0 0 0)");
     expect(css).not.toContain('data-thinking-level="low"');
     expect(css).not.toContain('data-thinking-level="xhigh"');
+    expect(css).toContain(".modelSettingsThinkingText { display: none; }");
   });
 
   it("animates the context meter while compacting with reduced-motion support", () => {

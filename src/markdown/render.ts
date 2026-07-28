@@ -401,16 +401,18 @@ function enhanceArtifactLinks(root: ParentNode) {
     if (!kind) continue;
     link.dataset.artifactPreviewEnhanced = "true";
 
+    const fileName = artifactName(url.pathname);
+    const displayName = link.textContent?.trim() || fileName;
     const card = document.createElement("div");
     card.className = `artifactPreview artifactPreview--${kind}`;
     const header = document.createElement("div");
     header.className = "artifactPreviewHeader";
     const title = document.createElement("span");
     title.className = "artifactPreviewTitle";
-    title.textContent = artifactName(url.pathname);
+    title.textContent = displayName;
     const open = document.createElement("a");
     open.href = kind === "markdown"
-      ? `/artifact-preview.html?src=${encodeURIComponent(url.pathname)}&name=${encodeURIComponent(artifactName(url.pathname))}`
+      ? `/artifact-preview.html?src=${encodeURIComponent(url.pathname)}&name=${encodeURIComponent(displayName)}`
       : url.pathname;
     if (isStandalonePwa()) {
       open.target = "_top";

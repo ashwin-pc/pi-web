@@ -634,9 +634,9 @@ export function createMockHarness(options: MockSessionOptions) {
           }
           appendMockMessage({ role: "toolResult", toolCallId, toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
         } else if (/markdown artifact/i.test(message)) {
-          appendMockMessage({ role: "assistant", content: "Here is a markdown artifact:\n\n[report.md](/api/artifacts/report.md)", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "assistant", content: "Here is a markdown artifact:\n\n[Artifact report](/api/artifacts/report.md)", timestamp: new Date().toISOString() });
         } else if (/html artifact/i.test(message)) {
-          appendMockMessage({ role: "assistant", content: "Here is an HTML artifact:\n\n[preview.html](/api/artifacts/preview.html)", timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "assistant", content: "Here is an HTML artifact:\n\n[Interactive preview](/api/artifacts/preview.html)", timestamp: new Date().toISOString() });
         } else if (/video artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a video artifact:\n\n[e2e-video-artifact.webm](/api/artifacts/e2e-video-artifact.webm)", timestamp: new Date().toISOString() });
         } else if (/artifact/i.test(message)) {

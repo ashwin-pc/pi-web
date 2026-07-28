@@ -43,7 +43,8 @@
   background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
 }
 .statusTitle {
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-width: 0;
   color: var(--text);
   font-size: 12px;
   font-weight: 700;
@@ -51,7 +52,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  max-width: 240px;
   cursor: pointer;
 }
 .statusTitle:hover {
@@ -134,7 +134,7 @@
   }
 
   .statusTitle {
-    max-width: 28vw;
+    min-width: 0;
   }
 
   .statusPath {

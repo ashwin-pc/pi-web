@@ -15,10 +15,51 @@
 .toolCard--running { background: color-mix(in srgb, var(--panel-2) 80%, #1a3050); }
 .toolCard--running.toolCard--quiet { background: color-mix(in srgb, var(--panel-2) 76%, #3b2f0b); }
 .toolCard--running.toolCard--stale { background: color-mix(in srgb, var(--panel-2) 72%, #3a1d10); }
-.toolCard--success { background: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
+.toolCard--success { background: #15201e; }
 .toolCard--error   { background: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
-.toolCard--thinking { background: color-mix(in srgb, var(--tool) 70%, #251a3d); }
+.toolCard--thinking { background: #171b25; }
+.toolCard--success,
+.toolCard--thinking {
+  /* A restrained cross-woven texture gives the dark fills a tailored,
+     fabric-like finish while preserving text contrast. */
+  background-image:
+    repeating-linear-gradient(
+      115deg,
+      rgba(255, 255, 255, .065) 0 1px,
+      transparent 1px 5px
+    ),
+    repeating-linear-gradient(
+      25deg,
+      rgba(0, 0, 0, .18) 0 1px,
+      transparent 1px 6px
+    ),
+    linear-gradient(100deg, rgba(255, 255, 255, .025), transparent 38%, rgba(0, 0, 0, .055));
+}
 .toolCard--thinkingEmpty .toolCardBody { display: none; }
+
+/* Keep the join clean and planar, with a short champagne stitch centered on
+   the divider rather than shaping the entire edge. */
+.toolCard + .toolCard {
+  --tool-stitch-metal: #c7a86d;
+  overflow: visible;
+  border-top: 1px solid color-mix(in srgb, var(--tool-stitch-metal) 35%, var(--border));
+}
+.toolCard + .toolCard::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  top: -2px;
+  left: 50%;
+  width: 60px;
+  height: 3px;
+  transform: translateX(-50%);
+  background: repeating-linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--tool-stitch-metal) 82%, white) 0 .75px,
+    transparent .75px 5px
+  ) center / auto 100%;
+  pointer-events: none;
+}
 
 .toolCardHeader {
   display: flex;
@@ -74,17 +115,17 @@
   vertical-align: -1px;
   box-sizing: border-box;
 }
-.toolCard--success .toolCardIcon::before { content: "✓"; color: #4ade80; }
+.toolCard--success .toolCardIcon::before { content: "✓"; color: #a9c6b9; }
 .toolCard--error   .toolCardIcon::before { content: "✗"; color: var(--danger); }
-.toolCard--thinking .toolCardIcon::before { content: "✦"; color: #c4b5fd; }
+.toolCard--thinking .toolCardIcon::before { content: "✦"; color: #d5bd8b; }
 .toolCard--thinkingStreaming .toolCardIcon::before {
   content: "";
   display: inline-block;
   width: 12px;
   height: 12px;
   border-radius: 50%;
-  border: 1.5px solid color-mix(in srgb, #c4b5fd 30%, transparent);
-  border-top-color: #c4b5fd;
+  border: 1.5px solid color-mix(in srgb, #d5bd8b 30%, transparent);
+  border-top-color: #d5bd8b;
   animation: toolSpin 0.8s linear infinite;
   vertical-align: -1px;
   box-sizing: border-box;
@@ -239,7 +280,7 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
   color: var(--muted);
 }
 .toolCardThinkingHeading {
-  color: color-mix(in srgb, var(--text) 88%, #c4b5fd);
+  color: color-mix(in srgb, var(--text) 88%, #d5bd8b);
   font-weight: 800;
 }
 .toolCard:not(.toolCard--thinking) .toolCardBody {
@@ -276,9 +317,9 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
   background: linear-gradient(transparent, var(--tool-bg, var(--tool)) 82%);
 }
 .toolCard--running .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--panel-2) 80%, #1a3050); }
-.toolCard--success .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #0f2a1a); }
+.toolCard--success .toolCardBody.collapsed::after { --tool-bg: #15201e; }
 .toolCard--error   .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
-.toolCard--thinking .toolCardBody.collapsed::after { --tool-bg: color-mix(in srgb, var(--tool) 70%, #251a3d); }
+.toolCard--thinking .toolCardBody.collapsed::after { --tool-bg: #171b25; }
 .runtimeErrorActions {
   display: flex;
   flex-wrap: wrap;

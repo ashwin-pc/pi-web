@@ -1507,7 +1507,7 @@ test.describe("image rendering", () => {
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
     const preview = page.locator(".artifactPreview--markdown").last();
-    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("report.md");
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("Artifact report");
     await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
     await expect(preview.locator(".artifactPreviewContent strong")).toHaveText("markdown");
     await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
@@ -1524,7 +1524,7 @@ test.describe("image rendering", () => {
     expect(href).toBeTruthy();
     await page.goto(href!);
 
-    await expect(page.locator("#artifactPreviewTitle")).toHaveText("report.md");
+    await expect(page.locator("#artifactPreviewTitle")).toHaveText("Artifact report");
     await expect(page.getByRole("button", { name: "Back" })).toHaveClass(/artifactPreviewPageAction/);
     await expect(page.getByRole("link", { name: "Raw" })).toHaveClass(/artifactPreviewPageAction/);
     await expect(page.locator("#artifactPreviewBody h1")).toHaveText("Artifact report");
@@ -1539,7 +1539,7 @@ test.describe("image rendering", () => {
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
     const preview = page.locator(".artifactPreview--html").last();
-    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("preview.html");
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("Interactive preview");
     const frame = preview.locator("iframe.artifactPreviewFrame");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);

@@ -295,15 +295,41 @@ body.artifactPreviewDocument {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 9px 14px;
-  border-bottom: 0;
-  background: color-mix(in srgb, var(--text) 4%, var(--panel));
+  gap: 10px;
+  min-height: 16px;
+  padding: 0 16px;
+  border-bottom: 1px solid color-mix(in srgb, #c7a86d 35%, var(--border));
+  background-color: color-mix(in srgb, #171b25 84%, var(--panel));
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      color-mix(in srgb, white 6%, transparent) 0 1px,
+      transparent 1px 8px
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in srgb, #c7a86d 7%, transparent),
+      transparent 42%
+    );
   color: var(--muted);
-  font-size: 12px;
+  font-size: 9px;
+  line-height: 1;
 }
-.artifactPreviewTitle { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: auto; }
-.artifactPreviewBuiltInActions, .artifactPreviewActions { display: inline-flex; align-items: center; gap: 8px; }
+.artifactPreviewTitle {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifactPreviewBuiltInActions, .artifactPreviewActions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+}
 .artifactPreviewAction { border: 0; padding: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
 .artifactPreviewAction:hover { text-decoration: underline; }
 .artifactPreviewAction:disabled { color: var(--muted); cursor: wait; text-decoration: none; }
