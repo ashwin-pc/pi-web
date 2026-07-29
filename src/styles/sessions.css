@@ -813,12 +813,12 @@
 }
 .sessionBarTab.marked {
   --session-tab-accent: var(--session-marker-color);
-  color: color-mix(in srgb, var(--session-tab-accent) 68%, var(--text));
-  background: color-mix(in srgb, var(--session-tab-accent) 18%, transparent);
+  color: color-mix(in srgb, var(--session-tab-accent) 78%, var(--text));
+  background: color-mix(in srgb, var(--session-tab-accent) 30%, transparent);
 }
 .sessionBarTab.marked:hover {
-  color: color-mix(in srgb, var(--session-tab-accent) 78%, var(--text));
-  background: color-mix(in srgb, var(--session-tab-accent) 24%, transparent);
+  color: color-mix(in srgb, var(--session-tab-accent) 86%, var(--text));
+  background: color-mix(in srgb, var(--session-tab-accent) 38%, transparent);
 }
 .sessionBarTab.marked.active,
 .sessionBarTab.marked.running {
@@ -826,7 +826,7 @@
 }
 .sessionBarTab.marked.active {
   border-top-color: var(--session-tab-accent);
-  background: #1f1f1f;
+  background: color-mix(in srgb, var(--session-tab-accent) 24%, #1f1f1f);
 }
 .sessionBarTab + .sessionBarTab {
   border-left: 1px solid var(--border);

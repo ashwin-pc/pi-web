@@ -267,6 +267,12 @@ describe("configurable accent color", () => {
     expect(sessionsCss).toContain(".sessionBarTab.active {\n  border-top-color: var(--accent);");
   });
 
+  it("keeps bucket colors prominent on marked session tabs", () => {
+    expect(sessionsCss).toContain("background: color-mix(in srgb, var(--session-tab-accent) 30%, transparent);");
+    expect(sessionsCss).toContain("background: color-mix(in srgb, var(--session-tab-accent) 38%, transparent);");
+    expect(sessionsCss).toContain("background: color-mix(in srgb, var(--session-tab-accent) 24%, #1f1f1f);");
+  });
+
   it("offers selectable running session tab loading animations", () => {
     expect(settingsHtml).toContain('id="settingLoadingAnimationSelect"');
     expect(settingsHtml).toContain('<option value="fireworks">Micro fireworks</option>');
