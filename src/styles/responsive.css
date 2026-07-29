@@ -29,13 +29,57 @@
     height: var(--app-height);
     min-height: 0;
     padding: 10px 0;
+    padding-top: max(10px, env(safe-area-inset-top));
     padding-bottom: max(10px, env(safe-area-inset-bottom));
+  }
+  /* iOS Safari auto-zooms the page when the user focuses an input/textarea
+     whose font-size is < 16px. That zoom shifts the layout sideways, clips
+     the composer’s send button at the right edge, makes the session-bar
+     tabs overflow, and is what users experience as “the UI is a little
+     zoomed in”. Force 16px on every text input on mobile so iOS leaves the
+     page at the natural zoom level. */
+  textarea,
+  input[type="text"],
+  input[type="search"],
+  input[type="email"],
+  input[type="url"],
+  input[type="tel"],
+  input[type="password"],
+  input:not([type]) {
+    font-size: 16px;
   }
   .composer {
     margin: 0 10px;
     margin-bottom: max(0px, env(safe-area-inset-bottom));
+    /* Defensive: never let the composer (or its footer) overflow the
+       viewport horizontally on iOS, where keyboard / focus-scroll quirks
+       can otherwise clip the send button at the right edge. */
+    max-width: calc(100vw - 20px);
+    min-width: 0;
+  }
+  .composerFooter {
+    min-width: 0;
+    max-width: 100%;
+  }
+  /* Expanded composer needs to respect safe-area insets on iOS too. */
+  .composer.expanded {
+    inset: max(10px, env(safe-area-inset-top))
+           max(10px, env(safe-area-inset-right))
+           max(10px, env(safe-area-inset-bottom))
+           max(10px, env(safe-area-inset-left));
   }
   .message.user { margin: 12px 10px 12px 0; }
+
+  /* On narrow phone screens the cwd is too long and pushes the right-side
+     status-bar buttons (bucket, settings) off-screen. Hide it on mobile;
+     the working directory is still surfaced via the empty-state chooser
+     and the session list. */
+  .statusPath {
+    display: none;
+  }
+  .statusTitle {
+    max-width: min(60vw, 240px);
+  }
 
   .contextMeterLabel {
     top: -13px;

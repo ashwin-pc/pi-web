@@ -203,6 +203,14 @@ export function getAppElements(): AppElements {
 export function syncAppHeight() {
   const height = window.visualViewport?.height || window.innerHeight;
   document.documentElement.style.setProperty("--app-height", `${height}px`);
+  // iOS Safari can scroll the document body when focusing an input near the
+  // bottom of the viewport (keyboard appearance). With our fixed-height,
+  // overflow:hidden layout that just leaves part of the UI — e.g. the
+  // composer footer or send button — visually clipped at the edges of the
+  // visual viewport. Snap any stray scroll back to the top.
+  if (window.scrollY !== 0 || window.scrollX !== 0) {
+    window.scrollTo(0, 0);
+  }
 }
 
 export function initAppHeightSync() {
@@ -210,4 +218,15 @@ export function initAppHeightSync() {
   window.addEventListener("resize", syncAppHeight);
   window.visualViewport?.addEventListener("resize", syncAppHeight);
   window.visualViewport?.addEventListener("scroll", syncAppHeight);
+  // iOS Safari ignores `html, body { overflow: hidden }` when the user types
+  // in a focused textarea: it scrolls the document horizontally to keep the
+  // caret in view, which clips the composer footer (send button) at the right
+  // edge. The visualViewport `scroll` event does NOT fire for document scroll,
+  // so we also need a window-level scroll listener to snap back.
+  window.addEventListener("scroll", syncAppHeight, { passive: true });
+  // After focusing an input, iOS may scroll once more on the next frame;
+  // schedule a follow-up snap-back so the UI never lands offset.
+  document.addEventListener("focusin", () => {
+    requestAnimationFrame(syncAppHeight);
+  }, { passive: true });
 }
