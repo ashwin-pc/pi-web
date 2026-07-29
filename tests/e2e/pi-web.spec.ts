@@ -483,7 +483,8 @@ test.describe("composer layout", () => {
     await expect(page.locator("#settingAccentMenuName")).toHaveText("Velvet Orchid");
     await expect(page.locator('.settingsAccentSwatch[data-accent-color="#d98adf"]')).toHaveAttribute("aria-checked", "true");
     const preview = await readAccentStyles();
-    expect(preview.buttonBackground).not.toBe(before.buttonBackground);
+    expect(preview.buttonBackground).toBe(before.buttonBackground);
+    expect(preview.buttonBackground).toBe("rgb(36, 52, 46)");
     expect(preview.promptFocusBorder).toBe("rgb(217, 138, 223)");
     expect(preview.unreadDotBackground).toBe("rgb(217, 138, 223)");
 
@@ -508,8 +509,8 @@ test.describe("composer layout", () => {
     await page.locator("#settingAccentApplyButton").click();
     await expect.poll(() => page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--accent").trim())).toBe("#ff00aa");
     const custom = await readAccentStyles();
-    expect(custom.buttonBackground).not.toBe(before.buttonBackground);
-    expect(custom.buttonBackground).not.toBe(preview.buttonBackground);
+    expect(custom.buttonBackground).toBe(before.buttonBackground);
+    expect(custom.buttonBackground).toBe(preview.buttonBackground);
     expect(custom.promptFocusBorder).toBe("rgb(255, 0, 170)");
     expect(custom.unreadDotBackground).toBe("rgb(255, 0, 170)");
   });

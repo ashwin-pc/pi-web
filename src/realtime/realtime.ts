@@ -327,7 +327,7 @@ export function createRealtime(options: {
     card.classList.remove("toolCard--compactCollapsed");
     const toggle = card.querySelector<HTMLButtonElement>(".toolCardExpandToggle");
     if (!toggle) return;
-    toggle.textContent = "▾";
+    toggle.textContent = "";
     toggle.setAttribute("aria-label", "Hide tool details");
     toggle.title = "Hide tool details";
     toggle.setAttribute("aria-expanded", "true");

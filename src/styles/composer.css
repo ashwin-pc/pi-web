@@ -373,6 +373,12 @@ textarea:focus { border-bottom-color: var(--accent); }
   margin-top: 0;
   padding: 0;
   overflow: visible;
+  border-radius: 0 0 15px 15px;
+  background-color: color-mix(in srgb, var(--panel-2) 96%, var(--accent) 4%);
+  background-image:
+    repeating-linear-gradient(115deg, rgba(0, 0, 0, .26) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(25deg, rgba(0, 0, 0, .16) 0 1px, transparent 1px 5px),
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, .025), transparent 48%);
 }
 button, select {
   height: 40px;
@@ -409,6 +415,7 @@ select {
   padding: 4px 10px;
   text-align: left;
 }
+.composerFooter .modelSettingsButton { background-color: transparent; }
 .modelSettingsButton:hover { border-color: var(--accent); }
 .modelSettingsLabel {
   display: grid;
@@ -580,6 +587,11 @@ button:hover { border-color: var(--accent); }
   position: relative;
   z-index: 1;
 }
+.composer textarea:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px #d5bd8b,
+    inset 0 0 0 3px rgba(199, 168, 109, .14);
+}
 button:disabled { cursor: default; opacity: .45; }
 button:disabled:hover { border-color: var(--border); }
 .composerFooter .iconButton:not(.primaryAction) {
@@ -592,6 +604,11 @@ button:disabled:hover { border-color: var(--border); }
 }
 #queueToggle[aria-pressed="true"] { color: var(--accent); }
 #primaryButton { border-bottom-right-radius: 15px; }
+.composerFooter:has(#stopButton:not([style*="display: none"])) #stopButton { border-right: 0; }
+.composerFooter:has(#stopButton:not([style*="display: none"])) #stopButton + #primaryButton {
+  margin-left: 0;
+  border-left: 0;
+}
 
 .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) {
   display: grid;
@@ -646,6 +663,7 @@ button:disabled:hover { border-color: var(--border); }
   height: 38px;
   align-items: center;
   overflow: visible;
+  background: transparent;
 }
 .composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl {
   flex: 0 1 auto;
@@ -707,15 +725,79 @@ button:disabled:hover { border-color: var(--border); }
   margin-left: 2px;
 }
 .primaryAction {
-  background: color-mix(in srgb, var(--accent) 44%, #051621);
-  border-color: color-mix(in srgb, var(--accent) 72%, #0b2432);
-  color: #fff;
+  border-color: #a98d59;
+  border-bottom-width: 1px;
+  background-color: #24342e;
+  background-image:
+    repeating-linear-gradient(
+      115deg,
+      rgba(255, 255, 255, .075) 0 1px,
+      transparent 1px 4px
+    ),
+    repeating-linear-gradient(
+      25deg,
+      rgba(0, 0, 0, .2) 0 1px,
+      transparent 1px 5px
+    ),
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, .08), transparent 48%);
+  color: #d5bd8b;
+  box-shadow:
+    inset 0 0 0 1px rgba(213, 189, 139, .55),
+    inset 0 1px 0 rgba(255, 255, 255, .1),
+    inset 0 -1px 0 rgba(0, 0, 0, .35);
 }
 .primaryAction:hover {
-  background: color-mix(in srgb, var(--accent) 52%, #061824);
-  border-color: var(--accent);
+  border-color: #d5bd8b;
+  background-color: #2b4037;
+  color: #ead5a7;
 }
-.dangerAction { background: #5f1824; border-color: #9f2a3d; }
-.dangerAction:hover { border-color: var(--danger); }
-.composerFooter .iconButton.dangerAction { background: #5f1824; border-color: #9f2a3d; }
-.composerFooter .iconButton.dangerAction:hover { border-color: var(--danger); background: #7a1f2e; }
+.composer .primaryAction:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px #ead5a7,
+    inset 0 0 0 3px rgba(199, 168, 109, .2),
+    inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+.dangerAction {
+  border-color: #9f5f67;
+  border-bottom-width: 1px;
+  background-color: #48262b;
+  background-image:
+    repeating-linear-gradient(
+      115deg,
+      rgba(255, 255, 255, .07) 0 1px,
+      transparent 1px 4px
+    ),
+    repeating-linear-gradient(
+      25deg,
+      rgba(0, 0, 0, .2) 0 1px,
+      transparent 1px 5px
+    ),
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, .07), transparent 48%);
+  color: #dfb5ae;
+  box-shadow:
+    inset 0 0 0 1px rgba(207, 137, 142, .48),
+    inset 0 1px 0 rgba(255, 255, 255, .08),
+    inset 0 -1px 0 rgba(0, 0, 0, .35);
+}
+.dangerAction:hover {
+  border-color: #cf898e;
+  background-color: #583036;
+  color: #f1cbc4;
+}
+.composerFooter .iconButton.dangerAction {
+  border-color: #9f5f67;
+  border-bottom-width: 1px;
+  background-color: #48262b;
+  color: #e58f93;
+}
+.composerFooter .iconButton.dangerAction:hover {
+  border-color: #cf898e;
+  background-color: #583036;
+  color: #efaaad;
+}
+.composer .dangerAction:focus-visible {
+  box-shadow:
+    inset 0 0 0 1px #efb6b2,
+    inset 0 0 0 3px rgba(207, 137, 142, .2),
+    inset 0 1px 0 rgba(255, 255, 255, .08);
+}

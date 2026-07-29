@@ -188,12 +188,15 @@ describe("git status colors", () => {
 
 describe("tool card expand chevrons", () => {
   const css = readFileSync(new URL("../src/styles/toolCards.css", import.meta.url), "utf8");
+  const toolCardsTs = readFileSync(new URL("../src/tools/toolCards.ts", import.meta.url), "utf8");
+  const messagesTs = readFileSync(new URL("../src/messages/messageList.ts", import.meta.url), "utf8");
 
-  it("keeps tool and thinking expand/collapse chevrons white instead of accent-colored", () => {
-    const toggleBlock = css.match(/\.toolCardExpandToggle,\n\.toolCardCollapseToggle \{[\s\S]*?\n\}/)?.[0] || "";
-    expect(toggleBlock).toContain("color: #fff;");
-    expect(toggleBlock).not.toContain("color: var(--accent);");
-    expect(css).toContain(".toolCardCollapseToggle:focus-visible { color: #fff; border: none; }");
+  it("renders one metallic CSS chevron while preserving expanded state semantics", () => {
+    expect(css).toContain(".toolCardExpandToggle::before,\n.toolCardCollapseToggle::before {");
+    expect(css).toContain("background: linear-gradient(90deg, #7e6a43, #d8c18d 50%, #7e6a43);");
+    expect(css).toContain('.toolCardCollapseToggle[aria-expanded="true"]::before { transform: rotate(180deg); }');
+    expect(toolCardsTs).toContain('toggle.textContent = "";');
+    expect(messagesTs).toContain('toggle.textContent = "";');
   });
 });
 
@@ -252,8 +255,11 @@ describe("configurable accent color", () => {
   });
 
   it("routes primary accent UI through the configurable token", () => {
-    expect(composerCss).toContain(".primaryAction {\n  background: color-mix(in srgb, var(--accent)");
-    expect(composerCss).toContain("box-shadow: inset 0 0 0 2px var(--accent);");
+    expect(composerCss).toContain(".primaryAction {\n  border-color: #a98d59;\n  border-bottom-width: 1px;\n  background-color: #24342e;");
+    expect(composerCss).toContain("repeating-linear-gradient(");
+    expect(composerCss).toContain(".dangerAction {\n  border-color: #9f5f67;\n  border-bottom-width: 1px;\n  background-color: #48262b;");
+    expect(composerCss).toContain(".composer .dangerAction:focus-visible {\n  box-shadow:");
+    expect(composerCss).toContain(".composer textarea:focus-visible {\n  box-shadow:");
     expect(composerCss).toContain(".contextMeter.active .contextMeterFill { background: var(--accent); }");
     expect(composerCss).toContain("--thinking-accent: var(--accent);");
     expect(sessionsCss).toContain(".sessionUnreadDot {");

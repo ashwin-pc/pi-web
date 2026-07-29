@@ -31,7 +31,7 @@ function isCompactDensity() {
 }
 
 function updateCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
-  toggle.textContent = collapsed ? "▸" : "▾";
+  toggle.textContent = "";
   toggle.setAttribute("aria-label", collapsed ? "Show tool details" : "Hide tool details");
   toggle.title = collapsed ? "Show tool details" : "Hide tool details";
   toggle.setAttribute("aria-expanded", String(!collapsed));
@@ -179,7 +179,7 @@ function addToolResultBody(card: HTMLDivElement, result: string) {
     toggle.className = "toolCardCollapseToggle";
     const setCollapsed = (collapsed: boolean) => {
       body.classList.toggle("collapsed", collapsed);
-      toggle.textContent = collapsed ? "▾" : "▴";
+      toggle.textContent = "";
       toggle.setAttribute("aria-label", collapsed ? "Show more" : "Show less");
       toggle.title = collapsed ? "Show more" : "Show less";
       toggle.setAttribute("aria-expanded", String(!collapsed));

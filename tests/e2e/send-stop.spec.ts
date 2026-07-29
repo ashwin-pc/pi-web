@@ -41,10 +41,15 @@ test.describe("stop button", () => {
 
     await expect(page.locator("#stopButton")).toBeVisible();
 
-    const bg = await page.locator("#stopButton").evaluate((el) => getComputedStyle(el).backgroundColor);
-    // should not be transparent
-    expect(bg).not.toBe("rgba(0, 0, 0, 0)");
-    expect(bg).not.toBe("transparent");
+    const styles = await page.locator("#stopButton").evaluate((el) => {
+      const computed = getComputedStyle(el);
+      return { background: computed.backgroundColor, color: computed.color };
+    });
+    expect(styles.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect(styles.background).not.toBe("transparent");
+    const [red, green, blue] = styles.color.match(/\d+/g)!.map(Number);
+    expect(red).toBeGreaterThan(green);
+    expect(red).toBeGreaterThan(blue);
   });
 
   test("clicking stop aborts streaming", async ({ page }) => {
@@ -108,8 +113,15 @@ test.describe("send while streaming", () => {
     await page.locator("#prompt").fill("steer it this way");
 
     await expect(page.locator("#stopButton")).toBeVisible();
-    await expect(page.locator("#primaryButton")).toBeVisible();
-    await expect(page.locator("#primaryButton")).toBeEnabled();
+    const stop = page.locator("#stopButton");
+    const send = page.locator("#primaryButton");
+    await expect(send).toBeVisible();
+    await expect(send).toBeEnabled();
+    const stopBox = (await stop.boundingBox())!;
+    const sendBox = (await send.boundingBox())!;
+    expect(Math.abs(stopBox.x + stopBox.width - sendBox.x)).toBeLessThanOrEqual(1);
+    await expect(stop).toHaveCSS("border-right-width", "0px");
+    await expect(send).toHaveCSS("border-left-width", "0px");
   });
 
   test("send button disabled during streaming with no input", async ({ page }) => {

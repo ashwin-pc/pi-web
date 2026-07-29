@@ -704,7 +704,7 @@ export function createMessageList(options: {
   }
 
   function updateThinkingCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
-    toggle.textContent = collapsed ? "▸" : "▾";
+    toggle.textContent = "";
     toggle.setAttribute("aria-label", collapsed ? "Show thinking" : "Hide thinking");
     toggle.title = collapsed ? "Show thinking" : "Hide thinking";
     toggle.setAttribute("aria-expanded", String(!collapsed));
@@ -770,7 +770,7 @@ export function createMessageList(options: {
       toggle.className = "toolCardCollapseToggle";
       const setCollapsed = (collapsed: boolean) => {
         body.classList.toggle("collapsed", collapsed);
-        toggle.textContent = collapsed ? "▾" : "▴";
+        toggle.textContent = "";
         toggle.setAttribute("aria-label", collapsed ? "Show thinking" : "Hide thinking");
         toggle.title = collapsed ? "Show thinking" : "Hide thinking";
         toggle.setAttribute("aria-expanded", String(!collapsed));

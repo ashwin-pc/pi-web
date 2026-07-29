@@ -78,11 +78,24 @@
   background: transparent;
   color: #fff;
   padding: 0;
-  font-size: 16px;
+  font-size: 0;
   line-height: 1;
   cursor: pointer;
   z-index: 1;
 }
+.toolCardExpandToggle::before,
+.toolCardCollapseToggle::before {
+  content: "";
+  display: block;
+  width: 10px;
+  height: 7px;
+  background: linear-gradient(90deg, #7e6a43, #d8c18d 50%, #7e6a43);
+  clip-path: polygon(0 10%, 50% 70%, 100% 10%, 100% 35%, 50% 100%, 0 35%);
+  filter: drop-shadow(0 1px 0 rgba(0, 0, 0, .5));
+  transition: transform 140ms ease, filter 140ms ease;
+}
+.toolCardExpandToggle[aria-expanded="true"]::before,
+.toolCardCollapseToggle[aria-expanded="true"]::before { transform: rotate(180deg); }
 .toolCardExpandToggle {
   display: none;
   flex: 0 0 auto;
@@ -97,6 +110,12 @@
 .toolCardExpandToggle:focus-visible,
 .toolCardCollapseToggle:hover,
 .toolCardCollapseToggle:focus-visible { color: #fff; border: none; }
+.toolCardExpandToggle:hover::before,
+.toolCardExpandToggle:focus-visible::before,
+.toolCardCollapseToggle:hover::before,
+.toolCardCollapseToggle:focus-visible::before {
+  filter: brightness(1.16) drop-shadow(0 1px 0 rgba(0, 0, 0, .55));
+}
 .toolCardIcon {
   flex: 0 0 auto;
   font-size: 13px;

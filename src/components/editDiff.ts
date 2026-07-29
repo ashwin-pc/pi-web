@@ -37,7 +37,7 @@ function updateLayoutToggle(button: HTMLButtonElement, stacked: boolean) {
 }
 
 function updateCollapseToggle(button: HTMLButtonElement, collapsed: boolean) {
-  button.textContent = collapsed ? "▾" : "▴";
+  button.textContent = "";
   button.setAttribute("aria-label", collapsed ? "Show more" : "Show less");
   button.title = collapsed ? "Show more" : "Show less";
   button.setAttribute("aria-expanded", String(!collapsed));
