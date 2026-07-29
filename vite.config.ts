@@ -30,17 +30,12 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Always send document navigations through the server. Serving cached HTML
-        // can bypass an auth proxy (such as Codespaces) after its session expires,
-        // leaving a visible app shell whose authenticated API requests all fail.
-        // Immutable assets remain precached, but HTML is deliberately excluded.
+        // Do not precache HTML or register a navigation route. Even NetworkOnly
+        // would still mediate document requests through serviceWorker.fetch(),
+        // which can interfere with redirects from auth proxies such as Codespaces.
+        // Native browser navigations handle auth; immutable assets remain cached.
+        navigateFallback: null,
         globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
-        runtimeCaching: [
-          {
-            urlPattern: ({ request }) => request.mode === "navigate",
-            handler: "NetworkOnly",
-          },
-        ],
       },
     }),
   ],
