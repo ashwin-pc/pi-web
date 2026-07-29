@@ -36,6 +36,21 @@ export interface BaseSessionStateDto {
   stats: SessionStatsDto;
 }
 
+/** Serializable message projection consumed by the browser message list. */
+export interface MessageDto {
+  entryId?: string;
+  role?: string;
+  text?: string;
+  toolCalls?: Array<{ id?: string; toolName: string; args: JsonValue; startedAt?: string }>;
+  toolCallId?: string;
+  toolName?: string;
+  toolArgs?: JsonValue;
+  isError?: boolean;
+  timestamp?: string;
+  raw?: JsonValue;
+  [key: string]: JsonValue | undefined;
+}
+
 export interface TreeNodeDto {
   id: string;
   parentId: string | null;
@@ -68,33 +83,78 @@ export interface SlashCommandDto {
   sourceInfo?: JsonValue;
 }
 
-export type NavigationResult = Record<string, unknown> & { finish(): void };
+export interface SessionInfoDto {
+  id: string;
+  path: string;
+  name?: string;
+  firstMessage?: string;
+  created: string;
+  modified: string;
+  messageCount: number;
+  cwd: string;
+  isCurrent: false;
+}
+
+export interface ModelsResultDto {
+  cwd: string;
+  current?: ModelDto;
+  thinkingLevel: string;
+  thinkingLevels: string[];
+  models: ModelDto[];
+}
+
+export interface DeleteSessionResultDto {
+  id: string;
+  disposition: "trashed" | "deleted";
+}
+
+export type SessionServiceEvent =
+  | { type: "pi"; sessionId: string; sessionFile: string; event: JsonValue; clientMessageId?: string; sourceClientId?: string }
+  | { type: "state"; state: BaseSessionStateDto; includeThinkingLevels?: boolean }
+  | { type: "stats"; sessionId: string; sessionFile: string; stats: SessionStatsDto }
+  | { type: "models"; sessionId: string; models: ModelDto[] }
+  | { type: "error"; sessionId?: string; sessionFile?: string; error: string; clientMessageId?: string }
+  | { type: "shutdown"; sessionId: string; sessionFile: string; sessionKey: string }
+  | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed" }
+  | { type: "wire"; value: JsonValue };
+
+/**
+ * Navigation has one serving-side finalizer. `finish` is intentionally not
+ * serializable: a remote runner returns the data first and its serving adapter
+ * finalizes only after writing that data to its own transport.
+ */
+export type NavigationResult = {
+  state: BaseSessionStateDto;
+  finish(): void;
+  [key: string]: unknown;
+};
 
 export interface SessionService {
-  defaultSessionId(): string;
-  state(sessionId?: string): Promise<Record<string, unknown>>;
-  stats(sessionId?: string): Promise<{ sessionId: string; stats: SessionStatsDto }>;
-  tree(sessionId?: string): Promise<ConversationTreeDto>;
-  messages(sessionId?: string): Promise<unknown[]>;
-  commands(sessionId?: string): Promise<SlashCommandDto[]>;
-  models(sessionId?: string): Promise<Record<string, unknown>>;
-  setModel(sessionId: string | undefined, provider: string, id: string, thinkingLevel?: string): Promise<Record<string, unknown>>;
-  executeShell(sessionId: string | undefined, command: string, excludeFromContext: boolean): Promise<Record<string, unknown>>;
-  executeCommand(sessionId: string | undefined, command: string): Promise<Record<string, unknown>>;
-  prompt(sessionId: string | undefined, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }): Promise<{ sessionId: string }>;
-  retry(sessionId?: string): Promise<{ sessionId: string }>;
-  abort(sessionId?: string): Promise<{ sessionId: string }>;
-  abortCompaction(sessionId?: string): Promise<{ sessionId: string }>;
-  abortBranchSummary(sessionId?: string): Promise<{ sessionId: string }>;
-  rename(sessionId: string | undefined, name: string): Promise<Record<string, unknown>>;
-  navigate(sessionId: string | undefined, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
-  invokeHeaderAction(sessionId: string | undefined, key: unknown): Promise<Record<string, unknown>>;
-  invokeGitTab(sessionId: string | undefined, input: Record<string, unknown>): Promise<Record<string, unknown>>;
-  list(extraCwds?: string[]): Promise<Array<{ id: string } & Record<string, unknown>>>;
-  create(sessionId?: string, cwd?: string): Promise<Record<string, unknown>>;
-  open(sessionId: string, cwd?: string): Promise<Record<string, unknown>>;
-  delete(sessionId: string, cwd?: string): Promise<unknown>;
-  switchCwd(sessionId: string | undefined, cwd: string): Promise<Record<string, unknown>>;
+  state(sessionId: string): Promise<BaseSessionStateDto>;
+  stats(sessionId: string): Promise<{ sessionId: string; stats: SessionStatsDto }>;
+  tree(sessionId: string): Promise<ConversationTreeDto>;
+  messages(sessionId: string): Promise<MessageDto[]>;
+  commands(sessionId: string): Promise<SlashCommandDto[]>;
+  models(sessionId: string): Promise<ModelsResultDto>;
+  setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string): Promise<BaseSessionStateDto>;
+  executeShell(sessionId: string, command: string, excludeFromContext: boolean): Promise<Record<string, JsonValue | undefined>>;
+  executeCommand(sessionId: string, command: string): Promise<{ message: string; state: BaseSessionStateDto }>;
+  prompt(sessionId: string, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }): Promise<{ sessionId: string }>;
+  retry(sessionId: string): Promise<{ sessionId: string }>;
+  abort(sessionId: string): Promise<{ sessionId: string }>;
+  abortCompaction(sessionId: string): Promise<{ sessionId: string }>;
+  abortBranchSummary(sessionId: string): Promise<{ sessionId: string }>;
+  rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;
+  navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
+  invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
+  invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  invokeGitTab(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  list(extraCwds?: string[]): Promise<SessionInfoDto[]>;
+  create(previousSessionId: string | undefined, cwd?: string): Promise<BaseSessionStateDto>;
+  open(sessionId: string, cwd?: string): Promise<BaseSessionStateDto>;
+  delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto>;
+  switchCwd(sessionId: string, cwd: string): Promise<BaseSessionStateDto>;
+  subscribe(listener: (event: SessionServiceEvent) => void): () => void;
 }
 
 export function jsonRoundTrip<T>(value: T): T {

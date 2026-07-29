@@ -353,6 +353,36 @@ describe("pi-web mock API", () => {
     expect(state.sessionName).toBeUndefined();
   });
 
+  it("clears queued mock prompt correlations on reset", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    await once(ws, "open");
+    const events: any[] = [];
+    ws.on("message", (data) => events.push(JSON.parse(String(data))));
+    const headers = { "content-type": "application/json", "x-pi-web-client-id": "correlation-client" };
+
+    await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers,
+      body: JSON.stringify({ message: "slow correlation run", clientMessageId: "first-message" }),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers,
+      body: JSON.stringify({ message: "queued before reset", mode: "followUp", clientMessageId: "stale-message" }),
+    });
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    events.length = 0;
+    await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "after correlation reset" }),
+    });
+    await waitForCondition(() => events.some((event) => event.type === "pi_event" && event.event?.type === "message_end" && event.event?.message?.content === "after correlation reset"));
+    const nextUserEvent = events.find((event) => event.type === "pi_event" && event.event?.message?.content === "after correlation reset");
+    expect(nextUserEvent).not.toHaveProperty("clientMessageId");
+    expect(nextUserEvent).not.toHaveProperty("sourceClientId");
+    ws.close();
+  });
+
   it("rejects empty prompts", async () => {
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",
@@ -480,6 +510,7 @@ describe("pi-web mock API", () => {
     const missing = "does-not-exist";
     const cases: Array<[string, RequestInit, number]> = [
       [`/api/state?sessionId=${missing}`, {}, 404],
+      ["/api/state?sessionId=%20", {}, 404],
       [`/api/messages?sessionId=${missing}`, {}, 404],
       ["/api/sessions/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: missing }) }, 404],
       ["/api/session/cwd", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, cwd: "/tmp" }) }, 404],
