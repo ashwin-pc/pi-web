@@ -33,9 +33,10 @@ import {
   isAssistantAbortedMessage,
   isAssistantFailureMessage,
   isIncompleteToolResultMessage,
-  projectMessages,
+  messageEntryRefs,
   projectSessionState,
   sessionStats,
+  simplifyMessage,
   simplifyModel,
 } from "./projection.js";
 
@@ -265,7 +266,19 @@ export class LocalSessionService implements SessionService {
   }
 
   async messages(sessionId: string): Promise<MessageDto[]> {
-    return jsonSafe(projectMessages(await this.require(sessionId)));
+    const value = await this.require(sessionId);
+    const toolCallArgs = new Map<string, Record<string, unknown>>();
+    for (const message of value.messages as any[]) {
+      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+      for (const part of message.content) {
+        if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
+      }
+    }
+    const refs = messageEntryRefs(value);
+    return jsonSafe(value.messages.map((message, index) => simplifyMessage(message, {
+      toolCallArgs,
+      entryId: refs[index]?.entryId,
+    }) as MessageDto));
   }
 
   async commands(sessionId: string) {

@@ -229,7 +229,7 @@ function updateSessionStats(stats: any) {
   contextMeter.update(stats);
 }
 
-async function reconcileMessages(snapshot?: unknown[]) {
+async function refreshMessages() {
   await messages.refreshMessages({
     sessionId: state.currentSessionId,
     headers: api.headers,
@@ -240,12 +240,7 @@ async function reconcileMessages(snapshot?: unknown[]) {
     isStreaming: state.isStreaming || state.isRetrying,
     updateEmptyCwdChooser: () => sessions.finishTranscriptLoading(),
     onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
-    snapshot,
   });
-}
-
-async function refreshMessages() {
-  await reconcileMessages();
 }
 
 function applyRuntimeState(data: any) {
@@ -392,7 +387,6 @@ realtime = createRealtime({
   updateMeta,
   updateSessionStats,
   refreshMessages,
-  reconcileMessages,
   refreshState,
   applyRuntimeState,
   addMessage: messages.addMessage,

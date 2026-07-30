@@ -1,5 +1,5 @@
 import type { PiWebSession } from "../types.js";
-import type { BaseSessionStateDto, ConversationTreeDto, MessageDto, ModelDto, SessionStatsDto, SlashCommandDto } from "./dto.js";
+import type { BaseSessionStateDto, ConversationTreeDto, ModelDto, SessionStatsDto, SlashCommandDto } from "./dto.js";
 
 export type ContentDecorator = (content: unknown) => unknown;
 
@@ -71,21 +71,6 @@ export function messageEntryRefs(targetSession: PiWebSession): Array<{ entryId?:
   }
   for (let index = compactionIndex + 1; index < branch.length; index += 1) appendMessageEntryRef(refs, branch[index]);
   return refs;
-}
-
-export function projectMessages(targetSession: PiWebSession): MessageDto[] {
-  const toolCallArgs = new Map<string, Record<string, unknown>>();
-  for (const message of targetSession.messages as any[]) {
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-    for (const part of message.content) {
-      if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
-    }
-  }
-  const refs = messageEntryRefs(targetSession);
-  return targetSession.messages.map((message, index) => simplifyMessage(message, {
-    toolCallArgs,
-    entryId: refs[index]?.entryId,
-  }) as MessageDto);
 }
 
 export function simplifyMessage(

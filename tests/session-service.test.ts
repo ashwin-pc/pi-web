@@ -265,9 +265,8 @@ describe("LocalSessionService contract", () => {
     const messageAt = "2026-02-01T00:00:02.000Z";
     const message = { role: "assistant", model: "model", errorMessage: "model_not_supported", timestamp: messageAt };
     fixture.emit({ type: "message_end", message, timestamp: messageAt });
-    const projectedMessages = decorateHostMessages(await service.messages(initial.sessionId), initial.sessionFile, activity);
     expect(wire).toEqual([
-      { type: "pi_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt }, messages: projectedMessages },
+      { type: "pi_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
       { type: "session_stats_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, stats: (await service.stats(initial.sessionId)).stats },
       { type: "models_updated", sessionId: initial.sessionId, models: [] },
