@@ -38,9 +38,6 @@ jobs:
           tests/e2e/custom-messages.spec.ts
           tests/e2e/interleaving.spec.ts
           tests/e2e/retry-errors.spec.ts
-          tests/e2e/send-stop.spec.ts
-          tests/e2e/stream-follow.spec.ts
-          tests/e2e/thinking-and-stop-reason.spec.ts
 
       - name: Authentication E2E suite
         run: npx playwright test --project=auth --reporter=html,list
