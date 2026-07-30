@@ -23,8 +23,10 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium
 
-      - name: Full test suite
-        run: PI_WEB_E2E_SHARDS=3 npm test
+      # The hosted macOS runner cannot reliably execute Playwright's emulated
+      # touch projects; those remain covered by the full local sharded suite.
+      - name: Full desktop and auth test suite
+        run: PI_WEB_E2E_PROJECTS=desktop,auth PI_WEB_E2E_SHARDS=3 npm test
 
       - name: Upload Playwright report
         if: always()
