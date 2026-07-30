@@ -510,6 +510,7 @@ export function createMockHarness(options: MockSessionOptions) {
           const visibleCustom = { role: "custom", customType: "probe", content: "hello from an extension", details: { source: "mock-extension" }, display: true, timestamp };
           appendMockMessage(visibleCustom);
           broadcastPiEvent({ type: "message_end", message: visibleCustom });
+          if (!(await waitForMockRun(500))) return;
           const hiddenCustom = { role: "custom", customType: "probe-hidden", content: "hidden extension message", details: { source: "mock-extension" }, display: false, timestamp };
           appendMockMessage(hiddenCustom);
           broadcastPiEvent({ type: "message_end", message: hiddenCustom });
