@@ -33,9 +33,18 @@ jobs:
         run: npm run build
 
       - name: Functional desktop E2E suite
-        run: >-
-          npx playwright test --project=desktop --reporter=html,list
-          --grep-invert "compact density keeps tool calls|full-screen Mermaid viewer"
+        run: |
+          set -e
+          pattern="compact density keeps tool calls|full-screen Mermaid viewer"
+          PLAYWRIGHT_PORT=10476 npx playwright test --project=desktop --reporter=line --grep-invert "$pattern" --shard=1/3 &
+          p1=$!
+          PLAYWRIGHT_PORT=10486 npx playwright test --project=desktop --reporter=line --grep-invert "$pattern" --shard=2/3 &
+          p2=$!
+          PLAYWRIGHT_PORT=10496 npx playwright test --project=desktop --reporter=line --grep-invert "$pattern" --shard=3/3 &
+          p3=$!
+          wait "$p1"
+          wait "$p2"
+          wait "$p3"
 
       - name: Authentication E2E suite
         run: npx playwright test --project=auth --reporter=html,list
