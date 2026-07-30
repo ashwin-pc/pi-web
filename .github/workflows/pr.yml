@@ -29,6 +29,9 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
+      - name: Build
+        run: npm run build
+
       - name: E2E tests
         run: npx playwright test --reporter=html,list
 
