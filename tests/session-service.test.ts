@@ -284,6 +284,8 @@ describe("LocalSessionService contract", () => {
     const sessionFile = "/tmp/id-less.jsonl";
     activity.enrichEvent({ sessionFile, sessionId: "id-less" } as PiWebSession, { type: "tool_execution_start", toolName: "read", startedAt: "2026-03-01T00:00:00.000Z" });
     const messages: MessageDto[] = [{
+      role: "assistant",
+      isError: false,
       toolCalls: [{ toolName: "read", args: {} }],
       raw: { role: "assistant", content: [{ type: "toolCall", toolName: "read", arguments: {} }] },
     }];

@@ -111,6 +111,18 @@ export function simplifyMessage(
       raw: m,
     };
   }
+  if (m.role === "custom") {
+    return {
+      ...entry,
+      role: "custom",
+      customType: typeof m.customType === "string" ? m.customType : "custom",
+      text: textFromContent(content),
+      details: m.details,
+      display: m.display !== false,
+      timestamp: m.timestamp,
+      raw: content === m.content ? m : { ...m, content },
+    };
+  }
   const text = textFromContent(content);
   const errorText = m.role === "assistant" && m.errorMessage ? assistantErrorPreview(m) : "";
   const stopReasonText = m.role === "assistant" && !errorText ? assistantStopReasonPreview(m) : "";
@@ -141,7 +153,14 @@ export function truncatePreview(value: string, max = 220) {
 
 export function entryMessage(entry: any) {
   if (entry?.type === "message") return entry.message;
-  if (entry?.type === "custom_message") return { role: "custom", content: entry.content, timestamp: entry.timestamp };
+  if (entry?.type === "custom_message") return {
+    role: "custom",
+    customType: entry.customType,
+    content: entry.content,
+    details: entry.details,
+    display: entry.display,
+    timestamp: entry.timestamp,
+  };
   return undefined;
 }
 

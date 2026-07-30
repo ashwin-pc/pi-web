@@ -488,6 +488,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const withoutAgentEnd = /missing agent end|no agent end/i.test(message);
         const withStaleRuntimeAfterEnd = /stale runtime after end/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message) || withProgressDemo;
+        const withLiveMessageKinds = /live message kinds/i.test(message);
         const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && !withInterruptedTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
         mockSession.isStreaming = true;
         if (withQuietRuntime) {
@@ -497,6 +498,21 @@ export function createMockHarness(options: MockSessionOptions) {
         }
         broadcastRuntimeChanged();
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
+        if (withLiveMessageKinds) {
+          const timestamp = new Date().toISOString();
+          const visibleCustom = { role: "custom", customType: "probe", content: "hello from an extension", details: { source: "mock-extension" }, display: true, timestamp };
+          appendMockMessage(visibleCustom);
+          broadcastPiEvent({ type: "message_end", message: visibleCustom });
+          const hiddenCustom = { role: "custom", customType: "probe-hidden", content: "hidden extension message", details: { source: "mock-extension" }, display: false, timestamp };
+          appendMockMessage(hiddenCustom);
+          broadcastPiEvent({ type: "message_end", message: hiddenCustom });
+          const bashMessage = { role: "bashExecution", command: "echo live", output: "live bash output", exitCode: 0, cancelled: false, truncated: false, timestamp };
+          appendMockMessage(bashMessage);
+          broadcastPiEvent({ type: "message_end", message: bashMessage });
+          const compactionMessage = { role: "compactionSummary", content: "live compaction summary", summary: "live compaction summary", tokensBefore: 1234, timestamp };
+          appendMockMessage(compactionMessage);
+          broadcastPiEvent({ type: "message_end", message: compactionMessage });
+        }
         if (withQuietRuntime) {
           if (!(await waitForMockRun(60_000))) return;
         } else if (slow && !(await waitForMockRun(/queue demo/i.test(message) ? 2_500 : 750))) return;

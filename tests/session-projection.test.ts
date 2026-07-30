@@ -3,6 +3,7 @@ import type { PiWebSession } from "../server/types.js";
 import { jsonRoundTrip } from "../server/session/dto.js";
 import {
   conversationTreeForSession,
+  entryMessage,
   getSessionSlashCommands,
   messageEntryRefs,
   projectSessionState,
@@ -65,6 +66,28 @@ describe("pure session projections", () => {
       { id: "new", type: "message", message: { role: "assistant", content: "new" } },
     ];
     expect(messageEntryRefs(session)).toEqual([{ entryId: "compact" }, { entryId: "kept" }, { entryId: "new" }]);
+  });
+
+  it("preserves custom message metadata and string or array content", () => {
+    for (const content of ["hello", [{ type: "text", text: "hello" }]]) {
+      const message = entryMessage({
+        type: "custom_message",
+        customType: "probe",
+        content,
+        details: { source: "extension" },
+        display: false,
+        timestamp: "now",
+      });
+      expect(simplifyMessage(message)).toEqual({
+        role: "custom",
+        customType: "probe",
+        text: "hello",
+        details: { source: "extension" },
+        display: false,
+        timestamp: "now",
+        raw: message,
+      });
+    }
   });
 
   it("accepts host decoration as explicit message projection input", () => {

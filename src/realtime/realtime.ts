@@ -613,8 +613,15 @@ export function createRealtime(options: {
         break;
       case "message_end": {
         const deliveredMessage = messageFromEvent(event.message);
-        if (String(deliveredMessage?.role || deliveredMessage?.raw?.role || "") === "user") {
+        const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
+        if (deliveredRole === "user") {
           composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId);
+        } else if (!["assistant", "toolResult"].includes(deliveredRole)) {
+          // Non-streamed transcript entries (custom, bash, compaction, and future
+          // kinds) use the same normalized /api/messages renderer immediately.
+          // This is deliberately fail-safe: an unknown kind costs one refresh
+          // instead of remaining invisible until agent_end.
+          if (!isReplay) void refreshMessages().catch((error) => console.error("Could not refresh completed transcript message", error));
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {

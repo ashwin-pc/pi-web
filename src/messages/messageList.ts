@@ -975,6 +975,7 @@ export function createMessageList(options: {
       }
       for (let index = 0; index < allMessages.length; index += 1) {
         const message = allMessages[index];
+        if (message.role === "custom" && message.display === false) continue;
         const retryGroup = retryableAssistantErrorGroup(allMessages, index);
         if (retryGroup.length >= 2) {
           index += retryGroup.length - 1;
@@ -997,6 +998,9 @@ export function createMessageList(options: {
           continue;
         }
 
+        const knownRoles = ["assistant", "user", "system", "custom", "compactionSummary"];
+        const knownNonChatRole = message.role === "custom" || message.role === "compactionSummary";
+        if (!knownRoles.includes(message.role)) console.error("Unknown transcript message role", message);
         const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
         if (role === "assistant") {
           renderAssistantMessageParts(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
@@ -1006,7 +1010,11 @@ export function createMessageList(options: {
         const text = messageText(message);
         if (text) {
           const rawImages = role === "user" ? imagesFromRawContent(rawContent(message)) : [];
-          const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
+          const extraClass = message.role === "compactionSummary"
+            ? "compaction"
+            : message.role === "custom"
+              ? `custom custom--${String(message.customType || "custom").replace(/[^a-zA-Z0-9_-]+/g, "-")}`
+              : message.isError ? "error" : "";
           addMessage(role, text, extraClass, rawImages, { entryId: message.entryId });
         }
       }

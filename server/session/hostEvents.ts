@@ -57,7 +57,7 @@ export function decorateHostMessages(messages: MessageDto[], sessionFile: string
       : [];
     return {
       ...message,
-      ...(message.toolCalls ? {
+      ...(message.role === "assistant" && message.toolCalls ? {
         toolCalls: message.toolCalls.map((call, index) => {
           const startedAt = decoratedToolCalls[index]?.startedAt;
           return startedAt && !call.startedAt ? { ...call, startedAt } : call;
