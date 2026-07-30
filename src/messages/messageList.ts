@@ -64,6 +64,7 @@ export type MessageList = {
     isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
     onTranscriptRuntimeState?: (state: TranscriptRuntimeState) => void;
+    snapshot?: unknown[];
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
   invalidateRefreshes: () => void;
@@ -939,7 +940,7 @@ export function createMessageList(options: {
     }
   }
 
-  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState }: {
+  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState, snapshot }: {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
@@ -949,14 +950,21 @@ export function createMessageList(options: {
     isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
     onTranscriptRuntimeState?: (state: TranscriptRuntimeState) => void;
+    snapshot?: unknown[];
   }) {
     const refreshId = ++refreshSerial;
     const mutationAtStart = mutationSerial;
-    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-    const res = await fetch(`/api/messages${query}`, { headers: headers() });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    if (refreshId !== refreshSerial || mutationAtStart !== mutationSerial) return;
+    let allMessages: any[];
+    if (snapshot) {
+      allMessages = snapshot;
+    } else {
+      const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
+      const res = await fetch(`/api/messages${query}`, { headers: headers() });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (refreshId !== refreshSerial || mutationAtStart !== mutationSerial) return;
+      allMessages = data.messages || [];
+    }
 
     const wasFollowing = shouldFollowStream;
     const previousScrollTop = messagesEl.scrollTop;
@@ -964,7 +972,6 @@ export function createMessageList(options: {
     try {
       clearInternal(false);
       clearActiveToolCards();
-      const allMessages = data.messages || [];
       const runtimeState = transcriptRuntimeState(allMessages, isStreaming);
       bulkRendering = true;
       const completedToolResults = new Map<string, any>();

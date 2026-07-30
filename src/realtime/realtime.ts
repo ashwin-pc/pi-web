@@ -45,11 +45,12 @@ export function createRealtime(options: {
   updateMeta: (data: any) => void;
   updateSessionStats: (stats: any) => void;
   refreshMessages: () => Promise<void>;
+  reconcileMessages: (snapshot: unknown[]) => Promise<void>;
   refreshState: () => Promise<void>;
   applyRuntimeState: (data: any) => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, applyRuntimeState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, reconcileMessages, refreshState, applyRuntimeState, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -570,7 +571,7 @@ export function createRealtime(options: {
     rememberIncompleteResponse(transcriptState.incomplete || null);
   }
 
-  function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string }) {
+  function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string; messages?: unknown[] }) {
     switch (event.type) {
       case "session_info_changed":
         if ("name" in event) status.setStatusTitle(event.name || "New session");
@@ -616,12 +617,14 @@ export function createRealtime(options: {
         const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
         if (deliveredRole === "user") {
           composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId);
-        } else if (!["assistant", "toolResult"].includes(deliveredRole)) {
-          // Non-streamed transcript entries (custom, bash, compaction, and future
-          // kinds) use the same normalized /api/messages renderer immediately.
-          // This is deliberately fail-safe: an unknown kind costs one refresh
-          // instead of remaining invisible until agent_end.
-          if (!isReplay) void refreshMessages().catch((error) => console.error("Could not refresh completed transcript message", error));
+        }
+        // Every committed message kind is projected by the server and reconciled
+        // through the same snapshot renderer used for initial transcript loads.
+        if (!isReplay) {
+          const reconciliation = envelope?.messages
+            ? reconcileMessages(envelope.messages)
+            : refreshMessages();
+          void reconciliation.catch((error) => console.error("Could not reconcile completed transcript message", error));
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {
