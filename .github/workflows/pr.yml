@@ -23,17 +23,8 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium
 
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Unit tests
-        run: npm run test:unit
-
-      - name: Build
-        run: npm run build
-
-      - name: E2E tests
-        run: npx playwright test --reporter=html,list
+      - name: Full test suite
+        run: PI_WEB_E2E_SHARDS=3 npm test
 
       - name: Upload Playwright report
         if: always()
