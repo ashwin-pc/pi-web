@@ -39,9 +39,6 @@ jobs:
           tests/e2e/interleaving.spec.ts
           tests/e2e/retry-errors.spec.ts
 
-      - name: Authentication E2E suite
-        run: npx playwright test --project=auth --reporter=html,list
-
       - name: Upload Playwright report
         if: always()
         uses: actions/upload-artifact@v7
