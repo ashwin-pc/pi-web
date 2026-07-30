@@ -9,13 +9,12 @@ const e2eOnly = process.argv.includes("--e2e-only");
 const e2eShards = Math.max(1, Number(process.env.PI_WEB_E2E_SHARDS || 3));
 const e2eConcurrency = Math.max(1, Number(process.env.PI_WEB_E2E_CONCURRENCY || 3));
 
-const requestedProjects = new Set(String(process.env.PI_WEB_E2E_PROJECTS || "mobile,tablet,desktop,auth").split(",").map((name) => name.trim()).filter(Boolean));
 const e2eProjects = [
   { name: "mobile", basePort: 9876 },
   { name: "tablet", basePort: 10_176 },
   { name: "desktop", basePort: 10_476 },
   { name: "auth", basePort: 10_776 },
-].filter((project) => requestedProjects.has(project.name));
+];
 
 const e2eTasks = e2eProjects.flatMap((project) =>
   Array.from({ length: project.name === "auth" ? 1 : e2eShards }, (_, index) => {
