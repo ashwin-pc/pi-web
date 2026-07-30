@@ -68,14 +68,14 @@ describe("pure session projections", () => {
     expect(messageEntryRefs(session)).toEqual([{ entryId: "compact" }, { entryId: "kept" }, { entryId: "new" }]);
   });
 
-  it("preserves custom message metadata and string or array content", () => {
+  it("preserves visible custom metadata and omits hidden custom content", () => {
     for (const content of ["hello", [{ type: "text", text: "hello" }]]) {
       const message = entryMessage({
         type: "custom_message",
         customType: "probe",
         content,
         details: { source: "extension" },
-        display: false,
+        display: true,
         timestamp: "now",
       });
       expect(simplifyMessage(message)).toEqual({
@@ -83,10 +83,11 @@ describe("pure session projections", () => {
         customType: "probe",
         text: "hello",
         details: { source: "extension" },
-        display: false,
+        display: true,
         timestamp: "now",
         raw: message,
       });
+      expect(simplifyMessage({ ...message, display: false })).toBeUndefined();
     }
   });
 

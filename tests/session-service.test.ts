@@ -266,7 +266,19 @@ describe("LocalSessionService contract", () => {
     const message = { role: "assistant", model: "model", errorMessage: "model_not_supported", timestamp: messageAt };
     fixture.emit({ type: "message_end", message, timestamp: messageAt });
     expect(wire).toEqual([
-      { type: "pi_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt } },
+      {
+        type: "pi_event",
+        sessionId: initial.sessionId,
+        sessionFile: initial.sessionFile,
+        event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt },
+        committedMessage: {
+          role: "assistant",
+          text: "model_not_supported",
+          isError: true,
+          timestamp: messageAt,
+          raw: message,
+        },
+      },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
       { type: "session_stats_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, stats: (await service.stats(initial.sessionId)).stats },
       { type: "models_updated", sessionId: initial.sessionId, models: [] },

@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
+import type { MessageDto } from "../../server/session/dto.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
 import { messageText } from "../messages/content.js";
@@ -63,6 +64,7 @@ export function createRealtime(options: {
   let latestRetryAttempt: number | undefined;
   let latestRetryMaxAttempts: number | undefined;
   let sessionRefreshTimer: number | undefined;
+  let transcriptFallbackTimer: number | undefined;
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
   const sessionRuntimeKeys = new Map<string, string>();
@@ -570,7 +572,9 @@ export function createRealtime(options: {
     rememberIncompleteResponse(transcriptState.incomplete || null);
   }
 
-  function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string }) {
+  const projectedMessageRoles = new Set(["user", "assistant", "system", "toolResult", "bashExecution", "compactionSummary", "branchSummary", "custom"]);
+
+  function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string; committedMessage?: MessageDto }) {
     switch (event.type) {
       case "session_info_changed":
         if ("name" in event) status.setStatusTitle(event.name || "New session");
@@ -616,12 +620,20 @@ export function createRealtime(options: {
         const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
         if (deliveredRole === "user") {
           composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId);
-        } else if (!["assistant", "toolResult"].includes(deliveredRole)) {
-          // Non-streamed transcript entries (custom, bash, compaction, and future
-          // kinds) use the same normalized /api/messages renderer immediately.
-          // This is deliberately fail-safe: an unknown kind costs one refresh
-          // instead of remaining invisible until agent_end.
-          if (!isReplay) void refreshMessages().catch((error) => console.error("Could not refresh completed transcript message", error));
+        } else if (!isReplay && envelope?.committedMessage && !["assistant", "toolResult"].includes(deliveredRole)) {
+          messages.appendCommittedMessage(envelope.committedMessage, {
+            addToolHistoryCard: tools.addToolHistoryCard,
+            addPendingToolCard: tools.startTool,
+            addRuntimeErrorCard: tools.addRuntimeErrorCard,
+            isStreaming: state.isStreaming || state.isRetrying,
+          });
+        } else if (!isReplay && !projectedMessageRoles.has(deliveredRole)) {
+          // Unknown future kinds safely converge through one debounced bulk load.
+          if (transcriptFallbackTimer !== undefined) window.clearTimeout(transcriptFallbackTimer);
+          transcriptFallbackTimer = window.setTimeout(() => {
+            transcriptFallbackTimer = undefined;
+            void refreshMessages().catch((error) => console.error("Could not refresh unknown completed transcript message", error));
+          }, 100);
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {

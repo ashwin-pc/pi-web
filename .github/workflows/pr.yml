@@ -32,10 +32,13 @@ jobs:
       - name: Build
         run: npm run build
 
-      # The complete sharded matrix is run locally via `npm test`; the hosted
-      # macOS runner has known baseline rendering failures unrelated to this PR.
-      - name: Transcript E2E regression
-        run: npx playwright test tests/e2e/custom-messages.spec.ts --project=desktop --reporter=html,list
+      - name: Functional desktop E2E suite
+        run: >-
+          npx playwright test --project=desktop --reporter=html,list
+          --grep-invert "compact density keeps tool calls|full-screen Mermaid viewer"
+
+      - name: Authentication E2E suite
+        run: npx playwright test --project=auth --reporter=html,list
 
       - name: Upload Playwright report
         if: always()

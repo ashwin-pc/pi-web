@@ -51,7 +51,8 @@ export type MessageDto = MessageDtoBase & (
   | { role: "toolResult"; toolCallId?: string; toolName?: string; toolArgs?: JsonValue; isError: boolean }
   | { role: "bashExecution"; command?: JsonValue; output?: JsonValue; exitCode?: JsonValue; cancelled: boolean; truncated: boolean; fullOutputPath?: JsonValue; excludeFromContext: boolean }
   | { role: "compactionSummary"; isError?: boolean }
-  | { role: "custom"; customType: string; details?: JsonValue; display: boolean }
+  | { role: "branchSummary"; isError?: boolean }
+  | { role: "custom"; customType: string; details?: JsonValue; display: true }
 );
 
 export interface TreeNodeDto {

@@ -1,5 +1,5 @@
 import type { PiWebSession } from "../types.js";
-import type { BaseSessionStateDto, ConversationTreeDto, ModelDto, SessionStatsDto, SlashCommandDto } from "./dto.js";
+import { jsonRoundTrip, type BaseSessionStateDto, type ConversationTreeDto, type MessageDto, type ModelDto, type SessionStatsDto, type SlashCommandDto } from "./dto.js";
 
 export type ContentDecorator = (content: unknown) => unknown;
 
@@ -76,14 +76,14 @@ export function messageEntryRefs(targetSession: PiWebSession): Array<{ entryId?:
 export function simplifyMessage(
   message: unknown,
   options: { toolCallArgs?: Map<string, Record<string, unknown>>; decorateContent?: ContentDecorator; entryId?: string } = {},
-) {
-  if (!message || typeof message !== "object") return message;
+): MessageDto | undefined {
+  if (!message || typeof message !== "object") return undefined;
   const m = message as Record<string, unknown>;
   const content = options.decorateContent ? options.decorateContent(m.content) : m.content;
   const entry = options.entryId ? { entryId: options.entryId } : {};
   const toolCallArgs = options.toolCallArgs;
   if (m.role === "bashExecution") {
-    return {
+    return jsonRoundTrip({
       ...entry,
       role: "bashExecution",
       command: m.command,
@@ -95,11 +95,11 @@ export function simplifyMessage(
       excludeFromContext: Boolean(m.excludeFromContext),
       timestamp: m.timestamp,
       raw: m,
-    };
+    }) as MessageDto;
   }
   if (m.role === "toolResult") {
     const args = toolCallArgs?.get(m.toolCallId as string);
-    return {
+    return jsonRoundTrip({
       ...entry,
       role: "toolResult",
       toolCallId: m.toolCallId,
@@ -109,20 +109,22 @@ export function simplifyMessage(
       text: textFromContent(m.content),
       timestamp: m.timestamp,
       raw: m,
-    };
+    }) as MessageDto;
   }
   if (m.role === "custom") {
-    return {
+    if (m.display === false) return undefined;
+    return jsonRoundTrip({
       ...entry,
       role: "custom",
-      customType: typeof m.customType === "string" ? m.customType : "custom",
+      customType: typeof m.customType === "string" ? m.customType : "",
       text: textFromContent(content),
       details: m.details,
-      display: m.display !== false,
+      display: true,
       timestamp: m.timestamp,
       raw: content === m.content ? m : { ...m, content },
-    };
+    }) as MessageDto;
   }
+  if (!["user", "assistant", "system", "compactionSummary", "branchSummary"].includes(String(m.role))) return undefined;
   const text = textFromContent(content);
   const errorText = m.role === "assistant" && m.errorMessage ? assistantErrorPreview(m) : "";
   const stopReasonText = m.role === "assistant" && !errorText ? assistantStopReasonPreview(m) : "";
@@ -135,7 +137,7 @@ export function simplifyMessage(
       startedAt: part.startedAt,
     }))
     : undefined;
-  return {
+  return jsonRoundTrip({
     ...entry,
     role: m.role,
     text: displayText,
@@ -143,7 +145,33 @@ export function simplifyMessage(
     isError: Boolean(m.errorMessage || m.stopReason === "error" || stopReasonText),
     timestamp: m.timestamp,
     raw: content === m.content ? m : { ...m, content },
-  };
+  }) as MessageDto;
+}
+
+function messageProjectionContext(targetSession: PiWebSession) {
+  const toolCallArgs = new Map<string, Record<string, unknown>>();
+  for (const message of targetSession.messages as any[]) {
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (const part of message.content) {
+      if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
+    }
+  }
+  return { toolCallArgs, refs: messageEntryRefs(targetSession) };
+}
+
+export function projectMessages(targetSession: PiWebSession): MessageDto[] {
+  const { toolCallArgs, refs } = messageProjectionContext(targetSession);
+  return targetSession.messages.flatMap((message, index) => {
+    const projected = simplifyMessage(message, { toolCallArgs, entryId: refs[index]?.entryId });
+    return projected ? [projected] : [];
+  });
+}
+
+export function projectCommittedMessage(targetSession: PiWebSession, committed: unknown): MessageDto | undefined {
+  const index = targetSession.messages.lastIndexOf(committed as never);
+  if (index < 0) return simplifyMessage(committed);
+  const { toolCallArgs, refs } = messageProjectionContext(targetSession);
+  return simplifyMessage(targetSession.messages[index], { toolCallArgs, entryId: refs[index]?.entryId });
 }
 
 export function truncatePreview(value: string, max = 220) {

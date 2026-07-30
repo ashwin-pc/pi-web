@@ -1,6 +1,7 @@
 import type { PiWebSession } from "../types.js";
 import { SessionActivity } from "./activity.js";
 import type { BaseSessionStateDto, MessageDto, SessionServiceEvent } from "./dto.js";
+import { projectCommittedMessage } from "./projection.js";
 
 export type HostSessionStateDecoration = {
   runtimeStartedAt?: string;
@@ -80,11 +81,16 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         const enriched = target
           ? deps.sessionActivity.enrichEvent(target, serviceEvent.event)
           : { event: serviceEvent.event, sessionId: serviceEvent.sessionId, sessionFile: serviceEvent.sessionFile };
+        const event = serviceEvent.event as { type?: unknown; message?: unknown };
+        const committedMessage = target && event.type === "message_end"
+          ? projectCommittedMessage(target, event.message)
+          : undefined;
         deps.broadcast({
           type: "pi_event",
           sessionId: enriched.sessionId,
           sessionFile: enriched.sessionFile,
           event: enriched.event,
+          ...(committedMessage ? { committedMessage: decorateHostMessages([committedMessage], target!.sessionFile, deps.sessionActivity)[0] } : {}),
           ...(serviceEvent.clientMessageId ? { clientMessageId: serviceEvent.clientMessageId } : {}),
           ...(serviceEvent.sourceClientId ? { sourceClientId: serviceEvent.sourceClientId } : {}),
         });

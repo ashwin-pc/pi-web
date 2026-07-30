@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { PiWebSession, PiWebSessionInfo } from "./types.js";
+import { simplifyMessage } from "./session/projection.js";
 
 interface MockSessionOptions {
   piCwd: string;
@@ -217,11 +218,13 @@ export function createMockHarness(options: MockSessionOptions) {
 
     function broadcastPiEvent(event: Record<string, unknown>, activityAt?: string | false) {
       const lastActivityAt = activityAt === false ? runtimeLastActivityAt : markRuntimeActivity(activityAt || new Date().toISOString());
+      const committedMessage = event.type === "message_end" ? simplifyMessage(event.message) : undefined;
       broadcast({
         type: "pi_event",
         sessionId: mockSession.sessionId,
         sessionFile: mockSession.sessionFile,
         event: lastActivityAt ? { ...event, lastActivityAt } : event,
+        ...(committedMessage ? { committedMessage } : {}),
       });
     }
 
@@ -499,6 +502,7 @@ export function createMockHarness(options: MockSessionOptions) {
         broadcastRuntimeChanged();
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
         if (withLiveMessageKinds) {
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed prefix" } });
           const timestamp = new Date().toISOString();
           const visibleCustom = { role: "custom", customType: "probe", content: "hello from an extension", details: { source: "mock-extension" }, display: true, timestamp };
           appendMockMessage(visibleCustom);
@@ -512,8 +516,9 @@ export function createMockHarness(options: MockSessionOptions) {
           const compactionMessage = { role: "compactionSummary", content: "live compaction summary", summary: "live compaction summary", tokensBefore: 1234, timestamp };
           appendMockMessage(compactionMessage);
           broadcastPiEvent({ type: "message_end", message: compactionMessage });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed suffix" } });
         }
-        if (withQuietRuntime) {
+        if (withQuietRuntime || withLiveMessageKinds) {
           if (!(await waitForMockRun(60_000))) return;
         } else if (slow && !(await waitForMockRun(/queue demo/i.test(message) ? 2_500 : 750))) return;
         if (withProviderError) {
