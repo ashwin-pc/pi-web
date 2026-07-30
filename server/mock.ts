@@ -506,6 +506,7 @@ export function createMockHarness(options: MockSessionOptions) {
           // committed messages; this keeps the scenario deterministic on CI.
           if (!(await waitForMockRun(150))) return;
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed prefix" } });
+          if (!(await waitForMockRun(500))) return;
           const timestamp = new Date().toISOString();
           const visibleCustom = { role: "custom", customType: "probe", content: "hello from an extension", details: { source: "mock-extension" }, display: true, timestamp };
           appendMockMessage(visibleCustom);
