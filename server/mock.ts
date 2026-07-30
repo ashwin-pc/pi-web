@@ -502,6 +502,9 @@ export function createMockHarness(options: MockSessionOptions) {
         broadcastRuntimeChanged();
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
         if (withLiveMessageKinds) {
+          // Let the browser apply agent_start before exercising interleaved
+          // committed messages; this keeps the scenario deterministic on CI.
+          if (!(await waitForMockRun(150))) return;
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed prefix" } });
           const timestamp = new Date().toISOString();
           const visibleCustom = { role: "custom", customType: "probe", content: "hello from an extension", details: { source: "mock-extension" }, display: true, timestamp };
