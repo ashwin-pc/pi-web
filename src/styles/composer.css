@@ -610,7 +610,7 @@ button:disabled:hover { border-color: var(--border); }
   border-left: 0;
 }
 
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) {
+.composer.compactInactive:not(:focus-within):not(.expanded) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -625,7 +625,7 @@ button:disabled:hover { border-color: var(--border); }
     inset 0 -1px 0 rgba(0,0,0,.65);
   padding: 3px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))::before {
+.composer.compactInactive:not(:focus-within):not(.expanded)::before {
   content: "";
   position: absolute;
   z-index: -1;
@@ -639,12 +639,12 @@ button:disabled:hover { border-color: var(--border); }
   opacity: .86;
   pointer-events: none;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .contextMeter {
+.composer.compactInactive:not(:focus-within):not(.expanded) .contextMeter {
   left: 18px;
   right: 18px;
   top: -5px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) textarea {
+.composer.compactInactive:not(:focus-within):not(.expanded) textarea {
   min-height: 38px;
   height: 38px;
   resize: none;
@@ -653,19 +653,24 @@ button:disabled:hover { border-color: var(--border); }
   background: transparent;
   padding: 8px 12px 8px 14px;
   overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .expandButton,
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #queueToggle,
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #primaryButton {
+.composer.compactInactive:not(:focus-within):not(.expanded) .attachments {
+  display: none;
+}
+.composer.compactInactive:not(:focus-within):not(.expanded) .expandButton,
+.composer.compactInactive:not(:focus-within):not(.expanded) #queueToggle,
+.composer.compactInactive:not(:focus-within):not(.expanded) #primaryButton {
   display: none !important;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .composerFooter {
+.composer.compactInactive:not(:focus-within):not(.expanded) .composerFooter {
   height: 38px;
   align-items: center;
   overflow: visible;
   background: transparent;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelControl {
+.composer.compactInactive:not(:focus-within):not(.expanded) .modelControl {
   flex: 0 1 auto;
   width: fit-content;
   max-width: clamp(112px, 18vw, 190px);
@@ -674,7 +679,7 @@ button:disabled:hover { border-color: var(--border); }
   max-width: clamp(132px, 22vw, 230px);
 }
 
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsButton {
+.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsButton {
   display: inline-flex;
   width: auto;
   max-width: 100%;
@@ -688,19 +693,19 @@ button:disabled:hover { border-color: var(--border); }
   justify-content: flex-start;
   padding: 0 8px 0 10px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsLabel {
+.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsLabel {
   flex: 0 1 auto;
   gap: 0;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsModelName {
+.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsModelName {
   font-size: 11.5px;
   line-height: 1.12;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsProvider {
+.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsProvider {
   font-size: 9.5px;
   line-height: 1.1;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) .modelSettingsPopover,
+.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsPopover,
 .composer:has(.modelSettingsButton[aria-expanded="true"]) .modelSettingsPopover {
   position: fixed;
   left: 50%;
@@ -709,8 +714,8 @@ button:disabled:hover { border-color: var(--border); }
   width: min(560px, calc(100vw - 32px));
   transform: translateX(-50%);
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #attachButton,
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #stopButton {
+.composer.compactInactive:not(:focus-within):not(.expanded) #attachButton,
+.composer.compactInactive:not(:focus-within):not(.expanded) #stopButton {
   width: 38px;
   min-width: 38px;
   height: 38px;
@@ -718,10 +723,10 @@ button:disabled:hover { border-color: var(--border); }
   border: 0;
   border-radius: 999px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #attachButton {
+.composer.compactInactive:not(:focus-within):not(.expanded) #attachButton {
   background: transparent;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty))) #stopButton {
+.composer.compactInactive:not(:focus-within):not(.expanded) #stopButton {
   margin-left: 2px;
 }
 .primaryAction {

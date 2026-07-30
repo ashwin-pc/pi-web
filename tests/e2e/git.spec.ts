@@ -216,6 +216,25 @@ test("git status repo accordions switch the selected file", async ({ page }) => 
   await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("b.txt");
 });
 
+test("mobile launcher opens Git without activating a compact composer", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/");
+
+  const composer = page.locator("#promptForm");
+  const prompt = page.locator("#prompt");
+  await prompt.fill("A draft that should remain compact while opening Git");
+  await prompt.blur();
+
+  await expect(composer).toHaveClass(/compactInactive/);
+  await expect.poll(async () => (await composer.boundingBox())?.height || 0).toBeLessThanOrEqual(50);
+  await page.locator(".actionLauncherToggle").click();
+  await page.locator(".actionLauncherItem", { hasText: "Git" }).click();
+
+  await expect(page.locator("#gitPanel")).toBeVisible();
+  await expect(prompt).not.toBeFocused();
+  await expect.poll(async () => (await composer.boundingBox())?.height || 0).toBeLessThanOrEqual(50);
+});
+
 test("git panel switches to a single visible pane when its container is narrow", async ({ page }) => {
   await page.route("**/api/git/repos**", (route) => route.fulfill({ json: {
     ok: true,

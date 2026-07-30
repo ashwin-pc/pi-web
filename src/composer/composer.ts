@@ -170,7 +170,14 @@ export function createComposer(options: {
   }
 
   function settlePromptFocusAfterSubmit() {
-    if (!focusIfKeyboardFriendly(elements.promptEl)) elements.promptEl.blur();
+    if (!focusIfKeyboardFriendly(elements.promptEl)) {
+      // Let the pointer-generated click finish before compact mode hides and
+      // reflows the submit control, especially on touch-sized viewports.
+      window.setTimeout(() => {
+        // A new queued prompt may have been entered while the request settled.
+        if (!elements.promptEl.value) elements.promptEl.blur();
+      }, 0);
+    }
   }
 
   function setPromptText(text: string) {
@@ -595,6 +602,10 @@ export function createComposer(options: {
   }
 
   function init() {
+    // Keep textarea focus through pointer submission so compact mode cannot
+    // hide the Send button between pointerdown and click on touch browsers.
+    elements.primaryButton.addEventListener("pointerdown", (event) => event.preventDefault());
+
     elements.formEl.addEventListener("submit", async (event) => {
       event.preventDefault();
       if ((state.isStreaming || state.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0) return;

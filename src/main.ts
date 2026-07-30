@@ -12,6 +12,7 @@ import { initKeyboardShortcuts } from "./app/shortcuts.js";
 import { createRightPanelManager } from "./layout/rightPanel.js";
 import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
+import { initActionLauncher } from "./app/actionLauncher.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
@@ -392,6 +393,7 @@ realtime = createRealtime({
 });
 
 initStaticIcons();
+initActionLauncher(elements);
 statusBar.init();
 sessions.init();
 contextMeter.init();

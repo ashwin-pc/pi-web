@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -457,8 +458,9 @@ test.describe("composer layout", () => {
 
     const openSettings = async () => {
       if (await page.locator("#settingsPanel").isVisible()) return;
-      if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
-      await page.locator("#settingsButton").click();
+      await page.locator("#prompt").blur();
+      if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+      await openLauncherAction(page, "Settings");
       await expect(page.locator("#settingsPanel")).toBeVisible();
     };
 
@@ -520,8 +522,9 @@ test.describe("composer layout", () => {
 
     const openSettings = async () => {
       if (await page.locator("#settingsPanel").isVisible()) return;
-      if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
-      await page.locator("#settingsButton").click();
+      await page.locator("#prompt").blur();
+      if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+      await openLauncherAction(page, "Settings");
       await expect(page.locator("#settingsPanel")).toBeVisible();
     };
 
@@ -960,6 +963,7 @@ test.describe("attachments and prompt", () => {
       buffer: VALID_PNG,
     };
     await page.locator("#imageInput").setInputFiles(file);
+    await page.locator("#prompt").focus();
     await expect(page.locator(".attachmentChip")).toBeVisible();
     await expect(attachments).toHaveCSS("padding-top", "8px");
     await expect(attachments).toHaveCSS("padding-right", "8px");
@@ -1011,6 +1015,7 @@ test.describe("attachments and prompt", () => {
       buffer: VALID_PNG,
     };
     await page.locator("#imageInput").setInputFiles(file);
+    await page.locator("#prompt").focus();
     await expect(page.locator(".attachmentChip")).toBeVisible();
     await expect(page.locator("#primaryButton")).toBeEnabled();
 
@@ -1019,6 +1024,7 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator("#primaryButton")).toBeDisabled();
 
     await page.locator("#imageInput").setInputFiles(file);
+    await page.locator("#prompt").focus();
     await expect(page.locator(".attachmentChip")).toBeVisible();
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.user .messageImageThumb")).toBeVisible();

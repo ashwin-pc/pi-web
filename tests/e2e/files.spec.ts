@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLauncherAction } from "./helpers/actionLauncher.js";
 
 const files = {
   "README.md": { content: "# Test workspace\n", language: "markdown", revision: "readme-1" },
@@ -27,6 +28,15 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("browser back closes an open panel", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#filesButton").evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.locator("#filesPanel")).toBeVisible();
+
+  await page.goBack();
+  await expect(page.locator("#filesPanel")).toBeHidden();
+});
+
 test("explorer opens, edits, saves, wraps, resizes text, and closes tabs", async ({ page }, testInfo) => {
   let savedBody: Record<string, unknown> | undefined;
   await page.route("**/api/files/write", async (route) => {
@@ -34,7 +44,7 @@ test("explorer opens, edits, saves, wraps, resizes text, and closes tabs", async
     await route.fulfill({ json: { ok: true, path: savedBody?.path, size: String(savedBody?.content || "").length, revision: "readme-2" } });
   });
   await page.goto("/");
-  await page.locator("#filesButton").click();
+  await openLauncherAction(page, "File explorer");
   await expect(page.locator("#filesPanel")).toBeVisible();
   await expect(page.locator(".filesPanelHeading h2")).toHaveText("Explorer");
   if (testInfo.project.name === "desktop") await expect(page.locator(".fileEditorEmpty img")).toBeVisible();
@@ -74,7 +84,7 @@ test("image preview failures render inside the file pane", async ({ page }) => {
   await page.unroute("**/api/files/image**");
   await page.route("**/api/files/image**", (route) => route.fulfill({ status: 415, json: { ok: false, error: "File does not contain valid image data" } }));
   await page.goto("/");
-  await page.locator("#filesButton").click();
+  await openLauncherAction(page, "File explorer");
   await page.locator('.fileTreeFile[title="preview.png"]').click();
   await expect(page.locator(".fileEditorError")).toBeVisible();
   await expect(page.locator(".fileEditorError")).toContainText("valid image data");
@@ -85,7 +95,7 @@ test("image preview failures render inside the file pane", async ({ page }) => {
 test("desktop tree can be resized and collapsed", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "Desktop split-pane behavior");
   await page.goto("/");
-  await page.locator("#filesButton").click();
+  await openLauncherAction(page, "File explorer");
   const explorer = page.locator(".filesExplorer");
   const before = (await explorer.boundingBox())!.width;
   const handle = page.locator("#filesTreeResize");
@@ -103,7 +113,7 @@ test("desktop tree can be resized and collapsed", async ({ page }, testInfo) => 
 test("touch-first mobile file opening does not focus the editor", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile", "Mobile keyboard behavior");
   await page.goto("/");
-  await page.locator("#filesButton").click();
+  await openLauncherAction(page, "File explorer");
   await page.locator('.fileTreeFile[title="README.md"]').click();
   await expect(page.locator("#filesPanel")).toHaveAttribute("data-mobile-view", "editor");
   await expect(page.locator(".cm-content")).not.toBeFocused();

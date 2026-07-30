@@ -112,4 +112,11 @@ describe("mobile focus wiring", () => {
       expect(source, file).toContain("blurActiveEditableOnMobile");
     }
   });
+
+  it("only auto-focuses conversation tree search on keyboard-friendly devices", () => {
+    const tree = readFileSync(new URL("../src/tree/conversationTree.ts", import.meta.url), "utf8");
+
+    expect(tree).toContain("focusIfKeyboardFriendly(search);");
+    expect(tree).not.toContain("search.focus();");
+  });
 });

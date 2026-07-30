@@ -1,4 +1,4 @@
-export const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
+export const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded)";
 
 type CompactPressOptions = {
   stopPropagation?: boolean;

@@ -1,5 +1,5 @@
 import type { ApiClient } from "../app/api.js";
-import { blurActiveEditableOnMobile } from "../app/focus.js";
+import { blurActiveEditableOnMobile, focusIfKeyboardFriendly } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
@@ -771,7 +771,7 @@ export function createConversationTree(options: {
   function handleOpen() {
     document.body.classList.toggle("conversationTreeOpen", true);
     refreshTree().catch((error) => setStatus(error instanceof Error ? error.message : String(error), true));
-    if (!isMobileViewport()) search.focus();
+    focusIfKeyboardFriendly(search);
   }
 
   function handleClose() {

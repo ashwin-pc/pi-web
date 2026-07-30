@@ -353,7 +353,7 @@ describe("slash command compact styling", () => {
 
 describe("compact inactive composer styling", () => {
   const css = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
-  const compactSelector = ".composer.compactInactive:not(:focus-within):not(.expanded):has(textarea:placeholder-shown):not(:has(.attachments:not(:empty)))";
+  const compactSelector = ".composer.compactInactive:not(:focus-within):not(.expanded)";
 
   it("collapses the inactive empty composer into a single floating bar", () => {
     expect(css).toContain(`${compactSelector} {`);

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLauncherAction } from "./helpers/actionLauncher.js";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -12,7 +13,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function openConversationTree(page: any) {
-  await page.locator("#conversationTreeButton").click();
+  await openLauncherAction(page, "Conversation tree");
   const panel = page.locator(".conversationTreePanel");
   await expect(panel).toBeVisible();
   return panel;

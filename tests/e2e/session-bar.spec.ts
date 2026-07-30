@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLauncherAction } from "./helpers/actionLauncher.js";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; cwd?: string }>;
@@ -337,7 +338,7 @@ test.describe("session quick bar", () => {
     await page.goto("/");
     await expect(page.locator("#sessionDrawer")).toBeHidden();
 
-    await page.locator("#newSessionHeaderButton").click();
+    await openLauncherAction(page, "New session");
 
     await expect(page.locator("#statusTitle")).toHaveText("New session");
     await expect(page.locator("#sessionDrawer")).toBeHidden();
@@ -346,7 +347,7 @@ test.describe("session quick bar", () => {
     if (width > 700) {
       await page.locator("#sessionButton").click();
       await expect(page.locator("#sessionDrawer")).toBeVisible();
-      await page.locator("#newSessionHeaderButton").click();
+      await openLauncherAction(page, "New session");
       await expect(page.locator("#statusTitle")).toHaveText("New session");
       await expect(page.locator("#sessionDrawer")).toBeVisible();
     }

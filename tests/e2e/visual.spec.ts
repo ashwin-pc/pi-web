@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -237,6 +238,10 @@ test.describe("visual regression", () => {
       animations: "disabled",
       maxDiffPixelRatio: 0.001,
     });
+    // The README showcase presents the compact composer with its app launcher open.
+    await page.locator("#prompt").blur();
+    await page.locator(".actionLauncherToggle").click();
+    await expect(page.locator(".actionLauncher")).toHaveClass(/open/);
     await expect(page).toHaveScreenshot(`hero-showcase-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
@@ -291,7 +296,7 @@ test.describe("visual regression", () => {
 
     await mockConversationTreeApi(page);
     await page.goto("/");
-    await page.locator("#conversationTreeButton").click();
+    await openLauncherAction(page, "Conversation tree");
     const panel = page.locator(".conversationTreePanel");
     await expect(panel).toBeVisible();
     await expect(panel.locator(".conversationTreeNode")).toHaveCount(11);
@@ -317,7 +322,7 @@ test.describe("visual regression", () => {
     await mockFilesApi(page);
 
     await page.goto("/");
-    await page.locator("#filesButton").click();
+    await openLauncherAction(page, "File explorer");
     await page.locator(".fileTreeDirectory summary", { hasText: "src" }).click();
     await expect(page.locator('.fileTreeFile[title="src/main.ts"]')).toBeVisible();
     await page.locator('.fileTreeFile[title="README.md"]').click();

@@ -9,7 +9,7 @@ async function clickMessageAction(page: Page, message: Locator, buttonName: stri
     await page.mouse.down();
     await page.waitForTimeout(650);
     await page.mouse.up();
-    const menu = page.getByRole("menu");
+    const menu = page.locator(".messageActionMenu");
     await expect(menu).toBeVisible();
     await menu.getByRole("menuitem", { name: menuLabel }).click();
     return;

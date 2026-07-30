@@ -63,6 +63,13 @@ const minChatWidth = 360;
 const maximizeDragThreshold = 0.78;
 const closeDragThreshold = 0.18;
 const dragEdgeThreshold = 48;
+const panelHistoryStateKey = "piWebPanels";
+
+type PanelHistoryState = Record<string, unknown> & { [panelHistoryStateKey]?: string[] };
+
+function historyState(): PanelHistoryState {
+  return history.state && typeof history.state === "object" ? history.state as PanelHistoryState : {};
+}
 
 function resolveElement(value?: HTMLElement | (() => HTMLElement | undefined)) {
   return typeof value === "function" ? value() : value;
@@ -174,6 +181,19 @@ export function createAppPanelManager(): AppPanelManager {
     if (focusTrigger) focusElement(resolveElement(registration.focusOnClose) || registration.trigger);
   }
 
+  function activePanelIds() {
+    return ([active.left, active.right].filter(Boolean) as RegisteredPanel[]).map((registration) => registration.id);
+  }
+
+  function replacePanelHistoryState() {
+    history.replaceState({ ...historyState(), [panelHistoryStateKey]: activePanelIds() }, "");
+  }
+
+  function closeRegistrationFromUi(registration: RegisteredPanel, focusTrigger = true) {
+    closeRegistration(registration, focusTrigger);
+    replacePanelHistoryState();
+  }
+
   function closeOppositeIfNeeded(side: AppPanelSide) {
     if (multiSideMode.matches) return;
     const other = active[oppositeSide(side)];
@@ -196,6 +216,13 @@ export function createAppPanelManager(): AppPanelManager {
     setTriggerState(registration, true);
     registration.onOpen?.();
     focusElement(resolveElement(registration.focusOnOpen));
+  }
+
+  function openRegistrationFromUi(registration: RegisteredPanel) {
+    if (!registration.panel.hidden) return;
+    replacePanelHistoryState();
+    openRegistration(registration);
+    history.pushState({ ...historyState(), [panelHistoryStateKey]: activePanelIds() }, "");
   }
 
   function enforceLayoutMode() {
@@ -270,7 +297,7 @@ export function createAppPanelManager(): AppPanelManager {
       document.body.classList.remove("appPanelResizing");
 
       if (shouldCloseFromDrag(registration, lastDesired, lastClientX)) {
-        closeRegistration(registration);
+        closeRegistrationFromUi(registration);
         return;
       }
 
@@ -322,13 +349,13 @@ export function createAppPanelManager(): AppPanelManager {
     const handle: AppPanelHandle = {
       id: registered.id,
       side,
-      open: () => openRegistration(registered),
-      close: (focusTrigger = true) => closeRegistration(registered, focusTrigger),
+      open: () => openRegistrationFromUi(registered),
+      close: (focusTrigger = true) => closeRegistrationFromUi(registered, focusTrigger),
       toggle: () => {
-        if (registered.panel.hidden) openRegistration(registered);
-        else closeRegistration(registered);
+        if (registered.panel.hidden) openRegistrationFromUi(registered);
+        else closeRegistrationFromUi(registered);
       },
-      setOpen: (open) => open ? openRegistration(registered) : closeRegistration(registered),
+      setOpen: (open) => open ? openRegistrationFromUi(registered) : closeRegistrationFromUi(registered),
       isOpen: () => !registered.panel.hidden,
     };
 
@@ -343,7 +370,20 @@ export function createAppPanelManager(): AppPanelManager {
     const activePanel = (lastOpenedSide ? active[lastOpenedSide] : undefined) || active.right || active.left;
     if (event.key !== "Escape" || !activePanel) return;
     if (activePanel.closeOnEscape === false || activePanel.canCloseOnEscape?.() === false) return;
-    closeRegistration(activePanel);
+    closeRegistrationFromUi(activePanel);
+  });
+
+  window.addEventListener("popstate", (event) => {
+    const state = event.state && typeof event.state === "object" ? event.state as PanelHistoryState : {};
+    const panelsToKeep = new Set(Array.isArray(state[panelHistoryStateKey]) ? state[panelHistoryStateKey] : []);
+    for (const side of ["left", "right"] as const) {
+      const registration = active[side];
+      if (registration && !panelsToKeep.has(registration.id)) closeRegistration(registration, false);
+    }
+    for (const id of panelsToKeep) {
+      const registration = registrations.get(id);
+      if (registration?.panel.hidden) openRegistration(registration);
+    }
   });
 
   paneMode.addEventListener("change", updateActiveWidths);
@@ -357,7 +397,7 @@ export function createAppPanelManager(): AppPanelManager {
     register,
     closeActive: () => {
       const activePanel = (lastOpenedSide ? active[lastOpenedSide] : undefined) || active.right || active.left;
-      if (activePanel) closeRegistration(activePanel);
+      if (activePanel) closeRegistrationFromUi(activePanel);
     },
     activeId: (side) => side ? active[side]?.id : active.right?.id || active.left?.id,
     isOpen: (id) => registrations.get(id)?.panel.hidden === false,
