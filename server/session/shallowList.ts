@@ -45,12 +45,21 @@ async function boundedContents(path: string, size: number) {
       const tail = Buffer.allocUnsafe(tailSize);
       const position = size - tailSize;
       const { bytesRead: tailRead } = await handle.read(tail, 0, tailSize, position);
-      // Discard the first possibly partial line.
+      // Deliberately drop any entry straddling the head/tail boundary, including
+      // contiguous 32–40 KiB reads; bounded metadata projection tolerates that loss.
       const tailText = tail.subarray(0, tailRead).toString("utf8");
       text += `\n${tailText.slice(Math.max(0, tailText.indexOf("\n") + 1))}`;
     }
     return text;
   } finally { await handle.close(); }
+}
+
+export async function shallowSessionCwd(path: string): Promise<string | undefined> {
+  try {
+    const fileStat = await stat(path);
+    const header = parseLines(await boundedContents(path, fileStat.size)).find((entry) => entry?.type === "session");
+    return typeof header?.cwd === "string" && header.cwd ? header.cwd : undefined;
+  } catch { return undefined; }
 }
 
 /** A bounded projection of pi's append-only JSONL. It never reads transcript bodies. */
