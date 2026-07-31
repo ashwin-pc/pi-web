@@ -1,6 +1,7 @@
 import type { ApiHeaders } from "../app/api.js";
 import { iconElement, type IconName } from "../app/icons.js";
 import type { AttachedImage, Role } from "../app/types.js";
+import type { MessageDto } from "../../server/session/dto.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
@@ -67,6 +68,12 @@ export type MessageList = {
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
   invalidateRefreshes: () => void;
+  appendCommittedMessage: (message: MessageDto, options: {
+    addToolHistoryCard: AddToolHistoryCard;
+    addPendingToolCard: AddPendingToolCard;
+    addRuntimeErrorCard: AddRuntimeErrorCard;
+    isStreaming?: boolean;
+  }) => void;
   scrollToBottom: () => void;
 };
 
@@ -939,6 +946,83 @@ export function createMessageList(options: {
     }
   }
 
+  function assertNeverMessage(message: never): never {
+    throw new Error(`Unsupported transcript message: ${JSON.stringify(message)}`);
+  }
+
+  function renderMessage(message: MessageDto, options: {
+    addToolHistoryCard: AddToolHistoryCard;
+    addPendingToolCard: AddPendingToolCard;
+    addRuntimeErrorCard: AddRuntimeErrorCard;
+    completedToolResults: Map<string, MessageDto>;
+    renderedToolResultIds: Set<string>;
+    isStreaming?: boolean;
+  }) {
+    const { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming } = options;
+    switch (message.role) {
+      case "toolResult": {
+        const id = message.toolCallId;
+        if (id && renderedToolResultIds.has(id)) return;
+        renderToolResultMessage(message, addToolHistoryCard);
+        return;
+      }
+      case "bashExecution": {
+        const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
+        addToolHistoryCard("bash", Boolean(message.cancelled || (exitCode !== undefined && exitCode !== 0)), message, { command: String(message.command || "") });
+        return;
+      }
+      case "assistant":
+        renderAssistantMessageParts(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
+        return;
+      case "user": {
+        const text = messageText(message);
+        if (text) addMessage("user", text, message.isError ? "error" : "", imagesFromRawContent(rawContent(message)), { entryId: message.entryId });
+        return;
+      }
+      case "system":
+      case "unknown": {
+        const text = messageText(message);
+        if (text) addMessage("system", text, message.isError ? "error" : "", [], { entryId: message.entryId });
+        return;
+      }
+      case "compactionSummary":
+      case "branchSummary": {
+        const text = messageText(message);
+        if (text) addMessage("system", text, message.role === "compactionSummary" ? "compaction" : "", [], { entryId: message.entryId });
+        return;
+      }
+      case "custom": {
+        const text = messageText(message);
+        if (!text) return;
+        const customType = message.customType.replace(/[^a-zA-Z0-9_-]+/g, "-");
+        addMessage("system", text, `custom${customType ? ` custom--${customType}` : ""}`, [], { entryId: message.entryId });
+        return;
+      }
+      default:
+        assertNeverMessage(message);
+    }
+  }
+
+  function appendCommittedMessage(message: MessageDto, options: {
+    addToolHistoryCard: AddToolHistoryCard;
+    addPendingToolCard: AddPendingToolCard;
+    addRuntimeErrorCard: AddRuntimeErrorCard;
+    isStreaming?: boolean;
+  }) {
+    const streamingAnchor = streamingAssistant?.isConnected ? streamingAssistant : null;
+    const existingChildren = new Set(messagesEl.children);
+    renderMessage(message, {
+      ...options,
+      completedToolResults: new Map(),
+      renderedToolResultIds: new Set(),
+    });
+    if (streamingAnchor) {
+      for (const child of Array.from(messagesEl.children)) {
+        if (!existingChildren.has(child)) messagesEl.insertBefore(child, streamingAnchor);
+      }
+    }
+  }
+
   async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState }: {
     sessionId: string;
     headers: ApiHeaders;
@@ -964,14 +1048,13 @@ export function createMessageList(options: {
     try {
       clearInternal(false);
       clearActiveToolCards();
-      const allMessages = data.messages || [];
+      const allMessages = (data.messages || []) as MessageDto[];
       const runtimeState = transcriptRuntimeState(allMessages, isStreaming);
       bulkRendering = true;
-      const completedToolResults = new Map<string, any>();
+      const completedToolResults = new Map<string, MessageDto>();
       const renderedToolResultIds = new Set<string>();
       for (const message of allMessages) {
-        const id = message?.toolCallId || message?.raw?.toolCallId;
-        if (message?.role === "toolResult" && typeof id === "string") completedToolResults.set(id, message);
+        if (message.role === "toolResult" && message.toolCallId) completedToolResults.set(message.toolCallId, message);
       }
       for (let index = 0; index < allMessages.length; index += 1) {
         const message = allMessages[index];
@@ -984,31 +1067,7 @@ export function createMessageList(options: {
           continue;
         }
 
-        const id = message?.toolCallId || message?.raw?.toolCallId;
-        if (message.role === "toolResult") {
-          if (typeof id === "string" && renderedToolResultIds.has(id)) continue;
-          renderToolResultMessage(message, addToolHistoryCard);
-          continue;
-        }
-
-        if (message.role === "bashExecution") {
-          const exitCode = typeof message.exitCode === "number" ? message.exitCode : undefined;
-          addToolHistoryCard("bash", Boolean(message.cancelled || (exitCode !== undefined && exitCode !== 0)), message, { command: String(message.command || "") });
-          continue;
-        }
-
-        const role = message.role === "assistant" ? "assistant" : message.role === "user" ? "user" : "system";
-        if (role === "assistant") {
-          renderAssistantMessageParts(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
-          continue;
-        }
-
-        const text = messageText(message);
-        if (text) {
-          const rawImages = role === "user" ? imagesFromRawContent(rawContent(message)) : [];
-          const extraClass = message.role === "compactionSummary" ? "compaction" : message.isError ? "error" : "";
-          addMessage(role, text, extraClass, rawImages, { entryId: message.entryId });
-        }
+        renderMessage(message, { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming });
       }
       bulkRendering = false;
       if (wasFollowing) scrollToBottom();
@@ -1030,6 +1089,7 @@ export function createMessageList(options: {
 
   return {
     addMessage,
+    appendCommittedMessage,
     appendStreamingDelta,
     appendStreamingThinkingDelta,
     beginStreamFollow,

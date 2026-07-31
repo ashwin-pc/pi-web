@@ -33,10 +33,10 @@ import {
   isAssistantAbortedMessage,
   isAssistantFailureMessage,
   isIncompleteToolResultMessage,
-  messageEntryRefs,
+  projectCommittedMessage,
+  projectMessages,
   projectSessionState,
   sessionStats,
-  simplifyMessage,
   simplifyModel,
 } from "./projection.js";
 
@@ -266,19 +266,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async messages(sessionId: string): Promise<MessageDto[]> {
-    const value = await this.require(sessionId);
-    const toolCallArgs = new Map<string, Record<string, unknown>>();
-    for (const message of value.messages as any[]) {
-      if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-      for (const part of message.content) {
-        if (part?.type === "toolCall" && part.id) toolCallArgs.set(part.id, part.arguments || {});
-      }
-    }
-    const refs = messageEntryRefs(value);
-    return jsonSafe(value.messages.map((message, index) => simplifyMessage(message, {
-      toolCallArgs,
-      entryId: refs[index]?.entryId,
-    }) as MessageDto));
+    return jsonSafe(projectMessages(await this.require(sessionId)));
   }
 
   async commands(sessionId: string) {
@@ -663,6 +651,16 @@ export class LocalSessionService implements SessionService {
       event: event as JsonValue,
       ...(correlation ? { clientMessageId: correlation.clientMessageId, sourceClientId: correlation.sourceClientId } : {}),
     });
+    if (e?.type === "message_end") {
+      const committed = e.message;
+      // agent-core inserts this object before notifying listeners; the agent
+      // relay persists its entry after listeners return, while idle custom
+      // messages persist before emitting. Defer so both paths expose entry metadata.
+      queueMicrotask(() => {
+        const message = projectCommittedMessage(value, committed);
+        if (message) this.emit({ type: "committed", sessionId, sessionFile: value.sessionFile, message });
+      });
+    }
     if (e?.type === "session_info_changed") this.emit({ type: "state", state: this.projectState(value) });
     if (e?.type === "message_end" || e?.type === "agent_end" || e?.type === "compaction_end") {
       this.emit({ type: "stats", sessionId, sessionFile, stats: sessionStats(value) });

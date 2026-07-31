@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { PiWebSession, PiWebSessionInfo } from "./types.js";
+import { simplifyMessage } from "./session/projection.js";
 
 interface MockSessionOptions {
   piCwd: string;
@@ -217,11 +218,18 @@ export function createMockHarness(options: MockSessionOptions) {
 
     function broadcastPiEvent(event: Record<string, unknown>, activityAt?: string | false) {
       const lastActivityAt = activityAt === false ? runtimeLastActivityAt : markRuntimeActivity(activityAt || new Date().toISOString());
+      const committedMessage = event.type === "message_end" ? simplifyMessage(event.message) : undefined;
       broadcast({
         type: "pi_event",
         sessionId: mockSession.sessionId,
         sessionFile: mockSession.sessionFile,
         event: lastActivityAt ? { ...event, lastActivityAt } : event,
+      });
+      if (committedMessage) broadcast({
+        type: "committed_message",
+        sessionId: mockSession.sessionId,
+        sessionFile: mockSession.sessionFile,
+        message: committedMessage,
       });
     }
 
@@ -488,6 +496,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const withoutAgentEnd = /missing agent end|no agent end/i.test(message);
         const withStaleRuntimeAfterEnd = /stale runtime after end/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message) || withProgressDemo;
+        const withLiveMessageKinds = /live message kinds/i.test(message);
         const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && !withInterruptedTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
         mockSession.isStreaming = true;
         if (withQuietRuntime) {
@@ -497,7 +506,26 @@ export function createMockHarness(options: MockSessionOptions) {
         }
         broadcastRuntimeChanged();
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
-        if (withQuietRuntime) {
+        if (withLiveMessageKinds) {
+          // Let the browser apply agent_start before exercising interleaved
+          // committed messages; this keeps the scenario deterministic on CI.
+          if (!(await waitForMockRun(150))) return;
+          if (!(await waitForMockRun(500))) return;
+          const timestamp = new Date().toISOString();
+          const visibleCustom = { role: "custom", customType: "probe", content: "hello from an extension", details: { source: "mock-extension" }, display: true, timestamp };
+          appendMockMessage(visibleCustom);
+          broadcastPiEvent({ type: "message_end", message: visibleCustom });
+          if (!(await waitForMockRun(500))) return;
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed prefix" } });
+          const hiddenCustom = { role: "custom", customType: "probe-hidden", content: "hidden extension message", details: { source: "mock-extension" }, display: false, timestamp };
+          appendMockMessage(hiddenCustom);
+          broadcastPiEvent({ type: "message_end", message: hiddenCustom });
+          const unknownMessage = { role: "futureKind", content: "future message content", timestamp };
+          appendMockMessage(unknownMessage);
+          broadcastPiEvent({ type: "message_end", message: unknownMessage });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed suffix" } });
+        }
+        if (withQuietRuntime || withLiveMessageKinds) {
           if (!(await waitForMockRun(60_000))) return;
         } else if (slow && !(await waitForMockRun(/queue demo/i.test(message) ? 2_500 : 750))) return;
         if (withProviderError) {

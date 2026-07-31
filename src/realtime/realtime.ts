@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
+import type { MessageDto } from "../../server/session/dto.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
 import { messageText } from "../messages/content.js";
@@ -63,6 +64,7 @@ export function createRealtime(options: {
   let latestRetryAttempt: number | undefined;
   let latestRetryMaxAttempts: number | undefined;
   let sessionRefreshTimer: number | undefined;
+  let replayTranscriptRefreshTimer: number | undefined;
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
   const sessionRuntimeKeys = new Map<string, string>();
@@ -613,7 +615,8 @@ export function createRealtime(options: {
         break;
       case "message_end": {
         const deliveredMessage = messageFromEvent(event.message);
-        if (String(deliveredMessage?.role || deliveredMessage?.raw?.role || "") === "user") {
+        const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
+        if (deliveredRole === "user") {
           composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId);
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
@@ -819,6 +822,27 @@ export function createRealtime(options: {
       }
       if (data.type === "web_git_tabs_changed") {
         if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
+        return;
+      }
+      if (data.type === "committed_message") {
+        const appliesToCurrentSession = !data.sessionId || data.sessionId === state.currentSessionId;
+        if (isReplay && appliesToCurrentSession) {
+          if (replayTranscriptRefreshTimer !== undefined) window.clearTimeout(replayTranscriptRefreshTimer);
+          replayTranscriptRefreshTimer = window.setTimeout(() => {
+            replayTranscriptRefreshTimer = undefined;
+            void refreshMessages().catch((error) => console.error("Could not reconcile replayed transcript messages", error));
+          }, 100);
+          return;
+        }
+        const committed = data.message as MessageDto;
+        if (appliesToCurrentSession && !["user", "assistant", "toolResult"].includes(committed.role)) {
+          messages.appendCommittedMessage(committed, {
+            addToolHistoryCard: tools.addToolHistoryCard,
+            addPendingToolCard: tools.startTool,
+            addRuntimeErrorCard: tools.addRuntimeErrorCard,
+            isStreaming: state.isStreaming || state.isRetrying,
+          });
+        }
         return;
       }
       if (data.type === "pi_event") {

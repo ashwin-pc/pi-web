@@ -57,7 +57,7 @@ export function decorateHostMessages(messages: MessageDto[], sessionFile: string
       : [];
     return {
       ...message,
-      ...(message.toolCalls ? {
+      ...(message.role === "assistant" && message.toolCalls ? {
         toolCalls: message.toolCalls.map((call, index) => {
           const startedAt = decoratedToolCalls[index]?.startedAt;
           return startedAt && !call.startedAt ? { ...call, startedAt } : call;
@@ -96,6 +96,14 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         });
         return;
       }
+      case "committed":
+        deps.broadcast({
+          type: "committed_message",
+          sessionId: serviceEvent.sessionId,
+          sessionFile: serviceEvent.sessionFile,
+          message: decorateHostMessages([serviceEvent.message], serviceEvent.sessionFile, deps.sessionActivity)[0],
+        });
+        return;
       case "state": {
         const target = deps.sessionForId(serviceEvent.state.sessionId);
         if (target) deps.broadcast({ type: "state_changed", ...decorate(serviceEvent.state, target, Boolean(serviceEvent.includeThinkingLevels)) });

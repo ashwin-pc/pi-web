@@ -36,20 +36,25 @@ export interface BaseSessionStateDto {
   stats: SessionStatsDto;
 }
 
-/** Serializable message projection consumed by the browser message list. */
-export interface MessageDto {
+/** Serializable, role-discriminated projection consumed by every transcript path. */
+type MessageDtoBase = {
   entryId?: string;
-  role?: string;
   text?: string;
-  toolCalls?: Array<{ id?: string; toolName: string; args: JsonValue; startedAt?: string }>;
-  toolCallId?: string;
-  toolName?: string;
-  toolArgs?: JsonValue;
-  isError?: boolean;
   timestamp?: string;
   raw?: JsonValue;
-  [key: string]: JsonValue | undefined;
-}
+};
+
+export type MessageDto = MessageDtoBase & (
+  | { role: "user"; isError?: boolean }
+  | { role: "assistant"; toolCalls?: Array<{ id?: string; toolName: string; args: JsonValue; startedAt?: string }>; isError: boolean }
+  | { role: "system"; isError?: boolean }
+  | { role: "toolResult"; toolCallId?: string; toolName?: string; toolArgs?: JsonValue; isError: boolean }
+  | { role: "bashExecution"; command?: JsonValue; output?: JsonValue; exitCode?: JsonValue; cancelled: boolean; truncated: boolean; fullOutputPath?: JsonValue; excludeFromContext: boolean }
+  | { role: "compactionSummary"; isError?: boolean }
+  | { role: "branchSummary"; isError?: boolean }
+  | { role: "unknown"; originalRole: string; isError?: boolean }
+  | { role: "custom"; customType: string; details?: JsonValue; display: true }
+);
 
 export interface TreeNodeDto {
   id: string;
@@ -111,6 +116,7 @@ export interface DeleteSessionResultDto {
 export type SessionServiceEvent =
   | { type: "pi"; sessionId: string; sessionFile: string; event: JsonValue; clientMessageId?: string; sourceClientId?: string }
   | { type: "state"; state: BaseSessionStateDto; includeThinkingLevels?: boolean }
+  | { type: "committed"; sessionId: string; sessionFile: string; message: MessageDto }
   | { type: "stats"; sessionId: string; sessionFile: string; stats: SessionStatsDto }
   | { type: "models"; sessionId: string; models: ModelDto[] }
   | { type: "error"; sessionId?: string; sessionFile?: string; error: string; clientMessageId?: string }

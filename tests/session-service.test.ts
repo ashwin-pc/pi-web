@@ -124,6 +124,11 @@ describe("LocalSessionService contract", () => {
     expect(await service.messages(created.sessionId)).toContainEqual(expect.objectContaining({ role: "user", text: "hello" }));
     expect(events.map((event) => event.type)).toContain("pi");
     expect(events.map((event) => event.type)).toContain("stats");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "committed",
+      sessionId: created.sessionId,
+      message: expect.objectContaining({ role: "user", text: "hello", entryId: "user-2" }),
+    }));
 
     initial.prompt = async () => { throw new Error("prompt failed"); };
     await service.prompt(initial.sessionId, { message: "fail", mode: "steer", images: [] });
@@ -266,7 +271,12 @@ describe("LocalSessionService contract", () => {
     const message = { role: "assistant", model: "model", errorMessage: "model_not_supported", timestamp: messageAt };
     fixture.emit({ type: "message_end", message, timestamp: messageAt });
     expect(wire).toEqual([
-      { type: "pi_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt } },
+      {
+        type: "pi_event",
+        sessionId: initial.sessionId,
+        sessionFile: initial.sessionFile,
+        event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt },
+      },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
       { type: "session_stats_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, stats: (await service.stats(initial.sessionId)).stats },
       { type: "models_updated", sessionId: initial.sessionId, models: [] },
@@ -284,6 +294,8 @@ describe("LocalSessionService contract", () => {
     const sessionFile = "/tmp/id-less.jsonl";
     activity.enrichEvent({ sessionFile, sessionId: "id-less" } as PiWebSession, { type: "tool_execution_start", toolName: "read", startedAt: "2026-03-01T00:00:00.000Z" });
     const messages: MessageDto[] = [{
+      role: "assistant",
+      isError: false,
       toolCalls: [{ toolName: "read", args: {} }],
       raw: { role: "assistant", content: [{ type: "toolCall", toolName: "read", arguments: {} }] },
     }];

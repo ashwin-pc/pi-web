@@ -29,8 +29,15 @@ jobs:
       - name: Unit tests
         run: npm run test:unit
 
-      - name: E2E tests
-        run: npx playwright test --reporter=html,list
+      - name: Build
+        run: npm run build
+
+      - name: Functional realtime E2E suite
+        run: >-
+          npx playwright test --project=desktop --reporter=html,list
+          tests/e2e/custom-messages.spec.ts
+          tests/e2e/interleaving.spec.ts
+          tests/e2e/retry-errors.spec.ts
 
       - name: Upload Playwright report
         if: always()

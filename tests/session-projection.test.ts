@@ -3,8 +3,10 @@ import type { PiWebSession } from "../server/types.js";
 import { jsonRoundTrip } from "../server/session/dto.js";
 import {
   conversationTreeForSession,
+  entryMessage,
   getSessionSlashCommands,
   messageEntryRefs,
+  projectCommittedMessage,
   projectSessionState,
   sessionStats,
   simplifyMessage,
@@ -65,6 +67,48 @@ describe("pure session projections", () => {
       { id: "new", type: "message", message: { role: "assistant", content: "new" } },
     ];
     expect(messageEntryRefs(session)).toEqual([{ entryId: "compact" }, { entryId: "kept" }, { entryId: "new" }]);
+  });
+
+  it("preserves visible custom metadata and omits hidden custom content", () => {
+    for (const content of ["hello", [{ type: "text", text: "hello" }]]) {
+      const message = entryMessage({
+        type: "custom_message",
+        customType: "probe",
+        content,
+        details: { source: "extension" },
+        display: true,
+        timestamp: "now",
+      });
+      expect(simplifyMessage(message)).toEqual({
+        role: "custom",
+        customType: "probe",
+        text: "hello",
+        details: { source: "extension" },
+        display: true,
+        timestamp: "now",
+        raw: message,
+      });
+      expect(simplifyMessage({ ...message, display: false })).toBeUndefined();
+    }
+  });
+
+  it("recovers persisted metadata for the committed message reference", () => {
+    const session = fixtureSession();
+    expect(projectCommittedMessage(session, session.messages[1])).toMatchObject({
+      role: "assistant",
+      entryId: "assistant-1",
+      text: "Hi",
+    });
+  });
+
+  it("projects unknown roles without dropping their content", () => {
+    expect(simplifyMessage({ role: "futureKind", content: "important text", timestamp: "now" })).toEqual({
+      role: "unknown",
+      originalRole: "futureKind",
+      text: "important text",
+      timestamp: "now",
+      raw: { role: "futureKind", content: "important text", timestamp: "now" },
+    });
   });
 
   it("accepts host decoration as explicit message projection input", () => {
