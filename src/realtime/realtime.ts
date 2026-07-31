@@ -85,10 +85,7 @@ export function createRealtime(options: {
 
   function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
     switch (event?.type) {
-      case "session_info_changed":
       case "message_end":
-      case "agent_end":
-      case "compaction_end":
         return true;
       default:
         return false;
@@ -751,7 +748,7 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "session_deleted") {
-        if (!isReplay) scheduleSessionRefresh();
+        if (!isReplay) sessions.removeSession(String(data.sessionId || ""));
         return;
       }
       if (data.type === "session_runtime_changed") {
@@ -848,7 +845,9 @@ export function createRealtime(options: {
       if (data.type === "pi_event") {
         const eventSessionKey = String(data.sessionId || data.sessionFile || "");
         noteRuntimeEvent(eventSessionKey, data.event);
-        if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
+        if (!isReplay && data.event?.type === "session_info_changed") {
+          sessions.updateSessionName(String(data.sessionId || ""), String(data.event.name || ""));
+        } else if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
         if (data.sessionId) {
           if (data.event?.type === "agent_start") {
             sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, pendingMessageCount: 0 });

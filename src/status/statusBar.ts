@@ -75,7 +75,6 @@ export function createStatusBar(options: {
       const data = text ? JSON.parse(text) : {};
       if (!res.ok || data.ok === false) throw new Error(data.error || text);
       updateMeta(data);
-      if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
     } catch (error) {
       setStatusTitle(previous);
       addMessage("system", error instanceof Error ? error.message : String(error), "error");

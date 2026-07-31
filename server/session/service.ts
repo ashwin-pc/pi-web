@@ -27,6 +27,7 @@ import type {
   SessionServiceEvent,
   SlashCommandDto,
 } from "./dto.js";
+import { shallowListSessions } from "./shallowList.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -427,10 +428,20 @@ export class LocalSessionService implements SessionService {
     const request = (async () => {
       const groups = await Promise.all(orderedCwds.map(async (cwd) => {
         try {
-          const infos = this.deps.sessionFactory?.list
-            ? await this.deps.sessionFactory.list(cwd)
-            : await SessionManager.list(cwd);
-          return infos.map((info) => this.simplifySessionInfo(info, cwd));
+          if (this.deps.sessionFactory?.list) {
+            const infos = await this.deps.sessionFactory.list(cwd);
+            return infos.map((info) => this.simplifySessionInfo(info, cwd));
+          }
+          return (await shallowListSessions(cwd, this.defaultSessionDir(cwd))).map((info) => {
+            this.rememberSessionLocation(info, cwd);
+            const live = this.liveById.get(info.id);
+            return live ? {
+              ...info,
+              name: live.getSessionName?.() || info.name,
+              messageCount: live.messages.length,
+              cwd: this.sessionCwd(live),
+            } : info;
+          });
         } catch { return []; }
       }));
       return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
@@ -820,20 +831,10 @@ export class LocalSessionService implements SessionService {
       const infos = await this.deps.sessionFactory.list(cwd || this.deps.globalCwd());
       return infos.find((info) => info.id === id);
     }
-    if (cwd?.trim()) {
-      const resolvedCwd = resolve(cwd);
-      const info = (await SessionManager.list(resolvedCwd)).find((item) => item.id === id);
-      if (info?.cwd) this.knownSessionCwds.add(resolve(info.cwd));
-      if (info) return info;
-    }
-    for (const knownCwd of this.knownCwds()) {
-      const info = (await SessionManager.list(knownCwd)).find((item) => item.id === id);
-      if (info?.cwd) this.knownSessionCwds.add(resolve(info.cwd));
-      if (info) return info;
-    }
-    const info = (await SessionManager.listAll()).find((item) => item.id === id);
-    if (info?.cwd) this.knownSessionCwds.add(resolve(info.cwd));
-    return info;
+    const location = await this.resolveSessionLocation(id, cwd);
+    if (!location) return undefined;
+    // Delete needs only the deterministic path; opening parses the selected file later.
+    return { id, path: location.path, cwd: location.cwd } as Awaited<ReturnType<typeof SessionManager.list>>[number];
   }
 
   private defaultSessionDir(cwd: string) {
