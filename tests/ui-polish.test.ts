@@ -203,6 +203,7 @@ describe("tool card expand chevrons", () => {
 describe("connected transcript and header styling", () => {
   const toolCss = readFileSync(new URL("../src/styles/toolCards.css", import.meta.url), "utf8");
   const messagesCss = readFileSync(new URL("../src/styles/messages.css", import.meta.url), "utf8");
+  const entryAnimationTs = readFileSync(new URL("../src/messages/entryAnimation.ts", import.meta.url), "utf8");
   const statusCss = readFileSync(new URL("../src/styles/statusBar.css", import.meta.url), "utf8");
 
   it("uses the midnight and champagne treatment for adjacent tool cards", () => {
@@ -210,6 +211,27 @@ describe("connected transcript and header styling", () => {
     expect(toolCss).toContain(".toolCard--thinking { background: #171b25; }");
     expect(toolCss).toContain("--tool-stitch-metal: #c7a86d;");
     expect(toolCss).toContain("width: 60px;");
+  });
+
+  it("uses the selected folio flip for tool and thinking card entrances", () => {
+    expect(toolCss).toContain("animation: toolCardFolioFlip .55s");
+    expect(toolCss).toContain("transform: perspective(800px) rotateX(-62deg)");
+    expect(toolCss).toContain("transform: perspective(800px) rotateX(4deg)");
+    expect(toolCss).toContain("animation-name: toolCardFolioFlipCompact;");
+    expect(toolCss).toContain("transform: perspective(700px) rotateX(-78deg)");
+    expect(toolCss).toContain(".toolCard--folioPending { opacity: 0; }");
+    expect(toolCss).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(entryAnimationTs).toContain("window.requestAnimationFrame(() => {");
+    expect(entryAnimationTs).toContain('card.classList.add("toolCard--folioEnter")');
+  });
+
+  it("smoothly settles tool results and completed thinking states", () => {
+    expect(toolCss).toContain(".toolCard--stateChanging .toolCardHeader {");
+    expect(toolCss).toContain("animation: toolCardStateSettle .42s");
+    expect(toolCss).toContain("@keyframes toolCardStateIcon");
+    expect(toolCss).toContain("@keyframes toolCardStateContent");
+    expect(entryAnimationTs).toContain("export function playToolCardStateTransition");
+    expect(entryAnimationTs).toContain('card.classList.add("toolCard--stateChanging")');
   });
 
   it("keeps artifact headers compact with a pinstripe treatment", () => {

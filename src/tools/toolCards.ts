@@ -1,6 +1,7 @@
 import hljs from "highlight.js/lib/common";
 import { renderEditDiff } from "../components/editDiff.js";
 import { textFromRawContent } from "../messages/content.js";
+import { playToolCardEntry, playToolCardStateTransition } from "../messages/entryAnimation.js";
 import type { ApiHeaders } from "../app/api.js";
 
 export type ToolCards = {
@@ -424,6 +425,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     startRunningToolProgress(card, parseToolTimestamp(startedAt));
     messagesEl.append(card);
     scrollToBottom();
+    playToolCardEntry(card);
     return card;
   }
 
@@ -443,6 +445,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
       finalizePartialToolOutput(card);
     }
     addToolImagePreviews(card, result, apiHeaders);
+    playToolCardStateTransition(card);
 
     scrollToBottom();
   }

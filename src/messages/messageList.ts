@@ -5,6 +5,7 @@ import type { MessageDto } from "../../server/session/dto.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
+import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -793,6 +794,7 @@ export function createMessageList(options: {
 
     messagesEl.append(card);
     scrollToBottom();
+    if (streaming) playToolCardEntry(card);
     return card;
   }
 
@@ -870,6 +872,7 @@ export function createMessageList(options: {
       card.remove();
     } else {
       updateThinkingCardText(card, finalText, false);
+      playToolCardStateTransition(card);
     }
     streamingThinkingCards.delete(key);
     streamingAssistant = null;

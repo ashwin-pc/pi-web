@@ -11,6 +11,18 @@
   overflow: hidden;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 13px;
+  transition: background-color .28s ease, border-color .28s ease, color .22s ease;
+}
+.toolCard--folioPending { opacity: 0; }
+.toolCard--folioEnter {
+  transform-origin: top center;
+  backface-visibility: hidden;
+  animation: toolCardFolioFlip .55s cubic-bezier(.15, .82, .2, 1) both;
+}
+@keyframes toolCardFolioFlip {
+  0% { opacity: 0; transform: perspective(800px) rotateX(-62deg); filter: brightness(.7); }
+  72% { opacity: 1; transform: perspective(800px) rotateX(4deg); filter: none; }
+  100% { opacity: 1; transform: perspective(800px) rotateX(0); filter: none; }
 }
 .toolCard--running { background: color-mix(in srgb, var(--panel-2) 80%, #1a3050); }
 .toolCard--running.toolCard--quiet { background: color-mix(in srgb, var(--panel-2) 76%, #3b2f0b); }
@@ -18,7 +30,9 @@
 .toolCard--success { background: #15201e; }
 .toolCard--error   { background: color-mix(in srgb, var(--tool) 60%, #2d0a0f); }
 .toolCard--thinking { background: #171b25; }
+.toolCard--running,
 .toolCard--success,
+.toolCard--error,
 .toolCard--thinking {
   /* A restrained cross-woven texture gives the dark fills a tailored,
      fabric-like finish while preserving text contrast. */
@@ -66,6 +80,30 @@
   align-items: center;
   gap: 8px;
   padding: 8px 12px;
+}
+.toolCard--stateChanging .toolCardHeader {
+  animation: toolCardStateSettle .42s cubic-bezier(.18, .78, .2, 1) both;
+}
+.toolCard--stateChanging .toolCardIcon {
+  animation: toolCardStateIcon .42s cubic-bezier(.16, .82, .2, 1) both;
+}
+.toolCard--stateChanging .toolCardBody:not(.toolCardPartialBody),
+.toolCard--stateChanging .toolCardImage {
+  animation: toolCardStateContent .34s ease-out both;
+}
+@keyframes toolCardStateSettle {
+  0% { opacity: .72; filter: brightness(.76); }
+  55% { opacity: 1; filter: brightness(1.13); }
+  100% { opacity: 1; filter: none; }
+}
+@keyframes toolCardStateIcon {
+  0% { opacity: 0; transform: scale(.55) rotate(-14deg); }
+  68% { opacity: 1; transform: scale(1.14) rotate(2deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+@keyframes toolCardStateContent {
+  from { opacity: 0; clip-path: inset(0 0 18% 0); }
+  to { opacity: 1; clip-path: inset(0); }
 }
 .toolCardExpandToggle,
 .toolCardCollapseToggle {
@@ -375,6 +413,16 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
 :root[data-density="compact"] .toolCard {
   font-size: 12px;
 }
+:root[data-density="compact"] .toolCard--folioEnter {
+  animation-name: toolCardFolioFlipCompact;
+  animation-duration: .72s;
+  animation-delay: .04s;
+}
+@keyframes toolCardFolioFlipCompact {
+  0% { opacity: 0; transform: perspective(700px) rotateX(-78deg); filter: brightness(.62); }
+  74% { opacity: 1; transform: perspective(700px) rotateX(5deg); filter: none; }
+  100% { opacity: 1; transform: perspective(700px) rotateX(0); filter: none; }
+}
 :root[data-density="compact"] .toolCardHeader {
   min-height: 29px;
   height: 29px;
@@ -409,6 +457,16 @@ details[open] > .toolCardSummary::before { content: "▼ "; }
 }
 :root[data-density="compact"] .toolCard.toolCard--compactCollapsed > :not(.toolCardHeader) {
   display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toolCard { transition: none; }
+  .toolCard--folioPending { opacity: 1; }
+  .toolCard--folioEnter,
+  .toolCard--stateChanging .toolCardHeader,
+  .toolCard--stateChanging .toolCardIcon,
+  .toolCard--stateChanging .toolCardBody,
+  .toolCard--stateChanging .toolCardImage { animation: none !important; }
 }
 
 /* ── end Tool Cards ──────────────────────────────────────── */
