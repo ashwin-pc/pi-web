@@ -248,7 +248,7 @@ export type SessionInfo = {
   firstMessage?: string;
   created: string;
   modified: string;
-  messageCount: number;
+  messageCount?: number;
   cwd?: string;
   isCurrent: boolean;
   runtime?: {

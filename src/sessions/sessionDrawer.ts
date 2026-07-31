@@ -6,12 +6,21 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 
+export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try { return await fetch(url, { headers, signal: controller.signal }); }
+  finally { window.clearTimeout(timeout); }
+}
+
 export type SessionsController = {
   init: () => void;
   refreshSessions: () => Promise<void>;
   setSessionDrawerOpen: (open: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
+  updateSessionName: (sessionId: string, name: string) => void;
+  removeSession: (sessionId: string) => void;
   beginTranscriptLoading: () => void;
   updateEmptyCwdChooser: () => void;
   finishTranscriptLoading: () => void;
@@ -411,7 +420,7 @@ export function createSessions(options: {
       const params = new URLSearchParams();
       for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
       const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
-      const res = await fetch(url, { headers: api.headers() });
+      const res = await fetchSessionList(url, api.headers());
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
@@ -448,6 +457,29 @@ export function createSessions(options: {
     }));
     renderSessionList(cachedSessions);
     renderSessionBar();
+  }
+
+  function updateSessionName(sessionId: string, name: string) {
+    if (!sessionId) return;
+    let changed = false;
+    cachedSessions = cachedSessions.map((session) => {
+      if (session.id !== sessionId) return session;
+      changed = true;
+      return { ...session, name: name || undefined };
+    });
+    if (state.sessionsById[sessionId]) state.sessionsById[sessionId].name = name || undefined;
+    if (changed && !elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
+    renderSessionBar();
+  }
+
+  function removeSession(sessionId: string) {
+    if (!sessionId) return;
+    cachedSessions = cachedSessions.filter((session) => session.id !== sessionId);
+    delete state.sessionsById[sessionId];
+    pinnedRuntimes.delete(sessionId);
+    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
+    renderSessionBar();
+    updateSessionButtonUnread();
   }
 
   function updateSessionRuntime(sessionId: string, runtime: SessionInfo["runtime"]) {
@@ -1884,7 +1916,9 @@ export function createSessions(options: {
 
     const meta = document.createElement("span");
     meta.className = "sessionItemMeta";
-    meta.textContent = `${formatRelativeTime(item.modified)} · ${item.messageCount}`;
+    meta.textContent = item.messageCount === undefined
+      ? formatRelativeTime(item.modified)
+      : `${formatRelativeTime(item.modified)} · ${item.messageCount}`;
 
     navBtn.append(titleRow, meta);
     navBtn.addEventListener("click", async () => {
@@ -2038,6 +2072,8 @@ export function createSessions(options: {
     updateEmptyCwdChooser,
     finishTranscriptLoading,
     updateSessionRuntime,
+    updateSessionName,
+    removeSession,
     renderSessionBar,
     renderCurrentSessionBucketButton,
     applySessionUiState,

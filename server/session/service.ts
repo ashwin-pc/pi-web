@@ -27,6 +27,7 @@ import type {
   SessionServiceEvent,
   SlashCommandDto,
 } from "./dto.js";
+import { shallowListSessions, shallowSessionCwd } from "./shallowList.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -225,7 +226,7 @@ export class LocalSessionService implements SessionService {
   async cwdForSessionId(id: string) {
     const live = this.liveById.get(id);
     if (live) return this.sessionCwd(live);
-    const info = await this.findSessionInfoById(id);
+    const info = await this.findSessionLocationById(id);
     if (!info) throw new SessionServiceError("Session not found", 404);
     return info.cwd || this.deps.globalCwd();
   }
@@ -427,10 +428,20 @@ export class LocalSessionService implements SessionService {
     const request = (async () => {
       const groups = await Promise.all(orderedCwds.map(async (cwd) => {
         try {
-          const infos = this.deps.sessionFactory?.list
-            ? await this.deps.sessionFactory.list(cwd)
-            : await SessionManager.list(cwd);
-          return infos.map((info) => this.simplifySessionInfo(info, cwd));
+          if (this.deps.sessionFactory?.list) {
+            const infos = await this.deps.sessionFactory.list(cwd);
+            return infos.map((info) => this.simplifySessionInfo(info, cwd));
+          }
+          return (await shallowListSessions(cwd, this.defaultSessionDir(cwd))).map((info) => {
+            this.rememberSessionLocation(info, cwd);
+            const live = this.liveById.get(info.id);
+            return live ? {
+              ...info,
+              name: live.getSessionName?.() || info.name,
+              messageCount: live.messages.length,
+              cwd: this.sessionCwd(live),
+            } : info;
+          });
         } catch { return []; }
       }));
       return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
@@ -456,7 +467,7 @@ export class LocalSessionService implements SessionService {
 
   async delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto> {
     if (this.noSession) throw new Error("Sessions are disabled.");
-    const info = await this.findSessionInfoById(sessionId, cwd);
+    const info = await this.findSessionLocationById(sessionId, cwd);
     if (!info) throw new SessionServiceError("Session not found", 404);
     const live = this.liveSessions.get(info.path);
     if (live?.session.isStreaming || live?.session.isCompacting) throw new SessionServiceError("Wait for the session to finish before deleting it.", 409);
@@ -814,26 +825,14 @@ export class LocalSessionService implements SessionService {
     });
   }
 
-  private async findSessionInfoById(id: string, cwd?: string) {
+  private async findSessionLocationById(id: string, cwd?: string): Promise<{ id: string; path: string; cwd: string } | undefined> {
     if (!id || this.noSession) return undefined;
     if (this.deps.sessionFactory?.list) {
-      const infos = await this.deps.sessionFactory.list(cwd || this.deps.globalCwd());
-      return infos.find((info) => info.id === id);
+      const info = (await this.deps.sessionFactory.list(cwd || this.deps.globalCwd())).find((item) => item.id === id);
+      return info ? { id, path: info.path, cwd: info.cwd || cwd || this.deps.globalCwd() } : undefined;
     }
-    if (cwd?.trim()) {
-      const resolvedCwd = resolve(cwd);
-      const info = (await SessionManager.list(resolvedCwd)).find((item) => item.id === id);
-      if (info?.cwd) this.knownSessionCwds.add(resolve(info.cwd));
-      if (info) return info;
-    }
-    for (const knownCwd of this.knownCwds()) {
-      const info = (await SessionManager.list(knownCwd)).find((item) => item.id === id);
-      if (info?.cwd) this.knownSessionCwds.add(resolve(info.cwd));
-      if (info) return info;
-    }
-    const info = (await SessionManager.listAll()).find((item) => item.id === id);
-    if (info?.cwd) this.knownSessionCwds.add(resolve(info.cwd));
-    return info;
+    const location = await this.resolveSessionLocation(id, cwd);
+    return location ? { id, ...location } : undefined;
   }
 
   private defaultSessionDir(cwd: string) {
@@ -849,14 +848,38 @@ export class LocalSessionService implements SessionService {
       return info ? this.sessionLocations.get(id) : undefined;
     }
     const suffix = `_${id}.jsonl`;
+    const checkedDirectories = new Set<string>();
     for (const resolvedCwd of new Set([resolve(cwd), ...this.knownCwds()])) {
+      const directory = this.defaultSessionDir(resolvedCwd);
+      checkedDirectories.add(directory);
       let names: string[];
-      try { names = await readdir(this.defaultSessionDir(resolvedCwd)); } catch { continue; }
+      try { names = await readdir(directory); } catch { continue; }
       const name = names.find((entry) => entry.endsWith(suffix));
       if (!name) continue;
-      const location = { path: join(this.defaultSessionDir(resolvedCwd), name), cwd: resolvedCwd };
+      const location = { path: join(directory, name), cwd: resolvedCwd };
       this.sessionLocations.set(id, location);
       this.knownSessionCwds.add(resolvedCwd);
+      return location;
+    }
+
+    // Bookmarked IDs may be opened before their cwd has been visited in this process.
+    // Scan directory names and filenames only, then read the one matching header.
+    const sessionsRoot = join(getAgentDir(), "sessions");
+    let directories: string[];
+    try { directories = await readdir(sessionsRoot); } catch { return undefined; }
+    for (const directoryName of directories) {
+      const directory = join(sessionsRoot, directoryName);
+      if (checkedDirectories.has(directory)) continue;
+      let names: string[];
+      try { names = await readdir(directory); } catch { continue; }
+      const name = names.find((entry) => entry.endsWith(suffix));
+      if (!name) continue;
+      const path = join(directory, name);
+      const sessionCwd = await shallowSessionCwd(path);
+      if (!sessionCwd || this.defaultSessionDir(sessionCwd) !== directory) continue;
+      const location = { path, cwd: resolve(sessionCwd) };
+      this.sessionLocations.set(id, location);
+      this.knownSessionCwds.add(location.cwd);
       return location;
     }
     return undefined;

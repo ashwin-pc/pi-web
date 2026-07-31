@@ -95,7 +95,8 @@ export interface SessionInfoDto {
   firstMessage?: string;
   created: string;
   modified: string;
-  messageCount: number;
+  /** Exact for live sessions; omitted for cold sessions because deriving it requires a transcript parse. */
+  messageCount?: number;
   cwd: string;
   isCurrent: false;
 }
