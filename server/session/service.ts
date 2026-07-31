@@ -653,8 +653,9 @@ export class LocalSessionService implements SessionService {
     });
     if (e?.type === "message_end") {
       const committed = e.message;
-      // pi preserves this object identity and persists synchronously after its
-      // event listeners return; defer projection so entry metadata is available.
+      // agent-core inserts this object before notifying listeners; the agent
+      // relay persists its entry after listeners return, while idle custom
+      // messages persist before emitting. Defer so both paths expose entry metadata.
       queueMicrotask(() => {
         const message = projectCommittedMessage(value, committed);
         if (message) this.emit({ type: "committed", sessionId, sessionFile: value.sessionFile, message });

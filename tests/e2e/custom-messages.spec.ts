@@ -22,4 +22,6 @@ test("renders custom and unknown committed messages without disrupting the live 
 
   await page.locator("#stopButton").click();
   await expect(page.locator("#stopButton")).toBeHidden();
+  await expect(visibleCustom).toHaveCount(1);
+  await expect(page.locator(".message.system", { hasText: "future message content" })).toHaveCount(1);
 });
