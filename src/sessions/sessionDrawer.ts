@@ -6,6 +6,13 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 
+export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  try { return await fetch(url, { headers, signal: controller.signal }); }
+  finally { window.clearTimeout(timeout); }
+}
+
 export type SessionsController = {
   init: () => void;
   refreshSessions: () => Promise<void>;
@@ -413,11 +420,7 @@ export function createSessions(options: {
       const params = new URLSearchParams();
       for (const cwd of readKnownSessionCwds()) params.append("cwd", cwd);
       const url = params.toString() ? `/api/sessions?${params}` : "/api/sessions";
-      const controller = new AbortController();
-      const timeout = window.setTimeout(() => controller.abort(), 15_000);
-      let res: Response;
-      try { res = await fetch(url, { headers: api.headers(), signal: controller.signal }); }
-      finally { window.clearTimeout(timeout); }
+      const res = await fetchSessionList(url, api.headers());
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));

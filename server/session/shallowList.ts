@@ -33,18 +33,22 @@ function filenameMetadata(name: string) {
   return { id: match[2], created };
 }
 
-async function boundedContents(path: string, size: number) {
+export interface ShallowListMetrics { files: number; bytesRead: number }
+
+async function boundedContents(path: string, size: number, metrics?: ShallowListMetrics) {
   const handle = await open(path, "r");
   try {
     const headSize = Math.min(size, HEAD_BYTES);
     const head = Buffer.allocUnsafe(headSize);
     const { bytesRead: headRead } = await handle.read(head, 0, headSize, 0);
+    if (metrics) metrics.bytesRead += headRead;
     let text = head.subarray(0, headRead).toString("utf8");
     if (size > HEAD_BYTES) {
       const tailSize = Math.min(size - HEAD_BYTES, TAIL_BYTES);
       const tail = Buffer.allocUnsafe(tailSize);
       const position = size - tailSize;
       const { bytesRead: tailRead } = await handle.read(tail, 0, tailSize, position);
+      if (metrics) metrics.bytesRead += tailRead;
       // Deliberately drop any entry straddling the head/tail boundary, including
       // contiguous 32–40 KiB reads; bounded metadata projection tolerates that loss.
       const tailText = tail.subarray(0, tailRead).toString("utf8");
@@ -63,7 +67,7 @@ export async function shallowSessionCwd(path: string): Promise<string | undefine
 }
 
 /** A bounded projection of pi's append-only JSONL. It never reads transcript bodies. */
-export async function shallowListSessions(cwd: string, directory: string): Promise<SessionInfoDto[]> {
+export async function shallowListSessions(cwd: string, directory: string, metrics?: ShallowListMetrics): Promise<SessionInfoDto[]> {
   let names: string[];
   try { names = await readdir(directory); } catch { return []; }
   return (await Promise.all(names.filter((name) => name.endsWith(".jsonl")).map(async (name) => {
@@ -73,7 +77,8 @@ export async function shallowListSessions(cwd: string, directory: string): Promi
     try {
       const fileStat = await stat(path);
       if (!fileStat.isFile()) return undefined;
-      const entries = parseLines(await boundedContents(path, fileStat.size));
+      if (metrics) metrics.files += 1;
+      const entries = parseLines(await boundedContents(path, fileStat.size, metrics));
       const header = entries.find((entry) => entry?.type === "session");
       if (header?.id && header.id !== metadata.id) return undefined;
       let sessionName: string | undefined;

@@ -15,6 +15,10 @@ import type { ConversationTreeController } from "../tree/conversationTree.js";
 import { renderWebFooters } from "../extensions/webFooter.js";
 import { assistantErrorBody, normalizeAssistantError } from "../messages/content.js";
 
+export function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
+  return event?.type === "message_end";
+}
+
 export type RealtimeController = {
   connect: () => void;
   handlePiEvent: (event: PiEvent) => void;
@@ -81,15 +85,6 @@ export function createRealtime(options: {
 
   function eventWillRetry(event: PiEvent | undefined) {
     return Boolean(event?.willRetry);
-  }
-
-  function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
-    switch (event?.type) {
-      case "message_end":
-        return true;
-      default:
-        return false;
-    }
   }
 
   function noteRuntimeEvent(sessionKey: string, event: PiEvent | undefined) {
