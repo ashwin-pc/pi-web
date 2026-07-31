@@ -3,6 +3,8 @@ import { jsonRoundTrip, type BaseSessionStateDto, type ConversationTreeDto, type
 
 export type ContentDecorator = (content: unknown) => unknown;
 
+const warnedUnknownMessageRoles = new Set<string>();
+
 export function textFromContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -124,7 +126,21 @@ export function simplifyMessage(
       raw: content === m.content ? m : { ...m, content },
     }) as MessageDto;
   }
-  if (!["user", "assistant", "system", "compactionSummary", "branchSummary"].includes(String(m.role))) return undefined;
+  if (!["user", "assistant", "system", "compactionSummary", "branchSummary"].includes(String(m.role))) {
+    const originalRole = typeof m.role === "string" && m.role ? m.role : "unknown";
+    if (!warnedUnknownMessageRoles.has(originalRole)) {
+      warnedUnknownMessageRoles.add(originalRole);
+      console.warn(`Projecting unknown transcript message role: ${originalRole}`);
+    }
+    return jsonRoundTrip({
+      ...entry,
+      role: "unknown",
+      originalRole,
+      text: textFromContent(content),
+      timestamp: m.timestamp,
+      raw: content === m.content ? m : { ...m, content },
+    }) as MessageDto;
+  }
   const text = textFromContent(content);
   const errorText = m.role === "assistant" && m.errorMessage ? assistantErrorPreview(m) : "";
   const stopReasonText = m.role === "assistant" && !errorText ? assistantStopReasonPreview(m) : "";
@@ -168,8 +184,17 @@ export function projectMessages(targetSession: PiWebSession): MessageDto[] {
 }
 
 export function projectCommittedMessage(targetSession: PiWebSession, committed: unknown): MessageDto | undefined {
-  const index = targetSession.messages.lastIndexOf(committed as never);
-  if (index < 0) return simplifyMessage(committed);
+  const serialized = JSON.stringify(committed);
+  let index = targetSession.messages.lastIndexOf(committed as never);
+  if (index < 0 && serialized !== undefined) {
+    for (let candidate = targetSession.messages.length - 1; candidate >= 0; candidate -= 1) {
+      if (JSON.stringify(targetSession.messages[candidate]) === serialized) {
+        index = candidate;
+        break;
+      }
+    }
+  }
+  if (index < 0) return undefined;
   const { toolCallArgs, refs } = messageProjectionContext(targetSession);
   return simplifyMessage(targetSession.messages[index], { toolCallArgs, entryId: refs[index]?.entryId });
 }

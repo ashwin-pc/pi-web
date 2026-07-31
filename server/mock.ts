@@ -224,7 +224,12 @@ export function createMockHarness(options: MockSessionOptions) {
         sessionId: mockSession.sessionId,
         sessionFile: mockSession.sessionFile,
         event: lastActivityAt ? { ...event, lastActivityAt } : event,
-        ...(committedMessage ? { committedMessage } : {}),
+      });
+      if (committedMessage) broadcast({
+        type: "committed_message",
+        sessionId: mockSession.sessionId,
+        sessionFile: mockSession.sessionFile,
+        message: committedMessage,
       });
     }
 
@@ -511,6 +516,7 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage(visibleCustom);
           broadcastPiEvent({ type: "message_end", message: visibleCustom });
           if (!(await waitForMockRun(500))) return;
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed prefix" } });
           const hiddenCustom = { role: "custom", customType: "probe-hidden", content: "hidden extension message", details: { source: "mock-extension" }, display: false, timestamp };
           appendMockMessage(hiddenCustom);
           broadcastPiEvent({ type: "message_end", message: hiddenCustom });

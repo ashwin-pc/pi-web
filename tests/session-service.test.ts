@@ -124,6 +124,11 @@ describe("LocalSessionService contract", () => {
     expect(await service.messages(created.sessionId)).toContainEqual(expect.objectContaining({ role: "user", text: "hello" }));
     expect(events.map((event) => event.type)).toContain("pi");
     expect(events.map((event) => event.type)).toContain("stats");
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "committed",
+      sessionId: created.sessionId,
+      message: expect.objectContaining({ role: "user", text: "hello", entryId: "user-2" }),
+    }));
 
     initial.prompt = async () => { throw new Error("prompt failed"); };
     await service.prompt(initial.sessionId, { message: "fail", mode: "steer", images: [] });
@@ -271,13 +276,6 @@ describe("LocalSessionService contract", () => {
         sessionId: initial.sessionId,
         sessionFile: initial.sessionFile,
         event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt },
-        committedMessage: {
-          role: "assistant",
-          text: "model_not_supported",
-          isError: true,
-          timestamp: messageAt,
-          raw: message,
-        },
       },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
       { type: "session_stats_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, stats: (await service.stats(initial.sessionId)).stats },

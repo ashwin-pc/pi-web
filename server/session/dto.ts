@@ -52,6 +52,7 @@ export type MessageDto = MessageDtoBase & (
   | { role: "bashExecution"; command?: JsonValue; output?: JsonValue; exitCode?: JsonValue; cancelled: boolean; truncated: boolean; fullOutputPath?: JsonValue; excludeFromContext: boolean }
   | { role: "compactionSummary"; isError?: boolean }
   | { role: "branchSummary"; isError?: boolean }
+  | { role: "unknown"; originalRole: string; isError?: boolean }
   | { role: "custom"; customType: string; details?: JsonValue; display: true }
 );
 
@@ -115,6 +116,7 @@ export interface DeleteSessionResultDto {
 export type SessionServiceEvent =
   | { type: "pi"; sessionId: string; sessionFile: string; event: JsonValue; clientMessageId?: string; sourceClientId?: string }
   | { type: "state"; state: BaseSessionStateDto; includeThinkingLevels?: boolean }
+  | { type: "committed"; sessionId: string; sessionFile: string; message: MessageDto }
   | { type: "stats"; sessionId: string; sessionFile: string; stats: SessionStatsDto }
   | { type: "models"; sessionId: string; models: ModelDto[] }
   | { type: "error"; sessionId?: string; sessionFile?: string; error: string; clientMessageId?: string }

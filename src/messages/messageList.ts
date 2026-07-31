@@ -979,7 +979,8 @@ export function createMessageList(options: {
         if (text) addMessage("user", text, message.isError ? "error" : "", imagesFromRawContent(rawContent(message)), { entryId: message.entryId });
         return;
       }
-      case "system": {
+      case "system":
+      case "unknown": {
         const text = messageText(message);
         if (text) addMessage("system", text, message.isError ? "error" : "", [], { entryId: message.entryId });
         return;
@@ -987,7 +988,7 @@ export function createMessageList(options: {
       case "compactionSummary":
       case "branchSummary": {
         const text = messageText(message);
-        if (text) addMessage("system", text, message.role === "compactionSummary" ? "compaction" : "branchSummary", [], { entryId: message.entryId });
+        if (text) addMessage("system", text, message.role === "compactionSummary" ? "compaction" : "", [], { entryId: message.entryId });
         return;
       }
       case "custom": {
@@ -1008,11 +1009,18 @@ export function createMessageList(options: {
     addRuntimeErrorCard: AddRuntimeErrorCard;
     isStreaming?: boolean;
   }) {
+    const streamingAnchor = streamingAssistant?.isConnected ? streamingAssistant : null;
+    const existingChildren = new Set(messagesEl.children);
     renderMessage(message, {
       ...options,
       completedToolResults: new Map(),
       renderedToolResultIds: new Set(),
     });
+    if (streamingAnchor) {
+      for (const child of Array.from(messagesEl.children)) {
+        if (!existingChildren.has(child)) messagesEl.insertBefore(child, streamingAnchor);
+      }
+    }
   }
 
   async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState }: {

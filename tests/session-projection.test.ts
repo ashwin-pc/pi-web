@@ -6,6 +6,7 @@ import {
   entryMessage,
   getSessionSlashCommands,
   messageEntryRefs,
+  projectCommittedMessage,
   projectSessionState,
   sessionStats,
   simplifyMessage,
@@ -89,6 +90,26 @@ describe("pure session projections", () => {
       });
       expect(simplifyMessage({ ...message, display: false })).toBeUndefined();
     }
+  });
+
+  it("recovers persisted metadata for cloned committed messages", () => {
+    const session = fixtureSession();
+    const cloned = jsonRoundTrip(session.messages[1]);
+    expect(projectCommittedMessage(session, cloned)).toMatchObject({
+      role: "assistant",
+      entryId: "assistant-1",
+      text: "Hi",
+    });
+  });
+
+  it("projects unknown roles without dropping their content", () => {
+    expect(simplifyMessage({ role: "futureKind", content: "important text", timestamp: "now" })).toEqual({
+      role: "unknown",
+      originalRole: "futureKind",
+      text: "important text",
+      timestamp: "now",
+      raw: { role: "futureKind", content: "important text", timestamp: "now" },
+    });
   });
 
   it("accepts host decoration as explicit message projection input", () => {

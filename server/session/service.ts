@@ -33,6 +33,7 @@ import {
   isAssistantAbortedMessage,
   isAssistantFailureMessage,
   isIncompleteToolResultMessage,
+  projectCommittedMessage,
   projectMessages,
   projectSessionState,
   sessionStats,
@@ -650,6 +651,13 @@ export class LocalSessionService implements SessionService {
       event: event as JsonValue,
       ...(correlation ? { clientMessageId: correlation.clientMessageId, sourceClientId: correlation.sourceClientId } : {}),
     });
+    if (e?.type === "message_end") {
+      const committed = e.message;
+      queueMicrotask(() => {
+        const message = projectCommittedMessage(value, committed);
+        if (message) this.emit({ type: "committed", sessionId, sessionFile: value.sessionFile, message });
+      });
+    }
     if (e?.type === "session_info_changed") this.emit({ type: "state", state: this.projectState(value) });
     if (e?.type === "message_end" || e?.type === "agent_end" || e?.type === "compaction_end") {
       this.emit({ type: "stats", sessionId, sessionFile, stats: sessionStats(value) });

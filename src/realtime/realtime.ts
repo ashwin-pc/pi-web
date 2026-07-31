@@ -64,7 +64,6 @@ export function createRealtime(options: {
   let latestRetryAttempt: number | undefined;
   let latestRetryMaxAttempts: number | undefined;
   let sessionRefreshTimer: number | undefined;
-  let transcriptFallbackTimer: number | undefined;
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
   const sessionRuntimeKeys = new Map<string, string>();
@@ -572,9 +571,7 @@ export function createRealtime(options: {
     rememberIncompleteResponse(transcriptState.incomplete || null);
   }
 
-  const projectedMessageRoles = new Set(["user", "assistant", "system", "toolResult", "bashExecution", "compactionSummary", "branchSummary", "custom"]);
-
-  function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string; committedMessage?: MessageDto }) {
+  function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string }) {
     switch (event.type) {
       case "session_info_changed":
         if ("name" in event) status.setStatusTitle(event.name || "New session");
@@ -620,20 +617,6 @@ export function createRealtime(options: {
         const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
         if (deliveredRole === "user") {
           composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId);
-        } else if (!isReplay && envelope?.committedMessage && !["assistant", "toolResult"].includes(deliveredRole)) {
-          messages.appendCommittedMessage(envelope.committedMessage, {
-            addToolHistoryCard: tools.addToolHistoryCard,
-            addPendingToolCard: tools.startTool,
-            addRuntimeErrorCard: tools.addRuntimeErrorCard,
-            isStreaming: state.isStreaming || state.isRetrying,
-          });
-        } else if (!isReplay && !projectedMessageRoles.has(deliveredRole)) {
-          // Unknown future kinds safely converge through one debounced bulk load.
-          if (transcriptFallbackTimer !== undefined) window.clearTimeout(transcriptFallbackTimer);
-          transcriptFallbackTimer = window.setTimeout(() => {
-            transcriptFallbackTimer = undefined;
-            void refreshMessages().catch((error) => console.error("Could not refresh unknown completed transcript message", error));
-          }, 100);
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {
@@ -838,6 +821,18 @@ export function createRealtime(options: {
       }
       if (data.type === "web_git_tabs_changed") {
         if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
+        return;
+      }
+      if (data.type === "committed_message") {
+        const committed = data.message as MessageDto;
+        if (!isReplay && (!data.sessionId || data.sessionId === state.currentSessionId) && !["user", "assistant", "toolResult"].includes(committed.role)) {
+          messages.appendCommittedMessage(committed, {
+            addToolHistoryCard: tools.addToolHistoryCard,
+            addPendingToolCard: tools.startTool,
+            addRuntimeErrorCard: tools.addRuntimeErrorCard,
+            isStreaming: state.isStreaming || state.isRetrying,
+          });
+        }
         return;
       }
       if (data.type === "pi_event") {
