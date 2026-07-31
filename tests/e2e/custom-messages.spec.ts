@@ -4,7 +4,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
 });
 
-test("renders custom, bash, and compaction messages live without relying on agent_end", async ({ page }) => {
+test("renders custom and unknown committed messages without disrupting the live stream", async ({ page }) => {
   await page.goto("/");
   await page.locator("#prompt").fill("slow live message kinds");
   await page.locator("#primaryButton").click();
@@ -15,8 +15,7 @@ test("renders custom, bash, and compaction messages live without relying on agen
   const streamedAssistant = page.locator(".message.assistant", { hasText: "streamed prefix" });
   await expect(streamedAssistant).toHaveCount(1);
   await expect(page.getByText("hidden extension message", { exact: true })).toHaveCount(0);
-  await expect(page.locator(".toolCard", { hasText: "live bash output" })).toHaveCount(1, { timeout: 2_000 });
-  await expect(page.locator(".message.compaction", { hasText: "live compaction summary" })).toHaveCount(1, { timeout: 1_000 });
+  await expect(page.locator(".message.system", { hasText: "future message content" })).toHaveCount(1, { timeout: 2_000 });
   await expect(streamedAssistant).toHaveCount(1);
   await expect(streamedAssistant).toContainText("streamed prefixstreamed suffix");
   await expect(page.locator("#stopButton")).toBeVisible();

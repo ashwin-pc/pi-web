@@ -653,6 +653,8 @@ export class LocalSessionService implements SessionService {
     });
     if (e?.type === "message_end") {
       const committed = e.message;
+      // pi preserves this object identity and persists synchronously after its
+      // event listeners return; defer projection so entry metadata is available.
       queueMicrotask(() => {
         const message = projectCommittedMessage(value, committed);
         if (message) this.emit({ type: "committed", sessionId, sessionFile: value.sessionFile, message });

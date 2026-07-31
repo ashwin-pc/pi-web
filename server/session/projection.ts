@@ -184,16 +184,7 @@ export function projectMessages(targetSession: PiWebSession): MessageDto[] {
 }
 
 export function projectCommittedMessage(targetSession: PiWebSession, committed: unknown): MessageDto | undefined {
-  const serialized = JSON.stringify(committed);
-  let index = targetSession.messages.lastIndexOf(committed as never);
-  if (index < 0 && serialized !== undefined) {
-    for (let candidate = targetSession.messages.length - 1; candidate >= 0; candidate -= 1) {
-      if (JSON.stringify(targetSession.messages[candidate]) === serialized) {
-        index = candidate;
-        break;
-      }
-    }
-  }
+  const index = targetSession.messages.lastIndexOf(committed as never);
   if (index < 0) return undefined;
   const { toolCallArgs, refs } = messageProjectionContext(targetSession);
   return simplifyMessage(targetSession.messages[index], { toolCallArgs, entryId: refs[index]?.entryId });

@@ -64,6 +64,7 @@ export function createRealtime(options: {
   let latestRetryAttempt: number | undefined;
   let latestRetryMaxAttempts: number | undefined;
   let sessionRefreshTimer: number | undefined;
+  let replayTranscriptRefreshTimer: number | undefined;
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
   const sessionRuntimeKeys = new Map<string, string>();
@@ -824,8 +825,17 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "committed_message") {
+        const appliesToCurrentSession = !data.sessionId || data.sessionId === state.currentSessionId;
+        if (isReplay && appliesToCurrentSession) {
+          if (replayTranscriptRefreshTimer !== undefined) window.clearTimeout(replayTranscriptRefreshTimer);
+          replayTranscriptRefreshTimer = window.setTimeout(() => {
+            replayTranscriptRefreshTimer = undefined;
+            void refreshMessages().catch((error) => console.error("Could not reconcile replayed transcript messages", error));
+          }, 100);
+          return;
+        }
         const committed = data.message as MessageDto;
-        if (!isReplay && (!data.sessionId || data.sessionId === state.currentSessionId) && !["user", "assistant", "toolResult"].includes(committed.role)) {
+        if (appliesToCurrentSession && !["user", "assistant", "toolResult"].includes(committed.role)) {
           messages.appendCommittedMessage(committed, {
             addToolHistoryCard: tools.addToolHistoryCard,
             addPendingToolCard: tools.startTool,

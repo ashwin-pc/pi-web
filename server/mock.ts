@@ -520,12 +520,9 @@ export function createMockHarness(options: MockSessionOptions) {
           const hiddenCustom = { role: "custom", customType: "probe-hidden", content: "hidden extension message", details: { source: "mock-extension" }, display: false, timestamp };
           appendMockMessage(hiddenCustom);
           broadcastPiEvent({ type: "message_end", message: hiddenCustom });
-          const bashMessage = { role: "bashExecution", command: "echo live", output: "live bash output", exitCode: 0, cancelled: false, truncated: false, timestamp };
-          appendMockMessage(bashMessage);
-          broadcastPiEvent({ type: "message_end", message: bashMessage });
-          const compactionMessage = { role: "compactionSummary", content: "live compaction summary", summary: "live compaction summary", tokensBefore: 1234, timestamp };
-          appendMockMessage(compactionMessage);
-          broadcastPiEvent({ type: "message_end", message: compactionMessage });
+          const unknownMessage = { role: "futureKind", content: "future message content", timestamp };
+          appendMockMessage(unknownMessage);
+          broadcastPiEvent({ type: "message_end", message: unknownMessage });
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "streamed suffix" } });
         }
         if (withQuietRuntime || withLiveMessageKinds) {

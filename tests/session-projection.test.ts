@@ -92,10 +92,9 @@ describe("pure session projections", () => {
     }
   });
 
-  it("recovers persisted metadata for cloned committed messages", () => {
+  it("recovers persisted metadata for the committed message reference", () => {
     const session = fixtureSession();
-    const cloned = jsonRoundTrip(session.messages[1]);
-    expect(projectCommittedMessage(session, cloned)).toMatchObject({
+    expect(projectCommittedMessage(session, session.messages[1])).toMatchObject({
       role: "assistant",
       entryId: "assistant-1",
       text: "Hi",
