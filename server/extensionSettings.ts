@@ -3,8 +3,10 @@
  *
  * Shared backbone for the generic pi-web extension-settings platform. Kept pure
  * (no node/browser deps) so both the server (validation before persist) and the
- * client (form rendering) can rely on the same contract. See
- * `.pi/web/artifacts/worker-model-selection-plan.md` (Amendment 3).
+ * client (form rendering) can rely on the same descriptor, defaulting, and
+ * validation contract. Extension authors register namespaced schemas; pi-web
+ * renders those schemas and validates values before persistence. See
+ * `docs/pi-web-extensions.md`.
  */
 
 import type { JsonObject } from "./settings.js";
@@ -111,6 +113,12 @@ function coerceScalar(field: FieldDescriptor, raw: unknown, path: string, errors
     case "toggle":
       return typeof raw === "boolean" ? raw : Boolean(raw);
     case "number": {
+      const empty = raw === undefined || raw === null || raw === "";
+      if (empty) {
+        if (!field.required) return typeof field.default === "number" ? field.default : undefined;
+        errors.push({ path, message: `${field.label} must be a number` });
+        return typeof field.default === "number" ? field.default : (field.min ?? 0);
+      }
       const n = typeof raw === "number" ? raw : Number(raw);
       if (!Number.isFinite(n)) {
         errors.push({ path, message: `${field.label} must be a number` });
@@ -223,10 +231,16 @@ export function validateSettingsValues(
 }
 
 function coerceList(field: FieldDescriptor, raw: unknown, path: string, errors: ValidationError[]): JsonObject[] {
+  if (raw !== undefined && raw !== null && !Array.isArray(raw)) {
+    errors.push({ path, message: `${field.label} must be a list` });
+  }
   const arr = Array.isArray(raw) ? raw : [];
   const itemFields = field.itemFields ?? [];
   const rows: JsonObject[] = arr.map((rawRow, i) => {
     const row: JsonObject = {};
+    if (!isRecord(rawRow)) {
+      errors.push({ path: `${path}[${i}]`, message: `${field.label} item must be an object` });
+    }
     const rowSrc = isRecord(rawRow) ? rawRow : {};
     // preserve/generate stable __id
     row.__id = typeof rowSrc.__id === "string" && rowSrc.__id ? rowSrc.__id : newRowId();

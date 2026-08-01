@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { PiWebArtifactAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
-import { isValidExtensionOwnerId } from "../settings.js";
+import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
 
 export interface WebUiBridgeDependencies {
@@ -105,6 +105,7 @@ function settingsSchemaProblem(schema: PiWebSettingsRegistration, depth = 0, fie
     if (!settingsFieldTypes.has(String(field.type))) return `unsupported field type "${String(field.type)}" on "${field.key}"`;
     if (typeof field.label !== "string" || !field.label.trim()) return `field "${field.key}" needs a label`;
     if (field.type === "list") {
+      if (depth > 0) return `field "${field.key}": nested list fields are not supported`;
       const nested = settingsSchemaProblem(schema, depth + 1, field.itemFields);
       if (nested) return nested;
     }
@@ -127,8 +128,14 @@ function activeSettingsSchemaList() {
     .map(serializableSettingsSchema);
 }
 
-function broadcastSettingsSchemas() {
-  deps.emit({ type: "web_settings_schemas_changed", webSettingsSchemas: activeSettingsSchemaList() });
+function settingsSchemaListKey() {
+  return JSON.stringify(activeSettingsSchemaList());
+}
+
+function broadcastSettingsSchemasIfChanged(previousKey: string) {
+  const webSettingsSchemas = activeSettingsSchemaList();
+  if (JSON.stringify(webSettingsSchemas) === previousKey) return;
+  deps.emit({ type: "web_settings_schemas_changed", webSettingsSchemas });
 }
 
 /**
@@ -159,19 +166,39 @@ async function migrateStoredSettings(
       if (migrateError === undefined && migratedValues !== undefined) {
         const { values, errors } = validateSettingsValues(schema, migratedValues, { modelOptions: deps.modelOptions() });
         if (errors.length === 0) {
-          await deps.settingsStore.patchExtension(schema.id, values, { schemaVersion: schema.schemaVersion, backup });
+          await deps.settingsStore.patchExtension(schema.id, values, {
+            schemaVersion: schema.schemaVersion,
+            expectedRevision: stored.revision,
+            backup,
+          });
           return { migrated: true, usedBackup: false };
         }
         migrateError = `migration produced invalid values (${errors.length})`;
       }
-      await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
+      await deps.settingsStore.patchExtension(schema.id, defaults, {
+        schemaVersion: schema.schemaVersion,
+        expectedRevision: stored.revision,
+        backup,
+      });
       return { migrated: false, usedBackup: true, error: migrateError };
     }
     // No migrate() provided: reset to defaults, keep a one-slot backup.
-    await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
+    await deps.settingsStore.patchExtension(schema.id, defaults, {
+      schemaVersion: schema.schemaVersion,
+      expectedRevision: stored.revision,
+      backup,
+    });
     return { migrated: false, usedBackup: true };
   } catch (error) {
-    return { migrated: false, usedBackup: false, error: describe(error) };
+    const message = describe(error);
+    if (error instanceof ExtensionRevisionConflictError) {
+      return {
+        migrated: false,
+        usedBackup: false,
+        error: `migration skipped because settings changed concurrently: ${message}`,
+      };
+    }
+    return { migrated: false, usedBackup: false, error: message };
   }
 }
 
@@ -196,7 +223,6 @@ async function registerSessionSettings(
     console.warn(`pi-web: ${error}; rejecting new registration.`);
     return { registered: false, migrated: false, usedBackup: false, error };
   }
-  const reserved = !entry;
   if (!entry) {
     entry = {
       schema,
@@ -209,38 +235,60 @@ async function registerSessionSettings(
     activeSettingsSchemas.set(id, entry);
   }
 
-  // Count ourselves as in-flight BEFORE awaiting, so a concurrent registrant
-  // that gets disposed cannot delete this entry out from under us.
-  entry.pending += 1;
   let result: { migrated: boolean; usedBackup: boolean; error?: string };
-  try {
-    result = await entry.migration;
-  } catch (error) {
-    // migrateStoredSettings is written not to reject; treat a rejection as a
-    // failed registration and release the reservation so the id stays usable.
-    const message = error instanceof Error ? error.message : String(error);
+  while (true) {
+    // Count ourselves as in-flight BEFORE awaiting, so releasing the last
+    // registrant cannot drop this entry while this registration can still use it.
+    entry.pending += 1;
+    try {
+      result = await entry.migration;
+    } catch (error) {
+      // migrateStoredSettings is written not to reject; treat a rejection as a
+      // failed registration and release the reservation so the id stays usable.
+      const message = error instanceof Error ? error.message : String(error);
+      entry.pending -= 1;
+      if (entry.registrants.size === 0 && entry.pending === 0 && activeSettingsSchemas.get(id) === entry) {
+        activeSettingsSchemas.delete(id);
+      }
+      return { registered: false, migrated: false, usedBackup: false, error: message };
+    }
     entry.pending -= 1;
-    if (entry.registrants.size === 0 && entry.pending === 0) activeSettingsSchemas.delete(id);
-    return { registered: false, migrated: false, usedBackup: false, error: message };
-  }
-  entry.pending -= 1;
-  entry.ready = true;
-  if (result.error) {
-    entry.migrationError = result.error;
-    console.warn(`pi-web: settings migration for "${id}" fell back to defaults: ${result.error}`);
+    entry.ready = true;
+    if (result.error) {
+      entry.migrationError = result.error;
+      console.warn(`pi-web: settings migration for "${id}" did not complete: ${result.error}`);
+    }
+
+    // The session may have shut down while migration was in flight; never
+    // register a dead session (and drop a reservation nobody else is claiming).
+    if (disposedSettingsSessions.has(session)) {
+      if (entry.registrants.size === 0 && entry.pending === 0 && activeSettingsSchemas.get(id) === entry) {
+        activeSettingsSchemas.delete(id);
+      }
+      return { registered: false, migrated: result.migrated, usedBackup: result.usedBackup, error: "session shut down during registration" };
+    }
+
+    const current = activeSettingsSchemas.get(id);
+    if (!current) {
+      // The id is still unclaimed, so this completed reservation may publish.
+      activeSettingsSchemas.set(id, entry);
+      break;
+    }
+    if (current === entry) break;
+    if (current.canonicalKey !== canonical) {
+      const error = `settings id "${id}" is now registered with a different schema`;
+      console.warn(`pi-web: ${error}; rejecting registration completed against a stale reservation.`);
+      return { registered: false, migrated: result.migrated, usedBackup: result.usedBackup, error };
+    }
+
+    // Another equivalent entry became canonical while this migration awaited.
+    // Join it (and await its shared migration) instead of overwriting it.
+    entry = current;
   }
 
-  // The session may have shut down while migration was in flight; never
-  // register a dead session (and drop a reservation nobody else is claiming).
-  if (disposedSettingsSessions.has(session)) {
-    if (entry.registrants.size === 0 && entry.pending === 0) activeSettingsSchemas.delete(id);
-    return { registered: false, migrated: result.migrated, usedBackup: result.usedBackup, error: "session shut down during registration" };
-  }
-
-  // Always attach to the entry the registry currently holds for this id.
-  if (activeSettingsSchemas.get(id) !== entry) activeSettingsSchemas.set(id, entry);
+  const previousSchemaList = settingsSchemaListKey();
   entry.registrants.set(session, { schema, sessionId: String(value?.sessionId || "") });
-  broadcastSettingsSchemas();
+  broadcastSettingsSchemasIfChanged(previousSchemaList);
   return { registered: true, migrated: result.migrated, usedBackup: result.usedBackup, error: result.error };
 }
 
@@ -260,13 +308,12 @@ function notifySettingsChanged(id: string, values: Record<string, unknown>) {
 function releaseSessionSettings(value: any) {
   const session = value as object;
   disposedSettingsSessions.add(session);
-  let changed = false;
+  const previousSchemaList = settingsSchemaListKey();
   for (const [id, entry] of activeSettingsSchemas) {
     if (!entry.registrants.delete(session)) continue;
-    changed = true;
-    if (entry.registrants.size === 0) activeSettingsSchemas.delete(id);
+    if (entry.registrants.size === 0 && entry.pending === 0) activeSettingsSchemas.delete(id);
   }
-  if (changed) broadcastSettingsSchemas();
+  broadcastSettingsSchemasIfChanged(previousSchemaList);
 }
 
 async function getExtensionSettings(id: string): Promise<PiWebStoredSettings> {

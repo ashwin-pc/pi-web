@@ -82,6 +82,29 @@ describe("extension settings registry", () => {
     expect(good.registered).toBe(true);
   });
 
+  it("rejects nested list fields that the client cannot render", async () => {
+    // Removing the server-side nested-list guard makes this registration
+    // succeed and exposes values the client cannot safely edit.
+    const { bridge } = await makeBridge();
+    const result = await register(bridge, makeSession("s1"), schemaFor("demo.x", {
+      fields: [{
+        key: "groups",
+        type: "list",
+        label: "Groups",
+        itemFields: [{
+          key: "members",
+          type: "list",
+          label: "Members",
+          itemFields: [{ key: "name", type: "text", label: "Name" }],
+        }],
+      }],
+    }));
+
+    expect(result.registered).toBe(false);
+    expect(result.error).toMatch(/nested list fields are not supported/);
+    expect(bridge.settingsSchemas()).toHaveLength(0);
+  });
+
   it("migrates once when two sessions register the same schema concurrently", async () => {
     const { bridge, settingsStore } = await makeBridge();
     await settingsStore.patchExtension("demo.x", { tier: "old" }, { schemaVersion: 1, expectedRevision: 0 });
@@ -126,6 +149,30 @@ describe("extension settings registry", () => {
 
     bridge.releaseSessionSettings(second);
     expect(bridge.settingsSchemas()).toHaveLength(0);
+  });
+
+  it("broadcasts only when the published schema list changes", async () => {
+    // Restoring an unconditional registration/release broadcast increases the
+    // counts below when an equivalent session joins or a non-last one leaves.
+    const { bridge, emitted } = await makeBridge();
+    const first = makeSession("s1");
+    const second = makeSession("s2");
+    const schema = schemaFor("demo.x");
+    const broadcasts = () => emitted.filter((event: any) => event?.type === "web_settings_schemas_changed") as any[];
+
+    await register(bridge, first, schema);
+    expect(broadcasts()).toHaveLength(1);
+    expect(broadcasts()[0].webSettingsSchemas).toHaveLength(1);
+
+    await register(bridge, second, schema);
+    expect(broadcasts()).toHaveLength(1); // identical published descriptor
+
+    bridge.releaseSessionSettings(first);
+    expect(broadcasts()).toHaveLength(1); // second keeps it published
+
+    bridge.releaseSessionSettings(second);
+    expect(broadcasts()).toHaveLength(2);
+    expect(broadcasts()[1].webSettingsSchemas).toHaveLength(0);
   });
 
   it("notifies every live registrant with its own callback and session id", async () => {
@@ -230,6 +277,87 @@ describe("extension settings registry", () => {
 });
 
 describe("extension settings registry — failure corner cases", () => {
+  it("does not let an in-flight registration overwrite a divergent replacement", async () => {
+    // Removing the pending-release guard changes the canonical winner; restoring
+    // blind stale reattachment too lets both callers succeed while one is invisible.
+    const { bridge } = await makeBridge();
+    const first = makeSession("s1");
+    const joiner = makeSession("s2");
+    const divergent = makeSession("s3");
+    const joinerChange = vi.fn();
+    const divergentChange = vi.fn();
+    const canonical = schemaFor("demo.x", { onChange: joinerChange });
+
+    expect((await register(bridge, first, canonical)).registered).toBe(true);
+    const joining = register(bridge, joiner, canonical); // awaits the settled shared migration
+    bridge.releaseSessionSettings(first);
+    const diverging = register(bridge, divergent, schemaFor("demo.x", {
+      fields: [{ key: "other", type: "toggle", label: "Other" }],
+      onChange: divergentChange,
+    }));
+
+    const [joinResult, divergentResult] = await Promise.all([joining, diverging]);
+    expect(joinResult.registered).toBe(true);
+    expect(divergentResult.registered).toBe(false);
+    expect(divergentResult.error).toMatch(/different schema/);
+    expect(bridge.settingsSchemas()).toHaveLength(1);
+    expect((bridge.settingsSchemas() as any[])[0].fields[0].key).toBe("tier");
+    expect(bridge.settingsSchemaEntry("demo.x")).toBeDefined();
+
+    bridge.notifySettingsChanged("demo.x", { tier: "fast" });
+    expect(joinerChange).toHaveBeenCalledWith({ tier: "fast" }, { sessionId: "s2" });
+    expect(divergentChange).not.toHaveBeenCalled();
+  });
+
+  it("keeps same-schema registrations visible and notifiable across an in-flight release", async () => {
+    // Restoring pending-entry deletion plus blind continuation reattachment makes
+    // one successful same-schema registrant disappear from notifications.
+    const { bridge } = await makeBridge();
+    const first = makeSession("s1");
+    const second = makeSession("s2");
+    const third = makeSession("s3");
+    const secondChange = vi.fn();
+    const thirdChange = vi.fn();
+    const secondSchema = schemaFor("demo.x", { onChange: secondChange });
+    const thirdSchema = schemaFor("demo.x", { onChange: thirdChange });
+
+    expect((await register(bridge, first, secondSchema)).registered).toBe(true);
+    const secondRegistration = register(bridge, second, secondSchema);
+    bridge.releaseSessionSettings(first);
+    const thirdRegistration = register(bridge, third, thirdSchema);
+
+    const [secondResult, thirdResult] = await Promise.all([secondRegistration, thirdRegistration]);
+    expect(secondResult.registered).toBe(true);
+    expect(thirdResult.registered).toBe(true);
+    expect(bridge.settingsSchemas()).toHaveLength(1);
+    expect(bridge.settingsSchemaEntry("demo.x")).toBeDefined();
+
+    bridge.notifySettingsChanged("demo.x", { tier: "fast" });
+    expect(secondChange).toHaveBeenCalledWith({ tier: "fast" }, { sessionId: "s2" });
+    expect(thirdChange).toHaveBeenCalledWith({ tier: "fast" }, { sessionId: "s3" });
+  });
+
+  it("skips a migration write when a concurrent reset changes the revision", async () => {
+    // Removing expectedRevision from migration writes makes the migration
+    // silently recreate and overwrite the record reset inside migrate().
+    const { bridge, settingsStore } = await makeBridge();
+    await settingsStore.patchExtension("demo.x", { tier: "old" }, { schemaVersion: 1, expectedRevision: 0 });
+
+    const result = await register(bridge, makeSession("s1"), schemaFor("demo.x", {
+      schemaVersion: 2,
+      migrate: async () => {
+        await settingsStore.resetExtension("demo.x", 1);
+        return { tier: "migrated" };
+      },
+    }));
+
+    expect(result.registered).toBe(true);
+    expect(result.migrated).toBe(false);
+    expect(result.usedBackup).toBe(false);
+    expect(result.error).toMatch(/migration skipped.*changed concurrently/i);
+    expect((await settingsStore.read()).extensions?.["demo.x"]).toBeUndefined();
+  });
+
   it("keeps the owner id usable after a migration write fails", async () => {
     // Regression: the migration promise is shared by every registration of an
     // id, so a rejected store write used to poison that id until restart.

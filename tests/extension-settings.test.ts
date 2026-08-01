@@ -119,4 +119,74 @@ describe("extension settings validation", () => {
     );
     expect(tooMany.errors.map((error) => error.path)).toContain("categories");
   });
+
+  it("accepts cleared optional numbers and keeps their persisted round trip stable", () => {
+    const numberSchema: SettingsSchema = {
+      id: "demo-ext.numbers",
+      title: "Numbers",
+      schemaVersion: 1,
+      fields: [
+        { key: "optional", type: "number", label: "Optional" },
+        { key: "withDefault", type: "number", label: "With default", default: 7 },
+      ],
+    };
+
+    for (const empty of [undefined, ""]) {
+      const first = validateSettingsValues(numberSchema, { optional: empty, withDefault: empty });
+      expect(first.errors).toEqual([]);
+      expect(first.values).toEqual({ optional: undefined, withDefault: 7 });
+
+      // Simulate JSON persistence, which omits the unset optional key.
+      const persisted = JSON.parse(JSON.stringify(first.values));
+      const again = validateSettingsValues(numberSchema, persisted);
+      expect(again.errors).toEqual([]);
+      expect(again.values).toEqual(first.values);
+    }
+  });
+
+  it("rejects empty and non-numeric required numbers", () => {
+    const numberSchema: SettingsSchema = {
+      id: "demo-ext.required-number",
+      title: "Required number",
+      schemaVersion: 1,
+      fields: [{ key: "count", type: "number", label: "Count", required: true }],
+    };
+
+    for (const value of [undefined, null, "", "not-a-number"]) {
+      const result = validateSettingsValues(numberSchema, { count: value });
+      expect(result.errors).toContainEqual({ path: "count", message: "Count must be a number" });
+    }
+  });
+
+  it("enforces number minimum and maximum for real numbers", () => {
+    const numberSchema: SettingsSchema = {
+      id: "demo-ext.bounded-number",
+      title: "Bounded number",
+      schemaVersion: 1,
+      fields: [{ key: "count", type: "number", label: "Count", min: 2, max: 5 }],
+    };
+
+    expect(validateSettingsValues(numberSchema, { count: 1 }).errors).toContainEqual({
+      path: "count",
+      message: "Count must be ≥ 2",
+    });
+    expect(validateSettingsValues(numberSchema, { count: 6 }).errors).toContainEqual({
+      path: "count",
+      message: "Count must be ≤ 5",
+    });
+    expect(validateSettingsValues(numberSchema, { count: 3 }).errors).toEqual([]);
+  });
+
+  it("rejects a present list value that is not an array", () => {
+    const result = validateSettingsValues(schema, { categories: "not-an-array", defaultCategory: "" }, { modelOptions: models });
+
+    expect(result.errors).toContainEqual({ path: "categories", message: "Categories must be a list" });
+    expect(result.values.categories).toEqual([]);
+  });
+
+  it("rejects a present list item that is not an object", () => {
+    const result = validateSettingsValues(schema, { categories: ["not-an-object"], defaultCategory: "" }, { modelOptions: models });
+
+    expect(result.errors).toContainEqual({ path: "categories[0]", message: "Categories item must be an object" });
+  });
 });

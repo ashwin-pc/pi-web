@@ -76,6 +76,7 @@ export function createExtensionSettings(options: {
   const openRows = new Set<string>();
   let modelOptions: WebSelectOption[] | undefined;
   let modelsLoading = false;
+  let lastRenderStructureKey: string | undefined;
 
   function storedFor(id: string) {
     return state.settings.extensions?.[id];
@@ -189,6 +190,24 @@ export function createExtensionSettings(options: {
       select.addEventListener("change", () => { assign(select.value); });
       return select;
     }
+    if (field.type === "list") {
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(value, null, 2) ?? "[]";
+      } catch {
+        serialized = "(value could not be displayed)";
+      }
+      const placeholder = el("textarea", {
+        value: `Nested list editing is unavailable here.\n${serialized}`,
+        rows: 3,
+        disabled: true,
+        readOnly: true,
+        title: "Nested lists cannot be edited in this control",
+      });
+      placeholder.setAttribute("aria-disabled", "true");
+      placeholder.setAttribute("aria-readonly", "true");
+      return placeholder;
+    }
     if (field.type === "textarea") {
       const ta = el("textarea", { value: typeof value === "string" ? value : "", rows: 3 });
       markRequired(ta, field.required);
@@ -197,11 +216,11 @@ export function createExtensionSettings(options: {
       return ta;
     }
     if (field.type === "number") {
-      const input = el("input", { type: "number", value: value === undefined ? "" : String(value) });
+      const input = el("input", { type: "number", value: value === undefined || value === null ? "" : String(value) });
       markRequired(input, field.required);
       if (field.min !== undefined) input.min = String(field.min);
       if (field.max !== undefined) input.max = String(field.max);
-      input.addEventListener("input", () => { assign(input.value === "" ? undefined : Number(input.value)); });
+      input.addEventListener("input", () => { assign(input.value === "" ? undefined : input.valueAsNumber); });
       return input;
     }
     // text
@@ -235,7 +254,7 @@ export function createExtensionSettings(options: {
       if (isRecord(row) && typeof row.__id !== "string") row.__id = newRowId();
     }
     const itemFields = field.itemFields ?? [];
-    const rerender = () => render();
+    const rerender = () => render(true);
     const titleField = itemFields.find((f) => f.type === "text");
     const metaField = itemFields.find((f) => f.type === "select");
     // Resolve the referenced row once, before any edit. The stable id remains
@@ -381,7 +400,7 @@ export function createExtensionSettings(options: {
       const data = await res.json().catch(() => ({}));
       if (res.status === 422 && Array.isArray(data.errors)) {
         errors.set(schema.id, data.errors);
-        render();
+        render(true);
         setStatus(`Fix ${data.errors.length} field${data.errors.length === 1 ? "" : "s"}`, true);
         return;
       }
@@ -393,7 +412,7 @@ export function createExtensionSettings(options: {
           // settings on the response when available, otherwise fetch them.
           if (!applyResponseSettings(data)) await reloadSettingsFromServer();
         } finally {
-          render();
+          render(true);
         }
         setStatus("Changed elsewhere — reloaded latest", true);
         return;
@@ -404,7 +423,7 @@ export function createExtensionSettings(options: {
         // Recreate from the canonical server response (trimmed/coerced values
         // and the new revision) rather than waiting for a broadcast.
         drafts.delete(schema.id);
-        render();
+        render(true);
       }
       setStatus("Saved");
     } catch (error) {
@@ -430,7 +449,7 @@ export function createExtensionSettings(options: {
         try {
           if (!applyResponseSettings(data)) await reloadSettingsFromServer();
         } finally {
-          render();
+          render(true);
         }
         setStatus("Changed elsewhere — reloaded latest", true);
         return;
@@ -439,7 +458,7 @@ export function createExtensionSettings(options: {
       if (!applyResponseSettings(data)) await reloadSettingsFromServer();
       drafts.delete(id);
       errors.delete(id);
-      render();
+      render(true);
       setStatus("Reset");
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -483,7 +502,7 @@ export function createExtensionSettings(options: {
         group.append(listControl(schema, field, draft, defaultRefByList.get(field.key)));
         section.append(group);
       } else {
-        const ctrl = scalarControl(schema.id, field, draft, draft, () => render());
+        const ctrl = scalarControl(schema.id, field, draft, draft, () => render(true));
         section.append(fieldRow(field.label, ctrl, field.description, errorAt(schema.id, field.key)));
       }
     }
@@ -510,14 +529,22 @@ export function createExtensionSettings(options: {
     return section;
   }
 
-  function render() {
+  function render(force = false) {
     const schemas = state.webSettingsSchemas ?? [];
+    const stored = state.settings.extensions ?? {};
+    // Realtime broadcasts often carry no structural change (for example when
+    // another session registers the same schemas). Preserve the live controls
+    // in that case so an in-progress edit keeps its focus, caret and selection.
+    const structureKey = JSON.stringify({ schemas, ownerIds: Object.keys(stored).sort() });
+    const active = document.activeElement;
+    if (!force && structureKey === lastRenderStructureKey && active && container.contains(active)) return;
+
     const registeredIds = new Set(schemas.map((s) => s.id));
     container.replaceChildren();
+    lastRenderStructureKey = structureKey;
 
     for (const schema of schemas) container.append(renderSchema(schema));
 
-    const stored = state.settings.extensions ?? {};
     for (const [id, rec] of Object.entries(stored)) {
       if (registeredIds.has(id)) continue;
       container.append(renderRetained(id, Object.keys(rec?.values ?? {}).length));
