@@ -2,6 +2,7 @@ import "./style.css";
 import "./components/diff.css";
 import "./git/git.css";
 import "./files/files.css";
+import "./files/artifacts.css";
 import "./styles/appLayout.css";
 import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
@@ -10,7 +11,7 @@ import { initSwAutoReload } from "./app/sw-update.js";
 import { setIcon } from "./app/icons.js";
 import { initKeyboardShortcuts } from "./app/shortcuts.js";
 import { createRightPanelManager } from "./layout/rightPanel.js";
-import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
+import { createAppState, readActiveSessionIdFromHistoryState, readActiveSessionIdFromUrl, syncActiveSessionIdHistoryState } from "./app/types.js";
 import {
   activeSessionState,
   activeSessionStats,
@@ -274,6 +275,7 @@ function renderActiveSession(
 
 function activateSession(sessionId: string) {
   selectSession(state, sessionId);
+  syncActiveSessionIdHistoryState(sessionId);
   renderActiveSession();
 }
 
@@ -296,7 +298,10 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   if (!view) return undefined;
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
-  if (activatesSession) selectSession(state, view.id);
+  if (activatesSession) {
+    selectSession(state, view.id);
+    syncActiveSessionIdHistoryState(view.id);
+  }
   if (data && "sessionUiState" in data) sessions?.applySessionUiState(data.sessionUiState);
 
   const includesRuntime = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting"].some((key) => key in data));
@@ -566,8 +571,8 @@ gitPanel = initGitPanel({
   getSessionId: () => state.currentSessionId,
   onComposerContext: (context) => composer.addContextAttachment(context),
 });
-window.addEventListener("popstate", () => {
-  const nextSessionId = readActiveSessionIdFromUrl();
+window.addEventListener("popstate", (event) => {
+  const nextSessionId = readActiveSessionIdFromHistoryState(event.state) ?? readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;
   sessionState.activate(nextSessionId);
   tools.clearActiveToolCards();

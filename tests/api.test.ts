@@ -621,6 +621,7 @@ describe("artifact serving", () => {
     await mkdir(artifactDir, { recursive: true });
     await mkdir(legacyArtifactDir, { recursive: true });
     await writeFile(join(artifactDir, "test.png"), Buffer.from("PNG"));
+    await writeFile(join(artifactDir, "test.webm"), Buffer.from("WEBM"));
     await mkdir(join(artifactDir, "image-edits", "run-1"), { recursive: true });
     await writeFile(join(artifactDir, "image-edits", "run-1", "output.png"), Buffer.from("NESTED"));
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
@@ -636,6 +637,7 @@ describe("artifact serving", () => {
   afterAll(async () => {
     child?.kill();
     await rm(join(artifactDir, "test.png"), { force: true });
+    await rm(join(artifactDir, "test.webm"), { force: true });
     await rm(join(artifactDir, "e2e-test.png"), { force: true });
     await rm(join(artifactDir, "image-edits"), { recursive: true, force: true });
     await rm(join(legacyArtifactDir, "legacy.png"), { force: true });
@@ -653,6 +655,15 @@ describe("artifact serving", () => {
     const res = await fetch(`${baseUrl}/api/artifacts/image-edits/run-1/output.png`);
     expect(res.status).toBe(200);
     expect(Buffer.from(await res.arrayBuffer()).toString()).toBe("NESTED");
+  });
+
+  it("serves preview media with the correct MIME type, byte ranges, and a session preference", async () => {
+    const video = await fetch(`${baseUrl}/api/artifacts/test.webm?sessionId=unknown-session`, { headers: { range: "bytes=1-2" } });
+    expect(video.status).toBe(206);
+    expect(video.headers.get("content-type")).toBe("video/webm");
+    expect(video.headers.get("accept-ranges")).toBe("bytes");
+    expect(video.headers.get("content-range")).toBe("bytes 1-2/4");
+    expect(Buffer.from(await video.arrayBuffer()).toString()).toBe("EB");
   });
 
   it("serves legacy artifacts as a read-only fallback", async () => {

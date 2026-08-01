@@ -6,11 +6,16 @@ import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { vscodeDark } from "@uiw/codemirror-theme-vscode/esm/dark.js";
 import type { RightPanelManager } from "../layout/rightPanel.js";
 import { iconElement } from "../app/icons.js";
+import { initArtifactBrowser } from "./artifactBrowser.js";
 
 type FileEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number };
 type TextDocumentState = { kind: "text"; path: string; revision: string; saved: string; view: EditorView; language: string; wrap: Compartment; host: HTMLElement };
 type ImageDocumentState = { kind: "image"; path: string; host: HTMLElement; objectUrl: string };
 type DocumentState = TextDocumentState | ImageDocumentState;
+type ExplorerScope = "workspace" | "artifacts";
+type DirectoryLoadContext = { generation: number; root: boolean };
+type WorkspaceHistoryState = { view: "tree" | "editor" };
+const workspaceHistoryStateKey = "piWebWorkspaceView";
 
 async function languageExtension(language: string) {
   switch (language) {
@@ -35,12 +40,17 @@ export function initFilesPanel(options: {
 }): FilesPanelController {
   const { button, panel, rightPanels, apiHeaders, getSessionId, onError } = options;
   const tree = panel.querySelector<HTMLElement>("#filesTree")!;
+  const artifactsTree = panel.querySelector<HTMLElement>("#artifactsTree")!;
   const editor = panel.querySelector<HTMLElement>("#fileEditor")!;
   const tabs = panel.querySelector<HTMLElement>("#fileTabs")!;
   const saveButton = panel.querySelector<HTMLButtonElement>("#fileSaveButton")!;
   const backButton = panel.querySelector<HTMLButtonElement>("#fileBackButton")!;
   const refreshButton = panel.querySelector<HTMLButtonElement>("#filesRefreshButton")!;
   const closeButton = panel.querySelector<HTMLButtonElement>("#filesCloseButton")!;
+  const panelHeading = panel.querySelector<HTMLElement>("#filesPanelHeadingLabel")!;
+  const explorer = panel.querySelector<HTMLElement>(".filesExplorer")!;
+  const workspaceScopeButton = panel.querySelector<HTMLButtonElement>("#filesWorkspaceScope")!;
+  const artifactsScopeButton = panel.querySelector<HTMLButtonElement>("#filesArtifactsScope")!;
   backButton.textContent = "";
   backButton.append(iconElement("arrow-left"));
   const status = panel.querySelector<HTMLElement>("#fileStatus")!;
@@ -49,6 +59,7 @@ export function initFilesPanel(options: {
   const fontSlider = panel.querySelector<HTMLInputElement>("#fileFontSlider")!;
   const fontValue = panel.querySelector<HTMLOutputElement>("#fileFontValue")!;
   const wrapToggle = panel.querySelector<HTMLButtonElement>("#fileWrapToggle")!;
+  const artifactBrowser = initArtifactBrowser({ panel, tree: artifactsTree, apiHeaders, getSessionId });
   const documents = new Map<string, DocumentState>();
   const editorFontStorageKey = "pi-web.files.editor-font-size";
   const editorWrapStorageKey = "pi-web.files.editor-line-wrap";
@@ -56,6 +67,11 @@ export function initFilesPanel(options: {
   const activeTouchPointers = new Map<number, { x: number; y: number }>();
   let activePath = "";
   let loadedSession = "";
+  let treeScope: ExplorerScope = "workspace";
+  let treeLoadGeneration = 0;
+  let workspaceMobileView: "tree" | "editor" = "tree";
+  let scopeLoaded: Record<ExplorerScope, boolean> = { workspace: false, artifacts: false };
+  const scopeScrollPositions: Record<ExplorerScope, number> = { workspace: 0, artifacts: 0 };
   let errorHost: HTMLElement | undefined;
   let pinchStartDistance = 0;
   let pinchStartFontSize = 0;
@@ -121,7 +137,7 @@ export function initFilesPanel(options: {
     const doc = documents.get(path); if (!doc) return;
     errorHost?.remove(); errorHost = undefined;
     for (const item of documents.values()) item.host.hidden = item !== doc;
-    activePath = path; panel.dataset.mobileView = "editor"; panel.classList.toggle("filesPanel--imageActive", doc.kind === "image"); saveButton.disabled = !dirty(doc); status.textContent = "";
+    activePath = path; showWorkspaceEditor(); panel.classList.toggle("filesPanel--imageActive", doc.kind === "image"); saveButton.disabled = !dirty(doc); status.textContent = "";
     renderTabs();
     // Touch-first tablets (including unfolded foldables) should not summon the
     // software keyboard merely because a file was opened.
@@ -160,7 +176,7 @@ export function initFilesPanel(options: {
       const image = document.createElement("img"); image.src = "/file-editor-error.png"; image.alt = "";
       const message = document.createElement("p"); message.textContent = error instanceof Error ? error.message : String(error);
       errorHost.append(image, message); editor.append(errorHost);
-      activePath = ""; panel.dataset.mobileView = "editor"; panel.classList.remove("filesPanel--imageActive"); status.textContent = ""; saveButton.disabled = true; renderTabs();
+      activePath = ""; showWorkspaceEditor(); panel.classList.remove("filesPanel--imageActive"); status.textContent = ""; saveButton.disabled = true; renderTabs();
     }
   }
   async function save() {
@@ -191,36 +207,152 @@ export function initFilesPanel(options: {
       : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M6 2h8l4 4v16H6z"/><path d="M14 2v5h5"/></svg>';
     return icon;
   }
-  async function loadDirectory(path: string, container: HTMLElement) {
-    container.textContent = "Loading…";
+  function renderTreeState(container: HTMLElement, kind: "loading" | "empty" | "error", title: string, description = "") {
+    container.textContent = "";
+    container.classList.add("fileTreeContainer--state");
+    const state = document.createElement("div");
+    state.className = `fileTreeState fileTreeState--${kind}${container === tree ? "" : " fileTreeState--nested"}`;
+    state.setAttribute("role", kind === "error" ? "alert" : "status");
+    const icon = document.createElement("span");
+    icon.className = "fileTreeStateIcon";
+    icon.setAttribute("aria-hidden", "true");
+    if (kind === "loading") {
+      icon.classList.add("fileTreeStateSpinner");
+    } else {
+      icon.innerHTML = kind === "error"
+        ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v5m0 3h.01"/></svg>'
+        : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 6h6l2 2h10v10H3z"/></svg>';
+    }
+    const copy = document.createElement("span"); copy.className = "fileTreeStateCopy";
+    const heading = document.createElement("strong"); heading.textContent = title; copy.append(heading);
+    if (description) { const detail = document.createElement("span"); detail.textContent = description; copy.append(detail); }
+    state.append(icon, copy); container.append(state);
+  }
+  async function loadDirectory(path: string, container: HTMLElement, context: DirectoryLoadContext) {
+    renderTreeState(container, "loading", "Loading files…");
+    container.setAttribute("aria-busy", "true");
     try {
-      const data = await responseJson(await fetch(`/api/files/tree?${query(path)}`, { headers: apiHeaders() })); container.textContent = "";
-      for (const entry of data.entries as FileEntry[]) {
+      const data = await responseJson(await fetch(`/api/files/tree?${query(path)}`, { headers: apiHeaders() }));
+      if (context.generation !== treeLoadGeneration) return;
+      container.textContent = "";
+      container.classList.remove("fileTreeContainer--state");
+      const entries = data.entries as FileEntry[];
+      for (const entry of entries) {
         if (entry.kind === "directory") {
           const details = document.createElement("details"); details.className = "fileTreeDirectory";
           const summary = document.createElement("summary");
-          summary.append(document.createTextNode(entry.name)); details.append(summary);
+          summary.append(treeIcon("folder"), document.createTextNode(entry.name)); details.append(summary);
           const children = document.createElement("div"); children.className = "fileTreeChildren"; details.append(children);
-          details.addEventListener("toggle", () => { if (details.open && !children.dataset.loaded) { children.dataset.loaded = "1"; void loadDirectory(entry.path, children); } }); container.append(details);
+          details.addEventListener("toggle", () => {
+            if (details.open && !children.dataset.loaded) {
+              children.dataset.loaded = "1";
+              void loadDirectory(entry.path, children, { ...context, root: false });
+            }
+          });
+          container.append(details);
         } else {
           const item = document.createElement("button"); item.type = "button"; item.className = "fileTreeFile"; item.append(treeIcon("file", fileTypeClass(entry.path)), document.createTextNode(entry.name)); item.title = entry.path;
           item.addEventListener("click", () => void openFile(entry.path)); container.append(item);
         }
       }
-      if (!data.entries.length) container.textContent = "Empty folder";
-    } catch (error) { container.textContent = error instanceof Error ? error.message : String(error); }
+      if (!entries.length) renderTreeState(container, "empty", context.root ? "Empty workspace" : "Empty folder");
+    } catch (error) {
+      if (context.generation !== treeLoadGeneration) return;
+      renderTreeState(container, "error", "Couldn’t load files", error instanceof Error ? error.message : String(error));
+    } finally {
+      if (context.generation === treeLoadGeneration) container.removeAttribute("aria-busy");
+    }
   }
   function renderEditorEmpty() {
     errorHost = undefined;
     editor.innerHTML = '<div class="fileEditorEmpty"><img src="/file-editor-waiting-v3.png" alt="" /></div>';
   }
-  function refresh() { loadedSession = getSessionId(); tree.textContent = ""; void loadDirectory("", tree); }
-  function sessionChanged() {
-    const next = getSessionId(); if (next === loadedSession) return;
-    if ([...documents.values()].some(dirty) && !confirm("Discard unsaved file changes from the previous session?")) return;
-    for (const doc of documents.values()) { if (doc.kind === "text") doc.view.destroy(); else URL.revokeObjectURL(doc.objectUrl); doc.host.remove(); } documents.clear(); renderEditorEmpty(); activePath = ""; renderTabs(); panel.classList.remove("filesPanel--imageActive"); panel.dataset.mobileView = "tree"; refresh();
+  function historyRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   }
-  const handle = rightPanels.register({ id: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000, onOpen: () => { sessionChanged(); if (!loadedSession) refresh(); } });
+  function workspaceHistoryState(value: unknown = window.history.state): WorkspaceHistoryState | undefined {
+    const candidate = historyRecord(value)[workspaceHistoryStateKey];
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
+    const view = (candidate as Record<string, unknown>).view;
+    return view === "tree" || view === "editor" ? { view } : undefined;
+  }
+  function replaceWorkspaceHistory(view: WorkspaceHistoryState["view"]) {
+    window.history.replaceState({ ...historyRecord(window.history.state), [workspaceHistoryStateKey]: { view } satisfies WorkspaceHistoryState }, "");
+  }
+  function setWorkspaceMobileView(view: WorkspaceHistoryState["view"]) {
+    workspaceMobileView = view;
+    if (treeScope === "workspace") panel.dataset.mobileView = view;
+  }
+  function showWorkspaceEditor() {
+    if (treeScope === "workspace" && workspaceMobileView !== "editor" && !panel.hidden) {
+      replaceWorkspaceHistory("tree");
+      window.history.pushState({ ...historyRecord(window.history.state), [workspaceHistoryStateKey]: { view: "editor" } satisfies WorkspaceHistoryState }, "");
+    }
+    setWorkspaceMobileView("editor");
+  }
+  function showWorkspaceTree() {
+    setWorkspaceMobileView("tree");
+    replaceWorkspaceHistory("tree");
+  }
+  function updateTreeScope() {
+    const showingArtifacts = treeScope === "artifacts";
+    panel.dataset.filesScope = treeScope;
+    panel.setAttribute("aria-label", showingArtifacts ? "Artifacts" : "Workspace files");
+    panelHeading.textContent = showingArtifacts ? "Artifacts" : "Explorer";
+    explorer.setAttribute("aria-label", showingArtifacts ? "Artifact gallery" : "File tree");
+    refreshButton.setAttribute("aria-label", showingArtifacts ? "Refresh artifacts" : "Refresh files");
+    refreshButton.title = showingArtifacts ? "Refresh artifacts" : "Refresh files";
+    workspaceScopeButton.setAttribute("aria-pressed", String(!showingArtifacts));
+    artifactsScopeButton.setAttribute("aria-pressed", String(showingArtifacts));
+  }
+  function loadActiveScope(force = false) {
+    if (!force && scopeLoaded[treeScope]) return;
+    scopeLoaded[treeScope] = true;
+    if (treeScope === "artifacts") {
+      artifactBrowser.refresh();
+      return;
+    }
+    const generation = ++treeLoadGeneration;
+    void loadDirectory("", tree, { generation, root: true });
+  }
+  function refresh() { loadActiveScope(true); }
+  function restoreScopeScroll(scope: ExplorerScope) {
+    const scrollTop = scopeScrollPositions[scope];
+    explorer.scrollTop = scrollTop;
+    requestAnimationFrame(() => { if (treeScope === scope) explorer.scrollTop = scrollTop; });
+  }
+  function setTreeScope(next: ExplorerScope) {
+    if (treeScope === next) return;
+    scopeScrollPositions[treeScope] = explorer.scrollTop;
+    if (treeScope === "workspace") workspaceMobileView = panel.dataset.mobileView === "editor" ? "editor" : "tree";
+    treeScope = next;
+    panel.dataset.mobileView = next === "workspace" ? workspaceMobileView : "tree";
+    updateTreeScope();
+    restoreScopeScroll(next);
+    loadActiveScope();
+  }
+  function sessionChanged() {
+    const next = getSessionId(); if (next === loadedSession) return "unchanged" as const;
+    if ([...documents.values()].some(dirty) && !confirm("Discard unsaved file changes from the previous session?")) return "cancelled" as const;
+    loadedSession = next;
+    scopeLoaded = { workspace: false, artifacts: false };
+    scopeScrollPositions.workspace = 0; scopeScrollPositions.artifacts = 0;
+    ++treeLoadGeneration;
+    tree.className = "filesTree"; tree.textContent = ""; tree.removeAttribute("aria-busy");
+    artifactBrowser.reset();
+    for (const doc of documents.values()) { if (doc.kind === "text") doc.view.destroy(); else URL.revokeObjectURL(doc.objectUrl); doc.host.remove(); } documents.clear(); renderEditorEmpty(); activePath = ""; renderTabs(); panel.classList.remove("filesPanel--imageActive"); setWorkspaceMobileView("tree");
+    if (!panel.hidden) loadActiveScope();
+    return "changed" as const;
+  }
+  updateTreeScope();
+  const handle = rightPanels.register({
+    id: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000,
+    onOpen: () => {
+      const sessionResult = sessionChanged();
+      if (sessionResult === "cancelled") return;
+      loadActiveScope();
+    },
+  });
   function applyEditorFontSize(value: number, persist = false) {
     editorFontSize = Math.round(Math.min(22, Math.max(11, value)) * 10) / 10;
     panel.style.setProperty("--file-editor-font-size", `${editorFontSize}px`);
@@ -294,7 +426,15 @@ export function initFilesPanel(options: {
     try { localStorage.setItem(editorWrapStorageKey, editorLineWrap ? "on" : "off"); } catch { /* Ignore unavailable storage. */ }
     for (const doc of documents.values()) if (doc.kind === "text") doc.view.dispatch({ effects: doc.wrap.reconfigure(editorLineWrap ? EditorView.lineWrapping : []) });
   });
-  refreshButton.addEventListener("click", refresh); saveButton.addEventListener("click", () => void save()); backButton.addEventListener("click", () => { panel.dataset.mobileView = "tree"; });
+  workspaceScopeButton.addEventListener("click", () => setTreeScope("workspace"));
+  artifactsScopeButton.addEventListener("click", () => setTreeScope("artifacts"));
+  refreshButton.addEventListener("click", refresh); saveButton.addEventListener("click", () => void save()); backButton.addEventListener("click", showWorkspaceTree);
+  window.addEventListener("popstate", (event) => {
+    if (panel.hidden || treeScope !== "workspace") return;
+    const view = workspaceHistoryState(event.state)?.view;
+    if (view === "editor" && (activePath || errorHost)) setWorkspaceMobileView("editor");
+    else if (workspaceMobileView === "editor") setWorkspaceMobileView("tree");
+  });
   window.addEventListener("beforeunload", (event) => { if ([...documents.values()].some(dirty)) event.preventDefault(); });
   return { isOpen: handle.isOpen, sessionChanged, openFile };
 }
