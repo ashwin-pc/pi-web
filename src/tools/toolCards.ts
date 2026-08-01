@@ -1,7 +1,7 @@
 import hljs from "highlight.js/lib/common";
 import { renderEditDiff } from "../components/editDiff.js";
 import { textFromRawContent } from "../messages/content.js";
-import { sessionRefChipClass, sessionRefChipText, sessionRefHref, sessionRefsFromDetails } from "../app/sessionRefs.js";
+import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import { playToolCardEntry, playToolCardStateTransition } from "../messages/entryAnimation.js";
 import type { ApiHeaders } from "../app/api.js";
 
@@ -100,6 +100,8 @@ function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>
  * structured `details`. Generic: no tool name is special-cased and no result
  * text is parsed. Safe to call repeatedly for the same card.
  */
+let openSessionRef: ((sessionId: string) => void) | undefined;
+
 function addToolSessionChips(card: HTMLDivElement, result: unknown) {
   const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
   const details = record.details ?? (record.raw as Record<string, unknown> | undefined)?.details;
@@ -112,12 +114,7 @@ function addToolSessionChips(card: HTMLDivElement, result: unknown) {
   if (!refs.length) return;
   const toggle = header.querySelector(".toolCardExpandToggle");
   for (const ref of refs) {
-    const chip = document.createElement("a");
-    chip.className = sessionRefChipClass(ref);
-    chip.href = sessionRefHref(ref);
-    chip.textContent = sessionRefChipText(ref);
-    chip.title = `Open session ${ref.sessionId}`;
-    header.insertBefore(chip, toggle || null);
+    header.insertBefore(createSessionRefChip(ref, { openSession: openSessionRef }), toggle || null);
   }
 }
 
@@ -357,7 +354,8 @@ function finalizePartialToolOutput(card: HTMLDivElement) {
 
 export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () => void = () => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
-}, apiHeaders?: ApiHeaders): ToolCards {
+}, apiHeaders?: ApiHeaders, openSession?: (sessionId: string) => void): ToolCards {
+  openSessionRef = openSession;
   const activeToolCards = new Map<string, HTMLDivElement>();
   const knownToolStartedAts = new Map<string, number>();
   const runningToolStates = new WeakMap<HTMLDivElement, { startedAt?: number; lastActivityAt: number; timer: number }>();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { orderItemsWithChildren, runningChildIdsOf, sessionIndicatorKind } from "../src/sessions/lineage.js";
+import { orderItemsWithChildren, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom } from "../src/sessions/lineage.js";
 
 type Item = { id: string };
 const items = (...ids: string[]): Item[] => ids.map((id) => ({ id }));
@@ -119,5 +119,55 @@ describe("runningChildIdsOf", () => {
 
   it("returns nothing for an empty session id", () => {
     expect(runningChildIdsOf("", origins, () => true)).toEqual([]);
+  });
+});
+
+describe("waitingInfoFrom", () => {
+  const origins = [
+    { sessionId: "worker-1", originSessionId: "parent" },
+    { sessionId: "worker-2", originSessionId: "parent" },
+    { sessionId: "unrelated", originSessionId: "other" },
+  ];
+  const describe_ = (id: string) => ({ name: id === "worker-1" ? "scout: auth" : "tests: baseline", cwd: `/repo/${id}` });
+
+  it("returns each running child so the UI can link to it", () => {
+    const info = waitingInfoFrom("parent", origins, { selfRunning: false, isRunning: () => true, describe: describe_ });
+    expect(info?.count).toBe(2);
+    expect(info?.sessions).toEqual([
+      { sessionId: "worker-1", name: "scout: auth", cwd: "/repo/worker-1" },
+      { sessionId: "worker-2", name: "tests: baseline", cwd: "/repo/worker-2" },
+    ]);
+    expect(info?.names).toEqual(["scout: auth", "tests: baseline"]);
+  });
+
+  it("is undefined while the session itself is running", () => {
+    // Precedence: a running session shows its own progress, not what it awaits.
+    expect(waitingInfoFrom("parent", origins, { selfRunning: true, isRunning: () => true, describe: describe_ })).toBeUndefined();
+  });
+
+  it("is undefined when no spawned session is still running", () => {
+    expect(waitingInfoFrom("parent", origins, { selfRunning: false, isRunning: () => false, describe: describe_ })).toBeUndefined();
+  });
+
+  it("counts only children that are still running", () => {
+    const info = waitingInfoFrom("parent", origins, {
+      selfRunning: false,
+      isRunning: (id) => id === "worker-2",
+      describe: describe_,
+    });
+    expect(info?.sessions.map((s) => s.sessionId)).toEqual(["worker-2"]);
+  });
+
+  it("falls back to a short id when a child has no title yet", () => {
+    const info = waitingInfoFrom("parent", [{ sessionId: "abcdef123456", originSessionId: "parent" }], {
+      selfRunning: false,
+      isRunning: () => true,
+      describe: () => ({}),
+    });
+    expect(info?.sessions[0]).toEqual({ sessionId: "abcdef123456", name: "ef123456", cwd: undefined });
+  });
+
+  it("is undefined for an empty session id", () => {
+    expect(waitingInfoFrom("", origins, { selfRunning: false, isRunning: () => true, describe: describe_ })).toBeUndefined();
   });
 });

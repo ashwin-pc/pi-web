@@ -6,7 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
-import { orderItemsWithChildren as orderLineage, runningChildIdsOf, sessionIndicatorKind } from "./lineage.js";
+import { orderItemsWithChildren as orderLineage, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type WaitingInfo } from "./lineage.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -30,7 +30,9 @@ export type SessionsController = {
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
   markSessionRead: (sessionId?: string) => Promise<void>;
-  waitingInfoFor: (sessionId: string) => { count: number; names: string[] } | undefined;
+  waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
+  openSessionTab: (sessionId: string, cwd: string) => Promise<void>;
+  openSessionById: (sessionId: string) => Promise<void>;
 };
 
 function formatRelativeTime(value: string) {
@@ -159,6 +161,7 @@ export function createSessions(options: {
   } = options;
 
   let cachedSessions: SessionInfo[] = [];
+  const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
   let closeSessionActionsMenu: (() => void) | undefined;
   let sessionPanelHandle: RightPanelHandle | undefined;
@@ -463,6 +466,10 @@ export function createSessions(options: {
 
   function updateSessionName(sessionId: string, name: string) {
     if (!sessionId) return;
+    // Remember the name even when the session is not in the cached list yet: a
+    // just-spawned session is named before it appears in a list refresh, and
+    // without this its links would fall back to showing a raw id fragment.
+    if (name) knownSessionNames.set(sessionId, name);
     let changed = false;
     cachedSessions = cachedSessions.map((session) => {
       if (session.id !== sessionId) return session;
@@ -471,7 +478,19 @@ export function createSessions(options: {
     });
     sessionState.applySnapshot({ sessionId, sessionName: name });
     if (changed && !elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
+    else if (!changed) void refreshSessionsSoon(); // bring the new session into the list
     renderSessionBar();
+    options.onDerivedSessionStateChanged?.();
+  }
+
+  /** Coalesce list refreshes triggered by newly discovered sessions. */
+  let refreshSoonTimer: number | undefined;
+  function refreshSessionsSoon() {
+    if (refreshSoonTimer !== undefined) return;
+    refreshSoonTimer = window.setTimeout(() => {
+      refreshSoonTimer = undefined;
+      void refreshSessions();
+    }, 400);
   }
 
   function removeSession(sessionId: string) {
@@ -608,15 +627,23 @@ export function createSessions(options: {
    * Derived "waiting" state: session is idle but sessions it spawned are still
    * running. Computed purely from origins + live runtimes — nothing to reset.
    */
-  function waitingInfoFor(sessionId: string): { count: number; names: string[] } | undefined {
-    if (!sessionId || isSessionRunning(sessionId, Boolean(cachedSessions.find((item) => item.id === sessionId)?.runtime?.isRunning))) return undefined;
-    const running = runningChildrenOf(sessionId);
-    if (running.length === 0) return undefined;
-    const names = running.map((childId) => {
-      const cached = cachedSessions.find((item) => item.id === childId);
-      return (cached ? sessionTitle(cached) : "").replace(/^[⑂⤑]\s*/, "") || childId.slice(-8);
+  function waitingInfoFor(sessionId: string): WaitingInfo | undefined {
+    const self = cachedSessions.find((item) => item.id === sessionId);
+    return waitingInfoFrom(sessionId, state.sessionOrigins || [], {
+      selfRunning: isSessionRunning(sessionId, Boolean(self?.runtime?.isRunning)),
+      isRunning: (childId) => {
+        const cached = cachedSessions.find((item) => item.id === childId);
+        return isSessionRunning(childId, Boolean(cached?.runtime?.isRunning));
+      },
+      describe: (childId) => {
+        const cached = cachedSessions.find((item) => item.id === childId);
+        const cachedName = (cached ? sessionTitle(cached) : "").replace(/^[⑂⤑]\s*/, "");
+        return {
+          name: cachedName || knownSessionNames.get(childId) || "",
+          cwd: cached?.cwd,
+        };
+      },
     });
-    return { count: running.length, names };
   }
 
   /**
@@ -1189,6 +1216,17 @@ export function createSessions(options: {
       if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
     }
+  }
+
+  /**
+   * Open a session knowing only its id: resolve its cwd from the cached list
+   * (falling back to the current one) and switch in place. This is what session
+   * links elsewhere in the UI use, so they never need a full page reload.
+   */
+  async function openSessionById(sessionId: string) {
+    if (!sessionId) return;
+    const cached = cachedSessions.find((item) => item.id === sessionId);
+    await openSessionTab(sessionId, cached?.cwd || state.currentCwd || "");
   }
 
   function updateCurrentSessionPinButton() {
@@ -2142,5 +2180,7 @@ export function createSessions(options: {
     applySessionUiState,
     markSessionRead,
     waitingInfoFor,
+    openSessionTab,
+    openSessionById,
   };
 }

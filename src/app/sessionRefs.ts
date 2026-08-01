@@ -70,3 +70,33 @@ export function sessionRefChipClass(ref: SessionRef): string {
 export function sessionRefHref(ref: SessionRef): string {
   return `/?sessionId=${encodeURIComponent(ref.sessionId)}`;
 }
+
+/**
+ * Build a chip linking to a referenced session.
+ *
+ * The chip is a real anchor, so middle-click / cmd-click / "open in new tab" and
+ * keyboard activation all behave normally. When an in-app opener is supplied, a
+ * plain left click switches session in place instead of reloading the whole app —
+ * a full document navigation costs a complete app restart (state, models and
+ * transcript refetch) for what should be an instant switch.
+ */
+export function createSessionRefChip(
+  ref: SessionRef,
+  options: { className?: string; openSession?: (sessionId: string) => void } = {},
+): HTMLAnchorElement {
+  const chip = document.createElement("a");
+  chip.className = options.className ?? sessionRefChipClass(ref);
+  chip.href = sessionRefHref(ref);
+  chip.textContent = sessionRefChipText(ref);
+  chip.title = `Open session ${ref.sessionId}`;
+  const { openSession } = options;
+  if (openSession) {
+    chip.addEventListener("click", (event) => {
+      // Leave modified clicks and non-primary buttons to the browser.
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      event.preventDefault();
+      openSession(ref.sessionId);
+    });
+  }
+  return chip;
+}

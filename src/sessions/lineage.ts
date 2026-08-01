@@ -108,3 +108,33 @@ export function runningChildIdsOf(
   }
   return running;
 }
+
+export type WaitingSession = { sessionId: string; name: string; cwd?: string };
+export type WaitingInfo = { count: number; names: string[]; sessions: WaitingSession[] };
+
+/**
+ * Derived "waiting on spawned sessions" state for one session: it is idle, but
+ * sessions it spawned are still running. Returns the running children so the UI
+ * can link to each of them, not merely name them.
+ */
+export function waitingInfoFrom(
+  sessionId: string,
+  origins: Array<{ sessionId: string; originSessionId: string }>,
+  lookups: {
+    isRunning: (id: string) => boolean;
+    selfRunning: boolean;
+    describe: (id: string) => { name?: string; cwd?: string };
+  },
+): WaitingInfo | undefined {
+  // A running session shows its own progress instead of what it is waiting for.
+  if (!sessionId || lookups.selfRunning) return undefined;
+  const running = runningChildIdsOf(sessionId, origins, lookups.isRunning);
+  if (running.length === 0) return undefined;
+
+  const sessions: WaitingSession[] = running.map((childId) => {
+    const described = lookups.describe(childId) || {};
+    const name = (described.name || "").trim() || childId.slice(-8);
+    return { sessionId: childId, name, cwd: described.cwd };
+  });
+  return { count: sessions.length, names: sessions.map((session) => session.name), sessions };
+}

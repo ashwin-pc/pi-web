@@ -6,7 +6,7 @@ import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
-import { sessionRefChipClass, sessionRefChipText, sessionRefHref, sessionRefsFromDetails } from "../app/sessionRefs.js";
+import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -244,11 +244,13 @@ function transcriptRuntimeState(messages: any[], isStreaming?: boolean): Transcr
 }
 
 export function createMessageList(options: {
+  /** Switch to a referenced session in place instead of reloading the app. */
+  openSession?: (sessionId: string) => void;
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction } = options;
+  const { messagesEl, markdown, onMessageAction, openSession } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
@@ -724,12 +726,7 @@ export function createMessageList(options: {
     header.append(label);
 
     for (const ref of sessionRefs) {
-      const chip = document.createElement("a");
-      chip.className = sessionRefChipClass(ref);
-      chip.href = sessionRefHref(ref);
-      chip.textContent = sessionRefChipText(ref);
-      chip.title = `Open session ${ref.sessionId}`;
-      header.append(chip);
+      header.append(createSessionRefChip(ref, { openSession }));
     }
     div.append(header);
 

@@ -125,14 +125,8 @@ body {
   animation: waitingPulse 2s ease-in-out infinite;
 }
 .sessionWaitingCount { font-weight: 600; }
-.runtimeStatus.waiting svg {
-  width: 13px;
-  height: 13px;
-  vertical-align: middle;
-  margin-right: 5px;
-  animation: waitingPulse 2s ease-in-out infinite;
-}
+
 @media (prefers-reduced-motion: reduce) {
-  .sessionWaitingPill svg, .runtimeStatus.waiting svg { animation: none; }
+  .sessionWaitingPill svg { animation: none; }
   .auroraRibbon { animation: none; }
 }

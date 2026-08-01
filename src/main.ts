@@ -136,8 +136,8 @@ async function handleMessageAction(context: MessageActionContext) {
   }
 }
 
-messages = createMessageList({ messagesEl: elements.messagesEl, markdown, onMessageAction: handleMessageAction });
-const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers);
+messages = createMessageList({ messagesEl: elements.messagesEl, markdown, onMessageAction: handleMessageAction, openSession: (sessionId) => void sessions.openSessionById(sessionId) });
+const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId));
 
 const webHeaderActions = createWebHeaderActions({
   container: elements.headerActionsEl,
@@ -429,6 +429,7 @@ statusBar = createStatusBar({
   sessionState,
   addMessage: messages.addMessage,
   refreshSessions: () => sessions.refreshSessions(),
+  openSession: (sessionId, cwd) => sessions.openSessionTab(sessionId, cwd),
   refreshState,
 });
 

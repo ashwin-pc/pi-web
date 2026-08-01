@@ -76,13 +76,7 @@
 .runtimeStatus.running { color: var(--accent); }
 .runtimeStatus.quiet { color: #facc15; }
 .runtimeStatus.stale { color: #fb923c; }
-.runtimeStatus.waiting {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--fg);
-  pointer-events: auto;
-}
+
 .contextMeterLabel {
   right: 0;
   display: none;
@@ -812,4 +806,69 @@ button:disabled:hover { border-color: var(--border); }
     inset 0 0 0 1px #efb6b2,
     inset 0 0 0 3px rgba(207, 137, 142, .2),
     inset 0 1px 0 rgba(255, 255, 255, .08);
+}
+
+/* Spawned sessions still running, shown directly above the composer. Each is a
+   link, so a worker can be opened while it works. Hidden entirely when idle, so
+   it costs no vertical space. */
+.waitingSessions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 4px 10px;
+  margin: 0 auto;
+  width: min(var(--composer-max-width, 900px), 100%);
+  box-sizing: border-box;
+  font-size: 12px;
+  color: var(--muted);
+}
+.waitingSessions::-webkit-scrollbar { display: none; }
+.waitingSessions[hidden] { display: none; }
+.waitingSessionsLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.waitingSessionsLabel svg {
+  width: 13px;
+  height: 13px;
+  animation: waitingPulse 2s ease-in-out infinite;
+}
+.waitingSessionChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  max-width: 220px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  color: var(--text);
+  text-decoration: none;
+  padding: 3px 10px 3px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.waitingSessionChip:hover,
+.waitingSessionChip:focus-visible {
+  border-color: color-mix(in srgb, var(--accent) 70%, var(--border));
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  outline: none;
+}
+.waitingSessionSpinner {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+  background: var(--accent);
+  animation: waitingPulse 1.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .waitingSessionsLabel svg, .waitingSessionSpinner { animation: none; }
 }
