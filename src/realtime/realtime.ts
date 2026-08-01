@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
+import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import type { MessageDto } from "../../server/session/dto.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
@@ -12,7 +13,6 @@ import type { SettingsController } from "../settings/settings.js";
 import type { StatusBar } from "../status/statusBar.js";
 import type { ToolCards } from "../tools/toolCards.js";
 import type { ConversationTreeController } from "../tree/conversationTree.js";
-import { renderWebFooters } from "../extensions/webFooter.js";
 import { assistantErrorBody, normalizeAssistantError } from "../messages/content.js";
 
 export function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
@@ -47,14 +47,12 @@ export function createRealtime(options: {
   status: StatusBar;
   tools: ToolCards;
   conversationTree?: ConversationTreeController;
-  updateMeta: (data: any) => void;
-  updateSessionStats: (stats: any) => void;
+  sessionState: SessionStateController;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
-  applyRuntimeState: (data: any) => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, updateMeta, updateSessionStats, refreshMessages, refreshState, applyRuntimeState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -71,17 +69,7 @@ export function createRealtime(options: {
   let replayTranscriptRefreshTimer: number | undefined;
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
-  const sessionRuntimeKeys = new Map<string, string>();
   const terminalRuntimeSessions = new Set<string>();
-
-  function runtimeKey(runtime: any) {
-    return [
-      Boolean(runtime?.isRunning),
-      Boolean(runtime?.isStreaming),
-      Boolean(runtime?.isRetrying),
-      Boolean(runtime?.isCompacting),
-    ].join(":");
-  }
 
   function eventWillRetry(event: PiEvent | undefined) {
     return Boolean(event?.willRetry);
@@ -512,12 +500,14 @@ export function createRealtime(options: {
   }
 
   function restoreTerminalFailureCard() {
-    if (!terminalFailureInfo || terminalFailureSessionId !== (state.currentSessionId || "") || state.isStreaming || state.isRetrying) return;
+    const runtime = sessionRuntime(state);
+    if (!terminalFailureInfo || terminalFailureSessionId !== (state.currentSessionId || "") || runtime.isStreaming || runtime.isRetrying) return;
     if (!terminalFailureCard?.isConnected) addTerminalFailureCard(terminalFailureInfo);
   }
 
   function restoreIncompleteResponseCard() {
-    if (!incompleteResponseInfo || incompleteResponseSessionId !== (state.currentSessionId || "") || state.isStreaming || state.isRetrying) return;
+    const runtime = sessionRuntime(state);
+    if (!incompleteResponseInfo || incompleteResponseSessionId !== (state.currentSessionId || "") || runtime.isStreaming || runtime.isRetrying) return;
     if (!incompleteResponseCard?.isConnected) addIncompleteResponseCard(incompleteResponseInfo);
   }
 
@@ -550,7 +540,8 @@ export function createRealtime(options: {
   }
 
   function applyTranscriptRuntimeState(transcriptState: TranscriptRuntimeState) {
-    if (state.isStreaming || state.isRetrying) return;
+    const runtime = sessionRuntime(state);
+    if (runtime.isStreaming || runtime.isRetrying) return;
     if (transcriptState.terminalFailure) {
       rememberTerminalFailure({
         text: transcriptState.terminalFailure.text,
@@ -567,14 +558,18 @@ export function createRealtime(options: {
   function handlePiEvent(event: PiEvent, isReplay = false, envelope?: { clientMessageId?: string; sourceClientId?: string }) {
     switch (event.type) {
       case "session_info_changed":
-        if ("name" in event) status.setStatusTitle(event.name || "New session");
+        if ("name" in event) sessionState.applySnapshot({ sessionId: state.currentSessionId, sessionName: event.name });
         break;
       case "agent_start":
         clearTransientFailureUi();
-        state.isStreaming = true;
-        state.isRetrying = false;
-        status.markActivityStart("starting", event.startedAt, event.lastActivityAt);
-        composer.updatePrimaryAction();
+        sessionState.patchRuntime(state.currentSessionId, {
+          loaded: true,
+          isStreaming: true,
+          isRetrying: false,
+          isCompacting: false,
+          startedAt: event.startedAt,
+          lastActivityAt: event.lastActivityAt,
+        }, { kind: "start", label: "starting", startedAt: event.startedAt, lastActivityAt: event.lastActivityAt });
         messages.resetStreamingAssistant();
         messages.beginStreamFollow();
         break;
@@ -603,7 +598,7 @@ export function createRealtime(options: {
         status.markActivityProgress("waiting for assistant", event.lastActivityAt);
         break;
       case "queue_update":
-        composer.updatePendingQueue(event.steering, event.followUp);
+        sessionState.applySnapshot({ sessionId: state.currentSessionId, queue: { steering: event.steering, followUp: event.followUp } }, { activity: { kind: "preserve" } });
         break;
       case "message_end": {
         const deliveredMessage = messageFromEvent(event.message);
@@ -627,30 +622,21 @@ export function createRealtime(options: {
         break;
       }
       case "auto_retry_start":
-        state.isStreaming = false;
-        state.isRetrying = true;
-        composer.updatePrimaryAction();
+        sessionState.patchRuntime(state.currentSessionId, { isStreaming: false, isRetrying: true }, { kind: "preserve" });
         updateRetryStart(event);
         break;
       case "auto_retry_end":
-        state.isRetrying = false;
-        composer.updatePrimaryAction();
+        sessionState.patchRuntime(state.currentSessionId, { isRetrying: false }, { kind: "preserve" });
         updateRetryEnd(event);
         break;
       case "agent_end": {
         if (eventWillRetry(event)) {
-          state.isStreaming = false;
-          state.isRetrying = true;
-          composer.updatePrimaryAction();
-          status.markActivityProgress("waiting to retry", event.lastActivityAt);
+          sessionState.patchRuntime(state.currentSessionId, { isStreaming: false, isRetrying: true }, { kind: "progress", label: "waiting to retry", lastActivityAt: event.lastActivityAt });
           break;
         }
         const terminalError = terminalErrorFromAgentEnd(event);
-        state.isStreaming = false;
-        state.isRetrying = false;
+        sessionState.patchRuntime(state.currentSessionId, { isStreaming: false, isRetrying: false }, { kind: "end" });
         rememberTerminalFailure(terminalError);
-        status.markActivityEnd();
-        composer.updatePrimaryAction();
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
         tools.clearActiveToolCards();
@@ -667,22 +653,21 @@ export function createRealtime(options: {
         break;
       }
       case "compaction_start":
-        state.isCompacting = true;
-        state.isRetrying = false;
-        status.markActivityStart("compacting", event.startedAt, event.lastActivityAt);
-        updateSessionStats(state.stats);
+        sessionState.patchRuntime(state.currentSessionId, {
+          loaded: true,
+          isStreaming: false,
+          isRetrying: false,
+          isCompacting: true,
+          startedAt: event.startedAt,
+          lastActivityAt: event.lastActivityAt,
+        }, { kind: "start", label: "compacting", startedAt: event.startedAt, lastActivityAt: event.lastActivityAt });
         break;
       case "compaction_end": {
-        state.isCompacting = false;
         if (eventWillRetry(event)) {
-          state.isRetrying = true;
-          composer.updatePrimaryAction();
-          status.markActivityProgress("waiting to retry", event.lastActivityAt);
+          sessionState.patchRuntime(state.currentSessionId, { isCompacting: false, isRetrying: true }, { kind: "progress", label: "waiting to retry", lastActivityAt: event.lastActivityAt });
           break;
         }
-        state.isRetrying = false;
-        status.markActivityEnd();
-        updateSessionStats(state.stats);
+        sessionState.patchRuntime(state.currentSessionId, { isCompacting: false, isRetrying: false }, { kind: "end" });
         const extraClass = event.errorMessage && !event.aborted ? "compaction error" : "compaction";
         setCompactionMessage(compactionEndText(event), extraClass);
         compactionMessage = null;
@@ -696,7 +681,7 @@ export function createRealtime(options: {
         break;
       }
       case "thinking_level_changed":
-        state.currentThinkingLevel = event.level || state.currentThinkingLevel;
+        sessionState.applySnapshot({ sessionId: state.currentSessionId, thinkingLevel: event.level || state.currentThinkingLevel });
         elements.thinkingSelectEl.value = state.currentThinkingLevel;
         models.updateSummary();
         refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
@@ -724,10 +709,9 @@ export function createRealtime(options: {
       }
       const isReplay = data.replay === true;
       if (data.type === "hello" || data.type === "state_changed") {
-        if (data.sessionId && state.currentSessionId && data.sessionId !== state.currentSessionId) return;
-        updateMeta(data);
-        applyRuntimeState(data);
-        updateSessionStats(state.stats);
+        const appliesToCurrentSession = !data.sessionId || !state.currentSessionId || data.sessionId === state.currentSessionId;
+        sessionState.applySnapshot(data, { activate: data.type === "hello" && !state.currentSessionId });
+        if (!appliesToCurrentSession) return;
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
         if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
@@ -750,33 +734,18 @@ export function createRealtime(options: {
         const key = String(data.sessionId || data.sessionFile || "");
         if (isStaleRunningRuntimeAfterTerminal(key, data.runtime)) return;
         if (key && (!data.runtime?.isRunning || typeof data.runtime?.startedAt === "string")) terminalRuntimeSessions.delete(key);
-        const nextRuntimeKey = runtimeKey(data.runtime);
-        if (key && sessionRuntimeKeys.get(key) !== nextRuntimeKey) {
-          sessionRuntimeKeys.set(key, nextRuntimeKey);
-          sessions.updateSessionRuntime(String(data.sessionId || ""), data.runtime);
-        }
-        if (data.sessionId && data.sessionId === state.currentSessionId) {
-          const wasRunning = state.isStreaming || state.isRetrying || state.isCompacting;
-          const isRunning = Boolean(data.runtime?.isRunning);
-          state.isStreaming = Boolean(data.runtime?.isStreaming);
-          state.isRetrying = Boolean(data.runtime?.isRetrying);
-          state.isCompacting = Boolean(data.runtime?.isCompacting);
-          if (isRunning) {
-            if (wasRunning) status.markActivityProgress(undefined, data.runtime?.lastActivityAt);
-            else status.markActivityStart(state.isCompacting ? "compacting" : state.isRetrying ? "retrying" : "active", data.runtime?.startedAt, data.runtime?.lastActivityAt);
-          } else status.markActivityEnd();
-          composer.updatePrimaryAction();
-          if (wasRunning && !isRunning) {
-            refreshMessages()
-              .then(() => {
-                restoreTerminalFailureCard();
-                restoreIncompleteResponseCard();
-                return sessions.markSessionRead();
-              })
-              .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
-            if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
-            status.refreshSessionTitle();
-          }
+        if (!data.sessionId) return;
+        const transition = sessionState.replaceRuntime(String(data.sessionId), data.runtime);
+        if (transition.isActive && transition.previous.isRunning && !transition.next.isRunning) {
+          refreshMessages()
+            .then(() => {
+              restoreTerminalFailureCard();
+              restoreIncompleteResponseCard();
+              return sessions.markSessionRead();
+            })
+            .catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+          if (conversationTree?.isOpen()) conversationTree.refreshTree().catch(() => undefined);
+          status.refreshSessionTitle();
         }
         return;
       }
@@ -785,7 +754,7 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "session_stats_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) updateSessionStats(data.stats);
+        sessionState.updateStats(String(data.sessionId || state.currentSessionId), data.stats);
         return;
       }
       if (data.type === "settings_updated") {
@@ -800,20 +769,8 @@ export function createRealtime(options: {
         handleExtensionUiRequest(data);
         return;
       }
-      if (data.type === "web_footer_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) renderWebFooters(elements.extensionFooterEl, data.webFooters);
-        return;
-      }
-      if (data.type === "web_header_actions_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
-        return;
-      }
-      if (data.type === "web_artifact_actions_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
-        return;
-      }
-      if (data.type === "web_git_tabs_changed") {
-        if (!data.sessionId || data.sessionId === state.currentSessionId) updateMeta(data);
+      if (["web_footer_changed", "web_header_actions_changed", "web_artifact_actions_changed", "web_git_tabs_changed"].includes(data.type)) {
+        sessionState.applySnapshot(data);
         return;
       }
       if (data.type === "committed_message") {
@@ -832,7 +789,7 @@ export function createRealtime(options: {
             addToolHistoryCard: tools.addToolHistoryCard,
             addPendingToolCard: tools.startTool,
             addRuntimeErrorCard: tools.addRuntimeErrorCard,
-            isStreaming: state.isStreaming || state.isRetrying,
+            isStreaming: sessionRuntime(state).isStreaming || sessionRuntime(state).isRetrying,
           });
         }
         return;
@@ -843,18 +800,21 @@ export function createRealtime(options: {
         if (!isReplay && data.event?.type === "session_info_changed") {
           sessions.updateSessionName(String(data.sessionId || ""), String(data.event.name || ""));
         } else if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
-        if (data.sessionId) {
+        const appliesToCurrentSession = !data.sessionId || data.sessionId === state.currentSessionId;
+        if (data.sessionId && !appliesToCurrentSession) {
           if (data.event?.type === "agent_start") {
-            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, pendingMessageCount: 0 });
+            sessionState.replaceRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, startedAt: data.event.startedAt, lastActivityAt: data.event.lastActivityAt, pendingMessageCount: 0 }, { kind: "preserve" });
           } else if (data.event?.type === "agent_end") {
-            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: eventWillRetry(data.event), isStreaming: false, isRetrying: eventWillRetry(data.event), isCompacting: false, pendingMessageCount: 0 });
+            sessionState.replaceRuntime(String(data.sessionId), { loaded: true, isRunning: eventWillRetry(data.event), isStreaming: false, isRetrying: eventWillRetry(data.event), isCompacting: false, lastActivityAt: data.event.lastActivityAt, pendingMessageCount: 0 }, { kind: "preserve" });
           } else if (data.event?.type === "compaction_start") {
-            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: false, isRetrying: false, isCompacting: true, pendingMessageCount: 0 });
+            sessionState.replaceRuntime(String(data.sessionId), { loaded: true, isRunning: true, isStreaming: false, isRetrying: false, isCompacting: true, startedAt: data.event.startedAt, lastActivityAt: data.event.lastActivityAt, pendingMessageCount: 0 }, { kind: "preserve" });
           } else if (data.event?.type === "compaction_end") {
-            sessions.updateSessionRuntime(String(data.sessionId), { loaded: true, isRunning: eventWillRetry(data.event), isStreaming: false, isRetrying: eventWillRetry(data.event), isCompacting: false, pendingMessageCount: 0 });
+            sessionState.replaceRuntime(String(data.sessionId), { loaded: true, isRunning: eventWillRetry(data.event), isStreaming: false, isRetrying: eventWillRetry(data.event), isCompacting: false, lastActivityAt: data.event.lastActivityAt, pendingMessageCount: 0 }, { kind: "preserve" });
+          } else if (data.event?.type === "queue_update") {
+            sessionState.applySnapshot({ sessionId: data.sessionId, queue: { steering: data.event.steering, followUp: data.event.followUp } }, { activity: { kind: "preserve" } });
           }
         }
-        if (!data.sessionId || data.sessionId === state.currentSessionId) handlePiEvent(data.event, isReplay, data);
+        if (appliesToCurrentSession) handlePiEvent(data.event, isReplay, data);
         return;
       }
       if (data.type === "server_error" && (!data.sessionId || data.sessionId === state.currentSessionId)) addMessage("system", data.error, "error");

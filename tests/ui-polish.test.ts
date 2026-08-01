@@ -42,21 +42,20 @@ function mockContextMeter(compacting: boolean) {
   const contextMeterLabelEl = new MockElement();
   const contextMeterPopoverEl = new MockElement();
   const controller = createContextMeter({
-    state: { isCompacting: compacting } as AppState,
     elements: {
       contextMeterEl,
       contextMeterLabelEl,
       contextMeterPopoverEl,
     } as unknown as AppElements,
   });
-  return { controller, contextMeterEl, contextMeterLabelEl };
+  return { controller, contextMeterEl, contextMeterLabelEl, compacting };
 }
 
 describe("context meter compaction polish", () => {
   it("shows a compacting label and class while compaction is running", () => {
-    const { controller, contextMeterEl, contextMeterLabelEl } = mockContextMeter(true);
+    const { controller, contextMeterEl, contextMeterLabelEl, compacting } = mockContextMeter(true);
 
-    controller.update({ contextUsage: { tokens: 82_000, contextWindow: 100_000 } });
+    controller.update({ stats: { contextUsage: { tokens: 82_000, contextWindow: 100_000 } }, isCompacting: compacting });
 
     expect(contextMeterEl.className).toContain("compacting");
     expect(contextMeterEl.title).toBe("Compacting context…");
@@ -65,9 +64,9 @@ describe("context meter compaction polish", () => {
   });
 
   it("uses the normal ctx percentage label when not compacting", () => {
-    const { controller, contextMeterEl, contextMeterLabelEl } = mockContextMeter(false);
+    const { controller, contextMeterEl, contextMeterLabelEl, compacting } = mockContextMeter(false);
 
-    controller.update({ contextUsage: { tokens: 82_000, contextWindow: 100_000 } });
+    controller.update({ stats: { contextUsage: { tokens: 82_000, contextWindow: 100_000 } }, isCompacting: compacting });
 
     expect(contextMeterEl.className).toBe("contextMeter warning");
     expect(contextMeterLabelEl.textContent).toBe("ctx 82%");

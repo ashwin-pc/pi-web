@@ -11,7 +11,8 @@ async function switchToOlder(page: Page) {
   await expect(page.locator("#sessionDrawer")).toBeVisible();
   await page.locator(".sessionItem").filter({ hasText: "Older mock session" }).locator(".sessionItemNavBtn").click();
   await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
-  if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+  if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click({ force: true }).catch(() => undefined);
+  await expect(page.locator("#sessionDrawer")).toBeHidden();
 }
 
 async function promptCurrentInBackground(page: Page, message: string) {
@@ -66,4 +67,25 @@ test("switching away from a streaming session clears the composer runtime", asyn
   const currentTab = page.locator(".sessionBarTab").filter({ hasText: "Current mock session" });
   await currentTab.click();
   await expect(page.locator("#stopButton")).toBeVisible();
+});
+
+test("compaction animation follows the active pinned session", async ({ page }) => {
+  await page.locator("#prompt").fill("slow compaction foreground task");
+  await page.locator("#primaryButton").click();
+  await expect(page.locator("#contextMeter")).toHaveClass(/\bcompacting\b/);
+
+  const olderTab = page.locator(".sessionBarTab").filter({ hasText: "Older mock session" });
+  await olderTab.click();
+  await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+  await expect(page.locator("#contextMeter")).not.toHaveClass(/\bcompacting\b/);
+  await expect(page.locator("#contextMeterLabel")).not.toHaveText("compacting");
+
+  const currentTab = page.locator(".sessionBarTab").filter({ hasText: "Current mock session" });
+  await currentTab.click();
+  await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+  await expect(page.locator("#contextMeter")).toHaveClass(/\bcompacting\b/);
+  await expect(page.locator("#contextMeterLabel")).toHaveText("compacting");
+
+  await page.request.post("/api/compaction/abort", { data: { sessionId: "mock-current" } });
+  await expect(page.locator("#contextMeter")).not.toHaveClass(/\bcompacting\b/);
 });

@@ -2,6 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, ImageAttachment, SlashCommand } from "../app/types.js";
+import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
@@ -46,7 +47,7 @@ export function createComposer(options: {
   api: ApiClient;
   addMessage: (role: "user" | "system", text: string, extraClass?: string, images?: any[]) => void;
   addToolHistoryCard?: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
-  updateMeta: (data: any) => void;
+  sessionState: SessionStateController;
   updateThinkingOptions: (levels?: string[]) => void;
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
@@ -55,7 +56,7 @@ export function createComposer(options: {
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
 }): ComposerController {
-  const { state, elements, api, addMessage, addToolHistoryCard, updateMeta, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
@@ -126,7 +127,8 @@ export function createComposer(options: {
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
     elements.primaryButton.disabled = !hasInput || !initialRealtimeReady;
     elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
-    elements.stopButton.style.display = state.isStreaming || state.isRetrying ? "" : "none";
+    const runtime = sessionRuntime(state);
+    elements.stopButton.style.display = runtime.isStreaming || runtime.isRetrying ? "" : "none";
   }
 
   function updateQueueToggle() {
@@ -488,7 +490,7 @@ export function createComposer(options: {
 
     const sessionId = scanned.url?.searchParams.get("sessionId")?.trim();
     if (sessionId) {
-      state.currentSessionId = sessionId;
+      sessionState.activate(sessionId);
       writeActiveSessionIdToUrl(sessionId, "replace");
     }
     connectWithToken(scanned.token);
@@ -588,11 +590,8 @@ export function createComposer(options: {
     const resetsSession = name === "new" || name === "clear";
     if (resetsSession) beginTranscriptLoading?.();
     if (data.state) {
-      updateMeta(data.state);
+      sessionState.applySnapshot(data.state, { activate: resetsSession });
       if (resetsSession && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
-      state.isStreaming = Boolean(data.state.isStreaming);
-      state.isRetrying = Boolean(data.state.isRetrying || data.state.runtime?.isRetrying);
-      updatePrimaryAction();
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
     }
     await refreshModels();
@@ -608,7 +607,8 @@ export function createComposer(options: {
 
     elements.formEl.addEventListener("submit", async (event) => {
       event.preventDefault();
-      if ((state.isStreaming || state.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0) return;
+      const activeRuntime = sessionRuntime(state);
+      if ((activeRuntime.isStreaming || activeRuntime.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0) return;
 
       const rawMessage = elements.promptEl.value;
       const promptMessage = rawMessage.trim();
@@ -665,10 +665,13 @@ export function createComposer(options: {
       state.attachedImages = [];
       contextAttachments = [];
       renderAttachments();
-      const submittedWhileRunning = state.isStreaming || state.isRetrying;
-      state.isStreaming = true;
-      state.isRetrying = false;
-      updatePrimaryAction();
+      const submittedWhileRunning = activeRuntime.isStreaming || activeRuntime.isRetrying;
+      const sessionId = state.currentSessionId;
+      const runtimeTransition = sessionState.patchRuntime(sessionId, {
+        loaded: true,
+        isStreaming: true,
+        isRetrying: false,
+      }, { kind: "start", label: "starting" });
       beginStreamFollow?.();
       const clientMessageId = crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       if (!submittedWhileRunning) {
@@ -680,14 +683,12 @@ export function createComposer(options: {
         const res = await fetch("/api/prompt", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId: state.currentSessionId, clientMessageId, message, mode: state.queueMode, images }),
+          body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, images }),
         });
         if (!res.ok) throw new Error(await res.text());
       } catch (error) {
         optimisticUserMessages.delete(clientMessageId);
-        state.isStreaming = false;
-        state.isRetrying = false;
-        updatePrimaryAction();
+        sessionState.replaceRuntime(sessionId, runtimeTransition.previous);
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       } finally {

@@ -2,6 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile, focusIfKeyboardFriendly } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
+import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import type { ComposerController } from "../composer/composer.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 
@@ -333,11 +334,11 @@ export function createConversationTree(options: {
   api: ApiClient;
   rightPanels?: RightPanelManager;
   composer: ComposerController;
-  updateMeta: (data: any) => void;
+  sessionState: SessionStateController;
   refreshMessages: () => Promise<void>;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): ConversationTreeController {
-  const { state, elements, api, rightPanels, composer, updateMeta, refreshMessages, addMessage } = options;
+  const { state, elements, api, rightPanels, composer, sessionState, refreshMessages, addMessage } = options;
 
   let treeData: ConversationTreeResponse | null = null;
   let selectedId = "";
@@ -495,9 +496,10 @@ export function createConversationTree(options: {
 
     const actionText = node.role === "user" || node.role === "custom" ? "Edit from here" : "Continue from here";
     jumpButton.textContent = node.isCurrentLeaf ? "Current position" : actionText;
-    jumpButton.disabled = loading || state.isStreaming || node.isCurrentLeaf;
-    summaryButton.disabled = loading || state.isStreaming || node.isCurrentLeaf;
-    customButton.disabled = loading || state.isStreaming || node.isCurrentLeaf;
+    const streaming = sessionRuntime(state).isStreaming;
+    jumpButton.disabled = loading || streaming || node.isCurrentLeaf;
+    summaryButton.disabled = loading || streaming || node.isCurrentLeaf;
+    customButton.disabled = loading || streaming || node.isCurrentLeaf;
     summaryButton.hidden = node.isCurrentLeaf;
     customButton.hidden = node.isCurrentLeaf;
   }
@@ -751,10 +753,7 @@ export function createConversationTree(options: {
         setStatus("Navigation cancelled.");
         return;
       }
-      if (data.state) {
-        updateMeta(data.state);
-        state.isStreaming = Boolean(data.state.isStreaming);
-      }
+      if (data.state) sessionState.applySnapshot(data.state);
       composer.setPromptText(typeof data.editorText === "string" ? data.editorText : "");
       await refreshMessages();
       await refreshTree();

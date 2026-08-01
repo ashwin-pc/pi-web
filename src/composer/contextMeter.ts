@@ -1,11 +1,16 @@
 import type { AppElements } from "../app/elements.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
-import type { AppState, SessionStats } from "../app/types.js";
+import type { SessionStats } from "../app/types.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
+
+export type ContextMeterView = {
+  stats?: SessionStats | null;
+  isCompacting: boolean;
+};
 
 export type ContextMeterController = {
   init: () => void;
-  update: (stats?: SessionStats | null) => void;
+  update: (view: ContextMeterView) => void;
 };
 
 function finiteNumber(value: unknown): number | undefined {
@@ -79,8 +84,9 @@ function addStatRow(parent: HTMLElement, label: string, value: string) {
   parent.append(row);
 }
 
-export function createContextMeter(options: { state: AppState; elements: AppElements }): ContextMeterController {
-  const { state, elements } = options;
+export function createContextMeter(options: { elements: AppElements }): ContextMeterController {
+  const { elements } = options;
+  let currentView: ContextMeterView = { isCompacting: false };
 
   function closePopover() {
     elements.contextMeterPopoverEl.hidden = true;
@@ -119,28 +125,28 @@ export function createContextMeter(options: { state: AppState; elements: AppElem
     addStatRow(popover, "Cost", dollars(stats.cost));
   }
 
-  function update(stats?: SessionStats | null) {
-    state.stats = stats || undefined;
-    const percent = contextPercent(stats);
+  function update(view: ContextMeterView) {
+    currentView = view;
+    const percent = contextPercent(view.stats);
     const clamped = Math.max(0, Math.min(100, percent ?? 0));
     const tone = contextTone(percent);
-    const title = state.isCompacting ? "Compacting context…" : contextTitle(stats);
-    const compactingClass = state.isCompacting ? " compacting" : "";
+    const title = view.isCompacting ? "Compacting context…" : contextTitle(view.stats);
+    const compactingClass = view.isCompacting ? " compacting" : "";
 
     elements.contextMeterEl.className = `contextMeter ${tone}${compactingClass}`;
     elements.contextMeterEl.style.setProperty("--context-percent", `${clamped}%`);
     elements.contextMeterEl.title = title;
     elements.contextMeterEl.setAttribute("aria-label", title.replace(/\n/g, ". "));
-    elements.contextMeterLabelEl.textContent = state.isCompacting
+    elements.contextMeterLabelEl.textContent = view.isCompacting
       ? "compacting"
       : percent !== undefined && percent >= 80 ? `ctx ${Math.round(percent)}%` : "";
-    renderPopover(stats);
+    renderPopover(view.stats);
   }
 
   function togglePopover() {
     const open = elements.contextMeterPopoverEl.hidden;
     if (open) blurActiveEditableOnMobile();
-    renderPopover(state.stats);
+    renderPopover(currentView.stats);
     elements.contextMeterPopoverEl.hidden = !open;
     elements.contextMeterEl.setAttribute("aria-expanded", String(open));
   }
@@ -161,7 +167,7 @@ export function createContextMeter(options: { state: AppState; elements: AppElem
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") closePopover();
     });
-    update(state.stats);
+    update(currentView);
   }
 
   return { init, update };

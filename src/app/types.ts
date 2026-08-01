@@ -41,6 +41,13 @@ export type PiWebModelSetting = {
   id: string;
 };
 
+export type SessionModel = PiWebModelSetting & {
+  name?: string;
+  reasoning?: boolean;
+  contextWindow?: number;
+  maxTokens?: number;
+};
+
 export type ContextUsage = {
   tokens?: number | null;
   contextWindow?: number | null;
@@ -242,6 +249,18 @@ export function readLegacySelectedMarkerColor(): SessionMarkerColorId | undefine
   return normalizeMarkerColor(localStorage.getItem(selectedMarkerColorKey));
 }
 
+export type SessionRuntimeState = {
+  loaded: boolean;
+  isRunning: boolean;
+  isStreaming: boolean;
+  isRetrying: boolean;
+  isCompacting: boolean;
+  startedAt?: string;
+  lastActivityAt?: string;
+  pendingMessageCount: number;
+  model?: SessionModel;
+};
+
 export type SessionInfo = {
   id: string;
   name?: string;
@@ -251,21 +270,33 @@ export type SessionInfo = {
   messageCount?: number;
   cwd?: string;
   isCurrent: boolean;
-  runtime?: {
-    loaded: boolean;
-    isRunning: boolean;
-    isStreaming: boolean;
-    isRetrying?: boolean;
-    isCompacting: boolean;
-    startedAt?: string;
-    lastActivityAt?: string;
-    pendingMessageCount: number;
-  };
+  runtime?: SessionRuntimeState;
   unread?: boolean;
   unreadAt?: string;
 };
 
 export type SessionRecord = Partial<Omit<SessionInfo, "id">> & { id: string };
+
+export type SessionQueueState = {
+  steering: string[];
+  followUp: string[];
+};
+
+/** Canonical client-side projection for one session, whether active or backgrounded. */
+export type SessionViewState = SessionRecord & {
+  snapshotLoaded?: boolean;
+  sessionFile?: string;
+  title?: string;
+  model?: SessionModel;
+  thinkingLevel?: string;
+  thinkingLevels?: string[];
+  stats?: SessionStats;
+  queue?: SessionQueueState;
+  webFooters?: unknown;
+  webHeaderActions?: unknown;
+  webArtifactActions?: unknown;
+  webGitTabs?: unknown;
+};
 
 export type AppState = {
   token: string;
@@ -276,9 +307,6 @@ export type AppState = {
   currentCwd: string;
   currentSessionTitle: string;
   statusTitleEditing: boolean;
-  isStreaming: boolean;
-  isRetrying: boolean;
-  isCompacting: boolean;
   wsHasOpened: boolean;
   wsDisconnected: boolean;
   initialSyncComplete: boolean;
@@ -287,7 +315,7 @@ export type AppState = {
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
-  sessionsById: Record<string, SessionRecord>;
+  sessionsById: Record<string, SessionViewState>;
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
@@ -298,7 +326,6 @@ export type AppState = {
   attachedImages: ImageAttachment[];
   editorExpanded: boolean;
   settings: PiWebSettings;
-  stats?: SessionStats;
 };
 
 export const reconnectDelayMs = 1500;
@@ -364,9 +391,6 @@ export function createAppState(): AppState {
     currentCwd: "",
     currentSessionTitle: "New session",
     statusTitleEditing: false,
-    isStreaming: false,
-    isRetrying: false,
-    isCompacting: false,
     wsHasOpened: false,
     wsDisconnected: false,
     initialSyncComplete: false,
@@ -386,7 +410,6 @@ export function createAppState(): AppState {
     attachedImages: [],
     editorExpanded: defaultPiWebSettings.composer.expanded,
     settings: defaultPiWebSettings,
-    stats: undefined,
   };
 }
 

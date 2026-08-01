@@ -4,6 +4,7 @@ import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
+import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
@@ -129,12 +130,11 @@ export function createSessions(options: {
   elements: AppElements;
   api: ApiClient;
   rightPanels?: RightPanelManager;
-  updateMeta: (data: any) => void;
+  sessionState: SessionStateController;
   updateThinkingOptions: (levels?: string[]) => void;
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
-  applyRuntimeState: (data: any) => void;
   refreshSessionTitle: () => Promise<void>;
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
@@ -144,12 +144,11 @@ export function createSessions(options: {
     elements,
     api,
     rightPanels,
-    updateMeta,
+    sessionState,
     updateThinkingOptions,
     refreshModels,
     refreshMessages,
     refreshState,
-    applyRuntimeState,
     refreshSessionTitle,
     clearMessages,
     addMessage,
@@ -157,10 +156,6 @@ export function createSessions(options: {
 
   let cachedSessions: SessionInfo[] = [];
   let sessionRefreshPromise: Promise<void> | undefined;
-  // Tracks runtime state for pinned sessions independently of cachedSessions so
-  // session_runtime_changed events can update the bar even before the first
-  // refreshSessions() completes.
-  const pinnedRuntimes = new Map<string, SessionInfo["runtime"]>();
   let closeSessionActionsMenu: (() => void) | undefined;
   let sessionPanelHandle: RightPanelHandle | undefined;
   let currentSessionPinButton: HTMLButtonElement | undefined;
@@ -198,7 +193,7 @@ export function createSessions(options: {
 
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = state.currentCwd;
-    elements.emptyCwdChooserEl.hidden = transcriptLoading || elements.messagesEl.children.length > 0 || state.isStreaming;
+    elements.emptyCwdChooserEl.hidden = transcriptLoading || elements.messagesEl.children.length > 0 || sessionRuntime(state).isStreaming;
   }
 
   function finishTranscriptLoading() {
@@ -206,7 +201,7 @@ export function createSessions(options: {
       updateEmptyCwdChooser();
       return;
     }
-    if (elements.messagesEl.children.length === 0 && !state.isStreaming) {
+    if (elements.messagesEl.children.length === 0 && !sessionRuntime(state).isStreaming) {
       const generation = transcriptLoadGeneration;
       if (lastReplayedGeneration !== generation) {
         lastReplayedGeneration = generation;
@@ -257,7 +252,7 @@ export function createSessions(options: {
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
     rememberSessionCwd(cwd);
     if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
-    updateMeta(data);
+    sessionState.applySnapshot(data, { activate: true });
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await refreshModels();
     await refreshMessages();
@@ -375,7 +370,7 @@ export function createSessions(options: {
     rememberSessionCwd(cwd || data.cwd || state.currentCwd);
     beginTranscriptLoading();
     clearMessages();
-    updateMeta(data);
+    sessionState.applySnapshot(data, { activate: true });
     await refreshState();
     updateEmptyCwdChooser();
     if (shouldCloseDrawerAfterSessionSwitch()) {
@@ -424,7 +419,7 @@ export function createSessions(options: {
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
       cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
-      for (const session of cachedSessions) state.sessionsById[session.id] = { ...state.sessionsById[session.id], ...session };
+      for (const session of cachedSessions) sessionState.mergeSessionInfo(session);
       let pinnedCwdsChanged = false;
       state.pinnedSessions = state.pinnedSessions.map((pinned) => {
         const live = cachedSessions.find((s) => s.id === pinned.id);
@@ -444,10 +439,12 @@ export function createSessions(options: {
 
   async function applyOpenedSession(openRes: Response) {
     const data = await openRes.json();
-    updateMeta(data);
-    applyRuntimeState(data);
+    const responseSessionId = typeof data.sessionId === "string" ? data.sessionId : "";
+    sessionState.applySnapshot(data, { activate: Boolean(responseSessionId && responseSessionId === state.currentSessionId) });
+    if (responseSessionId && responseSessionId !== state.currentSessionId) return false;
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await Promise.all([refreshModels(), refreshMessages()]);
+    return !responseSessionId || responseSessionId === state.currentSessionId;
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -467,7 +464,7 @@ export function createSessions(options: {
       changed = true;
       return { ...session, name: name || undefined };
     });
-    if (state.sessionsById[sessionId]) state.sessionsById[sessionId].name = name || undefined;
+    sessionState.applySnapshot({ sessionId, sessionName: name });
     if (changed && !elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
   }
@@ -475,34 +472,15 @@ export function createSessions(options: {
   function removeSession(sessionId: string) {
     if (!sessionId) return;
     cachedSessions = cachedSessions.filter((session) => session.id !== sessionId);
-    delete state.sessionsById[sessionId];
-    pinnedRuntimes.delete(sessionId);
+    sessionState.remove(sessionId);
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
     updateSessionButtonUnread();
   }
 
   function updateSessionRuntime(sessionId: string, runtime: SessionInfo["runtime"]) {
-    if (!sessionId) return;
-    // Always cache runtime for pinned sessions — this lets renderSessionBar show
-    // the running state even before cachedSessions is populated.
-    const isPinned = state.pinnedSessions.some((p) => p.id === sessionId);
-    if (isPinned) pinnedRuntimes.set(sessionId, runtime);
-    if (cachedSessions.length === 0) {
-      if (isPinned) renderSessionBar();
-      return;
-    }
-    let changed = false;
-    cachedSessions = cachedSessions.map((session) => {
-      if (session.id !== sessionId) return session;
-      changed = true;
-      return { ...session, runtime };
-    });
-    if (!changed) {
-      // Session not in cachedSessions yet but is pinned — still re-render bar.
-      if (isPinned) renderSessionBar();
-      return;
-    }
+    if (!sessionId || !runtime) return;
+    cachedSessions = cachedSessions.map((session) => session.id === sessionId ? { ...session, runtime } : session);
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
   }
@@ -592,14 +570,12 @@ export function createSessions(options: {
     });
   }
 
-  function sessionRuntime(sessionId: string) {
-    const pinnedRuntime = pinnedRuntimes.get(sessionId);
-    if (pinnedRuntime?.isRunning) return pinnedRuntime;
-    return cachedSessions.find((session) => session.id === sessionId)?.runtime ?? pinnedRuntime;
+  function runtimeForSession(sessionId: string) {
+    return state.sessionsById[sessionId]?.runtime ?? cachedSessions.find((session) => session.id === sessionId)?.runtime;
   }
 
   function isSessionRunning(sessionId: string, fallbackRunning = false) {
-    return Boolean(fallbackRunning || sessionRuntime(sessionId)?.isRunning);
+    return Boolean(fallbackRunning || runtimeForSession(sessionId)?.isRunning);
   }
 
   function isSessionUnread(sessionId: string, fallbackUnread = false, fallbackRunning = false) {
@@ -1070,7 +1046,7 @@ export function createSessions(options: {
 
   function pinSession(item: SessionInfo) {
     if (isPinned(item.id)) return;
-    state.sessionsById[item.id] = { ...state.sessionsById[item.id], ...item };
+    sessionState.mergeSessionInfo(item);
     state.pinnedSessions = [...state.pinnedSessions, { id: item.id, cwd: item.cwd || state.currentCwd }];
     persistSessionUiState({ pinnedSessions: state.pinnedSessions });
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
@@ -1083,7 +1059,6 @@ export function createSessions(options: {
     const pinnedCount = state.pinnedSessions.length;
     state.pinnedSessions = state.pinnedSessions.filter((p) => p.id !== sessionId);
     if (state.pinnedSessions.length === pinnedCount) return;
-    pinnedRuntimes.delete(sessionId);
     persistSessionUiState({ pinnedSessions: state.pinnedSessions });
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
     renderSessionList(cachedSessions);
@@ -1131,12 +1106,7 @@ export function createSessions(options: {
     const previousSessionId = state.currentSessionId;
     const switchingSessions = state.currentSessionId !== sessionId;
     if (switchingSessions) {
-      const knownSession = state.sessionsById[sessionId];
-      const knownTitle = knownSession ? sessionTitle(knownSession as SessionInfo) : "";
-      state.currentSessionId = sessionId;
-      state.currentSessionTitle = knownTitle || "Session";
-      renderSessionBar();
-      renderCurrentSessionBucketButton();
+      sessionState.activate(sessionId);
       beginTranscriptLoading();
       clearMessages();
     }
@@ -1147,15 +1117,13 @@ export function createSessions(options: {
         body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
       if (!openRes.ok) throw new Error(await openRes.text());
-      await applyOpenedSession(openRes);
+      if (!await applyOpenedSession(openRes)) return;
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       markSessionReadBestEffort(sessionId);
     } catch (error) {
-      state.currentSessionId = previousSessionId;
-      renderSessionBar();
-      renderCurrentSessionBucketButton();
+      if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
     }
   }
@@ -1523,7 +1491,7 @@ export function createSessions(options: {
         pinnedEntry.id,
         titleForSessionId(pinnedEntry.id),
         live?.cwd || pinnedEntry.cwd || state.currentCwd,
-        { pinned: true, running: (live?.runtime ?? pinnedRuntimes.get(pinnedEntry.id))?.isRunning ?? false, unread: live?.unread },
+        { pinned: true, running: (state.sessionsById[pinnedEntry.id]?.runtime ?? live?.runtime)?.isRunning ?? false, unread: live?.unread },
       );
     }
 
@@ -1537,7 +1505,7 @@ export function createSessions(options: {
       }
       appendTab(currentId, live ? sessionTitle(live) : titleForSessionId(currentId), live?.cwd || state.currentCwd, {
         pinned: false,
-        running: (live?.runtime ?? pinnedRuntimes.get(currentId))?.isRunning ?? state.isStreaming,
+        running: (state.sessionsById[currentId]?.runtime ?? live?.runtime)?.isRunning ?? sessionRuntime(state).isRunning,
         unread: live?.unread,
       });
     }
@@ -1570,7 +1538,7 @@ export function createSessions(options: {
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
 
     cachedSessions = cachedSessions.filter((session) => session.id !== item.id);
-    pinnedRuntimes.delete(item.id);
+    sessionState.remove(item.id);
     state.pinnedSessions = state.pinnedSessions.filter((session) => session.id !== item.id);
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== item.id);
     renderSessionList(cachedSessions);
@@ -1926,9 +1894,7 @@ export function createSessions(options: {
       const nextCwd = item.cwd || cwd;
       const switchingSessions = state.currentSessionId !== item.id;
       if (switchingSessions) {
-        state.currentSessionId = item.id;
-        renderSessionBar();
-        renderCurrentSessionBucketButton();
+        sessionState.activate(item.id);
         beginTranscriptLoading();
         clearMessages();
       }
@@ -1939,18 +1905,14 @@ export function createSessions(options: {
           body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
         });
         if (!openRes.ok) throw new Error(await openRes.text());
-        await applyOpenedSession(openRes);
+        if (!await applyOpenedSession(openRes)) return;
         writeActiveSessionIdToUrl(item.id);
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         markSessionReadBestEffort(item.id);
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
       } catch (error) {
-        if (switchingSessions) {
-          state.currentSessionId = previousSessionId;
-          renderSessionBar();
-          renderCurrentSessionBucketButton();
-        }
+        if (switchingSessions && state.currentSessionId === item.id) sessionState.activate(previousSessionId);
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
         if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
       }

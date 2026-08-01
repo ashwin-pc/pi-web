@@ -656,9 +656,9 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
     // Drawer auto-closes on narrow viewports after a session switch; only close manually if still open.
     if (await page.locator("#sessionDrawer").isVisible()) {
-      await page.locator("#sessionCloseButton").click();
-      await expect(page.locator("#sessionDrawer")).toBeHidden();
+      await page.locator("#sessionCloseButton").click({ force: true }).catch(() => undefined);
     }
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
   }
 
   async function promptCurrentInBackground(page: import("@playwright/test").Page, message: string) {

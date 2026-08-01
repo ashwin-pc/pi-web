@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
+import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { connectionLostDelayMs, reconnectDelayMs, reconnectNoticeDelayMs } from "../app/types.js";
 
 
@@ -45,12 +46,12 @@ export function createStatusBar(options: {
   state: AppState;
   elements: AppElements;
   api: ApiClient;
-  updateMeta: (data: any) => void;
+  sessionState: SessionStateController;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
   refreshSessions: () => Promise<void>;
   refreshState: () => Promise<void>;
 }): StatusBar {
-  const { state, elements, api, updateMeta, addMessage, refreshSessions, refreshState } = options;
+  const { state, elements, api, sessionState, addMessage, refreshSessions, refreshState } = options;
   const activityBySession = new Map<string, ActivityEntry>();
   let activityTimer: number | undefined;
 
@@ -74,7 +75,7 @@ export function createStatusBar(options: {
       const text = await res.text();
       const data = text ? JSON.parse(text) : {};
       if (!res.ok || data.ok === false) throw new Error(data.error || text);
-      updateMeta(data);
+      sessionState.applySnapshot(data);
     } catch (error) {
       setStatusTitle(previous);
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
@@ -174,9 +175,10 @@ export function createStatusBar(options: {
     const elapsedText = activity.startedAt ? ` ${formatActivityDuration(now - activity.startedAt)}` : "";
     const className = warn ? "stale" : quiet ? "quiet" : "running";
     const text = `Running${elapsedText}${activity.label ? ` · ${activity.label}` : ""}${quiet ? ` · no updates ${formatActivityDuration(quietFor)}` : ""}`;
+    const runtime = sessionRuntime(state);
     const title = activity.startedAt
-      ? `Session is still active. Last update ${formatActivityDuration(quietFor)} ago.${state.isStreaming || state.isRetrying ? " Use Stop to cancel if needed." : ""}`
-      : `Session is still active, but its original start time is unavailable.${state.isStreaming || state.isRetrying ? " Use Stop to cancel if needed." : ""}`;
+      ? `Session is still active. Last update ${formatActivityDuration(quietFor)} ago.${runtime.isStreaming || runtime.isRetrying ? " Use Stop to cancel if needed." : ""}`
+      : `Session is still active, but its original start time is unavailable.${runtime.isStreaming || runtime.isRetrying ? " Use Stop to cancel if needed." : ""}`;
     elements.activityStatusEl.className = `activityStatus ${className}`;
     elements.activityStatusEl.textContent = text;
     elements.activityStatusEl.title = title;
@@ -301,7 +303,7 @@ export function createStatusBar(options: {
       if (!res.ok || sessionId !== state.currentSessionId) return;
       const data = await res.json();
       if (sessionId !== state.currentSessionId || data.sessionId !== sessionId) return;
-      updateMeta(data);
+      sessionState.applySnapshot(data);
     } catch (_e) { /* best-effort */ }
   }
 
