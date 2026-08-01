@@ -6,6 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { orderItemsWithChildren as orderLineage, runningChildIdsOf, sessionIndicatorKind } from "./lineage.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -518,6 +519,9 @@ export function createSessions(options: {
       || value.pinnedFolders.length > 0
       || value.sessionMarkers.length > 0
       || value.sessionUnreadStates.length > 0
+      // Lineage counts as state: without it, a server holding ONLY origins looks
+      // "empty" and a legacy-localStorage push would wipe every recorded origin.
+      || (value.sessionOrigins?.length ?? 0) > 0
       || value.allowedMarkerColors.length > 0
       || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
   }
@@ -594,7 +598,7 @@ export function createSessions(options: {
   }
 
   function runningChildrenOf(sessionId: string) {
-    return childSessionIdsOf(sessionId).filter((childId) => {
+    return runningChildIdsOf(sessionId, state.sessionOrigins || [], (childId) => {
       const cached = cachedSessions.find((item) => item.id === childId);
       return isSessionRunning(childId, Boolean(cached?.runtime?.isRunning));
     });
@@ -625,10 +629,15 @@ export function createSessions(options: {
     | { kind: "waiting"; waiting: { count: number; names: string[] } }
     | { kind: "unread" }
     | { kind: "none" } {
-    if (isSessionRunning(sessionId, Boolean(fallbacks.running))) return { kind: "running" };
     const waiting = waitingInfoFor(sessionId);
-    if (waiting) return { kind: "waiting", waiting };
-    if (isSessionUnread(sessionId, Boolean(fallbacks.unread), Boolean(fallbacks.running))) return { kind: "unread" };
+    const kind = sessionIndicatorKind({
+      running: isSessionRunning(sessionId, Boolean(fallbacks.running)),
+      waiting: Boolean(waiting),
+      unread: isSessionUnread(sessionId, Boolean(fallbacks.unread), Boolean(fallbacks.running)),
+    });
+    if (kind === "waiting" && waiting) return { kind: "waiting", waiting };
+    if (kind === "running") return { kind: "running" };
+    if (kind === "unread") return { kind: "unread" };
     return { kind: "none" };
   }
 
@@ -1888,24 +1897,7 @@ export function createSessions(options: {
   /** Keep spawned children adjacent to (and after) their parent in the list. */
   function orderItemsWithChildren(items: SessionInfo[]): SessionInfo[] {
     if (!(state.sessionOrigins || []).length) return items;
-    const ids = new Set(items.map((item) => item.id));
-    const childrenByParent = new Map<string, SessionInfo[]>();
-    const deferred = new Set<string>();
-    for (const item of items) {
-      const parent = originParentOf(item.id);
-      if (parent && ids.has(parent)) {
-        childrenByParent.set(parent, [...(childrenByParent.get(parent) || []), item]);
-        deferred.add(item.id);
-      }
-    }
-    if (deferred.size === 0) return items;
-    const result: SessionInfo[] = [];
-    for (const item of items) {
-      if (deferred.has(item.id)) continue;
-      result.push(item);
-      for (const child of childrenByParent.get(item.id) || []) result.push(child);
-    }
-    return result;
+    return orderLineage(items, (id) => originParentOf(id));
   }
 
   function buildSessionItem(item: SessionInfo, cwd: string): HTMLElement {

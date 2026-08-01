@@ -171,7 +171,11 @@ export function normalizeExtensionSettings(value: unknown): Record<string, Store
   if (!isRecord(value)) return undefined;
   const out: Record<string, StoredExtensionSettings> = {};
   let count = 0;
-  for (const [id, raw] of Object.entries(value)) {
+  const entries = Object.entries(value);
+  if (entries.length > extensionSettingsLimits.maxOwners) {
+    console.warn(`pi-web: ignoring extension settings beyond the first ${extensionSettingsLimits.maxOwners} owners (${entries.length} stored)`);
+  }
+  for (const [id, raw] of entries) {
     if (count >= extensionSettingsLimits.maxOwners) break;
     if (!isValidExtensionOwnerId(id)) continue;
     const record = normalizeStoredExtension(raw);
