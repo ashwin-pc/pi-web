@@ -3,6 +3,8 @@ import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+const visualArtifactRoot = ".pi/web/artifacts";
+
 async function sendPrompt(page: import("@playwright/test").Page, prompt: string) {
   await page.locator("#prompt").fill(prompt);
   await page.locator("#primaryButton").click();
@@ -87,30 +89,52 @@ async function mockConversationTreeApi(page: import("@playwright/test").Page) {
 async function mockFilesApi(page: import("@playwright/test").Page) {
   await page.route("**/api/files/tree**", async (route) => {
     const path = new URL(route.request().url()).searchParams.get("path") || "";
-    await route.fulfill({ json: path === "src" ? {
-      ok: true, path, entries: [
-        { name: "app", path: "src/app", kind: "directory" },
-        { name: "main.ts", path: "src/main.ts", kind: "file", size: 152 },
-        { name: "styles.css", path: "src/styles.css", kind: "file", size: 84 },
-      ],
-    } : {
-      ok: true, path: "", entries: [
-        { name: "src", path: "src", kind: "directory" },
-        { name: "tests", path: "tests", kind: "directory" },
-        { name: "package.json", path: "package.json", kind: "file", size: 418 },
-        { name: "README.md", path: "README.md", kind: "file", size: 226 },
-      ],
-    } });
+    const entries = path === "src"
+      ? [
+          { name: "app", path: "src/app", kind: "directory" },
+          { name: "main.ts", path: "src/main.ts", kind: "file", size: 152 },
+          { name: "styles.css", path: "src/styles.css", kind: "file", size: 84 },
+        ]
+      : path === visualArtifactRoot
+        ? [
+            { name: "image-edits", path: `${visualArtifactRoot}/image-edits`, kind: "directory" },
+            { name: "showcase", path: `${visualArtifactRoot}/showcase`, kind: "directory" },
+            { name: "concept.html", path: `${visualArtifactRoot}/concept.html`, kind: "file", size: 4_320 },
+            { name: "launch-preview.png", path: `${visualArtifactRoot}/launch-preview.png`, kind: "file", size: 125_400 },
+            { name: "notes.md", path: `${visualArtifactRoot}/notes.md`, kind: "file", size: 1_860 },
+            { name: "walkthrough.webm", path: `${visualArtifactRoot}/walkthrough.webm`, kind: "file", size: 820_100 },
+          ]
+        : path === `${visualArtifactRoot}/image-edits`
+          ? [
+              { name: "final.png", path: `${visualArtifactRoot}/image-edits/final.png`, kind: "file", size: 96_500 },
+              { name: "source.png", path: `${visualArtifactRoot}/image-edits/source.png`, kind: "file", size: 104_200 },
+            ]
+          : [
+              { name: "src", path: "src", kind: "directory" },
+              { name: "tests", path: "tests", kind: "directory" },
+              { name: "package.json", path: "package.json", kind: "file", size: 418 },
+              { name: "README.md", path: "README.md", kind: "file", size: 226 },
+            ];
+    await route.fulfill({ json: { ok: true, path, entries } });
   });
-  await page.route("**/api/files/read**", (route) => route.fulfill({ json: {
-    ok: true,
-    path: "README.md",
-    size: 226,
-    readOnly: false,
-    language: "markdown",
-    revision: "showcase-readme",
-    content: "# pi-web\n\nA focused, responsive web UI for the pi coding agent.\n\n## Workspace Explorer\n\n- Browse the active session directory\n- Edit files with syntax highlighting\n- Save safely with revision conflict detection\n- Preview images without leaving the workspace\n",
-  } }));
+  await page.route(/\/api\/(?:session-)?artifacts\//, async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith(".html")) {
+      await route.fulfill({ contentType: "text/html", body: `<!doctype html><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 30% 20%,#5a4324,#14100b 56%,#070706);color:#fff;font:16px system-ui}.card{width:min(82vw,620px);padding:44px;border:1px solid #9b7740;border-radius:24px;background:rgba(15,12,8,.72);box-shadow:0 24px 80px #0008}small{color:#e2b15f;text-transform:uppercase;letter-spacing:.18em}h1{font-size:clamp(30px,6vw,68px);margin:.2em 0}p{color:#c8bdad;line-height:1.6}button{padding:12px 18px;border:1px solid #b68d4d;border-radius:99px;background:#e2b15f;color:#17120b;font-weight:700}</style><div class="card"><small>Interactive artifact</small><h1>Constellation</h1><p>A tactile prototype with live controls, motion, and a warm editorial palette.</p><button>Explore prototype</button></div>` });
+    } else if (path.endsWith(".webm")) {
+      await route.fulfill({ contentType: "video/webm", body: Buffer.from([]) });
+    } else {
+      await route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360"><defs><radialGradient id="g"><stop stop-color="#8b6630"/><stop offset="1" stop-color="#111318"/></radialGradient></defs><rect width="640" height="360" fill="url(#g)"/><circle cx="320" cy="180" r="82" fill="#e2b15f" opacity=".92"/><circle cx="320" cy="180" r="114" fill="none" stroke="#f4d9a3" opacity=".35"/></svg>' });
+    }
+  });
+  await page.route("**/api/files/read**", async (route) => {
+    const path = new URL(route.request().url()).searchParams.get("path") || "README.md";
+    const artifact = path === `${visualArtifactRoot}/notes.md`;
+    const content = artifact
+      ? "# Artifact field notes\n\nA rendered study of the new **gallery and interactive preview** experience.\n"
+      : "# pi-web\n\nA focused, responsive web UI for the pi coding agent.\n\n## Workspace Explorer\n\n- Browse the active session directory\n- Edit files with syntax highlighting\n- Save safely with revision conflict detection\n- Preview images without leaving the workspace\n";
+    await route.fulfill({ json: { ok: true, path, size: content.length, readOnly: false, language: "markdown", revision: artifact ? "artifact-notes" : "showcase-readme", content } });
+  });
 }
 
 async function mockGitApi(page: import("@playwright/test").Page) {
@@ -330,6 +354,42 @@ test.describe("visual regression", () => {
     await expect(page.locator(".cm-editor")).toBeVisible();
 
     await expect(page).toHaveScreenshot(`workspace-explorer-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+    });
+  });
+
+  test("artifacts explorer", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
+    if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1600, height: 1000 });
+    await mockFilesApi(page);
+
+    await page.goto("/");
+    await openLauncherAction(page, "File explorer");
+    await page.locator("#filesArtifactsScope").click();
+    await expect(page.locator(`.artifactGalleryCard[data-artifact-path="${visualArtifactRoot}/launch-preview.png"] img`)).toBeVisible();
+    const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${visualArtifactRoot}/concept.html"] iframe`);
+    await expect(thumbnail.contentFrame().locator("h1")).toHaveText("Constellation");
+
+    await expect(page).toHaveScreenshot(`artifacts-explorer-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+    });
+  });
+
+  test("large interactive artifact preview", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
+    if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1600, height: 1000 });
+    await mockFilesApi(page);
+
+    await page.goto("/");
+    await openLauncherAction(page, "File explorer");
+    await page.locator("#filesArtifactsScope").click();
+    await page.getByRole("button", { name: "Preview concept.html" }).click();
+    const preview = page.locator("#artifactBrowserPreviewBody iframe");
+    await expect(preview.contentFrame().locator("h1")).toHaveText("Constellation");
+
+    await expect(page).toHaveScreenshot(`artifact-preview-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
     });

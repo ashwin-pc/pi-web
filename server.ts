@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream, existsSync } from "node:fs";
+import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { extname, join, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
@@ -38,6 +38,8 @@ const mockMode = process.env.PI_WEB_MOCK === "1";
 
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
+  ".htm": "text/html; charset=utf-8",
+  ".xhtml": "application/xhtml+xml",
   ".css": "text/css; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".json": "application/json; charset=utf-8",
@@ -49,6 +51,12 @@ const contentTypes: Record<string, string> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
+  ".bmp": "image/bmp",
+  ".mp4": "video/mp4",
+  ".webm": "video/webm",
+  ".mov": "video/quicktime",
+  ".ogv": "video/ogg",
+  ".pdf": "application/pdf",
 };
 
 function sendJson(res: ServerResponse, status: number, value: unknown) {
@@ -60,8 +68,8 @@ function sendJson(res: ServerResponse, status: number, value: unknown) {
   res.end(body);
 }
 
-function pipeReadStream(res: ServerResponse, file: string) {
-  const stream = createReadStream(file);
+function pipeReadStream(res: ServerResponse, file: string, range?: { start: number; end: number }) {
+  const stream = createReadStream(file, range);
   res.on("close", () => stream.destroy());
   stream.pipe(res);
 }
@@ -88,20 +96,62 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
-function serveArtifact(req: IncomingMessage, res: ServerResponse) {
+async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionScoped = false) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const artifactPath = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
-  if (!isValidArtifactPath(artifactPath)) return sendJson(res, 400, { ok: false, error: "Invalid artifact path" });
+  const routePrefix = sessionScoped ? "/api/session-artifacts/" : "/api/artifacts/";
+  const routePath = url.pathname.slice(routePrefix.length);
+  const separator = routePath.indexOf("/");
+  const pathSessionId = sessionScoped && separator > 0 ? decodeURIComponent(routePath.slice(0, separator)) : "";
+  const artifactPath = decodeURIComponent(sessionScoped ? routePath.slice(separator + 1) : routePath);
+  if ((sessionScoped && !pathSessionId) || !isValidArtifactPath(artifactPath)) return sendJson(res, 400, { ok: false, error: "Invalid artifact path" });
 
-  const artifactRoots = new Set([piCwd, ...knownCwds, ...sessionService.knownCwds()]);
+  let preferredCwd = "";
+  const requestedSessionId = pathSessionId || url.searchParams.get("sessionId");
+  if (requestedSessionId) {
+    try { preferredCwd = await sessionService.cwdForSessionId(requestedSessionId); } catch {
+      if (sessionScoped) return sendJson(res, 404, { ok: false, error: "Session not found" });
+    }
+  }
+  const artifactRoots = sessionScoped
+    ? new Set([preferredCwd])
+    : new Set([...(preferredCwd ? [preferredCwd] : []), piCwd, ...knownCwds, ...sessionService.knownCwds()]);
   const resolvedFile = findArtifactFile(artifactRoots, artifactPath);
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
-  res.writeHead(200, {
+  const size = statSync(resolvedFile).size;
+  const headers: Record<string, string | number> = {
     "content-type": contentTypes[extname(resolvedFile).toLowerCase()] || "application/octet-stream",
+    "content-length": size,
+    "accept-ranges": "bytes",
     "cache-control": "no-store",
+  };
+  const rangeHeader = req.headers.range?.trim();
+  if (!rangeHeader) {
+    res.writeHead(200, headers);
+    pipeReadStream(res, resolvedFile);
+    return;
+  }
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader);
+  let start = match?.[1] ? Number(match[1]) : 0;
+  let end = match?.[2] ? Number(match[2]) : size - 1;
+  if (match && !match[1] && match[2]) {
+    const suffixLength = Number(match[2]);
+    start = Math.max(0, size - suffixLength);
+    end = size - 1;
+  }
+  if (!match || (!match[1] && !match[2]) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start || start >= size) {
+    res.writeHead(416, { ...headers, "content-length": 0, "content-range": `bytes */${size}` });
+    res.end();
+    return;
+  }
+  end = Math.min(end, size - 1);
+  res.writeHead(206, {
+    ...headers,
+    "content-length": end - start + 1,
+    "content-range": `bytes ${start}-${end}/${size}`,
   });
-  pipeReadStream(res, resolvedFile);
+  pipeReadStream(res, resolvedFile, { start, end });
 }
 
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
@@ -341,8 +391,11 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
     if (url.pathname.startsWith("/api/")) {
+      if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
+        return await serveArtifact(req, res, true);
+      }
       if (method === "GET" && url.pathname.startsWith("/api/artifacts/")) {
-        return serveArtifact(req, res);
+        return await serveArtifact(req, res);
       }
 
       if (!isAuthorized(req)) return unauthorized(res);

@@ -343,6 +343,8 @@ export const defaultPiWebSettings: PiWebSettings = {
 const tokenStorageKey = "pi-web-token";
 const collapsedFoldersStorageKey = "pi-web-collapsed-session-folders";
 const sessionIdUrlParam = "sessionId";
+const sessionIdHistoryStateKey = "piWebSessionId";
+const sessionScopedHistoryStateKeys = ["piWebArtifactView", "piWebWorkspaceView"] as const;
 
 function consumeUrlToken() {
   const urlToken = new URLSearchParams(location.search).get("token");
@@ -358,12 +360,31 @@ export function readActiveSessionIdFromUrl() {
   return new URLSearchParams(location.search).get(sessionIdUrlParam) || "";
 }
 
+function objectHistoryState(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function readActiveSessionIdFromHistoryState(value: unknown = history.state): string | undefined {
+  const sessionId = objectHistoryState(value)[sessionIdHistoryStateKey];
+  return typeof sessionId === "string" ? sessionId : undefined;
+}
+
+export function syncActiveSessionIdHistoryState(sessionId: string) {
+  if (readActiveSessionIdFromHistoryState() === sessionId) return;
+  history.replaceState({ ...objectHistoryState(history.state), [sessionIdHistoryStateKey]: sessionId }, "");
+}
+
 export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "replace" = "push") {
   const url = new URL(location.href);
   if (sessionId) url.searchParams.set(sessionIdUrlParam, sessionId);
   else url.searchParams.delete(sessionIdUrlParam);
-  if (url.href === location.href) return;
-  history[mode === "replace" ? "replaceState" : "pushState"](null, "", url.toString());
+  if (url.href === location.href) {
+    syncActiveSessionIdHistoryState(sessionId);
+    return;
+  }
+  const nextState: Record<string, unknown> = { ...objectHistoryState(history.state), [sessionIdHistoryStateKey]: sessionId };
+  for (const key of sessionScopedHistoryStateKeys) delete nextState[key];
+  history[mode === "replace" ? "replaceState" : "pushState"](nextState, "", url.toString());
 }
 
 function readCollapsedSessionFolders() {

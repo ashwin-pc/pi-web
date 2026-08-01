@@ -2,6 +2,7 @@ import "./style.css";
 import "./components/diff.css";
 import "./git/git.css";
 import "./files/files.css";
+import "./files/artifacts.css";
 import "./styles/appLayout.css";
 import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
@@ -10,7 +11,7 @@ import { initSwAutoReload } from "./app/sw-update.js";
 import { setIcon } from "./app/icons.js";
 import { initKeyboardShortcuts } from "./app/shortcuts.js";
 import { createRightPanelManager } from "./layout/rightPanel.js";
-import { createAppState, readActiveSessionIdFromUrl } from "./app/types.js";
+import { createAppState, readActiveSessionIdFromHistoryState, readActiveSessionIdFromUrl, syncActiveSessionIdHistoryState } from "./app/types.js";
 import {
   activeSessionState,
   activeSessionStats,
@@ -383,6 +384,7 @@ async function refreshState() {
     return;
   }
   sessionState.applySnapshot(data, { activate: true });
+  syncActiveSessionIdHistoryState(state.currentSessionId);
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -566,9 +568,10 @@ gitPanel = initGitPanel({
   getSessionId: () => state.currentSessionId,
   onComposerContext: (context) => composer.addContextAttachment(context),
 });
-window.addEventListener("popstate", () => {
-  const nextSessionId = readActiveSessionIdFromUrl();
+window.addEventListener("popstate", (event) => {
+  const nextSessionId = readActiveSessionIdFromHistoryState(event.state) ?? readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;
+  syncActiveSessionIdHistoryState(nextSessionId);
   sessionState.activate(nextSessionId);
   tools.clearActiveToolCards();
   sessions.beginTranscriptLoading();

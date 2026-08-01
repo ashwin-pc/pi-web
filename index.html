@@ -84,8 +84,11 @@
         <div class="filesPanelHeader">
           <button id="fileBackButton" class="fileHeaderBackButton" type="button" aria-label="Back to files" title="Back to files">‹</button>
           <div class="filesPanelHeading">
-            <span class="filesPanelHeadingIcon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h6l2 2h10v10H3z"/><path d="M8 12v4m0-2h5m0-2v4m0-2h3"/></svg></span>
-            <h2>Explorer</h2>
+            <span class="filesPanelHeadingIcon" aria-hidden="true">
+              <svg class="filesPanelHeadingIconWorkspace" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h6l2 2h10v10H3z"/><path d="M8 12v4m0-2h5m0-2v4m0-2h3"/></svg>
+              <svg class="filesPanelHeadingIconArtifact" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 1.35 3.65L17 8l-3.65 1.35L12 13l-1.35-3.65L7 8l3.65-1.35L12 3Z"/><path d="m18 13 .85 2.15L21 16l-2.15.85L18 19l-.85-2.15L15 16l2.15-.85L18 13Z"/></svg>
+            </span>
+            <h2 id="filesPanelHeadingLabel">Explorer</h2>
           </div>
           <span id="fileStatus" class="fileStatus" aria-live="polite"></span>
           <button id="fileSaveButton" class="fileHeaderSaveButton" type="button" disabled>Save</button>
@@ -93,7 +96,29 @@
           <button id="filesCloseButton" class="iconButton" type="button" aria-label="Close files" title="Close files">×</button>
         </div>
         <div class="filesPanelBody">
-          <nav class="filesExplorer" aria-label="File tree"><div id="filesTree" class="filesTree"></div></nav>
+          <nav class="filesExplorer" aria-label="File tree">
+            <div class="filesExplorerScopeBar">
+              <div class="filesExplorerScope" role="group" aria-label="Explorer location">
+                <button id="filesWorkspaceScope" class="fileExplorerScopeButton" type="button" aria-pressed="true" title="Browse workspace files">
+                  <span class="fileExplorerScopeIcon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 6h6l2 2h10v10H3z"/></svg></span>
+                  <span>Workspace</span>
+                </button>
+                <button id="filesArtifactsScope" class="fileExplorerScopeButton fileExplorerScopeButton--artifacts" type="button" aria-pressed="false" title="Browse generated artifacts">
+                  <span class="fileExplorerScopeIcon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="m12 3 1.35 3.65L17 8l-3.65 1.35L12 13l-1.35-3.65L7 8l3.65-1.35L12 3Z"/><path d="m18 13 .85 2.15L21 16l-2.15.85L18 19l-.85-2.15L15 16l2.15-.85L18 13Z"/><path d="M5 14v5h8"/></svg></span>
+                  <span>Artifacts</span>
+                </button>
+              </div>
+            </div>
+            <div id="artifactsGalleryToolbar" class="artifactsGalleryToolbar">
+              <button id="artifactsGalleryBack" class="artifactsGalleryBack" type="button" aria-label="Back one artifact folder" title="Back one folder" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+              <nav id="artifactsGalleryBreadcrumb" class="artifactsGalleryBreadcrumb" aria-label="Artifact folder"></nav>
+              <span id="artifactsGalleryCount" class="artifactsGalleryCount"></span>
+            </div>
+            <div id="filesTree" class="filesTree"></div>
+            <div id="artifactsTree" class="filesTree artifactGallery"></div>
+          </nav>
           <div id="filesTreeResize" class="filesTreeResize" role="separator" aria-label="Resize file tree" aria-orientation="vertical" tabindex="0"><button id="filesTreeCollapse" type="button" aria-label="Collapse file tree" title="Collapse file tree">‹</button></div>
           <section class="fileWorkspace">
             <div class="fileTabsBar">
@@ -110,6 +135,22 @@
                 <output id="fileFontValue" for="fileFontSlider">14px</output>
               </label>
             </div>
+          </section>
+          <section id="artifactBrowserPreview" class="artifactBrowserPreview" aria-label="Artifact preview">
+            <header class="artifactBrowserPreviewHeader">
+              <button id="artifactBrowserPreviewBack" class="artifactBrowserPreviewBack" type="button" aria-label="Back to artifact gallery" title="Back to gallery">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+              </button>
+              <div class="artifactBrowserPreviewIdentity">
+                <span>Artifact</span>
+                <strong id="artifactBrowserPreviewTitle"></strong>
+              </div>
+              <div class="artifactBrowserPreviewActions">
+                <a id="artifactBrowserPreviewOpen" href="#" target="_blank" rel="noopener noreferrer">Open</a>
+                <a id="artifactBrowserPreviewDownload" href="#" download>Download</a>
+              </div>
+            </header>
+            <div id="artifactBrowserPreviewBody" class="artifactBrowserPreviewBody"></div>
           </section>
         </div>
       </aside>

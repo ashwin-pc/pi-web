@@ -313,10 +313,25 @@ test.describe("composer layout", () => {
     await expect(other.locator("#statusTitle")).toHaveText("Current mock session");
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
 
+    await page.evaluate(() => history.replaceState({
+      ...history.state,
+      piWebArtifactView: { view: "preview", entry: { name: "older.html", path: ".pi/web/artifacts/older.html", kind: "file" } },
+      piWebWorkspaceView: { view: "editor" },
+    }, ""));
     await page.locator("#sessionButton").click();
     await page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionItemNavBtn").click();
     await expect(page).toHaveURL(/sessionId=mock-current/);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect.poll(() => page.evaluate(() => ({ artifact: history.state.piWebArtifactView, workspace: history.state.piWebWorkspaceView }))).toEqual({ artifact: undefined, workspace: undefined });
+
+    await page.goBack();
+    await expect(page).toHaveURL(/sessionId=mock-older/);
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect.poll(() => page.evaluate(() => history.state.piWebArtifactView?.entry?.name)).toBe("older.html");
+    await page.goForward();
+    await expect(page).toHaveURL(/sessionId=mock-current/);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect.poll(() => page.evaluate(() => history.state.piWebArtifactView)).toBeUndefined();
     await expect(other.locator("#statusTitle")).toHaveText("Current mock session");
     await other.close();
   });
