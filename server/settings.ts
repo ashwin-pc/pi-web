@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
@@ -208,12 +209,9 @@ export function applyExtensionValues(
   }
   const next = cloneSettings(current);
   const existing = next.extensions?.[ownerId];
-  if (
-    opts?.expectedRevision !== undefined &&
-    existing !== undefined &&
-    existing.revision !== opts.expectedRevision
-  ) {
-    throw new ExtensionRevisionConflictError(ownerId, existing.revision, opts.expectedRevision);
+  const actualRevision = existing?.revision ?? 0;
+  if (opts?.expectedRevision !== undefined && actualRevision !== opts.expectedRevision) {
+    throw new ExtensionRevisionConflictError(ownerId, actualRevision, opts.expectedRevision);
   }
   const record: StoredExtensionSettings = {
     schemaVersion: opts?.schemaVersion ?? existing?.schemaVersion ?? 0,
@@ -230,9 +228,17 @@ export function applyExtensionValues(
   return normalizeSettings(next);
 }
 
-/** Drop one owner's stored record entirely (reset). */
-export function resetExtensionValues(current: PiWebSettings, ownerId: string): PiWebSettings {
+/** Drop one owner's stored record entirely (reset), guarded by its current revision. */
+export function resetExtensionValues(
+  current: PiWebSettings,
+  ownerId: string,
+  expectedRevision: number,
+): PiWebSettings {
   const next = cloneSettings(current);
+  const existing = next.extensions?.[ownerId];
+  if (existing && existing.revision !== expectedRevision) {
+    throw new ExtensionRevisionConflictError(ownerId, existing.revision, expectedRevision);
+  }
   if (next.extensions && ownerId in next.extensions) {
     delete next.extensions[ownerId];
     if (Object.keys(next.extensions).length === 0) delete next.extensions;
@@ -348,8 +354,16 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
 
 export function createSettingsStore(file: string) {
   let cached: PiWebSettings | undefined;
+  let operationChain: Promise<void> = Promise.resolve();
 
-  async function read() {
+  /** Keep every store operation ordered; mutation read/apply/write sequences never interleave. */
+  function enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = operationChain.then(operation);
+    operationChain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  async function readUnlocked() {
     if (cached) return cloneSettings(cached);
     try {
       cached = normalizeSettings(JSON.parse(await readFile(file, "utf-8")));
@@ -362,17 +376,26 @@ export function createSettingsStore(file: string) {
     return cloneSettings(cached);
   }
 
-  async function write(settings: PiWebSettings) {
-    cached = normalizeSettings(settings);
+  async function writeUnlocked(settings: PiWebSettings) {
+    const normalized = normalizeSettings(settings);
     await mkdir(dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(cached, null, 2)}\n`, "utf-8");
+    const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
+    await writeFile(tmp, `${JSON.stringify(normalized, null, 2)}\n`, "utf-8");
     await rename(tmp, file);
+    cached = normalized;
     return cloneSettings(cached);
   }
 
-  async function patch(value: unknown) {
-    return write(applySettingsPatch(await read(), value));
+  function read() {
+    return enqueue(readUnlocked);
+  }
+
+  function write(settings: PiWebSettings) {
+    return enqueue(() => writeUnlocked(settings));
+  }
+
+  function patch(value: unknown) {
+    return enqueue(async () => writeUnlocked(applySettingsPatch(await readUnlocked(), value)));
   }
 
   return { file, read, write, patch, patchExtension, resetExtension };
@@ -382,7 +405,7 @@ export function createSettingsStore(file: string) {
    * validation must be done by the caller against the live schema; this only
    * enforces bounds + the optional revision guard, then writes.
    */
-  async function patchExtension(
+  function patchExtension(
     ownerId: string,
     nextValues: JsonObject,
     opts?: {
@@ -391,11 +414,11 @@ export function createSettingsStore(file: string) {
       backup?: { schemaVersion: number; values: JsonObject };
     },
   ) {
-    return write(applyExtensionValues(await read(), ownerId, nextValues, opts));
+    return enqueue(async () => writeUnlocked(applyExtensionValues(await readUnlocked(), ownerId, nextValues, opts)));
   }
 
   /** Drop one owner's stored record (reset to unconfigured). */
-  async function resetExtension(ownerId: string) {
-    return write(resetExtensionValues(await read(), ownerId));
+  function resetExtension(ownerId: string, expectedRevision: number) {
+    return enqueue(async () => writeUnlocked(resetExtensionValues(await readUnlocked(), ownerId, expectedRevision)));
   }
 }

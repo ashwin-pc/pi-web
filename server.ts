@@ -703,28 +703,53 @@ const server = createServer(async (req, res) => {
       if (url.pathname.startsWith("/api/settings/extensions/")) {
         const rest = url.pathname.slice("/api/settings/extensions/".length);
         const isReset = rest.endsWith("/reset");
-        const ownerId = decodeURIComponent(isReset ? rest.slice(0, -"/reset".length) : rest);
+        let ownerId: string;
+        try {
+          ownerId = decodeURIComponent(isReset ? rest.slice(0, -"/reset".length) : rest);
+        } catch {
+          return sendJson(res, 400, { ok: false, error: "malformed owner id" });
+        }
         const entry = sessionService.settingsSchemaEntry(ownerId);
-        if (!entry) return sendJson(res, 409, { ok: false, error: "extension not loaded" });
+        // Reset only needs stored data, not a live schema, so configuration for
+        // an unloaded extension can still be cleared. Editing needs the schema.
+        const storedOwner = (await settingsStore.read()).extensions?.[ownerId];
+        if (!entry && !(isReset && storedOwner)) {
+          return sendJson(res, 409, { ok: false, error: "extension not loaded" });
+        }
 
         if (method === "POST" && isReset) {
-          const settings = await settingsStore.resetExtension(ownerId);
-          broadcast({ type: "settings_updated", settings });
-          try { entry.schema.onChange?.(defaultSettingsValues(entry.schema)); } catch { /* ignore */ }
-          return sendJson(res, 200, { ok: true, settings });
+          const body = await readBody(req) as { expectedRevision?: unknown };
+          if (typeof body?.expectedRevision !== "number" || !Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) {
+            return sendJson(res, 400, { ok: false, error: "expectedRevision must be a non-negative integer" });
+          }
+          try {
+            const settings = await settingsStore.resetExtension(ownerId, body.expectedRevision);
+            broadcast({ type: "settings_updated", settings });
+            if (entry) sessionService.notifySettingsChanged(ownerId, defaultSettingsValues(entry.schema));
+            return sendJson(res, 200, { ok: true, settings });
+          } catch (error) {
+            if (error instanceof ExtensionRevisionConflictError) {
+              return sendJson(res, 409, { ok: false, error: "revision conflict", actualRevision: error.actualRevision });
+            }
+            throw error;
+          }
         }
 
         if (method === "PATCH" && !isReset) {
+          if (!entry) return sendJson(res, 409, { ok: false, error: "extension not loaded" });
           const body = await readBody(req) as { values?: unknown; expectedRevision?: unknown };
+          if (typeof body?.expectedRevision !== "number" || !Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) {
+            return sendJson(res, 400, { ok: false, error: "expectedRevision must be a non-negative integer" });
+          }
           const { values, errors } = validateSettingsValues(entry.schema, body?.values, { modelOptions: sessionService.modelOptionTokens() });
           if (errors.length) return sendJson(res, 422, { ok: false, errors });
           try {
             const settings = await settingsStore.patchExtension(ownerId, values, {
               schemaVersion: entry.schema.schemaVersion,
-              expectedRevision: typeof body?.expectedRevision === "number" ? body.expectedRevision : undefined,
+              expectedRevision: body.expectedRevision,
             });
             broadcast({ type: "settings_updated", settings });
-            try { entry.schema.onChange?.(values); } catch { /* ignore */ }
+            sessionService.notifySettingsChanged(ownerId, values);
             return sendJson(res, 200, { ok: true, settings, revision: settings.extensions?.[ownerId]?.revision ?? 0 });
           } catch (error) {
             if (error instanceof ExtensionRevisionConflictError) {
@@ -847,16 +872,25 @@ const server = createServer(async (req, res) => {
         const state = await decorateServiceState(baseState);
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
         const origin = body.origin && typeof body.origin === "object" ? body.origin as { sessionId?: unknown; kind?: unknown } : undefined;
+        let originWarning: string | undefined;
         if (origin && typeof origin.sessionId === "string" && origin.sessionId.trim() && state.sessionId) {
-          const sessionUiState = await sessionUiStateStore.setSessionOrigin(
-            state.sessionId,
-            origin.sessionId.trim(),
-            typeof origin.kind === "string" && origin.kind.trim() ? origin.kind.trim() : "spawn",
-          );
-          broadcast({ type: "session_ui_state_changed", sessionUiState });
+          // Lineage is best-effort metadata: the session already exists, so a
+          // failure here must not fail the request (that would hide the new
+          // session's id from the caller and leak an unreachable session).
+          try {
+            const sessionUiState = await sessionUiStateStore.setSessionOrigin(
+              state.sessionId,
+              origin.sessionId.trim(),
+              typeof origin.kind === "string" && origin.kind.trim() ? origin.kind.trim() : "spawn",
+            );
+            broadcast({ type: "session_ui_state_changed", sessionUiState });
+          } catch (error) {
+            originWarning = error instanceof Error ? error.message : String(error);
+            console.warn(`Could not record session origin for ${state.sessionId}:`, error);
+          }
         }
         broadcast({ type: "state_changed", ...state });
-        return sendJson(res, 200, { ok: true, ...state });
+        return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}) });
       }
 
       if (method === "POST" && url.pathname === "/api/session/cwd") {

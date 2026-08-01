@@ -206,7 +206,7 @@ pi.on("session_start", async (_event, ctx) => {
       { key: "enabled", type: "toggle", label: "Enabled", default: true },
       { key: "model", type: "select", label: "Model", optionsSource: "models" },
     ],
-    onChange: (values) => applyPreferences(values),
+    onChange: (values, info) => applyPreferences(values, info.sessionId),
   });
 
   const { values } = await ctx.ui.web.getSettings("my-ext.prefs");
@@ -237,7 +237,38 @@ Storage notes:
   stored values. A failed migration falls back to defaults and keeps a one-slot
   `backup`.
 - Owners with stored values but no live registration render as a read-only
-  "data retained" card.
+  "data retained" card. Their stored values can still be reset (reset needs only
+  stored data, not a live schema); editing requires the schema.
+- Every live registrant of an id is notified on change, each with its own
+  `onChange` and its own `info.sessionId`. The first registrant's descriptor is
+  canonical; a divergent schema for the same id is rejected.
+- If a migration fails, the stored values fall back to defaults, the previous
+  values are kept in `backup`, and the schema is published with a
+  `migrationError` so the UI can surface it.
+
+## Referencing sessions from extension output
+
+Extension output can point at other sessions, and pi-web renders those as links.
+This works the same way for custom messages and for tool results: put an explicit
+reference LIST in `details`.
+
+```ts
+pi.sendMessage({
+  customType: "my-ext",
+  content: "Background job finished",
+  details: { sessions: [{ sessionId, name: "job runner", status: "ok" }] },
+});
+```
+
+- Supported keys are `sessions`, `sessionRefs`, and `workers`; each entry is
+  `{ sessionId, name?, status? }`, where `status` may be `error` or `aborted` to
+  change the chip's glyph.
+- A **bare** `details.sessionId` is treated as incidental metadata and renders no
+  link, so a tool that merely echoes the session it acted on stays quiet. Linking
+  is opt-in.
+- Core caps rendering at 8 references per card, truncates labels, and requires
+  plausible session ids, because `details` is untrusted persisted input. No
+  extension or tool name is special-cased.
 
 ## Example: GitHub PRs and issues tab
 

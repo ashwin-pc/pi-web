@@ -93,17 +93,6 @@ function shouldCloseDrawerAfterSessionSwitch() {
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
 const sessionDrawerOpenStorageKey = "pi-web-session-drawer-open";
 
-type SessionTimeField = "created" | "modified";
-type SessionTimeRange = "all" | "day" | "week" | "month" | "year";
-
-const sessionTimeRanges: Array<{ value: SessionTimeRange; label: string; milliseconds?: number }> = [
-  { value: "all", label: "All time" },
-  { value: "day", label: "Past 24 hours", milliseconds: 24 * 60 * 60 * 1000 },
-  { value: "week", label: "Past week", milliseconds: 7 * 24 * 60 * 60 * 1000 },
-  { value: "month", label: "Past month", milliseconds: 30 * 24 * 60 * 60 * 1000 },
-  { value: "year", label: "Past year", milliseconds: 365 * 24 * 60 * 60 * 1000 },
-];
-
 function readPersistedSessionDrawerOpen() {
   try {
     return localStorage.getItem(sessionDrawerOpenStorageKey) === "true";
@@ -186,8 +175,6 @@ export function createSessions(options: {
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let suppressTabClickUntil = 0;
-  let sessionTimeField: SessionTimeField = "modified";
-  let sessionTimeRange: SessionTimeRange = "all";
   type SessionRowTool = "pin" | SessionMarkerColorId;
   let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
 
@@ -721,27 +708,13 @@ export function createSessions(options: {
       .filter((color) => allowedMarkerColors.has(color));
   }
 
-  function selectedSessionTimeRange() {
-    return sessionTimeRanges.find((range) => range.value === sessionTimeRange) || sessionTimeRanges[0];
-  }
-
-  function matchesSessionTimeFilter(item: SessionInfo) {
-    const range = selectedSessionTimeRange();
-    if (!range.milliseconds) return true;
-    const value = Date.parse(item[sessionTimeField]);
-    return Number.isFinite(value) && value >= Date.now() - range.milliseconds;
-  }
-
   function renderSessionColorFilterButton() {
     if (!sessionColorFilterButton) return;
     const colors = sortedAllowedMarkerColors();
-    const timeRange = selectedSessionTimeRange();
     sessionColorFilterButton.textContent = "";
-    const timeFilterActive = sessionTimeRange !== "all";
-    const active = colors.length > 0 || unreadFilterActive || timeFilterActive;
+    const active = colors.length > 0 || unreadFilterActive;
     sessionColorFilterButton.classList.toggle("active", active);
     const parts = [
-      timeFilterActive ? `${sessionTimeField} ${timeRange.label.toLowerCase()}` : "all dates",
       colors.length === 0 ? "all colors allowed" : `colors: ${colors.map(markerColorLabel).join(", ")}`,
       unreadFilterActive ? "unread only" : "read and unread",
     ];
@@ -1035,37 +1008,6 @@ export function createSessions(options: {
     unreadButton.append(unreadLabel);
     menu.append(unreadButton);
 
-    const timeTitle = document.createElement("div");
-    timeTitle.className = "sessionColorFilterTitle";
-    timeTitle.textContent = "Time";
-
-    const timeControls = document.createElement("div");
-    timeControls.className = "sessionTimeFilterControls";
-
-    const timeFieldSelect = document.createElement("select");
-    timeFieldSelect.className = "sessionTimeFilterSelect";
-    timeFieldSelect.setAttribute("aria-label", "Session date field");
-    for (const optionValue of ["created", "modified"] as const) {
-      const option = document.createElement("option");
-      option.value = optionValue;
-      option.textContent = optionValue === "created" ? "Created" : "Modified";
-      option.selected = sessionTimeField === optionValue;
-      timeFieldSelect.append(option);
-    }
-
-    const timeRangeSelect = document.createElement("select");
-    timeRangeSelect.className = "sessionTimeFilterSelect";
-    timeRangeSelect.setAttribute("aria-label", "Session time range");
-    for (const range of sessionTimeRanges) {
-      const option = document.createElement("option");
-      option.value = range.value;
-      option.textContent = range.label;
-      option.selected = sessionTimeRange === range.value;
-      timeRangeSelect.append(option);
-    }
-    timeControls.append(timeFieldSelect, timeRangeSelect);
-    menu.append(timeTitle, timeControls);
-
     const colorTitle = document.createElement("div");
     colorTitle.className = "sessionColorFilterTitle";
     colorTitle.textContent = "Marker colors";
@@ -1101,17 +1043,6 @@ export function createSessions(options: {
       renderSessionColorFilterButton();
       renderSessionList(cachedSessions);
       updateMenuState();
-    });
-
-    timeFieldSelect.addEventListener("change", () => {
-      sessionTimeField = timeFieldSelect.value === "created" ? "created" : "modified";
-      renderSessionList(cachedSessions);
-    });
-
-    timeRangeSelect.addEventListener("change", () => {
-      const value = timeRangeSelect.value as SessionTimeRange;
-      sessionTimeRange = sessionTimeRanges.some((range) => range.value === value) ? value : "all";
-      renderSessionList(cachedSessions);
     });
 
     for (const color of sessionMarkerColors) {
@@ -1813,14 +1744,13 @@ export function createSessions(options: {
     const query = sessionSearchInput?.value.trim().toLowerCase() || "";
     const matchesFilter = (item: SessionInfo) => {
       const marker = markerForSession(item.id);
-      if (!matchesSessionTimeFilter(item)) return false;
       if (allowedMarkerColors.size > 0 && !allowedMarkerColors.has(marker?.color as SessionMarkerColorId)) return false;
       if (unreadFilterActive && !isSessionUnread(item.id, Boolean(item.unread), Boolean(item.runtime?.isRunning))) return false;
       if (!query) return true;
       return [sessionTitle(item), item.cwd || "", item.firstMessage || ""]
         .some((value) => value.toLowerCase().includes(query));
     };
-    const filterActive = Boolean(query || allowedMarkerColors.size > 0 || unreadFilterActive || sessionTimeRange !== "all");
+    const filterActive = Boolean(query || allowedMarkerColors.size > 0 || unreadFilterActive);
     renderSessionColorFilterButton();
 
     const groups = new Map<string, SessionInfo[]>();
@@ -1912,11 +1842,9 @@ export function createSessions(options: {
         empty.className = "sessionEmpty";
         empty.textContent = query
           ? "No matching sessions in this folder."
-          : unreadFilterActive && sessionTimeRange === "all" && allowedMarkerColors.size === 0
+          : unreadFilterActive
             ? "No unread sessions in this folder."
-            : sessionTimeRange === "all" && allowedMarkerColors.size > 0
-              ? "No sessions in the selected colors."
-              : "No sessions match these filters in this folder.";
+            : "No sessions in the selected colors.";
         group.append(empty);
       }
 
@@ -1950,11 +1878,9 @@ export function createSessions(options: {
       empty.className = "sessionEmpty";
       empty.textContent = query
         ? "No matching sessions."
-        : unreadFilterActive && sessionTimeRange === "all" && allowedMarkerColors.size === 0
+        : unreadFilterActive
           ? "No unread sessions."
-          : sessionTimeRange === "all" && allowedMarkerColors.size > 0
-            ? "No sessions in the selected colors."
-            : "No sessions match these filters.";
+          : "No sessions in the selected colors.";
       elements.sessionListEl.append(empty);
     }
   }

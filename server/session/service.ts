@@ -238,6 +238,7 @@ export class LocalSessionService implements SessionService {
   webUiEntries(value: PiWebSession) { return this.webUiBridge.entries(value); }
   settingsSchemas() { return this.webUiBridge.settingsSchemas(); }
   settingsSchemaEntry(id: string) { return this.webUiBridge.settingsSchemaEntry(id); }
+  notifySettingsChanged(id: string, values: Record<string, unknown>) { return this.webUiBridge.notifySettingsChanged(id, values); }
   modelOptionTokens() {
     return new Set(this.deps.modelRuntime.getAvailableSnapshot().flatMap((model) =>
       model?.provider && model?.id ? [`${model.provider}:${model.id}`] : [],

@@ -634,30 +634,6 @@
   font-weight: 700;
   padding: 6px 8px 4px;
 }
-.sessionTimeFilterControls {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.35fr);
-  gap: 4px;
-  padding: 0 4px 4px;
-}
-.sessionTimeFilterSelect {
-  box-sizing: border-box;
-  width: 100%;
-  min-width: 0;
-  height: 30px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--panel-2);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-  padding: 0 6px;
-}
-.sessionTimeFilterSelect:hover,
-.sessionTimeFilterSelect:focus-visible {
-  border-color: var(--accent);
-  outline: none;
-}
 .sessionColorFilterMenuItem {
   display: flex;
   align-items: center;

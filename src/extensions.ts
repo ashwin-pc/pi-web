@@ -147,7 +147,12 @@ export type PiWebSettingsRegistration = PiWebSettingsSchema & {
     oldVersion: number,
   ) => Record<string, unknown> | Promise<Record<string, unknown>>;
   /** Called after a persisted change (this owner only), with the new values. */
-  onChange?: (values: Record<string, unknown>) => void;
+  /**
+   * Called after a persisted change to this owner's values. Every live
+   * registrant is notified with its own callback; `info.sessionId` identifies
+   * which session's registration is being notified.
+   */
+  onChange?: (values: Record<string, unknown>, info: { sessionId: string }) => void;
 };
 
 export type PiWebRegisterSettingsResult = {

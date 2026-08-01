@@ -119,6 +119,20 @@ export function createExtensionSettings(options: {
     return errors.get(id)?.find((e) => e.path === path)?.message;
   }
 
+  function addAriaDescription(control: HTMLElement, descriptionId: string): void {
+    const ids = new Set((control.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean));
+    ids.add(descriptionId);
+    control.setAttribute("aria-describedby", Array.from(ids).join(" "));
+  }
+
+  function markRequired(control: HTMLElement, required: boolean | undefined): void {
+    if (!required) return;
+    control.setAttribute("aria-required", "true");
+    if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement) {
+      control.required = true;
+    }
+  }
+
   function fieldRow(labelText: string, control: HTMLElement, descr: string | undefined, errText: string | undefined): HTMLElement {
     const label = el("label", { class: "settingsField extSettingsField" });
     label.append(el("span", {}, [labelText]));
@@ -131,23 +145,38 @@ export function createExtensionSettings(options: {
       control.id = ctrlId;
       err.id = `${ctrlId}-err`;
       control.setAttribute("aria-invalid", "true");
-      control.setAttribute("aria-describedby", err.id);
+      addAriaDescription(control, err.id);
       label.append(err);
     }
     return label;
   }
 
-  // Render one scalar/select control bound to obj[field.key].
-  function scalarControl(id: string, field: WebFieldDescriptor, obj: Values, ownerDraft: Values, onStructural: () => void): HTMLElement {
+  // Render one scalar/select control bound to obj[field.key]. `onValueChanged`
+  // runs in the same event as the assignment, before a structural re-render.
+  function scalarControl(
+    id: string,
+    field: WebFieldDescriptor,
+    obj: Values,
+    ownerDraft: Values,
+    onStructural: () => void,
+    onValueChanged?: (value: unknown) => void,
+  ): HTMLElement {
     const value = obj[field.key];
+    const assign = (next: unknown) => {
+      obj[field.key] = next;
+      onValueChanged?.(next);
+    };
     if (field.type === "toggle") {
       const input = el("input", { type: "checkbox", checked: Boolean(value) });
-      input.addEventListener("change", () => { obj[field.key] = input.checked; });
+      markRequired(input, field.required);
+      input.addEventListener("change", () => { assign(input.checked); });
       const wrap = el("span", { class: "extSettingsToggle" }, [input]);
+      if (field.required) wrap.setAttribute("aria-required", "true");
       return wrap;
     }
     if (field.type === "select") {
       const select = el("select");
+      markRequired(select, field.required);
       const opts = optionsForSelect(field, ownerDraft);
       select.append(el("option", { value: "" }, [field.required ? "Select…" : "— none —"]));
       for (const o of opts) select.append(el("option", { value: o.value }, [o.label ?? o.value]));
@@ -157,62 +186,97 @@ export function createExtensionSettings(options: {
         select.append(el("option", { value }, [`${value} (unavailable)`]));
         select.value = value;
       }
-      select.addEventListener("change", () => { obj[field.key] = select.value; });
+      select.addEventListener("change", () => { assign(select.value); });
       return select;
     }
     if (field.type === "textarea") {
       const ta = el("textarea", { value: typeof value === "string" ? value : "", rows: 3 });
+      markRequired(ta, field.required);
       if (field.maxLength) ta.maxLength = field.maxLength;
-      ta.addEventListener("input", () => { obj[field.key] = ta.value; });
+      ta.addEventListener("input", () => { assign(ta.value); });
       return ta;
     }
     if (field.type === "number") {
       const input = el("input", { type: "number", value: value === undefined ? "" : String(value) });
+      markRequired(input, field.required);
       if (field.min !== undefined) input.min = String(field.min);
       if (field.max !== undefined) input.max = String(field.max);
-      input.addEventListener("input", () => { obj[field.key] = input.value === "" ? undefined : Number(input.value); });
+      input.addEventListener("input", () => { assign(input.value === "" ? undefined : Number(input.value)); });
       return input;
     }
     // text
     const input = el("input", { type: "text", value: typeof value === "string" ? value : "" });
+    markRequired(input, field.required);
     if (field.maxLength) input.maxLength = field.maxLength;
     // a text field may feed a select's optionsFromField → re-render on commit
-    input.addEventListener("input", () => { obj[field.key] = input.value; });
-    input.addEventListener("change", () => { obj[field.key] = input.value; onStructural(); });
+    input.addEventListener("input", () => { assign(input.value); });
+    input.addEventListener("change", () => { assign(input.value); onStructural(); });
     return input;
   }
 
   // A default-ref is a top-level select whose options come from a list column
   // (optionsFromField). We render it as a per-row star toggle instead of a
   // separate dropdown, and skip the standalone select.
-  type DefaultRef = { selectKey: string; itemKey: string };
+  type DefaultRef = { selectKey: string; itemKey: string; label: string; required?: boolean };
+
+  function domIdPart(value: string): string {
+    return value.replace(/[^a-zA-Z0-9_-]/g, "-");
+  }
 
   function listControl(schema: WebSettingsSchema, field: WebFieldDescriptor, ownerDraft: Values, defaultRef?: DefaultRef): HTMLElement {
     const wrap = el("div", { class: "extSettingsList" });
+    wrap.setAttribute("role", "group");
+    wrap.setAttribute("aria-label", field.label);
+    if (field.required) wrap.setAttribute("aria-required", "true");
     const rows = (Array.isArray(ownerDraft[field.key]) ? ownerDraft[field.key] : []) as Values[];
+    // Older persisted rows may predate ids; establish identity before resolving
+    // a value-based reference so the same row is tracked through its edit.
+    for (const row of rows) {
+      if (isRecord(row) && typeof row.__id !== "string") row.__id = newRowId();
+    }
     const itemFields = field.itemFields ?? [];
     const rerender = () => render();
     const titleField = itemFields.find((f) => f.type === "text");
     const metaField = itemFields.find((f) => f.type === "select");
-    const defaultRowId = defaultRef
+    // Resolve the referenced row once, before any edit. The stable id remains
+    // valid while input/change events update the row's referenced column.
+    const referencedRowIdBeforeEdit = defaultRef
       ? rows.find((r) => isRecord(r) && r[defaultRef.itemKey] === ownerDraft[defaultRef.selectKey] && r[defaultRef.itemKey] !== "")?.__id
       : undefined;
+    const referenceError = defaultRef ? errorAt(schema.id, defaultRef.selectKey) : undefined;
+    const referenceErrorId = `ext-${domIdPart(schema.id)}-${domIdPart(defaultRef?.selectKey ?? field.key)}-ref-err`;
 
     rows.forEach((row, i) => {
       if (!isRecord(row)) return;
-      if (typeof row.__id !== "string") row.__id = newRowId();
       const rid = row.__id as string;
       const open = openRows.has(rid);
       const hasError = itemFields.some((f) => errorAt(schema.id, `${field.key}[${i}].${f.key}`));
       const isDefault = Boolean(defaultRef) && ownerDraft[defaultRef!.selectKey] === row[defaultRef!.itemKey] && row[defaultRef!.itemKey] !== "";
       const rowEl = el("div", { class: `extAccRow${open ? " open" : ""}${hasError ? " hasError" : ""}` });
 
-      const head = el("div", { class: "extAccHead" });
-      head.setAttribute("role", "button");
+      const head = el("button", { type: "button", class: "extAccHead" });
+      // Preserve the former div header's layout against the app-wide button
+      // chrome while gaining native keyboard activation and focusability.
+      Object.assign(head.style, {
+        width: "100%",
+        height: "auto",
+        minHeight: "0",
+        border: "0",
+        borderRadius: "0",
+        background: "transparent",
+        color: "inherit",
+        font: "inherit",
+        textAlign: "left",
+      });
       head.setAttribute("aria-expanded", String(open));
       if (defaultRef) {
-        const star = el("button", { type: "button", class: `extAccStar${isDefault ? " on" : ""}`, title: isDefault ? "Default category" : "Make default" }, [isDefault ? "★" : "☆"]);
+        const star = el("button", { type: "button", class: `extAccStar${isDefault ? " on" : ""}`, title: isDefault ? `Default ${defaultRef.label}` : `Make default ${defaultRef.label}` }, [isDefault ? "★" : "☆"]);
         star.setAttribute("aria-pressed", String(isDefault));
+        if (defaultRef.required) star.setAttribute("aria-required", "true");
+        if (referenceError) {
+          star.setAttribute("aria-invalid", "true");
+          addAriaDescription(star, referenceErrorId);
+        }
         star.addEventListener("click", (e) => { e.stopPropagation(); ownerDraft[defaultRef.selectKey] = row[defaultRef.itemKey]; rerender(); });
         head.append(star);
       }
@@ -231,22 +295,34 @@ export function createExtensionSettings(options: {
       if (open) {
         const body = el("div", { class: "extAccBody" });
         for (const item of itemFields) {
-          const ctrl = scalarControl(schema.id, item, row, ownerDraft, rerender);
-          // rename-follows-default: if this row is the default, keep the ref in sync live.
-          if (defaultRef && item.key === defaultRef.itemKey && rid === defaultRowId) {
-            ctrl.addEventListener("input", () => { ownerDraft[defaultRef.selectKey] = row[item.key]; });
-          }
+          const followsReference = Boolean(defaultRef)
+            && item.key === defaultRef!.itemKey
+            && rid === referencedRowIdBeforeEdit;
+          const ctrl = scalarControl(
+            schema.id,
+            item,
+            row,
+            ownerDraft,
+            rerender,
+            followsReference ? (next) => { ownerDraft[defaultRef!.selectKey] = next; } : undefined,
+          );
           body.append(fieldRow(item.label, ctrl, item.description, errorAt(schema.id, `${field.key}[${i}].${item.key}`)));
         }
         const actions = el("div", { class: "extAccRowActions" });
         if (defaultRef) {
           const mk = el("button", { type: "button", class: "extSettingsLink", disabled: isDefault }, [isDefault ? "★ Default" : "☆ Make default"]);
+          if (defaultRef.required) mk.setAttribute("aria-required", "true");
+          if (referenceError) {
+            mk.setAttribute("aria-invalid", "true");
+            addAriaDescription(mk, referenceErrorId);
+          }
           mk.addEventListener("click", () => { ownerDraft[defaultRef.selectKey] = row[defaultRef.itemKey]; rerender(); });
           actions.append(mk);
         }
         const remove = el("button", { type: "button", class: "extSettingsLink danger" }, ["Delete"]);
         remove.addEventListener("click", () => {
-          if (defaultRef && ownerDraft[defaultRef.selectKey] === row[defaultRef.itemKey]) ownerDraft[defaultRef.selectKey] = "";
+          // Keep a deleted row's reference intact. Validation reports the
+          // dangling value on the referencing field for the user to resolve.
           rows.splice(i, 1); openRows.delete(rid); rerender();
         });
         actions.append(remove);
@@ -259,7 +335,18 @@ export function createExtensionSettings(options: {
     const listErr = errorAt(schema.id, field.key);
     if (listErr) {
       const e = el("span", { class: "extSettingsError" }, [listErr]);
+      e.id = `ext-${domIdPart(schema.id)}-${domIdPart(field.key)}-list-err`;
       e.setAttribute("role", "alert");
+      wrap.setAttribute("aria-invalid", "true");
+      addAriaDescription(wrap, e.id);
+      wrap.append(e);
+    }
+    if (referenceError) {
+      const e = el("span", { class: "extSettingsError" }, [referenceError]);
+      e.id = referenceErrorId;
+      e.setAttribute("role", "alert");
+      wrap.setAttribute("aria-invalid", "true");
+      addAriaDescription(wrap, e.id);
       wrap.append(e);
     }
 
@@ -277,9 +364,24 @@ export function createExtensionSettings(options: {
     return wrap;
   }
 
+  function applyResponseSettings(data: unknown): boolean {
+    if (!isRecord(data) || !isRecord(data.settings)) return false;
+    state.settings = data.settings as AppState["settings"];
+    return true;
+  }
+
+  async function reloadSettingsFromServer(): Promise<void> {
+    const res = await fetch("/api/settings", { headers: api.headers() });
+    const data: unknown = await res.json().catch(() => ({}));
+    if (!res.ok || !applyResponseSettings(data)) {
+      const message = isRecord(data) && typeof data.error === "string" ? data.error : `HTTP ${res.status}`;
+      throw new Error(message);
+    }
+  }
+
   async function save(schema: WebSettingsSchema) {
     const draft = ensureDraft(schema);
-    const expectedRevision = storedFor(schema.id)?.revision;
+    const expectedRevision = storedFor(schema.id)?.revision ?? 0;
     setStatus("Saving…");
     try {
       const res = await fetch(`/api/settings/extensions/${encodeURIComponent(schema.id)}`, {
@@ -296,14 +398,26 @@ export function createExtensionSettings(options: {
       }
       if (res.status === 409) {
         errors.delete(schema.id);
-        drafts.delete(schema.id); // re-sync from server on next render
+        drafts.delete(schema.id);
+        try {
+          // Current conflict responses only carry the latest revision. Prefer
+          // settings on the response when available, otherwise fetch them.
+          if (!applyResponseSettings(data)) await reloadSettingsFromServer();
+        } finally {
+          render();
+        }
         setStatus("Changed elsewhere — reloaded latest", true);
         return;
       }
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
       errors.delete(schema.id);
+      if (applyResponseSettings(data)) {
+        // Recreate from the canonical server response (trimmed/coerced values
+        // and the new revision) rather than waiting for a broadcast.
+        drafts.delete(schema.id);
+        render();
+      }
       setStatus("Saved");
-      // state.settings gets refreshed via the settings_updated broadcast → applySettings
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       setStatus(msg, true);
@@ -314,11 +428,29 @@ export function createExtensionSettings(options: {
   async function reset(schema: WebSettingsSchema) {
     setStatus("Resetting…");
     try {
-      const res = await fetch(`/api/settings/extensions/${encodeURIComponent(schema.id)}/reset`, { method: "POST", headers: api.headers() });
+      const expectedRevision = storedFor(schema.id)?.revision ?? 0;
+      const res = await fetch(`/api/settings/extensions/${encodeURIComponent(schema.id)}/reset`, {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ expectedRevision }),
+      });
       const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        errors.delete(schema.id);
+        drafts.delete(schema.id);
+        try {
+          if (!applyResponseSettings(data)) await reloadSettingsFromServer();
+        } finally {
+          render();
+        }
+        setStatus("Changed elsewhere — reloaded latest", true);
+        return;
+      }
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      if (!applyResponseSettings(data)) await reloadSettingsFromServer();
       drafts.delete(schema.id);
       errors.delete(schema.id);
+      render();
       setStatus("Reset");
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
@@ -338,7 +470,10 @@ export function createExtensionSettings(options: {
     for (const f of schema.fields) {
       if (f.type === "select" && f.optionsFromField) {
         const [lk, ik] = f.optionsFromField.split(".");
-        if (lk && ik) { defaultRefByList.set(lk, { selectKey: f.key, itemKey: ik }); skipSelectKeys.add(f.key); }
+        if (lk && ik) {
+          defaultRefByList.set(lk, { selectKey: f.key, itemKey: ik, label: f.label, required: f.required });
+          skipSelectKeys.add(f.key);
+        }
       }
     }
 

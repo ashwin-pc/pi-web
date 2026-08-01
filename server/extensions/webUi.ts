@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { PiWebArtifactAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
+import { isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
 
 export interface WebUiBridgeDependencies {
@@ -59,25 +60,69 @@ const webHeaderActionStates = new WeakMap<object, WebHeaderActionState>();
 const webGitTabStates = new WeakMap<object, WebGitTabState>();
 const webArtifactActionStates = new WeakMap<object, WebArtifactActionState>();
 
-// Process-global extension-settings schema registry (R2.2): decoupled from any
-// one session. Values live in settingsStore (global); schemas are refcounted
-// across the live sessions that registered them.
+// Process-global extension-settings schema registry: decoupled from any one
+// session. Values live in settingsStore (global). A schema stays registered
+// while at least one live session registers it, and every live registrant is
+// notified of changes with its own callback.
+type SettingsRegistrant = { schema: PiWebSettingsRegistration; sessionId: string };
 type RegisteredSettingsSchema = {
+  /** Canonical (first) registrant's schema: used for validation + transport. */
   schema: PiWebSettingsRegistration;
   canonicalKey: string;
-  refCount: number;
+  registrants: Map<object, SettingsRegistrant>;
+  /** Shared so concurrent first registrations migrate exactly once. */
+  migration: Promise<{ migrated: boolean; usedBackup: boolean; error?: string }>;
+  /** Only exposed once migration settled, so nothing validates mid-migration. */
+  ready: boolean;
+  migrationError?: string;
 };
 const activeSettingsSchemas = new Map<string, RegisteredSettingsSchema>();
-// Which owner ids each live session registered (for shutdown decrement).
-const sessionRegisteredSettings = new WeakMap<object, Set<string>>();
+// Sessions that shut down; a registration awaiting migration must not complete.
+const disposedSettingsSessions = new WeakSet<object>();
 
-function serializableSettingsSchema(schema: PiWebSettingsRegistration) {
-  const { migrate: _migrate, onChange: _onChange, ...rest } = schema;
-  return rest;
+const settingsFieldTypes = new Set(["toggle", "text", "textarea", "number", "select", "list"]);
+const settingsFieldKeyPattern = /^[A-Za-z0-9_]{1,64}$/;
+
+/** Structural validation of a contributed descriptor, before anything is reserved. */
+function settingsSchemaProblem(schema: PiWebSettingsRegistration, depth = 0, fields = schema?.fields): string | undefined {
+  if (depth === 0) {
+    if (!schema || typeof schema !== "object") return "schema must be an object";
+    if (!isValidExtensionOwnerId(schema.id)) return `settings id "${String(schema.id)}" must be namespaced as <extension>.<schema>`;
+    if (typeof schema.title !== "string" || !schema.title.trim()) return "schema.title is required";
+    if (!Number.isInteger(schema.schemaVersion) || schema.schemaVersion < 1) return "schema.schemaVersion must be a positive integer";
+  }
+  if (depth > 2) return "schema nesting is too deep";
+  if (!Array.isArray(fields) || fields.length === 0) return "schema.fields must be a non-empty array";
+  if (fields.length > 64) return "schema.fields has too many entries (max 64)";
+  const keys = new Set<string>();
+  for (const field of fields) {
+    if (!field || typeof field !== "object") return "each field must be an object";
+    if (!settingsFieldKeyPattern.test(String(field.key))) return `invalid field key "${String(field.key)}"`;
+    if (keys.has(field.key)) return `duplicate field key "${field.key}"`;
+    keys.add(field.key);
+    if (!settingsFieldTypes.has(String(field.type))) return `unsupported field type "${String(field.type)}" on "${field.key}"`;
+    if (typeof field.label !== "string" || !field.label.trim()) return `field "${field.key}" needs a label`;
+    if (field.type === "list") {
+      const nested = settingsSchemaProblem(schema, depth + 1, field.itemFields);
+      if (nested) return nested;
+    }
+    if (field.optionsFromField !== undefined) {
+      const [listKey, itemKey] = String(field.optionsFromField).split(".");
+      if (!listKey || !itemKey) return `field "${field.key}" has a malformed optionsFromField`;
+    }
+  }
+  return undefined;
+}
+
+function serializableSettingsSchema(entry: RegisteredSettingsSchema) {
+  const { migrate: _migrate, onChange: _onChange, ...rest } = entry.schema;
+  return entry.migrationError ? { ...rest, migrationError: entry.migrationError } : rest;
 }
 
 function activeSettingsSchemaList() {
-  return Array.from(activeSettingsSchemas.values()).map((e) => serializableSettingsSchema(e.schema));
+  return Array.from(activeSettingsSchemas.values())
+    .filter((entry) => entry.ready && entry.registrants.size > 0)
+    .map(serializableSettingsSchema);
 }
 
 function broadcastSettingsSchemas() {
@@ -118,56 +163,76 @@ async function registerSessionSettings(
   value: any,
   schema: PiWebSettingsRegistration,
 ): Promise<PiWebRegisterSettingsResult> {
-  if (!schema || typeof schema.id !== "string" || !Array.isArray(schema.fields)) {
-    return { registered: false, migrated: false, usedBackup: false, error: "invalid settings schema" };
+  const problem = settingsSchemaProblem(schema);
+  if (problem) {
+    console.warn(`pi-web: rejected settings registration: ${problem}`);
+    return { registered: false, migrated: false, usedBackup: false, error: problem };
   }
   const id = schema.id;
   const canonical = canonicalSchemaKey(schema);
-  const existing = activeSettingsSchemas.get(id);
-  if (existing && existing.canonicalKey !== canonical) {
-    // First-registered wins; a divergent schema for the same id is rejected.
-    console.warn(`pi-web: settings id "${id}" already registered with a different schema; rejecting new registration.`);
-    return { registered: false, migrated: false, usedBackup: false, error: `settings id "${id}" already registered with a different schema` };
+  const session = value as object;
+
+  // Reserve the id SYNCHRONOUSLY (before any await) so concurrent first
+  // registrations cannot both migrate or both claim the id.
+  let entry = activeSettingsSchemas.get(id);
+  if (entry && entry.canonicalKey !== canonical) {
+    const error = `settings id "${id}" is already registered with a different schema`;
+    console.warn(`pi-web: ${error}; rejecting new registration.`);
+    return { registered: false, migrated: false, usedBackup: false, error };
+  }
+  const reserved = !entry;
+  if (!entry) {
+    entry = {
+      schema,
+      canonicalKey: canonical,
+      registrants: new Map(),
+      migration: migrateStoredSettings(schema),
+      ready: false,
+    };
+    activeSettingsSchemas.set(id, entry);
   }
 
-  let migrated = false;
-  let usedBackup = false;
-  let error: string | undefined;
-  if (!existing) {
-    const result = await migrateStoredSettings(schema);
-    migrated = result.migrated;
-    usedBackup = result.usedBackup;
-    error = result.error;
-    activeSettingsSchemas.set(id, { schema, canonicalKey: canonical, refCount: 0 });
-  } else {
-    existing.schema = schema; // refresh callbacks to the latest registrant
+  const result = await entry.migration;
+  entry.ready = true;
+  if (result.error) {
+    entry.migrationError = result.error;
+    console.warn(`pi-web: settings migration for "${id}" fell back to defaults: ${result.error}`);
   }
 
-  const entry = activeSettingsSchemas.get(id)!;
-  const owned = sessionRegisteredSettings.get(value as object) ?? new Set<string>();
-  if (!owned.has(id)) {
-    entry.refCount += 1;
-    owned.add(id);
-    sessionRegisteredSettings.set(value as object, owned);
+  // The session may have shut down while migration was in flight; never
+  // register a dead session (and drop a reservation nobody else claimed).
+  if (disposedSettingsSessions.has(session)) {
+    if (reserved && entry.registrants.size === 0) activeSettingsSchemas.delete(id);
+    return { registered: false, migrated: result.migrated, usedBackup: result.usedBackup, error: "session shut down during registration" };
   }
+
+  entry.registrants.set(session, { schema, sessionId: String(value?.sessionId || "") });
   broadcastSettingsSchemas();
-  return { registered: true, migrated, usedBackup, error };
+  return { registered: true, migrated: result.migrated, usedBackup: result.usedBackup, error: result.error };
+}
+
+/** Notify every live registrant, each with its own callback and session id. */
+function notifySettingsChanged(id: string, values: Record<string, unknown>) {
+  const entry = activeSettingsSchemas.get(id);
+  if (!entry) return;
+  for (const registrant of entry.registrants.values()) {
+    try {
+      registrant.schema.onChange?.(values, { sessionId: registrant.sessionId });
+    } catch (error) {
+      console.warn(`pi-web: settings onChange for "${id}" threw:`, error);
+    }
+  }
 }
 
 function releaseSessionSettings(value: any) {
-  const owned = sessionRegisteredSettings.get(value as object);
-  if (!owned) return;
+  const session = value as object;
+  disposedSettingsSessions.add(session);
   let changed = false;
-  for (const id of owned) {
-    const entry = activeSettingsSchemas.get(id);
-    if (!entry) continue;
-    entry.refCount -= 1;
-    if (entry.refCount <= 0) {
-      activeSettingsSchemas.delete(id);
-      changed = true;
-    }
+  for (const [id, entry] of activeSettingsSchemas) {
+    if (!entry.registrants.delete(session)) continue;
+    changed = true;
+    if (entry.registrants.size === 0) activeSettingsSchemas.delete(id);
   }
-  sessionRegisteredSettings.delete(value as object);
   if (changed) broadcastSettingsSchemas();
 }
 
@@ -641,8 +706,13 @@ async function bindWebExtensions(value: any) {
     invokeArtifactAction,
     invokeGitTab,
     respond,
+    registerSettings: (session: any, schema: PiWebSettingsRegistration) => registerSessionSettings(session, schema),
     settingsSchemas: activeSettingsSchemaList,
-    settingsSchemaEntry: (id: string) => activeSettingsSchemas.get(id),
+    settingsSchemaEntry: (id: string) => {
+      const entry = activeSettingsSchemas.get(id);
+      return entry?.ready && entry.registrants.size > 0 ? entry : undefined;
+    },
+    notifySettingsChanged,
     releaseSessionSettings,
   };
 }

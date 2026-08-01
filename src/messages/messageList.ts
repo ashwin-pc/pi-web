@@ -6,6 +6,7 @@ import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
+import { sessionRefChipClass, sessionRefChipText, sessionRefHref, sessionRefsFromDetails } from "../app/sessionRefs.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -685,33 +686,12 @@ export function createMessageList(options: {
     return text.charAt(0).toUpperCase() + text.slice(1);
   }
 
-  function customDetailSessionRefs(details: unknown): Array<{ sessionId: string; name?: string; status?: string }> {
-    if (!details || typeof details !== "object") return [];
-    const refs: Array<{ sessionId: string; name?: string; status?: string }> = [];
-    const push = (value: unknown) => {
-      if (!value || typeof value !== "object") return;
-      const record = value as Record<string, unknown>;
-      const sessionId = typeof record.sessionId === "string" ? record.sessionId.trim() : "";
-      if (!sessionId) return;
-      refs.push({
-        sessionId,
-        name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : undefined,
-        status: typeof record.status === "string" ? record.status : undefined,
-      });
-    };
-    const record = details as Record<string, unknown>;
-    if (Array.isArray(record.workers)) for (const worker of record.workers) push(worker);
-    else if (Array.isArray(record.sessions)) for (const item of record.sessions) push(item);
-    else push(record);
-    return refs;
-  }
-
   function addCustomMessageCard(message: { text?: string; customType?: string; details?: unknown; isError?: boolean; raw?: any }) {
     invalidatePendingRefreshes();
     const text = String(message.text || "").trim();
     const customType = message.customType || message.raw?.customType || "";
     const details = message.details ?? message.raw?.details;
-    const sessionRefs = customDetailSessionRefs(details);
+    const sessionRefs = sessionRefsFromDetails(details);
 
     // Realtime projection can briefly emit a details-only copy of a custom
     // worker event after its complete transcript entry has already rendered.
@@ -742,10 +722,9 @@ export function createMessageList(options: {
 
     for (const ref of sessionRefs) {
       const chip = document.createElement("a");
-      chip.className = `customCardSessionChip${ref.status === "error" ? " status-error" : ref.status === "aborted" ? " status-aborted" : ""}`;
-      chip.href = `/?sessionId=${encodeURIComponent(ref.sessionId)}`;
-      const statusIcon = ref.status === "error" ? "⚠" : ref.status === "aborted" ? "⏹" : "✓";
-      chip.textContent = `${statusIcon} ${ref.name || ref.sessionId.slice(-8)} ↗`;
+      chip.className = sessionRefChipClass(ref);
+      chip.href = sessionRefHref(ref);
+      chip.textContent = sessionRefChipText(ref);
       chip.title = `Open session ${ref.sessionId}`;
       header.append(chip);
     }

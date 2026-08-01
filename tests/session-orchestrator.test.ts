@@ -72,13 +72,18 @@ let tools: Map<string, any>;
 let handlers: Map<string, (event: any, ctx: any) => any>;
 let realFetch: typeof globalThis.fetch;
 
-function makeExtension() {
+function makeExtension(options: { wakeupFails?: boolean } = {}) {
   tools = new Map();
   handlers = new Map();
   const pi: any = {
     registerTool: (tool: any) => tools.set(tool.name, tool),
     on: (event: string, handler: any) => handlers.set(event, handler),
-    sendMessage: vi.fn(),
+    sendMessage: options.wakeupFails
+      ? vi.fn(async () => { throw new Error("wakeup unavailable"); })
+      : vi.fn(),
+    sendUserMessage: options.wakeupFails
+      ? vi.fn(() => { throw new Error("user-message unavailable"); })
+      : vi.fn(),
     appendEntry: vi.fn(),
   };
   sessionOrchestrator(pi);
@@ -117,7 +122,14 @@ function makeCtx(options: {
 }
 
 /** Route pi-web API calls; `models` is the worker session's registry. */
-function stubFetch(options: { models?: any[]; parentModelId?: string; newChatFails?: boolean } = {}) {
+function stubFetch(options: {
+  models?: any[];
+  parentModelId?: string;
+  newChatFails?: boolean;
+  promptFails?: boolean;
+  wakeupPromptFails?: boolean;
+  deleteFails?: boolean;
+} = {}) {
   let created = 0;
   globalThis.fetch = (async (url: any, init: any = {}) => {
     const method = String(init.method || "GET");
@@ -135,6 +147,10 @@ function stubFetch(options: { models?: any[]; parentModelId?: string; newChatFai
       payload = { ok: true, model: { provider: "anthropic", id: options.parentModelId ?? "fast-1" } };
     } else if (path.startsWith("/api/messages")) {
       payload = { ok: true, messages: [] };
+    } else if (path === "/api/prompt" && (options.promptFails || (options.wakeupPromptFails && body?.sessionId === "parent-1"))) {
+      payload = { ok: false, error: "prompt failed" };
+    } else if (path === "/api/sessions/delete" && options.deleteFails) {
+      payload = { ok: false, error: "delete failed" };
     }
     return { ok: payload.ok !== false, status: payload.ok === false ? 500 : 200, json: async () => payload } as any;
   }) as any;
@@ -173,6 +189,7 @@ afterEach(() => {
   // Clears the background poll timer started by a successful spawn.
   handlers.get("session_shutdown")?.({}, makeCtx());
   globalThis.fetch = realFetch;
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -228,6 +245,28 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(pathsFor("POST")).not.toContain("/api/sessions/delete");
   });
 
+  it("returns only the category name after a successful spawn and keeps the model mapping private", async () => {
+    const ctx = makeCtx({ categories: [FAST, SMART], defaultCategory: "Fast" });
+    const result = await spawn(ctx, { name: "builder", task: "implement it", category: "Smart" });
+
+    const visibleResult = `${resultText(result)}\n${JSON.stringify(result.details)}`;
+    expect(result.details.sessions).toEqual([{ sessionId: "worker-1", name: "builder" }]);
+    expect(visibleResult).toContain("Smart");
+    expect(visibleResult).not.toContain("anthropic");
+    expect(visibleResult).not.toContain("smart-1");
+  });
+
+  it("reports status by category without exposing the concrete model id", async () => {
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    await spawn(ctx, { name: "scout", task: "look around", category: "Fast" });
+
+    const result = await tools.get("sessions_status").execute("status-1", {});
+    const visibleResult = `${resultText(result)}\n${JSON.stringify(result.details)}`;
+    expect(visibleResult).toContain('category "Fast"');
+    expect(visibleResult).not.toContain("anthropic");
+    expect(visibleResult).not.toContain("fast-1");
+  });
+
   it("uses the configured default when category is omitted", async () => {
     const ctx = makeCtx({ categories: [FAST, SMART], defaultCategory: "Smart" });
     const result = await spawn(ctx, { name: "scout", task: "look around" });
@@ -263,6 +302,23 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(calls.find((call) => call.path === "/api/sessions/delete")?.body).toMatchObject({ sessionId: "worker-1" });
     expect(pathsFor("POST")).not.toContain("/api/prompt"); // no LLM work happened
     expect(resultText(result)).toMatch(/deleted/i);
+    const visibleResult = `${resultText(result)}\n${JSON.stringify(result.details)}`;
+    expect(visibleResult).toContain("Fast");
+    expect(visibleResult).not.toContain("anthropic");
+    expect(visibleResult).not.toContain("fast-1");
+    expect(visibleResult).not.toContain("something-else");
+  });
+
+  it("reports that a session may remain when cleanup after resolution failure also fails", async () => {
+    stubFetch({ models: [], deleteFails: true });
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    const result = await spawn(ctx, { name: "scout", task: "look around", category: "Fast" });
+
+    expect(result.isError).toBe(true);
+    expect(resultText(result)).toMatch(/may remain/i);
+    expect(resultText(result)).toMatch(/please remove it/i);
+    expect(resultText(result)).not.toMatch(/no orphan/i);
+    expect(result.details.cleanedUp).toBe(false);
   });
 
   it("reports a region-prefix substitution instead of silently swapping models", async () => {
@@ -332,6 +388,19 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(pathsFor("POST")).not.toContain("/api/prompt");
   });
 
+  it("deletes the worker and leaves it untracked when task dispatch fails", async () => {
+    stubFetch({ promptFails: true });
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    const result = await spawn(ctx, { name: "scout", task: "look around", category: "Fast" });
+
+    expect(result.isError).toBe(true);
+    expect(resultText(result)).toMatch(/failed to dispatch/i);
+    expect(calls.filter((call) => call.path === "/api/prompt")).toHaveLength(1);
+    expect(calls.find((call) => call.path === "/api/sessions/delete")?.body).toEqual({ sessionId: "worker-1" });
+    const status = await tools.get("sessions_status").execute("status-1", {});
+    expect(resultText(status)).toMatch(/no tracked workers/i);
+  });
+
   it("caps the number of concurrently tracked workers", async () => {
     const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
     for (let i = 0; i < 4; i += 1) {
@@ -341,5 +410,61 @@ describe("sessions_spawn fail-closed resolution", () => {
     const overflow = await spawn(ctx, { name: "worker-5", task: "work" });
     expect(overflow.isError).toBe(true);
     expect(resultText(overflow)).toMatch(/cap/i);
+  });
+});
+
+describe("watcher lifecycle and wakeup retries", () => {
+  it("does not re-arm polling when a pending ledger re-arm finishes after shutdown", async () => {
+    vi.useFakeTimers();
+    let resolveState!: (response: any) => void;
+    const pendingState = new Promise<any>((resolve) => { resolveState = resolve; });
+    globalThis.fetch = (async (url: any, init: any = {}) => {
+      const method = String(init.method || "GET");
+      const path = String(url).replace(/^https?:\/\/[^/]+/, "");
+      calls.push({ method, path, body: init.body ? JSON.parse(init.body) : undefined });
+      if (path.startsWith("/api/state?sessionId=ledger-worker")) return pendingState;
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as any;
+    }) as any;
+
+    const ctx = makeCtx();
+    ctx.sessionManager.getBranch = () => [{
+      type: "custom",
+      customType: "orchestrator-watch",
+      data: { childId: "ledger-worker", name: "ledger worker", categoryName: "Fast" },
+    }];
+    await handlers.get("session_start")?.({}, ctx);
+    expect(calls.filter((call) => call.path.includes("ledger-worker"))).toHaveLength(1);
+
+    handlers.get("session_shutdown")?.({}, ctx);
+    resolveState({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, runtime: { isRunning: true, pendingMessageCount: 0 } }),
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(calls.filter((call) => call.path.includes("ledger-worker"))).toHaveLength(1);
+  });
+
+  it("keeps a completed worker watched and retries after every wakeup delivery path fails", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch({ wakeupPromptFails: true });
+    const pi = makeExtension({ wakeupFails: true });
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    await activate(ctx);
+    await spawn(ctx, { name: "scout", task: "look around", category: "Fast" });
+
+    await vi.advanceTimersByTimeAsync(10_000); // four idle polls settle a fast worker
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(calls.filter((call) => call.path === "/api/state?sessionId=worker-1")).toHaveLength(4);
+
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+    expect(calls.filter((call) => call.path === "/api/state?sessionId=worker-1")).toHaveLength(5);
+    const status = await tools.get("sessions_status").execute("status-1", {});
+    expect(resultText(status)).toContain("worker-1");
   });
 });

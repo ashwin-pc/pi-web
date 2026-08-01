@@ -51,7 +51,7 @@ describe("extension settings descriptors", () => {
 });
 
 describe("extension settings validation", () => {
-  it("accepts a valid configuration and assigns stable row ids", () => {
+  it("accepts a valid reference with zero errors and assigns stable row ids", () => {
     const first = validateSettingsValues(schema, withCategories([{ name: "Fast" }, { name: "Smart", model: "anthropic:smart-1" }], "Fast"), { modelOptions: models });
     expect(first.errors).toEqual([]);
 
@@ -73,14 +73,39 @@ describe("extension settings validation", () => {
     expect(result.errors.map((error) => error.path)).toContain("defaultCategory");
   });
 
-  it("keeps the default valid when the referenced category is renamed alongside it", () => {
-    const result = validateSettingsValues(schema, withCategories([{ name: "Quick" }], "Quick"), { modelOptions: models });
-    expect(result.errors).toEqual([]);
+  it("reports a dangling reference when the referenced row is renamed without updating it", () => {
+    const initial = validateSettingsValues(schema, withCategories([{ name: "Fast" }], "Fast"), { modelOptions: models });
+    expect(initial.errors).toEqual([]);
+
+    const renamed = structuredClone(initial.values);
+    (renamed.categories as Array<Record<string, unknown>>)[0].name = "Quick";
+    const result = validateSettingsValues(schema, renamed, { modelOptions: models });
+
+    expect(result.values.defaultCategory).toBe("Fast");
+    expect(result.errors).toContainEqual({
+      path: "defaultCategory",
+      message: "Default references an unavailable value",
+    });
   });
 
-  it("rejects duplicate names case-insensitively", () => {
+  it("reports a dangling reference when the referenced row is deleted without clearing it", () => {
+    const initial = validateSettingsValues(schema, withCategories([{ name: "Fast" }, { name: "Smart" }], "Fast"), { modelOptions: models });
+    expect(initial.errors).toEqual([]);
+
+    const deleted = structuredClone(initial.values);
+    (deleted.categories as Array<Record<string, unknown>>).splice(0, 1);
+    const result = validateSettingsValues(schema, deleted, { modelOptions: models });
+
+    expect(result.values.defaultCategory).toBe("Fast");
+    expect(result.errors).toContainEqual({
+      path: "defaultCategory",
+      message: "Default references an unavailable value",
+    });
+  });
+
+  it("rejects referenced-column values that differ only in case", () => {
     const result = validateSettingsValues(schema, withCategories([{ name: "Fast" }, { name: "fast" }], "Fast"), { modelOptions: models });
-    expect(result.errors.map((error) => error.path)).toContain("categories[1].name");
+    expect(result.errors).toContainEqual({ path: "categories[1].name", message: "Name must be unique" });
   });
 
   it("requires non-empty required text and honours item bounds", () => {

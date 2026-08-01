@@ -208,6 +208,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   type Watched = {
     id: string;
     name: string;
+    categoryName: string;
     sawRunning: boolean;
     idlePolls: number;
     errorPolls: number;
@@ -219,6 +220,12 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   let timer: ReturnType<typeof setInterval> | undefined;
   let pollInFlight = false;
   let selfSessionId = "";
+  let disposed = false;
+  let generation = 0;
+
+  function isActive(expectedGeneration = generation): boolean {
+    return !disposed && generation === expectedGeneration;
+  }
 
   // Capture our own session id whenever context is available; used to route
   // wakeups through /api/prompt (the same battle-tested path the web UI uses
@@ -267,7 +274,11 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   }
 
   function ensureTimer() {
-    if (!timer && watched.size > 0) timer = setInterval(() => void poll(), POLL_MS);
+    if (!isActive() || timer || watched.size === 0) return;
+    const timerGeneration = generation;
+    timer = setInterval(() => {
+      if (isActive(timerGeneration)) void poll(timerGeneration);
+    }, POLL_MS);
   }
 
   function stopTimerIfIdle() {
@@ -277,8 +288,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     }
   }
 
-  function watch(id: string, name: string) {
-    watched.set(id, { id, name, sawRunning: false, idlePolls: 0, errorPolls: 0, aborted: false });
+  function watch(id: string, name: string, categoryName = "Unknown") {
+    if (!isActive()) return;
+    watched.set(id, { id, name, categoryName, sawRunning: false, idlePolls: 0, errorPolls: 0, aborted: false });
     ensureTimer();
   }
 
@@ -287,9 +299,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     stopTimerIfIdle();
   }
 
-  function appendLedger(customType: string, childId: string, name?: string) {
+  function appendLedger(customType: string, childId: string, name?: string, categoryName?: string) {
     try {
-      pi.appendEntry(customType, { childId, ...(name ? { name } : {}) });
+      pi.appendEntry(customType, { childId, ...(name ? { name } : {}), ...(categoryName ? { categoryName } : {}) });
     } catch (error) {
       console.error(`[session-orchestrator] could not append ${customType} entry: ${error instanceof Error ? error.message : error}`);
     }
@@ -300,14 +312,35 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       .catch((error) => console.error(`[session-orchestrator] could not mark child read: ${error instanceof Error ? error.message : error}`));
   }
 
-  function outstandingWatches(ctx: any): Map<string, string> {
-    const watches = new Map<string, string>();
+  async function cleanupCreatedSession(sessionId: string): Promise<boolean> {
+    try {
+      await api("POST", "/api/sessions/delete", { sessionId });
+      return true;
+    } catch (error) {
+      console.error(`[session-orchestrator] could not clean up worker ${sessionId}: ${error instanceof Error ? error.message : error}`);
+      return false;
+    }
+  }
+
+  function cleanupReport(sessionId: string, cleanedUp: boolean): string {
+    return cleanedUp
+      ? `Session ${sessionId} was created but then deleted (no orphan).`
+      : `Session ${sessionId} could not be deleted and may remain — please remove it.`;
+  }
+
+  function outstandingWatches(ctx: any): Map<string, { name: string; categoryName: string }> {
+    const watches = new Map<string, { name: string; categoryName: string }>();
     try {
       for (const entry of ctx.sessionManager?.getBranch?.() || []) {
         if (entry?.type !== "custom") continue;
         const childId = typeof entry.data?.childId === "string" ? entry.data.childId : "";
         if (!childId) continue;
-        if (entry.customType === WATCH_ENTRY) watches.set(childId, typeof entry.data?.name === "string" ? entry.data.name : childId.slice(-8));
+        if (entry.customType === WATCH_ENTRY) {
+          watches.set(childId, {
+            name: typeof entry.data?.name === "string" ? entry.data.name : childId.slice(-8),
+            categoryName: typeof entry.data?.categoryName === "string" ? entry.data.categoryName : "Unknown",
+          });
+        }
         else if (entry.customType === RESOLVED_ENTRY) watches.delete(childId);
       }
     } catch (error) {
@@ -421,6 +454,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
               // Empty config → virtual Default, skip resolution, use session default.
               if (categories.length === 0) {
                 resolvedToken = null; // Signals: use session default
+                categoryName = "Default";
+                validCategories = [categoryName];
               } else {
                 // Collect valid names.
                 for (const cat of categories) {
@@ -470,7 +505,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
                     content: [
                       {
                         type: "text",
-                        text: `ERROR: category "${categoryName}" model token is malformed (expected "<provider>:<id>", got "${matching.model}"). Check extension settings.`,
+                        text: `ERROR: the model configured for category "${categoryName}" is malformed. Check extension settings. Valid categories: ${validCategories.join(", ") || "(none configured)"}`,
                       },
                     ],
                     isError: true,
@@ -521,8 +556,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         const displayName = params.name;
         await api("POST", "/api/session/name", { sessionId, name: displayName }).catch(() => {});
 
-        let modelNote = "";
-        let modelSummary = "session default";
+        let regionSubstituted = false;
 
         // ====================================================================
         // Phase 3: Resolve against worker's registry (if config provided)
@@ -548,17 +582,16 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
 
             if (!resolution) {
               // Resolution failed → delete session and error.
-              await api("POST", "/api/sessions/delete", { sessionId }).catch(() => {});
-              const availableProviders = Array.from(new Set(registryModels.map((m: any) => m.provider)));
+              const cleanedUp = await cleanupCreatedSession(sessionId);
               return {
                 content: [
                   {
                     type: "text",
-                    text: `ERROR: configured model "${resolvedToken.provider}:${resolvedToken.id}" for category "${categoryName}" is not available in this session's registry. Available providers: ${availableProviders.join(", ") || "(none)"}. Valid categories for this spawn: ${validCategories.join(", ") || "(none configured)"}. Session ${sessionId} was created but then deleted (no orphan).`,
+                    text: `ERROR: the model configured for category "${categoryName}" is not available in this worker's registry. Valid categories: ${validCategories.join(", ") || "(none configured)"}. ${cleanupReport(sessionId, cleanedUp)}`,
                   },
                 ],
                 isError: true,
-                details: { sessionId, validCategories, categoryName, requestedModel: `${resolvedToken.provider}:${resolvedToken.id}`, availableProviders },
+                details: { sessionId, validCategories, categoryName, cleanedUp },
               };
             }
 
@@ -569,24 +602,21 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             // ================================================================
 
             await api("POST", "/api/model", { sessionId, provider: match.provider, id: match.id });
-            modelNote = `category "${categoryName}" → model ${match.provider}/${match.id}`;
-            modelSummary = `${match.provider}/${match.id}`;
-
-            if (substituted) {
-              modelNote += ` (substituted region prefix from parent)`;
-            }
+            regionSubstituted = substituted;
           } catch (error) {
-            // Model resolution error → delete session and error.
-            await api("POST", "/api/sessions/delete", { sessionId }).catch(() => {});
+            // Model resolution error → delete session and error. Keep the
+            // configured provider/id private from the model-facing result.
+            console.error(`[session-orchestrator] failed to configure worker category "${categoryName}": ${error instanceof Error ? error.message : error}`);
+            const cleanedUp = await cleanupCreatedSession(sessionId);
             return {
               content: [
                 {
                   type: "text",
-                  text: `ERROR: failed to resolve model for category "${categoryName}": ${error instanceof Error ? error.message : error}. Session ${sessionId} was created but then deleted (no orphan). Valid categories: ${validCategories.join(", ") || "(none configured)"}`,
+                  text: `ERROR: failed to configure the model for category "${categoryName}". Valid categories: ${validCategories.join(", ") || "(none configured)"}. ${cleanupReport(sessionId, cleanedUp)}`,
                 },
               ],
               isError: true,
-              details: { sessionId, validCategories, categoryName },
+              details: { sessionId, validCategories, categoryName, cleanedUp },
             };
           }
         }
@@ -601,19 +631,36 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           ``,
           `TASK: ${params.task}`,
         ].join("\n");
-        await api("POST", "/api/prompt", { sessionId, message: prompt });
+        try {
+          await api("POST", "/api/prompt", { sessionId, message: prompt });
+        } catch (error) {
+          console.error(`[session-orchestrator] failed to dispatch worker ${sessionId}: ${error instanceof Error ? error.message : error}`);
+          const cleanedUp = await cleanupCreatedSession(sessionId);
+          return {
+            content: [{ type: "text", text: `ERROR: failed to dispatch the task to worker session ${sessionId}; no work was dispatched. ${cleanupReport(sessionId, cleanedUp)}` }],
+            isError: true,
+            details: { sessionId, categoryName, cleanedUp },
+          };
+        }
 
-        watch(sessionId, params.name);
-        appendLedger(WATCH_ENTRY, sessionId, params.name);
+        watch(sessionId, params.name, categoryName || "Default");
+        appendLedger(WATCH_ENTRY, sessionId, params.name, categoryName || "Default");
 
         return {
           content: [
             {
               type: "text",
-              text: `Spawned worker "${params.name}" (session ${sessionId}, ${modelSummary}) [ext ${EXT_VERSION}]. It is running in the background as a normal pi-web session named "${displayName}". ${modelNote ? `Used ${modelNote}.` : ""} You'll receive a 🔔 wakeup message when it goes idle — do not poll. Continue other work, spawn more workers, or end your turn to wait.`,
+              text: `Spawned worker "${params.name}" (session ${sessionId}, category "${categoryName || "Default"}") [ext ${EXT_VERSION}]. It is running in the background as a normal pi-web session named "${displayName}".${regionSubstituted ? " A region prefix was substituted." : ""} You'll receive a 🔔 wakeup message when it goes idle — do not poll. Continue other work, spawn more workers, or end your turn to wait.`,
             },
           ],
-          details: { sessionId, name: params.name, cwd: params.cwd || parentCwd, modelSummary } as Record<string, unknown>,
+          details: {
+            sessionId,
+            name: params.name,
+            sessions: [{ sessionId, name: params.name }],
+            cwd: params.cwd || parentCwd,
+            categoryName: categoryName || "Default",
+            regionSubstituted,
+          } as Record<string, unknown>,
         };
       },
     };
@@ -664,31 +711,40 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
    * deliver catch-up wakeups for children that finished while this session was
    * not in memory (server restart, /reload, idle disposal).
    */
-  async function rearmFromLedger(ctx: any) {
+  async function rearmFromLedger(ctx: any, expectedGeneration = generation) {
+    if (!isActive(expectedGeneration)) return;
     const outstanding = outstandingWatches(ctx);
     for (const id of watched.keys()) outstanding.delete(id);
     if (outstanding.size === 0) return;
 
-    const finished: { id: string; name: string; summary: { text: string; isError: boolean } }[] = [];
-    for (const [childId, name] of outstanding) {
+    const finished: { id: string; name: string; categoryName: string; summary: { text: string; isError: boolean } }[] = [];
+    for (const [childId, worker] of outstanding) {
+      if (!isActive(expectedGeneration)) return;
       try {
         const state = await api("GET", `/api/state?sessionId=${encodeURIComponent(childId)}`);
+        if (!isActive(expectedGeneration)) return;
         const running = Boolean(state?.runtime?.isRunning) || Number(state?.runtime?.pendingMessageCount || 0) > 0;
         if (running) {
-          watch(childId, name);
+          watch(childId, worker.name, worker.categoryName);
           continue;
         }
         let summary = { text: "", isError: false };
         try {
-          summary = lastAssistantText(await fetchMessages(childId));
-        } catch { /* best effort */ }
-        finished.push({ id: childId, name, summary });
+          const messages = await fetchMessages(childId);
+          if (!isActive(expectedGeneration)) return;
+          summary = lastAssistantText(messages);
+        } catch {
+          if (!isActive(expectedGeneration)) return;
+          // Transcript fetch is best effort.
+        }
+        finished.push({ id: childId, name: worker.name, categoryName: worker.categoryName, summary });
       } catch {
+        if (!isActive(expectedGeneration)) return;
         // Child gone (deleted?) — resolve so we don't retry forever.
         appendLedger(RESOLVED_ENTRY, childId);
       }
     }
-    if (finished.length === 0) return;
+    if (!isActive(expectedGeneration) || finished.length === 0) return;
 
     const details = {
       kind: "wakeup",
@@ -708,17 +764,23 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       sections.join("\n\n---\n\n"),
       ``,
       `You can inspect details with sessions_read, follow up or redirect with sessions_prompt, or continue with your task.`,
-    ].join("\n"), details);
+    ].join("\n"), details, expectedGeneration);
+    if (!isActive(expectedGeneration)) return;
     if (ok) {
       for (const f of finished) {
         appendLedger(RESOLVED_ENTRY, f.id);
         markChildRead(f.id);
       }
+    } else {
+      // Keep completed workers live in the watcher until a later poll can
+      // successfully deliver their wakeup.
+      for (const f of finished) watch(f.id, f.name, f.categoryName);
     }
   }
 
   /** Deliver a wakeup to this session. Returns true only if delivery succeeded. */
-  async function deliverWakeup(text: string, details?: Record<string, unknown>): Promise<boolean> {
+  async function deliverWakeup(text: string, details?: Record<string, unknown>, expectedGeneration = generation): Promise<boolean> {
+    if (!isActive(expectedGeneration)) return false;
     // Preferred: pi custom message — typed, persisted, reaches the LLM as a
     // user message, and carries structured details for the pi-web UI card.
     try {
@@ -726,14 +788,18 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         { customType: WAKEUP_CUSTOM_TYPE, content: text, display: true, details },
         { triggerTurn: true, deliverAs: "steer" },
       );
+      if (!isActive(expectedGeneration)) return false;
       return true;
     } catch (error) {
+      if (!isActive(expectedGeneration)) return false;
       const message = error instanceof Error ? error.message : String(error);
       if (/stale/i.test(message)) {
         // This extension instance was replaced (e.g. /reload). The new
         // instance re-arms from the persisted watch ledger and owns delivery
         // now — falling back here would double-deliver. Go silent and stop.
         console.error("[session-orchestrator] instance is stale after reload; stopping watcher (ledger hands off to the new instance)");
+        disposed = true;
+        generation += 1;
         if (timer) clearInterval(timer);
         timer = undefined;
         watched.clear();
@@ -741,14 +807,18 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       }
       console.error(`[session-orchestrator] custom-message wakeup failed, falling back to /api/prompt: ${message}`);
     }
+    if (!isActive(expectedGeneration)) return false;
     if (selfSessionId) {
       try {
         await api("POST", "/api/prompt", { sessionId: selfSessionId, message: text, mode: "steer" });
+        if (!isActive(expectedGeneration)) return false;
         return true;
       } catch (error) {
+        if (!isActive(expectedGeneration)) return false;
         console.error(`[session-orchestrator] wakeup via /api/prompt failed: ${error instanceof Error ? error.message : error}`);
       }
     }
+    if (!isActive(expectedGeneration)) return false;
     try {
       pi.sendUserMessage(text);
       return true;
@@ -763,14 +833,16 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     return false;
   }
 
-  async function poll() {
-    if (pollInFlight) return;
+  async function poll(expectedGeneration = generation) {
+    if (!isActive(expectedGeneration) || pollInFlight) return;
     pollInFlight = true;
     try {
       const completed: { w: Watched; summary: { text: string; isError: boolean } }[] = [];
       for (const w of Array.from(watched.values())) {
+        if (!isActive(expectedGeneration)) return;
         try {
           const state = await api("GET", `/api/state?sessionId=${encodeURIComponent(w.id)}`);
+          if (!isActive(expectedGeneration)) return;
           const running = Boolean(state?.runtime?.isRunning ?? (state?.isStreaming || state?.isCompacting));
           const pending = Number(state?.runtime?.pendingMessageCount || 0);
           w.errorPolls = 0;
@@ -785,25 +857,30 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           const settled = w.sawRunning ? w.idlePolls >= 1 : w.idlePolls >= 4;
           if (!settled) continue;
 
-          unwatch(w.id);
           let summary = { text: "", isError: false };
           try {
-            summary = lastAssistantText(await fetchMessages(w.id));
+            const messages = await fetchMessages(w.id);
+            if (!isActive(expectedGeneration)) return;
+            summary = lastAssistantText(messages);
           } catch {
+            if (!isActive(expectedGeneration)) return;
             // Transcript fetch is best-effort.
           }
           completed.push({ w, summary });
         } catch {
+          if (!isActive(expectedGeneration)) return;
           w.errorPolls += 1;
           if (w.errorPolls >= 20) {
-            unwatch(w.id);
-            void (async () => {
-              const ok = await deliverWakeup(
-                `🔔 [orchestrator] Lost track of worker "${w.name}" (session ${w.id}): status polling kept failing (it may have been deleted). Check it with sessions_status or in the sidebar.`,
-                { kind: "wakeup", workers: [{ sessionId: w.id, name: w.name, status: "error" }] },
-              );
-              if (ok) appendLedger(RESOLVED_ENTRY, w.id);
-            })();
+            const ok = await deliverWakeup(
+              `🔔 [orchestrator] Lost track of worker "${w.name}" (session ${w.id}): status polling kept failing (it may have been deleted). Check it with sessions_status or in the sidebar.`,
+              { kind: "wakeup", workers: [{ sessionId: w.id, name: w.name, status: "error" }] },
+              expectedGeneration,
+            );
+            if (!isActive(expectedGeneration)) return;
+            if (ok) {
+              unwatch(w.id);
+              appendLedger(RESOLVED_ENTRY, w.id);
+            }
           }
         }
       }
@@ -812,7 +889,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       // two user messages back-to-back while the parent is idle races the
       // turn-start and can drop the second message.
       if (completed.length > 0) {
-        const stillRunning = Array.from(watched.values()).map((o) => `"${o.name}"`).join(", ");
+        const completedIds = new Set(completed.map(({ w }) => w.id));
+        const activeWorkers = Array.from(watched.values()).filter((w) => !completedIds.has(w.id));
+        const stillRunning = activeWorkers.map((o) => `"${o.name}"`).join(", ");
         const details = {
           kind: "wakeup",
           workers: completed.map(({ w, summary }) => ({
@@ -820,7 +899,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             name: w.name,
             status: w.aborted ? "aborted" : summary.isError ? "error" : "idle",
           })),
-          stillRunning: Array.from(watched.values()).map((o) => ({ sessionId: o.id, name: o.name })),
+          stillRunning: activeWorkers.map((o) => ({ sessionId: o.id, name: o.name })),
         };
         const sections = completed.map(({ w, summary }) => [
           `Worker "${w.name}" (session ${w.id}) is now ${w.aborted ? "stopped (aborted)" : "idle"}.`,
@@ -835,15 +914,19 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           ``,
           stillRunning ? `Still running: ${stillRunning}.` : `No other workers are running.`,
           `You can inspect details with sessions_read, follow up or redirect with sessions_prompt, or continue with your task.`,
-        ].join("\n"), details);
+        ].join("\n"), details, expectedGeneration);
+        if (!isActive(expectedGeneration)) return;
         if (ok) {
           for (const { w } of completed) {
+            unwatch(w.id);
             appendLedger(RESOLVED_ENTRY, w.id);
             // The report was consumed by this session on the user's behalf —
             // clear the child's unread dot via the normal read endpoint.
             markChildRead(w.id);
           }
         }
+        // On total delivery failure, leave every completed worker watched. The
+        // next normal poll interval retries without creating a tight loop.
       }
     } finally {
       pollInFlight = false;
@@ -860,7 +943,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   pi.registerTool({
     name: "sessions_status",
     label: "Worker session status",
-    description: "Get a one-line status (running/idle, model, cost, message counts) for worker sessions. With no ids, reports all workers spawned from this session that are still tracked. Prefer waiting for wakeup messages over calling this in a loop.",
+    description: "Get a one-line status (running/idle, category, cost, message counts) for worker sessions. With no ids, reports all workers spawned from this session that are still tracked. Prefer waiting for wakeup messages over calling this in a loop.",
     promptSnippet: "Check status of spawned worker sessions",
     parameters: Type.Object({
       ids: Type.Optional(Type.Array(Type.String(), { description: "Session ids to check (defaults to all tracked workers)" })),
@@ -877,8 +960,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           const running = Boolean(state?.runtime?.isRunning);
           const stats = state?.stats || {};
           const name = state?.sessionName || state?.sessionTitle || shortId(id);
-          const model = state?.model?.id || "?";
-          lines.push(`${running ? "⏳ RUNNING" : "✔ idle"} — "${name}" (${id}) — model ${model} — $${Number(stats.cost || 0).toFixed(2)} — ${Number(stats.assistantMessages || 0)} assistant msgs${state?.runtime?.pendingMessageCount ? ` — ${state.runtime.pendingMessageCount} queued` : ""}`);
+          const categoryName = watched.get(id)?.categoryName || "Unknown";
+          lines.push(`${running ? "⏳ RUNNING" : "✔ idle"} — "${name}" (${id}) — category "${categoryName}" — $${Number(stats.cost || 0).toFixed(2)} — ${Number(stats.assistantMessages || 0)} assistant msgs${state?.runtime?.pendingMessageCount ? ` — ${state.runtime.pendingMessageCount} queued` : ""}`);
         } catch (error) {
           lines.push(`? — ${id} — status unavailable (${error instanceof Error ? error.message : error})`);
         }
@@ -961,6 +1044,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   // Lifecycle
   // -------------------------------------------------------------------------
   pi.on("session_shutdown", () => {
+    disposed = true;
+    generation += 1;
     if (timer) clearInterval(timer);
     timer = undefined;
     watched.clear();
