@@ -692,6 +692,9 @@ export function createMessageList(options: {
     const customType = message.customType || message.raw?.customType || "";
     const details = message.details ?? message.raw?.details;
     const sessionRefs = sessionRefsFromDetails(details);
+    // Nothing to show: upstream drops text-less custom messages, so do not
+    // leave an empty bordered strip in the conversation.
+    if (!text && sessionRefs.length === 0) return undefined;
 
     // Realtime projection can briefly emit a details-only copy of a custom
     // worker event after its complete transcript entry has already rendered.

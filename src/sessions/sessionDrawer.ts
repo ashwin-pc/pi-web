@@ -982,7 +982,7 @@ export function createSessions(options: {
     closeOpenSessionColorFilterMenu();
 
     const menu = document.createElement("div");
-    menu.className = "sessionColorFilterMenu sessionFilterMenu";
+    menu.className = "sessionColorFilterMenu";
     menu.setAttribute("role", "menu");
 
     const title = document.createElement("div");

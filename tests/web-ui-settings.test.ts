@@ -16,7 +16,20 @@ afterEach(async () => {
 async function makeBridge() {
   const dir = await mkdtemp(join(tmpdir(), "pi-web-webui-"));
   tempDirs.push(dir);
-  const settingsStore = createSettingsStore(join(dir, "settings.json"));
+  const realStore = createSettingsStore(join(dir, "settings.json"));
+  let failWrite = false;
+  /** Arm exactly one extension-write failure (used to simulate a bad disk). */
+  const armWriteFailure = () => { failWrite = true; };
+  const settingsStore = {
+    ...realStore,
+    patchExtension: (...args: Parameters<typeof realStore.patchExtension>) => {
+      if (failWrite) {
+        failWrite = false;
+        return Promise.reject(new Error("disk full"));
+      }
+      return realStore.patchExtension(...args);
+    },
+  } as typeof realStore;
   const emitted: unknown[] = [];
   const bridge = createWebUiBridge({
     emit: (value) => emitted.push(value),
@@ -28,7 +41,7 @@ async function makeBridge() {
     settingsStore,
     modelOptions: () => new Set(["anthropic:fast-1"]),
   });
-  return { bridge, settingsStore, emitted };
+  return { bridge, settingsStore, emitted, armWriteFailure };
 }
 
 /** A fake pi-web session object; identity is what the registry keys on. */
@@ -213,5 +226,59 @@ describe("extension settings registry", () => {
     await pending;
     expect(bridge.settingsSchemas()).toHaveLength(1);
     expect(bridge.settingsSchemaEntry("demo.x")).toBeDefined();
+  });
+});
+
+describe("extension settings registry — failure corner cases", () => {
+  it("keeps the owner id usable after a migration write fails", async () => {
+    // Regression: the migration promise is shared by every registration of an
+    // id, so a rejected store write used to poison that id until restart.
+    const { bridge, settingsStore, armWriteFailure } = await makeBridge();
+    await settingsStore.patchExtension("demo.x", { tier: "old" }, { schemaVersion: 1, expectedRevision: 0 });
+    armWriteFailure(); // the migration's write is the one that fails
+
+    const schema = schemaFor("demo.x", { schemaVersion: 2, migrate: async () => ({ tier: "new" }) });
+    const first = await register(bridge, makeSession("s1"), schema);
+    expect(first.error).toMatch(/disk full/);
+
+    // A later session must still be able to register the same id.
+    const second = await register(bridge, makeSession("s2"), schema);
+    expect(second.registered).toBe(true);
+    expect(bridge.settingsSchemas()).toHaveLength(1);
+  });
+
+  it("does not drop the entry when the reserving session dies while another is still registering", async () => {
+    // Regression: the disposed reserver deleted the entry while a concurrent
+    // registrant was still awaiting migration; that registrant was told it had
+    // registered while its schema stayed invisible forever.
+    const { bridge, settingsStore } = await makeBridge();
+    await settingsStore.patchExtension("demo.x", { tier: "old" }, { schemaVersion: 1, expectedRevision: 0 });
+
+    let releaseMigration: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { releaseMigration = resolve; });
+    const schema = schemaFor("demo.x", {
+      schemaVersion: 2,
+      migrate: async () => { await gate; return { tier: "new" }; },
+    });
+
+    const reserver = makeSession("s1");
+    const joiner = makeSession("s2");
+    const reserverRegistration = register(bridge, reserver, schema);
+    const joinerRegistration = register(bridge, joiner, schema);
+
+    bridge.releaseSessionSettings(reserver); // reserver dies mid-migration
+    releaseMigration();
+
+    const [reserverResult, joinerResult] = await Promise.all([reserverRegistration, joinerRegistration]);
+    expect(reserverResult.registered).toBe(false);
+    expect(joinerResult.registered).toBe(true);
+
+    // The surviving registrant must be visible and notifiable.
+    expect(bridge.settingsSchemas()).toHaveLength(1);
+    expect(bridge.settingsSchemaEntry("demo.x")).toBeDefined();
+    const onChange = vi.fn();
+    await register(bridge, joiner, schemaFor("demo.x", { schemaVersion: 2, migrate: async () => ({ tier: "new" }), onChange }));
+    bridge.notifySettingsChanged("demo.x", { tier: "fast" });
+    expect(onChange).toHaveBeenCalled();
   });
 });

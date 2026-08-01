@@ -72,6 +72,8 @@ type RegisteredSettingsSchema = {
   registrants: Map<object, SettingsRegistrant>;
   /** Shared so concurrent first registrations migrate exactly once. */
   migration: Promise<{ migrated: boolean; usedBackup: boolean; error?: string }>;
+  /** Registrations awaiting migration; the entry must not be dropped under them. */
+  pending: number;
   /** Only exposed once migration settled, so nothing validates mid-migration. */
   ready: boolean;
   migrationError?: string;
@@ -129,34 +131,48 @@ function broadcastSettingsSchemas() {
   deps.emit({ type: "web_settings_schemas_changed", webSettingsSchemas: activeSettingsSchemaList() });
 }
 
+/**
+ * Migrate stored values for one owner. NEVER rejects: a store failure resolves
+ * with an `error` instead, because this promise is shared by every concurrent
+ * registration of the id — a rejection would poison the id until restart.
+ */
 async function migrateStoredSettings(
   schema: PiWebSettingsRegistration,
 ): Promise<{ migrated: boolean; usedBackup: boolean; error?: string }> {
-  const settings = await deps.settingsStore.read();
-  const stored = settings.extensions?.[schema.id];
-  if (!stored || stored.schemaVersion >= schema.schemaVersion) {
-    return { migrated: false, usedBackup: false };
-  }
-  const backup = { schemaVersion: stored.schemaVersion, values: stored.values };
-  const defaults = defaultSettingsValues(schema);
-  if (typeof schema.migrate === "function") {
-    try {
-      const migratedValues = await schema.migrate(stored.values, stored.schemaVersion);
-      const { values, errors } = validateSettingsValues(schema, migratedValues, { modelOptions: deps.modelOptions() });
-      if (errors.length) {
-        await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
-        return { migrated: false, usedBackup: true, error: `migration produced invalid values (${errors.length})` };
-      }
-      await deps.settingsStore.patchExtension(schema.id, values, { schemaVersion: schema.schemaVersion, backup });
-      return { migrated: true, usedBackup: false };
-    } catch (error) {
-      await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
-      return { migrated: false, usedBackup: true, error: error instanceof Error ? error.message : String(error) };
+  const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  try {
+    const settings = await deps.settingsStore.read();
+    const stored = settings.extensions?.[schema.id];
+    if (!stored || stored.schemaVersion >= schema.schemaVersion) {
+      return { migrated: false, usedBackup: false };
     }
+    const backup = { schemaVersion: stored.schemaVersion, values: stored.values };
+    const defaults = defaultSettingsValues(schema);
+    if (typeof schema.migrate === "function") {
+      let migratedValues: Record<string, unknown> | undefined;
+      let migrateError: string | undefined;
+      try {
+        migratedValues = await schema.migrate(stored.values, stored.schemaVersion);
+      } catch (error) {
+        migrateError = describe(error);
+      }
+      if (migrateError === undefined && migratedValues !== undefined) {
+        const { values, errors } = validateSettingsValues(schema, migratedValues, { modelOptions: deps.modelOptions() });
+        if (errors.length === 0) {
+          await deps.settingsStore.patchExtension(schema.id, values, { schemaVersion: schema.schemaVersion, backup });
+          return { migrated: true, usedBackup: false };
+        }
+        migrateError = `migration produced invalid values (${errors.length})`;
+      }
+      await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
+      return { migrated: false, usedBackup: true, error: migrateError };
+    }
+    // No migrate() provided: reset to defaults, keep a one-slot backup.
+    await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
+    return { migrated: false, usedBackup: true };
+  } catch (error) {
+    return { migrated: false, usedBackup: false, error: describe(error) };
   }
-  // No migrate() provided: reset to defaults, keep a one-slot backup.
-  await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
-  return { migrated: false, usedBackup: true };
 }
 
 async function registerSessionSettings(
@@ -187,12 +203,27 @@ async function registerSessionSettings(
       canonicalKey: canonical,
       registrants: new Map(),
       migration: migrateStoredSettings(schema),
+      pending: 0,
       ready: false,
     };
     activeSettingsSchemas.set(id, entry);
   }
 
-  const result = await entry.migration;
+  // Count ourselves as in-flight BEFORE awaiting, so a concurrent registrant
+  // that gets disposed cannot delete this entry out from under us.
+  entry.pending += 1;
+  let result: { migrated: boolean; usedBackup: boolean; error?: string };
+  try {
+    result = await entry.migration;
+  } catch (error) {
+    // migrateStoredSettings is written not to reject; treat a rejection as a
+    // failed registration and release the reservation so the id stays usable.
+    const message = error instanceof Error ? error.message : String(error);
+    entry.pending -= 1;
+    if (entry.registrants.size === 0 && entry.pending === 0) activeSettingsSchemas.delete(id);
+    return { registered: false, migrated: false, usedBackup: false, error: message };
+  }
+  entry.pending -= 1;
   entry.ready = true;
   if (result.error) {
     entry.migrationError = result.error;
@@ -200,12 +231,14 @@ async function registerSessionSettings(
   }
 
   // The session may have shut down while migration was in flight; never
-  // register a dead session (and drop a reservation nobody else claimed).
+  // register a dead session (and drop a reservation nobody else is claiming).
   if (disposedSettingsSessions.has(session)) {
-    if (reserved && entry.registrants.size === 0) activeSettingsSchemas.delete(id);
+    if (entry.registrants.size === 0 && entry.pending === 0) activeSettingsSchemas.delete(id);
     return { registered: false, migrated: result.migrated, usedBackup: result.usedBackup, error: "session shut down during registration" };
   }
 
+  // Always attach to the entry the registry currently holds for this id.
+  if (activeSettingsSchemas.get(id) !== entry) activeSettingsSchemas.set(id, entry);
   entry.registrants.set(session, { schema, sessionId: String(value?.sessionId || "") });
   broadcastSettingsSchemas();
   return { registered: true, migrated: result.migrated, usedBackup: result.usedBackup, error: result.error };

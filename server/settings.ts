@@ -152,10 +152,17 @@ function normalizeStoredExtension(value: unknown): StoredExtensionSettings | und
       values: value.backup.values,
     };
   }
-  // Bounds: drop the owner rather than corrupt it.
-  if (Object.keys(record.values).length > extensionSettingsLimits.maxKeysPerOwner) return undefined;
+  // Bounds: drop the owner rather than corrupt it, but say so — silently losing
+  // a user's stored configuration is worse than a noisy log.
+  if (Object.keys(record.values).length > extensionSettingsLimits.maxKeysPerOwner) {
+    console.warn(`pi-web: ignoring stored extension settings with too many keys (max ${extensionSettingsLimits.maxKeysPerOwner})`);
+    return undefined;
+  }
   const bytes = serializedBytes(record);
-  if (bytes === undefined || bytes > extensionSettingsLimits.maxBytesPerOwner) return undefined;
+  if (bytes === undefined || bytes > extensionSettingsLimits.maxBytesPerOwner) {
+    console.warn(`pi-web: ignoring stored extension settings that are not serializable or exceed ${extensionSettingsLimits.maxBytesPerOwner} bytes`);
+    return undefined;
+  }
   return record;
 }
 

@@ -623,11 +623,6 @@
 .sessionColorFilterMenu {
   min-width: 150px;
 }
-.sessionFilterMenu {
-  min-width: 240px;
-  max-height: calc(100vh - 16px);
-  overflow-y: auto;
-}
 .sessionColorFilterTitle {
   color: var(--muted);
   font-size: 11px;
