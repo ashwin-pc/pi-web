@@ -107,10 +107,11 @@ function serveArtifact(req: IncomingMessage, res: ServerResponse) {
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(url.pathname);
-  const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
-  const file = resolve(staticDir, relative);
+  const reqPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const file = resolve(staticDir, reqPath);
+  const relPath = relative(staticDir, file);
 
-  if (!file.startsWith(staticDir) || !existsSync(file)) {
+  if (relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(file)) {
     sendJson(res, 404, { ok: false, error: "Not found" });
     return;
   }
