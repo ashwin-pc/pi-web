@@ -94,7 +94,9 @@ yourself.
 ## Etiquette and limits
 
 - Depth cap: workers must not spawn sub-workers (`sessions_spawn` refuses).
-- At most 4 tracked workers at once; prefer 2–3 focused workers over a swarm.
+- At most 4 workers spawned by `sessions_spawn` may be running/tracked at once;
+  sessions merely watched after `sessions_prompt` do not consume spawn slots.
+  Prefer 2–3 focused workers over a swarm.
 - The user sees every worker in the sidebar and may type into one directly —
   that's fine and expected. Their instructions to a worker take precedence.
 - In your reply to the user after spawning, say which workers you started and

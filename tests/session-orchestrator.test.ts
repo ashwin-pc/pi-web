@@ -48,6 +48,10 @@ describe("resolveModel", () => {
     expect(resolveModel("amazon-bedrock:anthropic.claude-x-v1:0", registry, "")).toBeNull();
   });
 
+  it("never replaces an explicit configured region prefix", () => {
+    expect(resolveModel("amazon-bedrock:eu.anthropic.claude-x-v1:0", registry, "us.")).toBeNull();
+  });
+
   it("never picks an arbitrary candidate from another provider", () => {
     expect(resolveModel("openai:missing-1", registry, "us.")).toBeNull();
   });
@@ -313,6 +317,13 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(visibleResult).not.toContain("smart-1");
   });
 
+  it("does not expose an extension version marker in spawn result text or details", async () => {
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    const result = await spawn(ctx, { name: "scout", task: "look around" });
+
+    expect(`${resultText(result)}\n${JSON.stringify(result.details)}`).not.toMatch(/\[ext\s/i);
+  });
+
   it("reports status by category without exposing the concrete model id", async () => {
     const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
     await spawn(ctx, { name: "scout", task: "look around", category: "Fast" });
@@ -339,6 +350,27 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(result.isError).toBe(true);
     expect(resultText(result)).toContain("Fast"); // menu-on-miss
     expect(calls).toHaveLength(0); // nothing created, nothing dispatched
+  });
+
+  it("rejects an explicit category when the category config is empty", async () => {
+    const ctx = makeCtx();
+    const result = await spawn(ctx, { name: "scout", task: "look around", category: "Ghost" });
+
+    expect(result.isError).toBe(true);
+    expect(resultText(result)).toMatch(/none configured/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("rejects an explicit category when getSettings is unavailable", async () => {
+    const ctx = makeCtx();
+    delete (ctx.ui.web as any).getSettings;
+    await activate(ctx);
+
+    const result = await spawn(ctx, { name: "scout", task: "look around", category: "Ghost" });
+
+    expect(result.isError).toBe(true);
+    expect(resultText(result)).toMatch(/settings are unavailable/i);
+    expect(calls).toHaveLength(0);
   });
 
   it("errors without creating a session when no default is configured", async () => {
@@ -378,7 +410,7 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(result.details.cleanedUp).toBe(false);
   });
 
-  it("reports a region-prefix substitution instead of silently swapping models", async () => {
+  it("adds the parent's region prefix to an unprefixed configured model", async () => {
     stubFetch({ models: [{ provider: "amazon-bedrock", id: "us.anthropic.claude-x-v1:0" }], parentModelId: "us.anthropic.other-v1:0" });
     const category = { name: "Bedrock", model: "amazon-bedrock:anthropic.claude-x-v1:0", description: "Region-prefixed profile." };
     const ctx = makeCtx({ categories: [category], defaultCategory: "Bedrock", parentModelId: "us.anthropic.other-v1:0" });
@@ -388,6 +420,19 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(result.isError).toBeFalsy();
     expect(calls.find((call) => call.path === "/api/model")?.body).toMatchObject({ id: "us.anthropic.claude-x-v1:0" });
     expect(resultText(result)).toMatch(/substituted/i);
+  });
+
+  it("fails closed rather than replacing an explicit configured region", async () => {
+    stubFetch({ models: [{ provider: "amazon-bedrock", id: "us.anthropic.claude-x-v1:0" }], parentModelId: "us.anthropic.other-v1:0" });
+    const category = { name: "EU", model: "amazon-bedrock:eu.anthropic.claude-x-v1:0", description: "EU residency." };
+    const ctx = makeCtx({ categories: [category], defaultCategory: "EU" });
+
+    const result = await spawn(ctx, { name: "scout", task: "look around", category: "EU" });
+
+    expect(result.isError).toBe(true);
+    expect(pathsFor("POST")).not.toContain("/api/model");
+    expect(pathsFor("POST")).not.toContain("/api/prompt");
+    expect(pathsFor("POST")).toContain("/api/sessions/delete");
   });
 
   it("leaves the worker on the session default when no categories are configured", async () => {
@@ -468,9 +513,108 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(overflow.isError).toBe(true);
     expect(resultText(overflow)).toMatch(/cap/i);
   });
+
+  it("reserves spawn slots before awaits so concurrent calls cannot exceed the cap", async () => {
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    await activate(ctx);
+    const tool = tools.get("sessions_spawn");
+
+    const results = await Promise.all(Array.from({ length: 6 }, (_, index) =>
+      tool.execute(`call-${index}`, { name: `worker-${index}`, task: "work" }, undefined, undefined, ctx),
+    ));
+
+    expect(results.filter((result) => !result.isError)).toHaveLength(4);
+    expect(results.filter((result) => result.isError)).toHaveLength(2);
+    expect(calls.filter((call) => call.path === "/api/new-chat")).toHaveLength(4);
+  });
+
+  it("does not charge sessions_prompt watches against the spawn cap", async () => {
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    await activate(ctx);
+    for (let i = 0; i < 4; i += 1) {
+      await tools.get("sessions_prompt").execute("prompt", { id: `existing-${i}`, message: "continue" });
+    }
+
+    const result = await spawn(ctx, { name: "new worker", task: "work" });
+
+    expect(result.isError).toBeFalsy();
+    expect(pathsFor("POST")).toContain("/api/new-chat");
+  });
 });
 
 describe("watcher lifecycle and wakeup retries", () => {
+  it("keeps a ledger watch after a transient re-arm failure and later delivers its wakeup", async () => {
+    vi.useFakeTimers();
+    const pi = makeExtension();
+    let stateCalls = 0;
+    globalThis.fetch = (async (url: any, init: any = {}) => {
+      const method = String(init.method || "GET");
+      const path = String(url).replace(/^https?:\/\/[^/]+/, "");
+      calls.push({ method, path, body: init.body ? JSON.parse(init.body) : undefined });
+      if (path === "/api/state?sessionId=ledger-worker") {
+        stateCalls += 1;
+        if (stateCalls === 1) {
+          return { ok: false, status: 503, json: async () => ({ ok: false, error: "restarting" }) } as any;
+        }
+        return { ok: true, status: 200, json: async () => ({ ok: true, runtime: { isRunning: false, pendingMessageCount: 0 } }) } as any;
+      }
+      if (path === "/api/messages?sessionId=ledger-worker") {
+        return { ok: true, status: 200, json: async () => ({ ok: true, messages: [{ role: "assistant", text: "finished after restart" }] }) } as any;
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as any;
+    }) as any;
+
+    const ctx = makeCtx();
+    ctx.sessionManager.getBranch = () => [{
+      type: "custom",
+      customType: "orchestrator-watch",
+      data: { childId: "ledger-worker", name: "ledger worker", categoryName: "Fast", spawned: true },
+    }];
+    await handlers.get("session_start")?.({}, ctx);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pi.appendEntry).not.toHaveBeenCalledWith("orchestrator-watch-resolved", expect.anything());
+    const statusBefore = await tools.get("sessions_status").execute("status", {});
+    expect(resultText(statusBefore)).toContain("ledger-worker");
+
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(String(pi.sendMessage.mock.calls[0][0].content)).toContain("finished after restart");
+    expect(pi.appendEntry).toHaveBeenCalledWith("orchestrator-watch-resolved", { childId: "ledger-worker" });
+    expect(stateCalls).toBe(6); // re-arm failure + status check + four settled polls
+  });
+
+  it("resolves a ledger watch after a definitive not-found without polling forever", async () => {
+    vi.useFakeTimers();
+    const pi = makeExtension();
+    let stateCalls = 0;
+    globalThis.fetch = (async (url: any, init: any = {}) => {
+      const method = String(init.method || "GET");
+      const path = String(url).replace(/^https?:\/\/[^/]+/, "");
+      calls.push({ method, path, body: init.body ? JSON.parse(init.body) : undefined });
+      if (path === "/api/state?sessionId=missing-worker") {
+        stateCalls += 1;
+        return { ok: false, status: 404, json: async () => ({ ok: false, error: "session not found" }) } as any;
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true }) } as any;
+    }) as any;
+
+    const ctx = makeCtx();
+    ctx.sessionManager.getBranch = () => [{
+      type: "custom",
+      customType: "orchestrator-watch",
+      data: { childId: "missing-worker", name: "missing worker", categoryName: "Fast", spawned: true },
+    }];
+    await handlers.get("session_start")?.({}, ctx);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(pi.appendEntry).toHaveBeenCalledWith("orchestrator-watch-resolved", { childId: "missing-worker" });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(stateCalls).toBe(1);
+    expect(pi.sendMessage).not.toHaveBeenCalled();
+  });
+
   it("does not re-arm polling when a pending ledger re-arm finishes after shutdown", async () => {
     vi.useFakeTimers();
     let resolveState!: (response: any) => void;

@@ -13,9 +13,9 @@
  *
  * Everything goes through the same local HTTP API the web UI uses.
  *
- * Reversible install: this lives in .pi/extensions/session-orchestrator/ —
- * delete that directory (and .pi/skills/session-orchestration/) to remove the
- * feature entirely. No AGENTS.md or server changes.
+ * Reversible install: this lives at .pi/web/extensions/session-orchestrator.ts —
+ * delete that file (and ~/.pi/agent/skills/session-orchestration/) to remove
+ * the feature entirely. No AGENTS.md or server changes.
  */
 
 import { Type } from "typebox";
@@ -103,10 +103,12 @@ export function resolveModel(
   const exact = registryModels.find((m: any) => m.provider === provider && m.id === id);
   if (exact) return { match: exact, substituted: false };
 
-  // 2. Same provider + same normalized base id + parent region prefix (Bedrock case).
-  if (parentRegionPrefix) {
-    const baseId = normalizeBedrockId(id);
-    const withPrefix = parentRegionPrefix + baseId.slice(baseId.match(/^(us|eu|au|apac|global)\./)  ?.[0]?.length || 0);
+  // 2. For an unprefixed configured id only, add the parent's region prefix
+  // (Bedrock inference-profile case). An explicit configured region is a
+  // residency choice and must never be silently replaced with another one.
+  const baseId = normalizeBedrockId(id);
+  if (parentRegionPrefix && !/^(us|eu|au|apac|global)\./.test(baseId)) {
+    const withPrefix = parentRegionPrefix + baseId;
     const candidate = registryModels.find(
       (m: any) => m.provider === provider && normalizeBedrockId(m.id) === normalizeBedrockId(withPrefix),
     );
@@ -121,6 +123,13 @@ export function resolveModel(
 // Small HTTP client for the pi-web API (same API the browser UI uses)
 // ---------------------------------------------------------------------------
 
+class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function api(method: string, path: string, body?: unknown): Promise<any> {
   const res = await fetch(`${BASE}${path}`, {
     method,
@@ -133,7 +142,7 @@ async function api(method: string, path: string, body?: unknown): Promise<any> {
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok || json?.ok === false) {
-    throw new Error(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`);
+    throw new ApiError(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`, res.status);
   }
   return json;
 }
@@ -216,6 +225,10 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   };
 
   const watched = new Map<string, Watched>();
+  // The spawn cap applies only to workers created by sessions_spawn. Sessions
+  // added to the watcher by sessions_prompt do not consume spawn capacity.
+  const spawnedWorkers = new Set<string>();
+  let reservedSpawnSlots = 0;
   let cachedConfig: { categories: any[]; defaultCategory: string } = { categories: [], defaultCategory: "" };
   let timer: ReturnType<typeof setInterval> | undefined;
   let pollInFlight = false;
@@ -296,12 +309,13 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
 
   function unwatch(id: string) {
     watched.delete(id);
+    spawnedWorkers.delete(id);
     stopTimerIfIdle();
   }
 
-  function appendLedger(customType: string, childId: string, name?: string, categoryName?: string) {
+  function appendLedger(customType: string, childId: string, name?: string, categoryName?: string, spawned?: boolean) {
     try {
-      pi.appendEntry(customType, { childId, ...(name ? { name } : {}), ...(categoryName ? { categoryName } : {}) });
+      pi.appendEntry(customType, { childId, ...(name ? { name } : {}), ...(categoryName ? { categoryName } : {}), ...(spawned !== undefined ? { spawned } : {}) });
     } catch (error) {
       console.error(`[session-orchestrator] could not append ${customType} entry: ${error instanceof Error ? error.message : error}`);
     }
@@ -328,8 +342,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       : `Session ${sessionId} could not be deleted and may remain — please remove it.`;
   }
 
-  function outstandingWatches(ctx: any): Map<string, { name: string; categoryName: string }> {
-    const watches = new Map<string, { name: string; categoryName: string }>();
+  function outstandingWatches(ctx: any): Map<string, { name: string; categoryName: string; spawned: boolean }> {
+    const watches = new Map<string, { name: string; categoryName: string; spawned: boolean }>();
     try {
       for (const entry of ctx.sessionManager?.getBranch?.() || []) {
         if (entry?.type !== "custom") continue;
@@ -339,6 +353,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           watches.set(childId, {
             name: typeof entry.data?.name === "string" ? entry.data.name : childId.slice(-8),
             categoryName: typeof entry.data?.categoryName === "string" ? entry.data.categoryName : "Unknown",
+            // Legacy entries did not distinguish spawn from prompt watches;
+            // count them conservatively until a new typed entry is written.
+            spawned: typeof entry.data?.spawned === "boolean" ? entry.data.spawned : true,
           });
         }
         else if (entry.customType === RESOLVED_ENTRY) watches.delete(childId);
@@ -422,14 +439,19 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             details: {},
           };
         }
-        if (watched.size >= MAX_WORKERS) {
+        const spawnSlotsInUse = spawnedWorkers.size + reservedSpawnSlots;
+        if (spawnSlotsInUse >= MAX_WORKERS) {
           return {
-            content: [{ type: "text", text: `Refused: already tracking ${watched.size} running workers (cap ${MAX_WORKERS}). Wait for a wakeup or abort one first.` }],
+            content: [{ type: "text", text: `Refused: already running or starting ${spawnSlotsInUse} spawned workers (spawn cap ${MAX_WORKERS}; sessions watched after sessions_prompt do not count). Wait for a wakeup or abort one first.` }],
             isError: true,
             details: {},
           };
         }
 
+        // Reserve synchronously, before category/settings/API awaits, so
+        // concurrent tool calls cannot all pass the cap check.
+        reservedSpawnSlots += 1;
+        try {
         const parentId = ownSessionId(ctx);
         const parentCwd = ownCwd(ctx);
 
@@ -438,94 +460,84 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         // ====================================================================
 
         let resolvedToken: { provider: string; id: string } | null = null;
-        let categoryName = params.category || "";
+        const explicitCategory = typeof params.category === "string" && params.category.trim().length > 0;
+        let categoryName = explicitCategory ? params.category.trim() : "";
         let validCategories: string[] = [];
 
         try {
           const web = ctx?.ui?.web;
-          if (web?.getSettings) {
-            const settings = await web.getSettings(SETTINGS_ID);
-            if (settings && typeof settings === "object") {
-              const values = settings.values || {};
-              cachedConfig = { categories: Array.isArray(values.categories) ? values.categories : [], defaultCategory: String(values.defaultCategory || "") };
-              const categories = Array.isArray(values.categories) ? values.categories : [];
-              const defaultCategory = String(values.defaultCategory || "");
+          const settings = web?.getSettings ? await web.getSettings(SETTINGS_ID) : null;
+          if (settings && typeof settings === "object") {
+            const values = settings.values || {};
+            cachedConfig = { categories: Array.isArray(values.categories) ? values.categories : [], defaultCategory: String(values.defaultCategory || "") };
+            const categories = Array.isArray(values.categories) ? values.categories : [];
+            const defaultCategory = String(values.defaultCategory || "");
 
-              // Empty config → virtual Default, skip resolution, use session default.
-              if (categories.length === 0) {
-                resolvedToken = null; // Signals: use session default
-                categoryName = "Default";
-                validCategories = [categoryName];
-              } else {
-                // Collect valid names.
-                for (const cat of categories) {
-                  if (cat && typeof cat === "object" && cat.name) {
-                    validCategories.push(String(cat.name));
-                  }
-                }
+            for (const cat of categories) {
+              if (cat && typeof cat === "object" && cat.name) validCategories.push(String(cat.name));
+            }
 
-                // Resolve category name.
-                if (!categoryName) {
-                  categoryName = defaultCategory;
-                }
+            // An explicit category must resolve even when the configured list
+            // is empty. Only an omitted category gets the virtual Default.
+            if (categories.length === 0) {
+              if (explicitCategory) {
+                return {
+                  content: [{ type: "text", text: `ERROR: category "${categoryName}" not found. Valid categories: (none configured)` }],
+                  isError: true,
+                  details: { validCategories, categoryName },
+                };
+              }
+              categoryName = "Default";
+            } else {
+              if (!categoryName) categoryName = defaultCategory;
+              if (!categoryName) {
+                return {
+                  content: [{ type: "text", text: `ERROR: category omitted and no default is configured. Valid categories: ${validCategories.join(", ") || "(none configured)"}. Set a default in extension settings or pass an explicit category name.` }],
+                  isError: true,
+                  details: { validCategories },
+                };
+              }
 
-                if (!categoryName) {
-                  return {
-                    content: [
-                      {
-                        type: "text",
-                        text: `ERROR: category omitted and no default is configured. Valid categories: ${validCategories.join(", ") || "(none configured)"}. Set a default in extension settings or pass an explicit category name.`,
-                      },
-                    ],
-                    isError: true,
-                    details: { validCategories },
-                  };
-                }
+              const matching = categories.find(
+                (cat: any) => cat && typeof cat === "object" && cat.name && String(cat.name).toLowerCase() === String(categoryName).toLowerCase(),
+              );
+              if (!matching || !matching.model) {
+                return {
+                  content: [{ type: "text", text: `ERROR: category "${categoryName}" not found or has no model configured. Valid categories: ${validCategories.join(", ") || "(none configured)"}` }],
+                  isError: true,
+                  details: { validCategories, categoryName },
+                };
+              }
 
-                // Find matching category.
-                const matching = categories.find(
-                  (cat: any) => cat && typeof cat === "object" && cat.name && String(cat.name).toLowerCase() === String(categoryName).toLowerCase(),
-                );
-                if (!matching || !matching.model) {
-                  return {
-                    content: [
-                      {
-                        type: "text",
-                        text: `ERROR: category "${categoryName}" not found or has no model configured. Valid categories: ${validCategories.join(", ") || "(none configured)"}`,
-                      },
-                    ],
-                    isError: true,
-                    details: { validCategories, categoryName },
-                  };
-                }
-
-                resolvedToken = parseToken(String(matching.model));
-                if (!resolvedToken) {
-                  return {
-                    content: [
-                      {
-                        type: "text",
-                        text: `ERROR: the model configured for category "${categoryName}" is malformed. Check extension settings. Valid categories: ${validCategories.join(", ") || "(none configured)"}`,
-                      },
-                    ],
-                    isError: true,
-                    details: { validCategories },
-                  };
-                }
+              resolvedToken = parseToken(String(matching.model));
+              if (!resolvedToken) {
+                return {
+                  content: [{ type: "text", text: `ERROR: the model configured for category "${categoryName}" is malformed. Check extension settings. Valid categories: ${validCategories.join(", ") || "(none configured)"}` }],
+                  isError: true,
+                  details: { validCategories },
+                };
               }
             }
+          } else if (explicitCategory) {
+            return {
+              content: [{ type: "text", text: `ERROR: category "${categoryName}" cannot be resolved because category settings are unavailable. Valid categories: (none configured)` }],
+              isError: true,
+              details: { validCategories, categoryName },
+            };
+          } else {
+            categoryName = "Default";
           }
         } catch (error) {
-          return {
-            content: [
-              {
-                type: "text",
-                text: `ERROR: failed to read category config: ${error instanceof Error ? error.message : error}. Categories unavailable; please check extension settings.`,
-              },
-            ],
-            isError: true,
-            details: {},
-          };
+          if (explicitCategory) {
+            return {
+              content: [{ type: "text", text: `ERROR: failed to read category config: ${error instanceof Error ? error.message : error}. Category "${categoryName}" cannot be resolved; valid categories are unavailable.` }],
+              isError: true,
+              details: { validCategories, categoryName },
+            };
+          }
+          // With no explicit category, an unreadable settings API may safely
+          // fall back to the new session's default model.
+          categoryName = "Default";
         }
 
         // ====================================================================
@@ -643,14 +655,15 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           };
         }
 
+        spawnedWorkers.add(sessionId);
         watch(sessionId, params.name, categoryName || "Default");
-        appendLedger(WATCH_ENTRY, sessionId, params.name, categoryName || "Default");
+        appendLedger(WATCH_ENTRY, sessionId, params.name, categoryName || "Default", true);
 
         return {
           content: [
             {
               type: "text",
-              text: `Spawned worker "${params.name}" (session ${sessionId}, category "${categoryName || "Default"}") [ext ${EXT_VERSION}]. It is running in the background as a normal pi-web session named "${displayName}".${regionSubstituted ? " A region prefix was substituted." : ""} You'll receive a 🔔 wakeup message when it goes idle — do not poll. Continue other work, spawn more workers, or end your turn to wait.`,
+              text: `Spawned worker "${params.name}" (session ${sessionId}, category "${categoryName || "Default"}"). It is running in the background as a normal pi-web session named "${displayName}".${regionSubstituted ? " A region prefix was substituted." : ""} You'll receive a 🔔 wakeup message when it goes idle — do not poll. Continue other work, spawn more workers, or end your turn to wait.`,
             },
           ],
           details: {
@@ -662,6 +675,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             regionSubstituted,
           } as Record<string, unknown>,
         };
+        } finally {
+          reservedSpawnSlots -= 1;
+        }
       },
     };
   }
@@ -716,6 +732,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     const outstanding = outstandingWatches(ctx);
     for (const id of watched.keys()) outstanding.delete(id);
     if (outstanding.size === 0) return;
+    for (const [id, worker] of outstanding) {
+      if (worker.spawned) spawnedWorkers.add(id);
+    }
 
     const finished: { id: string; name: string; categoryName: string; summary: { text: string; isError: boolean } }[] = [];
     for (const [childId, worker] of outstanding) {
@@ -738,10 +757,18 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           // Transcript fetch is best effort.
         }
         finished.push({ id: childId, name: worker.name, categoryName: worker.categoryName, summary });
-      } catch {
+      } catch (error) {
         if (!isActive(expectedGeneration)) return;
-        // Child gone (deleted?) — resolve so we don't retry forever.
-        appendLedger(RESOLVED_ENTRY, childId);
+        if (error instanceof ApiError && error.status === 404) {
+          // A definitive not-found means the child is genuinely gone.
+          spawnedWorkers.delete(childId);
+          appendLedger(RESOLVED_ENTRY, childId);
+        } else {
+          // Timeouts, network failures, and 5xx responses are transient. Hand
+          // the outstanding ledger entry to the normal paced poller, which
+          // retries and eventually emits its existing "lost track" wakeup.
+          watch(childId, worker.name, worker.categoryName);
+        }
       }
     }
     if (!isActive(expectedGeneration) || finished.length === 0) return;
@@ -768,6 +795,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration)) return;
     if (ok) {
       for (const f of finished) {
+        spawnedWorkers.delete(f.id);
         appendLedger(RESOLVED_ENTRY, f.id);
         markChildRead(f.id);
       }
@@ -1015,7 +1043,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           name = String(state?.sessionName || state?.sessionTitle || name).replace(/^[⑂⤑]\s*/, "");
         } catch { /* best effort */ }
         watch(params.id, name);
-        appendLedger(WATCH_ENTRY, params.id, name);
+        appendLedger(WATCH_ENTRY, params.id, name, undefined, false);
       }
       return { content: [{ type: "text", text: `${params.interrupt ? "Interrupted and redirected" : "Message delivered to"} session ${params.id}. You'll get a 🔔 wakeup when it goes idle.` }], details: {} };
     },
@@ -1049,5 +1077,6 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (timer) clearInterval(timer);
     timer = undefined;
     watched.clear();
+    spawnedWorkers.clear();
   });
 }
