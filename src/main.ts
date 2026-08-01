@@ -385,6 +385,7 @@ async function refreshState() {
   }
   sessionState.applySnapshot(data, { activate: true });
   syncActiveSessionIdHistoryState(state.currentSessionId);
+  statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -452,6 +453,7 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
+  onDerivedSessionStateChanged: () => statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || "")),
   clearMessages: () => {
     tools.clearActiveToolCards();
     messages.clear();

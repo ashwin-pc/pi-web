@@ -3,6 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { connectionLostDelayMs, reconnectDelayMs, reconnectNoticeDelayMs } from "../app/types.js";
+import { iconElement } from "../app/icons.js";
 
 
 export type StatusBar = {
@@ -15,6 +16,7 @@ export type StatusBar = {
   markActivityStart: (label?: string, startedAt?: string | number | Date, lastActivityAt?: string | number | Date) => void;
   markActivityProgress: (label?: string, lastActivityAt?: string | number | Date) => void;
   markActivityEnd: () => void;
+  updateWaitingStatus: (info: { count: number; names: string[] } | undefined) => void;
 };
 
 const activityQuietNoticeMs = 30_000;
@@ -241,6 +243,38 @@ export function createStatusBar(options: {
     elements.runtimeStatusEl.textContent = "";
     elements.runtimeStatusEl.title = "";
     elements.runtimeStatusEl.className = "runtimeStatus";
+    renderWaitingStatus();
+  }
+
+  // Derived "waiting on spawned sessions" indicator, shown in the runtime
+  // slot above the composer — but only while the session is otherwise idle:
+  // precedence is running > waiting. Static pulsing hourglass (accent, same
+  // color family as unread) + white text naming what it waits for.
+  let waitingInfo: { count: number; names: string[] } | undefined;
+
+  function clearWaitingRender() {
+    if (!elements.runtimeStatusEl.classList.contains("waiting")) return;
+    elements.runtimeStatusEl.hidden = true;
+    elements.runtimeStatusEl.textContent = "";
+    elements.runtimeStatusEl.title = "";
+    elements.runtimeStatusEl.className = "runtimeStatus";
+  }
+
+  function renderWaitingStatus() {
+    if (!waitingInfo || currentActivity()) return;
+    const names = waitingInfo.names.slice(0, 3).join(", ") + (waitingInfo.names.length > 3 ? "…" : "");
+    elements.runtimeStatusEl.className = "runtimeStatus waiting";
+    elements.runtimeStatusEl.textContent = "";
+    elements.runtimeStatusEl.append(iconElement("hourglass"), document.createTextNode(`Waiting on ${waitingInfo.count} spawned session${waitingInfo.count === 1 ? "" : "s"}: ${names}`));
+    elements.runtimeStatusEl.title = "This session stays usable while spawned sessions run — it will be woken automatically when they finish.";
+    elements.runtimeStatusEl.hidden = false;
+  }
+
+  function updateWaitingStatus(info: { count: number; names: string[] } | undefined) {
+    waitingInfo = info;
+    if (currentActivity()) return; // running indicator owns the slot
+    if (info) renderWaitingStatus();
+    else clearWaitingRender();
   }
 
   function scheduleConnectionStatus() {
@@ -339,5 +373,6 @@ export function createStatusBar(options: {
     markActivityStart,
     markActivityProgress,
     markActivityEnd,
+    updateWaitingStatus,
   };
 }

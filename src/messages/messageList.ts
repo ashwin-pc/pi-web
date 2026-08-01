@@ -675,6 +675,102 @@ export function createMessageList(options: {
     return text.split(/\s+/).filter(Boolean).length;
   }
 
+  // ── Custom (extension-injected) message cards ───────────────────────────
+  // pi custom messages reach the LLM as user messages; here they render as a
+  // distinct notification card. `details` may carry structured session
+  // references (e.g. spawned workers) which render as link chips.
+
+  function prettyCustomType(customType: string) {
+    const text = (customType || "notification").replace(/[-_]+/g, " ").trim();
+    return text.charAt(0).toUpperCase() + text.slice(1);
+  }
+
+  function customDetailSessionRefs(details: unknown): Array<{ sessionId: string; name?: string; status?: string }> {
+    if (!details || typeof details !== "object") return [];
+    const refs: Array<{ sessionId: string; name?: string; status?: string }> = [];
+    const push = (value: unknown) => {
+      if (!value || typeof value !== "object") return;
+      const record = value as Record<string, unknown>;
+      const sessionId = typeof record.sessionId === "string" ? record.sessionId.trim() : "";
+      if (!sessionId) return;
+      refs.push({
+        sessionId,
+        name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : undefined,
+        status: typeof record.status === "string" ? record.status : undefined,
+      });
+    };
+    const record = details as Record<string, unknown>;
+    if (Array.isArray(record.workers)) for (const worker of record.workers) push(worker);
+    else if (Array.isArray(record.sessions)) for (const item of record.sessions) push(item);
+    else push(record);
+    return refs;
+  }
+
+  function addCustomMessageCard(message: { text?: string; customType?: string; details?: unknown; isError?: boolean; raw?: any }) {
+    invalidatePendingRefreshes();
+    const text = String(message.text || "").trim();
+    const customType = message.customType || message.raw?.customType || "";
+    const details = message.details ?? message.raw?.details;
+    const sessionRefs = customDetailSessionRefs(details);
+
+    // Realtime projection can briefly emit a details-only copy of a custom
+    // worker event after its complete transcript entry has already rendered.
+    // Avoid leaving a duplicate, empty bordered strip in the conversation.
+    if (!text && sessionRefs.length) {
+      const refIds = new Set(sessionRefs.map((ref) => ref.sessionId));
+      const existing = Array.from(messagesEl.querySelectorAll<HTMLDivElement>(".customCard"))
+        .find((card) => (card.dataset.sessionRefs || "").split(",").some((id) => refIds.has(id)));
+      if (existing) return existing;
+    }
+
+    const div = document.createElement("div");
+    div.dataset.sessionRefs = sessionRefs.map((ref) => ref.sessionId).join(",");
+    const collapsible = shouldCollapseMessage(text);
+    div.className = `message custom customCard${collapsible ? " collapsible collapsed" : ""}${message.isError ? " error" : ""}`;
+
+    const header = document.createElement("div");
+    header.className = "customCardHeader";
+    header.append(iconElement("bell"));
+    const label = document.createElement("span");
+    label.className = "customCardLabel";
+    label.textContent = prettyCustomType(customType);
+    label.title = customType ? `Injected by extension (${customType})` : "Injected by extension";
+    header.append(label);
+
+    for (const ref of sessionRefs) {
+      const chip = document.createElement("a");
+      chip.className = `customCardSessionChip${ref.status === "error" ? " status-error" : ref.status === "aborted" ? " status-aborted" : ""}`;
+      chip.href = `/?sessionId=${encodeURIComponent(ref.sessionId)}`;
+      const statusIcon = ref.status === "error" ? "⚠" : ref.status === "aborted" ? "⏹" : "✓";
+      chip.textContent = `${statusIcon} ${ref.name || ref.sessionId.slice(-8)} ↗`;
+      chip.title = `Open session ${ref.sessionId}`;
+      header.append(chip);
+    }
+    div.append(header);
+
+    const body = document.createElement("div");
+    body.className = "body";
+    body.textContent = text;
+    if (text) markdown.renderAssistantMarkdown(body, text);
+    div.append(body);
+
+    if (collapsible) {
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "messageToggle";
+      toggle.textContent = "Show more";
+      toggle.addEventListener("click", () => {
+        const collapsed = div.classList.toggle("collapsed");
+        toggle.textContent = collapsed ? "Show more" : "Show less";
+      });
+      div.append(toggle);
+    }
+
+    messagesEl.append(div);
+    scrollToBottom();
+    return div;
+  }
+
   function renderThinkingBody(body: HTMLElement, text: string) {
     body.replaceChildren();
     for (const segment of thinkingTextSegments(text)) {
@@ -995,10 +1091,10 @@ export function createMessageList(options: {
         return;
       }
       case "custom": {
-        const text = messageText(message);
-        if (!text) return;
-        const customType = message.customType.replace(/[^a-zA-Z0-9_-]+/g, "-");
-        addMessage("system", text, `custom${customType ? ` custom--${customType}` : ""}`, [], { entryId: message.entryId });
+        // Extension-injected custom messages render as a rich notification card
+        // (with session-link chips from `details`), not a plain system message.
+        // Non-display customs are already filtered out by the projection.
+        addCustomMessageCard(message);
         return;
       }
       default:

@@ -94,6 +94,58 @@ function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>
   card.append(details);
 }
 
+function toolResultSessionRefs(toolName: string, result: unknown): Array<{ sessionId: string; name?: string; status?: string }> {
+  const refs: Array<{ sessionId: string; name?: string; status?: string }> = [];
+  const seen = new Set<string>();
+  const push = (sessionId?: string, name?: string, status?: string) => {
+    const id = typeof sessionId === "string" ? sessionId.trim() : "";
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    refs.push({ sessionId: id, name: name?.trim() || undefined, status });
+  };
+  const rec = result && typeof result === "object" ? result as Record<string, unknown> : {};
+  const details = (rec.details ?? (rec.raw as Record<string, unknown> | undefined)?.details) as unknown;
+  if (details && typeof details === "object") {
+    const d = details as Record<string, unknown>;
+    const items = Array.isArray(d.workers) ? d.workers : Array.isArray(d.sessions) ? d.sessions : [d];
+    for (const item of items) {
+      if (item && typeof item === "object") {
+        const r = item as Record<string, unknown>;
+        push(typeof r.sessionId === "string" ? r.sessionId : undefined,
+          typeof r.name === "string" ? r.name : undefined,
+          typeof r.status === "string" ? r.status : undefined);
+      }
+    }
+  }
+  // Fallback for the spawn tool: parse the session id from the result text
+  // (covers the live-stream path if details didn't ride along).
+  if (refs.length === 0 && toolName === "sessions_spawn") {
+    const text = textFromToolResult(result);
+    const re = /session\s+([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text))) push(m[1]);
+  }
+  return refs;
+}
+
+function addToolSessionChips(card: HTMLDivElement, toolName: string, result: unknown) {
+  if (toolName !== "sessions_spawn") return; // only the spawn card links to its worker
+  const refs = toolResultSessionRefs(toolName, result);
+  if (!refs.length) return;
+  const header = card.querySelector<HTMLElement>(".toolCardHeader");
+  if (!header) return;
+  const toggle = header.querySelector(".toolCardExpandToggle");
+  for (const ref of refs) {
+    const chip = document.createElement("a");
+    chip.className = `customCardSessionChip${ref.status === "error" ? " status-error" : ref.status === "aborted" ? " status-aborted" : ""}`;
+    chip.href = `/?sessionId=${encodeURIComponent(ref.sessionId)}`;
+    const statusIcon = ref.status === "error" ? "⚠" : ref.status === "aborted" ? "⏹" : "↗";
+    chip.textContent = `${statusIcon} ${ref.name || ref.sessionId.slice(-8)}`;
+    chip.title = `Open session ${ref.sessionId}`;
+    header.insertBefore(chip, toggle || null);
+  }
+}
+
 function addCardHeader(card: HTMLDivElement, title: string, subtitleText = "") {
   const header = document.createElement("div");
   header.className = "toolCardHeader";
@@ -446,6 +498,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     }
     addToolImagePreviews(card, result, apiHeaders);
     playToolCardStateTransition(card);
+    addToolSessionChips(card, toolName, result);
 
     scrollToBottom();
   }
@@ -459,6 +512,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     if (toolName === "edit" && args) renderEditDiff(card, args, result);
     else if (resultStr) addToolResultBody(card, resultStr);
     addToolImagePreviews(card, result, apiHeaders);
+    addToolSessionChips(card, toolName, result);
     messagesEl.append(card);
   }
 

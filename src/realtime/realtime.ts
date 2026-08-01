@@ -736,6 +736,9 @@ export function createRealtime(options: {
         if (key && (!data.runtime?.isRunning || typeof data.runtime?.startedAt === "string")) terminalRuntimeSessions.delete(key);
         if (!data.sessionId) return;
         const transition = sessionState.replaceRuntime(String(data.sessionId), data.runtime);
+        // Any runtime change (including a spawned child's) can flip the
+        // current session's derived "waiting on spawned sessions" state.
+        status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
         if (transition.isActive && transition.previous.isRunning && !transition.next.isRunning) {
           refreshMessages()
             .then(() => {
@@ -761,8 +764,13 @@ export function createRealtime(options: {
         settings.applySettings(data.settings);
         return;
       }
+      if (data.type === "web_settings_schemas_changed") {
+        settings.applyWebSettingsSchemas(data.webSettingsSchemas);
+        return;
+      }
       if (data.type === "session_ui_state_changed") {
         sessions.applySessionUiState(data.sessionUiState);
+        status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
         return;
       }
       if (data.type === "extension_ui_request") {

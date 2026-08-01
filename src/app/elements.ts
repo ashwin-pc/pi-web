@@ -81,6 +81,7 @@ export type AppElements = {
   extensionStatusDetails: HTMLDivElement;
   extensionReloadButton: HTMLButtonElement;
   settingsStatusEl: HTMLSpanElement;
+  extensionSettingsContainer: HTMLElement;
   tokenShareSection: HTMLElement;
   tokenShareQr: HTMLDivElement;
   tokenShareUrl: HTMLInputElement;
@@ -185,6 +186,7 @@ export function getAppElements(): AppElements {
     extensionStatusDetails: requiredElement<HTMLDivElement>("#extensionStatusDetails"),
     extensionReloadButton: requiredElement<HTMLButtonElement>("#extensionReloadButton"),
     settingsStatusEl: requiredElement<HTMLSpanElement>("#settingsStatus"),
+    extensionSettingsContainer: requiredElement<HTMLElement>("#extensionSettingsContainer"),
     tokenShareSection: requiredElement<HTMLElement>("#tokenShareSection"),
     tokenShareQr: requiredElement<HTMLDivElement>("#tokenShareQr"),
     tokenShareUrl: requiredElement<HTMLInputElement>("#tokenShareUrl"),

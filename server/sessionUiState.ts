@@ -20,12 +20,25 @@ export type SessionUnreadState = {
   updatedAt: string;
 };
 
+/**
+ * Session creation provenance: records that `sessionId` was created by
+ * `originSessionId` (e.g. kind "spawn" for orchestrated workers, or future
+ * kinds like "continuation"). Written once at creation; immutable in spirit.
+ */
+export type SessionOrigin = {
+  sessionId: string;
+  originSessionId: string;
+  kind: string;
+  updatedAt: string;
+};
+
 export type SessionUiState = {
   version: 1;
   pinnedSessions: PinnedSession[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
+  sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
 };
@@ -35,6 +48,7 @@ export type SessionUiStatePatch = Partial<{
   pinnedFolders: unknown;
   sessionMarkers: unknown;
   sessionUnreadStates: unknown;
+  sessionOrigins: unknown;
   selectedMarkerColor: unknown;
   allowedMarkerColors: unknown;
 }>;
@@ -54,6 +68,7 @@ export const defaultSessionUiState: SessionUiState = {
   pinnedFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
+  sessionOrigins: [],
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
 };
@@ -116,6 +131,16 @@ function normalizeSessionUnreadState(value: unknown): SessionUnreadState | undef
   return { sessionId, unreadAt, updatedAt };
 }
 
+function normalizeSessionOrigin(value: unknown): SessionOrigin | undefined {
+  if (!isRecord(value)) return undefined;
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  const originSessionId = typeof value.originSessionId === "string" ? value.originSessionId.trim() : "";
+  const kind = typeof value.kind === "string" && value.kind.trim() ? value.kind.trim() : "spawn";
+  if (!sessionId || !originSessionId || sessionId === originSessionId) return undefined;
+  const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
+  return { sessionId, originSessionId, kind, updatedAt };
+}
+
 function uniqueBy<T>(items: T[], key: (item: T) => string) {
   const seen = new Set<string>();
   const result: T[] = [];
@@ -148,6 +173,10 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     state.sessionUnreadStates = uniqueBy(value.sessionUnreadStates.map(normalizeSessionUnreadState).filter(Boolean) as SessionUnreadState[], (item) => item.sessionId);
   }
 
+  if (Array.isArray(value.sessionOrigins)) {
+    state.sessionOrigins = uniqueBy(value.sessionOrigins.map(normalizeSessionOrigin).filter(Boolean) as SessionOrigin[], (item) => item.sessionId);
+  }
+
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;
   state.allowedMarkerColors = normalizeMarkerColors(value.allowedMarkerColors);
   return state;
@@ -171,6 +200,10 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   if ("sessionUnreadStates" in patch && Array.isArray(patch.sessionUnreadStates)) {
     next.sessionUnreadStates = uniqueBy(patch.sessionUnreadStates.map(normalizeSessionUnreadState).filter(Boolean) as SessionUnreadState[], (item) => item.sessionId);
+  }
+
+  if ("sessionOrigins" in patch && Array.isArray(patch.sessionOrigins)) {
+    next.sessionOrigins = uniqueBy(patch.sessionOrigins.map(normalizeSessionOrigin).filter(Boolean) as SessionOrigin[], (item) => item.sessionId);
   }
 
   const selectedMarkerColor = normalizeMarkerColor(patch.selectedMarkerColor);
@@ -245,6 +278,16 @@ export function createSessionUiStateStore(file: string) {
     });
   }
 
+  async function setSessionOrigin(sessionId: string, originSessionId: string, kind = "spawn") {
+    const origin = normalizeSessionOrigin({ sessionId, originSessionId, kind });
+    if (!origin) return read();
+    return serializeWrite(async () => {
+      const current = await read();
+      const sessionOrigins = [origin, ...current.sessionOrigins.filter((item) => item.sessionId !== origin.sessionId)];
+      return writeState({ ...current, sessionOrigins });
+    });
+  }
+
   async function removeSession(sessionId: string) {
     return serializeWrite(async () => {
       const current = await read();
@@ -253,9 +296,10 @@ export function createSessionUiStateStore(file: string) {
         pinnedSessions: current.pinnedSessions.filter((item) => item.id !== sessionId),
         sessionMarkers: current.sessionMarkers.filter((item) => item.sessionId !== sessionId),
         sessionUnreadStates: current.sessionUnreadStates.filter((item) => item.sessionId !== sessionId),
+        sessionOrigins: current.sessionOrigins.filter((item) => item.sessionId !== sessionId && item.originSessionId !== sessionId),
       });
     });
   }
 
-  return { file, read, write, patch, markUnread, markRead, removeSession };
+  return { file, read, write, patch, markUnread, markRead, removeSession, setSessionOrigin };
 }

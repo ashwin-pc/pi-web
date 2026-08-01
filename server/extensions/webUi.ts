@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { PiWebArtifactAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebUi } from "../../src/extensions.js";
+import type { PiWebArtifactAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
+import type { createSettingsStore } from "../settings.js";
+import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
 
 export interface WebUiBridgeDependencies {
   emit(value: unknown): void;
@@ -9,6 +11,9 @@ export interface WebUiBridgeDependencies {
   createNewSession(cwd: string, previousSessionFile?: string): Promise<any>;
   sessionCwd(session: any): string;
   state(session: any): Record<string, unknown>;
+  settingsStore: ReturnType<typeof createSettingsStore>;
+  /** Allowed model tokens ("<provider>:<id>") for `optionsSource: "models"` fields. */
+  modelOptions(): Set<string>;
 }
 
 export function createWebUiBridge(deps: WebUiBridgeDependencies) {
@@ -53,6 +58,127 @@ const webFooterStates = new WeakMap<object, WebFooterState>();
 const webHeaderActionStates = new WeakMap<object, WebHeaderActionState>();
 const webGitTabStates = new WeakMap<object, WebGitTabState>();
 const webArtifactActionStates = new WeakMap<object, WebArtifactActionState>();
+
+// Process-global extension-settings schema registry (R2.2): decoupled from any
+// one session. Values live in settingsStore (global); schemas are refcounted
+// across the live sessions that registered them.
+type RegisteredSettingsSchema = {
+  schema: PiWebSettingsRegistration;
+  canonicalKey: string;
+  refCount: number;
+};
+const activeSettingsSchemas = new Map<string, RegisteredSettingsSchema>();
+// Which owner ids each live session registered (for shutdown decrement).
+const sessionRegisteredSettings = new WeakMap<object, Set<string>>();
+
+function serializableSettingsSchema(schema: PiWebSettingsRegistration) {
+  const { migrate: _migrate, onChange: _onChange, ...rest } = schema;
+  return rest;
+}
+
+function activeSettingsSchemaList() {
+  return Array.from(activeSettingsSchemas.values()).map((e) => serializableSettingsSchema(e.schema));
+}
+
+function broadcastSettingsSchemas() {
+  deps.emit({ type: "web_settings_schemas_changed", webSettingsSchemas: activeSettingsSchemaList() });
+}
+
+async function migrateStoredSettings(
+  schema: PiWebSettingsRegistration,
+): Promise<{ migrated: boolean; usedBackup: boolean; error?: string }> {
+  const settings = await deps.settingsStore.read();
+  const stored = settings.extensions?.[schema.id];
+  if (!stored || stored.schemaVersion >= schema.schemaVersion) {
+    return { migrated: false, usedBackup: false };
+  }
+  const backup = { schemaVersion: stored.schemaVersion, values: stored.values };
+  const defaults = defaultSettingsValues(schema);
+  if (typeof schema.migrate === "function") {
+    try {
+      const migratedValues = await schema.migrate(stored.values, stored.schemaVersion);
+      const { values, errors } = validateSettingsValues(schema, migratedValues, { modelOptions: deps.modelOptions() });
+      if (errors.length) {
+        await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
+        return { migrated: false, usedBackup: true, error: `migration produced invalid values (${errors.length})` };
+      }
+      await deps.settingsStore.patchExtension(schema.id, values, { schemaVersion: schema.schemaVersion, backup });
+      return { migrated: true, usedBackup: false };
+    } catch (error) {
+      await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
+      return { migrated: false, usedBackup: true, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+  // No migrate() provided: reset to defaults, keep a one-slot backup.
+  await deps.settingsStore.patchExtension(schema.id, defaults, { schemaVersion: schema.schemaVersion, backup });
+  return { migrated: false, usedBackup: true };
+}
+
+async function registerSessionSettings(
+  value: any,
+  schema: PiWebSettingsRegistration,
+): Promise<PiWebRegisterSettingsResult> {
+  if (!schema || typeof schema.id !== "string" || !Array.isArray(schema.fields)) {
+    return { registered: false, migrated: false, usedBackup: false, error: "invalid settings schema" };
+  }
+  const id = schema.id;
+  const canonical = canonicalSchemaKey(schema);
+  const existing = activeSettingsSchemas.get(id);
+  if (existing && existing.canonicalKey !== canonical) {
+    // First-registered wins; a divergent schema for the same id is rejected.
+    console.warn(`pi-web: settings id "${id}" already registered with a different schema; rejecting new registration.`);
+    return { registered: false, migrated: false, usedBackup: false, error: `settings id "${id}" already registered with a different schema` };
+  }
+
+  let migrated = false;
+  let usedBackup = false;
+  let error: string | undefined;
+  if (!existing) {
+    const result = await migrateStoredSettings(schema);
+    migrated = result.migrated;
+    usedBackup = result.usedBackup;
+    error = result.error;
+    activeSettingsSchemas.set(id, { schema, canonicalKey: canonical, refCount: 0 });
+  } else {
+    existing.schema = schema; // refresh callbacks to the latest registrant
+  }
+
+  const entry = activeSettingsSchemas.get(id)!;
+  const owned = sessionRegisteredSettings.get(value as object) ?? new Set<string>();
+  if (!owned.has(id)) {
+    entry.refCount += 1;
+    owned.add(id);
+    sessionRegisteredSettings.set(value as object, owned);
+  }
+  broadcastSettingsSchemas();
+  return { registered: true, migrated, usedBackup, error };
+}
+
+function releaseSessionSettings(value: any) {
+  const owned = sessionRegisteredSettings.get(value as object);
+  if (!owned) return;
+  let changed = false;
+  for (const id of owned) {
+    const entry = activeSettingsSchemas.get(id);
+    if (!entry) continue;
+    entry.refCount -= 1;
+    if (entry.refCount <= 0) {
+      activeSettingsSchemas.delete(id);
+      changed = true;
+    }
+  }
+  sessionRegisteredSettings.delete(value as object);
+  if (changed) broadcastSettingsSchemas();
+}
+
+async function getExtensionSettings(id: string): Promise<PiWebStoredSettings> {
+  const settings = await deps.settingsStore.read();
+  const stored = settings.extensions?.[id];
+  if (stored) return { schemaVersion: stored.schemaVersion, values: stored.values };
+  const entry = activeSettingsSchemas.get(id);
+  if (entry) return { schemaVersion: entry.schema.schemaVersion, values: defaultSettingsValues(entry.schema) };
+  return { schemaVersion: 0, values: {} };
+}
 
 function getWebFooterState(value: any): WebFooterState {
   const key = value as object;
@@ -246,6 +372,12 @@ function createPiWebUi(value: any): PiWebUi {
         tabState.tabs.delete(tabKey);
       }
       broadcastWebGitTabs(value);
+    },
+    async registerSettings(schema) {
+      return registerSessionSettings(value, schema);
+    },
+    async getSettings(id) {
+      return getExtensionSettings(id);
     },
   };
 }
@@ -509,5 +641,8 @@ async function bindWebExtensions(value: any) {
     invokeArtifactAction,
     invokeGitTab,
     respond,
+    settingsSchemas: activeSettingsSchemaList,
+    settingsSchemaEntry: (id: string) => activeSettingsSchemas.get(id),
+    releaseSessionSettings,
   };
 }

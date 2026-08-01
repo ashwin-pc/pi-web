@@ -108,6 +108,7 @@ export function simplifyMessage(
       toolName: m.toolName,
       toolArgs: args,
       isError: Boolean(m.isError),
+      ...(m.details !== undefined ? { details: m.details } : {}),
       text: textFromContent(m.content),
       timestamp: m.timestamp,
       raw: m,

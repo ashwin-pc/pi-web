@@ -2,15 +2,17 @@ import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
-import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings } from "../app/types.js";
+import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings, type WebSettingsSchema } from "../app/types.js";
 import { createQrSvg } from "../token/qr.js";
 import { createTokenShareUrl } from "../token/tokenShare.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { createExtensionSettings, type ExtensionSettingsController } from "./extensionSettings.js";
 
 export type SettingsController = {
   init: () => void;
   refreshSettings: () => Promise<void>;
   applySettings: (settings: PiWebSettings) => void;
+  applyWebSettingsSchemas: (schemas: WebSettingsSchema[]) => void;
 };
 
 type ExtensionLoadStatus = {
@@ -67,6 +69,9 @@ function normalizeSettings(value: unknown): PiWebSettings {
   const sessionBucketColor = normalizeMarkerColor(defaults?.sessionBucketColor);
   if (sessionBucketColor) settings.defaults.sessionBucketColor = sessionBucketColor;
 
+  // Carry the extension-settings blob through verbatim (server owns validation).
+  if (isRecord(value.extensions)) settings.extensions = value.extensions as PiWebSettings["extensions"];
+
   return settings;
 }
 
@@ -104,6 +109,7 @@ export function createSettings(options: {
   const expandedStorageKey = "pi-web-composer-expanded";
   let hasAppliedSettings = false;
   let settingsPanelHandle: RightPanelHandle | undefined;
+  let extSettings: ExtensionSettingsController | undefined;
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -223,6 +229,7 @@ export function createSettings(options: {
 
     updateQueueToggle();
     updateExpandedComposer();
+    extSettings?.render();
   }
 
   function setSettingsStatus(message: string, isError = false) {
@@ -406,6 +413,7 @@ export function createSettings(options: {
     const res = await fetch("/api/settings", { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    if (Array.isArray(data.webSettingsSchemas)) state.webSettingsSchemas = data.webSettingsSchemas;
     applySettings(data.settings);
   }
 
@@ -457,6 +465,19 @@ export function createSettings(options: {
 
   function init() {
     populateBucketColorSelect(elements.settingDefaultBucketColorSelect);
+    extSettings = createExtensionSettings({
+      container: elements.extensionSettingsContainer,
+      api,
+      state,
+      fetchModels: async () => {
+        const res = await fetch("/api/models", { headers: api.headers() });
+        if (!res.ok) return [];
+        const data = await res.json().catch(() => ({}));
+        return Array.isArray(data.models) ? data.models : [];
+      },
+      setStatus: setSettingsStatus,
+      notifyError: (message) => addMessage("system", message, "error"),
+    });
     applySettings(state.settings);
 
     settingsPanelHandle = rightPanels?.register({
@@ -589,5 +610,10 @@ export function createSettings(options: {
     });
   }
 
-  return { init, refreshSettings, applySettings };
+  function applyWebSettingsSchemas(schemas: WebSettingsSchema[]) {
+    state.webSettingsSchemas = Array.isArray(schemas) ? schemas : [];
+    extSettings?.render();
+  }
+
+  return { init, refreshSettings, applySettings, applyWebSettingsSchemas };
 }

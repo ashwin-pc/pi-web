@@ -76,6 +76,13 @@
 .runtimeStatus.running { color: var(--accent); }
 .runtimeStatus.quiet { color: #facc15; }
 .runtimeStatus.stale { color: #fb923c; }
+.runtimeStatus.waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--fg);
+  pointer-events: auto;
+}
 .contextMeterLabel {
   right: 0;
   display: none;
