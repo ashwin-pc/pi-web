@@ -344,6 +344,7 @@ const tokenStorageKey = "pi-web-token";
 const collapsedFoldersStorageKey = "pi-web-collapsed-session-folders";
 const sessionIdUrlParam = "sessionId";
 const sessionIdHistoryStateKey = "piWebSessionId";
+const sessionScopedHistoryStateKeys = ["piWebArtifactView", "piWebWorkspaceView"] as const;
 
 function consumeUrlToken() {
   const urlToken = new URLSearchParams(location.search).get("token");
@@ -381,11 +382,9 @@ export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "rep
     syncActiveSessionIdHistoryState(sessionId);
     return;
   }
-  history[mode === "replace" ? "replaceState" : "pushState"](
-    { ...objectHistoryState(history.state), [sessionIdHistoryStateKey]: sessionId },
-    "",
-    url.toString(),
-  );
+  const nextState: Record<string, unknown> = { ...objectHistoryState(history.state), [sessionIdHistoryStateKey]: sessionId };
+  for (const key of sessionScopedHistoryStateKeys) delete nextState[key];
+  history[mode === "replace" ? "replaceState" : "pushState"](nextState, "", url.toString());
 }
 
 function readCollapsedSessionFolders() {

@@ -275,7 +275,6 @@ function renderActiveSession(
 
 function activateSession(sessionId: string) {
   selectSession(state, sessionId);
-  syncActiveSessionIdHistoryState(sessionId);
   renderActiveSession();
 }
 
@@ -298,10 +297,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   if (!view) return undefined;
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
-  if (activatesSession) {
-    selectSession(state, view.id);
-    syncActiveSessionIdHistoryState(view.id);
-  }
+  if (activatesSession) selectSession(state, view.id);
   if (data && "sessionUiState" in data) sessions?.applySessionUiState(data.sessionUiState);
 
   const includesRuntime = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting"].some((key) => key in data));
@@ -388,6 +384,7 @@ async function refreshState() {
     return;
   }
   sessionState.applySnapshot(data, { activate: true });
+  syncActiveSessionIdHistoryState(state.currentSessionId);
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -574,6 +571,7 @@ gitPanel = initGitPanel({
 window.addEventListener("popstate", (event) => {
   const nextSessionId = readActiveSessionIdFromHistoryState(event.state) ?? readActiveSessionIdFromUrl();
   if (nextSessionId === state.currentSessionId) return;
+  syncActiveSessionIdHistoryState(nextSessionId);
   sessionState.activate(nextSessionId);
   tools.clearActiveToolCards();
   sessions.beginTranscriptLoading();

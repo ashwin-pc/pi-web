@@ -133,7 +133,9 @@ export function initArtifactBrowser(options: {
     const relative = artifactRelativePath(path);
     const encoded = relative.split("/").filter(Boolean).map(encodeURIComponent).join("/");
     const sessionId = getSessionId();
-    return `/api/artifacts/${encoded}${sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""}`;
+    return sessionId
+      ? `/api/session-artifacts/${encodeURIComponent(sessionId)}/${encoded}`
+      : `/api/artifacts/${encoded}`;
   }
 
   function clearDeferredPreviews() {

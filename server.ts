@@ -96,17 +96,25 @@ async function readBody(req: IncomingMessage): Promise<unknown> {
   return text ? JSON.parse(text) : {};
 }
 
-async function serveArtifact(req: IncomingMessage, res: ServerResponse) {
+async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionScoped = false) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  const artifactPath = decodeURIComponent(url.pathname.slice("/api/artifacts/".length));
-  if (!isValidArtifactPath(artifactPath)) return sendJson(res, 400, { ok: false, error: "Invalid artifact path" });
+  const routePrefix = sessionScoped ? "/api/session-artifacts/" : "/api/artifacts/";
+  const routePath = url.pathname.slice(routePrefix.length);
+  const separator = routePath.indexOf("/");
+  const pathSessionId = sessionScoped && separator > 0 ? decodeURIComponent(routePath.slice(0, separator)) : "";
+  const artifactPath = decodeURIComponent(sessionScoped ? routePath.slice(separator + 1) : routePath);
+  if ((sessionScoped && !pathSessionId) || !isValidArtifactPath(artifactPath)) return sendJson(res, 400, { ok: false, error: "Invalid artifact path" });
 
   let preferredCwd = "";
-  const requestedSessionId = url.searchParams.get("sessionId");
+  const requestedSessionId = pathSessionId || url.searchParams.get("sessionId");
   if (requestedSessionId) {
-    try { preferredCwd = await sessionService.cwdForSessionId(requestedSessionId); } catch { /* Fall back to known artifact roots. */ }
+    try { preferredCwd = await sessionService.cwdForSessionId(requestedSessionId); } catch {
+      if (sessionScoped) return sendJson(res, 404, { ok: false, error: "Session not found" });
+    }
   }
-  const artifactRoots = new Set([...(preferredCwd ? [preferredCwd] : []), piCwd, ...knownCwds, ...sessionService.knownCwds()]);
+  const artifactRoots = sessionScoped
+    ? new Set([preferredCwd])
+    : new Set([...(preferredCwd ? [preferredCwd] : []), piCwd, ...knownCwds, ...sessionService.knownCwds()]);
   const resolvedFile = findArtifactFile(artifactRoots, artifactPath);
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
@@ -383,6 +391,9 @@ const server = createServer(async (req, res) => {
     const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
     if (url.pathname.startsWith("/api/")) {
+      if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
+        return await serveArtifact(req, res, true);
+      }
       if (method === "GET" && url.pathname.startsWith("/api/artifacts/")) {
         return await serveArtifact(req, res);
       }

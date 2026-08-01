@@ -117,7 +117,7 @@ async function mockFilesApi(page: import("@playwright/test").Page) {
             ];
     await route.fulfill({ json: { ok: true, path, entries } });
   });
-  await page.route("**/api/artifacts/**", async (route) => {
+  await page.route(/\/api\/(?:session-)?artifacts\//, async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith(".html")) {
       await route.fulfill({ contentType: "text/html", body: `<!doctype html><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at 30% 20%,#5a4324,#14100b 56%,#070706);color:#fff;font:16px system-ui}.card{width:min(82vw,620px);padding:44px;border:1px solid #9b7740;border-radius:24px;background:rgba(15,12,8,.72);box-shadow:0 24px 80px #0008}small{color:#e2b15f;text-transform:uppercase;letter-spacing:.18em}h1{font-size:clamp(30px,6vw,68px);margin:.2em 0}p{color:#c8bdad;line-height:1.6}button{padding:12px 18px;border:1px solid #b68d4d;border-radius:99px;background:#e2b15f;color:#17120b;font-weight:700}</style><div class="card"><small>Interactive artifact</small><h1>Constellation</h1><p>A tactile prototype with live controls, motion, and a warm editorial palette.</p><button>Explore prototype</button></div>` });

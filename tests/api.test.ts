@@ -657,6 +657,18 @@ describe("artifact serving", () => {
     expect(Buffer.from(await res.arrayBuffer()).toString()).toBe("NESTED");
   });
 
+  it("keeps session-scoped artifact URLs and their relative assets on the same session route", async () => {
+    const documentUrl = new URL(`${baseUrl}/api/session-artifacts/mock-current/image-edits/run-1/index.html`);
+    expect(new URL("./output.png", documentUrl).pathname).toBe("/api/session-artifacts/mock-current/image-edits/run-1/output.png");
+
+    const asset = await fetch(new URL("./output.png", documentUrl));
+    expect(asset.status).toBe(200);
+    expect(Buffer.from(await asset.arrayBuffer()).toString()).toBe("NESTED");
+
+    const unknownSession = await fetch(`${baseUrl}/api/session-artifacts/unknown-session/test.png`);
+    expect(unknownSession.status).toBe(404);
+  });
+
   it("serves preview media with the correct MIME type, byte ranges, and a session preference", async () => {
     const video = await fetch(`${baseUrl}/api/artifacts/test.webm?sessionId=unknown-session`, { headers: { range: "bytes=1-2" } });
     expect(video.status).toBe(206);

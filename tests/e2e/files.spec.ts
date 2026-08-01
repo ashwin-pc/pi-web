@@ -34,7 +34,7 @@ test.beforeEach(async ({ page }) => {
     await route.fulfill({ json: { ok: true, path, entries } });
   });
   await page.route("**/api/files/image**", (route) => route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"><rect width="10" height="10" fill="gold"/></svg>' }));
-  await page.route("**/api/artifacts/**", async (route) => {
+  await page.route(/\/api\/(?:session-)?artifacts\//, async (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith(".html")) {
       await route.fulfill({ contentType: "text/html", body: '<!doctype html><button id="interactive">Ready</button><script>interactive.onclick=()=>interactive.textContent="Clicked"</script>' });
@@ -117,7 +117,7 @@ test("artifacts scope browses a visual gallery, folders, and a large preview", a
   await page.getByRole("button", { name: "Preview latest.png" }).click();
   await expect(panel).toHaveAttribute("data-artifact-view", "preview");
   await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
-  await expect(page.locator("#artifactBrowserPreviewOpen")).toHaveAttribute("href", /\/api\/artifacts\/latest\.png\?sessionId=/);
+  await expect(page.locator("#artifactBrowserPreviewOpen")).toHaveAttribute("href", "/api/session-artifacts/mock-current/latest.png");
   await page.locator("#filesCloseButton").click();
   await openLauncherAction(page, "File explorer");
   await expect(panel).toHaveAttribute("data-files-scope", "artifacts");
