@@ -8,7 +8,19 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
     "resolveJsonModule": true,
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@ashwin-pc/pi-web/extensions": [
+        "./src/extensions.ts"
+      ]
+    }
   },
-  "include": ["server.ts", "supervisor.ts", "vite.config.ts", "src/**/*.ts", ".pi/extensions/**/*.ts"]
+  "include": [
+    "server.ts",
+    "supervisor.ts",
+    "vite.config.ts",
+    "src/**/*.ts",
+    ".pi/extensions/**/*.ts",
+    "examples/**/*.ts"
+  ]
 }

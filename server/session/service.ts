@@ -16,6 +16,7 @@ import { assertDirectory } from "../shared/fsList.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { createWebUiBridge } from "../extensions/webUi.js";
 import { ResilientResourceLoader } from "../extensions/resilientLoader.js";
+import { createSettingsStore } from "../settings.js";
 import type {
   BaseSessionStateDto,
   DeleteSessionResultDto,
@@ -163,6 +164,7 @@ export class LocalSessionService implements SessionService {
   private readonly pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
   private readonly knownSessionCwds = new Set<string>();
   private readonly protectedSessionIds = new Set<string>();
+  readonly settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
   private readonly noSession = process.env.PI_WEB_NO_SESSION === "1";
   private readonly idleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 24 * 60 * 60 * 1000);
   private readonly viewerGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, this.idleGraceMs));
@@ -177,6 +179,8 @@ export class LocalSessionService implements SessionService {
       createNewSession: (cwd, previousSessionFile) => this.createNewLiveSession(cwd, previousSessionFile),
       sessionCwd: (session) => this.sessionCwd(session),
       state: (session) => this.projectState(session) as unknown as Record<string, unknown>,
+      settingsStore: this.settingsStore,
+      modelOptions: () => this.modelOptionTokens(),
     });
   }
 
@@ -232,6 +236,14 @@ export class LocalSessionService implements SessionService {
   }
   knownCwds() { return new Set([resolve(this.deps.globalCwd()), ...this.knownSessionCwds]); }
   webUiEntries(value: PiWebSession) { return this.webUiBridge.entries(value); }
+  settingsSchemas() { return this.webUiBridge.settingsSchemas(); }
+  settingsSchemaEntry(id: string) { return this.webUiBridge.settingsSchemaEntry(id); }
+  notifySettingsChanged(id: string, values: Record<string, unknown>) { return this.webUiBridge.notifySettingsChanged(id, values); }
+  modelOptionTokens() {
+    return new Set(this.deps.modelRuntime.getAvailableSnapshot().flatMap((model) =>
+      model?.provider && model?.id ? [`${model.provider}:${model.id}`] : [],
+    ));
+  }
   projectState(value: PiWebSession): BaseSessionStateDto { return jsonSafe(projectSessionState(value, this.sessionCwd(value))); }
 
   private currentSession() {
@@ -800,6 +812,7 @@ export class LocalSessionService implements SessionService {
     catch (error) { console.warn(`Could not unsubscribe session before ${reason}:`, error); }
     try { (value as any).dispose?.(); }
     catch (error) { console.warn(`Could not dispose session after ${reason}:`, error); }
+    this.webUiBridge.releaseSessionSettings(value);
     this.liveSessions.delete(key);
     this.pendingPromptCorrelations.delete(key);
     if (this.liveById.get(sessionId) === value) this.liveById.delete(sessionId);

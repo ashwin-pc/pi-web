@@ -9,7 +9,8 @@ import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
-import { createSettingsStore } from "./server/settings.js";
+import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
+import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
@@ -232,7 +233,6 @@ function envMs(name: string, fallback: number) {
 }
 
 const modelRuntime = await ModelRuntime.create();
-const settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
 let sessionService: LocalSessionService;
 const sessionActivity = new SessionActivity((path) => sessionService?.sessionForPath(path));
@@ -371,6 +371,7 @@ sessionService = new LocalSessionService({
   globalCwd: () => piCwd,
   clientCount: () => realtimeHub.clientCount,
 });
+const settingsStore = sessionService.settingsStore;
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
     mockPromptCorrelations.delete(event.sessionKey);
@@ -681,7 +682,7 @@ const server = createServer(async (req, res) => {
 
 
       if (method === "GET" && url.pathname === "/api/settings") {
-        return sendJson(res, 200, { ok: true, settings: await settingsStore.read() });
+        return sendJson(res, 200, { ok: true, settings: await settingsStore.read(), webSettingsSchemas: sessionService.settingsSchemas() });
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
@@ -697,6 +698,71 @@ const server = createServer(async (req, res) => {
       if (method === "POST" && url.pathname === "/api/extensions/reload") {
         const body = await readBody(req) as { sessionId?: unknown };
         return sendJson(res, 200, { ok: true, status: await sessionService.reloadExtensions(resolveSessionId(body.sessionId)) });
+      }
+
+      if (url.pathname.startsWith("/api/settings/extensions/")) {
+        const rest = url.pathname.slice("/api/settings/extensions/".length);
+        const isReset = rest.endsWith("/reset");
+        let ownerId: string;
+        try {
+          ownerId = decodeURIComponent(isReset ? rest.slice(0, -"/reset".length) : rest);
+        } catch {
+          return sendJson(res, 400, { ok: false, error: "malformed owner id" });
+        }
+        const entry = sessionService.settingsSchemaEntry(ownerId);
+        // Reset only needs stored data, not a live schema, so configuration for
+        // an unloaded extension can still be cleared. Editing needs the schema.
+        const storedOwner = (await settingsStore.read()).extensions?.[ownerId];
+        if (!entry && !(isReset && storedOwner)) {
+          return sendJson(res, 409, { ok: false, error: "extension not loaded" });
+        }
+
+        if (method === "POST" && isReset) {
+          const body = await readBody(req) as { expectedRevision?: unknown };
+          if (typeof body?.expectedRevision !== "number" || !Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) {
+            return sendJson(res, 400, { ok: false, error: "expectedRevision must be a non-negative integer" });
+          }
+          try {
+            const settings = await settingsStore.resetExtension(ownerId, body.expectedRevision);
+            broadcast({ type: "settings_updated", settings });
+            if (entry) sessionService.notifySettingsChanged(ownerId, defaultSettingsValues(entry.schema));
+            return sendJson(res, 200, { ok: true, settings });
+          } catch (error) {
+            if (error instanceof ExtensionRevisionConflictError) {
+              return sendJson(res, 409, { ok: false, error: "revision conflict", actualRevision: error.actualRevision });
+            }
+            throw error;
+          }
+        }
+
+        if (method === "PATCH" && !isReset) {
+          if (!entry) return sendJson(res, 409, { ok: false, error: "extension not loaded" });
+          const body = await readBody(req) as { values?: unknown; expectedRevision?: unknown };
+          if (typeof body?.expectedRevision !== "number" || !Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) {
+            return sendJson(res, 400, { ok: false, error: "expectedRevision must be a non-negative integer" });
+          }
+          const { values, errors } = validateSettingsValues(entry.schema, body?.values, { modelOptions: sessionService.modelOptionTokens() });
+          if (errors.length) return sendJson(res, 422, { ok: false, errors });
+          try {
+            const settings = await settingsStore.patchExtension(ownerId, values, {
+              schemaVersion: entry.schema.schemaVersion,
+              expectedRevision: body.expectedRevision,
+            });
+            broadcast({ type: "settings_updated", settings });
+            sessionService.notifySettingsChanged(ownerId, values);
+            return sendJson(res, 200, { ok: true, settings, revision: settings.extensions?.[ownerId]?.revision ?? 0 });
+          } catch (error) {
+            if (error instanceof ExtensionRevisionConflictError) {
+              return sendJson(res, 409, { ok: false, error: "revision conflict", actualRevision: error.actualRevision });
+            }
+            if (error instanceof ExtensionSettingsBoundsError) {
+              return sendJson(res, 413, { ok: false, error: error.message });
+            }
+            throw error;
+          }
+        }
+
+        return sendJson(res, 405, { ok: false, error: "method not allowed" });
       }
 
       if (method === "GET" && url.pathname === "/api/commands") {
@@ -801,12 +867,30 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
-        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown };
+        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; origin?: unknown };
         const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined);
         const state = await decorateServiceState(baseState);
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
+        const origin = body.origin && typeof body.origin === "object" ? body.origin as { sessionId?: unknown; kind?: unknown } : undefined;
+        let originWarning: string | undefined;
+        if (origin && typeof origin.sessionId === "string" && origin.sessionId.trim() && state.sessionId) {
+          // Lineage is best-effort metadata: the session already exists, so a
+          // failure here must not fail the request (that would hide the new
+          // session's id from the caller and leak an unreachable session).
+          try {
+            const sessionUiState = await sessionUiStateStore.setSessionOrigin(
+              state.sessionId,
+              origin.sessionId.trim(),
+              typeof origin.kind === "string" && origin.kind.trim() ? origin.kind.trim() : "spawn",
+            );
+            broadcast({ type: "session_ui_state_changed", sessionUiState });
+          } catch (error) {
+            originWarning = error instanceof Error ? error.message : String(error);
+            console.warn(`Could not record session origin for ${state.sessionId}:`, error);
+          }
+        }
         broadcast({ type: "state_changed", ...state });
-        return sendJson(res, 200, { ok: true, ...state });
+        return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}) });
       }
 
       if (method === "POST" && url.pathname === "/api/session/cwd") {

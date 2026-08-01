@@ -91,7 +91,46 @@ export type PiWebSettings = {
     thinkingLevel?: string;
     sessionBucketColor?: SessionMarkerColorId;
   };
+  extensions?: Record<string, StoredExtensionSettings>;
 };
+
+// --- Extension-contributed settings (generic platform), client mirror ---
+export type WebFieldType = "toggle" | "text" | "textarea" | "number" | "select" | "list";
+export type WebSelectOption = { value: string; label?: string };
+export type WebFieldDescriptor = {
+  key: string;
+  type: WebFieldType;
+  label: string;
+  description?: string;
+  default?: unknown;
+  required?: boolean;
+  min?: number;
+  max?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  options?: WebSelectOption[];
+  optionsSource?: "models";
+  optionsFromField?: string;
+  itemFields?: WebFieldDescriptor[];
+  minItems?: number;
+  maxItems?: number;
+  uniqueCaseInsensitive?: boolean;
+};
+export type WebSettingsSchema = {
+  id: string;
+  title: string;
+  schemaVersion: number;
+  fields: WebFieldDescriptor[];
+  migrationError?: string;
+};
+export type StoredExtensionSettings = {
+  schemaVersion: number;
+  revision: number;
+  values: Record<string, unknown>;
+  backup?: { schemaVersion: number; values: Record<string, unknown> };
+};
+export type WebSettingsValidationError = { path: string; message: string };
 
 export type AttachedImage = {
   data?: string;
@@ -104,12 +143,14 @@ export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green
 export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
 export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
 export type SessionUnreadState = { sessionId: string; unreadAt: string; updatedAt: string };
+export type SessionOrigin = { sessionId: string; originSessionId: string; kind: string; updatedAt: string };
 export type SessionUiState = {
   version: 1;
   pinnedSessions: PinnedSession[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
+  sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
 };
@@ -128,6 +169,7 @@ export const defaultSessionUiState: SessionUiState = {
   pinnedFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
+  sessionOrigins: [],
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
 };
@@ -220,6 +262,21 @@ export function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
   return result;
 }
 
+export function normalizeSessionOrigins(value: unknown): SessionOrigin[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const result: SessionOrigin[] = [];
+  for (const item of value) {
+    const sessionId = typeof item?.sessionId === "string" ? item.sessionId.trim() : "";
+    const originSessionId = typeof item?.originSessionId === "string" ? item.originSessionId.trim() : "";
+    if (!sessionId || !originSessionId || sessionId === originSessionId || seen.has(sessionId)) continue;
+    seen.add(sessionId);
+    const kind = typeof item?.kind === "string" && item.kind.trim() ? item.kind.trim() : "spawn";
+    result.push({ sessionId, originSessionId, kind, updatedAt: typeof item?.updatedAt === "string" ? item.updatedAt : new Date().toISOString() });
+  }
+  return result;
+}
+
 export function normalizeSessionUiState(value: unknown): SessionUiState {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return {
@@ -228,6 +285,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
+    sessionOrigins: normalizeSessionOrigins(raw.sessionOrigins),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
     allowedMarkerColors: normalizeMarkerColors(raw.allowedMarkerColors),
   };
@@ -319,6 +377,7 @@ export type AppState = {
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
+  sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
@@ -326,6 +385,7 @@ export type AppState = {
   attachedImages: ImageAttachment[];
   editorExpanded: boolean;
   settings: PiWebSettings;
+  webSettingsSchemas: WebSettingsSchema[];
 };
 
 export const reconnectDelayMs = 1500;
@@ -424,6 +484,7 @@ export function createAppState(): AppState {
     pinnedFolders: [],
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
+    sessionOrigins: [],
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
@@ -431,6 +492,7 @@ export function createAppState(): AppState {
     attachedImages: [],
     editorExpanded: defaultPiWebSettings.composer.expanded,
     settings: defaultPiWebSettings,
+    webSettingsSchemas: [],
   };
 }
 

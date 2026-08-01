@@ -72,3 +72,61 @@ body {
   overflow: hidden;
 }
 
+
+/* Waiting-on-spawned-sessions (session tabs): aurora ribbon.
+   Polychrome ribbon drifting along the tab's bottom edge — mobile-proof and
+   never competes with the tab's close/pin action slot. (The session drawer and
+   status bar use the hourglass + count instead.) */
+@keyframes auroraDrift {
+  0% { background-position: 0% 0; }
+  100% { background-position: 300% 0; }
+}
+.auroraRibbon {
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 14px;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg,
+    color-mix(in srgb, var(--accent) 72%, transparent),
+    color-mix(in srgb, #6fd7c2 60%, transparent),
+    color-mix(in srgb, var(--accent) 78%, transparent),
+    color-mix(in srgb, #8fb6ff 52%, transparent),
+    color-mix(in srgb, var(--accent) 72%, transparent));
+  background-size: 300% 100%;
+  -webkit-mask-image: linear-gradient(180deg, transparent, #000 92%);
+  mask-image: linear-gradient(180deg, transparent, #000 92%);
+  animation: auroraDrift 7s linear infinite;
+}
+
+/* Waiting-on-spawned-sessions: pulsing hourglass + count pill.
+   Shown in the session drawer row and the status bar (not on the bottom tabs).
+   Precedence: running > waiting > unread. */
+@keyframes waitingPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .4; }
+}
+.sessionWaitingPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  padding: 1px 6px 1px 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+.sessionWaitingPill svg {
+  width: 12px;
+  height: 12px;
+  animation: waitingPulse 2s ease-in-out infinite;
+}
+.sessionWaitingCount { font-weight: 600; }
+
+@media (prefers-reduced-motion: reduce) {
+  .sessionWaitingPill svg { animation: none; }
+  .auroraRibbon { animation: none; }
+}

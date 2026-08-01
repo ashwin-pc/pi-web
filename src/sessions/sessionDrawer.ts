@@ -6,6 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import type { AppState, SessionInfo, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { orderItemsWithChildren as orderLineage, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type WaitingInfo } from "./lineage.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -29,6 +30,9 @@ export type SessionsController = {
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
   markSessionRead: (sessionId?: string) => Promise<void>;
+  waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
+  openSessionTab: (sessionId: string, cwd: string) => Promise<void>;
+  openSessionById: (sessionId: string) => Promise<void>;
 };
 
 function formatRelativeTime(value: string) {
@@ -138,6 +142,8 @@ export function createSessions(options: {
   refreshSessionTitle: () => Promise<void>;
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
+  /** Called whenever derived per-session state (e.g. waiting-on-spawned) may have changed. */
+  onDerivedSessionStateChanged?: () => void;
 }): SessionsController {
   const {
     state,
@@ -155,6 +161,7 @@ export function createSessions(options: {
   } = options;
 
   let cachedSessions: SessionInfo[] = [];
+  const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
   let closeSessionActionsMenu: (() => void) | undefined;
   let sessionPanelHandle: RightPanelHandle | undefined;
@@ -433,6 +440,7 @@ export function createSessions(options: {
       renderSessionList(cachedSessions);
       renderSessionBar();
       updateSessionButtonUnread();
+      options.onDerivedSessionStateChanged?.();
     })().finally(() => { sessionRefreshPromise = undefined; });
     return sessionRefreshPromise;
   }
@@ -458,6 +466,10 @@ export function createSessions(options: {
 
   function updateSessionName(sessionId: string, name: string) {
     if (!sessionId) return;
+    // Remember the name even when the session is not in the cached list yet: a
+    // just-spawned session is named before it appears in a list refresh, and
+    // without this its links would fall back to showing a raw id fragment.
+    if (name) knownSessionNames.set(sessionId, name);
     let changed = false;
     cachedSessions = cachedSessions.map((session) => {
       if (session.id !== sessionId) return session;
@@ -466,7 +478,19 @@ export function createSessions(options: {
     });
     sessionState.applySnapshot({ sessionId, sessionName: name });
     if (changed && !elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
+    else if (!changed) void refreshSessionsSoon(); // bring the new session into the list
     renderSessionBar();
+    options.onDerivedSessionStateChanged?.();
+  }
+
+  /** Coalesce list refreshes triggered by newly discovered sessions. */
+  let refreshSoonTimer: number | undefined;
+  function refreshSessionsSoon() {
+    if (refreshSoonTimer !== undefined) return;
+    refreshSoonTimer = window.setTimeout(() => {
+      refreshSoonTimer = undefined;
+      void refreshSessions();
+    }, 400);
   }
 
   function removeSession(sessionId: string) {
@@ -493,6 +517,7 @@ export function createSessions(options: {
     state.pinnedFolders = next.pinnedFolders;
     state.sessionMarkers = next.sessionMarkers;
     state.sessionUnreadStates = next.sessionUnreadStates;
+    state.sessionOrigins = next.sessionOrigins;
     syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
     allowedMarkerColors.clear();
@@ -513,6 +538,9 @@ export function createSessions(options: {
       || value.pinnedFolders.length > 0
       || value.sessionMarkers.length > 0
       || value.sessionUnreadStates.length > 0
+      // Lineage counts as state: without it, a server holding ONLY origins looks
+      // "empty" and a legacy-localStorage push would wipe every recorded origin.
+      || (value.sessionOrigins?.length ?? 0) > 0
       || value.allowedMarkerColors.length > 0
       || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
   }
@@ -576,6 +604,68 @@ export function createSessions(options: {
 
   function isSessionRunning(sessionId: string, fallbackRunning = false) {
     return Boolean(fallbackRunning || runtimeForSession(sessionId)?.isRunning);
+  }
+
+  // ── Session origin (creation provenance) helpers ────────────────────────
+
+  function originParentOf(sessionId: string) {
+    return (state.sessionOrigins || []).find((item) => item.sessionId === sessionId)?.originSessionId;
+  }
+
+  function childSessionIdsOf(sessionId: string) {
+    return (state.sessionOrigins || []).filter((item) => item.originSessionId === sessionId).map((item) => item.sessionId);
+  }
+
+  function runningChildrenOf(sessionId: string) {
+    return runningChildIdsOf(sessionId, state.sessionOrigins || [], (childId) => {
+      const cached = cachedSessions.find((item) => item.id === childId);
+      return isSessionRunning(childId, Boolean(cached?.runtime?.isRunning));
+    });
+  }
+
+  /**
+   * Derived "waiting" state: session is idle but sessions it spawned are still
+   * running. Computed purely from origins + live runtimes — nothing to reset.
+   */
+  function waitingInfoFor(sessionId: string): WaitingInfo | undefined {
+    const self = cachedSessions.find((item) => item.id === sessionId);
+    return waitingInfoFrom(sessionId, state.sessionOrigins || [], {
+      selfRunning: isSessionRunning(sessionId, Boolean(self?.runtime?.isRunning)),
+      isRunning: (childId) => {
+        const cached = cachedSessions.find((item) => item.id === childId);
+        return isSessionRunning(childId, Boolean(cached?.runtime?.isRunning));
+      },
+      describe: (childId) => {
+        const cached = cachedSessions.find((item) => item.id === childId);
+        const cachedName = (cached ? sessionTitle(cached) : "").replace(/^[⑂⤑]\s*/, "");
+        return {
+          name: cachedName || knownSessionNames.get(childId) || "",
+          cwd: cached?.cwd,
+        };
+      },
+    });
+  }
+
+  /**
+   * Single precedence rule for per-session indicators: running > waiting >
+   * unread. Exactly one indicator is shown per session, everywhere (tab bar
+   * and drawer rows).
+   */
+  function sessionIndicator(sessionId: string, fallbacks: { running?: boolean; unread?: boolean }):
+    | { kind: "running" }
+    | { kind: "waiting"; waiting: { count: number; names: string[] } }
+    | { kind: "unread" }
+    | { kind: "none" } {
+    const waiting = waitingInfoFor(sessionId);
+    const kind = sessionIndicatorKind({
+      running: isSessionRunning(sessionId, Boolean(fallbacks.running)),
+      waiting: Boolean(waiting),
+      unread: isSessionUnread(sessionId, Boolean(fallbacks.unread), Boolean(fallbacks.running)),
+    });
+    if (kind === "waiting" && waiting) return { kind: "waiting", waiting };
+    if (kind === "running") return { kind: "running" };
+    if (kind === "unread") return { kind: "unread" };
+    return { kind: "none" };
   }
 
   function isSessionUnread(sessionId: string, fallbackUnread = false, fallbackRunning = false) {
@@ -1128,6 +1218,17 @@ export function createSessions(options: {
     }
   }
 
+  /**
+   * Open a session knowing only its id: resolve its cwd from the cached list
+   * (falling back to the current one) and switch in place. This is what session
+   * links elsewhere in the UI use, so they never need a full page reload.
+   */
+  async function openSessionById(sessionId: string) {
+    if (!sessionId) return;
+    const cached = cachedSessions.find((item) => item.id === sessionId);
+    await openSessionTab(sessionId, cached?.cwd || state.currentCwd || "");
+  }
+
   function updateCurrentSessionPinButton() {
     if (!currentSessionPinButton) return;
     const currentId = state.currentSessionId;
@@ -1412,7 +1513,8 @@ export function createSessions(options: {
     let activeTab: HTMLElement | undefined;
     const appendTab = (sessionId: string, label: string, cwd: string, options: { pinned: boolean; running?: boolean; unread?: boolean }) => {
       const isActive = currentId === sessionId;
-      const unread = isSessionUnread(sessionId, Boolean(options.unread), Boolean(options.running));
+      const indicator = sessionIndicator(sessionId, { running: options.running, unread: options.unread });
+      const unread = indicator.kind === "unread";
       const markerColor = colorForMarker(markerForSession(sessionId)?.color);
       const tab = document.createElement("div");
       tab.className = `sessionBarTab${isActive ? " active" : ""}${unread ? " unread" : ""}${options.running ? " running" : ""}${options.pinned ? " pinned" : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
@@ -1445,6 +1547,22 @@ export function createSessions(options: {
       labelEl.className = "sessionBarTabLabel";
       labelEl.textContent = label;
       open.append(labelEl);
+      if (indicator.kind === "waiting") {
+        const waiting = indicator.waiting;
+        const ribbon = document.createElement("span");
+        ribbon.className = "auroraRibbon";
+        ribbon.title = `Waiting on ${waiting.count} spawned session${waiting.count === 1 ? "" : "s"}: ${waiting.names.join(", ")}`;
+        ribbon.setAttribute("aria-label", ribbon.title);
+        tab.append(ribbon);
+      }
+      if (originParentOf(sessionId)) {
+        const lineage = document.createElement("span");
+        lineage.className = "sessionBarLineageGlyph";
+        lineage.textContent = "⑂";
+        lineage.title = "Spawned by another session";
+        lineage.setAttribute("aria-hidden", "true");
+        open.prepend(lineage);
+      }
       if (unread) {
         const unreadDot = document.createElement("span");
         unreadDot.className = "sessionUnreadDot sessionBarUnreadDot";
@@ -1778,7 +1896,8 @@ export function createSessions(options: {
       }
 
       renderedItemCount += filteredItems.length;
-      for (const item of visibleItems) {
+      const orderedItems = orderItemsWithChildren(visibleItems);
+      for (const item of orderedItems) {
         group.append(buildSessionItem(item, cwd));
       }
 
@@ -1813,15 +1932,24 @@ export function createSessions(options: {
     }
   }
 
+  /** Keep spawned children adjacent to (and after) their parent in the list. */
+  function orderItemsWithChildren(items: SessionInfo[]): SessionInfo[] {
+    if (!(state.sessionOrigins || []).length) return items;
+    return orderLineage(items, (id) => originParentOf(id));
+  }
+
   function buildSessionItem(item: SessionInfo, cwd: string): HTMLElement {
     // Use a div so we can have sibling buttons (navigate + actions) without nesting buttons
     const marker = markerForSession(item.id);
     const markerColor = colorForMarker(marker?.color);
     const pinned = isPinned(item.id);
-    const unread = isSessionUnread(item.id, Boolean(item.unread), Boolean(item.runtime?.isRunning));
+    const indicator = sessionIndicator(item.id, { running: item.runtime?.isRunning, unread: item.unread });
+    const unread = indicator.kind === "unread";
     const pinToolSelected = selectedSessionRowTool === "pin";
+    const waiting = indicator.kind === "waiting" ? indicator.waiting : undefined;
+    const isChild = Boolean(originParentOf(item.id));
     const row = document.createElement("div");
-    row.className = `sessionItem${item.isCurrent ? " current" : ""}${unread ? " unread" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
+    row.className = `sessionItem${item.isCurrent ? " current" : ""}${unread ? " unread" : ""}${pinned ? " pinned" : ""}${markerColor ? ` marked marker-${markerColor.id}` : ""}${isChild ? " sessionItemChild" : ""}`;
     if (item.isCurrent) row.setAttribute("aria-current", "page");
 
     const markerButton = document.createElement("button");
@@ -1880,6 +2008,17 @@ export function createSessions(options: {
       spinner.setAttribute("aria-label", spinner.title);
       spinner.style.animationDelay = `-${Date.now() % 800}ms`;
       titleRow.append(spinner);
+    } else if (waiting) {
+      const pill = document.createElement("span");
+      pill.className = "sessionWaitingPill";
+      pill.title = `Waiting on ${waiting.count} spawned session${waiting.count === 1 ? "" : "s"}: ${waiting.names.join(", ")}`;
+      pill.setAttribute("aria-label", pill.title);
+      pill.append(iconElement("hourglass"));
+      const count = document.createElement("span");
+      count.className = "sessionWaitingCount";
+      count.textContent = String(waiting.count);
+      pill.append(count);
+      titleRow.append(pill);
     }
 
     const meta = document.createElement("span");
@@ -2040,5 +2179,8 @@ export function createSessions(options: {
     renderCurrentSessionBucketButton,
     applySessionUiState,
     markSessionRead,
+    waitingInfoFor,
+    openSessionTab,
+    openSessionById,
   };
 }

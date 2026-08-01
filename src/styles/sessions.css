@@ -450,6 +450,7 @@
 
 /* ── Session item: pin + nav layout ── */
 .sessionItem {
+  position: relative;
   display: flex;
   flex-shrink: 0;
   width: 100%;
@@ -1139,4 +1140,28 @@ body.hasPinnedSessions .app {
   body.hasPinnedSessions .composer {
     margin-bottom: 0;
   }
+}
+
+/* ── Derived "waiting on spawned sessions" chip + lineage indent ────────── */
+.sessionBarLineageGlyph {
+  flex: 0 0 auto;
+  margin-right: 3px;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--muted) 80%, transparent);
+}
+.sessionItemChild {
+  margin-left: 18px;
+  width: calc(100% - 18px);
+  position: relative;
+}
+.sessionItemChild::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 0;
+  bottom: 50%;
+  width: 8px;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-bottom-left-radius: 6px;
 }

@@ -100,6 +100,68 @@ export type PiWebGitTab = {
   render: (event?: PiWebGitTabEvent) => Promise<PiWebGitTabView> | PiWebGitTabView;
 };
 
+// --- Extension-contributed settings (generic platform) ---
+
+export type PiWebFieldType = "toggle" | "text" | "textarea" | "number" | "select" | "list";
+
+export type PiWebSelectOption = { value: string; label?: string };
+
+export type PiWebFieldDescriptor = {
+  key: string;
+  type: PiWebFieldType;
+  label: string;
+  description?: string;
+  default?: unknown;
+  required?: boolean;
+  /** number */
+  min?: number;
+  max?: number;
+  /** text / textarea */
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  /** select */
+  options?: PiWebSelectOption[];
+  optionsSource?: "models";
+  optionsFromField?: string; // "<listKey>.<itemKey>"
+  /** list (repeater) */
+  itemFields?: PiWebFieldDescriptor[];
+  minItems?: number;
+  maxItems?: number;
+  uniqueCaseInsensitive?: boolean;
+};
+
+export type PiWebSettingsSchema = {
+  id: string; // namespaced owner id: <extension>.<schema>
+  title: string;
+  schemaVersion: number;
+  fields: PiWebFieldDescriptor[];
+};
+
+export type PiWebStoredSettings = { schemaVersion: number; values: Record<string, unknown> };
+
+export type PiWebSettingsRegistration = PiWebSettingsSchema & {
+  /** Run when stored.schemaVersion < schemaVersion. Return migrated values. */
+  migrate?: (
+    oldValues: Record<string, unknown>,
+    oldVersion: number,
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  /** Called after a persisted change (this owner only), with the new values. */
+  /**
+   * Called after a persisted change to this owner's values. Every live
+   * registrant is notified with its own callback; `info.sessionId` identifies
+   * which session's registration is being notified.
+   */
+  onChange?: (values: Record<string, unknown>, info: { sessionId: string }) => void;
+};
+
+export type PiWebRegisterSettingsResult = {
+  registered: boolean;
+  migrated: boolean;
+  usedBackup: boolean;
+  error?: string;
+};
+
 export type PiWebUi = {
   /**
    * Set or clear a pi-web footer region.
@@ -120,6 +182,17 @@ export type PiWebUi = {
 
   /** Set or clear a provider-specific tab in the built-in Git panel. */
   setGitTab(key: string, tab: PiWebGitTab | undefined): void;
+
+  /**
+   * Register a settings schema contributed by this extension. Idempotent per
+   * session (re-registering the same canonical schema just refreshes callbacks).
+   * Awaits any schema-version migration. Values persist globally and outlive the
+   * session; the live registration is torn down on session shutdown.
+   */
+  registerSettings(schema: PiWebSettingsRegistration): Promise<PiWebRegisterSettingsResult>;
+
+  /** Read this owner's persisted settings (defaults if unset). */
+  getSettings(id: string): Promise<PiWebStoredSettings>;
 };
 
 export type PiWebExtensionUIContext = ExtensionUIContext & {

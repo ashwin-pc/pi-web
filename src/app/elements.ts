@@ -80,7 +80,9 @@ export type AppElements = {
   extensionStatusMessage: HTMLParagraphElement;
   extensionStatusDetails: HTMLDivElement;
   extensionReloadButton: HTMLButtonElement;
+  waitingSessionsEl: HTMLElement;
   settingsStatusEl: HTMLSpanElement;
+  extensionSettingsContainer: HTMLElement;
   tokenShareSection: HTMLElement;
   tokenShareQr: HTMLDivElement;
   tokenShareUrl: HTMLInputElement;
@@ -184,7 +186,9 @@ export function getAppElements(): AppElements {
     extensionStatusMessage: requiredElement<HTMLParagraphElement>("#extensionStatusMessage"),
     extensionStatusDetails: requiredElement<HTMLDivElement>("#extensionStatusDetails"),
     extensionReloadButton: requiredElement<HTMLButtonElement>("#extensionReloadButton"),
+    waitingSessionsEl: requiredElement<HTMLElement>("#waitingSessions"),
     settingsStatusEl: requiredElement<HTMLSpanElement>("#settingsStatus"),
+    extensionSettingsContainer: requiredElement<HTMLElement>("#extensionSettingsContainer"),
     tokenShareSection: requiredElement<HTMLElement>("#tokenShareSection"),
     tokenShareQr: requiredElement<HTMLDivElement>("#tokenShareQr"),
     tokenShareUrl: requiredElement<HTMLInputElement>("#tokenShareUrl"),

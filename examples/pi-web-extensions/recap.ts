@@ -1,4 +1,5 @@
 import { generateSummary } from "@earendil-works/pi-coding-agent";
+import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
 
 const RECAP_INSTRUCTIONS = [
@@ -13,9 +14,10 @@ const RECAP_INSTRUCTIONS = [
 async function buildRecap(ctx: PiWebExtensionContext) {
   const model = ctx.model;
   if (!model) throw new Error("No model is configured for this session");
-  const messages = ctx.sessionManager.buildSessionContext().messages;
+  const messages = buildSessionContext(ctx.sessionManager.getBranch()).messages;
   if (!messages.length) throw new Error("This session has no messages to recap yet");
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+  if (!auth.ok) throw new Error(auth.error);
   const markdown = await generateSummary(messages, model, 4096, auth.apiKey, auth.headers, ctx.signal, RECAP_INSTRUCTIONS);
   return { markdown: markdown.trim() };
 }

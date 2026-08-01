@@ -512,7 +512,7 @@ export function createMockHarness(options: MockSessionOptions) {
           if (!(await waitForMockRun(150))) return;
           if (!(await waitForMockRun(500))) return;
           const timestamp = new Date().toISOString();
-          const visibleCustom = { role: "custom", customType: "probe", content: "hello from an extension", details: { source: "mock-extension" }, display: true, timestamp };
+          const visibleCustom = { role: "custom", customType: "probe", content: "hello from an extension", details: { source: "mock-extension", workers: [{ sessionId: "mock-worker-1", name: "mock worker", status: "ok" }] }, display: true, timestamp };
           appendMockMessage(visibleCustom);
           broadcastPiEvent({ type: "message_end", message: visibleCustom });
           if (!(await waitForMockRun(500))) return;

@@ -326,6 +326,7 @@
             <button id="extensionReloadButton" type="button">Retry extensions</button>
           </div>
         </section>
+        <div id="extensionSettingsContainer" class="extensionSettings"></div>
         <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
           <h3>Token sharing</h3>
           <p class="settingsHint">Use Show QR or Copy link to open pi web on another trusted device with this browser’s saved token.</p>
@@ -340,6 +341,7 @@
       </aside>
 
       <section id="pendingMessages" class="pendingMessages" aria-label="Pending messages" aria-live="polite" hidden></section>
+      <section id="waitingSessions" class="waitingSessions" aria-label="Running spawned sessions" aria-live="polite" hidden></section>
       <form id="promptForm" class="composer">
         <button id="contextMeter" class="contextMeter unknown" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="contextMeterPopover" title="Context usage unavailable">
           <span class="contextMeterTrack" aria-hidden="true"><span id="contextMeterFill" class="contextMeterFill"></span></span>

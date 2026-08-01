@@ -455,3 +455,196 @@
 :root[data-density="compact"] .markdownBody table {
   margin-bottom: .55em;
 }
+
+/* --- Extension-contributed settings (generic renderer) --- */
+.extensionSettings {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.extensionSettings:empty {
+  display: none;
+}
+.extSettingsFieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.extSettingsGroupLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+/* list-item + group fields stack label over control */
+.extSettingsSection .extSettingsField {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+}
+.extSettingsField > span:first-child {
+  color: var(--muted);
+  font-size: 12px;
+}
+.extSettingsField input[type="text"],
+.extSettingsField input[type="number"],
+.extSettingsField textarea,
+.extSettingsField select {
+  width: 100%;
+  min-height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+}
+.extSettingsField textarea {
+  resize: vertical;
+  min-height: 58px;
+  line-height: 1.4;
+}
+.extSettingsToggle {
+  display: inline-flex;
+}
+.extSettingsList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Accordion rows: collapsed one-line summary, expand to edit. */
+.extAccRow {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 80%, transparent);
+  overflow: hidden;
+}
+.extAccRow.hasError {
+  border-color: color-mix(in srgb, var(--danger, #e0563f) 55%, var(--border));
+}
+.extAccHeadRow {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+}
+.extAccHead {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.extAccStar {
+  height: auto;
+  min-height: 0;
+  flex: 0 0 auto;
+  border: none;
+  background: none;
+  color: var(--muted);
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.extAccStar.on { color: var(--accent); }
+.extAccName {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.extAccMeta {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 45%;
+}
+.extAccChev {
+  color: var(--muted);
+  transition: transform .15s ease;
+  flex: 0 0 auto;
+}
+.extAccRow.open .extAccChev { transform: rotate(180deg); }
+.extAccBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 11px 11px;
+  border-top: 1px solid var(--border);
+}
+.extAccRowActions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 2px;
+}
+.extSettingsLink {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 0;
+}
+.extSettingsLink:hover:not(:disabled) { color: var(--text); }
+.extSettingsLink:disabled { color: var(--accent); cursor: default; }
+.extSettingsLink.danger { color: var(--danger, #e0563f); }
+.extSettingsAdd {
+  align-self: flex-start;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: none;
+  color: var(--text);
+  padding: 7px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.extSettingsAdd:hover:not(:disabled) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.extSettingsAdd:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+.extSettingsHint {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+.extSettingsError {
+  font-size: 12px;
+  color: var(--danger, #e0563f);
+}
+.extSettingsMigrationWarning {
+  border: 1px solid color-mix(in srgb, var(--danger, #e0563f) 55%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--danger, #e0563f) 10%, transparent);
+  padding: 8px 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.extSettingsField input[aria-invalid="true"],
+.extSettingsField textarea[aria-invalid="true"],
+.extSettingsField select[aria-invalid="true"] {
+  border-color: var(--danger, #e0563f);
+}
+.extSettingsRetained h3 {
+  color: var(--muted);
+  font-weight: 500;
+}

@@ -188,6 +188,88 @@ Clear a Git panel tab by passing `undefined`:
 ctx.ui.web.setGitTab("github", undefined);
 ```
 
+## Settings API
+
+`ctx.ui.web.registerSettings(schema)` contributes a settings panel to pi-web's
+settings drawer. Core pi-web owns storage, validation, and rendering; the
+extension owns the schema and reacts to changes. Values are **global** (shared by
+every session) while the schema registration is **per session**, and they persist
+after the extension unloads.
+
+```ts
+pi.on("session_start", async (_event, ctx) => {
+  await ctx.ui.web.registerSettings({
+    id: "my-ext.prefs",          // namespaced: <extension>.<schema>
+    title: "My extension",
+    schemaVersion: 1,
+    fields: [
+      { key: "enabled", type: "toggle", label: "Enabled", default: true },
+      { key: "model", type: "select", label: "Model", optionsSource: "models" },
+    ],
+    onChange: (values, info) => applyPreferences(values, info.sessionId),
+  });
+
+  const { values } = await ctx.ui.web.getSettings("my-ext.prefs");
+});
+```
+
+Field types are `toggle`, `text`, `textarea`, `number`, `select`, and `list`
+(a repeater with `itemFields`). Constraints include `required`, `min`/`max`,
+`minLength`/`maxLength`/`pattern`, `minItems`/`maxItems`, and
+`uniqueCaseInsensitive`. Validation errors render inline and are announced to
+screen readers.
+
+`select` options come from static `options`, from the live model registry with
+`optionsSource: "models"`, or from another field with
+`optionsFromField: "<listKey>.<itemKey>"`. When a top-level `select` references a
+list column this way, pi-web renders it as a per-row "default" star on that list
+instead of a separate dropdown. List rows carry a stable hidden `__id`, so
+renaming a row keeps references intact.
+
+Storage notes:
+
+- Values are stored under `extensions[id]` in pi-web settings as
+  `{ schemaVersion, revision, values, backup? }` and are carried through
+  verbatim, so an unloaded extension never loses its configuration.
+- Writes are validated against the live schema and use an optimistic `revision`
+  guard, so concurrent edits from two browsers cannot silently drop fields.
+- Bump `schemaVersion` and supply `migrate(oldValues, oldVersion)` to upgrade
+  stored values. A failed migration falls back to defaults and keeps a one-slot
+  `backup`.
+- Owners with stored values but no live registration render as a read-only
+  "data retained" card. Their stored values can still be reset (reset needs only
+  stored data, not a live schema); editing requires the schema.
+- Every live registrant of an id is notified on change, each with its own
+  `onChange` and its own `info.sessionId`. The first registrant's descriptor is
+  canonical; a divergent schema for the same id is rejected.
+- If a migration fails, the stored values fall back to defaults, the previous
+  values are kept in `backup`, and the schema is published with a
+  `migrationError` so the UI can surface it.
+
+## Referencing sessions from extension output
+
+Extension output can point at other sessions, and pi-web renders those as links.
+This works the same way for custom messages and for tool results: put an explicit
+reference LIST in `details`.
+
+```ts
+pi.sendMessage({
+  customType: "my-ext",
+  content: "Background job finished",
+  details: { sessions: [{ sessionId, name: "job runner", status: "ok" }] },
+});
+```
+
+- Supported keys are `sessions`, `sessionRefs`, and `workers`; each entry is
+  `{ sessionId, name?, status? }`, where `status` may be `error` or `aborted` to
+  change the chip's glyph.
+- A **bare** `details.sessionId` is treated as incidental metadata and renders no
+  link, so a tool that merely echoes the session it acted on stays quiet. Linking
+  is opt-in.
+- Core caps rendering at 8 references per card, truncates labels, and requires
+  plausible session ids, because `details` is untrusted persisted input. No
+  extension or tool name is special-cased.
+
 ## Example: GitHub PRs and issues tab
 
 The repo includes an opt-in GitHub extension example at [`examples/pi-web-extensions/github-repo-panel.ts`](../examples/pi-web-extensions/github-repo-panel.ts). It adds a **GitHub** tab to the built-in Git drawer for repositories with GitHub remotes. The extension uses the `gh` CLI to list and view pull requests and issues.
@@ -247,3 +329,37 @@ cp examples/pi-web-extensions/git-footer.ts ~/.pi/web/extensions/git-footer.ts
 ```
 
 Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
+
+## Example: multi-agent session orchestration
+
+The repo includes a session-orchestration extension at
+[`examples/pi-web-extensions/session-orchestrator.ts`](../examples/pi-web-extensions/session-orchestrator.ts).
+It lets one session spawn, monitor, steer, and interrupt other sessions, turning
+pi-web into a multi-agent workspace where each worker is a **normal, fully
+visible session** in the sidebar rather than a hidden subagent.
+
+It registers five tools — `sessions_spawn`, `sessions_status`, `sessions_read`,
+`sessions_prompt`, `sessions_abort` — and a zero-token background poller that
+delivers a wakeup message when a worker goes idle, so the parent never polls.
+Worker models are chosen from user-authored **categories** (name + "when to use"
+prose + a model) configured through the Settings API above; the concrete model
+mapping stays private to the config and the spawn tool resolves it fail-closed.
+
+pi-web renders the orchestration state generically: spawned sessions are
+indented under their parent in the session drawer, a waiting indicator shows
+while a session's workers run, wakeups render as notification cards, and both the
+spawn tool card and wakeup card link to the worker session.
+
+Install the extension into a pi-web extension directory, and the companion skill
+into a pi skills directory:
+
+```bash
+cp examples/pi-web-extensions/session-orchestrator.ts .pi/web/extensions/session-orchestrator.ts
+cp -r examples/pi-web-skills/session-orchestration ~/.pi/agent/skills/session-orchestration
+```
+
+The skill at
+[`examples/pi-web-skills/session-orchestration/SKILL.md`](../examples/pi-web-skills/session-orchestration/SKILL.md)
+teaches the delegation loop: what to delegate, how to write self-contained worker
+tasks, how to pick a category, and why ending your turn while workers run is
+correct.

@@ -136,8 +136,8 @@ async function handleMessageAction(context: MessageActionContext) {
   }
 }
 
-messages = createMessageList({ messagesEl: elements.messagesEl, markdown, onMessageAction: handleMessageAction });
-const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers);
+messages = createMessageList({ messagesEl: elements.messagesEl, markdown, onMessageAction: handleMessageAction, openSession: (sessionId) => void sessions.openSessionById(sessionId) });
+const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId));
 
 const webHeaderActions = createWebHeaderActions({
   container: elements.headerActionsEl,
@@ -385,6 +385,7 @@ async function refreshState() {
   }
   sessionState.applySnapshot(data, { activate: true });
   syncActiveSessionIdHistoryState(state.currentSessionId);
+  statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -428,6 +429,7 @@ statusBar = createStatusBar({
   sessionState,
   addMessage: messages.addMessage,
   refreshSessions: () => sessions.refreshSessions(),
+  openSession: (sessionId, cwd) => sessions.openSessionTab(sessionId, cwd),
   refreshState,
 });
 
@@ -452,6 +454,7 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
+  onDerivedSessionStateChanged: () => statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || "")),
   clearMessages: () => {
     tools.clearActiveToolCards();
     messages.clear();
