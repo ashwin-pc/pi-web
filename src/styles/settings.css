@@ -522,22 +522,41 @@
 .extAccRow.hasError {
   border-color: color-mix(in srgb, var(--danger, #e0563f) 55%, var(--border));
 }
-.extAccHead {
+.extAccHeadRow {
   display: flex;
   align-items: center;
   gap: 9px;
   padding: 9px 11px;
+}
+.extAccHead {
+  display: flex;
+  width: 100%;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font: inherit;
+  text-align: left;
   cursor: pointer;
 }
 .extAccStar {
-  background: none;
+  height: auto;
+  min-height: 0;
+  flex: 0 0 auto;
   border: none;
-  cursor: pointer;
-  font-size: 15px;
-  line-height: 1;
+  background: none;
   color: var(--muted);
   padding: 0;
-  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
 }
 .extAccStar.on { color: var(--accent); }
 .extAccName {
@@ -611,6 +630,14 @@
 .extSettingsError {
   font-size: 12px;
   color: var(--danger, #e0563f);
+}
+.extSettingsMigrationWarning {
+  border: 1px solid color-mix(in srgb, var(--danger, #e0563f) 55%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--danger, #e0563f) 10%, transparent);
+  padding: 8px 10px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 .extSettingsField input[aria-invalid="true"],
 .extSettingsField textarea[aria-invalid="true"],

@@ -167,6 +167,11 @@ async function activate(ctx: any) {
   calls.length = 0;
 }
 
+function serializedSpawnDefinition() {
+  const { name, description, parameters } = tools.get("sessions_spawn");
+  return JSON.stringify({ name, description, parameters });
+}
+
 async function spawn(ctx: any, params: Record<string, unknown>) {
   // sessions_spawn is (re)built from config on session_start, so activate first.
   if (!tools.has("sessions_spawn")) await activate(ctx);
@@ -228,6 +233,58 @@ describe("sessions_spawn tool surface", () => {
   it("describes the session default when nothing is configured", async () => {
     await handlers.get("session_start")?.({}, makeCtx());
     expect(tools.get("sessions_spawn").description as string).toMatch(/no categories/i);
+  });
+
+  it("keeps the complete tool definition stable when only a category model changes", async () => {
+    await activate(makeCtx({ categories: [FAST, SMART], defaultCategory: "Fast" }));
+    const before = serializedSpawnDefinition();
+
+    await activate(makeCtx({
+      categories: [{ ...FAST, model: "openai:private-replacement" }, SMART],
+      defaultCategory: "Fast",
+    }));
+
+    expect(serializedSpawnDefinition()).toBe(before);
+  });
+
+  it("changes the complete tool definition when a category name changes", async () => {
+    await activate(makeCtx({ categories: [FAST, SMART], defaultCategory: "Smart" }));
+    const before = serializedSpawnDefinition();
+
+    await activate(makeCtx({ categories: [{ ...FAST, name: "Quick" }, SMART], defaultCategory: "Smart" }));
+
+    expect(serializedSpawnDefinition()).not.toBe(before);
+  });
+
+  it("changes the complete tool definition when category routing prose changes", async () => {
+    await activate(makeCtx({ categories: [FAST, SMART], defaultCategory: "Fast" }));
+    const before = serializedSpawnDefinition();
+
+    await activate(makeCtx({
+      categories: [{ ...FAST, description: "Use for fast, bounded repository searches." }, SMART],
+      defaultCategory: "Fast",
+    }));
+
+    expect(serializedSpawnDefinition()).not.toBe(before);
+  });
+
+  it("changes the complete tool definition when the default category changes", async () => {
+    await activate(makeCtx({ categories: [FAST, SMART], defaultCategory: "Fast" }));
+    const before = serializedSpawnDefinition();
+
+    await activate(makeCtx({ categories: [FAST, SMART], defaultCategory: "Smart" }));
+
+    expect(serializedSpawnDefinition()).not.toBe(before);
+  });
+
+  it("re-registers a byte-identical tool definition for identical config", async () => {
+    const config = { categories: [FAST, SMART], defaultCategory: "Fast" };
+    await activate(makeCtx(config));
+    const before = serializedSpawnDefinition();
+
+    await activate(makeCtx(config));
+
+    expect(serializedSpawnDefinition()).toBe(before);
   });
 });
 

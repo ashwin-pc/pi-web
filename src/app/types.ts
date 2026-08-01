@@ -122,6 +122,7 @@ export type WebSettingsSchema = {
   title: string;
   schemaVersion: number;
   fields: WebFieldDescriptor[];
+  migrationError?: string;
 };
 export type StoredExtensionSettings = {
   schemaVersion: number;

@@ -254,21 +254,7 @@ export function createExtensionSettings(options: {
       const isDefault = Boolean(defaultRef) && ownerDraft[defaultRef!.selectKey] === row[defaultRef!.itemKey] && row[defaultRef!.itemKey] !== "";
       const rowEl = el("div", { class: `extAccRow${open ? " open" : ""}${hasError ? " hasError" : ""}` });
 
-      const head = el("button", { type: "button", class: "extAccHead" });
-      // Preserve the former div header's layout against the app-wide button
-      // chrome while gaining native keyboard activation and focusability.
-      Object.assign(head.style, {
-        width: "100%",
-        height: "auto",
-        minHeight: "0",
-        border: "0",
-        borderRadius: "0",
-        background: "transparent",
-        color: "inherit",
-        font: "inherit",
-        textAlign: "left",
-      });
-      head.setAttribute("aria-expanded", String(open));
+      const headRow = el("div", { class: "extAccHeadRow" });
       if (defaultRef) {
         const star = el("button", { type: "button", class: `extAccStar${isDefault ? " on" : ""}`, title: isDefault ? `Default ${defaultRef.label}` : `Make default ${defaultRef.label}` }, [isDefault ? "★" : "☆"]);
         star.setAttribute("aria-pressed", String(isDefault));
@@ -277,9 +263,11 @@ export function createExtensionSettings(options: {
           star.setAttribute("aria-invalid", "true");
           addAriaDescription(star, referenceErrorId);
         }
-        star.addEventListener("click", (e) => { e.stopPropagation(); ownerDraft[defaultRef.selectKey] = row[defaultRef.itemKey]; rerender(); });
-        head.append(star);
+        star.addEventListener("click", () => { ownerDraft[defaultRef.selectKey] = row[defaultRef.itemKey]; rerender(); });
+        headRow.append(star);
       }
+      const head = el("button", { type: "button", class: "extAccHead" });
+      head.setAttribute("aria-expanded", String(open));
       const titleText = String((titleField && row[titleField.key]) || "").trim() || "(unnamed)";
       head.append(el("span", { class: "extAccName" }, [titleText]));
       if (metaField) {
@@ -290,7 +278,8 @@ export function createExtensionSettings(options: {
       }
       head.append(el("span", { class: "extAccChev" }, ["⌄"]));
       head.addEventListener("click", () => { if (open) openRows.delete(rid); else openRows.add(rid); rerender(); });
-      rowEl.append(head);
+      headRow.append(head);
+      rowEl.append(headRow);
 
       if (open) {
         const body = el("div", { class: "extAccBody" });
@@ -425,19 +414,19 @@ export function createExtensionSettings(options: {
     }
   }
 
-  async function reset(schema: WebSettingsSchema) {
+  async function reset(id: string) {
     setStatus("Resetting…");
     try {
-      const expectedRevision = storedFor(schema.id)?.revision ?? 0;
-      const res = await fetch(`/api/settings/extensions/${encodeURIComponent(schema.id)}/reset`, {
+      const expectedRevision = storedFor(id)?.revision ?? 0;
+      const res = await fetch(`/api/settings/extensions/${encodeURIComponent(id)}/reset`, {
         method: "POST",
         headers: api.headers(),
         body: JSON.stringify({ expectedRevision }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.status === 409) {
-        errors.delete(schema.id);
-        drafts.delete(schema.id);
+        errors.delete(id);
+        drafts.delete(id);
         try {
           if (!applyResponseSettings(data)) await reloadSettingsFromServer();
         } finally {
@@ -448,8 +437,8 @@ export function createExtensionSettings(options: {
       }
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
       if (!applyResponseSettings(data)) await reloadSettingsFromServer();
-      drafts.delete(schema.id);
-      errors.delete(schema.id);
+      drafts.delete(id);
+      errors.delete(id);
       render();
       setStatus("Reset");
     } catch (error) {
@@ -463,6 +452,14 @@ export function createExtensionSettings(options: {
     const draft = ensureDraft(schema);
     const section = el("section", { class: "settingsSection extSettingsSection" });
     section.append(el("h3", {}, [schema.title]));
+    if (schema.migrationError) {
+      const warning = el("div", { class: "extSettingsError extSettingsMigrationWarning" }, [
+        "Your stored settings were reset to defaults because migration failed. The previous values were kept as a backup. ",
+        schema.migrationError,
+      ]);
+      warning.setAttribute("role", "alert");
+      section.append(warning);
+    }
 
     // Detect default-ref selects (rendered as per-row stars on their list).
     const defaultRefByList = new Map<string, DefaultRef>();
@@ -494,7 +491,7 @@ export function createExtensionSettings(options: {
     const saveBtn = el("button", { type: "button" }, ["Save"]);
     saveBtn.addEventListener("click", () => void save(schema));
     const resetBtn = el("button", { type: "button" }, ["Reset"]);
-    resetBtn.addEventListener("click", () => void reset(schema));
+    resetBtn.addEventListener("click", () => void reset(schema.id));
     actions.append(saveBtn, resetBtn);
     section.append(actions);
     return section;
@@ -505,6 +502,11 @@ export function createExtensionSettings(options: {
     const section = el("section", { class: "settingsSection extSettingsSection extSettingsRetained" });
     section.append(el("h3", {}, [id]));
     section.append(el("p", { class: "settingsHint" }, [`Extension not loaded — ${valueCount} value${valueCount === 1 ? "" : "s"} retained. Load the extension to edit.`]));
+    const actions = el("div", { class: "settingsActions" });
+    const resetBtn = el("button", { type: "button" }, ["Reset"]);
+    resetBtn.addEventListener("click", () => void reset(id));
+    actions.append(resetBtn);
+    section.append(actions);
     return section;
   }
 
