@@ -19,7 +19,7 @@
  */
 
 import { Type } from "typebox";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebSettingsSchema } from "@ashwin-pc/pi-web/extensions";
 
 const WORKER_MARKER = "[pi-web orchestrated worker]";
 const EXT_VERSION = "v9";
@@ -38,7 +38,7 @@ const WAKEUP_SUMMARY_CHARS = 2000;
 // concrete model stays private to config (never shown to the LLM). Empty config
 // is a virtual, unwritten "Default" resolved live to the worker's own model.
 const SETTINGS_ID = "session-orchestrator.workerModelCategories";
-const SETTINGS_SCHEMA = {
+const SETTINGS_SCHEMA: PiWebSettingsSchema = {
   id: SETTINGS_ID,
   title: "Worker model categories",
   schemaVersion: 1,
@@ -76,20 +76,20 @@ const BASE = `http://127.0.0.1:${PORT}`;
 // ---------------------------------------------------------------------------
 
 /** Parse "<provider>:<id>" into { provider, id }. Split on FIRST colon only. */
-function parseToken(token: string): { provider: string; id: string } | null {
+export function parseToken(token: string): { provider: string; id: string } | null {
   const idx = token.indexOf(":");
   if (idx < 0) return null;
   return { provider: token.slice(0, idx), id: token.slice(idx + 1) };
 }
 
 /** Determine if normalized id base matches (Bedrock inference-profile case). */
-function normalizeBedrockId(id: string): string {
+export function normalizeBedrockId(id: string): string {
   // Extract base (e.g. "us.amazon.nova-2-lite-v1" from "us.amazon.nova-2-lite-v1:0")
   return id.split(":")[0];
 }
 
 /** Resolution order per Amendment 6. Returns { match, substituted }. */
-function resolveModel(
+export function resolveModel(
   canonicalToken: string,
   registryModels: any[],
   parentRegionPrefix: string,
@@ -204,7 +204,7 @@ function formatTranscript(messages: any[], tail: number): string {
 // Extension
 // ---------------------------------------------------------------------------
 
-export default function sessionOrchestrator(pi: ExtensionAPI) {
+export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   type Watched = {
     id: string;
     name: string;
@@ -223,12 +223,12 @@ export default function sessionOrchestrator(pi: ExtensionAPI) {
   // Capture our own session id whenever context is available; used to route
   // wakeups through /api/prompt (the same battle-tested path the web UI uses
   // for steering), which works both when the parent is idle and mid-turn.
-  function captureSelf(ctx: any) {
+  function captureSelf(ctx: PiWebExtensionContext) {
     const id = ownSessionId(ctx);
     if (id && id !== "unknown") selfSessionId = id;
   }
 
-  function isWorkerSession(ctx: any): boolean {
+  function isWorkerSession(ctx: PiWebExtensionContext): boolean {
     try {
       const entries = ctx.sessionManager?.getBranch?.() || [];
       for (const entry of entries) {
@@ -249,15 +249,15 @@ export default function sessionOrchestrator(pi: ExtensionAPI) {
     return false;
   }
 
-  function ownSessionId(ctx: any): string {
+  function ownSessionId(ctx: PiWebExtensionContext): string {
     try {
-      return String(ctx.sessionManager?.getSessionId?.() ?? ctx.sessionManager?.getId?.() ?? "unknown");
+      return String(ctx.sessionManager?.getSessionId?.() ?? "unknown");
     } catch {
       return "unknown";
     }
   }
 
-  function ownCwd(ctx: any): string | undefined {
+  function ownCwd(ctx: PiWebExtensionContext): string | undefined {
     try {
       const cwd = ctx.sessionManager?.getCwd?.();
       return typeof cwd === "string" && cwd.trim() ? cwd : undefined;
@@ -320,7 +320,7 @@ export default function sessionOrchestrator(pi: ExtensionAPI) {
   // Tool builder and settings registration
   // =========================================================================
 
-  function buildSpawnTool(ctx: any): any {
+  function buildSpawnTool(ctx: PiWebExtensionContext): any {
     let description = [
       "Spawn a new pi-web worker session and give it a task. The worker runs in the background as a normal, fully visible pi-web session.",
       "Returns immediately with the worker's session id. When the worker goes idle you will receive a '🔔 [orchestrator]' user message containing its final output — do NOT poll for completion; do other, non-overlapping work or end your turn and wait.",
@@ -376,7 +376,7 @@ export default function sessionOrchestrator(pi: ExtensionAPI) {
         cwd: Type.Optional(Type.String({ description: "Working directory for the worker (defaults to this session's cwd)" })),
         category: Type.Optional(Type.String({ description: parameterDescription })),
       }),
-      execute: async (_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: any) => {
+      execute: async (_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: PiWebExtensionContext) => {
         if (isWorkerSession(ctx)) {
           return {
             content: [
@@ -414,9 +414,9 @@ export default function sessionOrchestrator(pi: ExtensionAPI) {
             const settings = await web.getSettings(SETTINGS_ID);
             if (settings && typeof settings === "object") {
               const values = settings.values || {};
-              cachedConfig = { categories: Array.isArray(values.categories) ? values.categories : [], defaultCategory: values.defaultCategory || "" };
+              cachedConfig = { categories: Array.isArray(values.categories) ? values.categories : [], defaultCategory: String(values.defaultCategory || "") };
               const categories = Array.isArray(values.categories) ? values.categories : [];
-              const defaultCategory = values.defaultCategory || "";
+              const defaultCategory = String(values.defaultCategory || "");
 
               // Empty config → virtual Default, skip resolution, use session default.
               if (categories.length === 0) {
@@ -619,7 +619,7 @@ export default function sessionOrchestrator(pi: ExtensionAPI) {
     };
   }
 
-  async function registerTools(ctx: any) {
+  async function registerTools(ctx: PiWebExtensionContext) {
     try {
       const web = ctx?.ui?.web;
       if (web?.getSettings) {
@@ -627,7 +627,7 @@ export default function sessionOrchestrator(pi: ExtensionAPI) {
         if (s && typeof s === "object" && s.values) {
           cachedConfig = {
             categories: Array.isArray(s.values.categories) ? s.values.categories : [],
-            defaultCategory: s.values.defaultCategory || "",
+            defaultCategory: String(s.values.defaultCategory || ""),
           };
         }
       }
@@ -635,7 +635,7 @@ export default function sessionOrchestrator(pi: ExtensionAPI) {
     pi.registerTool(buildSpawnTool(ctx));
   }
 
-  pi.on("session_start", async (_event: any, ctx: any) => {
+  pi.on("session_start", async (_event: unknown, ctx: PiWebExtensionContext) => {
     captureSelf(ctx);
     void rearmFromLedger(ctx);
     try {

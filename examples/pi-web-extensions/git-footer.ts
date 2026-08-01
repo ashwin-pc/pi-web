@@ -40,7 +40,6 @@ async function runGit(args: string[], cwd: string): Promise<GitResult> {
     const { stdout } = await execFileAsync("git", ["--no-optional-locks", ...args], {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
       timeout: GIT_TIMEOUT_MS,
       killSignal: "SIGKILL",
     });

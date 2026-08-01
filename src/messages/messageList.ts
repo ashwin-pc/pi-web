@@ -726,7 +726,10 @@ export function createMessageList(options: {
     const div = document.createElement("div");
     div.dataset.sessionRefs = sessionRefs.map((ref) => ref.sessionId).join(",");
     const collapsible = shouldCollapseMessage(text);
-    div.className = `message custom customCard${collapsible ? " collapsible collapsed" : ""}${message.isError ? " error" : ""}`;
+    // Keep the `custom--<type>` styling hook that plain custom messages expose,
+    // so extension-specific CSS and selectors keep working on the card form.
+    const typeClass = customType.replace(/[^a-zA-Z0-9_-]+/g, "-");
+    div.className = `message custom customCard${typeClass ? ` custom--${typeClass}` : ""}${collapsible ? " collapsible collapsed" : ""}${message.isError ? " error" : ""}`;
 
     const header = document.createElement("div");
     header.className = "customCardHeader";
