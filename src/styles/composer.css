@@ -189,7 +189,7 @@ textarea:focus { border-bottom-color: var(--accent); }
 .composer.expanded .expandButton { display: inline-grid; }
 .composer { position: relative; z-index: 2; }
 .composer.dragOver::after {
-  content: "Drop images to attach";
+  content: "Drop files to attach";
   position: absolute;
   inset: 0;
   z-index: 25;
@@ -282,6 +282,7 @@ textarea:focus { border-bottom-color: var(--accent); }
   position: fixed;
   inset: 16px;
   z-index: 10;
+  margin: 0;
   border-radius: 20px;
   display: flex;
   flex-direction: column;
@@ -604,17 +605,22 @@ button:disabled:hover { border-color: var(--border); }
   color: var(--accent);
 }
 #queueToggle[aria-pressed="true"] { color: var(--accent); }
-#primaryButton { border-bottom-right-radius: 15px; }
+#primaryButton {
+  position: relative;
+  z-index: 2;
+  border-bottom-right-radius: 15px;
+}
 .composerFooter:has(#stopButton:not([style*="display: none"])) #stopButton { border-right: 0; }
 .composerFooter:has(#stopButton:not([style*="display: none"])) #stopButton + #primaryButton {
   margin-left: 0;
   border-left: 0;
 }
 
-.composer.compactInactive:not(:focus-within):not(.expanded) {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  height: 46px;
   min-height: 46px;
   isolation: isolate;
   border: 1px solid rgba(255,255,255,.075);
@@ -626,7 +632,7 @@ button:disabled:hover { border-color: var(--border); }
     inset 0 -1px 0 rgba(0,0,0,.65);
   padding: 3px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded)::before {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded)::before {
   content: "";
   position: absolute;
   z-index: -1;
@@ -640,12 +646,12 @@ button:disabled:hover { border-color: var(--border); }
   opacity: .86;
   pointer-events: none;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .contextMeter {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .contextMeter {
   left: 18px;
   right: 18px;
   top: -5px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) textarea {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) textarea {
   min-height: 38px;
   height: 38px;
   resize: none;
@@ -657,21 +663,21 @@ button:disabled:hover { border-color: var(--border); }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .attachments {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .attachments {
   display: none;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .expandButton,
-.composer.compactInactive:not(:focus-within):not(.expanded) #queueToggle,
-.composer.compactInactive:not(:focus-within):not(.expanded) #primaryButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .expandButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #queueToggle,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #primaryButton {
   display: none !important;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .composerFooter {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerFooter {
   height: 38px;
   align-items: center;
   overflow: visible;
   background: transparent;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .modelControl {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelControl {
   flex: 0 1 auto;
   width: fit-content;
   max-width: clamp(112px, 18vw, 190px);
@@ -680,7 +686,7 @@ button:disabled:hover { border-color: var(--border); }
   max-width: clamp(132px, 22vw, 230px);
 }
 
-.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsButton {
   display: inline-flex;
   width: auto;
   max-width: 100%;
@@ -694,19 +700,19 @@ button:disabled:hover { border-color: var(--border); }
   justify-content: flex-start;
   padding: 0 8px 0 10px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsLabel {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsLabel {
   flex: 0 1 auto;
   gap: 0;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsModelName {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsModelName {
   font-size: 11.5px;
   line-height: 1.12;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsProvider {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsProvider {
   font-size: 9.5px;
   line-height: 1.1;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) .modelSettingsPopover,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsPopover,
 .composer:has(.modelSettingsButton[aria-expanded="true"]) .modelSettingsPopover {
   position: fixed;
   left: 50%;
@@ -715,8 +721,8 @@ button:disabled:hover { border-color: var(--border); }
   width: min(560px, calc(100vw - 32px));
   transform: translateX(-50%);
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) #attachButton,
-.composer.compactInactive:not(:focus-within):not(.expanded) #stopButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
   width: 38px;
   min-width: 38px;
   height: 38px;
@@ -724,10 +730,10 @@ button:disabled:hover { border-color: var(--border); }
   border: 0;
   border-radius: 999px;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) #attachButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton {
   background: transparent;
 }
-.composer.compactInactive:not(:focus-within):not(.expanded) #stopButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
   margin-left: 2px;
 }
 .primaryAction {

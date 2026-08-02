@@ -58,6 +58,21 @@
   margin: 8px 16px 0;
 }
 
+@media (hover: none) and (pointer: coarse) and (prefers-reduced-motion: no-preference) {
+  .composer:not(.expanded) {
+    interpolate-size: allow-keywords;
+    height: auto;
+    transition:
+      height .48s cubic-bezier(.2, .9, .25, 1),
+      margin-right .48s cubic-bezier(.2, .9, .25, 1),
+      border-radius .3s ease,
+      box-shadow .48s cubic-bezier(.2, .9, .25, 1);
+  }
+  .composer.compactInactive:not(.expanded) {
+    transition-delay: .1s;
+  }
+}
+
 .extensionFooter {
   grid-row: 5;
   min-width: 0;

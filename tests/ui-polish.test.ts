@@ -375,7 +375,7 @@ describe("slash command compact styling", () => {
 
 describe("compact inactive composer styling", () => {
   const css = readFileSync(new URL("../src/styles/composer.css", import.meta.url), "utf8");
-  const compactSelector = ".composer.compactInactive:not(:focus-within):not(.expanded)";
+  const compactSelector = ".composer.compactInactive:not(:has(#prompt:focus)):not(.expanded)";
 
   it("collapses the inactive empty composer into a single floating bar", () => {
     expect(css).toContain(`${compactSelector} {`);
@@ -421,7 +421,7 @@ describe("compact inactive composer styling", () => {
   it("sets the compact inactive state during composer initialization", () => {
     const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
     expect(composer).toContain("function updateCompactInactive()");
-    expect(composer).toContain("    updateCompactInactive();\n  }\n\n  return {");
+    expect(composer).toContain("applyCompactInactive(!elements.formEl.contains(document.activeElement));");
   });
 
   it("routes compact actions through press handlers before focus expands the composer", () => {

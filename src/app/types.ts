@@ -22,11 +22,14 @@ export type SlashCommand = {
   };
 };
 
-export type ImageAttachment = {
-  type: "image";
-  data: string;
-  mimeType: string;
+export type FileAttachment = {
+  type: "file";
+  id: string;
   name: string;
+  mediaType: string;
+  bytes: number;
+  path: string;
+  contentUrl: string;
 };
 
 export type ComposerContextAttachment = {
@@ -133,9 +136,14 @@ export type StoredExtensionSettings = {
 export type WebSettingsValidationError = { path: string; message: string };
 
 export type AttachedImage = {
+  id?: string;
+  name?: string;
   data?: string;
   mimeType?: string;
+  mediaType?: string;
+  bytes?: number;
   path?: string;
+  contentUrl?: string;
 };
 
 export type PinnedSession = { id: string; cwd?: string };
@@ -382,7 +390,7 @@ export type AppState = {
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   queueMode: QueueMode;
-  attachedImages: ImageAttachment[];
+  attachedImages: FileAttachment[];
   editorExpanded: boolean;
   settings: PiWebSettings;
   webSettingsSchemas: WebSettingsSchema[];

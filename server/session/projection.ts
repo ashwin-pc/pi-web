@@ -1,3 +1,4 @@
+import { parseAttachmentMarkup } from "../shared/attachments.js";
 import type { PiWebSession } from "../types.js";
 import { jsonRoundTrip, type BaseSessionStateDto, type ConversationTreeDto, type MessageDto, type ModelDto, type SessionStatsDto, type SlashCommandDto } from "./dto.js";
 
@@ -146,6 +147,7 @@ export function simplifyMessage(
   const errorText = m.role === "assistant" && m.errorMessage ? assistantErrorPreview(m) : "";
   const stopReasonText = m.role === "assistant" && !errorText ? assistantStopReasonPreview(m) : "";
   const displayText = errorText || (text && stopReasonText ? `${text}\n\n${stopReasonText}` : stopReasonText || text);
+  const attachmentProjection = m.role === "user" ? parseAttachmentMarkup(displayText) : { text: displayText, attachments: [] };
   const toolCalls = m.role === "assistant" && Array.isArray(content)
     ? content.filter((part: any) => part?.type === "toolCall").map((part: any) => ({
       id: part.id,
@@ -157,7 +159,8 @@ export function simplifyMessage(
   return jsonRoundTrip({
     ...entry,
     role: m.role,
-    text: displayText,
+    text: attachmentProjection.text,
+    ...(attachmentProjection.attachments.length ? { attachments: attachmentProjection.attachments } : {}),
     toolCalls,
     isError: Boolean(m.errorMessage || m.stopReason === "error" || stopReasonText),
     timestamp: m.timestamp,

@@ -12,6 +12,7 @@ import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessi
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
+import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment } from "./server/shared/attachments.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, WorkspaceFileError, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
@@ -867,18 +868,41 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true });
       }
 
-      if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; images?: unknown };
-        const message = String(body.message || "").trim();
-        const images = Array.isArray(body.images) ? body.images.flatMap((image) => {
-          if (!image || typeof image !== "object") return [];
-          const value = image as Record<string, unknown>;
-          return value.type === "image" && typeof value.data === "string" && typeof value.mimeType === "string" && value.mimeType.startsWith("image/")
-            ? [{ data: value.data, mimeType: value.mimeType, ...(typeof value.name === "string" ? { name: value.name } : {}) }]
-            : [];
-        }) : [];
-        if (!message && images.length === 0) return sendJson(res, 400, { ok: false, error: "message or image is required" });
+      if (method === "GET" && url.pathname.startsWith("/api/attachments/")) {
+        const parts = url.pathname.slice("/api/attachments/".length).split("/");
+        if (parts.length !== 2) return sendJson(res, 400, { ok: false, error: "Invalid attachment path" });
+        const id = decodeURIComponent(parts[0] || "");
+        const name = decodeURIComponent(parts[1] || "");
+        const roots = new Set([piCwd, ...knownCwds, ...sessionService.knownCwds()]);
+        const file = resolveAttachmentFile(roots, id, name);
+        if (!file) return sendJson(res, 410, { ok: false, error: "Attachment unavailable" });
+        res.writeHead(200, {
+          "content-type": contentTypes[extname(file).toLowerCase()] || "application/octet-stream",
+          "content-length": statSync(file).size,
+          "cache-control": "private, no-store",
+          "content-disposition": `inline; filename="${name.replaceAll('"', "")}"`,
+        });
+        pipeReadStream(res, file);
+        return;
+      }
+
+      if (method === "POST" && url.pathname === "/api/attachments") {
+        const body = await readBody(req) as { sessionId?: unknown; name?: unknown; mediaType?: unknown; data?: unknown };
         const target = await sessionService.require(resolveSessionId(body.sessionId));
+        const name = typeof body.name === "string" ? body.name : "attachment";
+        const mediaType = typeof body.mediaType === "string" && body.mediaType.length <= 160 ? body.mediaType : "application/octet-stream";
+        if (typeof body.data !== "string" || !body.data) return sendJson(res, 400, { ok: false, error: "attachment data is required" });
+        if (body.data.length > 40_000_000) return sendJson(res, 413, { ok: false, error: "attachment is too large" });
+        const attachment = await storeAttachment(sessionService.cwdForSession(target), { name, mediaType, data: body.data });
+        return sendJson(res, 201, { ok: true, attachment });
+      }
+
+      if (method === "POST" && url.pathname === "/api/prompt") {
+        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
+        const message = String(body.message || "").trim();
+        const target = await sessionService.require(resolveSessionId(body.sessionId));
+        const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);
+        if (!message && attachments.length === 0) return sendJson(res, 400, { ok: false, error: "message or attachment is required" });
         const clientMessageId = cleanClientId(body.clientMessageId);
         const sourceClientId = clientIdFromRequest(req);
         if (mockMode && clientMessageId && sourceClientId) {
@@ -890,7 +914,7 @@ const server = createServer(async (req, res) => {
         const result = await sessionService.prompt(target.sessionId, {
           message,
           mode: body.mode === "followUp" ? "followUp" : "steer",
-          images,
+          attachments,
           clientMessageId,
           sourceClientId,
         });

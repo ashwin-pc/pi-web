@@ -990,22 +990,26 @@ test.describe("attachments and prompt", () => {
     expect(attachmentBg).toBe(composerBg);
   });
 
-  test("supports dragging and dropping image attachments", async ({ page }) => {
-    const dataTransfer = await page.evaluateHandle((bytes) => {
+  test("supports dragging, dropping, and submitting generic attachments", async ({ page }) => {
+    const dataTransfer = await page.evaluateHandle(() => {
       const transfer = new DataTransfer();
-      transfer.items.add(new File([new Uint8Array(bytes)], "dropped.png", { type: "image/png" }));
+      transfer.items.add(new File(["notes"], "dropped.txt", { type: "text/plain" }));
       return transfer;
-    }, Array.from(VALID_PNG));
+    });
 
     await page.locator("#promptForm").dispatchEvent("dragenter", { dataTransfer });
     await expect(page.locator("#promptForm")).toHaveClass(/dragOver/);
     await page.locator("#promptForm").dispatchEvent("drop", { dataTransfer });
 
-    await expect(page.locator(".attachmentChip")).toContainText("dropped.png");
+    await expect(page.locator(".attachmentChip")).toContainText("dropped.txt");
     await expect(page.locator("#primaryButton")).toBeEnabled();
+    await page.locator("#prompt").fill("summarize this");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator(".message.user .messageAttachmentPreview")).toHaveText("TXT");
+    await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
   });
 
-  test("reconciles an image prompt without briefly duplicating its server-enriched message", async ({ page }) => {
+  test("reconciles an attachment prompt without briefly duplicating its server-enriched message", async ({ page }) => {
     const file = {
       name: "tiny.png",
       mimeType: "image/png",
@@ -1017,13 +1021,14 @@ test.describe("attachments and prompt", () => {
 
     await expect(page.locator("#stopButton")).toBeVisible();
     await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
-    await expect(page.locator(".message.user .messageImageThumb")).toHaveCount(1);
-    await expect(page.locator("#messages")).not.toContainText("Attached image file:");
+    await expect(page.locator(".message.user .messageAttachmentImage")).toHaveCount(1);
+    await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
+    await expect(page.locator("#messages")).not.toContainText("pi-web-attachments-v1");
     await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
     await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
   });
 
-  test("supports image-only prompt and attachment removal", async ({ page }) => {
+  test("supports attachment-only prompts and attachment removal", async ({ page }) => {
     const file = {
       name: "tiny.png",
       mimeType: "image/png",
@@ -1042,8 +1047,9 @@ test.describe("attachments and prompt", () => {
     await page.locator("#prompt").focus();
     await expect(page.locator(".attachmentChip")).toBeVisible();
     await page.locator("#primaryButton").click();
-    await expect(page.locator(".message.user .messageImageThumb")).toBeVisible();
-    await expect(page.getByText("Mock response with image.").first()).toBeVisible();
+    await expect(page.locator(".message.user .messageAttachmentImage")).toBeVisible();
+    await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
+    await expect(page.getByText("Mock response.").first()).toBeVisible();
   });
 });
 

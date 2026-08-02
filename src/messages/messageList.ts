@@ -21,6 +21,7 @@ export type MessageActionContext = {
 export type MessageMetadata = {
   entryId?: string;
   copyText?: string;
+  timestamp?: string;
 };
 
 export type TranscriptTerminalFailure = {
@@ -79,22 +80,42 @@ export type MessageList = {
   scrollToBottom: () => void;
 };
 
-function appendAttachedImage(container: HTMLElement, img: AttachedImage) {
-  if (img.data && img.mimeType) {
-    const el = document.createElement("img");
-    el.className = "messageImageThumb";
-    el.src = `data:${img.mimeType};base64,${img.data}`;
-    el.alt = imageFileName(img.path);
-    container.append(el);
-    attachImageActions(el);
-    return;
-  }
+function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, apiHeaders?: ApiHeaders, onMissing?: () => void) {
+  const mediaType = attachment.mediaType || attachment.mimeType || "application/octet-stream";
+  const name = attachment.name || imageFileName(attachment.path, "attachment");
+  const item = document.createElement("span");
+  item.className = "messageAttachmentPreview";
+  item.title = `${name}${typeof attachment.bytes === "number" ? ` · ${attachment.bytes.toLocaleString()} bytes` : ""}`;
 
-  const missing = document.createElement("span");
-  missing.className = "messageImageMissing";
-  missing.title = img.path || "unknown path";
-  missing.textContent = `🖼️ ${imageFileName(img.path, "missing image")}`;
-  container.append(missing);
+  if (mediaType.startsWith("image/") && (attachment.contentUrl || attachment.data)) {
+    const image = document.createElement("img");
+    image.className = "messageAttachmentImage";
+    image.alt = name;
+    if (attachment.data) image.src = `data:${mediaType};base64,${attachment.data}`;
+    else if (attachment.contentUrl) {
+      void fetch(attachment.contentUrl, { headers: apiHeaders?.() })
+        .then((response) => {
+          if (!response.ok) throw new Error("Attachment unavailable");
+          return response.blob();
+        })
+        .then((blob) => {
+          const objectUrl = URL.createObjectURL(blob);
+          image.src = objectUrl;
+          image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+        })
+        .catch(() => {
+          item.classList.add("missing");
+          item.textContent = "!";
+          item.title = `${name} · Unavailable`;
+          onMissing?.();
+        });
+    }
+    item.append(image);
+    attachImageActions(image);
+  } else {
+    item.textContent = name.includes(".") ? name.split(".").pop()!.slice(0, 3).toUpperCase() : "FILE";
+  }
+  container.append(item);
 }
 
 function rawContent(message: any) {
@@ -249,8 +270,9 @@ export function createMessageList(options: {
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
+  apiHeaders?: ApiHeaders;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, apiHeaders } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
@@ -637,11 +659,6 @@ export function createMessageList(options: {
         textNode.textContent = cleanText;
         body.append(textNode);
       }
-
-      const imgWrap = document.createElement("div");
-      imgWrap.className = "messageImages";
-      for (const img of images) appendAttachedImage(imgWrap, img);
-      body.append(imgWrap);
     } else if (role === "assistant" && text) {
       body.textContent = text;
       if (collapsible) markdown.queueAssistantMarkdownRender(body, text);
@@ -651,6 +668,63 @@ export function createMessageList(options: {
     }
 
     div.append(body);
+
+    if (role === "user") {
+      const baseline = document.createElement("div");
+      baseline.className = `messageAttachmentBaseline${images.length ? "" : " messageAttachmentBaseline--timeOnly"}`;
+      if (images.length) {
+        const summary = document.createElement("button");
+        summary.type = "button";
+        summary.className = "messageAttachmentSummary";
+        summary.setAttribute("aria-expanded", "false");
+        const previews = document.createElement("span");
+        previews.className = "messageAttachmentConstellation";
+        const popover = document.createElement("div");
+        popover.className = "messageAttachmentPopover";
+        popover.hidden = true;
+        const missingRows = new Map<number, HTMLElement>();
+        images.forEach((attachment, index) => {
+          const row = document.createElement("div");
+          row.className = "messageAttachmentRow";
+          const name = document.createElement("span");
+          name.className = "messageAttachmentName";
+          name.textContent = attachment.name || imageFileName(attachment.path, "attachment");
+          const info = document.createElement("span");
+          info.className = "messageAttachmentInfo";
+          info.textContent = `${attachment.mediaType || attachment.mimeType || "file"}${typeof attachment.bytes === "number" ? ` · ${attachment.bytes.toLocaleString()} bytes` : ""}`;
+          row.append(name, info);
+          missingRows.set(index, row);
+          popover.append(row);
+        });
+        images.slice(0, 3).forEach((attachment, index) => appendAttachedImage(previews, attachment, apiHeaders, () => {
+          const row = missingRows.get(index);
+          if (!row || row.classList.contains("missing")) return;
+          row.classList.add("missing");
+          const unavailable = document.createElement("span");
+          unavailable.className = "messageAttachmentUnavailable";
+          unavailable.textContent = "Unavailable";
+          row.append(unavailable);
+          summary.classList.add("hasMissing");
+        }));
+        const label = document.createElement("span");
+        label.className = "messageAttachmentCount";
+        label.textContent = `${images.length} attached`;
+        summary.append(previews, label);
+        summary.addEventListener("click", (event) => {
+          event.stopPropagation();
+          popover.hidden = !popover.hidden;
+          summary.setAttribute("aria-expanded", String(!popover.hidden));
+        });
+        baseline.append(summary, popover);
+      }
+      const time = document.createElement("time");
+      const timestamp = metadata.timestamp ? new Date(metadata.timestamp) : new Date();
+      time.className = "messageTimestamp";
+      time.dateTime = Number.isNaN(timestamp.valueOf()) ? "" : timestamp.toISOString();
+      time.textContent = `You · ${Number.isNaN(timestamp.valueOf()) ? "now" : timestamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      baseline.append(time);
+      div.append(baseline);
+    }
 
     if (collapsible) {
       const toggle = document.createElement("button");
@@ -1057,7 +1131,7 @@ export function createMessageList(options: {
         return;
       case "user": {
         const text = messageText(message);
-        if (text) addMessage("user", text, message.isError ? "error" : "", imagesFromRawContent(rawContent(message)), { entryId: message.entryId });
+        if (text) addMessage("user", text, message.isError ? "error" : "", message.attachments || imagesFromRawContent(rawContent(message)), { entryId: message.entryId, timestamp: message.timestamp });
         return;
       }
       case "system":

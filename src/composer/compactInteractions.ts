@@ -1,4 +1,4 @@
-export const compactInactiveComposerSelector = ".composer.compactInactive:not(:focus-within):not(.expanded)";
+export const compactInactiveComposerSelector = ".composer.compactInactive:not(.expanded)";
 
 type CompactPressOptions = {
   stopPropagation?: boolean;

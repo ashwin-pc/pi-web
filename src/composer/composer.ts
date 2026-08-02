@@ -1,7 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
-import type { AppState, ComposerContextAttachment, ImageAttachment, SlashCommand } from "../app/types.js";
+import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
@@ -28,13 +28,12 @@ export type ComposerController = {
   handleUserMessage: (text: string, clientMessageId?: string, sourceClientId?: string, images?: any[]) => boolean;
 };
 
-function fileToImageAttachment(file: File): Promise<ImageAttachment> {
+function fileToBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.addEventListener("load", () => {
       const result = String(reader.result || "");
-      const data = result.includes(",") ? result.slice(result.indexOf(",") + 1) : result;
-      resolve({ type: "image", data, mimeType: file.type, name: file.name });
+      resolve(result.includes(",") ? result.slice(result.indexOf(",") + 1) : result);
     });
     reader.addEventListener("error", () => reject(reader.error || new Error(`Could not read ${file.name}`)));
     reader.readAsDataURL(file);
@@ -139,9 +138,13 @@ export function createComposer(options: {
     setIcon(elements.queueToggle, isSteer ? "route" : "corner-down-right");
   }
 
+  function applyCompactInactive(compact: boolean) {
+    elements.formEl.classList.toggle("compactInactive", compact);
+  }
+
   function updateCompactInactive() {
     const active = document.activeElement;
-    elements.formEl.classList.toggle("compactInactive", !active || !elements.formEl.contains(active));
+    applyCompactInactive(!active || !elements.formEl.contains(active));
   }
 
   async function stopStreaming() {
@@ -324,16 +327,22 @@ export function createComposer(options: {
     return slashCommands.find((command) => command.name.toLowerCase() === name);
   }
 
-  async function attachImageFiles(files: File[]) {
-    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
-    if (files.length > 0 && imageFiles.length === 0) {
-      addMessage("system", "Only image attachments are supported.", "error");
-      return;
-    }
-    if (imageFiles.length !== files.length) addMessage("system", "Some dropped files were skipped because only image attachments are supported.");
+  async function attachFiles(files: File[]) {
+    if (!files.length) return;
     try {
-      const images = await Promise.all(imageFiles.map(fileToImageAttachment));
-      state.attachedImages.push(...images);
+      const attachments = await Promise.all(files.map(async (file): Promise<FileAttachment> => {
+        const data = await fileToBase64(file);
+        const response = await fetch("/api/attachments", {
+          method: "POST",
+          headers: api.headers(),
+          body: JSON.stringify({ sessionId: state.currentSessionId, name: file.name, mediaType: file.type || "application/octet-stream", data }),
+        });
+        if (!response.ok) throw new Error(await response.text());
+        const result = await response.json() as { attachment?: FileAttachment };
+        if (!result.attachment) throw new Error(`Could not attach ${file.name}`);
+        return result.attachment;
+      }));
+      state.attachedImages.push(...attachments);
       renderAttachments();
       updatePrimaryAction();
       hideSlashCommands();
@@ -405,7 +414,19 @@ export function createComposer(options: {
       chip.className = "attachmentChip";
 
       const preview = document.createElement("img");
-      preview.src = `data:${image.mimeType};base64,${image.data}`;
+      if (image.mediaType.startsWith("image/")) {
+        void fetch(image.contentUrl, { headers: api.headers() })
+          .then((response) => {
+            if (!response.ok) throw new Error("Attachment preview unavailable");
+            return response.blob();
+          })
+          .then((blob) => {
+            const objectUrl = URL.createObjectURL(blob);
+            preview.src = objectUrl;
+            preview.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
+          })
+          .catch(() => { preview.hidden = true; });
+      } else preview.hidden = true;
       preview.alt = "";
 
       const name = document.createElement("span");
@@ -614,10 +635,10 @@ export function createComposer(options: {
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
       const message = messageWithAttachedContext(promptMessage, contexts);
-      const images = state.attachedImages.map(({ type, data, mimeType, name }) => ({ type, data, mimeType, name }));
-      if (!message && images.length === 0) return;
+      const attachments = state.attachedImages.map(({ id, name, mediaType, bytes, path, contentUrl }) => ({ id, name, mediaType, bytes, path, contentUrl }));
+      if (!message && attachments.length === 0) return;
 
-      if (rawMessage.startsWith("!") && images.length === 0 && contexts.length === 0) {
+      if (rawMessage.startsWith("!") && attachments.length === 0 && contexts.length === 0) {
         elements.promptEl.value = "";
         clearDraft();
         hideSlashCommands();
@@ -632,7 +653,7 @@ export function createComposer(options: {
         return;
       }
 
-      if (rawMessage.startsWith("/") && images.length === 0 && contexts.length === 0) {
+      if (rawMessage.startsWith("/") && attachments.length === 0 && contexts.length === 0) {
         let commandInfo: SlashCommand | undefined;
         try {
           commandInfo = await commandInfoForMessage(promptMessage);
@@ -676,14 +697,14 @@ export function createComposer(options: {
       const clientMessageId = crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
       if (!submittedWhileRunning) {
         optimisticUserMessages.add(clientMessageId);
-        addMessage("user", message || "", "", images.map((img) => ({ data: img.data, mimeType: img.mimeType })));
+        addMessage("user", message || "", "", attachments);
       }
 
       try {
         const res = await fetch("/api/prompt", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, images }),
+          body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, attachments }),
         });
         if (!res.ok) throw new Error(await res.text());
       } catch (error) {
@@ -728,7 +749,9 @@ export function createComposer(options: {
       }
     });
 
-    elements.formEl.addEventListener("focusin", updateCompactInactive);
+    // focusin fires before every focused child is guaranteed to be reflected by
+    // document.activeElement on mobile WebKit. The event itself is authoritative.
+    elements.formEl.addEventListener("focusin", () => applyCompactInactive(false));
     elements.formEl.addEventListener("focusout", () => window.setTimeout(updateCompactInactive, 0));
     elements.promptEl.addEventListener("focus", () => { void maybeRefreshSlashCommands(); });
     elements.promptEl.addEventListener("blur", () => window.setTimeout(hideSlashCommands, 100));
@@ -751,7 +774,7 @@ export function createComposer(options: {
     elements.imageInput.addEventListener("change", () => {
       const files = Array.from(elements.imageInput.files || []);
       elements.imageInput.value = "";
-      void attachImageFiles(files);
+      void attachFiles(files);
     });
 
     let dragDepth = 0;
@@ -777,7 +800,7 @@ export function createComposer(options: {
       event.preventDefault();
       dragDepth = 0;
       setDragOver(false);
-      void attachImageFiles(Array.from(event.dataTransfer?.files || []));
+      void attachFiles(Array.from(event.dataTransfer?.files || []));
     });
 
     const consumeCompactStopClick = bindCompactInactiveAction(elements.stopButton, elements.formEl, () => {
@@ -829,7 +852,7 @@ export function createComposer(options: {
         updatePrimaryAction();
       }
     } catch { /* ignore */ }
-    updateCompactInactive();
+    applyCompactInactive(!elements.formEl.contains(document.activeElement));
   }
 
   return {

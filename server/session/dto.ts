@@ -37,10 +37,20 @@ export interface BaseSessionStateDto {
 }
 
 /** Serializable, role-discriminated projection consumed by every transcript path. */
+export type AttachmentDto = {
+  id: string;
+  name: string;
+  mediaType: string;
+  bytes: number;
+  path: string;
+  contentUrl: string;
+};
+
 type MessageDtoBase = {
   entryId?: string;
   text?: string;
   timestamp?: string;
+  attachments?: AttachmentDto[];
   raw?: JsonValue;
 };
 
@@ -146,7 +156,7 @@ export interface SessionService {
   setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string): Promise<BaseSessionStateDto>;
   executeShell(sessionId: string, command: string, excludeFromContext: boolean): Promise<Record<string, JsonValue | undefined>>;
   executeCommand(sessionId: string, command: string): Promise<{ message: string; state: BaseSessionStateDto }>;
-  prompt(sessionId: string, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }): Promise<{ sessionId: string }>;
+  prompt(sessionId: string, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }): Promise<{ sessionId: string }>;
   retry(sessionId: string): Promise<{ sessionId: string }>;
   abort(sessionId: string): Promise<{ sessionId: string }>;
   abortCompaction(sessionId: string): Promise<{ sessionId: string }>;

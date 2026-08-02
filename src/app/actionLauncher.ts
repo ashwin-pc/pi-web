@@ -40,6 +40,8 @@ export function initActionLauncher(elements: AppElements) {
     button.addEventListener("pointerdown", (event) => event.preventDefault());
     button.addEventListener("click", () => {
       button.blur();
+      elements.promptEl.blur();
+      elements.formEl.classList.add("compactInactive");
       setOpen(false);
       action.target.click();
     });
@@ -83,6 +85,8 @@ export function initActionLauncher(elements: AppElements) {
   toggle.addEventListener("pointerdown", (event) => event.preventDefault());
   toggle.addEventListener("click", () => {
     setOpen(!root.classList.contains("open"));
+    elements.promptEl.blur();
+    elements.formEl.classList.add("compactInactive");
     toggle.blur();
   });
   elements.promptEl.addEventListener("focus", () => setOpen(false));

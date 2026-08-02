@@ -4,7 +4,7 @@ import { once } from "node:events";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 
@@ -208,20 +208,36 @@ describe("pi-web mock API", () => {
     }
   }, 25_000);
 
-  it("accepts text and image prompts", async () => {
+  it("uploads generic attachments and keeps their bytes out of agent context", async () => {
+    const upload = await fetch(`${baseUrl}/api/attachments`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "tiny.png", mediaType: "image/png", data: Buffer.from("png").toString("base64") }),
+    });
+    expect(upload.status).toBe(201);
+    const { attachment } = await upload.json();
+
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        message: "describe this",
-        images: [{ type: "image", mimeType: "image/png", data: Buffer.from("png").toString("base64"), name: "tiny.png" }],
-      }),
+      body: JSON.stringify({ message: "describe this", attachments: [attachment] }),
     });
     expect(res.status).toBe(202);
 
     const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
-    expect(messages.messages.at(-2).text).toContain("describe this");
-    expect(messages.messages.at(-1).text).toContain("with image");
+    expect(messages.messages.at(-2)).toMatchObject({
+      text: "describe this",
+      attachments: [{ name: "tiny.png", mediaType: "image/png", bytes: 3 }],
+    });
+    expect(messages.messages.at(-1).text).toBe("Mock response.");
+
+    const content = await fetch(`${baseUrl}${attachment.contentUrl}`);
+    expect(content.status).toBe(200);
+    expect(Buffer.from(await content.arrayBuffer()).toString()).toBe("png");
+
+    await rm(dirname(attachment.path), { recursive: true, force: true });
+    const missing = await fetch(`${baseUrl}${attachment.contentUrl}`);
+    expect(missing.status).toBe(410);
   });
 
   it("persists and returns settings", async () => {

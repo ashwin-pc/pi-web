@@ -605,7 +605,7 @@ export function createRealtime(options: {
         const deliveredMessage = messageFromEvent(event.message);
         const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
         if (deliveredRole === "user") {
-          composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId);
+          composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId, deliveredMessage.attachments || []);
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {

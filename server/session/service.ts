@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -12,6 +11,7 @@ import {
   SessionManager,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
+import { serializeAttachmentMarkup } from "../shared/attachments.js";
 import { assertDirectory } from "../shared/fsList.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { createWebUiBridge } from "../extensions/webUi.js";
@@ -23,6 +23,7 @@ import type {
   JsonValue,
   MessageDto,
   NavigationResult,
+  AttachmentDto,
   SessionInfoDto,
   SessionService,
   SessionServiceEvent,
@@ -120,13 +121,6 @@ const webSlashCommands: SlashCommandDto[] = [
   { name: "stop", description: "Stop the current response", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
   { name: "logout", description: "Clear the web UI token in this browser", source: "web", sourceInfo: { path: "<pi-web>", source: "pi-web", scope: "temporary", origin: "top-level" } },
 ];
-
-const imageExtensions: Record<string, string> = {
-  "image/gif": ".gif",
-  "image/jpeg": ".jpg",
-  "image/png": ".png",
-  "image/webp": ".webp",
-};
 
 const execFileAsync = promisify(execFile);
 
@@ -335,7 +329,7 @@ export class LocalSessionService implements SessionService {
     return this.executeSlashCommand(command, await this.require(sessionId));
   }
 
-  async prompt(sessionId: string, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }) {
+  async prompt(sessionId: string, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }) {
     const value = await this.require(sessionId);
     await this.startSessionPrompt(value, input);
     return { sessionId: value.sessionId };
@@ -1033,33 +1027,14 @@ export class LocalSessionService implements SessionService {
     }
   }
 
-  private async persistPromptImages(images: Array<{ data: string; mimeType: string; name?: string }>, cwd: string) {
-    if (!images.length) return "";
-    await this.ensureStorage(cwd);
-    const uploadDir = join(cwd, ".pi", "web", "uploads");
-    await mkdir(uploadDir, { recursive: true });
-    const lines: string[] = [];
-    for (const image of images) {
-      const extension = imageExtensions[image.mimeType] || ".img";
-      const safeName = String(image.name || "image").replace(/[^a-zA-Z0-9._-]+/g, "_").slice(0, 80);
-      const fileName = `${new Date().toISOString().replace(/[:.]/g, "-")}-${randomUUID()}-${safeName}${safeName.endsWith(extension) ? "" : extension}`;
-      const filePath = join(uploadDir, fileName);
-      await writeFile(filePath, Buffer.from(image.data, "base64"));
-      lines.push(`- ${filePath}`);
-    }
-    return `\n\nAttached image file${images.length === 1 ? "" : "s"}:\n${lines.join("\n")}`;
-  }
-
-  private async startSessionPrompt(value: PiWebSession, input: { message: string; mode: string; images: Array<{ data: string; mimeType: string; name?: string }>; clientMessageId?: string; sourceClientId?: string }) {
-    const imageNote = await this.persistPromptImages(input.images, this.sessionCwd(value));
-    const promptText = `${input.message || "Please review the attached image."}${imageNote}`;
+  private async startSessionPrompt(value: PiWebSession, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }) {
+    const promptText = serializeAttachmentMarkup(input.message || "Please review the attached file.", input.attachments);
     if (!this.deps.sessionFactory?.isMock && input.clientMessageId && input.sourceClientId) this.rememberPromptCorrelation(sessionPathKey(value), { clientMessageId: input.clientMessageId, sourceClientId: input.sourceClientId, createdAt: Date.now() });
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;
     const release = this.acquireWorkLease(value);
     void value.prompt(promptText, {
       ...(value.isStreaming ? { streamingBehavior: input.mode } : {}),
-      ...(input.images.length ? { images: input.images.map(({ data, mimeType }) => ({ type: "image", data, mimeType })) } : {}),
     }).catch((error) => {
       if (!this.deps.sessionFactory?.isMock && input.clientMessageId) this.forgetPromptCorrelation(sessionPathKey(value), input.clientMessageId);
       this.emitError(value, error, input.clientMessageId);
