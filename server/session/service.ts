@@ -84,6 +84,7 @@ type LiveSessionEntry = {
   unsubscribe?: () => void;
   viewerClientIds: Set<string>;
   workLeases: number;
+  retryLeases: number;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
 };
@@ -225,6 +226,8 @@ export class LocalSessionService implements SessionService {
   }
 
   sessionForPath(path: string) { return this.liveSessions.get(path)?.session; }
+  hasActiveWorkForPath(path: string) { return (this.liveSessions.get(path)?.workLeases || 0) > 0; }
+  hasActiveRetryForPath(path: string) { return (this.liveSessions.get(path)?.retryLeases || 0) > 0; }
   sessionForId(id: string) { return this.liveById.get(id); }
   cwdForSession(value: PiWebSession) { return this.sessionCwd(value); }
   async cwdForSessionId(id: string) {
@@ -655,7 +658,7 @@ export class LocalSessionService implements SessionService {
     const key = sessionPathKey(value);
     if (!key || this.liveSessions.get(key)?.session === value) return value;
     const unsubscribe = value.subscribe?.((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0 });
+    this.liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0, retryLeases: 0 });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     queueMicrotask(() => this.scheduleLiveSessionCleanup(key));
@@ -748,17 +751,19 @@ export class LocalSessionService implements SessionService {
     else this.pendingPromptCorrelations.delete(sessionKey);
   }
 
-  private acquireWorkLease(value: PiWebSession) {
+  private acquireWorkLease(value: PiWebSession, kind: "general" | "retry" = "general") {
     const key = sessionPathKey(value);
     const entry = this.liveSessions.get(key);
     if (!entry) return () => undefined;
     entry.workLeases++;
+    if (kind === "retry") entry.retryLeases++;
     this.cancelLiveSessionCleanup(entry);
     let released = false;
     return () => {
       if (released) return;
       released = true;
       entry.workLeases = Math.max(0, entry.workLeases - 1);
+      if (kind === "retry") entry.retryLeases = Math.max(0, entry.retryLeases - 1);
       this.scheduleLiveSessionCleanup(key);
     };
   }
@@ -1059,8 +1064,8 @@ export class LocalSessionService implements SessionService {
       if (!this.deps.sessionFactory?.isMock && input.clientMessageId) this.forgetPromptCorrelation(sessionPathKey(value), input.clientMessageId);
       this.emitError(value, error, input.clientMessageId);
     }).finally(() => {
-      this.emitRuntime(value, "completed", promptSessionFile);
       release();
+      this.emitRuntime(value, "completed", promptSessionFile);
     });
   }
 
@@ -1099,13 +1104,13 @@ export class LocalSessionService implements SessionService {
   }
 
   private assertCanRetry(value: PiWebSession) {
+    if (this.hasActiveWorkForPath(value.sessionFile)) throw new Error("Wait for the current response to finish before retrying.");
     if (value.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
     if (value.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
     if (!this.trailingRetryTarget(value)) throw new Error("There is no failed or incomplete response to retry.");
   }
 
   private async retryFromFailure(value: PiWebSession) {
-    this.assertCanRetry(value);
     if (value.retryFromFailure) return value.retryFromFailure();
     const target = this.trailingRetryTarget(value);
     if (!target) throw new Error("There is no failed or incomplete response to retry.");
@@ -1129,13 +1134,15 @@ export class LocalSessionService implements SessionService {
     try { this.assertCanRetry(value); } catch (error) { throw new SessionServiceError(errorMessage(error), 409); }
     this.emitRuntime(value, "ensure");
     const retrySessionFile = value.sessionFile;
-    const release = this.acquireWorkLease(value);
+    const release = this.acquireWorkLease(value, "retry");
     void this.retryFromFailure(value).catch((error) => {
       this.emitRuntime(value, "clear", retrySessionFile);
       this.emitError(value, error);
     }).finally(() => {
-      this.emitRuntime(value, "completed", retrySessionFile);
+      // The terminal projection must happen after releasing the lease, or it
+      // would report this completed continuation as still running.
       release();
+      this.emitRuntime(value, "completed", retrySessionFile);
     });
   }
 

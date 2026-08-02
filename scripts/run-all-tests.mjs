@@ -6,8 +6,10 @@ const isWin = process.platform === "win32";
 const bin = (name) => `node_modules/.bin/${name}${isWin ? ".cmd" : ""}`;
 
 const e2eOnly = process.argv.includes("--e2e-only");
-const e2eShards = Math.max(1, Number(process.env.PI_WEB_E2E_SHARDS || 3));
-const e2eConcurrency = Math.max(1, Number(process.env.PI_WEB_E2E_CONCURRENCY || 3));
+// One long-lived process per viewport avoids repeated browser/server startup and
+// retry-trace contention. CI can still opt into shards when it has more capacity.
+const e2eShards = Math.max(1, Number(process.env.PI_WEB_E2E_SHARDS || 1));
+const e2eConcurrency = Math.max(1, Number(process.env.PI_WEB_E2E_CONCURRENCY || 4));
 
 const e2eProjects = [
   { name: "mobile", basePort: 9876 },
@@ -43,6 +45,7 @@ const results = [];
 
 function prefixLines(stream, taskName, color) {
   let pending = "";
+  let flushed = false;
   stream.on("data", (chunk) => {
     pending += chunk.toString();
     const lines = pending.split(/\r?\n/);
@@ -52,9 +55,13 @@ function prefixLines(stream, taskName, color) {
       else process.stdout.write("\n");
     }
   });
-  stream.on("end", () => {
+  const flush = () => {
+    if (flushed) return;
+    flushed = true;
     if (pending.length) process.stdout.write(`${color}[${taskName}]${reset} ${pending}\n`);
-  });
+  };
+  stream.on("end", flush);
+  stream.on("close", flush);
 }
 
 async function runPhase(tasks, colorOffset = 0) {
@@ -70,6 +77,7 @@ async function runPhase(tasks, colorOffset = 0) {
   };
 
   await Promise.all(tasks.map((task, index) => new Promise((resolve) => {
+    const taskStarted = Date.now();
     const color = colors[(index + colorOffset) % colors.length];
     const child = spawn(task.command, task.args, {
       cwd: process.cwd(),
@@ -80,26 +88,38 @@ async function runPhase(tasks, colorOffset = 0) {
     children.set(task.name, child);
     prefixLines(child.stdout, task.name, color);
     prefixLines(child.stderr, task.name, color);
-    child.on("error", (error) => {
-      results.push({ name: task.name, code: 1, error });
-      stopOthers(task.name);
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      child.stdout.destroy();
+      child.stderr.destroy();
+      results.push({ name: task.name, durationMs: Date.now() - taskStarted, ...result });
+      if (result.code !== 0) stopOthers(task.name);
       resolve();
-    });
-    child.on("exit", (code, signal) => {
-      results.push({ name: task.name, code: code ?? (signal ? 1 : 0), signal });
-      if ((code ?? 1) !== 0) stopOthers(task.name);
-      resolve();
-    });
+    };
+    child.on("error", (error) => finish({ code: 1, error }));
+    child.on("exit", (code, signal) => finish({ code: code ?? (signal ? 1 : 0), signal }));
   })));
   return !results.slice(phaseResultStart).some((result) => result.code !== 0);
 }
 
 async function runE2eTasks() {
-  for (let index = 0; index < e2eTasks.length; index += e2eConcurrency) {
-    const batch = e2eTasks.slice(index, index + e2eConcurrency);
-    if (!await runPhase(batch, preflightTasks.length + index)) return false;
-  }
-  return true;
+  // Pull from a shared queue instead of waiting for every task in a rigid batch.
+  // A fast shard can immediately start the next project while a slow shard
+  // finishes, substantially reducing the matrix's wall-clock tail.
+  let nextTask = 0;
+  let failed = false;
+  const workers = Array.from({ length: Math.min(e2eConcurrency, e2eTasks.length) }, async (_, workerIndex) => {
+    while (!failed) {
+      const index = nextTask++;
+      const task = e2eTasks[index];
+      if (!task) return;
+      if (!await runPhase([task], preflightTasks.length + workerIndex)) failed = true;
+    }
+  });
+  await Promise.all(workers);
+  return !failed;
 }
 
 if (e2eOnly) {
@@ -113,7 +133,7 @@ const failed = results.filter((result) => result.code !== 0);
 console.log(`\nTest tasks finished in ${elapsed}s`);
 for (const result of results.sort((a, b) => a.name.localeCompare(b.name))) {
   const status = result.code === 0 ? "passed" : `failed${result.signal ? ` (${result.signal})` : ""}`;
-  console.log(`- ${result.name}: ${status}`);
+  console.log(`- ${result.name}: ${status} (${(result.durationMs / 1000).toFixed(1)}s)`);
 }
 
 process.exit(failed.length ? 1 : 0);

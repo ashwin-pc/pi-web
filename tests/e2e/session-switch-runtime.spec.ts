@@ -73,6 +73,11 @@ test("compaction animation follows the active pinned session", async ({ page }) 
   await page.locator("#prompt").fill("slow compaction foreground task");
   await page.locator("#primaryButton").click();
   await expect(page.locator("#contextMeter")).toHaveClass(/\bcompacting\b/);
+  const fill = page.locator("#contextMeterFill");
+  await expect(fill).toHaveCSS("width", /[1-9][0-9.]*px/);
+  const firstAnimationTime = await fill.evaluate((element) => element.getAnimations()[0]?.currentTime as number | null);
+  await expect.poll(() => fill.evaluate((element) => element.getAnimations()[0]?.currentTime as number | null))
+    .not.toBe(firstAnimationTime);
 
   const olderTab = page.locator(".sessionBarTab").filter({ hasText: "Older mock session" });
   await olderTab.click();

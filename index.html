@@ -303,6 +303,25 @@
           </label>
         </section>
         <section class="settingsSection">
+          <h3>Notifications</h3>
+          <label class="settingsCheckbox">
+            <input id="settingRunNotificationsCheckbox" type="checkbox" />
+            <span>Notify when runs complete</span>
+          </label>
+          <label class="settingsCheckbox">
+            <input id="settingCompletionSoundCheckbox" type="checkbox" />
+            <span>Play a completion sound while pi-web is open</span>
+          </label>
+          <label class="settingsCheckbox">
+            <input id="settingCompletionVibrationCheckbox" type="checkbox" />
+            <span>Vibrate on supported mobile and tablet devices</span>
+          </label>
+          <p id="settingRunNotificationsStatus" class="settingsHint">Checking browser notification support…</p>
+          <div class="settingsActions">
+            <button id="settingRunNotificationsTestButton" type="button">Send test notification</button>
+          </div>
+        </section>
+        <section class="settingsSection">
           <h3>New sessions</h3>
           <label class="settingsField">
             <span>Default bucket</span>

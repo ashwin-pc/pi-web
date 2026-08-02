@@ -366,7 +366,8 @@ describe("slash command compact styling", () => {
   });
 
   it("animates the context meter while compacting with reduced-motion support", () => {
-    expect(css).toContain(".contextMeter.compacting .contextMeterFill");
+    expect(css).toContain(".contextMeter.compacting .contextMeterFill {");
+    expect(css).not.toMatch(/\.contextMeter\.compacting \.contextMeterFill \{[^}]*width:\s*100%/s);
     expect(css).toContain("animation: contextMeterPulse 1.25s ease-in-out infinite");
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
   });

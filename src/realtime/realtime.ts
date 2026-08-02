@@ -14,6 +14,7 @@ import type { StatusBar } from "../status/statusBar.js";
 import type { ToolCards } from "../tools/toolCards.js";
 import type { ConversationTreeController } from "../tree/conversationTree.js";
 import { assistantErrorBody, normalizeAssistantError } from "../messages/content.js";
+import { playCompletionAlerts } from "../app/completionAlerts.js";
 
 export function shouldRefreshSessionsForPiEvent(event: PiEvent | undefined) {
   return event?.type === "message_end";
@@ -805,6 +806,9 @@ export function createRealtime(options: {
       if (data.type === "pi_event") {
         const eventSessionKey = String(data.sessionId || data.sessionFile || "");
         noteRuntimeEvent(eventSessionKey, data.event);
+        if (!isReplay && data.event?.type === "agent_end" && !eventWillRetry(data.event) && !data.event.aborted) {
+          playCompletionAlerts();
+        }
         if (!isReplay && data.event?.type === "session_info_changed") {
           sessions.updateSessionName(String(data.sessionId || ""), String(data.event.name || ""));
         } else if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();

@@ -20,6 +20,7 @@ import type { BaseSessionStateDto, SessionInfoDto } from "./server/session/dto.j
 import { SessionActivity } from "./server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessionState, resolveWebSocketHelloSession, type DecoratedSessionState, type WireSessionState } from "./server/session/hostEvents.js";
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
+import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 
 
@@ -36,6 +37,7 @@ const knownCwds = new Set<string>([piCwd]);
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
 const mockMode = process.env.PI_WEB_MOCK === "1";
+let mockStateOverrides: Record<string, unknown> = {};
 
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -205,7 +207,8 @@ function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessio
 }
 
 function decorateState(baseState: BaseSessionStateDto, targetSession: PiWebSession, includeThinkingLevels = false): WireSessionState {
-  return decorateHostSessionState(baseState, targetSession, sessionActivity, (value) => sessionService.webUiEntries(value), includeThinkingLevels);
+  const state = decorateHostSessionState(baseState, targetSession, sessionActivity, (value) => sessionService.webUiEntries(value), includeThinkingLevels);
+  return (mockMode ? { ...state, ...mockStateOverrides } : state) as WireSessionState;
 }
 
 function currentState(targetSession: PiWebSession = session) {
@@ -234,8 +237,16 @@ function envMs(name: string, fallback: number) {
 
 const modelRuntime = await ModelRuntime.create();
 const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
+const pushNotifications = createPushNotificationService(
+  process.env.PI_WEB_PUSH_FILE || join(getAgentDir(), "pi-web-push.json"),
+  process.env.PI_WEB_VAPID_SUBJECT || "https://github.com/ashwin-pc/pi-web",
+);
 let sessionService: LocalSessionService;
-const sessionActivity = new SessionActivity((path) => sessionService?.sessionForPath(path));
+const sessionActivity = new SessionActivity(
+  (path) => sessionService?.sessionForPath(path),
+  (path) => sessionService?.hasActiveWorkForPath(path) ?? false,
+  (path) => sessionService?.hasActiveRetryForPath(path) ?? false,
+);
 let session: PiWebSession;
 
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
@@ -344,6 +355,16 @@ const handleSessionServiceEvent = createHostSessionEventHandler({
   sessionActivity,
   broadcast,
   markSessionUnreadCompleted,
+  notifySessionCompleted: (sessionId) => {
+    const target = sessionService.sessionForId(sessionId);
+    if (!target) return;
+    const state = sessionService.projectState(target);
+    void pushNotifications.notifyRunCompleted({
+      sessionId,
+      title: state.sessionName?.trim() || state.sessionTitle?.trim() || "Session",
+      completedAt: new Date().toISOString(),
+    });
+  },
 });
 
 const mockSessionFactory = mockMode ? {
@@ -404,6 +425,7 @@ const server = createServer(async (req, res) => {
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
         await sessionService.disposeAll("reset");
         mockPromptCorrelations.clear();
+        mockStateOverrides = {};
         resetMockSessions();
         await sessionUiStateStore.write(defaultSessionUiState);
         session = createMockSession();
@@ -411,6 +433,14 @@ const server = createServer(async (req, res) => {
         broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
+      }
+
+      if (mockMode && method === "POST" && url.pathname === "/api/mock/state") {
+        const body = await readBody(req);
+        mockStateOverrides = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
+        const state = currentState();
+        broadcast({ type: "state_changed", ...state });
+        return sendJson(res, 200, { ok: true, ...state });
       }
 
       if (mockMode && method === "GET" && url.pathname === "/api/mock/live-sessions") {
@@ -551,6 +581,29 @@ const server = createServer(async (req, res) => {
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           return sendJson(res, 200, await gitSync(cwd));
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "GET" && url.pathname === "/api/push/status") {
+        return sendJson(res, 200, { ok: true, vapidPublicKey: await pushNotifications.publicKey() });
+      }
+
+      if (method === "POST" && url.pathname === "/api/push/subscribe") {
+        const body = await readBody(req) as { installationId?: unknown; subscription?: unknown };
+        try {
+          return sendJson(res, 200, { ok: true, ...await pushNotifications.subscribe(body.installationId, body.subscription) });
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
+      if (method === "DELETE" && url.pathname === "/api/push/subscribe") {
+        const body = await readBody(req) as { installationId?: unknown; endpoint?: unknown };
+        try {
+          await pushNotifications.unsubscribe(body.installationId, body.endpoint);
+          return sendJson(res, 200, { ok: true });
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }

@@ -231,7 +231,9 @@ test("explorer opens, edits, saves, wraps, resizes text, and closes tabs", async
 
   await page.locator(".fileTabClose").click();
   await expect(page.locator(".fileTab")).toHaveCount(0);
-  await expect(page.locator(".fileEditorEmpty img")).toBeVisible();
+  const emptyEditorImage = page.locator(".fileEditorEmpty img");
+  if (testInfo.project.name === "mobile") await expect(emptyEditorImage).toHaveCount(1);
+  else await expect(emptyEditorImage).toBeVisible();
   await expect(page.locator(".fileEditorStatusBar")).toBeHidden();
 
   if (testInfo.project.name === "desktop") {

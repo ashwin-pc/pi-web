@@ -126,6 +126,7 @@ export function createContextMeter(options: { elements: AppElements }): ContextM
   }
 
   function update(view: ContextMeterView) {
+    const compactionStarted = view.isCompacting && !currentView.isCompacting;
     currentView = view;
     const percent = contextPercent(view.stats);
     const clamped = Math.max(0, Math.min(100, percent ?? 0));
@@ -133,6 +134,13 @@ export function createContextMeter(options: { elements: AppElements }): ContextM
     const title = view.isCompacting ? "Compacting context…" : contextTitle(view.stats);
     const compactingClass = view.isCompacting ? " compacting" : "";
 
+    // Entering compaction must restart the CSS animation on the existing fill.
+    // Merely changing the ancestor class can leave the already-composited fill
+    // unpainted until another UI transition (such as switching sessions).
+    if (compactionStarted) {
+      elements.contextMeterEl.className = `contextMeter ${tone}`;
+      void elements.contextMeterFillEl?.offsetWidth;
+    }
     elements.contextMeterEl.className = `contextMeter ${tone}${compactingClass}`;
     elements.contextMeterEl.style.setProperty("--context-percent", `${clamped}%`);
     elements.contextMeterEl.title = title;

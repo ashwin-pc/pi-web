@@ -12,15 +12,10 @@
 export function initSwAutoReload(): void {
   if (!("serviceWorker" in navigator)) return;
 
-  if (Boolean((import.meta as any).env?.DEV)) {
-    Promise.all([
-      navigator.serviceWorker.getRegistrations().then((registrations) => Promise.all(registrations.map((registration) => registration.unregister()))),
-      "caches" in window ? caches.keys().then((keys) => Promise.all(keys.map((key) => caches.delete(key)))) : Promise.resolve([]),
-    ]).then(() => {
-      if (navigator.serviceWorker.controller) window.location.reload();
-    }).catch(() => undefined);
-    return;
-  }
+  // The development worker intentionally has an empty precache manifest. Keep
+  // it registered so Web Push can be exercised locally without caching Vite
+  // assets or reloading the page whenever the worker source changes.
+  if (Boolean((import.meta as any).env?.DEV)) return;
 
   let refreshing = false;
   navigator.serviceWorker.addEventListener("controllerchange", () => {

@@ -12,7 +12,11 @@ export class SessionActivity {
   private readonly runtimeLastActivityAts = new Map<string, string>();
   private readonly toolStartedAts = new Map<string, Map<string, string>>();
 
-  constructor(private readonly liveSessionForPath: (path: string) => PiWebSession | undefined) {}
+  constructor(
+    private readonly liveSessionForPath: (path: string) => PiWebSession | undefined,
+    private readonly hasActiveWorkForPath: (path: string) => boolean = () => false,
+    private readonly hasActiveRetryForPath: (path: string) => boolean = () => false,
+  ) {}
 
   sessionPathKey(value: any): string {
     return String(value?.sessionFile || value?.sessionId || "");
@@ -107,7 +111,9 @@ export class SessionActivity {
     const isStreaming = Boolean(live?.isStreaming);
     const isRetrying = overrides.isRetrying ?? sessionIsRetrying(live);
     const isCompacting = Boolean(live?.isCompacting);
-    const isRunning = isStreaming || isRetrying || isCompacting;
+    // Work leases cover operations (notably the SDK continuation fallback) that
+    // execute an agent run without updating AgentSession.isStreaming.
+    const isRunning = isStreaming || isRetrying || isCompacting || this.hasActiveWorkForPath(path);
     return {
       loaded: Boolean(live),
       isRunning,
@@ -140,9 +146,12 @@ export class SessionActivity {
     if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
       return this.runtimeForPath(path, { isRetrying: true });
     }
-    return event?.type === "agent_end" || event?.type === "compaction_end"
-      ? this.stoppedRuntimeForPath(path)
-      : this.runtimeForPath(path);
+    if (event?.type === "agent_end" || event?.type === "compaction_end") {
+      // AgentSession may still expose stale streaming state while delivering its
+      // terminal event. Only an outer work lease should keep that event running.
+      return this.hasActiveRetryForPath(path) ? this.runtimeForPath(path) : this.stoppedRuntimeForPath(path);
+    }
+    return this.runtimeForPath(path);
   }
 
   isActivityEvent(event: any): boolean {

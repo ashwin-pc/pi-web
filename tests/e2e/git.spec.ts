@@ -5,14 +5,9 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("GitHub issue numbers attach issue details to the composer context", async ({ page }) => {
-  await page.route("**/api/state**", async (route) => {
-    const response = await route.fetch();
-    const data = await response.json();
-    await route.fulfill({ response, json: {
-      ...data,
-      webGitTabs: [{ key: "github", title: "GitHub issues", label: "GitHub" }],
-    } });
-  });
+  await page.request.post("/api/mock/state", { data: {
+    webGitTabs: [{ key: "github", title: "GitHub issues", label: "GitHub" }],
+  } });
   await page.route("**/api/web-git-tab/invoke", async (route) => {
     const request = route.request().postDataJSON();
     if (request.action === "attach-context") {
@@ -59,14 +54,9 @@ test("GitHub issue numbers attach issue details to the composer context", async 
 
 test("extension tabs remain available in split view with a reduced viewport height", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 500 });
-  await page.route("**/api/state**", async (route) => {
-    const response = await route.fetch();
-    const data = await response.json();
-    await route.fulfill({ response, json: {
-      ...data,
-      webGitTabs: [{ key: "github", title: "GitHub issues", label: "GitHub" }],
-    } });
-  });
+  await page.request.post("/api/mock/state", { data: {
+    webGitTabs: [{ key: "github", title: "GitHub issues", label: "GitHub" }],
+  } });
   await page.route("**/api/web-git-tab/invoke", (route) => route.fulfill({ json: {
     ok: true,
     title: "GitHub",

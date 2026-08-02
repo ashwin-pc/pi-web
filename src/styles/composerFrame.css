@@ -42,9 +42,9 @@
   margin: 3px 6px;
   background: color-mix(in srgb, var(--border) 78%, transparent);
 }
-.pendingMessages:not([hidden]) + .composer { margin-top: 0; }
-.pendingMessages:not([hidden]) + .composer .runtimeStatus,
-.pendingMessages:not([hidden]) + .composer .contextMeterLabel { top: -8px; }
+.pendingMessages:not([hidden]) ~ .composer { margin-top: 0; }
+.pendingMessages:not([hidden]) ~ .composer .runtimeStatus,
+.pendingMessages:not([hidden]) ~ .composer .contextMeterLabel { top: -8px; }
 
 .composer {
   grid-row: 4;

@@ -7,6 +7,7 @@ import { createQrSvg } from "../token/qr.js";
 import { createTokenShareUrl } from "../token/tokenShare.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import { createExtensionSettings, type ExtensionSettingsController } from "./extensionSettings.js";
+import { createRunNotifications } from "./runNotifications.js";
 
 export type SettingsController = {
   init: () => void;
@@ -110,6 +111,11 @@ export function createSettings(options: {
   let hasAppliedSettings = false;
   let settingsPanelHandle: RightPanelHandle | undefined;
   let extSettings: ExtensionSettingsController | undefined;
+  const runNotifications = createRunNotifications({
+    elements,
+    api,
+    onError: (error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"),
+  });
 
   function updateQueueToggle() {
     const isSteer = state.queueMode === "steer";
@@ -429,6 +435,7 @@ export function createSettings(options: {
     elements.extensionStatusMessage.textContent = "Checking extension status…";
     elements.extensionStatusDetails.hidden = true;
     void refreshExtensionStatus().catch(renderExtensionStatusError);
+    void runNotifications.refresh().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   }
 
   function afterOpenSettings() {
@@ -608,6 +615,7 @@ export function createSettings(options: {
     elements.extensionReloadButton.addEventListener("click", () => {
       void reloadExtensions();
     });
+    runNotifications.init();
   }
 
   function applyWebSettingsSchemas(schemas: WebSettingsSchema[]) {

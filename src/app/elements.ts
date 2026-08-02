@@ -72,6 +72,11 @@ export type AppElements = {
   settingAccentApplyButton: HTMLButtonElement;
   settingQueueModeSelect: HTMLSelectElement;
   settingComposerExpandedCheckbox: HTMLInputElement;
+  settingRunNotificationsCheckbox: HTMLInputElement;
+  settingCompletionSoundCheckbox: HTMLInputElement;
+  settingCompletionVibrationCheckbox: HTMLInputElement;
+  settingRunNotificationsStatus: HTMLParagraphElement;
+  settingRunNotificationsTestButton: HTMLButtonElement;
   settingDefaultBucketColorSelect: HTMLSelectElement;
   settingModelDefaultsValue: HTMLSpanElement;
   settingSaveModelDefaultsButton: HTMLButtonElement;
@@ -178,6 +183,11 @@ export function getAppElements(): AppElements {
     settingAccentApplyButton: requiredElement<HTMLButtonElement>("#settingAccentApplyButton"),
     settingQueueModeSelect: requiredElement<HTMLSelectElement>("#settingQueueModeSelect"),
     settingComposerExpandedCheckbox: requiredElement<HTMLInputElement>("#settingComposerExpandedCheckbox"),
+    settingRunNotificationsCheckbox: requiredElement<HTMLInputElement>("#settingRunNotificationsCheckbox"),
+    settingCompletionSoundCheckbox: requiredElement<HTMLInputElement>("#settingCompletionSoundCheckbox"),
+    settingCompletionVibrationCheckbox: requiredElement<HTMLInputElement>("#settingCompletionVibrationCheckbox"),
+    settingRunNotificationsStatus: requiredElement<HTMLParagraphElement>("#settingRunNotificationsStatus"),
+    settingRunNotificationsTestButton: requiredElement<HTMLButtonElement>("#settingRunNotificationsTestButton"),
     settingDefaultBucketColorSelect: requiredElement<HTMLSelectElement>("#settingDefaultBucketColorSelect"),
     settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),

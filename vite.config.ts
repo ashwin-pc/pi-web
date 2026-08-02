@@ -14,6 +14,10 @@ export default defineConfig({
   plugins: [
     VitePWA({
       registerType: "autoUpdate",
+      strategies: "injectManifest",
+      srcDir: "src",
+      filename: "sw.ts",
+      devOptions: { enabled: true, type: "module" },
       includeAssets: ["icon.svg", "apple-touch-icon.png"],
       manifest: {
         name: "pi web",
@@ -29,12 +33,9 @@ export default defineConfig({
           { src: "pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
         ],
       },
-      workbox: {
-        // Do not precache HTML or register a navigation route. Even NetworkOnly
-        // would still mediate document requests through serviceWorker.fetch(),
-        // which can interfere with redirects from auth proxies such as Codespaces.
-        // Native browser navigations handle auth; immutable assets remain cached.
-        navigateFallback: null,
+      injectManifest: {
+        // Do not precache HTML or register a navigation route. Native browser
+        // navigations must continue to handle redirects from auth proxies.
         globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
       },
     }),

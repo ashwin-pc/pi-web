@@ -21,6 +21,7 @@ type HostEventDependencies = {
   sessionActivity: SessionActivity;
   broadcast(value: unknown): void;
   markSessionUnreadCompleted(sessionId: string): void;
+  notifySessionCompleted?(sessionId: string): void;
 };
 
 export function decorateHostSessionState(
@@ -135,6 +136,7 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
           if (deps.sessionActivity.hasStarted(activitySessionFile) && !isRunning) {
             deps.sessionActivity.clearStarted(target, activitySessionFile);
             deps.markSessionUnreadCompleted(serviceEvent.sessionId);
+            deps.notifySessionCompleted?.(serviceEvent.sessionId);
           }
         }
         deps.broadcast({ type: "session_runtime_changed", sessionId: serviceEvent.sessionId, sessionFile: serviceEvent.sessionFile, runtime: deps.sessionActivity.runtimeForPath(serviceEvent.sessionFile) });

@@ -283,6 +283,34 @@ describe("LocalSessionService contract", () => {
     ]);
   });
 
+  it("marks unread and sends exactly one notification from the same final completion transition", async () => {
+    const { service, initial } = await fixtureService();
+    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const transitions: string[] = [];
+    const handler = createHostSessionEventHandler({
+      sessionForId: (id) => service.sessionForId(id),
+      projectState: (value) => service.projectState(value),
+      webUiEntries: (value) => service.webUiEntries(value),
+      sessionActivity: activity,
+      broadcast: () => undefined,
+      markSessionUnreadCompleted: () => transitions.push("unread"),
+      notifySessionCompleted: () => transitions.push("notification"),
+    });
+    activity.ensureStarted(initial);
+    const completed: SessionServiceEvent = {
+      type: "runtime",
+      action: "completed",
+      sessionId: initial.sessionId,
+      sessionFile: initial.sessionFile,
+    };
+
+    handler(completed);
+    handler(completed);
+
+    expect(transitions).toEqual(["unread", "notification"]);
+    expect(activity.hasStarted(initial.sessionFile)).toBe(false);
+  });
+
   it("propagates WebSocket open failures but keeps unknown-ID fallback eligible", async () => {
     const { initial } = await fixtureService();
     await expect(resolveWebSocketHelloSession("unknown", initial, async () => undefined)).resolves.toBeUndefined();
@@ -306,6 +334,32 @@ describe("LocalSessionService contract", () => {
 });
 
 describe("LocalSessionService standalone lifecycle", () => {
+  it("reports a gated retry as running, rejects a concurrent retry, and settles once", async () => {
+    const { service, initial } = await fixtureService();
+    let releaseRetry!: () => void;
+    const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; });
+    initial.retryFromFailure = vi.fn(() => retryGate);
+    const activity = new SessionActivity(
+      (path) => service.sessionForPath(path),
+      (path) => service.hasActiveWorkForPath(path),
+      (path) => service.hasActiveRetryForPath(path),
+    );
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+
+    await service.retry(initial.sessionId);
+    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(true);
+    expect(activity.runtimeForPath(initial.sessionFile)).toMatchObject({ isRunning: true, isStreaming: false });
+    expect(activity.runtimeForEvent(initial.sessionFile, { type: "agent_end" })).toMatchObject({ isRunning: true });
+    await expect(service.retry(initial.sessionId)).rejects.toMatchObject({ status: 409 });
+    expect(initial.retryFromFailure).toHaveBeenCalledTimes(1);
+
+    releaseRetry();
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false));
+    expect(activity.runtimeForPath(initial.sessionFile)).toMatchObject({ isRunning: false });
+    expect(events.filter((event) => event.type === "runtime" && event.action === "completed")).toHaveLength(1);
+  });
+
   it("honors viewer and work leases through their grace timers", async () => {
     vi.stubEnv("PI_WEB_SESSION_IDLE_GRACE_MS", "30");
     vi.stubEnv("PI_WEB_VIEWER_LEASE_GRACE_MS", "20");
