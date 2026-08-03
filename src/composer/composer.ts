@@ -28,18 +28,6 @@ export type ComposerController = {
   handleUserMessage: (text: string, clientMessageId?: string, sourceClientId?: string, images?: any[]) => boolean;
 };
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.addEventListener("load", () => {
-      const result = String(reader.result || "");
-      resolve(result.includes(",") ? result.slice(result.indexOf(",") + 1) : result);
-    });
-    reader.addEventListener("error", () => reject(reader.error || new Error(`Could not read ${file.name}`)));
-    reader.readAsDataURL(file);
-  });
-}
-
 export function createComposer(options: {
   state: AppState;
   elements: AppElements;
@@ -331,11 +319,16 @@ export function createComposer(options: {
     if (!files.length) return;
     try {
       const attachments = await Promise.all(files.map(async (file): Promise<FileAttachment> => {
-        const data = await fileToBase64(file);
-        const response = await fetch("/api/attachments", {
+        const params = new URLSearchParams({
+          sessionId: state.currentSessionId,
+          name: file.name,
+          mediaType: file.type || "application/octet-stream",
+        });
+        const { "content-type": _contentType, ...uploadHeaders } = api.headers();
+        const response = await fetch(`/api/attachments?${params}`, {
           method: "POST",
-          headers: api.headers(),
-          body: JSON.stringify({ sessionId: state.currentSessionId, name: file.name, mediaType: file.type || "application/octet-stream", data }),
+          headers: uploadHeaders,
+          body: file,
         });
         if (!response.ok) throw new Error(await response.text());
         const result = await response.json() as { attachment?: FileAttachment };

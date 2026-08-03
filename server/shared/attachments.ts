@@ -28,9 +28,14 @@ export function attachmentRootForCwd(cwd: string) {
   return join(cwd, ...attachmentPathParts);
 }
 
-export async function storeAttachment(cwd: string, input: { name: string; mediaType: string; data: string }): Promise<MessageAttachment> {
-  if (!/^[a-zA-Z0-9+/]*={0,2}$/.test(input.data) || input.data.length % 4 !== 0) throw new Error("Attachment data is not valid Base64");
-  const buffer = Buffer.from(input.data, "base64");
+export async function storeAttachment(cwd: string, input: { name: string; mediaType: string; data: string } | { name: string; mediaType: string; bytes: Uint8Array }): Promise<MessageAttachment> {
+  let buffer: Buffer;
+  if ("bytes" in input) {
+    buffer = Buffer.from(input.bytes);
+  } else {
+    if (!/^[a-zA-Z0-9+/]*={0,2}$/.test(input.data) || input.data.length % 4 !== 0) throw new Error("Attachment data is not valid Base64");
+    buffer = Buffer.from(input.data, "base64");
+  }
   if (!buffer.length) throw new Error("Attachment is empty");
   if (buffer.length > 30_000_000) throw new Error("Attachment is too large");
   const id = randomUUID();

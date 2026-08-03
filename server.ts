@@ -93,10 +93,20 @@ function isAuthorized(req: IncomingMessage): boolean {
   return !token || requestToken(req) === token;
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
+async function readBytes(req: IncomingMessage, maxBytes = 30_000_000): Promise<Buffer> {
   const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(Buffer.from(chunk));
-  const text = Buffer.concat(chunks).toString("utf-8");
+  let bytes = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.from(chunk);
+    bytes += buffer.length;
+    if (bytes > maxBytes) throw new Error("Request body is too large");
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req: IncomingMessage): Promise<unknown> {
+  const text = (await readBytes(req, 40_000_000)).toString("utf-8");
   return text ? JSON.parse(text) : {};
 }
 
@@ -887,13 +897,13 @@ const server = createServer(async (req, res) => {
       }
 
       if (method === "POST" && url.pathname === "/api/attachments") {
-        const body = await readBody(req) as { sessionId?: unknown; name?: unknown; mediaType?: unknown; data?: unknown };
-        const target = await sessionService.require(resolveSessionId(body.sessionId));
-        const name = typeof body.name === "string" ? body.name : "attachment";
-        const mediaType = typeof body.mediaType === "string" && body.mediaType.length <= 160 ? body.mediaType : "application/octet-stream";
-        if (typeof body.data !== "string" || !body.data) return sendJson(res, 400, { ok: false, error: "attachment data is required" });
-        if (body.data.length > 40_000_000) return sendJson(res, 413, { ok: false, error: "attachment is too large" });
-        const attachment = await storeAttachment(sessionService.cwdForSession(target), { name, mediaType, data: body.data });
+        const sessionId = url.searchParams.get("sessionId");
+        const target = await sessionService.require(resolveSessionId(sessionId));
+        const name = url.searchParams.get("name") || "attachment";
+        const requestedMediaType = url.searchParams.get("mediaType") || "";
+        const mediaType = requestedMediaType && requestedMediaType.length <= 160 ? requestedMediaType : "application/octet-stream";
+        const bytes = await readBytes(req);
+        const attachment = await storeAttachment(sessionService.cwdForSession(target), { name, mediaType, bytes });
         return sendJson(res, 201, { ok: true, attachment });
       }
 

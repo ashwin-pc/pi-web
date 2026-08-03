@@ -209,10 +209,10 @@ describe("pi-web mock API", () => {
   }, 25_000);
 
   it("uploads generic attachments and keeps their bytes out of agent context", async () => {
-    const upload = await fetch(`${baseUrl}/api/attachments`, {
+    const upload = await fetch(`${baseUrl}/api/attachments?name=tiny.png&mediaType=image%2Fpng`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ name: "tiny.png", mediaType: "image/png", data: Buffer.from("png").toString("base64") }),
+      headers: { "content-type": "application/octet-stream" },
+      body: Buffer.from("png"),
     });
     expect(upload.status).toBe(201);
     const { attachment } = await upload.json();
