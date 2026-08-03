@@ -43,6 +43,12 @@ function report(state: AppState) {
 
 export function initDebugDiagnostics(state: AppState) {
   recordDebugEvent("page-loaded", { navigationType: (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type, displayMode: displayMode() });
+  const hot = (import.meta as any).hot;
+  if (hot) {
+    hot.on("vite:beforeFullReload", (payload: any) => recordDebugEvent("vite-full-reload", { path: payload?.path }));
+    hot.on("vite:error", (payload: any) => recordDebugEvent("vite-error", { message: payload?.err?.message }));
+  }
+  navigator.serviceWorker?.addEventListener("controllerchange", () => recordDebugEvent("service-worker-controller-change"));
   addEventListener("pageshow", (event) => recordDebugEvent("page-show", { persisted: (event as PageTransitionEvent).persisted }));
   addEventListener("pagehide", (event) => recordDebugEvent("page-hide", { persisted: (event as PageTransitionEvent).persisted }));
   document.addEventListener("visibilitychange", () => recordDebugEvent("visibility-change", { state: document.visibilityState }));
