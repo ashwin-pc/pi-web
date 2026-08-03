@@ -5,6 +5,7 @@ import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand 
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
+import { recordDebugEvent } from "../app/debugDiagnostics.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
 
@@ -318,6 +319,7 @@ export function createComposer(options: {
 
   async function attachFiles(files: File[]) {
     if (!files.length) return;
+    recordDebugEvent("attachment-upload-start", { files: files.map(({ name, size, type }) => ({ name, size, type })) });
     try {
       const attachments = await Promise.all(files.map(async (file): Promise<FileAttachment> => {
         const params = new URLSearchParams({
@@ -337,10 +339,12 @@ export function createComposer(options: {
         return result.attachment;
       }));
       state.attachedImages.push(...attachments);
+      recordDebugEvent("attachment-upload-complete", { attachments: attachments.map(({ id, name, bytes, mediaType }) => ({ id, name, bytes, mediaType })) });
       renderAttachments();
       updatePrimaryAction();
       hideSlashCommands();
     } catch (error) {
+      recordDebugEvent("attachment-upload-error", { message: error instanceof Error ? error.message : String(error) });
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
     }
   }
@@ -395,6 +399,7 @@ export function createComposer(options: {
           && typeof attachment.path === "string"
           && typeof attachment.contentUrl === "string";
       });
+      recordDebugEvent("attachment-draft-restored", { count: state.attachedImages.length, storedSessionId: value.sessionId });
       renderAttachments();
       updatePrimaryAction();
     } catch { /* ignore malformed or unavailable storage */ }
@@ -803,12 +808,14 @@ export function createComposer(options: {
       elements.imageInput.click();
     });
     elements.attachButton.addEventListener("click", (event) => {
+      recordDebugEvent("attachment-picker-open", { compact: elements.formEl.classList.contains("compactInactive") });
       if (consumeCompactAttachClick(event)) return;
       elements.imageInput.click();
     });
 
     elements.imageInput.addEventListener("change", () => {
       const files = Array.from(elements.imageInput.files || []);
+      recordDebugEvent("attachment-picker-change", { files: files.map(({ name, size, type }) => ({ name, size, type })) });
       elements.imageInput.value = "";
       void attachFiles(files);
     });

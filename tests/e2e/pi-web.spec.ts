@@ -1044,6 +1044,19 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator("#primaryButton")).toBeEnabled();
   });
 
+  test("keeps a copyable attachment lifecycle report across reloads", async ({ page }) => {
+    await page.locator("#imageInput").setInputFiles({ name: "debug.png", mimeType: "image/png", buffer: VALID_PNG });
+    await page.reload();
+    await page.locator("#settingsButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator("#openDebugDiagnosticsButton").click();
+
+    const report = page.locator(".debugDiagnostics textarea");
+    await expect(report).toHaveValue(/attachment-picker-change/);
+    await expect(report).toHaveValue(/attachment-upload-complete/);
+    await expect(report).toHaveValue(/page-hide/);
+    await expect(report).toHaveValue(/attachment-draft-restored/);
+  });
+
   test("supports attachment-only prompts and attachment removal", async ({ page }) => {
     const file = {
       name: "tiny.png",
