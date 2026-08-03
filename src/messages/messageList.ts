@@ -101,7 +101,6 @@ function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, 
         .then((blob) => {
           const objectUrl = URL.createObjectURL(blob);
           image.src = objectUrl;
-          image.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
         })
         .catch(() => {
           item.classList.add("missing");

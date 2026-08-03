@@ -969,6 +969,7 @@ test.describe("attachments and prompt", () => {
   });
 
   test("shows floating attachment micro-pills above focused and blurred composers", async ({ page }) => {
+    await page.setViewportSize({ width: 411, height: 903 });
     const attachments = page.locator("#attachments");
     await expect(attachments).toHaveCSS("display", "none");
 
@@ -979,8 +980,17 @@ test.describe("attachments and prompt", () => {
     };
     await page.locator("#imageInput").setInputFiles(file);
     await page.locator("#prompt").focus();
-    await expect(page.locator(".attachmentChip")).toBeVisible();
+    const chip = page.locator(".attachmentChip");
+    await expect(chip).toBeVisible();
     expect((await attachments.boundingBox())!.y).toBeLessThan((await page.locator("#promptForm").boundingBox())!.y);
+    const pillBox = (await attachments.boundingBox())!;
+    const fabBox = (await page.locator(".actionLauncherToggle").boundingBox())!;
+    expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(fabBox.x);
+    await expect(page.locator(".removeAttachment")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+    await chip.locator("img").click();
+    await expect(page.locator(".imageOverlay img")).toBeVisible();
+    await page.locator(".imageOverlay").click();
 
     await page.locator("#prompt").blur();
     await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
@@ -1076,6 +1086,9 @@ test.describe("attachments and prompt", () => {
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.user .messageAttachmentImage")).toBeVisible();
     await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
+    await page.locator(".message.user .messageAttachmentImage").click();
+    await expect(page.locator(".imageOverlay img")).toBeVisible();
+    await page.locator(".imageOverlay").click();
     await expect(page.getByText("Mock response.").first()).toBeVisible();
   });
 });

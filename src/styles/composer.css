@@ -311,6 +311,10 @@ textarea:focus { border-bottom-color: var(--accent); }
   scrollbar-width: none;
 }
 .attachments::-webkit-scrollbar { display: none; }
+.composer:not(.compactInactive):not(.expanded):has(.attachments:not(:empty)) .attachments {
+  right: 72px;
+  max-width: calc(100% - 81px);
+}
 .attachments:empty {
   display: none;
 }
@@ -334,6 +338,7 @@ textarea:focus { border-bottom-color: var(--accent); }
   border-radius: 7px;
   object-fit: cover;
 }
+.attachmentChip img[role="button"] { cursor: zoom-in; }
 .attachmentChip span {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -375,7 +380,11 @@ textarea:focus { border-bottom-color: var(--accent); }
   border-radius: 999px;
   padding: 0;
 }
-.attachmentChip .removeAttachment { border: 0; }
+.attachmentChip .removeAttachment {
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
 .removeAttachment svg { width: 13px; height: 13px; }
 .composerFooter {
   display: flex;

@@ -6,6 +6,7 @@ import { sessionRuntime, type SessionStateController } from "../app/sessionState
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { recordDebugEvent } from "../app/debugDiagnostics.js";
+import { openImageOverlay } from "../components/imageActions.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
 
@@ -458,11 +459,22 @@ export function createComposer(options: {
           .then((blob) => {
             const objectUrl = URL.createObjectURL(blob);
             preview.src = objectUrl;
-            preview.addEventListener("load", () => URL.revokeObjectURL(objectUrl), { once: true });
           })
           .catch(() => { preview.hidden = true; });
       } else preview.hidden = true;
-      preview.alt = "";
+      preview.alt = image.name;
+      if (image.mediaType.startsWith("image/")) {
+        preview.tabIndex = 0;
+        preview.setAttribute("role", "button");
+        preview.setAttribute("aria-label", `Preview ${image.name}`);
+        preview.addEventListener("click", () => openImageOverlay(preview));
+        preview.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openImageOverlay(preview);
+          }
+        });
+      }
 
       const name = document.createElement("span");
       name.textContent = image.name;

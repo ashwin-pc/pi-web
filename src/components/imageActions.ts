@@ -6,6 +6,18 @@ function imageActionIcon(name: "download" | "external-link" | "maximize-2") {
   return createElement(icon, { "aria-hidden": "true" });
 }
 
+export function openImageOverlay(img: HTMLImageElement) {
+  if (!img.currentSrc && !img.src) return;
+  const overlay = document.createElement("div");
+  overlay.className = "imageOverlay";
+  const full = document.createElement("img");
+  full.src = img.currentSrc || img.src;
+  full.alt = img.alt || "image";
+  overlay.append(full);
+  overlay.addEventListener("click", () => overlay.remove());
+  document.body.append(overlay);
+}
+
 export function attachImageActions(img: HTMLImageElement) {
   if (img.closest(".imageFrame")) return;
 
@@ -21,16 +33,8 @@ export function attachImageActions(img: HTMLImageElement) {
   fullScreen.title = "Fullscreen";
   fullScreen.setAttribute("aria-label", fullScreen.title);
   fullScreen.append(imageActionIcon("maximize-2"));
-  fullScreen.addEventListener("click", () => {
-    const overlay = document.createElement("div");
-    overlay.className = "imageOverlay";
-    const full = document.createElement("img");
-    full.src = img.currentSrc || img.src;
-    full.alt = img.alt || "image";
-    overlay.append(full);
-    overlay.addEventListener("click", () => overlay.remove());
-    document.body.append(overlay);
-  });
+  fullScreen.addEventListener("click", () => openImageOverlay(img));
+  img.addEventListener("click", () => openImageOverlay(img));
 
   const download = document.createElement("a");
   download.className = "imageAction";
