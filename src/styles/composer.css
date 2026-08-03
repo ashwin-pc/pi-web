@@ -294,15 +294,23 @@ textarea:focus { border-bottom-color: var(--accent); }
   border-radius: 19px 19px 0 0;
 }
 .attachments {
+  position: absolute;
+  right: 9px;
+  bottom: calc(100% + 5px);
+  z-index: 4;
   display: flex;
+  max-width: calc(100% - 18px);
   min-width: 0;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   gap: 5px;
-  margin: 0 12px 6px;
+  margin: 0;
   padding: 0;
+  overflow-x: auto;
   background: transparent;
+  scrollbar-width: none;
 }
+.attachments::-webkit-scrollbar { display: none; }
 .attachments:empty {
   display: none;
 }
@@ -314,14 +322,15 @@ textarea:focus { border-bottom-color: var(--accent); }
   border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
   border-radius: 9px;
   background: color-mix(in srgb, var(--panel-2) 86%, var(--accent) 14%);
-  padding: 2px 4px 2px 2px;
+  height: 25px;
+  padding: 1px 3px 1px 2px;
   color: var(--muted);
   box-shadow: 0 4px 16px rgba(0,0,0,.18);
   font-size: 10px;
 }
 .attachmentChip img {
-  width: 22px;
-  height: 22px;
+  width: 21px;
+  height: 21px;
   border-radius: 7px;
   object-fit: cover;
 }

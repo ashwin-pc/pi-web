@@ -968,7 +968,7 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator("#connectionStatus")).toBeHidden();
   });
 
-  test("shows compact attachment drafts above both focused and blurred composers", async ({ page }) => {
+  test("shows floating attachment micro-pills above focused and blurred composers", async ({ page }) => {
     const attachments = page.locator("#attachments");
     await expect(attachments).toHaveCSS("display", "none");
 
