@@ -56,7 +56,7 @@ export function initActionLauncher(elements: AppElements) {
   toggle.setAttribute("aria-expanded", "false");
   toggle.title = "App tools";
   const mascot = document.createElement("img");
-  mascot.src = "/pi-mascot.png";
+  mascot.src = "/pi-mascot-avatar.png";
   mascot.alt = "";
   toggle.append(mascot);
 
