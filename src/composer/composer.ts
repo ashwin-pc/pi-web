@@ -635,7 +635,8 @@ export function createComposer(options: {
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
       const message = messageWithAttachedContext(promptMessage, contexts);
-      const attachments = state.attachedImages.map(({ id, name, mediaType, bytes, path, contentUrl }) => ({ id, name, mediaType, bytes, path, contentUrl }));
+      const submittedAttachments = [...state.attachedImages];
+      const attachments = submittedAttachments.map(({ id, name, mediaType, bytes, path, contentUrl }) => ({ id, name, mediaType, bytes, path, contentUrl }));
       if (!message && attachments.length === 0) return;
 
       if (rawMessage.startsWith("!") && attachments.length === 0 && contexts.length === 0) {
@@ -710,6 +711,11 @@ export function createComposer(options: {
       } catch (error) {
         optimisticUserMessages.delete(clientMessageId);
         sessionState.replaceRuntime(sessionId, runtimeTransition.previous);
+        state.attachedImages = [...submittedAttachments, ...state.attachedImages];
+        if (!elements.promptEl.value) elements.promptEl.value = rawMessage;
+        if (contextAttachments.length === 0) contextAttachments = contexts;
+        renderAttachments();
+        updatePrimaryAction();
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       } finally {
