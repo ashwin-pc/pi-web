@@ -1028,6 +1028,22 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
   });
 
+  test("restores uploaded attachment drafts after the page is reloaded", async ({ page }) => {
+    const file = {
+      name: "android-picker.png",
+      mimeType: "image/png",
+      buffer: VALID_PNG,
+    };
+    await page.locator("#imageInput").setInputFiles(file);
+    await expect(page.locator(".attachmentChip")).toContainText("android-picker.png");
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-composer-attachments-v1"))).toContain("android-picker.png");
+
+    await page.reload();
+
+    await expect(page.locator(".attachmentChip")).toContainText("android-picker.png");
+    await expect(page.locator("#primaryButton")).toBeEnabled();
+  });
+
   test("supports attachment-only prompts and attachment removal", async ({ page }) => {
     const file = {
       name: "tiny.png",

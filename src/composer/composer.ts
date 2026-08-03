@@ -48,6 +48,7 @@ export function createComposer(options: {
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
   const draftStorageKey = "pi-web-composer-draft";
+  const attachmentDraftStorageKey = "pi-web-composer-attachments-v1";
   const expandedStorageKey = "pi-web-composer-expanded";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
@@ -364,7 +365,43 @@ export function createComposer(options: {
     focusIfKeyboardFriendly(elements.promptEl);
   }
 
+  function persistAttachmentDraft() {
+    try {
+      if (state.attachedImages.length) {
+        localStorage.setItem(attachmentDraftStorageKey, JSON.stringify({
+          sessionId: state.currentSessionId,
+          attachments: state.attachedImages,
+        }));
+      } else {
+        localStorage.removeItem(attachmentDraftStorageKey);
+      }
+    } catch { /* ignore */ }
+  }
+
+  function restoreAttachmentDraft() {
+    try {
+      const value = JSON.parse(localStorage.getItem(attachmentDraftStorageKey) || "null") as { sessionId?: unknown; attachments?: unknown } | null;
+      if (!value || !Array.isArray(value.attachments)) return;
+      // Initial state arrives asynchronously after the composer is created. If
+      // no session is active yet, restore now just like the text draft does.
+      if (state.currentSessionId && value.sessionId !== state.currentSessionId) return;
+      state.attachedImages = value.attachments.filter((item): item is FileAttachment => {
+        if (!item || typeof item !== "object") return false;
+        const attachment = item as Partial<FileAttachment>;
+        return typeof attachment.id === "string"
+          && typeof attachment.name === "string"
+          && typeof attachment.mediaType === "string"
+          && typeof attachment.bytes === "number"
+          && typeof attachment.path === "string"
+          && typeof attachment.contentUrl === "string";
+      });
+      renderAttachments();
+      updatePrimaryAction();
+    } catch { /* ignore malformed or unavailable storage */ }
+  }
+
   function renderAttachments() {
+    persistAttachmentDraft();
     elements.attachmentsEl.textContent = "";
     elements.attachmentsEl.hidden = state.attachedImages.length === 0 && contextAttachments.length === 0;
     contextAttachments.forEach((context, index) => {
@@ -851,6 +888,7 @@ export function createComposer(options: {
         updatePrimaryAction();
       }
     } catch { /* ignore */ }
+    restoreAttachmentDraft();
     applyCompactInactive(!elements.formEl.contains(document.activeElement));
   }
 
