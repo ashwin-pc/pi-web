@@ -968,7 +968,7 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator("#connectionStatus")).toBeHidden();
   });
 
-  test("empty attachment container collapses and populated attachment row has padding", async ({ page }) => {
+  test("shows compact attachment drafts above both focused and blurred composers", async ({ page }) => {
     const attachments = page.locator("#attachments");
     await expect(attachments).toHaveCSS("display", "none");
 
@@ -980,14 +980,12 @@ test.describe("attachments and prompt", () => {
     await page.locator("#imageInput").setInputFiles(file);
     await page.locator("#prompt").focus();
     await expect(page.locator(".attachmentChip")).toBeVisible();
-    await expect(attachments).toHaveCSS("padding-top", "8px");
-    await expect(attachments).toHaveCSS("padding-right", "8px");
-    await expect(attachments).toHaveCSS("padding-bottom", "8px");
-    await expect(attachments).toHaveCSS("padding-left", "8px");
+    expect((await attachments.boundingBox())!.y).toBeLessThan((await page.locator("#promptForm").boundingBox())!.y);
 
-    const attachmentBg = await attachments.evaluate((el) => getComputedStyle(el).backgroundColor);
-    const composerBg = await page.locator("#promptForm").evaluate((el) => getComputedStyle(el).backgroundColor);
-    expect(attachmentBg).toBe(composerBg);
+    await page.locator("#prompt").blur();
+    await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+    await expect(page.locator(".attachmentChip")).toBeVisible();
+    expect((await attachments.boundingBox())!.y).toBeLessThan((await page.locator("#promptForm").boundingBox())!.y);
   });
 
   test("supports dragging, dropping, and submitting generic attachments", async ({ page }) => {
