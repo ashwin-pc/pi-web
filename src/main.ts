@@ -11,7 +11,8 @@ import { getAppElements, initAppHeightSync } from "./app/elements.js";
 import { initSwAutoReload } from "./app/sw-update.js";
 import { initDebugDiagnostics } from "./app/debugDiagnostics.js";
 import { setIcon } from "./app/icons.js";
-import { initKeyboardShortcuts } from "./app/shortcuts.js";
+import { createShortcutHelp, type ShortcutHelpController } from "./app/shortcutHelp.js";
+import { initKeyboardShortcuts, type Shortcut } from "./app/shortcuts.js";
 import { createRightPanelManager } from "./layout/rightPanel.js";
 import { createAppState, readActiveSessionIdFromHistoryState, readActiveSessionIdFromUrl, syncActiveSessionIdHistoryState } from "./app/types.js";
 import {
@@ -519,10 +520,12 @@ composer.init();
 conversationTree.init();
 modelSettings.init();
 settings.init();
-initKeyboardShortcuts([
+let shortcutHelp: ShortcutHelpController;
+const keyboardShortcuts: Shortcut[] = [
   {
     id: "sessions.toggleDrawer",
     key: "b",
+    description: "Toggle sessions drawer",
     scope: "global",
     mod: true,
     allowInEditable: true,
@@ -530,8 +533,51 @@ initKeyboardShortcuts([
     run: () => sessions.setSessionDrawerOpen(elements.sessionDrawer.hidden),
   },
   {
+    id: "sessions.toggleCurrentPin",
+    key: "p",
+    description: "Pin or unpin current session",
+    scope: "global",
+    mod: true,
+    shift: true,
+    allowInEditable: true,
+    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    run: () => sessions.toggleCurrentSessionPin(),
+  },
+  {
+    id: "sessions.new",
+    key: "o",
+    description: "Open a new session",
+    scope: "global",
+    mod: true,
+    shift: true,
+    allowInEditable: true,
+    when: () => elements.tokenOverlay.hidden,
+    run: () => sessions.startNewSession(),
+  },
+  {
+    id: "app.showKeyboardShortcuts",
+    key: "/",
+    description: "Show keyboard shortcuts",
+    scope: "global",
+    mod: true,
+    allowInEditable: true,
+    when: () => elements.tokenOverlay.hidden,
+    run: () => shortcutHelp.toggle(),
+  },
+  {
+    id: "composer.submit",
+    key: "Enter",
+    description: "Send prompt",
+    scope: "composer",
+    mod: true,
+    allowInEditable: true,
+    when: () => elements.tokenOverlay.hidden,
+    run: () => elements.formEl.requestSubmit(),
+  },
+  {
     id: "session.stopFromPrompt",
     key: "Escape",
+    description: "Stop current response",
     scope: "composer",
     allowInEditable: true,
     when: () => {
@@ -542,7 +588,9 @@ initKeyboardShortcuts([
     },
     run: () => composer.stopStreaming(),
   },
-], {
+];
+shortcutHelp = createShortcutHelp(keyboardShortcuts);
+initKeyboardShortcuts(keyboardShortcuts, {
   getScopes: () => {
     const scopes: string[] = [];
     if (!elements.tokenOverlay.hidden) scopes.push("token");

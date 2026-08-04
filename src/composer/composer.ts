@@ -797,9 +797,6 @@ export function createComposer(options: {
         }
       }
 
-      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-        elements.formEl.requestSubmit();
-      }
     });
 
     // focusin fires before every focused child is guaranteed to be reflected by

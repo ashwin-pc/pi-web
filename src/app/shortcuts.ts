@@ -9,6 +9,7 @@ export type ShortcutContext = {
 export type Shortcut = {
   id: string;
   key: string;
+  description?: string;
   scope?: ShortcutScope;
   scopes?: ShortcutScope[];
   mod?: boolean;

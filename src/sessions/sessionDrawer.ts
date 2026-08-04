@@ -20,6 +20,7 @@ export type SessionsController = {
   refreshSessions: () => Promise<void>;
   setSessionDrawerOpen: (open: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
+  toggleCurrentSessionPin: () => void;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateSessionName: (sessionId: string, name: string) => void;
   removeSession: (sessionId: string) => void;
@@ -2169,6 +2170,7 @@ export function createSessions(options: {
     refreshSessions,
     setSessionDrawerOpen,
     startNewSession,
+    toggleCurrentSessionPin,
     beginTranscriptLoading,
     updateEmptyCwdChooser,
     finishTranscriptLoading,
