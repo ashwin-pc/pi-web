@@ -166,6 +166,7 @@ export interface SessionService {
   invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
   invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokeGitTab(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  invokePanel(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   list(extraCwds?: string[]): Promise<SessionInfoDto[]>;
   create(previousSessionId: string | undefined, cwd?: string): Promise<BaseSessionStateDto>;
   open(sessionId: string, cwd?: string): Promise<BaseSessionStateDto>;

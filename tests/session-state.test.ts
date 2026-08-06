@@ -75,11 +75,13 @@ describe("session state store", () => {
     reduceSessionSnapshot(state, {
       ...legacySnapshot,
       webFooters: [{ key: "footer", footer: { kind: "text", lines: ["ready"] } }],
+      webPanels: [{ key: "notes", title: "Notes", label: "Notepad", icon: "notebook-pen" }],
     });
 
     expect(state.sessionsById["session-a"].snapshotLoaded).toBe(true);
     expect(state.sessionsById["session-a"].queue).toEqual({ steering: [], followUp: [] });
     expect(state.sessionsById["session-a"].webFooters).toHaveLength(1);
+    expect(state.sessionsById["session-a"].webPanels).toHaveLength(1);
   });
 
   it("updates a background runtime without changing the active projection", () => {

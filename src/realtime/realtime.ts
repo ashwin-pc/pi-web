@@ -778,7 +778,7 @@ export function createRealtime(options: {
         handleExtensionUiRequest(data);
         return;
       }
-      if (["web_footer_changed", "web_header_actions_changed", "web_artifact_actions_changed", "web_git_tabs_changed"].includes(data.type)) {
+      if (["web_footer_changed", "web_header_actions_changed", "web_artifact_actions_changed", "web_git_tabs_changed", "web_panels_changed", "web_fab_actions_changed"].includes(data.type)) {
         sessionState.applySnapshot(data);
         return;
       }

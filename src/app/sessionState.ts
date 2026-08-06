@@ -170,7 +170,7 @@ export function reduceSessionSnapshot(state: AppState, value: unknown, fallbackS
     next.queue = { steering: [], followUp: [] };
   }
   if (runtime) next.runtime = runtime;
-  for (const key of ["webFooters", "webHeaderActions", "webArtifactActions", "webGitTabs"] as const) {
+  for (const key of ["webFooters", "webHeaderActions", "webArtifactActions", "webGitTabs", "webPanels", "webFabActions"] as const) {
     if (hasOwn(data, key)) next[key] = data[key];
   }
   if (completeSnapshot) next.snapshotLoaded = true;

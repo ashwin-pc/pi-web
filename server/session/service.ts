@@ -405,6 +405,10 @@ export class LocalSessionService implements SessionService {
     return this.require(sessionId).then((value) => this.webUiBridge.invokeGitTab(value, input));
   }
 
+  invokePanel(sessionId: string | undefined, input: Record<string, unknown>) {
+    return this.require(sessionId).then((value) => this.webUiBridge.invokePanel(value, input));
+  }
+
   respondExtensionUi(id: string, response: Record<string, unknown>) { return this.webUiBridge.respond(id, response); }
 
   extensionStatus(sessionId: string) {

@@ -97,16 +97,9 @@
   pointer-events: auto;
   transition-delay: var(--fan-open-delay, 0s), var(--fan-open-delay, 0s), 0s, 0s;
 }
-.actionLauncherItem:nth-child(1) { --fan-open-delay: .14s; --fan-close-delay: 0s; }
-.actionLauncherItem:nth-child(2) { --fan-open-delay: .105s; --fan-close-delay: .035s; }
-.actionLauncherItem:nth-child(3) { --fan-open-delay: .07s; --fan-close-delay: .07s; }
-.actionLauncherItem:nth-child(4) { --fan-open-delay: .035s; --fan-close-delay: .105s; }
-.actionLauncherItem:nth-child(5) { --fan-open-delay: 0s; --fan-close-delay: .14s; }
-.actionLauncher.open .actionLauncherItem:nth-child(1) { transform: translate(-5px, -254px) scale(1); }
-.actionLauncher.open .actionLauncherItem:nth-child(2) { transform: translate(-18px, -204px) scale(1); }
-.actionLauncher.open .actionLauncherItem:nth-child(3) { transform: translate(-36px, -154px) scale(1); }
-.actionLauncher.open .actionLauncherItem:nth-child(4) { transform: translate(-51px, -103px) scale(1); }
-.actionLauncher.open .actionLauncherItem:nth-child(5) { transform: translate(-59px, -52px) scale(1); }
+.actionLauncher.open .actionLauncherItem {
+  transform: translate(var(--fan-x, -59px), var(--fan-y, -52px)) scale(1);
+}
 
 .composer.compactInactive:not(.expanded) .actionLauncher,
 .composer:not(.compactInactive):not(.expanded) .actionLauncher {
@@ -129,11 +122,9 @@
 .composer:not(.compactInactive):not(.expanded) .actionLauncher:not(.open) .actionLauncherToggle {
   transform: scale(1.02);
 }
-.composer:not(.compactInactive):not(.expanded) .actionLauncher.open .actionLauncherItem:nth-child(1) { transform: translate(-5px, -202px) scale(1); }
-.composer:not(.compactInactive):not(.expanded) .actionLauncher.open .actionLauncherItem:nth-child(2) { transform: translate(-18px, -152px) scale(1); }
-.composer:not(.compactInactive):not(.expanded) .actionLauncher.open .actionLauncherItem:nth-child(3) { transform: translate(-36px, -102px) scale(1); }
-.composer:not(.compactInactive):not(.expanded) .actionLauncher.open .actionLauncherItem:nth-child(4) { transform: translate(-51px, -51px) scale(1); }
-.composer:not(.compactInactive):not(.expanded) .actionLauncher.open .actionLauncherItem:nth-child(5) { transform: translate(-59px, 0) scale(1); }
+.composer:not(.compactInactive):not(.expanded) .actionLauncher.open .actionLauncherItem {
+  transform: translate(var(--fan-x, -59px), var(--fan-focused-y, 0px)) scale(1);
+}
 .composer.expanded .actionLauncher {
   display: none;
 }

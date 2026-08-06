@@ -36,11 +36,18 @@ export type PiWebFooter =
   | { kind: "text"; lines: string[] }
   | { kind: "html"; html: string };
 
+export type PiWebHeaderActionResult = {
+  /** Markdown rendered in the shared dismissible popover. */
+  markdown?: string;
+  /** Open a registered extension panel (by its setPanel key) instead of, or after, showing markdown. */
+  openPanel?: string;
+};
+
 export type PiWebHeaderAction = {
   icon?: string;
   title: string;
   label?: string;
-  invoke: () => Promise<{ markdown: string }> | { markdown: string };
+  invoke: () => Promise<PiWebHeaderActionResult> | PiWebHeaderActionResult;
 };
 
 export type PiWebArtifactContext = {
@@ -98,6 +105,38 @@ export type PiWebGitTab = {
   title: string;
   label?: string;
   render: (event?: PiWebGitTabEvent) => Promise<PiWebGitTabView> | PiWebGitTabView;
+};
+
+export type PiWebPanelEvent = {
+  /** Action declared by data-web-panel-action on a form or interactive element. */
+  action?: string;
+  /** Optional JSON declared by data-web-panel-payload. */
+  payload?: unknown;
+  /** Successful form controls, grouped by name. */
+  fields?: Record<string, string | string[]>;
+};
+
+export type PiWebPanelView = {
+  title?: string;
+  /** Trusted extension-provided HTML rendered in the shared right panel. */
+  html: string;
+};
+
+export type PiWebPanel = {
+  title: string;
+  label?: string;
+  /** lucide icon name; unsupported names fall back to square-pen. */
+  icon?: string;
+  render: (event?: PiWebPanelEvent) => Promise<PiWebPanelView> | PiWebPanelView;
+};
+
+export type PiWebFabAction = {
+  /** lucide icon name; unsupported names fall back to square-pen. */
+  icon?: string;
+  title: string;
+  label?: string;
+  /** Key of the panel surface (setPanel) this launcher opens. */
+  opens: string;
 };
 
 // --- Extension-contributed settings (generic platform) ---
@@ -182,6 +221,16 @@ export type PiWebUi = {
 
   /** Set or clear a provider-specific tab in the built-in Git panel. */
   setGitTab(key: string, tab: PiWebGitTab | undefined): void;
+
+  /**
+   * Set or clear an extension panel surface (shared right panel). Panels have
+   * NO implicit entry point: register a FAB launcher with setFabAction, open
+   * from a header action via `openPanel`, or any future affordance.
+   */
+  setPanel(key: string, panel: PiWebPanel | undefined): void;
+
+  /** Set or clear a mascot-FAB launcher entry that opens a registered panel. */
+  setFabAction(key: string, action: PiWebFabAction | undefined): void;
 
   /**
    * Register a settings schema contributed by this extension. Idempotent per

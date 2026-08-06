@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { PiWebArtifactAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
+import type { PiWebArtifactAction, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
@@ -51,6 +51,14 @@ type WebGitTabState = {
   tabs: Map<string, PiWebGitTab>;
 };
 
+type WebPanelState = {
+  panels: Map<string, PiWebPanel>;
+};
+
+type WebFabActionState = {
+  actions: Map<string, PiWebFabAction>;
+};
+
 type WebArtifactActionState = {
   actions: Map<string, PiWebArtifactAction>;
 };
@@ -58,6 +66,8 @@ type WebArtifactActionState = {
 const webFooterStates = new WeakMap<object, WebFooterState>();
 const webHeaderActionStates = new WeakMap<object, WebHeaderActionState>();
 const webGitTabStates = new WeakMap<object, WebGitTabState>();
+const webPanelStates = new WeakMap<object, WebPanelState>();
+const webFabActionStates = new WeakMap<object, WebFabActionState>();
 const webArtifactActionStates = new WeakMap<object, WebArtifactActionState>();
 
 // Process-global extension-settings schema registry: decoupled from any one
@@ -343,6 +353,7 @@ function cleanFooterKey(value: unknown) {
 
 const cleanHeaderActionKey = cleanFooterKey;
 const cleanGitTabKey = cleanFooterKey;
+const cleanPanelKey = cleanFooterKey;
 
 function cleanHeaderActionText(value: unknown, maxLength = 200) {
   if (typeof value !== "string") return undefined;
@@ -376,6 +387,26 @@ function getWebGitTabState(value: any): WebGitTabState {
   if (!state) {
     state = { tabs: new Map() };
     webGitTabStates.set(key, state);
+  }
+  return state;
+}
+
+function getWebPanelState(value: any): WebPanelState {
+  const key = value as object;
+  let state = webPanelStates.get(key);
+  if (!state) {
+    state = { panels: new Map() };
+    webPanelStates.set(key, state);
+  }
+  return state;
+}
+
+function getWebFabActionState(value: any): WebFabActionState {
+  const key = value as object;
+  let state = webFabActionStates.get(key);
+  if (!state) {
+    state = { actions: new Map() };
+    webFabActionStates.set(key, state);
   }
   return state;
 }
@@ -477,6 +508,47 @@ function broadcastWebGitTabs(value: any) {
   return webGitTabs;
 }
 
+function webPanelEntries(value: any) {
+  return Array.from(getWebPanelState(value).panels.entries()).map(([key, panel]) => ({
+    key,
+    icon: cleanHeaderActionText(panel.icon, 80),
+    title: cleanHeaderActionText(panel.title) || key,
+    label: cleanHeaderActionText(panel.label, 80),
+  }));
+}
+
+function webFabActionEntries(value: any) {
+  return Array.from(getWebFabActionState(value).actions.entries()).map(([key, action]) => ({
+    key,
+    icon: cleanHeaderActionText(action.icon, 80),
+    title: cleanHeaderActionText(action.title) || key,
+    label: cleanHeaderActionText(action.label, 80),
+    opens: cleanPanelKey(action.opens),
+  }));
+}
+
+function broadcastWebFabActions(value: any) {
+  const webFabActions = webFabActionEntries(value);
+  deps.emit({
+    type: "web_fab_actions_changed",
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    webFabActions,
+  });
+  return webFabActions;
+}
+
+function broadcastWebPanels(value: any) {
+  const webPanels = webPanelEntries(value);
+  deps.emit({
+    type: "web_panels_changed",
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    webPanels,
+  });
+  return webPanels;
+}
+
 function createPiWebUi(value: any): PiWebUi {
   return {
     setFooter(key, footer) {
@@ -517,6 +589,28 @@ function createPiWebUi(value: any): PiWebUi {
         tabState.tabs.delete(tabKey);
       }
       broadcastWebGitTabs(value);
+    },
+    setPanel(key, panel) {
+      const panelKey = cleanPanelKey(key);
+      if (!panelKey) return;
+      const panelState = getWebPanelState(value);
+      if (panel && typeof panel === "object" && typeof panel.render === "function") {
+        panelState.panels.set(panelKey, panel);
+      } else {
+        panelState.panels.delete(panelKey);
+      }
+      broadcastWebPanels(value);
+    },
+    setFabAction(key, action) {
+      const actionKey = cleanPanelKey(key);
+      if (!actionKey) return;
+      const state = getWebFabActionState(value);
+      if (action && typeof action === "object" && cleanPanelKey(action.opens)) {
+        state.actions.set(actionKey, action);
+      } else {
+        state.actions.delete(actionKey);
+      }
+      broadcastWebFabActions(value);
     },
     async registerSettings(schema) {
       return registerSessionSettings(value, schema);
@@ -708,8 +802,16 @@ async function bindWebExtensions(value: any) {
     if (!action) throw new Error("Header action not found");
     const result = await action.invoke();
     const markdown = cleanFooterText(result?.markdown, 200_000);
-    if (!markdown) throw new Error("Header action returned no markdown");
-    return { label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key, markdown };
+    const openPanel = cleanPanelKey((result as any)?.openPanel);
+    if (openPanel && !getWebPanelState(value).panels.has(openPanel)) {
+      throw new Error(`Header action requested unknown panel "${openPanel}"`);
+    }
+    if (!markdown && !openPanel) throw new Error("Header action returned no markdown");
+    return {
+      label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key,
+      ...(markdown ? { markdown } : {}),
+      ...(openPanel ? { openPanel } : {}),
+    };
   }
 
   async function invokeArtifactAction(value: any, input: { key?: unknown; name?: unknown; path?: unknown; kind?: unknown }) {
@@ -772,6 +874,49 @@ async function bindWebExtensions(value: any) {
     };
   }
 
+  function normalizePanelFields(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const fields: Record<string, string | string[]> = {};
+    let totalChars = 0;
+    for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>).slice(0, 128)) {
+      const key = cleanHeaderActionText(rawKey, 200);
+      if (!key) continue;
+      const cleanValue = (candidate: unknown) => {
+        if (typeof candidate !== "string") return undefined;
+        const cleaned = candidate.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").slice(0, 200_000);
+        if (totalChars + cleaned.length > 500_000) return undefined;
+        totalChars += cleaned.length;
+        return cleaned;
+      };
+      if (Array.isArray(rawValue)) {
+        const values = rawValue.slice(0, 100).map(cleanValue).filter((item): item is string => item !== undefined);
+        if (values.length) fields[key] = values;
+      } else {
+        const cleaned = cleanValue(rawValue);
+        if (cleaned !== undefined) fields[key] = cleaned;
+      }
+    }
+    return fields;
+  }
+
+  async function invokePanel(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; fields?: unknown }) {
+    const key = cleanPanelKey(input.key);
+    if (!key) throw new Error("key is required");
+    const panel = getWebPanelState(value).panels.get(key);
+    if (!panel) throw new Error("Panel not found");
+    const result = await panel.render({
+      action: typeof input.action === "string" ? cleanHeaderActionText(input.action, 120) : undefined,
+      payload: input.payload,
+      fields: normalizePanelFields(input.fields),
+    });
+    const html = cleanFooterText(result?.html, 500_000);
+    if (!html) throw new Error("Panel returned no HTML");
+    return {
+      title: cleanHeaderActionText(result?.title) || cleanHeaderActionText(panel.title) || key,
+      html,
+    };
+  }
+
   function respond(id: string, response: Record<string, unknown>): boolean {
     const pending = pendingExtensionUiRequests.get(id);
     if (!pending) return false;
@@ -781,10 +926,11 @@ async function bindWebExtensions(value: any) {
 
   return {
     bind: bindWebExtensions,
-    entries: (value: any) => ({ webFooters: webFooterEntries(value), webHeaderActions: webHeaderActionEntries(value), webArtifactActions: webArtifactActionEntries(value), webGitTabs: webGitTabEntries(value) }),
+    entries: (value: any) => ({ webFooters: webFooterEntries(value), webHeaderActions: webHeaderActionEntries(value), webArtifactActions: webArtifactActionEntries(value), webGitTabs: webGitTabEntries(value), webPanels: webPanelEntries(value), webFabActions: webFabActionEntries(value) }),
     invokeHeaderAction,
     invokeArtifactAction,
     invokeGitTab,
+    invokePanel,
     respond,
     registerSettings: (session: any, schema: PiWebSettingsRegistration) => registerSessionSettings(session, schema),
     settingsSchemas: activeSettingsSchemaList,

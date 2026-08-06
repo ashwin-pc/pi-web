@@ -664,6 +664,17 @@ const server = createServer(async (req, res) => {
         }
       }
 
+      if (method === "POST" && url.pathname === "/api/web-panel/invoke") {
+        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; fields?: unknown };
+        try {
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokePanel(resolveSessionId(body.sessionId), body) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Panel returned no HTML" ? 400 : message === "Panel not found" ? 404 : 500;
+          return sendJson(res, status, { ok: false, error: message });
+        }
+      }
+
       if (method === "GET" && url.pathname === "/api/session/stats") {
         return sendJson(res, 200, { ok: true, ...await sessionService.stats(resolveSessionId(url.searchParams.get("sessionId"))) });
       }

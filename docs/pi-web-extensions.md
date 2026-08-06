@@ -120,6 +120,90 @@ ctx.ui.web.setHeaderAction("recap", undefined);
 
 The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../examples/pi-web-extensions/recap.ts).
 
+## FAB and right-panel API
+
+`ctx.ui.web.setPanel(key, panel)` registers an extension **panel surface**: trusted
+extension-provided HTML rendered in pi-web's shared right panel. A panel has **no
+implicit entry point** — registering one contributes nothing to the FAB. Entry points
+are explicit and may be anything that references the panel:
+
+- `ctx.ui.web.setFabAction(key, { title, icon, opens })` — a mascot-FAB launcher entry
+- a header action returning `openPanel` from `invoke()`
+- future affordances (links from other extension views, etc.)
+
+The panel can call back into the extension with `data-web-panel-action`, optional JSON
+in `data-web-panel-payload`, and ordinary HTML forms. Successful form controls are sent
+as `event.fields`.
+
+```ts
+ctx.ui.web.setPanel("notes", {
+  title: "Notes",
+  label: "Notepad",
+  icon: "notebook-pen",
+  render: async (event) => {
+    if (event?.action === "save") {
+      const content = event.fields?.content;
+      // Persist content here.
+    }
+    return {
+      html: `<form data-web-panel-action="save">
+        <textarea name="content"></textarea>
+        <button type="submit" data-web-panel-action="save">Save</button>
+      </form>`,
+    };
+  },
+});
+```
+
+Panel HTML is trusted and uses the same local extension trust model as custom
+footer and Git-tab HTML. Scripts inserted through `innerHTML` do not execute;
+use action attributes for interaction. Clear the contribution with:
+
+```ts
+ctx.ui.web.setPanel("notes", undefined);
+ctx.ui.web.setFabAction("notes-launcher", undefined);
+```
+
+Register a FAB launcher for a panel, or open it from a header action — or both:
+
+```ts
+ctx.ui.web.setPanel("notes", { title: "Notes", render: ... });
+ctx.ui.web.setFabAction("notes-launcher", {
+  title: "Notes", icon: "notebook-pen", opens: "notes",
+});
+ctx.ui.web.setHeaderAction("open-notes", {
+  icon: "scroll-text",
+  title: "Open notes",
+  invoke: () => ({ openPanel: "notes" }),
+});
+```
+
+The installable global-notepad example is at
+[`examples/pi-web-extensions/notepad.ts`](../examples/pi-web-extensions/notepad.ts).
+It is a fully **opt-in** feature: install it by copying one file into a pi-web
+extension directory, remove it by deleting that file. Core pi-web contains
+nothing notepad-specific — the extension is built entirely on the generic
+`setPanel`, tool, and settings APIs.
+
+It keeps a machine-global day planner of structured entries (tasks, notes,
+decisions) in `~/.pi/agent/notepad.json`, shared by every conversation. Every
+entry records provenance — who added it (you or an agent), from which session,
+and in which project — and the panel links entries back to their source
+conversation. Entries have a lifecycle (`open`/`done`/`dropped`); closed
+entries auto-archive to `notepad-archive.jsonl` after a week, duplicates are
+detected on add, and caps keep the active set small.
+
+The model's default system-prompt footprint is exactly the `notepad` tool's
+one-line snippet and guideline — contents are never injected automatically. A
+settings toggle (“Share pinned entries with the model”, default **off**) can
+additionally append pinned entries to the system prompt. Install it globally
+with:
+
+```sh
+mkdir -p ~/.pi/web/extensions
+cp examples/pi-web-extensions/notepad.ts ~/.pi/web/extensions/notepad.ts
+```
+
 ## Artifact preview action API
 
 `ctx.ui.web.setArtifactAction(key, action)` adds an action to matching Markdown, HTML, or video artifact preview cards. Match by preview kind, filename extension, or both. The handler receives the artifact's name, `/api/artifacts/...` path, and kind, and may return Markdown or a plain-text message shown in the card.

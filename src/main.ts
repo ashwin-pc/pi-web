@@ -32,10 +32,11 @@ import {
   type SessionStateController,
 } from "./app/sessionState.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
-import { initActionLauncher } from "./app/actionLauncher.js";
+import { initActionLauncher, type ActionLauncherController } from "./app/actionLauncher.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
+import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
@@ -69,6 +70,8 @@ let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
 let gitPanel: GitPanelController;
 let filesPanel: FilesPanelController;
+let webPanels: WebPanelsController;
+let actionLauncher: ActionLauncherController;
 let realtime: RealtimeController;
 async function submitPromptFromMessageAction(message: string) {
   const promptText = message.trim();
@@ -148,6 +151,7 @@ const webHeaderActions = createWebHeaderActions({
   headers: api.headers,
   getSessionId: () => state.currentSessionId,
   markdown,
+  openPanel: (key) => webPanels?.open(key),
 });
 
 function setSessionInfoOpen(open: boolean) {
@@ -257,6 +261,8 @@ function renderActiveSessionMetadata() {
   webHeaderActions.render(view?.webHeaderActions ?? []);
   setArtifactPreviewActions(view?.webArtifactActions ?? []);
   gitPanel?.setExtensionTabs(view?.webGitTabs ?? []);
+  webPanels?.setPanels(view?.webPanels ?? [], state.currentSessionId);
+  actionLauncher?.setExtensionActions(view?.webFabActions ?? []);
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
   const idValue = elements.sessionInfoId.querySelector("strong");
@@ -313,7 +319,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   const includesRuntimeView = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting", "stats", "queue"].some((key) => key in data));
   const includesMetadataView = Boolean(data && [
     "cwd", "model", "thinkingLevel", "sessionName", "sessionTitle",
-    "webFooters", "webHeaderActions", "webArtifactActions", "webGitTabs",
+    "webFooters", "webHeaderActions", "webArtifactActions", "webGitTabs", "webPanels", "webFabActions",
   ].some((key) => key in data));
   if (activatesSession || includesMetadataView) renderActiveSessionMetadata();
   if (activatesSession || includesRuntimeView) {
@@ -512,7 +518,8 @@ realtime = createRealtime({
 });
 
 initStaticIcons();
-initActionLauncher(elements);
+webPanels = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+actionLauncher = initActionLauncher(elements, { onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey) });
 statusBar.init();
 sessions.init();
 contextMeter.init();

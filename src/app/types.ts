@@ -362,6 +362,8 @@ export type SessionViewState = SessionRecord & {
   webHeaderActions?: unknown;
   webArtifactActions?: unknown;
   webGitTabs?: unknown;
+  webPanels?: unknown;
+  webFabActions?: unknown;
 };
 
 export type AppState = {
