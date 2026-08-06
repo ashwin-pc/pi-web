@@ -74,12 +74,15 @@ describe("session state store", () => {
 
     reduceSessionSnapshot(state, {
       ...legacySnapshot,
-      webFooters: [{ key: "footer", footer: { kind: "text", lines: ["ready"] } }],
+      webContributions: [
+        { version: 1, key: "footer", slot: "footer", kind: "static", view: { kind: "text", lines: ["ready"] } },
+        { version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Notes", label: "Notepad", icon: "notebook-pen" },
+      ],
     });
 
     expect(state.sessionsById["session-a"].snapshotLoaded).toBe(true);
     expect(state.sessionsById["session-a"].queue).toEqual({ steering: [], followUp: [] });
-    expect(state.sessionsById["session-a"].webFooters).toHaveLength(1);
+    expect(state.sessionsById["session-a"].webContributions).toHaveLength(2);
   });
 
   it("updates a background runtime without changing the active projection", () => {

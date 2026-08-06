@@ -261,15 +261,14 @@ export function initGitPanel(options: {
     panel.setAttribute("aria-busy", "true");
     render();
     try {
-      const res = await fetch("/api/web-git-tab/invoke", {
+      const res = await fetch("/api/web-contributions/invoke", {
         method: "POST",
         headers: apiHeaders(),
         body: JSON.stringify({
           sessionId: getSessionId?.(),
+          slot: "git-tab",
           key,
-          action: event?.action,
-          payload: event?.payload,
-          repo: selectedRepoContext(),
+          event: { ...event, context: selectedRepoContext() },
         }),
       });
       const data = await res.json().catch(() => ({}));
@@ -453,8 +452,8 @@ export function initGitPanel(options: {
 
   function invokeExtensionAction(activeKey: string, target: HTMLElement) {
     void loadExtensionTab(activeKey, {
-      action: target.dataset.webGitTabAction || "",
-      payload: parsePayload(target.dataset.webGitTabPayload),
+      action: target.dataset.webAction || target.dataset.webGitTabAction || "",
+      payload: parsePayload(target.dataset.webPayload || target.dataset.webGitTabPayload),
     });
   }
 
@@ -462,7 +461,7 @@ export function initGitPanel(options: {
     const activeKey = extensionKeyFromView();
     if (!activeKey) return;
     const target = event.target instanceof Element
-      ? event.target.closest<HTMLElement>("[data-web-git-tab-action]")
+      ? event.target.closest<HTMLElement>("[data-web-action], [data-web-git-tab-action]")
       : undefined;
     if (!target || !primary.contains(target)) return;
     event.preventDefault();
@@ -474,7 +473,7 @@ export function initGitPanel(options: {
     const activeKey = extensionKeyFromView();
     if (!activeKey) return;
     const target = event.target instanceof Element
-      ? event.target.closest<HTMLElement>("[data-web-git-tab-action]")
+      ? event.target.closest<HTMLElement>("[data-web-action], [data-web-git-tab-action]")
       : undefined;
     if (!target || !primary.contains(target)) return;
     event.preventDefault();

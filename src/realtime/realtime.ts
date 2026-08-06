@@ -778,7 +778,7 @@ export function createRealtime(options: {
         handleExtensionUiRequest(data);
         return;
       }
-      if (["web_footer_changed", "web_header_actions_changed", "web_artifact_actions_changed", "web_git_tabs_changed"].includes(data.type)) {
+      if (data.type === "web_contributions_changed") {
         sessionState.applySnapshot(data);
         return;
       }

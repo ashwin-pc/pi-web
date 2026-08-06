@@ -1,0 +1,141 @@
+.webPanel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  color: var(--text);
+}
+
+.webPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 56px;
+  padding: 10px 12px 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-2) 78%, transparent);
+}
+
+.webPanelHeader h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.webPanelHeader h2 > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webPanelTitleIcon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--accent);
+}
+
+.webPanelTitleIcon svg,
+.webPanelClose svg { width: 18px; height: 18px; }
+
+.webPanelClose {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.webPanelClose:hover,
+.webPanelClose:focus-visible {
+  border-color: var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.webPanelBody {
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+  overscroll-behavior: contain;
+}
+
+.webPanel[aria-busy="true"] .webPanelBody { color: var(--muted); }
+
+.webPanelError {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  color: var(--danger);
+  white-space: pre-wrap;
+}
+
+/* Optional primitives for extension-provided forms. Extension HTML remains trusted. */
+.webPanelForm {
+  display: grid;
+  grid-template-rows: minmax(220px, 1fr) auto;
+  gap: 12px;
+  min-height: 100%;
+}
+
+.webPanelTextarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: min(62vh, 680px);
+  resize: vertical;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  outline: none;
+  background: color-mix(in srgb, var(--panel-2) 82%, black);
+  color: var(--text);
+  font: 14px/1.55 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  tab-size: 2;
+}
+
+.webPanelTextarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.webPanelFormActions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.webPanelFormStatus {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.webPanelButton {
+  min-height: 36px;
+  padding: 7px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 50%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel-2));
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.webPanelButton:hover,
+.webPanelButton:focus-visible { border-color: var(--accent); }
+
+@media (max-width: 640px) {
+  .webPanelBody { padding: 12px; }
+  .webPanelTextarea { min-height: calc(var(--app-height) - 150px); }
+}

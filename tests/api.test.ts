@@ -530,6 +530,7 @@ describe("pi-web mock API", () => {
       [`/api/messages?sessionId=${missing}`, {}, 404],
       ["/api/sessions/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: missing }) }, 404],
       ["/api/session/cwd", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, cwd: "/tmp" }) }, 404],
+      ["/api/web-contributions/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, slot: "panel", key: "notes" }) }, 404],
       ["/api/web-header-action/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, key: "recap" }) }, 404],
       ["/api/web-git-tab/invoke", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: missing, key: "status" }) }, 404],
       [`/api/session/tree?sessionId=${missing}`, {}, 404],

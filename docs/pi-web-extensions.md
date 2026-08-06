@@ -120,6 +120,65 @@ ctx.ui.web.setHeaderAction("recap", undefined);
 
 The repo includes a recap example at [`examples/pi-web-extensions/recap.ts`](../examples/pi-web-extensions/recap.ts).
 
+## FAB and right-panel API
+
+`ctx.ui.web.setPanel(key, panel)` registers an extension **panel surface**: trusted
+extension-provided HTML rendered in pi-web's shared right panel. A panel has **no
+implicit entry point** — registering one contributes nothing to the FAB. Entry points
+are explicit and may be anything that references the panel:
+
+- `ctx.ui.web.setFabAction(key, { title, icon, opens })` — a mascot-FAB launcher entry
+- a header action returning an `open-panel` effect from `invoke()`
+- future affordances (links from other extension views, etc.)
+
+The panel can call back into the extension with `data-web-action`, optional JSON
+in `data-web-payload`, and ordinary HTML forms. Successful form controls are sent
+as `event.fields`.
+
+```ts
+ctx.ui.web.setPanel("notes", {
+  title: "Notes",
+  label: "Notepad",
+  icon: "notebook-pen",
+  render: async (event) => {
+    if (event?.action === "save") {
+      const content = event.fields?.content;
+      // Persist content here.
+    }
+    return {
+      html: `<form data-web-action="save">
+        <textarea name="content"></textarea>
+        <button type="submit" data-web-action="save">Save</button>
+      </form>`,
+    };
+  },
+});
+```
+
+Panel HTML is trusted and uses the same local extension trust model as custom
+footer and Git-tab HTML. Scripts inserted through `innerHTML` do not execute;
+use action attributes for interaction. Clear the contribution with:
+
+```ts
+ctx.ui.web.setPanel("notes", undefined);
+ctx.ui.web.setFabAction("notes-launcher", undefined);
+```
+
+Register a FAB launcher for a panel, or open it from a header action — or both:
+
+```ts
+ctx.ui.web.setPanel("notes", { title: "Notes", render: ... });
+ctx.ui.web.setFabAction("notes-launcher", {
+  title: "Notes", icon: "notebook-pen", opens: "notes",
+});
+ctx.ui.web.setHeaderAction("open-notes", {
+  icon: "scroll-text",
+  title: "Open notes",
+  invoke: () => ({ effects: [{ type: "open-panel", key: "notes" }] }),
+});
+```
+
+
 ## Artifact preview action API
 
 `ctx.ui.web.setArtifactAction(key, action)` adds an action to matching Markdown, HTML, or video artifact preview cards. Match by preview kind, filename extension, or both. The handler receives the artifact's name, `/api/artifacts/...` path, and kind, and may return Markdown or a plain-text message shown in the card.
@@ -158,7 +217,7 @@ ctx.ui.web.setArtifactAction("publish", undefined);
 
 `ctx.ui.web.setGitTab(key, tab)` contributes a provider-specific tab to pi-web's built-in Git side panel. Core pi-web owns the Git drawer; extensions own provider detection, data fetching, and trusted HTML rendering.
 
-Elements inside the HTML can call back into the extension by using `data-web-git-tab-action` and optional JSON in `data-web-git-tab-payload`. An action can also return `composerContext` without `html`; pi-web keeps the current tab visible and adds the plain-text context as a removable composer pill. The context content is included with the next prompt.
+Elements inside the HTML can call back into the extension by using `data-web-action` and optional JSON in `data-web-payload` (the legacy Git-tab names remain accepted). An action can also return `composerContext` without `html`; pi-web keeps the current tab visible and adds the plain-text context as a removable composer pill. The context content is included with the next prompt.
 
 ```ts
 ctx.ui.web.setGitTab("github", {
@@ -176,7 +235,7 @@ ctx.ui.web.setGitTab("github", {
       };
     }
     return {
-      html: `<button data-web-git-tab-action="attach-issue" data-web-git-tab-payload='{"number":123}'>#123</button>`,
+      html: `<button data-web-action="attach-issue" data-web-payload='{"number":123}'>#123</button>`,
     };
   },
 });
