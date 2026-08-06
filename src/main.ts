@@ -520,6 +520,11 @@ composer.init();
 conversationTree.init();
 modelSettings.init();
 settings.init();
+const canCyclePinnedSessions = () => state.pinnedSessions.length > 1
+  && elements.tokenOverlay.hidden
+  && !elements.formEl.classList.contains("expanded")
+  && !document.fullscreenElement
+  && !document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop, .imageOverlay');
 let shortcutHelp: ShortcutHelpController;
 const keyboardShortcuts: Shortcut[] = [
   {
@@ -542,6 +547,26 @@ const keyboardShortcuts: Shortcut[] = [
     allowInEditable: true,
     when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
     run: () => sessions.toggleCurrentSessionPin(),
+  },
+  {
+    id: "sessions.previousPinned",
+    key: "ArrowLeft",
+    description: "Previous pinned session",
+    scope: "global",
+    mod: true,
+    shift: true,
+    when: canCyclePinnedSessions,
+    run: () => sessions.openAdjacentPinnedSession(-1),
+  },
+  {
+    id: "sessions.nextPinned",
+    key: "ArrowRight",
+    description: "Next pinned session",
+    scope: "global",
+    mod: true,
+    shift: true,
+    when: canCyclePinnedSessions,
+    run: () => sessions.openAdjacentPinnedSession(1),
   },
   {
     id: "sessions.new",

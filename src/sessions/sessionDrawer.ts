@@ -21,6 +21,7 @@ export type SessionsController = {
   setSessionDrawerOpen: (open: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
   toggleCurrentSessionPin: () => void;
+  openAdjacentPinnedSession: (direction: -1 | 1) => Promise<void>;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateSessionName: (sessionId: string, name: string) => void;
   removeSession: (sessionId: string) => void;
@@ -1230,6 +1231,18 @@ export function createSessions(options: {
     await openSessionTab(sessionId, cached?.cwd || state.currentCwd || "");
   }
 
+  async function openAdjacentPinnedSession(direction: -1 | 1) {
+    const pinned = state.pinnedSessions;
+    if (pinned.length < 2) return;
+    const currentIndex = pinned.findIndex((item) => item.id === state.currentSessionId);
+    const targetIndex = currentIndex < 0
+      ? (direction < 0 ? pinned.length - 1 : 0)
+      : (currentIndex + direction + pinned.length) % pinned.length;
+    const target = pinned[targetIndex];
+    const cached = cachedSessions.find((item) => item.id === target.id);
+    await openSessionTab(target.id, cached?.cwd || target.cwd || state.currentCwd || "");
+  }
+
   function updateCurrentSessionPinButton() {
     if (!currentSessionPinButton) return;
     const currentId = state.currentSessionId;
@@ -2184,5 +2197,6 @@ export function createSessions(options: {
     waitingInfoFor,
     openSessionTab,
     openSessionById,
+    openAdjacentPinnedSession,
   };
 }

@@ -10,12 +10,21 @@ function usesCommandKey() {
   return /Mac|iPhone|iPad|iPod/i.test(navigator.platform);
 }
 
+const namedKeys: Record<string, string> = {
+  arrowdown: "↓",
+  arrowleft: "←",
+  arrowright: "→",
+  arrowup: "↑",
+  enter: "Enter",
+  escape: "Esc",
+};
+
 function shortcutKeys(shortcut: Shortcut) {
   const keys: string[] = [];
   if (shortcut.mod) keys.push(usesCommandKey() ? "⌘" : "Ctrl");
   if (shortcut.alt) keys.push(usesCommandKey() ? "⌥" : "Alt");
   if (shortcut.shift) keys.push(usesCommandKey() ? "⇧" : "Shift");
-  keys.push(shortcut.key.toLowerCase() === "escape" ? "Esc" : shortcut.key.toUpperCase());
+  keys.push(namedKeys[shortcut.key.toLowerCase()] || shortcut.key.toUpperCase());
   return keys;
 }
 
