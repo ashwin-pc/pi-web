@@ -520,11 +520,12 @@ composer.init();
 conversationTree.init();
 modelSettings.init();
 settings.init();
+const hasBlockingShortcutOverlay = () => Boolean(document.fullscreenElement
+  || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop, .imageOverlay'));
 const canCyclePinnedSessions = () => state.pinnedSessions.length > 1
   && elements.tokenOverlay.hidden
   && !elements.formEl.classList.contains("expanded")
-  && !document.fullscreenElement
-  && !document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop, .imageOverlay');
+  && !hasBlockingShortcutOverlay();
 let shortcutHelp: ShortcutHelpController;
 const keyboardShortcuts: Shortcut[] = [
   {
@@ -588,6 +589,16 @@ const keyboardShortcuts: Shortcut[] = [
     allowInEditable: true,
     when: () => elements.tokenOverlay.hidden,
     run: () => shortcutHelp.toggle(),
+  },
+  {
+    id: "composer.focus",
+    key: ".",
+    description: "Focus composer",
+    scope: "global",
+    when: () => elements.tokenOverlay.hidden
+      && document.activeElement !== elements.promptEl
+      && !hasBlockingShortcutOverlay(),
+    run: () => elements.promptEl.focus(),
   },
   {
     id: "composer.submit",

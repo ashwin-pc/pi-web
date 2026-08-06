@@ -52,8 +52,9 @@ test.describe("keyboard shortcuts", () => {
     const dialog = page.locator(".shortcutHelp");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("heading")).toHaveText("Keyboard shortcuts");
-    await expect(dialog.locator(".shortcutHelpRow")).toHaveCount(8);
+    await expect(dialog.locator(".shortcutHelpRow")).toHaveCount(9);
     await expect(dialog).toContainText("Pin or unpin current session");
+    await expect(dialog.locator(".shortcutHelpRow").filter({ hasText: "Focus composer" }).locator("kbd").last()).toHaveText(".");
     await expect(dialog).toContainText("Open a new session");
     const previous = dialog.locator(".shortcutHelpRow").filter({ hasText: "Previous pinned session" });
     const next = dialog.locator(".shortcutHelpRow").filter({ hasText: "Next pinned session" });
@@ -137,6 +138,30 @@ test.describe("keyboard shortcuts", () => {
     await page.keyboard.press("Control+Shift+O");
 
     await expect(page.locator("#statusTitle")).toHaveText("New session");
+  });
+
+  test("period focuses the composer without replacing normal input", async ({ page }) => {
+    const prompt = page.locator("#prompt");
+    const statusTitle = page.locator("#statusTitle");
+    await statusTitle.focus();
+
+    await page.keyboard.press("Control+/");
+    await expect(page.locator(".shortcutHelp")).toBeVisible();
+    await page.keyboard.press(".");
+    await expect(page.locator(".shortcutHelp")).toBeVisible();
+    await expect(prompt).not.toBeFocused();
+    await page.keyboard.press("Control+/");
+    await expect(statusTitle).toBeFocused();
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+
+    await page.keyboard.press(".");
+    await expect(prompt).toBeFocused();
+    await expect(prompt).toHaveValue("");
+
+    await page.keyboard.press(".");
+    await expect(prompt).toHaveValue(".");
   });
 
   test("ctrl/cmd+enter sends the prompt", async ({ page }) => {
