@@ -108,6 +108,57 @@ describe("bundled extension path discovery", () => {
       .rejects.toThrow("does not match this artifact");
     await expect(bridge.invokeArtifactAction(session, { key: "download", name: "page.html", path: "/api/artifacts/other.html", kind: "html" }))
       .rejects.toThrow("Invalid artifact context");
+
+    ui.web.setArtifactAction("malformed", {
+      title: "Malformed filters", kinds: "html", extensions: ".html",
+      invoke: () => ({ message: "invoked" }),
+    } as any);
+    await expect(bridge.invokeArtifactAction(session, { key: "malformed", name: "notes.md", path: "/api/artifacts/notes.md", kind: "markdown" }))
+      .resolves.toMatchObject({ message: "invoked" });
+  });
+
+  it("keeps legacy surfaces isolated over one contribution registry", async () => {
+    let ui: any;
+    const emitted: any[] = [];
+    const bridge = createWebUiBridge({
+      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+
+    ui.web.setFooter("first", "one");
+    ui.web.setFooter("shared", "ready");
+    ui.web.setFooter("last", "three");
+    ui.web.setFooter("shared", "updated");
+    ui.web.setHeaderAction("shared", { title: "Summary", invoke: () => ({ markdown: "# Done" }) });
+    ui.web.setGitTab("shared", { title: "Issues", render: () => ({ html: "<p>Open</p>" }) });
+    const broadcastsBeforeInvalidKey = emitted.length;
+    ui.web.setFooter("", "ignored");
+    ui.web.setFooter("", undefined);
+
+    expect(emitted).toHaveLength(broadcastsBeforeInvalidKey);
+    expect(bridge.entries(session).webFooters.map(({ key }: { key: string }) => key)).toEqual(["first", "shared", "last"]);
+    expect(bridge.entries(session)).toMatchObject({
+      webFooters: [
+        { key: "first", footer: { kind: "text", lines: ["one"] } },
+        { key: "shared", footer: { kind: "text", lines: ["updated"] } },
+        { key: "last", footer: { kind: "text", lines: ["three"] } },
+      ],
+      webHeaderActions: [{ key: "shared", title: "Summary" }],
+      webGitTabs: [{ key: "shared", title: "Issues" }],
+    });
+    await expect(bridge.invokeHeaderAction(session, "shared")).resolves.toMatchObject({ markdown: "# Done" });
+    await expect(bridge.invokeGitTab(session, { key: "shared" })).resolves.toMatchObject({ html: "<p>Open</p>" });
+
+    ui.web.setHeaderAction("shared", undefined);
+    expect(bridge.entries(session).webHeaderActions).toEqual([]);
+    expect(bridge.entries(session).webFooters).toHaveLength(3);
+    expect(bridge.entries(session).webGitTabs).toHaveLength(1);
+    expect(emitted.at(-1)).toMatchObject({ type: "web_header_actions_changed", webHeaderActions: [] });
   });
 
   it("re-emits a footer when the same session id gets a new runtime", async () => {

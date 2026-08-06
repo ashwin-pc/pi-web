@@ -39,26 +39,34 @@ type PendingExtensionUiRequest = {
 };
 const pendingExtensionUiRequests = new Map<string, PendingExtensionUiRequest>();
 
-type WebFooterState = {
-  footers: Map<string, PiWebFooter>;
-};
+type WebContribution =
+  | { version: 1; key: string; slot: "footer"; kind: "static"; view: PiWebFooter }
+  | { version: 1; key: string; slot: "header-action"; kind: "rendered"; source: PiWebHeaderAction }
+  | { version: 1; key: string; slot: "artifact-action"; kind: "rendered"; source: PiWebArtifactAction }
+  | { version: 1; key: string; slot: "git-tab"; kind: "rendered"; source: PiWebGitTab };
 
-type WebHeaderActionState = {
-  actions: Map<string, PiWebHeaderAction>;
-};
+/** Canonical per-runtime registry. Legacy surfaces below are wire adapters over it. */
+const webContributionStates = new WeakMap<object, Map<string, WebContribution>>();
 
-type WebGitTabState = {
-  tabs: Map<string, PiWebGitTab>;
-};
+function contributionId(slot: WebContribution["slot"], key: string) {
+  return `${slot}\0${key}`;
+}
 
-type WebArtifactActionState = {
-  actions: Map<string, PiWebArtifactAction>;
-};
+function contributionState(value: any) {
+  const session = value as object;
+  let state = webContributionStates.get(session);
+  if (!state) {
+    state = new Map();
+    webContributionStates.set(session, state);
+  }
+  return state;
+}
 
-const webFooterStates = new WeakMap<object, WebFooterState>();
-const webHeaderActionStates = new WeakMap<object, WebHeaderActionState>();
-const webGitTabStates = new WeakMap<object, WebGitTabState>();
-const webArtifactActionStates = new WeakMap<object, WebArtifactActionState>();
+function contributionsFor<S extends WebContribution["slot"]>(value: any, slot: S) {
+  return Array.from(contributionState(value).values()).filter(
+    (entry): entry is Extract<WebContribution, { slot: S }> => entry.slot === slot,
+  );
+}
 
 // Process-global extension-settings schema registry: decoupled from any one
 // session. Values live in settingsStore (global). A schema stays registered
@@ -325,59 +333,16 @@ async function getExtensionSettings(id: string): Promise<PiWebStoredSettings> {
   return { schemaVersion: 0, values: {} };
 }
 
-function getWebFooterState(value: any): WebFooterState {
-  const key = value as object;
-  let state = webFooterStates.get(key);
-  if (!state) {
-    state = { footers: new Map() };
-    webFooterStates.set(key, state);
-  }
-  return state;
-}
-
-function cleanFooterKey(value: unknown) {
+function cleanContributionKey(value: unknown) {
   if (typeof value !== "string") return undefined;
   const cleaned = value.trim().slice(0, 80).replace(/[^a-zA-Z0-9_.:-]/g, "-");
   return cleaned || undefined;
 }
 
-const cleanHeaderActionKey = cleanFooterKey;
-const cleanGitTabKey = cleanFooterKey;
-
 function cleanHeaderActionText(value: unknown, maxLength = 200) {
   if (typeof value !== "string") return undefined;
   const cleaned = value.replace(/[\u0000-\u001F\u007F]/g, "").trim();
   return cleaned ? cleaned.slice(0, maxLength) : undefined;
-}
-
-function getWebHeaderActionState(value: any): WebHeaderActionState {
-  const key = value as object;
-  let state = webHeaderActionStates.get(key);
-  if (!state) {
-    state = { actions: new Map() };
-    webHeaderActionStates.set(key, state);
-  }
-  return state;
-}
-
-function getWebArtifactActionState(value: any): WebArtifactActionState {
-  const key = value as object;
-  let state = webArtifactActionStates.get(key);
-  if (!state) {
-    state = { actions: new Map() };
-    webArtifactActionStates.set(key, state);
-  }
-  return state;
-}
-
-function getWebGitTabState(value: any): WebGitTabState {
-  const key = value as object;
-  let state = webGitTabStates.get(key);
-  if (!state) {
-    state = { tabs: new Map() };
-    webGitTabStates.set(key, state);
-  }
-  return state;
 }
 
 function cleanFooterText(value: unknown, maxLength = 2_000) {
@@ -404,126 +369,96 @@ function normalizePiWebFooter(value: unknown): PiWebFooter | undefined {
   return undefined;
 }
 
-function webFooterEntries(value: any) {
-  return Array.from(getWebFooterState(value).footers.entries()).map(([key, footer]) => ({ key, footer }));
+const contributionPolicies = {
+  footer: {
+    entries: (value: any) => contributionsFor(value, "footer").map(({ key, view: footer }) => ({ key, footer })),
+    event: "web_footer_changed",
+    field: "webFooters",
+  },
+  "header-action": {
+    entries: (value: any) => contributionsFor(value, "header-action").map(({ key, source }) => ({
+      key, icon: cleanHeaderActionText(source.icon, 80), title: cleanHeaderActionText(source.title) || key,
+      label: cleanHeaderActionText(source.label),
+    })),
+    event: "web_header_actions_changed",
+    field: "webHeaderActions",
+  },
+  "artifact-action": {
+    entries: (value: any) => contributionsFor(value, "artifact-action").map(({ key, source }) => ({
+      key, title: cleanHeaderActionText(source.title) || key, label: cleanHeaderActionText(source.label, 80),
+      kinds: Array.isArray(source.kinds) ? source.kinds.filter((kind) => kind === "markdown" || kind === "html" || kind === "video") : undefined,
+      extensions: Array.isArray(source.extensions) ? source.extensions.flatMap((extension) => {
+        const cleaned = cleanHeaderActionText(extension, 30)?.toLowerCase();
+        return cleaned && /^\.[a-z0-9]+$/.test(cleaned) ? [cleaned] : [];
+      }).slice(0, 20) : undefined,
+    })),
+    event: "web_artifact_actions_changed",
+    field: "webArtifactActions",
+  },
+  "git-tab": {
+    entries: (value: any) => contributionsFor(value, "git-tab").map(({ key, source }) => ({
+      key, title: cleanHeaderActionText(source.title) || key, label: cleanHeaderActionText(source.label, 80),
+    })),
+    event: "web_git_tabs_changed",
+    field: "webGitTabs",
+  },
+} as const;
+
+type ContributionSlot = keyof typeof contributionPolicies;
+
+function broadcastContributions(value: any, slot: ContributionSlot) {
+  const policy = contributionPolicies[slot];
+  const entries = policy.entries(value);
+  deps.emit({ type: policy.event, sessionId: value.sessionId, sessionFile: value.sessionFile, [policy.field]: entries });
+  return entries;
 }
 
-function broadcastWebFooters(value: any) {
-  const webFooters = webFooterEntries(value);
-  deps.emit({
-    type: "web_footer_changed",
-    sessionId: value.sessionId,
-    sessionFile: value.sessionFile,
-    webFooters,
-  });
-  return webFooters;
-}
-
-function webHeaderActionEntries(value: any) {
-  return Array.from(getWebHeaderActionState(value).actions.entries()).map(([key, action]) => ({
-    key,
-    icon: cleanHeaderActionText(action.icon, 80),
-    title: cleanHeaderActionText(action.title) || key,
-    label: cleanHeaderActionText(action.label),
-  }));
-}
-
-function broadcastWebHeaderActions(value: any) {
-  const webHeaderActions = webHeaderActionEntries(value);
-  deps.emit({
-    type: "web_header_actions_changed",
-    sessionId: value.sessionId,
-    sessionFile: value.sessionFile,
-    webHeaderActions,
-  });
-  return webHeaderActions;
-}
-
-function webArtifactActionEntries(value: any) {
-  return Array.from(getWebArtifactActionState(value).actions.entries()).map(([key, action]) => ({
-    key,
-    title: cleanHeaderActionText(action.title) || key,
-    label: cleanHeaderActionText(action.label, 80),
-    kinds: Array.isArray(action.kinds) ? action.kinds.filter((kind) => kind === "markdown" || kind === "html" || kind === "video") : undefined,
-    extensions: Array.isArray(action.extensions) ? action.extensions.flatMap((extension) => {
-      const cleaned = cleanHeaderActionText(extension, 30)?.toLowerCase();
-      return cleaned && /^\.[a-z0-9]+$/.test(cleaned) ? [cleaned] : [];
-    }).slice(0, 20) : undefined,
-  }));
-}
-
-function broadcastWebArtifactActions(value: any) {
-  const webArtifactActions = webArtifactActionEntries(value);
-  deps.emit({ type: "web_artifact_actions_changed", sessionId: value.sessionId, sessionFile: value.sessionFile, webArtifactActions });
-  return webArtifactActions;
-}
-
-function webGitTabEntries(value: any) {
-  return Array.from(getWebGitTabState(value).tabs.entries()).map(([key, tab]) => ({
-    key,
-    title: cleanHeaderActionText(tab.title) || key,
-    label: cleanHeaderActionText(tab.label, 80),
-  }));
-}
-
-function broadcastWebGitTabs(value: any) {
-  const webGitTabs = webGitTabEntries(value);
-  deps.emit({
-    type: "web_git_tabs_changed",
-    sessionId: value.sessionId,
-    sessionFile: value.sessionFile,
-    webGitTabs,
-  });
-  return webGitTabs;
+function setContribution(
+  value: any,
+  slot: ContributionSlot,
+  keyValue: unknown,
+  create: (key: string) => WebContribution | undefined,
+) {
+  const key = cleanContributionKey(keyValue);
+  if (!key) return;
+  const contribution = create(key);
+  const id = contributionId(slot, key);
+  if (contribution) contributionState(value).set(id, contribution);
+  else contributionState(value).delete(id);
+  broadcastContributions(value, slot);
 }
 
 function createPiWebUi(value: any): PiWebUi {
   return {
     setFooter(key, footer) {
-      const footerKey = cleanFooterKey(key);
-      if (!footerKey) return;
-      const footerState = getWebFooterState(value);
-      const normalized = normalizePiWebFooter(footer);
-      if (normalized) footerState.footers.set(footerKey, normalized);
-      else footerState.footers.delete(footerKey);
-      broadcastWebFooters(value);
+      setContribution(value, "footer", key, (cleanKey) => {
+        const view = normalizePiWebFooter(footer);
+        return view ? { version: 1, key: cleanKey, slot: "footer", kind: "static", view } : undefined;
+      });
     },
     setHeaderAction(key, action) {
-      const actionKey = cleanHeaderActionKey(key);
-      if (!actionKey) return;
-      const actionState = getWebHeaderActionState(value);
-      if (action && typeof action === "object" && typeof action.invoke === "function") {
-        actionState.actions.set(actionKey, action);
-      } else {
-        actionState.actions.delete(actionKey);
-      }
-      broadcastWebHeaderActions(value);
+      setContribution(value, "header-action", key, (cleanKey) => (
+        action && typeof action === "object" && typeof action.invoke === "function"
+          ? { version: 1, key: cleanKey, slot: "header-action", kind: "rendered", source: action }
+          : undefined
+      ));
     },
     setArtifactAction(key, action) {
-      const actionKey = cleanHeaderActionKey(key);
-      if (!actionKey) return;
-      const state = getWebArtifactActionState(value);
-      if (action && typeof action === "object" && typeof action.invoke === "function") state.actions.set(actionKey, action);
-      else state.actions.delete(actionKey);
-      broadcastWebArtifactActions(value);
+      setContribution(value, "artifact-action", key, (cleanKey) => (
+        action && typeof action === "object" && typeof action.invoke === "function"
+          ? { version: 1, key: cleanKey, slot: "artifact-action", kind: "rendered", source: action }
+          : undefined
+      ));
     },
     setGitTab(key, tab) {
-      const tabKey = cleanGitTabKey(key);
-      if (!tabKey) return;
-      const tabState = getWebGitTabState(value);
-      if (tab && typeof tab === "object" && typeof tab.render === "function") {
-        tabState.tabs.set(tabKey, tab);
-      } else {
-        tabState.tabs.delete(tabKey);
-      }
-      broadcastWebGitTabs(value);
+      setContribution(value, "git-tab", key, (cleanKey) => (
+        tab && typeof tab === "object" && typeof tab.render === "function"
+          ? { version: 1, key: cleanKey, slot: "git-tab", kind: "rendered", source: tab }
+          : undefined
+      ));
     },
-    async registerSettings(schema) {
-      return registerSessionSettings(value, schema);
-    },
-    async getSettings(id) {
-      return getExtensionSettings(id);
-    },
+    async registerSettings(schema) { return registerSessionSettings(value, schema); },
+    async getSettings(id) { return getExtensionSettings(id); },
   };
 }
 
@@ -701,11 +636,17 @@ async function bindWebExtensions(value: any) {
 }
 
 
-  async function invokeHeaderAction(value: any, keyValue: unknown) {
-    const key = cleanHeaderActionKey(keyValue);
+  function renderedContribution<S extends "header-action" | "artifact-action" | "git-tab">(value: any, slot: S, keyValue: unknown) {
+    const key = cleanContributionKey(keyValue);
     if (!key) throw new Error("key is required");
-    const action = getWebHeaderActionState(value).actions.get(key);
-    if (!action) throw new Error("Header action not found");
+    const contribution = contributionState(value).get(contributionId(slot, key));
+    return { key, contribution: contribution?.slot === slot ? contribution as Extract<WebContribution, { slot: S }> : undefined };
+  }
+
+  async function invokeHeaderAction(value: any, keyValue: unknown) {
+    const { key, contribution } = renderedContribution(value, "header-action", keyValue);
+    if (!contribution) throw new Error("Header action not found");
+    const action = contribution.source;
     const result = await action.invoke();
     const markdown = cleanFooterText(result?.markdown, 200_000);
     if (!markdown) throw new Error("Header action returned no markdown");
@@ -713,10 +654,9 @@ async function bindWebExtensions(value: any) {
   }
 
   async function invokeArtifactAction(value: any, input: { key?: unknown; name?: unknown; path?: unknown; kind?: unknown }) {
-    const key = cleanHeaderActionKey(input.key);
-    if (!key) throw new Error("key is required");
-    const action = getWebArtifactActionState(value).actions.get(key);
-    if (!action) throw new Error("Artifact action not found");
+    const { key, contribution } = renderedContribution(value, "artifact-action", input.key);
+    if (!contribution) throw new Error("Artifact action not found");
+    const action = contribution.source;
     const name = cleanHeaderActionText(input.name, 500);
     const path = cleanHeaderActionText(input.path, 2_000);
     const kind = input.kind === "markdown" || input.kind === "html" || input.kind === "video" ? input.kind : undefined;
@@ -730,18 +670,20 @@ async function bindWebExtensions(value: any) {
     const result = await action.invoke({ name, path, kind });
     const markdown = cleanFooterText(result?.markdown, 200_000);
     const message = cleanHeaderActionText(result?.message, 2_000);
-    const download = result?.download && typeof result.download === "object"
-      ? { path, filename: cleanHeaderActionText(result.download.filename, 500) || name }
-      : undefined;
+    const download = result?.download && typeof result.download === "object" ? { path, filename: cleanHeaderActionText(result.download.filename, 500) || name } : undefined;
     if (!markdown && !message && !download) throw new Error("Artifact action returned no result");
-    return { label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key, ...(markdown ? { markdown } : {}), ...(message ? { message } : {}), ...(download ? { download } : {}) };
+    return {
+      label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key,
+      ...(markdown ? { markdown } : {}),
+      ...(message ? { message } : {}),
+      ...(download ? { download } : {}),
+    };
   }
 
   async function invokeGitTab(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; repo?: unknown }) {
-    const key = cleanGitTabKey(input.key);
-    if (!key) throw new Error("key is required");
-    const tab = getWebGitTabState(value).tabs.get(key);
-    if (!tab) throw new Error("Git tab not found");
+    const { key, contribution } = renderedContribution(value, "git-tab", input.key);
+    if (!contribution) throw new Error("Git tab not found");
+    const tab = contribution.source;
     const repo = input.repo && typeof input.repo === "object" ? input.repo as Record<string, unknown> : undefined;
     const result = await tab.render({
       action: typeof input.action === "string" ? input.action : undefined,
@@ -781,7 +723,7 @@ async function bindWebExtensions(value: any) {
 
   return {
     bind: bindWebExtensions,
-    entries: (value: any) => ({ webFooters: webFooterEntries(value), webHeaderActions: webHeaderActionEntries(value), webArtifactActions: webArtifactActionEntries(value), webGitTabs: webGitTabEntries(value) }),
+    entries: (value: any) => ({ webFooters: contributionPolicies.footer.entries(value), webHeaderActions: contributionPolicies["header-action"].entries(value), webArtifactActions: contributionPolicies["artifact-action"].entries(value), webGitTabs: contributionPolicies["git-tab"].entries(value) }),
     invokeHeaderAction,
     invokeArtifactAction,
     invokeGitTab,
