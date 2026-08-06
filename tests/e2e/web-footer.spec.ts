@@ -12,9 +12,9 @@ test("renders extension footers from session snapshots without queue data", asyn
     const response = await route.fetch();
     const state = await response.json();
     delete state.queue;
-    state.webFooters = [{
-      key: "test-footer",
-      footer: { kind: "text", lines: ["Extension footer is active"] },
+    state.webContributions = [{
+      version: 1, key: "test-footer", slot: "footer", kind: "static",
+      view: { kind: "text", lines: ["Extension footer is active"] },
     }];
     await route.fulfill({ response, json: state });
   });

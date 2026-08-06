@@ -6,10 +6,7 @@ export type HostSessionStateDecoration = {
   runtimeStartedAt?: string;
   runtimeLastActivityAt?: string;
   runtime: ReturnType<SessionActivity["runtimeForPath"]>;
-  webFooters: unknown[];
-  webHeaderActions: unknown[];
-  webArtifactActions: unknown[];
-  webGitTabs: unknown[];
+  webContributions: unknown[];
 };
 export type DecoratedSessionState = BaseSessionStateDto & HostSessionStateDecoration;
 export type WireSessionState = Omit<DecoratedSessionState, "thinkingLevels"> & { thinkingLevels?: string[] };
@@ -17,7 +14,7 @@ export type WireSessionState = Omit<DecoratedSessionState, "thinkingLevels"> & {
 type HostEventDependencies = {
   sessionForId(sessionId: string): PiWebSession | undefined;
   projectState(session: PiWebSession): BaseSessionStateDto;
-  webUiEntries(session: PiWebSession): Pick<HostSessionStateDecoration, "webFooters" | "webHeaderActions" | "webArtifactActions" | "webGitTabs">;
+  webUiEntries(session: PiWebSession): Pick<HostSessionStateDecoration, "webContributions">;
   sessionActivity: SessionActivity;
   broadcast(value: unknown): void;
   markSessionUnreadCompleted(sessionId: string): void;

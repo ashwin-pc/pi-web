@@ -98,12 +98,17 @@ describe("bundled extension path discovery", () => {
       invoke: ({ name }: { name: string }) => ({ download: { filename: `saved-${name}` } }),
     });
 
-    expect(bridge.entries(session).webArtifactActions).toEqual([{
-      key: "download", title: "Download", label: undefined, kinds: ["html"], extensions: [".html"],
+    expect(bridge.entries(session).webContributions).toEqual([{
+      version: 1, key: "download", slot: "artifact-action", kind: "rendered", title: "Download", label: undefined,
+      match: { kinds: ["html"], extensions: [".html"] },
     }]);
-    expect(emitted.at(-1)).toMatchObject({ type: "web_artifact_actions_changed", sessionId: "session" });
+    expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed", sessionId: "session" });
     await expect(bridge.invokeArtifactAction(session, { key: "download", name: "page.html", path: "/api/artifacts/page.html", kind: "html" }))
       .resolves.toMatchObject({ download: { path: "/api/artifacts/page.html", filename: "saved-page.html" } });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-action", key: "download",
+      event: { context: { key: "another-action", name: "page.html", path: "/api/artifacts/page.html", kind: "html" } },
+    })).resolves.toMatchObject({ download: { filename: "saved-page.html" } });
     await expect(bridge.invokeArtifactAction(session, { key: "download", name: "notes.md", path: "/api/artifacts/notes.md", kind: "markdown" }))
       .rejects.toThrow("does not match this artifact");
     await expect(bridge.invokeArtifactAction(session, { key: "download", name: "page.html", path: "/api/artifacts/other.html", kind: "html" }))
@@ -141,24 +146,75 @@ describe("bundled extension path discovery", () => {
     ui.web.setFooter("", undefined);
 
     expect(emitted).toHaveLength(broadcastsBeforeInvalidKey);
-    expect(bridge.entries(session).webFooters.map(({ key }: { key: string }) => key)).toEqual(["first", "shared", "last"]);
-    expect(bridge.entries(session)).toMatchObject({
-      webFooters: [
-        { key: "first", footer: { kind: "text", lines: ["one"] } },
-        { key: "shared", footer: { kind: "text", lines: ["updated"] } },
-        { key: "last", footer: { kind: "text", lines: ["three"] } },
-      ],
-      webHeaderActions: [{ key: "shared", title: "Summary" }],
-      webGitTabs: [{ key: "shared", title: "Issues" }],
-    });
+    const contributions = () => bridge.entries(session).webContributions;
+    expect(contributions().filter((entry: any) => entry.slot === "footer").map(({ key }: { key: string }) => key)).toEqual(["first", "shared", "last"]);
+    expect(contributions()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "first", slot: "footer", view: { kind: "text", lines: ["one"] } }),
+      expect.objectContaining({ key: "shared", slot: "footer", view: { kind: "text", lines: ["updated"] } }),
+      expect.objectContaining({ key: "last", slot: "footer", view: { kind: "text", lines: ["three"] } }),
+      expect.objectContaining({ key: "shared", slot: "header-action", title: "Summary" }),
+      expect.objectContaining({ key: "shared", slot: "git-tab", title: "Issues" }),
+    ]));
     await expect(bridge.invokeHeaderAction(session, "shared")).resolves.toMatchObject({ markdown: "# Done" });
     await expect(bridge.invokeGitTab(session, { key: "shared" })).resolves.toMatchObject({ html: "<p>Open</p>" });
 
     ui.web.setHeaderAction("shared", undefined);
-    expect(bridge.entries(session).webHeaderActions).toEqual([]);
-    expect(bridge.entries(session).webFooters).toHaveLength(3);
-    expect(bridge.entries(session).webGitTabs).toHaveLength(1);
-    expect(emitted.at(-1)).toMatchObject({ type: "web_header_actions_changed", webHeaderActions: [] });
+    expect(contributions().filter((entry: any) => entry.slot === "header-action")).toEqual([]);
+    expect(contributions().filter((entry: any) => entry.slot === "footer")).toHaveLength(3);
+    expect(contributions().filter((entry: any) => entry.slot === "git-tab")).toHaveLength(1);
+    expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed" });
+  });
+
+  it("serializes and invokes FAB-backed web panels through the web bridge", async () => {
+    let ui: any;
+    const emitted: any[] = [];
+    const bridge = createWebUiBridge({
+      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    } as any);
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+    let lastPanelEvent: any;
+    ui.web.setPanel("notes", {
+      title: "Global notes", label: "Notepad", icon: "notebook-pen",
+      render: (event: any) => {
+        lastPanelEvent = event;
+        return { title: event?.action === "save" ? "Saved notes" : undefined, html: `<p>${event?.fields?.content || "empty"}</p>` };
+      },
+    });
+
+    // Panels are pure surfaces: registering one contributes no FAB entry.
+    expect(bridge.entries(session).webContributions).toEqual([
+      { version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Global notes", label: "Notepad", icon: "notebook-pen" },
+    ]);
+    expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed", sessionId: "session" });
+
+    // Entry points are explicit registrations that reference a panel.
+    ui.web.setFabAction("notes-launcher", { title: "Notes", icon: "notebook-pen", opens: "notes" });
+    expect(bridge.entries(session).webContributions).toContainEqual(
+      { version: 1, key: "notes-launcher", slot: "fab", kind: "static", title: "Notes", label: undefined, icon: "notebook-pen", opens: "notes" },
+    );
+    expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed", sessionId: "session" });
+    ui.web.setFabAction("notes-launcher", undefined);
+    expect(bridge.entries(session).webContributions.filter((entry: any) => entry.slot === "fab")).toEqual([]);
+
+    const manyFields = Object.fromEntries(Array.from({ length: 130 }, (_, index) => [`field-${index}`, "value"]));
+    await expect(bridge.invokeContribution(session, {
+      slot: "panel", key: "notes", event: { action: "save", fields: { content: "remember me\n", ...manyFields } },
+    })).resolves.toEqual({ title: "Saved notes", html: "<p>remember me\n</p>" });
+    expect(lastPanelEvent.fields.content).toBe("remember me\n");
+    expect(Object.keys(lastPanelEvent.fields)).toHaveLength(128);
+    await expect(bridge.invokePanel(session, { key: "missing" })).rejects.toThrow("Panel not found");
+
+    // Launchers are decoupled from panels: a header action can open one.
+    ui.web.setHeaderAction("open-notes", { title: "Open notes", invoke: () => ({ effects: [{ type: "open-panel", key: "notes" }] }) });
+    await expect(bridge.invokeContribution(session, { slot: "header-action", key: "open-notes" }))
+      .resolves.toEqual({ label: "Open notes", effects: [{ type: "open-panel", key: "notes" }] });
+    ui.web.setHeaderAction("open-missing", { title: "Broken", invoke: () => ({ effects: [{ type: "open-panel", key: "nope" }] }) });
+    await expect(bridge.invokeHeaderAction(session, "open-missing")).rejects.toThrow('unknown panel "nope"');
   });
 
   it("re-emits a footer when the same session id gets a new runtime", async () => {

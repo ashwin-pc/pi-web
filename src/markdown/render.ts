@@ -359,7 +359,7 @@ function renderArtifactActions(card: HTMLElement, name: string, path: string, ki
       const original = button.textContent;
       button.textContent = "Working…";
       try {
-        const res = await fetch("/api/web-artifact-action/invoke", { method: "POST", headers: artifactActionHeaders(), body: JSON.stringify({ sessionId: artifactActionSessionId(), key: action.key, name, path, kind }) });
+        const res = await fetch("/api/web-contributions/invoke", { method: "POST", headers: artifactActionHeaders(), body: JSON.stringify({ sessionId: artifactActionSessionId(), slot: "artifact-action", key: action.key, event: { context: { name, path, kind } } }) });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
         if (data.download && typeof data.download.path === "string") {

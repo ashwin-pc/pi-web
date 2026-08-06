@@ -262,7 +262,7 @@ describe("LocalSessionService contract", () => {
         runtimeStartedAt: startedAt,
         runtimeLastActivityAt: firstActivityAt,
         runtime: activity.runtimeForPath(initial.sessionFile),
-        webFooters: [], webHeaderActions: [], webArtifactActions: [], webGitTabs: [],
+        webContributions: [],
       },
     ]);
 

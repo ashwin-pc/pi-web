@@ -9,6 +9,8 @@ type Options = {
   headers: ApiHeaders;
   getSessionId: () => string;
   markdown: MarkdownRenderer;
+  /** Open an extension panel by key (header actions may return `openPanel`). */
+  openPanel?: (key: string) => void;
 };
 
 const knownIcons = new Set<IconName>([
@@ -16,7 +18,7 @@ const knownIcons = new Set<IconName>([
   "paperclip", "pin", "route", "scroll-text", "send-horizontal", "settings", "square", "square-pen", "star", "trash-2", "maximize-2", "minimize-2", "x",
 ]);
 
-export function createWebHeaderActions({ container, headers, getSessionId, markdown }: Options) {
+export function createWebHeaderActions({ container, headers, getSessionId, markdown, openPanel }: Options) {
   let activeKey: string | undefined;
   let popover: HTMLDivElement | undefined;
 
@@ -55,16 +57,27 @@ export function createWebHeaderActions({ container, headers, getSessionId, markd
     activeKey = action.key;
     button.classList.add("active");
     showPopover(action.label || action.title, "Loading…");
+    const invokedSessionId = getSessionId();
     try {
-      const res = await fetch("/api/web-header-action/invoke", {
+      const res = await fetch("/api/web-contributions/invoke", {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ sessionId: getSessionId(), key: action.key }),
+        body: JSON.stringify({ sessionId: invokedSessionId, slot: "header-action", key: action.key }),
       });
       const data = await res.json().catch(() => ({}));
+      if (getSessionId() !== invokedSessionId) return;
       if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
-      showPopover(String(data.label || action.label || action.title), String(data.markdown || ""), true);
+      const openPanelEffect = Array.isArray(data.effects)
+        ? data.effects.find((effect: any) => effect?.type === "open-panel" && typeof effect.key === "string")
+        : undefined;
+      const responseMarkdown = typeof data.markdown === "string" && data.markdown ? data.markdown : undefined;
+      if (openPanelEffect) {
+        close();
+        openPanel?.(openPanelEffect.key);
+      }
+      if (responseMarkdown) showPopover(String(data.label || action.label || action.title), responseMarkdown, true);
     } catch (error) {
+      if (getSessionId() !== invokedSessionId) return;
       showPopover(action.label || action.title, error instanceof Error ? error.message : String(error));
     }
   }

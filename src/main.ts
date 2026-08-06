@@ -32,10 +32,11 @@ import {
   type SessionStateController,
 } from "./app/sessionState.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
-import { initActionLauncher } from "./app/actionLauncher.js";
+import { initActionLauncher, type ActionLauncherController } from "./app/actionLauncher.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
+import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
@@ -69,6 +70,8 @@ let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
 let gitPanel: GitPanelController;
 let filesPanel: FilesPanelController;
+let webPanels: WebPanelsController;
+let actionLauncher: ActionLauncherController;
 let realtime: RealtimeController;
 async function submitPromptFromMessageAction(message: string) {
   const promptText = message.trim();
@@ -148,6 +151,7 @@ const webHeaderActions = createWebHeaderActions({
   headers: api.headers,
   getSessionId: () => state.currentSessionId,
   markdown,
+  openPanel: (key) => webPanels?.open(key),
 });
 
 function setSessionInfoOpen(open: boolean) {
@@ -253,10 +257,14 @@ function renderActiveSessionMetadata() {
   state.currentCwd = view?.cwd || "";
   filesPanel?.sessionChanged();
 
-  renderWebFooters(elements.extensionFooterEl, view?.webFooters ?? []);
-  webHeaderActions.render(view?.webHeaderActions ?? []);
-  setArtifactPreviewActions(view?.webArtifactActions ?? []);
-  gitPanel?.setExtensionTabs(view?.webGitTabs ?? []);
+  const contributions = Array.isArray(view?.webContributions) ? view.webContributions as Array<Record<string, any>> : [];
+  const inSlot = (slot: string) => contributions.filter((entry) => entry?.version === 1 && entry.slot === slot);
+  renderWebFooters(elements.extensionFooterEl, inSlot("footer").map(({ key, view: footer }) => ({ key, footer })));
+  webHeaderActions.render(inSlot("header-action"));
+  setArtifactPreviewActions(inSlot("artifact-action").map((entry) => ({ ...entry, ...entry.match })));
+  gitPanel?.setExtensionTabs(inSlot("git-tab"));
+  webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
+  actionLauncher?.setExtensionActions(inSlot("fab"));
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
   const idValue = elements.sessionInfoId.querySelector("strong");
@@ -313,7 +321,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   const includesRuntimeView = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting", "stats", "queue"].some((key) => key in data));
   const includesMetadataView = Boolean(data && [
     "cwd", "model", "thinkingLevel", "sessionName", "sessionTitle",
-    "webFooters", "webHeaderActions", "webArtifactActions", "webGitTabs",
+    "webContributions",
   ].some((key) => key in data));
   if (activatesSession || includesMetadataView) renderActiveSessionMetadata();
   if (activatesSession || includesRuntimeView) {
@@ -512,7 +520,8 @@ realtime = createRealtime({
 });
 
 initStaticIcons();
-initActionLauncher(elements);
+webPanels = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
+actionLauncher = initActionLauncher(elements, { onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey) });
 statusBar.init();
 sessions.init();
 contextMeter.init();

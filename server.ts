@@ -631,13 +631,30 @@ const server = createServer(async (req, res) => {
         });
       }
 
+      if (method === "POST" && url.pathname === "/api/web-contributions/invoke") {
+        const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
+        try {
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeContribution(resolveSessionId(body.sessionId), body) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const status = error instanceof SessionServiceError ? error.status
+            : message === "key is required" || message.includes("returned no") || message.includes("returned unknown panel") || message === "Contribution is not invokable" ? 400
+            : message.includes("not found") ? 404
+            : 500;
+          return sendJson(res, status, { ok: false, error: message });
+        }
+      }
+
       if (method === "POST" && url.pathname === "/api/web-header-action/invoke") {
         const body = await readBody(req) as { sessionId?: unknown; key?: unknown };
         try {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeHeaderAction(resolveSessionId(body.sessionId), body.key) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Header action returned no markdown" ? 400 : message === "Header action not found" ? 404 : 500;
+          const status = error instanceof SessionServiceError ? error.status
+            : message === "key is required" || message === "Header action returned no markdown" || message === "Header action returned no result" || message.includes("Header action returned unknown panel") ? 400
+            : message === "Header action not found" ? 404
+            : 500;
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -660,6 +677,17 @@ const server = createServer(async (req, res) => {
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Git tab returned no HTML or composer context" ? 400 : message === "Git tab not found" ? 404 : 500;
+          return sendJson(res, status, { ok: false, error: message });
+        }
+      }
+
+      if (method === "POST" && url.pathname === "/api/web-panel/invoke") {
+        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; fields?: unknown };
+        try {
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokePanel(resolveSessionId(body.sessionId), body) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Panel returned no HTML" ? 400 : message === "Panel not found" ? 404 : 500;
           return sendJson(res, status, { ok: false, error: message });
         }
       }

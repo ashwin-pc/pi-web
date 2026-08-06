@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { PiWebArtifactAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
+import type { PiWebArtifactAction, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
@@ -43,7 +43,9 @@ type WebContribution =
   | { version: 1; key: string; slot: "footer"; kind: "static"; view: PiWebFooter }
   | { version: 1; key: string; slot: "header-action"; kind: "rendered"; source: PiWebHeaderAction }
   | { version: 1; key: string; slot: "artifact-action"; kind: "rendered"; source: PiWebArtifactAction }
-  | { version: 1; key: string; slot: "git-tab"; kind: "rendered"; source: PiWebGitTab };
+  | { version: 1; key: string; slot: "git-tab"; kind: "rendered"; source: PiWebGitTab }
+  | { version: 1; key: string; slot: "panel"; kind: "rendered"; source: PiWebPanel }
+  | { version: 1; key: string; slot: "fab"; kind: "static"; source: PiWebFabAction };
 
 /** Canonical per-runtime registry. Legacy surfaces below are wire adapters over it. */
 const webContributionStates = new WeakMap<object, Map<string, WebContribution>>();
@@ -369,48 +371,48 @@ function normalizePiWebFooter(value: unknown): PiWebFooter | undefined {
   return undefined;
 }
 
+const cleanIcon = (value: unknown) => cleanHeaderActionText(value, 80);
+const cleanArtifactExtensions = (value: unknown) => Array.isArray(value) ? value.flatMap((extension) => {
+  const cleaned = cleanHeaderActionText(extension, 30)?.toLowerCase();
+  return cleaned && /^\.[a-z0-9]+$/.test(cleaned) ? [cleaned] : [];
+}).slice(0, 20) : undefined;
+
 const contributionPolicies = {
-  footer: {
-    entries: (value: any) => contributionsFor(value, "footer").map(({ key, view: footer }) => ({ key, footer })),
-    event: "web_footer_changed",
-    field: "webFooters",
-  },
-  "header-action": {
-    entries: (value: any) => contributionsFor(value, "header-action").map(({ key, source }) => ({
-      key, icon: cleanHeaderActionText(source.icon, 80), title: cleanHeaderActionText(source.title) || key,
-      label: cleanHeaderActionText(source.label),
-    })),
-    event: "web_header_actions_changed",
-    field: "webHeaderActions",
-  },
-  "artifact-action": {
-    entries: (value: any) => contributionsFor(value, "artifact-action").map(({ key, source }) => ({
-      key, title: cleanHeaderActionText(source.title) || key, label: cleanHeaderActionText(source.label, 80),
-      kinds: Array.isArray(source.kinds) ? source.kinds.filter((kind) => kind === "markdown" || kind === "html" || kind === "video") : undefined,
-      extensions: Array.isArray(source.extensions) ? source.extensions.flatMap((extension) => {
-        const cleaned = cleanHeaderActionText(extension, 30)?.toLowerCase();
-        return cleaned && /^\.[a-z0-9]+$/.test(cleaned) ? [cleaned] : [];
-      }).slice(0, 20) : undefined,
-    })),
-    event: "web_artifact_actions_changed",
-    field: "webArtifactActions",
-  },
-  "git-tab": {
-    entries: (value: any) => contributionsFor(value, "git-tab").map(({ key, source }) => ({
-      key, title: cleanHeaderActionText(source.title) || key, label: cleanHeaderActionText(source.label, 80),
-    })),
-    event: "web_git_tabs_changed",
-    field: "webGitTabs",
-  },
+  footer: { descriptor: (entry: Extract<WebContribution, { slot: "footer" }>) => ({ view: entry.view }) },
+  "header-action": { descriptor: (_entry: Extract<WebContribution, { slot: "header-action" }>) => ({}) },
+  "artifact-action": { descriptor: (entry: Extract<WebContribution, { slot: "artifact-action" }>) => ({ match: {
+    kinds: Array.isArray(entry.source.kinds) ? entry.source.kinds.filter((kind) => kind === "markdown" || kind === "html" || kind === "video") : undefined,
+    extensions: cleanArtifactExtensions(entry.source.extensions),
+  } }) },
+  "git-tab": { descriptor: (_entry: Extract<WebContribution, { slot: "git-tab" }>) => ({}) },
+  panel: { descriptor: (_entry: Extract<WebContribution, { slot: "panel" }>) => ({}) },
+  fab: { descriptor: (entry: Extract<WebContribution, { slot: "fab" }>) => ({ opens: cleanContributionKey(entry.source.opens) }) },
 } as const;
 
 type ContributionSlot = keyof typeof contributionPolicies;
 
-function broadcastContributions(value: any, slot: ContributionSlot) {
-  const policy = contributionPolicies[slot];
-  const entries = policy.entries(value);
-  deps.emit({ type: policy.event, sessionId: value.sessionId, sessionFile: value.sessionFile, [policy.field]: entries });
-  return entries;
+function webContributionEntries(value: any) {
+  return Array.from(contributionState(value).values()).flatMap((entry) => {
+    const source = "source" in entry ? entry.source : undefined;
+    const descriptor = contributionPolicies[entry.slot].descriptor(entry as never);
+    if (entry.slot === "fab" && !(descriptor as { opens?: string }).opens) return [];
+    return [{
+      version: entry.version,
+      key: entry.key,
+      slot: entry.slot,
+      kind: entry.kind,
+      ...(source && "title" in source ? { title: cleanHeaderActionText(source.title) || entry.key } : {}),
+      ...(source && "label" in source ? { label: cleanHeaderActionText(source.label, 80) } : {}),
+      ...(source && "icon" in source ? { icon: cleanIcon(source.icon) } : {}),
+      ...descriptor,
+    }];
+  });
+}
+
+function broadcastContributions(value: any) {
+  const webContributions = webContributionEntries(value);
+  deps.emit({ type: "web_contributions_changed", sessionId: value.sessionId, sessionFile: value.sessionFile, webContributions });
+  return webContributions;
 }
 
 function setContribution(
@@ -425,7 +427,7 @@ function setContribution(
   const id = contributionId(slot, key);
   if (contribution) contributionState(value).set(id, contribution);
   else contributionState(value).delete(id);
-  broadcastContributions(value, slot);
+  broadcastContributions(value);
 }
 
 function createPiWebUi(value: any): PiWebUi {
@@ -454,6 +456,20 @@ function createPiWebUi(value: any): PiWebUi {
       setContribution(value, "git-tab", key, (cleanKey) => (
         tab && typeof tab === "object" && typeof tab.render === "function"
           ? { version: 1, key: cleanKey, slot: "git-tab", kind: "rendered", source: tab }
+          : undefined
+      ));
+    },
+    setPanel(key, panel) {
+      setContribution(value, "panel", key, (cleanKey) => (
+        panel && typeof panel === "object" && typeof panel.render === "function"
+          ? { version: 1, key: cleanKey, slot: "panel", kind: "rendered", source: panel }
+          : undefined
+      ));
+    },
+    setFabAction(key, action) {
+      setContribution(value, "fab", key, (cleanKey) => (
+        action && typeof action === "object" && cleanContributionKey(action.opens)
+          ? { version: 1, key: cleanKey, slot: "fab", kind: "static", source: action }
           : undefined
       ));
     },
@@ -636,7 +652,7 @@ async function bindWebExtensions(value: any) {
 }
 
 
-  function renderedContribution<S extends "header-action" | "artifact-action" | "git-tab">(value: any, slot: S, keyValue: unknown) {
+  function renderedContribution<S extends "header-action" | "artifact-action" | "git-tab" | "panel">(value: any, slot: S, keyValue: unknown) {
     const key = cleanContributionKey(keyValue);
     if (!key) throw new Error("key is required");
     const contribution = contributionState(value).get(contributionId(slot, key));
@@ -649,8 +665,17 @@ async function bindWebExtensions(value: any) {
     const action = contribution.source;
     const result = await action.invoke();
     const markdown = cleanFooterText(result?.markdown, 200_000);
-    if (!markdown) throw new Error("Header action returned no markdown");
-    return { label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key, markdown };
+    const openPanelEffect = Array.isArray(result?.effects)
+      ? result.effects.find((effect) => effect?.type === "open-panel")
+      : undefined;
+    const openPanel = cleanContributionKey(openPanelEffect?.key);
+    if (openPanel && !contributionState(value).has(contributionId("panel", openPanel))) throw new Error(`Header action returned unknown panel "${openPanel}"`);
+    if (!markdown && !openPanel) throw new Error("Header action returned no result");
+    return {
+      label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key,
+      ...(markdown ? { markdown } : {}),
+      ...(openPanel ? { effects: [{ type: "open-panel", key: openPanel }] } : {}),
+    };
   }
 
   async function invokeArtifactAction(value: any, input: { key?: unknown; name?: unknown; path?: unknown; kind?: unknown }) {
@@ -714,6 +739,49 @@ async function bindWebExtensions(value: any) {
     };
   }
 
+  async function invokePanel(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; fields?: unknown }) {
+    const { contribution } = renderedContribution(value, "panel", input.key);
+    if (!contribution) throw new Error("Panel not found");
+    const rawFields = input.fields && typeof input.fields === "object" && !Array.isArray(input.fields)
+      ? input.fields as Record<string, unknown>
+      : undefined;
+    const cleanFieldValue = (field: string) => field
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+      .slice(0, 100_000);
+    const fields = rawFields ? Object.entries(rawFields).slice(0, 128).reduce<Record<string, string | string[]>>((cleaned, [name, field]) => {
+      const cleanName = cleanHeaderActionText(name, 200);
+      if (!cleanName) return cleaned;
+      if (typeof field === "string") cleaned[cleanName] = cleanFieldValue(field);
+      else if (Array.isArray(field)) cleaned[cleanName] = field.flatMap((item) => typeof item === "string" ? [cleanFieldValue(item)] : []).slice(0, 100);
+      return cleaned;
+    }, {}) : undefined;
+    const result = await contribution.source.render({
+      action: cleanHeaderActionText(input.action, 200),
+      payload: input.payload,
+      fields,
+    });
+    const html = cleanFooterText(result?.html, 500_000);
+    if (!html) throw new Error("Panel returned no HTML");
+    return { title: cleanHeaderActionText(result?.title), html };
+  }
+
+  async function invokeContribution(value: any, input: { slot?: unknown; key?: unknown; event?: unknown }) {
+    const slot = input.slot;
+    const event = input.event && typeof input.event === "object" ? input.event as Record<string, unknown> : {};
+    if (slot === "header-action") return invokeHeaderAction(value, input.key);
+    if (slot === "artifact-action") {
+      const context = event.context && typeof event.context === "object" ? event.context as Record<string, unknown> : {};
+      return invokeArtifactAction(value, { ...context, key: input.key });
+    }
+    if (slot === "git-tab") {
+      return invokeGitTab(value, { key: input.key, action: event.action, payload: event.payload, repo: event.context });
+    }
+    if (slot === "panel") {
+      return invokePanel(value, { key: input.key, action: event.action, payload: event.payload, fields: event.fields });
+    }
+    throw new Error("Contribution is not invokable");
+  }
+
   function respond(id: string, response: Record<string, unknown>): boolean {
     const pending = pendingExtensionUiRequests.get(id);
     if (!pending) return false;
@@ -723,10 +791,12 @@ async function bindWebExtensions(value: any) {
 
   return {
     bind: bindWebExtensions,
-    entries: (value: any) => ({ webFooters: contributionPolicies.footer.entries(value), webHeaderActions: contributionPolicies["header-action"].entries(value), webArtifactActions: contributionPolicies["artifact-action"].entries(value), webGitTabs: contributionPolicies["git-tab"].entries(value) }),
+    entries: (value: any) => ({ webContributions: webContributionEntries(value) }),
+    invokeContribution,
     invokeHeaderAction,
     invokeArtifactAction,
     invokeGitTab,
+    invokePanel,
     respond,
     registerSettings: (session: any, schema: PiWebSettingsRegistration) => registerSessionSettings(session, schema),
     settingsSchemas: activeSettingsSchemaList,

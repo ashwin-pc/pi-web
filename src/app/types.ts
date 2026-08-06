@@ -358,10 +358,7 @@ export type SessionViewState = SessionRecord & {
   thinkingLevels?: string[];
   stats?: SessionStats;
   queue?: SessionQueueState;
-  webFooters?: unknown;
-  webHeaderActions?: unknown;
-  webArtifactActions?: unknown;
-  webGitTabs?: unknown;
+  webContributions?: unknown;
 };
 
 export type AppState = {

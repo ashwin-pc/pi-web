@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
 test("session info shows copyable metadata and real Git stats while header actions stay in the header", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   await page.request.post("/api/mock/state", { data: {
-    webHeaderActions: [{ key: "recap", icon: "scroll-text", title: "Session recap", label: "Recap" }],
+    webContributions: [{ version: 1, key: "recap", slot: "header-action", kind: "rendered", icon: "scroll-text", title: "Session recap", label: "Recap" }],
   } });
   await page.route("**/api/git/status**", (route) => route.fulfill({ json: {
     ok: true,

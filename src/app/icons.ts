@@ -1,4 +1,4 @@
-import { ArrowLeft, Bell, Bookmark, Brain, Check, Copy, CornerDownRight, createElement, Flag, FolderTree, Funnel, GitBranch, GitFork, Hourglass, Info, KeyRound, Maximize2, Minimize2, Menu, MoreVertical, Paperclip, Pin, RotateCcw, Route, ScrollText, SendHorizontal, Settings, Square, SquarePen, Star, Trash2, X } from "lucide";
+import { ArrowLeft, Bell, Bookmark, Brain, Check, Copy, CornerDownRight, createElement, Flag, FolderTree, Funnel, GitBranch, GitFork, Hourglass, Info, KeyRound, Maximize2, Minimize2, Menu, MoreVertical, NotebookPen, Paperclip, Pin, RotateCcw, Route, ScrollText, SendHorizontal, Settings, Square, SquarePen, Star, Trash2, X } from "lucide";
 
 const iconNodes = {
   "arrow-left": ArrowLeft,
@@ -18,6 +18,7 @@ const iconNodes = {
   "key-round": KeyRound,
   menu: Menu,
   "more-vertical": MoreVertical,
+  "notebook-pen": NotebookPen,
   paperclip: Paperclip,
   pin: Pin,
   "rotate-ccw": RotateCcw,
@@ -35,6 +36,10 @@ const iconNodes = {
 } as const;
 
 export type IconName = keyof typeof iconNodes;
+
+export function isIconName(value: string): value is IconName {
+  return Object.prototype.hasOwnProperty.call(iconNodes, value);
+}
 
 export function iconElement(name: IconName) {
   return createElement(iconNodes[name], { "aria-hidden": "true" });
