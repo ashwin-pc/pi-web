@@ -1435,7 +1435,9 @@ test.describe("code block copy button", () => {
     await pre.hover();
     const copyBtn = pre.locator(".copyCode");
     await copyBtn.evaluate((el) => (el as HTMLElement).focus());
-    await copyBtn.click();
+    // This test exercises the timer, not hover visibility (covered above). On
+    // touch projects Playwright may clear synthetic hover before the click.
+    await copyBtn.click({ force: true });
     await expect(copyBtn).toHaveAttribute("data-icon", "check");
 
     await page.waitForTimeout(2000);

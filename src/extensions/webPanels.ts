@@ -17,6 +17,7 @@ export type WebPanelsController = {
   setPanels(value: unknown, sessionId: string): void;
   entries(): WebPanelEntry[];
   open(key: string): void;
+  update(key: string): void;
   isOpen(): boolean;
 };
 
@@ -204,6 +205,9 @@ export function createWebPanels(options: {
     },
     entries: () => [...panels],
     open,
+    update: (key) => {
+      if (key === activeKey && panelHandle.isOpen()) void invoke();
+    },
     isOpen: () => panelHandle.isOpen(),
   };
 }

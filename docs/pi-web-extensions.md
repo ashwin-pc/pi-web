@@ -63,6 +63,34 @@ pi-web-only extensions are loaded from:
 
 These are separate from regular pi extension locations on purpose. A pi-web extension can use HTML and browser-specific APIs without promising that the same UI works in the terminal TUI.
 
+## Contribution API
+
+`ctx.ui.web.contribute(key, spec)` is the canonical API for browser surfaces. Specs use an explicit `slot` and `kind`; pi-web normalizes them immediately into versioned descriptors. Passing `undefined` clears every contribution registered under that key.
+
+```ts
+ctx.ui.web.contribute("worker-status", {
+  slot: "panel",
+  kind: "rendered",
+  title: "Worker status",
+  render: async (event) => ({
+    html: `<button data-web-action="refresh">Refresh</button>`,
+  }),
+});
+```
+
+Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `git-tab`, and `panel`.
+
+When backing data changes without a browser interaction, call `ctx.ui.web.update(key)`. pi-web emits a lightweight invalidation and an active panel or Git tab pulls a fresh render. Updates for hidden surfaces do no work; they render when next opened.
+
+```ts
+revision += 1;
+ctx.ui.web.update("worker-status");
+```
+
+The typed `setFooter`, `setHeaderAction`, `setArtifactAction`, `setGitTab`, `setPanel`, and `setFabAction` methods remain supported convenience wrappers over this registry.
+
+The [global notepad example](../examples/pi-web-extensions/notepad.ts) demonstrates a rendered panel, explicit FAB launcher, persisted cross-session data, and `update()` invalidation across every live session.
+
 ## Footer API
 
 `ctx.ui.web.setFooter(key, footer)` sets a footer region between the composer and pinned session tabs. Multiple extensions can set independent footer regions by using different keys.

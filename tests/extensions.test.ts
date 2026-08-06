@@ -165,6 +165,49 @@ describe("bundled extension path discovery", () => {
     expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed" });
   });
 
+  it("publishes normalized contributions and emits pull invalidations", async () => {
+    let ui: any;
+    const emitted: any[] = [];
+    const bridge = createWebUiBridge({
+      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+
+    let revision = 1;
+    ui.web.contribute("status", {
+      slot: "panel", kind: "rendered", title: "Worker status",
+      render: () => ({ html: `<p>Revision ${revision}</p>` }),
+    });
+    expect(bridge.entries(session).webContributions).toEqual([
+      expect.objectContaining({ version: 1, key: "status", slot: "panel", kind: "rendered", title: "Worker status" }),
+    ]);
+    await expect(bridge.invokeContribution(session, { slot: "panel", key: "status" }))
+      .resolves.toMatchObject({ html: "<p>Revision 1</p>" });
+
+    revision += 1;
+    ui.web.update("status");
+    expect(emitted.at(-1)).toMatchObject({ type: "web_contribution_updated", sessionId: "session", key: "status" });
+    const eventCount = emitted.length;
+    ui.web.update("missing");
+    expect(emitted).toHaveLength(eventCount);
+
+    ui.web.contribute("status", { slot: "footer", kind: "static", view: "Ready" });
+    expect(bridge.entries(session).webContributions).toEqual([
+      expect.objectContaining({ key: "status", slot: "footer", kind: "static" }),
+    ]);
+    expect(() => ui.web.contribute("bad", { slot: "panel", kind: "static", view: {} })).toThrow("Unsupported contribution slot/kind");
+    expect(() => ui.web.contribute("conflict", {
+      slot: "panel", kind: "rendered", title: "Conflict", view: {}, render: () => ({ html: "" }),
+    })).toThrow("conflicting or missing delivery fields");
+    ui.web.contribute("status", undefined);
+    expect(bridge.entries(session).webContributions).toEqual([]);
+  });
+
   it("serializes and invokes FAB-backed web panels through the web bridge", async () => {
     let ui: any;
     const emitted: any[] = [];

@@ -14,6 +14,7 @@ type GitExtensionTabView = { key: string; loading: boolean; title?: string; html
 
 export type GitPanelController = {
   setExtensionTabs(tabs: unknown): void;
+  updateExtensionTab(key: string): void;
   isOpen(): boolean;
 };
 
@@ -503,6 +504,9 @@ export function initGitPanel(options: {
 
   return {
     setExtensionTabs,
+    updateExtensionTab: (key) => {
+      if (extensionKeyFromView() === key && (panelHandle?.isOpen() ?? state.isOpen)) void loadExtensionTab(key);
+    },
     isOpen: () => panelHandle?.isOpen() ?? state.isOpen,
   };
 }

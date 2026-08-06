@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { PiWebArtifactAction, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
+import type { PiWebArtifactAction, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
@@ -365,7 +365,7 @@ function normalizePiWebFooter(value: unknown): PiWebFooter | undefined {
   const footer = value as Record<string, unknown>;
   if (footer.kind === "text") return normalizeTextLines(footer.lines);
   if (footer.kind === "html") {
-    const html = cleanFooterText(footer.html, 20_000);
+    const html = cleanFooterText(footer.html, contributionPolicies.footer.viewBudget);
     return html ? { kind: "html", html } : undefined;
   }
   return undefined;
@@ -378,15 +378,33 @@ const cleanArtifactExtensions = (value: unknown) => Array.isArray(value) ? value
 }).slice(0, 20) : undefined;
 
 const contributionPolicies = {
-  footer: { descriptor: (entry: Extract<WebContribution, { slot: "footer" }>) => ({ view: entry.view }) },
-  "header-action": { descriptor: (_entry: Extract<WebContribution, { slot: "header-action" }>) => ({}) },
-  "artifact-action": { descriptor: (entry: Extract<WebContribution, { slot: "artifact-action" }>) => ({ match: {
-    kinds: Array.isArray(entry.source.kinds) ? entry.source.kinds.filter((kind) => kind === "markdown" || kind === "html" || kind === "video") : undefined,
-    extensions: cleanArtifactExtensions(entry.source.extensions),
-  } }) },
-  "git-tab": { descriptor: (_entry: Extract<WebContribution, { slot: "git-tab" }>) => ({}) },
-  panel: { descriptor: (_entry: Extract<WebContribution, { slot: "panel" }>) => ({}) },
-  fab: { descriptor: (entry: Extract<WebContribution, { slot: "fab" }>) => ({ opens: cleanContributionKey(entry.source.opens) }) },
+  footer: {
+    allowedKinds: ["static"], viewFields: ["view"], viewBudget: 20_000,
+    descriptor: (entry: Extract<WebContribution, { slot: "footer" }>) => ({ view: entry.view }),
+  },
+  "header-action": {
+    allowedKinds: ["rendered"], viewFields: ["markdown"], effects: ["open-panel"], viewBudget: 200_000,
+    descriptor: (_entry: Extract<WebContribution, { slot: "header-action" }>) => ({}),
+  },
+  "artifact-action": {
+    allowedKinds: ["rendered"], viewFields: ["markdown", "message", "download"], viewBudget: 200_000,
+    descriptor: (entry: Extract<WebContribution, { slot: "artifact-action" }>) => ({ match: {
+      kinds: Array.isArray(entry.source.kinds) ? entry.source.kinds.filter((kind) => kind === "markdown" || kind === "html" || kind === "video") : undefined,
+      extensions: cleanArtifactExtensions(entry.source.extensions),
+    } }),
+  },
+  "git-tab": {
+    allowedKinds: ["rendered"], viewFields: ["html", "composerContext"], viewBudget: 500_000,
+    descriptor: (_entry: Extract<WebContribution, { slot: "git-tab" }>) => ({}),
+  },
+  panel: {
+    allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 500_000, maxFields: 128,
+    descriptor: (_entry: Extract<WebContribution, { slot: "panel" }>) => ({}),
+  },
+  fab: {
+    allowedKinds: ["static"], viewFields: [], viewBudget: 0,
+    descriptor: (entry: Extract<WebContribution, { slot: "fab" }>) => ({ opens: cleanContributionKey(entry.source.opens) }),
+  },
 } as const;
 
 type ContributionSlot = keyof typeof contributionPolicies;
@@ -430,49 +448,78 @@ function setContribution(
   broadcastContributions(value);
 }
 
+function normalizedPublicContribution(key: string, spec: PiWebContribution): WebContribution {
+  if (!spec || typeof spec !== "object") throw new TypeError("Contribution must be an object");
+  const delivery = spec as PiWebContribution & { view?: unknown; render?: unknown; entry?: unknown };
+  const deliveryFields = [delivery.view !== undefined, delivery.render !== undefined, delivery.entry !== undefined].filter(Boolean).length;
+  if (delivery.entry !== undefined) throw new TypeError("Webview contributions are not supported yet");
+  if (spec.slot === "fab" ? deliveryFields !== 0 : deliveryFields !== 1) {
+    throw new TypeError("Contribution has conflicting or missing delivery fields");
+  }
+  const policy = contributionPolicies[spec.slot as ContributionSlot];
+  if (!policy || !(policy.allowedKinds as readonly string[]).includes(spec.kind)) {
+    throw new TypeError(`Unsupported contribution slot/kind: ${String(spec.slot)}/${String(spec.kind)}`);
+  }
+  if (spec.slot === "footer" && spec.kind === "static") {
+    const view = normalizePiWebFooter(spec.view);
+    if (!view) throw new TypeError("Footer contribution requires a valid view");
+    return { version: 1, key, slot: "footer", kind: "static", view };
+  }
+  if (spec.slot === "fab" && spec.kind === "static") {
+    if (!cleanContributionKey(spec.opens)) throw new TypeError("FAB contribution requires a valid panel key in opens");
+    return { version: 1, key, slot: "fab", kind: "static", source: spec };
+  }
+  if ((spec.slot === "header-action" || spec.slot === "artifact-action" || spec.slot === "git-tab" || spec.slot === "panel")
+    && spec.kind === "rendered" && typeof spec.render === "function") {
+    if (spec.slot === "header-action") return {
+      version: 1, key, slot: spec.slot, kind: "rendered",
+      source: { ...spec, invoke: () => spec.render() },
+    };
+    if (spec.slot === "artifact-action") return {
+      version: 1, key, slot: spec.slot, kind: "rendered",
+      source: { ...spec, kinds: spec.match?.kinds, extensions: spec.match?.extensions, invoke: (artifact) => spec.render({ context: artifact }) },
+    };
+    if (spec.slot === "git-tab") return {
+      version: 1, key, slot: spec.slot, kind: "rendered",
+      source: { ...spec, render: (event) => spec.render({ action: event?.action, payload: event?.payload, context: event?.repo }) },
+    };
+    return {
+      version: 1, key, slot: spec.slot, kind: "rendered",
+      source: { ...spec, render: spec.render } as PiWebPanel,
+    };
+  }
+  throw new TypeError(`Unsupported contribution slot/kind: ${String((spec as any).slot)}/${String((spec as any).kind)}`);
+}
+
 function createPiWebUi(value: any): PiWebUi {
+  const contributeForSlot = (keyValue: unknown, slot: ContributionSlot, spec: PiWebContribution | undefined) => {
+    setContribution(value, slot, keyValue, (key) => spec ? normalizedPublicContribution(key, spec) : undefined);
+  };
   return {
-    setFooter(key, footer) {
-      setContribution(value, "footer", key, (cleanKey) => {
-        const view = normalizePiWebFooter(footer);
-        return view ? { version: 1, key: cleanKey, slot: "footer", kind: "static", view } : undefined;
-      });
+    contribute(keyValue, spec) {
+      const key = cleanContributionKey(keyValue);
+      if (!key) throw new TypeError("Contribution key is required");
+      if (!spec) {
+        for (const slot of Object.keys(contributionPolicies) as ContributionSlot[]) contributionState(value).delete(contributionId(slot, key));
+        broadcastContributions(value);
+        return;
+      }
+      const contribution = normalizedPublicContribution(key, spec);
+      for (const slot of Object.keys(contributionPolicies) as ContributionSlot[]) contributionState(value).delete(contributionId(slot, key));
+      contributionState(value).set(contributionId(contribution.slot, key), contribution);
+      broadcastContributions(value);
     },
-    setHeaderAction(key, action) {
-      setContribution(value, "header-action", key, (cleanKey) => (
-        action && typeof action === "object" && typeof action.invoke === "function"
-          ? { version: 1, key: cleanKey, slot: "header-action", kind: "rendered", source: action }
-          : undefined
-      ));
+    update(keyValue) {
+      const key = cleanContributionKey(keyValue);
+      if (!key || !Array.from(contributionState(value).values()).some((entry) => entry.key === key)) return;
+      deps.emit({ type: "web_contribution_updated", sessionId: value.sessionId, sessionFile: value.sessionFile, key });
     },
-    setArtifactAction(key, action) {
-      setContribution(value, "artifact-action", key, (cleanKey) => (
-        action && typeof action === "object" && typeof action.invoke === "function"
-          ? { version: 1, key: cleanKey, slot: "artifact-action", kind: "rendered", source: action }
-          : undefined
-      ));
-    },
-    setGitTab(key, tab) {
-      setContribution(value, "git-tab", key, (cleanKey) => (
-        tab && typeof tab === "object" && typeof tab.render === "function"
-          ? { version: 1, key: cleanKey, slot: "git-tab", kind: "rendered", source: tab }
-          : undefined
-      ));
-    },
-    setPanel(key, panel) {
-      setContribution(value, "panel", key, (cleanKey) => (
-        panel && typeof panel === "object" && typeof panel.render === "function"
-          ? { version: 1, key: cleanKey, slot: "panel", kind: "rendered", source: panel }
-          : undefined
-      ));
-    },
-    setFabAction(key, action) {
-      setContribution(value, "fab", key, (cleanKey) => (
-        action && typeof action === "object" && cleanContributionKey(action.opens)
-          ? { version: 1, key: cleanKey, slot: "fab", kind: "static", source: action }
-          : undefined
-      ));
-    },
+    setFooter: (key, footer) => contributeForSlot(key, "footer", footer === undefined ? undefined : { slot: "footer", kind: "static", view: footer }),
+    setHeaderAction: (key, action) => contributeForSlot(key, "header-action", action === undefined ? undefined : { slot: "header-action", kind: "rendered", ...action, render: () => action.invoke() }),
+    setArtifactAction: (key, action) => contributeForSlot(key, "artifact-action", action === undefined ? undefined : { slot: "artifact-action", kind: "rendered", title: action.title, label: action.label, match: { kinds: action.kinds, extensions: action.extensions }, render: (event) => action.invoke(event?.context as any) }),
+    setGitTab: (key, tab) => contributeForSlot(key, "git-tab", tab === undefined ? undefined : { slot: "git-tab", kind: "rendered", title: tab.title, label: tab.label, render: (event) => tab.render({ action: event?.action, payload: event?.payload, repo: event?.context }) }),
+    setPanel: (key, panel) => contributeForSlot(key, "panel", panel === undefined ? undefined : { slot: "panel", kind: "rendered", ...panel }),
+    setFabAction: (key, action) => contributeForSlot(key, "fab", action === undefined ? undefined : { slot: "fab", kind: "static", ...action }),
     async registerSettings(schema) { return registerSessionSettings(value, schema); },
     async getSettings(id) { return getExtensionSettings(id); },
   };
@@ -664,7 +711,7 @@ async function bindWebExtensions(value: any) {
     if (!contribution) throw new Error("Header action not found");
     const action = contribution.source;
     const result = await action.invoke();
-    const markdown = cleanFooterText(result?.markdown, 200_000);
+    const markdown = cleanFooterText(result?.markdown, contributionPolicies["header-action"].viewBudget);
     const openPanelEffect = Array.isArray(result?.effects)
       ? result.effects.find((effect) => effect?.type === "open-panel")
       : undefined;
@@ -693,7 +740,7 @@ async function bindWebExtensions(value: any) {
     if (Array.isArray(action.kinds) && action.kinds.length && !action.kinds.includes(kind)) throw new Error("Artifact action does not match this artifact");
     if (Array.isArray(action.extensions) && action.extensions.length && !action.extensions.some((extension) => typeof extension === "string" && name.toLowerCase().endsWith(extension.toLowerCase()))) throw new Error("Artifact action does not match this artifact");
     const result = await action.invoke({ name, path, kind });
-    const markdown = cleanFooterText(result?.markdown, 200_000);
+    const markdown = cleanFooterText(result?.markdown, contributionPolicies["artifact-action"].viewBudget);
     const message = cleanHeaderActionText(result?.message, 2_000);
     const download = result?.download && typeof result.download === "object" ? { path, filename: cleanHeaderActionText(result.download.filename, 500) || name } : undefined;
     if (!markdown && !message && !download) throw new Error("Artifact action returned no result");
@@ -719,7 +766,7 @@ async function bindWebExtensions(value: any) {
         branch: typeof repo.branch === "string" ? repo.branch : undefined,
       } : undefined,
     });
-    const html = cleanFooterText(result?.html, 500_000);
+    const html = cleanFooterText(result?.html, contributionPolicies["git-tab"].viewBudget);
     const rawContext = result?.composerContext && typeof result.composerContext === "object"
       ? result.composerContext as Record<string, unknown>
       : undefined;
@@ -748,7 +795,7 @@ async function bindWebExtensions(value: any) {
     const cleanFieldValue = (field: string) => field
       .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
       .slice(0, 100_000);
-    const fields = rawFields ? Object.entries(rawFields).slice(0, 128).reduce<Record<string, string | string[]>>((cleaned, [name, field]) => {
+    const fields = rawFields ? Object.entries(rawFields).slice(0, contributionPolicies.panel.maxFields).reduce<Record<string, string | string[]>>((cleaned, [name, field]) => {
       const cleanName = cleanHeaderActionText(name, 200);
       if (!cleanName) return cleaned;
       if (typeof field === "string") cleaned[cleanName] = cleanFieldValue(field);
@@ -760,7 +807,7 @@ async function bindWebExtensions(value: any) {
       payload: input.payload,
       fields,
     });
-    const html = cleanFooterText(result?.html, 500_000);
+    const html = cleanFooterText(result?.html, contributionPolicies.panel.viewBudget);
     if (!html) throw new Error("Panel returned no HTML");
     return { title: cleanHeaderActionText(result?.title), html };
   }
