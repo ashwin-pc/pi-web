@@ -413,9 +413,15 @@ function broadcastContributions(value: any, slot: ContributionSlot) {
   return entries;
 }
 
-function setContribution(value: any, contribution: WebContribution | undefined, slot: ContributionSlot, keyValue: unknown) {
+function setContribution(
+  value: any,
+  slot: ContributionSlot,
+  keyValue: unknown,
+  create: (key: string) => WebContribution | undefined,
+) {
   const key = cleanContributionKey(keyValue);
   if (!key) return;
+  const contribution = create(key);
   const id = contributionId(slot, key);
   if (contribution) contributionState(value).set(id, contribution);
   else contributionState(value).delete(id);
@@ -425,28 +431,31 @@ function setContribution(value: any, contribution: WebContribution | undefined, 
 function createPiWebUi(value: any): PiWebUi {
   return {
     setFooter(key, footer) {
-      const cleanKey = cleanContributionKey(key);
-      if (!cleanKey) return;
-      const view = normalizePiWebFooter(footer);
-      setContribution(value, view ? { version: 1, key: cleanKey, slot: "footer", kind: "static", view } : undefined, "footer", cleanKey);
+      setContribution(value, "footer", key, (cleanKey) => {
+        const view = normalizePiWebFooter(footer);
+        return view ? { version: 1, key: cleanKey, slot: "footer", kind: "static", view } : undefined;
+      });
     },
     setHeaderAction(key, action) {
-      const cleanKey = cleanContributionKey(key);
-      if (!cleanKey) return;
-      const valid = action && typeof action === "object" && typeof action.invoke === "function";
-      setContribution(value, valid ? { version: 1, key: cleanKey, slot: "header-action", kind: "rendered", source: action } : undefined, "header-action", cleanKey);
+      setContribution(value, "header-action", key, (cleanKey) => (
+        action && typeof action === "object" && typeof action.invoke === "function"
+          ? { version: 1, key: cleanKey, slot: "header-action", kind: "rendered", source: action }
+          : undefined
+      ));
     },
     setArtifactAction(key, action) {
-      const cleanKey = cleanContributionKey(key);
-      if (!cleanKey) return;
-      const valid = action && typeof action === "object" && typeof action.invoke === "function";
-      setContribution(value, valid ? { version: 1, key: cleanKey, slot: "artifact-action", kind: "rendered", source: action } : undefined, "artifact-action", cleanKey);
+      setContribution(value, "artifact-action", key, (cleanKey) => (
+        action && typeof action === "object" && typeof action.invoke === "function"
+          ? { version: 1, key: cleanKey, slot: "artifact-action", kind: "rendered", source: action }
+          : undefined
+      ));
     },
     setGitTab(key, tab) {
-      const cleanKey = cleanContributionKey(key);
-      if (!cleanKey) return;
-      const valid = tab && typeof tab === "object" && typeof tab.render === "function";
-      setContribution(value, valid ? { version: 1, key: cleanKey, slot: "git-tab", kind: "rendered", source: tab } : undefined, "git-tab", cleanKey);
+      setContribution(value, "git-tab", key, (cleanKey) => (
+        tab && typeof tab === "object" && typeof tab.render === "function"
+          ? { version: 1, key: cleanKey, slot: "git-tab", kind: "rendered", source: tab }
+          : undefined
+      ));
     },
     async registerSettings(schema) { return registerSessionSettings(value, schema); },
     async getSettings(id) { return getExtensionSettings(id); },
@@ -652,16 +661,23 @@ async function bindWebExtensions(value: any) {
     const path = cleanHeaderActionText(input.path, 2_000);
     const kind = input.kind === "markdown" || input.kind === "html" || input.kind === "video" ? input.kind : undefined;
     let pathName: string | undefined;
-    try { if (path?.startsWith("/api/artifacts/")) pathName = decodeURIComponent(path.slice(15)).split("/").at(-1); } catch { /* invalid encoding */ }
+    try {
+      if (path && path.startsWith("/api/artifacts/")) pathName = decodeURIComponent(path.slice("/api/artifacts/".length)).split("/").at(-1);
+    } catch { /* invalid encoded artifact path */ }
     if (!name || !path || !kind || pathName !== name) throw new Error("Invalid artifact context");
-    if (action.kinds?.length && !action.kinds.includes(kind)) throw new Error("Artifact action does not match this artifact");
-    if (action.extensions?.length && !action.extensions.some((extension) => typeof extension === "string" && name.toLowerCase().endsWith(extension.toLowerCase()))) throw new Error("Artifact action does not match this artifact");
+    if (Array.isArray(action.kinds) && action.kinds.length && !action.kinds.includes(kind)) throw new Error("Artifact action does not match this artifact");
+    if (Array.isArray(action.extensions) && action.extensions.length && !action.extensions.some((extension) => typeof extension === "string" && name.toLowerCase().endsWith(extension.toLowerCase()))) throw new Error("Artifact action does not match this artifact");
     const result = await action.invoke({ name, path, kind });
     const markdown = cleanFooterText(result?.markdown, 200_000);
     const message = cleanHeaderActionText(result?.message, 2_000);
     const download = result?.download && typeof result.download === "object" ? { path, filename: cleanHeaderActionText(result.download.filename, 500) || name } : undefined;
     if (!markdown && !message && !download) throw new Error("Artifact action returned no result");
-    return { label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key, ...(markdown ? { markdown } : {}), ...(message ? { message } : {}), ...(download ? { download } : {}) };
+    return {
+      label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key,
+      ...(markdown ? { markdown } : {}),
+      ...(message ? { message } : {}),
+      ...(download ? { download } : {}),
+    };
   }
 
   async function invokeGitTab(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; repo?: unknown }) {
@@ -669,20 +685,33 @@ async function bindWebExtensions(value: any) {
     if (!contribution) throw new Error("Git tab not found");
     const tab = contribution.source;
     const repo = input.repo && typeof input.repo === "object" ? input.repo as Record<string, unknown> : undefined;
-    const result = await tab.render({ action: typeof input.action === "string" ? input.action : undefined, payload: input.payload, repo: repo ? {
-      path: typeof repo.path === "string" ? repo.path : undefined, root: typeof repo.root === "string" ? repo.root : undefined,
-      branch: typeof repo.branch === "string" ? repo.branch : undefined,
-    } : undefined });
+    const result = await tab.render({
+      action: typeof input.action === "string" ? input.action : undefined,
+      payload: input.payload,
+      repo: repo ? {
+        path: typeof repo.path === "string" ? repo.path : undefined,
+        root: typeof repo.root === "string" ? repo.root : undefined,
+        branch: typeof repo.branch === "string" ? repo.branch : undefined,
+      } : undefined,
+    });
     const html = cleanFooterText(result?.html, 500_000);
-    const rawContext = result?.composerContext && typeof result.composerContext === "object" ? result.composerContext as Record<string, unknown> : undefined;
+    const rawContext = result?.composerContext && typeof result.composerContext === "object"
+      ? result.composerContext as Record<string, unknown>
+      : undefined;
     const contextLabel = cleanHeaderActionText(rawContext?.label, 200);
     const contextContent = cleanFooterText(rawContext?.content, 200_000);
     const composerContext = contextLabel && contextContent ? {
-      ...(cleanHeaderActionText(rawContext?.id, 500) ? { id: cleanHeaderActionText(rawContext?.id, 500) } : {}), label: contextLabel,
-      ...(cleanHeaderActionText(rawContext?.title, 500) ? { title: cleanHeaderActionText(rawContext?.title, 500) } : {}), content: contextContent,
+      ...(cleanHeaderActionText(rawContext?.id, 500) ? { id: cleanHeaderActionText(rawContext?.id, 500) } : {}),
+      label: contextLabel,
+      ...(cleanHeaderActionText(rawContext?.title, 500) ? { title: cleanHeaderActionText(rawContext?.title, 500) } : {}),
+      content: contextContent,
     } : undefined;
     if (!html && !composerContext) throw new Error("Git tab returned no HTML or composer context");
-    return { title: cleanHeaderActionText(result?.title) || cleanHeaderActionText(tab.title) || key, ...(html ? { html } : {}), ...(composerContext ? { composerContext } : {}) };
+    return {
+      title: cleanHeaderActionText(result?.title) || cleanHeaderActionText(tab.title) || key,
+      ...(html ? { html } : {}),
+      ...(composerContext ? { composerContext } : {}),
+    };
   }
 
   function respond(id: string, response: Record<string, unknown>): boolean {
