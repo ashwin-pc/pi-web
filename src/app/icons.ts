@@ -38,7 +38,7 @@ const iconNodes = {
 export type IconName = keyof typeof iconNodes;
 
 export function isIconName(value: string): value is IconName {
-  return value in iconNodes;
+  return Object.prototype.hasOwnProperty.call(iconNodes, value);
 }
 
 export function iconElement(name: IconName) {

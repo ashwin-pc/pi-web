@@ -12,6 +12,7 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
       { version: 1, key: "notes", slot: "panel", kind: "rendered", title: "Global notepad", label: "Notepad", icon: "notebook-pen" },
       { version: 1, key: "quiet", slot: "panel", kind: "rendered", title: "No launcher", label: "Quiet", icon: "notebook-pen" },
       { version: 1, key: "notes-launcher", slot: "fab", kind: "static", title: "Global notepad", label: "Notepad", icon: "notebook-pen", opens: "notes" },
+      { version: 1, key: "open-notes", slot: "header-action", kind: "rendered", title: "Open notes", label: "Open notes", icon: "scroll-text" },
     ];
     await route.fulfill({ response, json: state });
   });
@@ -20,6 +21,15 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
   await page.route("**/api/web-contributions/invoke", async (route) => {
     const input = route.request().postDataJSON();
     invocations.push(input);
+    if (input.slot === "header-action") {
+      await route.fulfill({ json: {
+        ok: true,
+        label: "Open notes",
+        markdown: "Panel opened from the header.",
+        effects: [{ type: "open-panel", key: "notes" }],
+      } });
+      return;
+    }
     const value = input.event?.fields?.content || "Initial global note";
     const status = input.event?.action === "save" ? "Saved globally" : "Shared with every conversation";
     await route.fulfill({
@@ -53,4 +63,11 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
     key: "notes",
     event: { action: "save", fields: { content: "Remember this everywhere" } },
   });
+
+  await panel.getByRole("button", { name: "Close panel" }).click();
+  await expect(panel).toBeHidden();
+  await page.locator('.webHeaderActionButton[title="Open notes"]').click();
+  await expect.poll(() => invocations.some((input) => input.slot === "header-action")).toBe(true);
+  await expect(panel).toBeVisible();
+  await expect(page.locator(".webHeaderActionPopoverBody")).toContainText("Panel opened from the header.");
 });

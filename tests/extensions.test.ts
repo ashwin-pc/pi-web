@@ -105,6 +105,10 @@ describe("bundled extension path discovery", () => {
     expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed", sessionId: "session" });
     await expect(bridge.invokeArtifactAction(session, { key: "download", name: "page.html", path: "/api/artifacts/page.html", kind: "html" }))
       .resolves.toMatchObject({ download: { path: "/api/artifacts/page.html", filename: "saved-page.html" } });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-action", key: "download",
+      event: { context: { key: "another-action", name: "page.html", path: "/api/artifacts/page.html", kind: "html" } },
+    })).resolves.toMatchObject({ download: { filename: "saved-page.html" } });
     await expect(bridge.invokeArtifactAction(session, { key: "download", name: "notes.md", path: "/api/artifacts/notes.md", kind: "markdown" }))
       .rejects.toThrow("does not match this artifact");
     await expect(bridge.invokeArtifactAction(session, { key: "download", name: "page.html", path: "/api/artifacts/other.html", kind: "html" }))
@@ -173,9 +177,13 @@ describe("bundled extension path discovery", () => {
       bindExtensions: async (options: any) => { ui = options.uiContext; },
     };
     await bridge.bind(session);
+    let lastPanelEvent: any;
     ui.web.setPanel("notes", {
       title: "Global notes", label: "Notepad", icon: "notebook-pen",
-      render: (event: any) => ({ title: event?.action === "save" ? "Saved notes" : undefined, html: `<p>${event?.fields?.content || "empty"}</p>` }),
+      render: (event: any) => {
+        lastPanelEvent = event;
+        return { title: event?.action === "save" ? "Saved notes" : undefined, html: `<p>${event?.fields?.content || "empty"}</p>` };
+      },
     });
 
     // Panels are pure surfaces: registering one contributes no FAB entry.
@@ -193,9 +201,12 @@ describe("bundled extension path discovery", () => {
     ui.web.setFabAction("notes-launcher", undefined);
     expect(bridge.entries(session).webContributions.filter((entry: any) => entry.slot === "fab")).toEqual([]);
 
+    const manyFields = Object.fromEntries(Array.from({ length: 130 }, (_, index) => [`field-${index}`, "value"]));
     await expect(bridge.invokeContribution(session, {
-      slot: "panel", key: "notes", event: { action: "save", fields: { content: "remember me" } },
-    })).resolves.toEqual({ title: "Saved notes", html: "<p>remember me</p>" });
+      slot: "panel", key: "notes", event: { action: "save", fields: { content: "remember me\n", ...manyFields } },
+    })).resolves.toEqual({ title: "Saved notes", html: "<p>remember me\n</p>" });
+    expect(lastPanelEvent.fields.content).toBe("remember me\n");
+    expect(Object.keys(lastPanelEvent.fields)).toHaveLength(128);
     await expect(bridge.invokePanel(session, { key: "missing" })).rejects.toThrow("Panel not found");
 
     // Launchers are decoupled from panels: a header action can open one.

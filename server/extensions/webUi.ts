@@ -409,7 +409,7 @@ function webContributionEntries(value: any) {
   });
 }
 
-function broadcastContributions(value: any, _slot: ContributionSlot) {
+function broadcastContributions(value: any) {
   const webContributions = webContributionEntries(value);
   deps.emit({ type: "web_contributions_changed", sessionId: value.sessionId, sessionFile: value.sessionFile, webContributions });
   return webContributions;
@@ -427,7 +427,7 @@ function setContribution(
   const id = contributionId(slot, key);
   if (contribution) contributionState(value).set(id, contribution);
   else contributionState(value).delete(id);
-  broadcastContributions(value, slot);
+  broadcastContributions(value);
 }
 
 function createPiWebUi(value: any): PiWebUi {
@@ -745,11 +745,14 @@ async function bindWebExtensions(value: any) {
     const rawFields = input.fields && typeof input.fields === "object" && !Array.isArray(input.fields)
       ? input.fields as Record<string, unknown>
       : undefined;
-    const fields = rawFields ? Object.entries(rawFields).reduce<Record<string, string | string[]>>((cleaned, [name, field]) => {
+    const cleanFieldValue = (field: string) => field
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+      .slice(0, 100_000);
+    const fields = rawFields ? Object.entries(rawFields).slice(0, 128).reduce<Record<string, string | string[]>>((cleaned, [name, field]) => {
       const cleanName = cleanHeaderActionText(name, 200);
       if (!cleanName) return cleaned;
-      if (typeof field === "string") cleaned[cleanName] = cleanFooterText(field, 100_000) || "";
-      else if (Array.isArray(field)) cleaned[cleanName] = field.flatMap((item) => typeof item === "string" ? [cleanFooterText(item, 100_000) || ""] : []).slice(0, 100);
+      if (typeof field === "string") cleaned[cleanName] = cleanFieldValue(field);
+      else if (Array.isArray(field)) cleaned[cleanName] = field.flatMap((item) => typeof item === "string" ? [cleanFieldValue(item)] : []).slice(0, 100);
       return cleaned;
     }, {}) : undefined;
     const result = await contribution.source.render({
@@ -768,7 +771,7 @@ async function bindWebExtensions(value: any) {
     if (slot === "header-action") return invokeHeaderAction(value, input.key);
     if (slot === "artifact-action") {
       const context = event.context && typeof event.context === "object" ? event.context as Record<string, unknown> : {};
-      return invokeArtifactAction(value, { key: input.key, ...context });
+      return invokeArtifactAction(value, { ...context, key: input.key });
     }
     if (slot === "git-tab") {
       return invokeGitTab(value, { key: input.key, action: event.action, payload: event.payload, repo: event.context });

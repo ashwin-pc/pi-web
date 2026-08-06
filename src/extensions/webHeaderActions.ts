@@ -57,24 +57,27 @@ export function createWebHeaderActions({ container, headers, getSessionId, markd
     activeKey = action.key;
     button.classList.add("active");
     showPopover(action.label || action.title, "Loading…");
+    const invokedSessionId = getSessionId();
     try {
       const res = await fetch("/api/web-contributions/invoke", {
         method: "POST",
         headers: headers(),
-        body: JSON.stringify({ sessionId: getSessionId(), slot: "header-action", key: action.key }),
+        body: JSON.stringify({ sessionId: invokedSessionId, slot: "header-action", key: action.key }),
       });
       const data = await res.json().catch(() => ({}));
+      if (getSessionId() !== invokedSessionId) return;
       if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
       const openPanelEffect = Array.isArray(data.effects)
         ? data.effects.find((effect: any) => effect?.type === "open-panel" && typeof effect.key === "string")
         : undefined;
-      if (openPanelEffect && openPanel) {
+      const responseMarkdown = typeof data.markdown === "string" && data.markdown ? data.markdown : undefined;
+      if (openPanelEffect) {
         close();
-        openPanel(openPanelEffect.key);
-        return;
+        openPanel?.(openPanelEffect.key);
       }
-      showPopover(String(data.label || action.label || action.title), String(data.markdown || ""), true);
+      if (responseMarkdown) showPopover(String(data.label || action.label || action.title), responseMarkdown, true);
     } catch (error) {
+      if (getSessionId() !== invokedSessionId) return;
       showPopover(action.label || action.title, error instanceof Error ? error.message : String(error));
     }
   }
