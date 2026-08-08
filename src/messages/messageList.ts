@@ -82,12 +82,14 @@ export type MessageList = {
 
 function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, apiHeaders?: ApiHeaders, onMissing?: () => void) {
   const mediaType = attachment.mediaType || attachment.mimeType || "application/octet-stream";
-  const name = attachment.name || imageFileName(attachment.path, "attachment");
+  const name = attachment.label || attachment.name || imageFileName(attachment.path, "attachment");
   const item = document.createElement("span");
   item.className = "messageAttachmentPreview";
-  item.title = `${name}${typeof attachment.bytes === "number" ? ` · ${attachment.bytes.toLocaleString()} bytes` : ""}`;
+  item.title = attachment.title ? `${name} · ${attachment.title}` : `${name}${typeof attachment.bytes === "number" ? ` · ${attachment.bytes.toLocaleString()} bytes` : ""}`;
 
-  if (mediaType.startsWith("image/") && (attachment.contentUrl || attachment.data)) {
+  if (attachment.type === "reference") {
+    item.textContent = attachment.reference?.provider === "github" ? "GH" : "REF";
+  } else if (mediaType.startsWith("image/") && (attachment.contentUrl || attachment.data)) {
     const image = document.createElement("img");
     image.className = "messageAttachmentImage";
     image.alt = name;

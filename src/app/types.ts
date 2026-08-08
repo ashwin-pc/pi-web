@@ -32,12 +32,23 @@ export type FileAttachment = {
   contentUrl: string;
 };
 
-export type ComposerContextAttachment = {
-  id?: string;
+export type ReferenceAttachment = {
+  type: "reference";
+  id: string;
   label: string;
   title?: string;
-  content: string;
+  reference: {
+    provider: "github";
+    repository: string;
+    resource: "issue" | "pull-request";
+    number: number;
+    url: string;
+  };
 };
+
+/** @deprecated Compatibility name for extension-provided reference attachments. */
+export type ComposerContextAttachment = ReferenceAttachment;
+export type MessageAttachment = FileAttachment | ReferenceAttachment;
 
 export type PiWebModelSetting = {
   provider: string;
@@ -136,8 +147,12 @@ export type StoredExtensionSettings = {
 export type WebSettingsValidationError = { path: string; message: string };
 
 export type AttachedImage = {
+  type?: "file" | "reference";
   id?: string;
   name?: string;
+  label?: string;
+  title?: string;
+  reference?: ReferenceAttachment["reference"];
   data?: string;
   mimeType?: string;
   mediaType?: string;

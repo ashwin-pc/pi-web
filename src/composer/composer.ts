@@ -498,16 +498,6 @@ export function createComposer(options: {
     });
   }
 
-  function messageWithAttachedContext(message: string, contexts: ComposerContextAttachment[]) {
-    if (contexts.length === 0) return message;
-    const attachedContext = contexts.map((context) => [
-      `--- Attached context: ${context.label} ---`,
-      context.content,
-      `--- End attached context: ${context.label} ---`,
-    ].join("\n")).join("\n\n");
-    return message ? `${attachedContext}\n\n${message}` : attachedContext;
-  }
-
   function isShellError(data: { exitCode?: unknown; cancelled?: unknown }) {
     return Boolean(data.cancelled || (typeof data.exitCode === "number" && data.exitCode !== 0));
   }
@@ -683,9 +673,12 @@ export function createComposer(options: {
       const rawMessage = elements.promptEl.value;
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
-      const message = messageWithAttachedContext(promptMessage, contexts);
+      const message = promptMessage;
       const submittedAttachments = [...state.attachedImages];
-      const attachments = submittedAttachments.map(({ id, name, mediaType, bytes, path, contentUrl }) => ({ id, name, mediaType, bytes, path, contentUrl }));
+      const attachments = [
+        ...submittedAttachments.map(({ type, id, name, mediaType, bytes, path, contentUrl }) => ({ type, id, name, mediaType, bytes, path, contentUrl })),
+        ...contexts,
+      ];
       if (!message && attachments.length === 0) return;
 
       if (rawMessage.startsWith("!") && attachments.length === 0 && contexts.length === 0) {

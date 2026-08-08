@@ -117,14 +117,21 @@ export type PiWebGitTabEvent = {
 };
 
 export type PiWebComposerContext = {
-  /** Stable identity used to avoid adding the same context more than once. */
-  id?: string;
+  type: "reference";
+  /** Stable identity used to avoid adding the same reference more than once. */
+  id: string;
   /** Short source label shown in the composer attachment pill. */
   label: string;
   /** Optional detail shown alongside the label, such as an issue title. */
   title?: string;
-  /** Plain-text content included with the next prompt. */
-  content: string;
+  /** Structured pointer included in the transcript; content is resolved by agent tools. */
+  reference: {
+    provider: "github";
+    repository: string;
+    resource: "issue" | "pull-request";
+    number: number;
+    url: string;
+  };
 };
 
 export type PiWebGitTabView = {

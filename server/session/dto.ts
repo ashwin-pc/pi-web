@@ -38,12 +38,25 @@ export interface BaseSessionStateDto {
 
 /** Serializable, role-discriminated projection consumed by every transcript path. */
 export type AttachmentDto = {
+  type: "file";
   id: string;
   name: string;
   mediaType: string;
   bytes: number;
   path: string;
   contentUrl: string;
+} | {
+  type: "reference";
+  id: string;
+  label: string;
+  title?: string;
+  reference: {
+    provider: "github";
+    repository: string;
+    resource: "issue" | "pull-request";
+    number: number;
+    url: string;
+  };
 };
 
 type MessageDtoBase = {

@@ -4,6 +4,7 @@ import { attachmentContentUrl, normalizeSubmittedAttachments, parseAttachmentMar
 
 const cwd = "/project";
 const attachment = {
+  type: "file" as const,
   id: "7c8216f8-1111-4222-8333-123456789abc",
   name: "hand-tattoo.jpg",
   mediaType: "image/jpeg",
@@ -15,9 +16,29 @@ const attachment = {
 describe("attachment message markup", () => {
   it("round trips strict fenced JSON without filesystem access", () => {
     const message = serializeAttachmentMarkup("Change this tattoo", [attachment]);
-    expect(message).toContain("~~~json pi-web-attachments-v1");
+    expect(message).toContain("~~~json pi-web-attachments-v2");
     expect(message).not.toContain("base64");
     expect(parseAttachmentMarkup(message, cwd)).toEqual({ text: "Change this tattoo", attachments: [attachment] });
+  });
+
+  it("round trips a self-contained GitHub reference without storing its content", () => {
+    const reference = {
+      type: "reference" as const,
+      id: "github:ashwin-pc/pi-web:issue:123",
+      label: "GitHub issue #123",
+      title: "Fix the mobile composer",
+      reference: {
+        provider: "github" as const,
+        repository: "ashwin-pc/pi-web",
+        resource: "issue" as const,
+        number: 123,
+        url: "https://github.com/ashwin-pc/pi-web/issues/123",
+      },
+    };
+    const message = serializeAttachmentMarkup("Please implement this.", [reference]);
+    expect(message).not.toContain("Description:");
+    expect(parseAttachmentMarkup(message, cwd)).toEqual({ text: "Please implement this.", attachments: [reference] });
+    expect(normalizeSubmittedAttachments(cwd, [reference])).toEqual([reference]);
   });
 
   it("leaves malformed or non-trailing markup visible", () => {

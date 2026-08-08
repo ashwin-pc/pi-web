@@ -4,7 +4,7 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
 });
 
-test("GitHub issue numbers attach issue details to the composer context", async ({ page }) => {
+test("GitHub issue numbers attach a structured reference to the prompt", async ({ page }) => {
   await page.request.post("/api/mock/state", { data: {
     webContributions: [{ version: 1, key: "github", slot: "git-tab", kind: "rendered", title: "GitHub issues", label: "GitHub" }],
   } });
@@ -15,10 +15,17 @@ test("GitHub issue numbers attach issue details to the composer context", async 
         ok: true,
         title: "GitHub",
         composerContext: {
+          type: "reference",
           id: "github:ashwin-pc/pi-web:issue:123",
           label: "GitHub issue #123",
           title: "Fix the mobile composer",
-          content: "GitHub issue: ashwin-pc/pi-web#123\nState: OPEN\nDescription:\nThe composer overlaps the issue panel.",
+          reference: {
+            provider: "github",
+            repository: "ashwin-pc/pi-web",
+            resource: "issue",
+            number: 123,
+            url: "https://github.com/ashwin-pc/pi-web/issues/123",
+          },
         },
       } });
       return;
@@ -45,9 +52,20 @@ test("GitHub issue numbers attach issue details to the composer context", async 
   const promptRequest = page.waitForRequest((request) => request.url().endsWith("/api/prompt") && request.method() === "POST");
   await page.locator("#primaryButton").click();
   const body = (await promptRequest).postDataJSON();
-  expect(body.message).toContain("GitHub issue: ashwin-pc/pi-web#123");
-  expect(body.message).toContain("The composer overlaps the issue panel.");
-  expect(body.message).toContain("Please implement this.");
+  expect(body.message).toBe("Please implement this.");
+  expect(body.attachments).toEqual([{
+    type: "reference",
+    id: "github:ashwin-pc/pi-web:issue:123",
+    label: "GitHub issue #123",
+    title: "Fix the mobile composer",
+    reference: {
+      provider: "github",
+      repository: "ashwin-pc/pi-web",
+      resource: "issue",
+      number: 123,
+      url: "https://github.com/ashwin-pc/pi-web/issues/123",
+    },
+  }]);
   await expect(contextChip).toHaveCount(0);
   await page.unrouteAll({ behavior: "wait" });
 });

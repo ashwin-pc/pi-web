@@ -797,12 +797,21 @@ async function bindWebExtensions(value: any) {
       ? result.composerContext as Record<string, unknown>
       : undefined;
     const contextLabel = cleanHeaderActionText(rawContext?.label, 200);
-    const contextContent = cleanFooterText(rawContext?.content, 200_000);
-    const composerContext = contextLabel && contextContent ? {
-      ...(cleanHeaderActionText(rawContext?.id, 500) ? { id: cleanHeaderActionText(rawContext?.id, 500) } : {}),
+    const rawReference = rawContext?.reference && typeof rawContext.reference === "object"
+      ? rawContext.reference as Record<string, unknown>
+      : undefined;
+    const repository = cleanHeaderActionText(rawReference?.repository, 300);
+    const resource = rawReference?.resource === "issue" || rawReference?.resource === "pull-request" ? rawReference.resource : undefined;
+    const number = typeof rawReference?.number === "number" && Number.isSafeInteger(rawReference.number) && rawReference.number > 0 ? rawReference.number : undefined;
+    const expectedUrl = repository && resource && number
+      ? `https://github.com/${repository}/${resource === "issue" ? "issues" : "pull"}/${number}`
+      : undefined;
+    const composerContext = rawContext?.type === "reference" && contextLabel && repository && resource && number && rawReference?.provider === "github" && rawReference.url === expectedUrl ? {
+      type: "reference",
+      id: cleanHeaderActionText(rawContext.id, 500) || `github:${repository}:${resource}:${number}`,
       label: contextLabel,
-      ...(cleanHeaderActionText(rawContext?.title, 500) ? { title: cleanHeaderActionText(rawContext?.title, 500) } : {}),
-      content: contextContent,
+      ...(cleanHeaderActionText(rawContext.title, 500) ? { title: cleanHeaderActionText(rawContext.title, 500) } : {}),
+      reference: { provider: "github", repository, resource, number, url: expectedUrl },
     } : undefined;
     if (!html && !composerContext) throw new Error("Git tab returned no HTML or composer context");
     return {

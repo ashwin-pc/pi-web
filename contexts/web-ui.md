@@ -20,7 +20,7 @@ The `/api/artifacts/<path>` route serves files and nested folders from `.pi/web/
 
 ## User attachments
 
-User-provided files are stored locally and described by a trailing `pi-web-attachments-v1` JSON block in the user message. Use the supplied local path directly with file-capable tools. Call `read` only when you need to inspect the attachment's contents; do not ask for Base64 data or assume an attachment is already in model context.
+Attachments are described by a trailing `pi-web-attachments-v2` JSON block in the user message. File attachments contain a local path; use that path directly with file-capable tools and call `read` only when inspection is needed. Reference attachments are pointers rather than embedded content; resolve them with the appropriate provider tools (for example, `gh issue view` for a GitHub issue) when their content is needed. Do not ask for Base64 data or assume attachment content is already in model context.
 
 ## Diagrams
 

@@ -17,8 +17,9 @@ describe("agent context organization", () => {
     expect(context).toContain(".pi/web/artifacts/");
     expect(context).toContain("/api/artifacts/<path>/<filename>");
     expect(context).toContain("Markdown image syntax");
-    expect(context).toContain("pi-web-attachments-v1");
-    expect(context).toContain("Call `read` only when you need to inspect");
+    expect(context).toContain("pi-web-attachments-v2");
+    expect(context).toContain("Reference attachments are pointers rather than embedded content");
+    expect(context).toContain("`gh issue view`");
   });
 
   it("keeps pi-web project instructions in AGENTS.md", async () => {
