@@ -403,21 +403,21 @@ rm ~/.pi/web/extensions/github-repo-panel.ts
 
 The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch and live dirty/clean state, refreshes periodically, and also refreshes around turns, bash commands, and compaction events.
 
-Install it for one project:
+Install it for one project from a checkout of this repository. Use a symlink so the installed extension stays in sync with the example source:
 
 ```sh
 mkdir -p .pi/web/extensions
-cp examples/pi-web-extensions/git-footer.ts .pi/web/extensions/git-footer.ts
+ln -s "$(pwd)/examples/pi-web-extensions/git-footer.ts" .pi/web/extensions/git-footer.ts
 ```
 
 Or install it for all pi-web projects:
 
 ```sh
 mkdir -p ~/.pi/web/extensions
-cp examples/pi-web-extensions/git-footer.ts ~/.pi/web/extensions/git-footer.ts
+ln -s "$(pwd)/examples/pi-web-extensions/git-footer.ts" ~/.pi/web/extensions/git-footer.ts
 ```
 
-Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
+These commands assume your current directory is the pi-web repository root. Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
 
 ## Example: multi-agent session orchestration
 
