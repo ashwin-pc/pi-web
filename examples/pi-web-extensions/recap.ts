@@ -24,15 +24,17 @@ async function buildRecap(ctx: PiWebExtensionContext) {
 
 export default function recapExtension(pi: PiWebExtensionAPI) {
   const add = (_event: unknown, ctx: PiWebExtensionContext) => {
-    ctx.ui.web.setHeaderAction("recap", {
+    ctx.ui.web.contribute("recap", {
+      slot: "header-action",
+      kind: "rendered",
       icon: "scroll-text",
       title: "Session recap",
       label: "Recap",
-      invoke: () => buildRecap(ctx),
+      render: () => buildRecap(ctx),
     });
   };
 
   pi.on("session_start", add);
   pi.on("session_before_switch", add);
-  pi.on("session_shutdown", (_event, ctx) => ctx.ui.web.setHeaderAction("recap", undefined));
+  pi.on("session_shutdown", (_event, ctx) => ctx.ui.web.contribute("recap", undefined));
 }

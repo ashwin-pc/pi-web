@@ -618,7 +618,16 @@ export class LocalSessionService implements SessionService {
     this.knownSessionCwds.add(resolve(resolvedCwd));
     await this.ensureStorage(resolvedCwd);
     const contextPath = fileURLToPath(new URL("../../contexts/web-ui.md", import.meta.url));
-    const webUiContext = existsSync(contextPath) ? readFileSync(contextPath, "utf8") : "";
+    const appDir = dirname(dirname(contextPath));
+    const extensionAuthoringContext = [
+      "pi-web extension documentation (read when asked to build pi-web extensions or browser UI):",
+      `- API + slots: ${join(appDir, "docs/pi-web-extensions.md")}`,
+      `- Examples: ${join(appDir, "examples/pi-web-extensions")} (notepad.ts shows the current contribute() API)`,
+    ].join("\n");
+    const webUiContext = [
+      existsSync(contextPath) ? readFileSync(contextPath, "utf8") : "",
+      extensionAuthoringContext,
+    ].filter(Boolean).join("\n\n");
     const loader = new ResilientResourceLoader({
       loadTimeoutMs: envMs("PI_WEB_EXTENSION_LOAD_TIMEOUT_MS", 8_000),
       fetchTimeoutMs: envMs("PI_WEB_EXTENSION_FETCH_TIMEOUT_MS", 3_000),

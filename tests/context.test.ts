@@ -41,10 +41,23 @@ describe("agent context organization", () => {
     expect(service).toContain('new URL("../../contexts/web-ui.md", import.meta.url)');
     expect(service).toContain("appendSystemPromptOverride");
     expect(service).toContain("webUiContext");
+    expect(service).toContain("pi-web extension documentation (read when asked to build pi-web extensions or browser UI)");
+    expect(service).toContain('join(appDir, "docs/pi-web-extensions.md")');
+    expect(service).toContain('join(appDir, "examples/pi-web-extensions")');
+    expect(service).toContain("notepad.ts shows the current contribute() API");
 
     expect(service).not.toContain("piWebDevelopmentContextFile");
     expect(service).not.toContain("pi-web-development.md");
     expect(service).not.toContain("piCwd === appDir ?");
     expect(service).not.toContain("pi-web-agent-context.md");
+  });
+
+  it("teaches the canonical contribution API throughout the first-party UI examples", async () => {
+    const uiExamples = ["git-footer.ts", "recap.ts", "download-artifact.ts", "github-repo-panel.ts", "notepad.ts"];
+    for (const filename of uiExamples) {
+      const example = await text(`examples/pi-web-extensions/${filename}`);
+      expect(example).toContain(".contribute(");
+      expect(example).not.toMatch(/\.set(?:Footer|HeaderAction|ArtifactAction|GitTab|Panel|FabAction)\(/);
+    }
   });
 });
