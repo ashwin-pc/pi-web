@@ -60,7 +60,6 @@ initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
 configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
-const markdown = createMarkdownRenderer(elements.messagesEl);
 
 let messages: MessageList;
 let composer: ComposerController;
@@ -151,6 +150,7 @@ const quoteReplies = createQuoteReplies({
   composerEl: elements.formEl,
   onChange: () => composer?.updatePrimaryAction(),
 });
+const markdown = createMarkdownRenderer(elements.messagesEl, quoteReplies.restoreSubmittedReferences);
 messages = createMessageList({ messagesEl: elements.messagesEl, markdown, apiHeaders: api.headers, quoteReplies, onMessageAction: handleMessageAction, openSession: (sessionId) => void sessions.openSessionById(sessionId) });
 const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId));
 

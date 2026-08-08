@@ -501,7 +501,11 @@ function renderAssistantMarkdown(body: HTMLElement, text: string) {
   delete body.dataset.markdownText;
 }
 
-export function createMarkdownRenderer(messagesEl: HTMLElement): MarkdownRenderer {
+export function createMarkdownRenderer(messagesEl: HTMLElement, onAssistantRendered?: (body: HTMLElement) => void): MarkdownRenderer {
+  const render = (body: HTMLElement, text: string) => {
+    renderAssistantMarkdown(body, text);
+    onAssistantRendered?.(body);
+  };
   const requestIdle = window.requestIdleCallback || ((callback: IdleRequestCallback) => window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 1));
   const markdownRenderObserver = "IntersectionObserver" in window
     ? new IntersectionObserver((entries, observer) => {
@@ -511,19 +515,19 @@ export function createMarkdownRenderer(messagesEl: HTMLElement): MarkdownRendere
         observer.unobserve(body);
         const text = body.dataset.markdownText || "";
         requestIdle(() => {
-          if (body.isConnected && text && !body.dataset.markdownRendered) renderAssistantMarkdown(body, text);
+          if (body.isConnected && text && !body.dataset.markdownRendered) render(body, text);
         });
       }
     }, { root: messagesEl, rootMargin: "600px 0px" })
     : null;
 
   return {
-    renderAssistantMarkdown,
+    renderAssistantMarkdown: render,
     queueAssistantMarkdownRender(body, text) {
       body.dataset.markdownText = text;
       if (markdownRenderObserver) markdownRenderObserver.observe(body);
       else requestIdle(() => {
-        if (body.isConnected && !body.dataset.markdownRendered) renderAssistantMarkdown(body, text);
+        if (body.isConnected && !body.dataset.markdownRendered) render(body, text);
       });
     },
     unobserve(body) {

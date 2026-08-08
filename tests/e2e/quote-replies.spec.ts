@@ -119,16 +119,23 @@ test("links questions to multiple assistant responses and sends structured quote
       label: "Excerpt 1",
       quote: "Image attachment support",
       question: "How should this behave on mobile?",
-      source: expect.objectContaining({ startOffset: expect.any(Number), endOffset: expect.any(Number) }),
+      source: expect.objectContaining({ messageId: expect.any(String), startOffset: expect.any(Number), endOffset: expect.any(Number) }),
     }),
     expect.objectContaining({
       type: "quote-reply",
       label: "Excerpt 2",
       quote: "Mock response",
       question: "What should happen next?",
-      source: expect.objectContaining({ startOffset: expect.any(Number), endOffset: expect.any(Number) }),
+      source: expect.objectContaining({ messageId: expect.any(String), startOffset: expect.any(Number), endOffset: expect.any(Number) }),
     }),
   ]));
   await expect(page.locator(".message.user .submittedQuoteDetails").last()).toContainText("2 linked excerpts");
   await expect(page.locator(".quoteReplySummaryButton")).toBeHidden();
+
+  await page.reload();
+  await expect(page.locator(".message.user .submittedQuoteDetails").last()).toContainText("2 linked excerpts");
+  await expect(page.locator(".quoteReplyMark")).toHaveCount(2);
+  await expect(page.locator(".quoteReplyPin.submitted")).toHaveCount(2);
+  await page.locator(".quoteReplyPin.submitted").first().click();
+  await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("How should this behave on mobile?");
 });

@@ -649,6 +649,8 @@ export function createMessageList(options: {
   function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = [], metadata: MessageMetadata = {}) {
     invalidatePendingRefreshes();
     const div = document.createElement("div");
+    const entryId = metadata.entryId?.trim();
+    if (entryId) div.dataset.entryId = entryId;
     const collapsible = shouldCollapseMessage(text);
     div.className = `message ${role} ${extraClass}${collapsible ? " collapsible collapsed" : ""}`.trim();
     const body = document.createElement("div");

@@ -34,6 +34,7 @@ export type QuoteRepliesController = {
   prepareSubmission: (overallInstruction: string) => QuoteReplySubmission | undefined;
   commitSubmission: (submission: QuoteReplySubmission) => void;
   clear: () => void;
+  restoreSubmittedReferences: (body?: HTMLElement) => void;
   renderSubmittedMessage: (body: HTMLElement, message: string, attachments: AttachedImage[]) => boolean;
 };
 
@@ -51,6 +52,29 @@ function textOffset(root: HTMLElement, target: Node, targetOffset: number) {
   return offset;
 }
 
+function textRange(root: HTMLElement, startOffset: number, endOffset: number) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let offset = 0;
+  let start: { node: Text; offset: number } | undefined;
+  let end: { node: Text; offset: number } | undefined;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    if (node.parentElement?.closest("[data-quote-reply-ui]")) continue;
+    const nextOffset = offset + node.data.length;
+    if (!start && startOffset >= offset && startOffset <= nextOffset) start = { node, offset: startOffset - offset };
+    if (endOffset >= offset && endOffset <= nextOffset) {
+      end = { node, offset: endOffset - offset };
+      break;
+    }
+    offset = nextOffset;
+  }
+  if (!start || !end) return undefined;
+  const range = document.createRange();
+  range.setStart(start.node, start.offset);
+  range.setEnd(end.node, end.offset);
+  return range;
+}
+
 export function createQuoteReplies(options: {
   messagesEl: HTMLElement;
   composerEl: HTMLFormElement;
@@ -61,6 +85,7 @@ export function createQuoteReplies(options: {
   let pending: PendingSelection | undefined;
   let nextId = 1;
   let settleTimer = 0;
+  const persistedReplies = new Map<string, Map<string, AttachedImage>>();
   const isMobileSelection = () => matchMedia("(pointer: coarse)").matches || innerWidth <= 760;
 
   const toolbar = document.createElement("div");
@@ -257,6 +282,74 @@ export function createQuoteReplies(options: {
     updateSummary();
   }
 
+  function restoreSubmittedReference(attachment: AttachedImage, body: HTMLElement) {
+    const source = attachment.source;
+    if (!source || !attachment.quote || !attachment.question || !attachment.id) return;
+    if (body.closest<HTMLElement>(".message.assistant")?.dataset.entryId !== source.messageId) return;
+    if (body.querySelector(`[data-quote-attachment-id="${CSS.escape(attachment.id)}"]`)) return;
+    const range = textRange(body, source.startOffset, source.endOffset);
+    if (!range || range.collapsed || range.toString().replace(/\s+/g, " ").trim() !== attachment.quote.replace(/\s+/g, " ").trim()) return;
+
+    const number = attachment.label?.match(/\d+/)?.[0] || "•";
+    const mark = document.createElement("mark");
+    mark.className = "quoteReplyMark";
+    mark.dataset.quoteAttachmentId = attachment.id;
+    try {
+      mark.append(range.extractContents());
+      range.insertNode(mark);
+    } catch {
+      return;
+    }
+
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "quoteReplyPin submitted";
+    pin.dataset.quoteReplyUi = "true";
+    pin.textContent = number;
+    pin.title = attachment.question;
+    mark.after(pin);
+
+    const note = document.createElement("div");
+    note.className = "quoteFootnote submitted saved";
+    note.dataset.quoteReplyUi = "true";
+    note.innerHTML = `<span class="quoteFootnoteNumber">${number}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span></div></div>`;
+    note.querySelector<HTMLElement>(".quoteFootnoteQuestion")!.textContent = attachment.question;
+    let noteAnchor: Element = mark.closest(selectableBlockSelector) || body;
+    while (noteAnchor.nextElementSibling?.classList.contains("quoteFootnote")) noteAnchor = noteAnchor.nextElementSibling;
+    noteAnchor.after(note);
+
+    const id = Number(number);
+    const reference: QuoteReference = {
+      id: Number.isSafeInteger(id) ? id : nextId,
+      quote: attachment.quote,
+      question: attachment.question,
+      sourceMessageId: source.messageId,
+      startOffset: source.startOffset,
+      endOffset: source.endOffset,
+      mark,
+      pin,
+      note,
+      submitted: true,
+    };
+    references.push(reference);
+    nextId = Math.max(nextId, reference.id + 1);
+    pin.addEventListener("click", () => {
+      note.classList.toggle("open");
+      if (note.classList.contains("open")) jumpToReference(reference);
+    });
+  }
+
+  function restoreSubmittedReferences(body?: HTMLElement) {
+    const bodies = body
+      ? [body]
+      : Array.from(messagesEl.querySelectorAll<HTMLElement>(".message.assistant > .body"));
+    for (const assistantBody of bodies) {
+      const messageId = assistantBody.closest<HTMLElement>(".message.assistant")?.dataset.entryId;
+      if (!messageId) continue;
+      for (const attachment of persistedReplies.get(messageId)?.values() || []) restoreSubmittedReference(attachment, assistantBody);
+    }
+  }
+
   function createReference() {
     if (!pending) return;
     const selection = pending;
@@ -264,6 +357,7 @@ export function createQuoteReplies(options: {
     const mark = document.createElement("mark");
     mark.className = "quoteReplyMark";
     mark.dataset.quoteReference = String(id);
+    mark.dataset.quoteAttachmentId = `quote-reply-${id}`;
     try {
       mark.append(selection.range.extractContents());
       selection.range.insertNode(mark);
@@ -406,15 +500,28 @@ export function createQuoteReplies(options: {
     },
     clear() {
       references = [];
+      persistedReplies.clear();
       pending = undefined;
       nextId = 1;
       toolbar.hidden = true;
       summaryPopover.hidden = true;
       updateSummary();
     },
+    restoreSubmittedReferences,
     renderSubmittedMessage(body, message, attachments) {
       const quoteReplies = attachments.filter((attachment) => attachment.type === "quote-reply" && attachment.quote && attachment.question);
       if (!quoteReplies.length) return false;
+      quoteReplies.forEach((attachment) => {
+        const messageId = attachment.source?.messageId;
+        if (!messageId) return;
+        let sourceReplies = persistedReplies.get(messageId);
+        if (!sourceReplies) {
+          sourceReplies = new Map();
+          persistedReplies.set(messageId, sourceReplies);
+        }
+        sourceReplies.set(`${attachment.id}:${attachment.source?.startOffset}`, attachment);
+      });
+      restoreSubmittedReferences();
       body.classList.add("submittedQuoteReplies");
       if (message) {
         const overall = document.createElement("div");
