@@ -7,6 +7,7 @@ import type { MarkdownRenderer } from "../markdown/render.js";
 import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
+import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -272,8 +273,9 @@ export function createMessageList(options: {
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
   apiHeaders?: ApiHeaders;
+  quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession, apiHeaders } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
@@ -652,7 +654,10 @@ export function createMessageList(options: {
     const body = document.createElement("div");
     body.className = "body";
 
-    if (role === "user" && images.length > 0) {
+    const renderedQuoteReplies = role === "user" && quoteReplies?.renderSubmittedMessage(body, text);
+    if (renderedQuoteReplies) {
+      // Structured quote prompts render as a compact linked-excerpt summary.
+    } else if (role === "user" && images.length > 0) {
       const cleanText = stripImagePathNote(text);
       if (cleanText) {
         const textNode = document.createElement("span");
@@ -953,6 +958,7 @@ export function createMessageList(options: {
 
   function clearInternal(invalidate = true) {
     if (invalidate) invalidatePendingRefreshes();
+    quoteReplies?.clear();
     messagesEl.textContent = "";
     streamingAssistant = null;
     streamingThinkingCards.clear();

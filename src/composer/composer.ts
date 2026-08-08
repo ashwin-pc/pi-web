@@ -9,6 +9,7 @@ import { recordDebugEvent } from "../app/debugDiagnostics.js";
 import { openImageOverlay } from "../components/imageActions.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
+import type { QuoteRepliesController, QuoteReplySubmission } from "../quotes/quoteReplies.js";
 
 type BarcodeDetectorLike = {
   detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
@@ -46,8 +47,9 @@ export function createComposer(options: {
   beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
+  quoteReplies: QuoteRepliesController;
 }): ComposerController {
-  const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow, quoteReplies } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
@@ -115,7 +117,7 @@ export function createComposer(options: {
   }
 
   function updatePrimaryAction() {
-    const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0;
+    const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0 || quoteReplies.hasDrafts();
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
     elements.primaryButton.disabled = !hasInput || !initialRealtimeReady;
     elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
@@ -668,12 +670,19 @@ export function createComposer(options: {
     elements.formEl.addEventListener("submit", async (event) => {
       event.preventDefault();
       const activeRuntime = sessionRuntime(state);
-      if ((activeRuntime.isStreaming || activeRuntime.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0) return;
+      if ((activeRuntime.isStreaming || activeRuntime.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0 && !quoteReplies.hasDrafts()) return;
 
       const rawMessage = elements.promptEl.value;
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
-      const message = promptMessage;
+      let quoteSubmission: QuoteReplySubmission | undefined;
+      try {
+        quoteSubmission = quoteReplies.prepareSubmission(promptMessage);
+      } catch (error) {
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        return;
+      }
+      const message = quoteSubmission?.message ?? promptMessage;
       const submittedAttachments = [...state.attachedImages];
       const attachments = [
         ...submittedAttachments.map(({ type, id, name, mediaType, bytes, path, contentUrl }) => ({ type, id, name, mediaType, bytes, path, contentUrl })),
@@ -681,7 +690,7 @@ export function createComposer(options: {
       ];
       if (!message && attachments.length === 0) return;
 
-      if (rawMessage.startsWith("!") && attachments.length === 0 && contexts.length === 0) {
+      if (rawMessage.startsWith("!") && attachments.length === 0 && contexts.length === 0 && !quoteSubmission) {
         elements.promptEl.value = "";
         clearDraft();
         hideSlashCommands();
@@ -696,7 +705,7 @@ export function createComposer(options: {
         return;
       }
 
-      if (rawMessage.startsWith("/") && attachments.length === 0 && contexts.length === 0) {
+      if (rawMessage.startsWith("/") && attachments.length === 0 && contexts.length === 0 && !quoteSubmission) {
         let commandInfo: SlashCommand | undefined;
         try {
           commandInfo = await commandInfoForMessage(promptMessage);
@@ -750,6 +759,8 @@ export function createComposer(options: {
           body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, attachments }),
         });
         if (!res.ok) throw new Error(await res.text());
+        if (quoteSubmission) quoteReplies.commitSubmission(quoteSubmission);
+        updatePrimaryAction();
       } catch (error) {
         optimisticUserMessages.delete(clientMessageId);
         sessionState.replaceRuntime(sessionId, runtimeTransition.previous);

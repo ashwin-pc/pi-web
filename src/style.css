@@ -2,6 +2,7 @@
 @import "./styles/composerFrame.css";
 @import "./styles/statusBar.css";
 @import "./styles/messages.css";
+@import "./styles/quoteReplies.css";
 @import "./styles/composer.css";
 @import "./styles/sessions.css";
 @import "./styles/settings.css";

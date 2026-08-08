@@ -41,6 +41,7 @@ import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
+import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
@@ -145,7 +146,12 @@ async function handleMessageAction(context: MessageActionContext) {
   }
 }
 
-messages = createMessageList({ messagesEl: elements.messagesEl, markdown, apiHeaders: api.headers, onMessageAction: handleMessageAction, openSession: (sessionId) => void sessions.openSessionById(sessionId) });
+const quoteReplies = createQuoteReplies({
+  messagesEl: elements.messagesEl,
+  composerEl: elements.formEl,
+  onChange: () => composer?.updatePrimaryAction(),
+});
+messages = createMessageList({ messagesEl: elements.messagesEl, markdown, apiHeaders: api.headers, quoteReplies, onMessageAction: handleMessageAction, openSession: (sessionId) => void sessions.openSessionById(sessionId) });
 const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId));
 
 const webHeaderActions = createWebHeaderActions({
@@ -498,6 +504,7 @@ composer = createComposer({
   beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,
+  quoteReplies,
 });
 
 conversationTree = createConversationTree({
