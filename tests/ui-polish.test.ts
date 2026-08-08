@@ -418,10 +418,10 @@ describe("compact inactive composer styling", () => {
     expect(css).toContain(`${compactSelector} .expandButton,\n${compactSelector} #queueToggle,\n${compactSelector} #primaryButton {\n  display: none !important;\n}`);
   });
 
-  it("sets the compact inactive state during composer initialization", () => {
+  it("sets or restores the compact inactive state during composer initialization", () => {
     const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
     expect(composer).toContain("function updateCompactInactive()");
-    expect(composer).toContain("applyCompactInactive(!elements.formEl.contains(document.activeElement));");
+    expect(composer).toContain("applyCompactInactive(restoreFocus ? false : !elements.formEl.contains(document.activeElement));");
   });
 
   it("routes compact actions through press handlers before focus expands the composer", () => {

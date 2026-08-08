@@ -16,6 +16,8 @@ type BarcodeDetectorLike = {
 
 type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
 
+const restoreFocusStorageKey = "pi-web-composer-restore-focus";
+
 export type ComposerController = {
   init: () => void;
   addContextAttachment: (context: ComposerContextAttachment) => void;
@@ -801,8 +803,18 @@ export function createComposer(options: {
 
     // focusin fires before every focused child is guaranteed to be reflected by
     // document.activeElement on mobile WebKit. The event itself is authoritative.
-    elements.formEl.addEventListener("focusin", () => applyCompactInactive(false));
-    elements.formEl.addEventListener("focusout", () => window.setTimeout(updateCompactInactive, 0));
+    let pageIsUnloading = false;
+    window.addEventListener("beforeunload", () => { pageIsUnloading = true; });
+    elements.formEl.addEventListener("focusin", () => {
+      applyCompactInactive(false);
+      try { sessionStorage.setItem(restoreFocusStorageKey, "true"); } catch { /* ignore */ }
+    });
+    elements.formEl.addEventListener("focusout", () => window.setTimeout(() => {
+      updateCompactInactive();
+      if (!pageIsUnloading && !elements.formEl.contains(document.activeElement)) {
+        try { sessionStorage.removeItem(restoreFocusStorageKey); } catch { /* ignore */ }
+      }
+    }, 0));
     elements.promptEl.addEventListener("focus", () => { void maybeRefreshSlashCommands(); });
     elements.promptEl.addEventListener("blur", () => window.setTimeout(hideSlashCommands, 100));
     elements.promptEl.addEventListener("input", () => {
@@ -905,7 +917,18 @@ export function createComposer(options: {
       }
     } catch { /* ignore */ }
     restoreAttachmentDraft();
-    applyCompactInactive(!elements.formEl.contains(document.activeElement));
+
+    let restoreFocus = false;
+    try {
+      restoreFocus = sessionStorage.getItem(restoreFocusStorageKey) === "true";
+      sessionStorage.removeItem(restoreFocusStorageKey);
+    } catch { /* ignore */ }
+
+    applyCompactInactive(restoreFocus ? false : !elements.formEl.contains(document.activeElement));
+    if (restoreFocus) {
+      // Defer until the browser has completed its own load-time focus handling.
+      window.requestAnimationFrame(() => elements.promptEl.focus({ preventScroll: true }));
+    }
   }
 
   return {

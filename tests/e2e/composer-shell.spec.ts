@@ -13,6 +13,20 @@ test.beforeEach(async ({ page }) => {
   await expect(page.locator("#connectionStatus")).toBeHidden();
 });
 
+test("keeps an active composer focused across reload", async ({ page }) => {
+  const prompt = page.locator("#prompt");
+  const composer = page.locator("#promptForm");
+
+  await prompt.focus();
+  await expect(prompt).toBeFocused();
+  await expect(composer).not.toHaveClass(/compactInactive/);
+
+  await page.reload();
+
+  await expect(prompt).toBeFocused();
+  await expect(composer).not.toHaveClass(/compactInactive/);
+});
+
 test.describe("composer shell escape", () => {
   test("runs ! commands through bash instead of prompting the agent", async ({ page }) => {
     let promptRequests = 0;
