@@ -1,3 +1,4 @@
+// Uses typed compatibility wrappers; see notepad.ts for the current contribute() API.
 import { generateSummary } from "@earendil-works/pi-coding-agent";
 import { buildSessionContext } from "@earendil-works/pi-coding-agent";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";

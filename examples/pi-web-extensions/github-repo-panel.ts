@@ -1,3 +1,4 @@
+// Uses typed compatibility wrappers; see notepad.ts for the current contribute() API.
 import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebGitTabEvent } from "@ashwin-pc/pi-web/extensions";
 
 const GIT_TAB_KEY = "github";

@@ -1,3 +1,4 @@
+// Uses typed compatibility wrappers; see notepad.ts for the current contribute() API.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";

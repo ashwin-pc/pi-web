@@ -1,3 +1,4 @@
+// Uses typed compatibility wrappers; see notepad.ts for the current contribute() API.
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
 
 const ACTION_KEY = "download-artifact";
