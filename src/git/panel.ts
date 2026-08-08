@@ -36,6 +36,7 @@ export function initGitPanel(options: {
   let panelHandle: RightPanelHandle | undefined;
   let extensionTabs: GitExtensionTab[] = [];
   let extensionTabView: GitExtensionTabView | undefined;
+  let extensionRequestGeneration = 0;
 
   const state: GitState = {
     isOpen: false,
@@ -256,6 +257,7 @@ export function initGitPanel(options: {
   }
 
   async function loadExtensionTab(key: string, event?: { action?: string; payload?: unknown }) {
+    const generation = ++extensionRequestGeneration;
     state.primaryView = extensionViewKey(key);
     state.mobileView = extensionViewKey(key);
     if (!event) extensionTabView = { key, loading: true };
@@ -274,6 +276,7 @@ export function initGitPanel(options: {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) throw new Error(data.error || res.statusText);
+      if (generation !== extensionRequestGeneration || extensionKeyFromView() !== key) return;
       if (data.composerContext && typeof data.composerContext === "object") {
         if (panelHandle) panelHandle.close(false);
         else setOpen(false);
@@ -285,10 +288,14 @@ export function initGitPanel(options: {
         throw new Error("Git tab returned no content");
       }
     } catch (error) {
-      extensionTabView = { key, loading: false, error: error instanceof Error ? error.message : String(error) };
+      if (generation === extensionRequestGeneration && extensionKeyFromView() === key) {
+        extensionTabView = { key, loading: false, error: error instanceof Error ? error.message : String(error) };
+      }
     } finally {
-      panel.removeAttribute("aria-busy");
-      render();
+      if (generation === extensionRequestGeneration) {
+        panel.removeAttribute("aria-busy");
+        render();
+      }
     }
   }
 

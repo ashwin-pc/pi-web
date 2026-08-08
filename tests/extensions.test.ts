@@ -167,6 +167,7 @@ describe("bundled extension path discovery", () => {
 
   it("publishes normalized contributions and emits pull invalidations", async () => {
     let ui: any;
+    let bindOptions: any;
     const emitted: any[] = [];
     const bridge = createWebUiBridge({
       emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
@@ -174,9 +175,26 @@ describe("bundled extension path discovery", () => {
     });
     const session = {
       sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
-      bindExtensions: async (options: any) => { ui = options.uiContext; },
+      bindExtensions: async (options: any) => { ui = options.uiContext; bindOptions = options; },
     };
     await bridge.bind(session);
+
+    expect(ui.web.capabilities).toEqual({
+      apiVersion: 1,
+      slots: ["footer", "header-action", "artifact-action", "git-tab", "panel", "fab"],
+      kinds: ["static", "rendered"],
+      effects: ["open-panel"],
+    });
+    expect(Object.isFrozen(ui.web.capabilities)).toBe(true);
+    expect(Object.isFrozen(ui.web.capabilities.slots)).toBe(true);
+
+    bindOptions.onError({ extensionPath: "/tmp/broken.ts", eventName: "session_start", error: new Error("registration failed") });
+    expect(bridge.runtimeErrors(session)).toEqual([
+      expect.objectContaining({ path: "/tmp/broken.ts", event: "session_start", error: "registration failed" }),
+    ]);
+    for (let index = 0; index < 21; index++) bindOptions.onError({ extensionPath: "/tmp/noisy.ts", eventName: "turn_start", error: `failure ${index}` });
+    expect(bridge.runtimeErrors(session)).toHaveLength(20);
+    expect(bridge.runtimeErrors(session).at(-1)).toMatchObject({ error: "failure 20" });
 
     let revision = 1;
     ui.web.contribute("status", {

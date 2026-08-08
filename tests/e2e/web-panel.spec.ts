@@ -57,8 +57,14 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
   await expect(panel.getByRole("status")).toContainText("revision 1");
 
   const invokesBeforeUpdate = invocations.length;
+  await panel.locator("textarea").fill("Unsubmitted draft");
   revision = 2;
   await page.request.post("/api/mock/event", { data: { type: "web_contribution_updated", sessionId: "mock-current", key: "notes" } });
+  await page.waitForTimeout(100);
+  await expect(panel.locator("textarea")).toHaveValue("Unsubmitted draft");
+  expect(invocations.length).toBe(invokesBeforeUpdate);
+
+  await page.locator("#prompt").focus();
   await expect(panel.getByRole("status")).toContainText("revision 2");
   expect(invocations.length).toBe(invokesBeforeUpdate + 1);
 

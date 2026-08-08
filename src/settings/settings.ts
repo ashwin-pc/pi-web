@@ -22,6 +22,7 @@ type ExtensionLoadStatus = {
   durationMs?: number;
   extensionCount: number;
   errors: Array<{ path: string; error: string }>;
+  runtimeErrors?: Array<{ path: string; event: string; error: string; timestamp: string }>;
   message: string;
 };
 
@@ -261,7 +262,14 @@ export function createSettings(options: {
       row.textContent = `${error.path}: ${error.error}`;
       elements.extensionStatusDetails.append(row);
     }
-    elements.extensionStatusDetails.hidden = status.state === "ready" && status.errors.length === 0;
+    for (const error of status.runtimeErrors || []) {
+      const row = document.createElement("div");
+      row.className = "extensionStatusError";
+      const time = Number.isNaN(Date.parse(error.timestamp)) ? error.timestamp : new Date(error.timestamp).toLocaleString();
+      row.textContent = `${error.path} · ${error.event} · ${time}: ${error.error}`;
+      elements.extensionStatusDetails.append(row);
+    }
+    elements.extensionStatusDetails.hidden = status.state === "ready" && status.errors.length === 0 && !status.runtimeErrors?.length;
   }
 
   function renderExtensionStatusError(error: unknown) {

@@ -49,6 +49,20 @@ type WebContribution =
 
 /** Canonical per-runtime registry. Legacy surfaces below are wire adapters over it. */
 const webContributionStates = new WeakMap<object, Map<string, WebContribution>>();
+type ExtensionRuntimeError = { path: string; event: string; error: string; timestamp: string };
+const extensionRuntimeErrors = new WeakMap<object, ExtensionRuntimeError[]>();
+
+function recordExtensionRuntimeError(session: object, input: any) {
+  const errors = extensionRuntimeErrors.get(session) || [];
+  errors.push({
+    path: String(input?.extensionPath || input?.path || "unknown extension"),
+    event: String(input?.event?.type || input?.eventName || input?.hook || input?.event || "unknown event"),
+    error: input?.error instanceof Error ? input.error.message : String(input?.error || input),
+    timestamp: new Date().toISOString(),
+  });
+  if (errors.length > 20) errors.splice(0, errors.length - 20);
+  extensionRuntimeErrors.set(session, errors);
+}
 
 function contributionId(slot: WebContribution["slot"], key: string) {
   return `${slot}\0${key}`;
@@ -377,6 +391,9 @@ const cleanArtifactExtensions = (value: unknown) => Array.isArray(value) ? value
   return cleaned && /^\.[a-z0-9]+$/.test(cleaned) ? [cleaned] : [];
 }).slice(0, 20) : undefined;
 
+// `allowedKinds`, budgets, and field limits are executable guards. `viewFields`
+// and `effects` document each slot's output contract; the slot-specific
+// sanitizers below enforce those structural shapes.
 const contributionPolicies = {
   footer: {
     allowedKinds: ["static"], viewFields: ["view"], viewBudget: 20_000,
@@ -408,6 +425,13 @@ const contributionPolicies = {
 } as const;
 
 type ContributionSlot = keyof typeof contributionPolicies;
+
+const webCapabilities = Object.freeze({
+  apiVersion: 1 as const,
+  slots: Object.freeze(Object.keys(contributionPolicies)),
+  kinds: Object.freeze([...new Set(Object.values(contributionPolicies).flatMap((policy) => [...policy.allowedKinds]))]),
+  effects: Object.freeze([...new Set(Object.values(contributionPolicies).flatMap((policy) => "effects" in policy ? [...policy.effects] : []))]),
+});
 
 function webContributionEntries(value: any) {
   return Array.from(contributionState(value).values()).flatMap((entry) => {
@@ -496,6 +520,7 @@ function createPiWebUi(value: any): PiWebUi {
     setContribution(value, slot, keyValue, (key) => spec ? normalizedPublicContribution(key, spec) : undefined);
   };
   return {
+    capabilities: webCapabilities,
     contribute(keyValue, spec) {
       const key = cleanContributionKey(keyValue);
       if (!key) throw new TypeError("Contribution key is required");
@@ -693,6 +718,7 @@ async function bindWebExtensions(value: any) {
       deps.emit({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: "An extension requested shutdown; pi-web ignored the request." });
     },
     onError: (error: any) => {
+      recordExtensionRuntimeError(value, error);
       deps.emit({ type: "server_error", sessionId: value.sessionId, sessionFile: value.sessionFile, error: `Extension error (${error.extensionPath}): ${error.error}` });
     },
   });
@@ -845,6 +871,7 @@ async function bindWebExtensions(value: any) {
     invokeGitTab,
     invokePanel,
     respond,
+    runtimeErrors: (value: object) => [...(extensionRuntimeErrors.get(value) || [])],
     registerSettings: (session: any, schema: PiWebSettingsRegistration) => registerSessionSettings(session, schema),
     settingsSchemas: activeSettingsSchemaList,
     settingsSchemaEntry: (id: string) => {

@@ -65,7 +65,7 @@ These are separate from regular pi extension locations on purpose. A pi-web exte
 
 ## Contribution API
 
-`ctx.ui.web.contribute(key, spec)` is the canonical API for browser surfaces. Specs use an explicit `slot` and `kind`; pi-web normalizes them immediately into versioned descriptors. Passing `undefined` clears every contribution registered under that key.
+`ctx.ui.web.contribute(key, spec)` is the canonical API for browser surfaces. Specs use an explicit `slot` and `kind`; pi-web normalizes them immediately into versioned descriptors. Passing `undefined` clears every contribution registered under that key. Keys are identities across slots, so prefix them with your extension name (for example, `acme-notes.panel`) to avoid collisions with other extensions and convenience wrappers.
 
 ```ts
 ctx.ui.web.contribute("worker-status", {
@@ -79,6 +79,8 @@ ctx.ui.web.contribute("worker-status", {
 ```
 
 Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `git-tab`, and `panel`.
+
+Independently distributed extensions should inspect `ctx.ui.web.capabilities` before using newer facilities. It reports the additive runtime contract: `apiVersion`, `slots`, `kinds`, and `effects`.
 
 When backing data changes without a browser interaction, call `ctx.ui.web.update(key)`. pi-web emits a lightweight invalidation and an active panel or Git tab pulls a fresh render. Updates for hidden surfaces do no work; they render when next opened.
 

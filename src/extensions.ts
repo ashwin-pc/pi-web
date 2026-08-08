@@ -234,7 +234,17 @@ export type PiWebRegisterSettingsResult = {
   error?: string;
 };
 
+export type PiWebCapabilities = Readonly<{
+  apiVersion: 1;
+  slots: readonly string[];
+  kinds: readonly string[];
+  effects: readonly string[];
+}>;
+
 export type PiWebUi = {
+  /** Runtime feature discovery for independently distributed extensions. */
+  readonly capabilities: PiWebCapabilities;
+
   /** Register or clear a normalized browser contribution. */
   contribute(key: string, contribution: PiWebContribution | undefined): void;
 

@@ -92,7 +92,14 @@ export function createWebPanels(options: {
   let sessionId = "";
   let activeKey = "";
   let requestGeneration = 0;
+  let updatePending = false;
   let panelHandle: RightPanelHandle;
+
+  function formControlIsFocused() {
+    const active = document.activeElement;
+    return active instanceof HTMLElement && body.contains(active)
+      && active.matches("input, textarea, select, button, [contenteditable]:not([contenteditable='false'])");
+  }
 
   function activePanel() {
     return panels.find((entry) => entry.key === activeKey);
@@ -161,6 +168,7 @@ export function createWebPanels(options: {
     if ((target instanceof HTMLButtonElement || target instanceof HTMLInputElement)
       && target.type === "submit" && target.form) return;
     event.preventDefault();
+    updatePending = false;
     void invoke({
       action: target.dataset.webAction || target.dataset.webPanelAction || "",
       payload: parsePayload(target.dataset.webPayload || target.dataset.webPanelPayload),
@@ -171,6 +179,7 @@ export function createWebPanels(options: {
   body.addEventListener("submit", (event) => {
     if (!(event.target instanceof HTMLFormElement)) return;
     event.preventDefault();
+    updatePending = false;
     const submitter = event.submitter instanceof HTMLElement ? event.submitter : undefined;
     void invoke({
       action: submitter?.dataset.webAction || submitter?.dataset.webPanelAction || event.target.dataset.webAction || event.target.dataset.webPanelAction || "",
@@ -178,6 +187,12 @@ export function createWebPanels(options: {
       fields: formFields(event.target),
     });
   });
+
+  body.addEventListener("focusout", () => queueMicrotask(() => {
+    if (!updatePending || formControlIsFocused() || !panelHandle.isOpen()) return;
+    updatePending = false;
+    void invoke();
+  }));
 
   panelHandle = rightPanels.register({
     id: "web-extension",
@@ -188,7 +203,7 @@ export function createWebPanels(options: {
     minWidth: 320,
     maxWidth: 900,
     focusOnOpen: close,
-    onClose: () => { requestGeneration += 1; },
+    onClose: () => { requestGeneration += 1; updatePending = false; },
   });
 
   return {
@@ -198,6 +213,7 @@ export function createWebPanels(options: {
       panels = normalizePanels(value);
       if (changedSession || (activeKey && !activePanel())) {
         requestGeneration += 1;
+        updatePending = false;
         activeKey = "";
         body.textContent = "";
         if (panelHandle.isOpen()) panelHandle.close(false);
@@ -206,7 +222,9 @@ export function createWebPanels(options: {
     entries: () => [...panels],
     open,
     update: (key) => {
-      if (key === activeKey && panelHandle.isOpen()) void invoke();
+      if (key !== activeKey || !panelHandle.isOpen()) return;
+      if (formControlIsFocused()) updatePending = true;
+      else void invoke();
     },
     isOpen: () => panelHandle.isOpen(),
   };

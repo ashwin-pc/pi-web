@@ -415,11 +415,23 @@ export class LocalSessionService implements SessionService {
 
   respondExtensionUi(id: string, response: Record<string, unknown>) { return this.webUiBridge.respond(id, response); }
 
+  private extensionStatusFor(value: PiWebSession, loader: ResilientResourceLoader) {
+    const status = loader.getStatus();
+    const runtimeErrors = this.webUiBridge.runtimeErrors(value);
+    if (!runtimeErrors.length) return { ...status, runtimeErrors };
+    return {
+      ...status,
+      state: status.state === "loading" ? status.state : "degraded" as const,
+      runtimeErrors,
+      message: `${status.message} ${runtimeErrors.length} recent runtime error${runtimeErrors.length === 1 ? "" : "s"}.`,
+    };
+  }
+
   extensionStatus(sessionId: string) {
     const value = this.openExtensionSession(sessionId);
     const loader = this.extensionLoaders.get(value);
     if (!loader) throw new SessionServiceError("Extension status is not available for this session.", 404);
-    return loader.getStatus();
+    return this.extensionStatusFor(value, loader);
   }
 
   async reloadExtensions(sessionId: string) {
@@ -429,7 +441,7 @@ export class LocalSessionService implements SessionService {
     const loader = this.extensionLoaders.get(value);
     if (!loader || typeof value.reload !== "function") throw new SessionServiceError("Extension reload is not available for this session.", 404);
     await value.reload();
-    const status = loader.getStatus();
+    const status = this.extensionStatusFor(value, loader);
     this.emit({ type: "wire", value: { type: "extensions_reloaded", sessionId: value.sessionId, status } as JsonValue });
     return status;
   }

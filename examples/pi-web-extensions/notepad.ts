@@ -521,7 +521,21 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
   });
 
   pi.on("session_start", async (_event, ctx) => {
-    await ctx.ui.web.registerSettings({
+    const web = ctx.ui.web as typeof ctx.ui.web | undefined;
+    const capabilities = web?.capabilities;
+    const compatible = capabilities?.apiVersion === 1
+      && capabilities.slots.includes("panel")
+      && capabilities.slots.includes("fab")
+      && capabilities.kinds.includes("rendered")
+      && capabilities.kinds.includes("static")
+      && typeof web?.contribute === "function"
+      && typeof web?.update === "function";
+    if (!compatible) {
+      ctx.ui.notify("Global notepad UI requires a newer pi-web contribution API. The notepad tool remains available.", "warning");
+      return;
+    }
+
+    await web.registerSettings({
       id: SETTINGS_ID,
       title: "Global notepad",
       schemaVersion: 1,
@@ -554,6 +568,9 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
               if (!text) return renderPanel(store, { status: "Type something to add first." });
               const duplicate = findDuplicate(store, text);
               if (duplicate) return renderPanel(store, { status: `Already tracked as ${duplicate.id}.` });
+              if (store.entries.filter((entry) => entry.status === "open").length >= MAX_ACTIVE_ENTRIES) {
+                return renderPanel(store, { status: `The notepad already has ${MAX_ACTIVE_ENTRIES} open entries. Close or consolidate stale ones first.` });
+              }
               const kindField = firstField(event, "kind");
               const now = new Date().toISOString();
               store.entries.push({
@@ -641,7 +658,9 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
     const invalidate = invalidatorByWebUi.get(ctx.ui.web);
     if (invalidate) storeInvalidators.delete(invalidate);
     invalidatorByWebUi.delete(ctx.ui.web);
-    ctx.ui.web.contribute(`${PANEL_KEY}-launcher`, undefined);
-    ctx.ui.web.contribute(PANEL_KEY, undefined);
+    if (typeof ctx.ui.web.contribute === "function") {
+      ctx.ui.web.contribute(`${PANEL_KEY}-launcher`, undefined);
+      ctx.ui.web.contribute(PANEL_KEY, undefined);
+    }
   });
 }
