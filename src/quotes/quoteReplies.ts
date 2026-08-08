@@ -96,17 +96,15 @@ export function createQuoteReplies(options: {
   const toolbar = document.createElement("div");
   toolbar.className = "quoteSelectionToolbar";
   toolbar.dataset.quoteReplyUi = "true";
+  toolbar.setAttribute("role", "toolbar");
+  toolbar.setAttribute("aria-label", "Selected text actions");
   toolbar.hidden = true;
   const reply = document.createElement("button");
   reply.type = "button";
   reply.className = "quoteSelectionReply";
-  reply.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21c3-4 7-6 13-6h4M13 8l7 7-7 7M20 15H9a6 6 0 0 1-6-6V3"/></svg><span>Reply</span>';
-  const cancel = document.createElement("button");
-  cancel.type = "button";
-  cancel.className = "quoteSelectionCancel";
-  cancel.setAttribute("aria-label", "Cancel quote reply");
-  cancel.textContent = "×";
-  toolbar.append(reply, cancel);
+  reply.title = "Reply to selected text";
+  reply.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7 4 12l5 5M4 12h9a7 7 0 0 1 7 7"/></svg><span>Reply</span>';
+  toolbar.append(reply);
   document.body.append(toolbar);
 
   const summary = document.createElement("div");
@@ -172,12 +170,53 @@ export function createQuoteReplies(options: {
       endOffset: textOffset(body, range.endContainer, range.endOffset),
     };
     toolbar.hidden = false;
-    const toolbarHalfWidth = 58;
-    toolbar.style.left = `${Math.max(toolbarHalfWidth + 6, Math.min(innerWidth - toolbarHalfWidth - 6, rect.right))}px`;
+    const actionRect = toolbar.getBoundingClientRect();
+    const safeEdge = 8;
+    const blockRect = startBlock.getBoundingClientRect();
+    const sameLine = (candidate: DOMRect) => candidate.bottom > rect.top + 1 && candidate.top < rect.bottom - 1;
+    let occupiedLeft = rect.left;
+    let occupiedRight = rect.right;
+    try {
+      const before = document.createRange();
+      before.selectNodeContents(startBlock);
+      before.setEnd(range.startContainer, range.startOffset);
+      const after = document.createRange();
+      after.selectNodeContents(startBlock);
+      after.setStart(range.endContainer, range.endOffset);
+      const lineRects = [...before.getClientRects(), ...after.getClientRects()].filter(sameLine);
+      occupiedLeft = Math.min(occupiedLeft, ...lineRects.map((candidate) => candidate.left));
+      occupiedRight = Math.max(occupiedRight, ...lineRects.map((candidate) => candidate.right));
+    } catch {
+      // The selection itself remains a sufficient anchor if a browser cannot
+      // construct a range around generated markdown nodes.
+    }
+
+    const lineTop = Math.max(safeEdge, Math.min(innerHeight - actionRect.height - safeEdge, rect.top + (rect.height - actionRect.height) / 2));
+    const rightBoundary = Math.min(innerWidth - safeEdge, blockRect.right);
+    const leftBoundary = Math.max(safeEdge, blockRect.left);
+    const maxSideTether = 112;
+    if (occupiedRight - rect.right + 8 <= maxSideTether && occupiedRight + 8 + actionRect.width <= rightBoundary) {
+      toolbar.dataset.placement = "right";
+      toolbar.style.left = `${Math.round(occupiedRight + 8)}px`;
+      toolbar.style.top = `${Math.round(lineTop)}px`;
+      return;
+    }
+    if (rect.left - occupiedLeft + 8 <= maxSideTether && occupiedLeft - 8 - actionRect.width >= leftBoundary) {
+      toolbar.dataset.placement = "left";
+      toolbar.style.left = `${Math.round(occupiedLeft - actionRect.width - 8)}px`;
+      toolbar.style.top = `${Math.round(lineTop)}px`;
+      return;
+    }
+
+    const anchorX = Math.max(safeEdge, Math.min(innerWidth - safeEdge, rect.right));
+    const left = Math.max(safeEdge, Math.min(innerWidth - actionRect.width - safeEdge, anchorX - actionRect.width + 12));
     const viewportHeight = visualViewport?.height || innerHeight;
-    const above = rect.bottom + 52 > viewportHeight;
+    const above = rect.bottom + actionRect.height + 10 > viewportHeight;
+    const top = above ? rect.top - actionRect.height - 8 : rect.bottom + 8;
     toolbar.dataset.placement = above ? "above" : "below";
-    toolbar.style.top = `${above ? rect.top - 7 : rect.bottom + 7}px`;
+    toolbar.style.left = `${Math.round(left)}px`;
+    toolbar.style.top = `${Math.round(top)}px`;
+    toolbar.style.setProperty("--quote-selection-tail-x", `${Math.round(Math.max(11, Math.min(actionRect.width - 11, anchorX - left)))}px`);
   }
 
   function jumpToReference(reference: QuoteReference) {
@@ -322,13 +361,25 @@ export function createQuoteReplies(options: {
 
   toolbar.addEventListener("pointerdown", (event) => event.preventDefault());
   reply.addEventListener("click", createReference);
-  cancel.addEventListener("click", () => hideToolbar(true));
   messagesEl.addEventListener("pointerup", () => {
     if (!isMobileSelection()) window.setTimeout(showSelection);
   });
   document.addEventListener("selectionchange", () => {
     window.clearTimeout(settleTimer);
-    if (isMobileSelection() && !["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName || "")) settleTimer = window.setTimeout(showSelection, 320);
+    const selection = getSelection();
+    if (!selection || selection.isCollapsed) {
+      hideToolbar();
+      return;
+    }
+    if (!["INPUT", "TEXTAREA"].includes(document.activeElement?.tagName || "")) {
+      settleTimer = window.setTimeout(showSelection, isMobileSelection() ? 320 : 120);
+    }
+  });
+  document.addEventListener("pointerdown", (event) => {
+    if (!toolbar.hidden && !toolbar.contains(event.target as Node)) hideToolbar();
+  }, true);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !toolbar.hidden) hideToolbar(true);
   });
   messagesEl.addEventListener("scroll", () => hideToolbar(), { passive: true });
   window.addEventListener("resize", () => hideToolbar());

@@ -1,51 +1,93 @@
 .quoteSelectionToolbar {
+  --quote-selection-tail-x: 50%;
   position: fixed;
   z-index: 1100;
-  display: flex;
-  align-items: center;
-  gap: 3px;
   width: max-content;
-  max-width: calc(100vw - 12px);
-  padding: 4px;
-  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--panel) 97%, transparent);
-  box-shadow: 0 14px 38px rgba(0, 0, 0, .58);
-  backdrop-filter: blur(16px);
-  transform: translate(-50%, 0);
+  max-width: calc(100vw - 16px);
   user-select: none;
+  animation: quoteSelectionActionIn .14s ease-out;
 }
 .quoteSelectionToolbar[hidden] { display: none; }
-.quoteSelectionToolbar[data-placement="above"] { transform: translate(-50%, -100%); }
+.quoteSelectionToolbar::before {
+  content: "";
+  position: absolute;
+  left: var(--quote-selection-tail-x);
+  top: -8px;
+  width: 1px;
+  height: 8px;
+  background: linear-gradient(to top, color-mix(in srgb, var(--accent) 48%, transparent), transparent);
+  pointer-events: none;
+}
+.quoteSelectionToolbar::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--quote-selection-tail-x) - 2px);
+  top: -2px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--bg) 82%, transparent);
+  pointer-events: none;
+}
+.quoteSelectionToolbar[data-placement="above"]::before {
+  top: auto;
+  bottom: -8px;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--accent) 48%, transparent), transparent);
+}
+.quoteSelectionToolbar[data-placement="above"]::after { top: auto; bottom: -2px; }
+.quoteSelectionToolbar[data-placement="right"]::before {
+  left: -8px;
+  top: 50%;
+  width: 8px;
+  height: 1px;
+  background: linear-gradient(to left, color-mix(in srgb, var(--accent) 48%, transparent), transparent);
+}
+.quoteSelectionToolbar[data-placement="right"]::after { left: -10px; top: calc(50% - 2px); }
+.quoteSelectionToolbar[data-placement="left"]::before {
+  left: 100%;
+  top: 50%;
+  width: 8px;
+  height: 1px;
+  background: linear-gradient(to right, color-mix(in srgb, var(--accent) 48%, transparent), transparent);
+}
+.quoteSelectionToolbar[data-placement="left"]::after { left: auto; right: -10px; top: calc(50% - 2px); }
 .quoteSelectionReply {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 32px;
-  min-height: 32px;
-  padding: 0 10px;
-  border: 0;
-  border-radius: 7px;
+  gap: 7px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0 12px 0 7px;
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel) 96%, transparent);
+  color: var(--text);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .42), inset 0 1px rgba(255, 255, 255, .035);
+  font-size: 11px;
+  font-weight: 750;
+  backdrop-filter: blur(14px);
+  transition: border-color .14s, background .14s, transform .1s;
+}
+.quoteSelectionReply:hover {
+  border-color: color-mix(in srgb, var(--accent) 68%, var(--border));
+  background: color-mix(in srgb, var(--panel) 88%, var(--accent) 12%);
+}
+.quoteSelectionReply:active { transform: scale(.96); }
+.quoteSelectionReply svg {
+  box-sizing: content-box;
+  width: 12px;
+  height: 12px;
+  padding: 4px;
+  border-radius: 50%;
   background: var(--accent);
   color: var(--accent-contrast, #211707);
-  font-size: 11px;
-  font-weight: 800;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2;
 }
-.quoteSelectionReply:hover { border: 0; background: color-mix(in srgb, var(--accent) 88%, white); }
-.quoteSelectionReply svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; }
-.quoteSelectionCancel {
-  display: grid;
-  place-items: center;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  min-height: 28px;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-}
-.quoteSelectionCancel:hover { border: 0; background: transparent; color: var(--text); }
 
 .quoteReplyMark {
   border-radius: 2px;
@@ -228,17 +270,19 @@
 .submittedQuoteRow small { overflow: hidden; color: var(--muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .submittedQuoteRow strong { font-size: 10px; font-weight: 650; }
 
+@keyframes quoteSelectionActionIn { from { opacity: 0; transform: translateY(-3px) scale(.96); } }
 @keyframes quoteReplyFlash { 50% { background: color-mix(in srgb, var(--accent) 52%, transparent); } }
 @keyframes quoteReplyShake { 25% { transform: translateX(-4px); } 50% { transform: translateX(3px); } 75% { transform: translateX(-2px); } }
 
 @media (max-width: 760px) {
-  .quoteSelectionReply { height: 34px; min-height: 34px; }
+  .quoteSelectionReply { height: 38px; min-height: 38px; padding-right: 13px; }
   .quoteFootnote { margin: 5px 0 9px; padding: 4px 5px; }
   .quoteReplyComposerSummary { left: 10px; bottom: calc(100% + 6px); }
   .quoteReplySummaryPopover { position: fixed; left: 10px; right: 10px; bottom: calc(100px + env(safe-area-inset-bottom)); width: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .quoteSelectionToolbar,
   .quoteReplyMark.flash,
   .quoteFootnote.shake { animation: none; }
 }
