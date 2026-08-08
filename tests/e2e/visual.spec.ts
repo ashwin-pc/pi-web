@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -309,6 +310,21 @@ test.describe("visual regression", () => {
     await expect(page.locator(".sessionItem.marker-green")).toContainText("Older mock session");
 
     await expect(page).toHaveScreenshot(`sessions-drawer-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+    });
+  });
+
+  test("system information", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
+    if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 1000 });
+
+    await page.goto("/");
+    await openSessionDrawerFooterAction(page, "System info");
+    await expect(page.locator("#systemInfoPanel")).toBeVisible();
+    await expect(page.locator("#systemInfoPanel").getByRole("heading", { name: "Host machine" })).toBeVisible();
+
+    await expect(page).toHaveScreenshot(`system-info-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
     });

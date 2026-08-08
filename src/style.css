@@ -5,6 +5,7 @@
 @import "./styles/composer.css";
 @import "./styles/sessions.css";
 @import "./styles/settings.css";
+@import "./styles/systemInfo.css";
 @import "./styles/conversationTree.css";
 @import "./styles/folderPicker.css";
 @import "./styles/toolCards.css";

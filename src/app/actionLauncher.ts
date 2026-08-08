@@ -51,7 +51,6 @@ export function initActionLauncher(
 
   const builtInActions: LauncherAction[] = [
     { label: "Git", icon: "git-branch", run: () => elements.gitButton.click() },
-    { label: "Settings", icon: "settings", run: () => elements.settingsButton.click() },
     { label: "File explorer", icon: "folder-tree", run: () => elements.filesButton.click() },
     { label: "Conversation tree", icon: "git-fork", run: () => elements.conversationTreeButton.click() },
     { label: "New session", icon: "square-pen", run: () => elements.newSessionHeaderButton.click() },
@@ -74,7 +73,7 @@ export function initActionLauncher(
       }, 420);
     }
     toggle.setAttribute("aria-expanded", String(open));
-    toggle.setAttribute("aria-label", open ? "Close app tools" : "Open app tools");
+    toggle.setAttribute("aria-label", open ? "Close session actions" : "Open session actions");
   }
 
   function renderActions() {
@@ -130,10 +129,10 @@ export function initActionLauncher(
   const toggle = document.createElement("button");
   toggle.className = "actionLauncherToggle";
   toggle.type = "button";
-  toggle.setAttribute("aria-label", "Open app tools");
+  toggle.setAttribute("aria-label", "Open session actions");
   toggle.setAttribute("aria-controls", menu.id);
   toggle.setAttribute("aria-expanded", "false");
-  toggle.title = "App tools";
+  toggle.title = "Session actions";
   const mascot = document.createElement("img");
   mascot.src = "/pi-mascot-avatar.png";
   mascot.alt = "";

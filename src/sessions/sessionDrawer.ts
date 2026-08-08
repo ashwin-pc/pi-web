@@ -2114,15 +2114,18 @@ export function createSessions(options: {
       headerTitle.replaceWith(filterWrap);
     }
 
-    const footer = document.createElement("div");
-    footer.className = "sessionDrawerFooter";
-    elements.settingsButton.classList.add("sessionDrawerFooterButton");
-    elements.settingsButton.textContent = "";
-    setIcon(elements.settingsButton, "settings");
-    elements.settingsButton.append(document.createTextNode("Settings"));
+    setIcon(elements.sessionDrawerSettingsButton, "settings");
+    elements.sessionDrawerSettingsButton.append(document.createTextNode("Settings"));
+    setIcon(elements.sessionDrawerInfoButton, "info");
+    elements.sessionDrawerInfoButton.append(document.createTextNode("Info"));
     elements.sessionNewButton.textContent = "+ New session";
-    footer.append(elements.settingsButton, elements.sessionNewButton);
-    elements.sessionDrawer.append(footer);
+    elements.sessionDrawerSettingsButton.addEventListener("click", () => {
+      setSessionDrawerOpen(false);
+      elements.settingsButton.click();
+    });
+    // The system-info panel owns this button's open handler. Closing the drawer
+    // first keeps the transition consistent on both split-pane and mobile layouts.
+    elements.sessionDrawerInfoButton.addEventListener("click", () => setSessionDrawerOpen(false));
 
     sessionPanelHandle = rightPanels?.register({
       id: "sessions",

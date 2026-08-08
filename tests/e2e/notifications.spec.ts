@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -54,7 +54,8 @@ test.beforeEach(async ({ page }) => {
 
 test("notification settings test notification, sound, vibration, and persistence", async ({ page }) => {
   await page.goto("/");
-  await openLauncherAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "Settings");
+  await page.locator("#settingsNavNotifications").click();
 
   await expect(page.locator("#settingRunNotificationsCheckbox")).toBeChecked();
   await page.locator("#settingCompletionSoundCheckbox").check();
@@ -68,7 +69,8 @@ test("notification settings test notification, sound, vibration, and persistence
   });
 
   await page.reload();
-  await openLauncherAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "Settings");
+  await page.locator("#settingsNavNotifications").click();
   await expect(page.locator("#settingCompletionSoundCheckbox")).toBeChecked();
   await expect(page.locator("#settingCompletionVibrationCheckbox")).toBeChecked();
 });

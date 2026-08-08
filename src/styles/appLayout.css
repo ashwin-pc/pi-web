@@ -125,7 +125,10 @@
     border-left: 1px solid var(--border);
   }
 
-  .settingsPanel.appSidePanel--right,
+  .settingsPanel.appSidePanel--right {
+    overflow: hidden;
+  }
+
   .conversationTreePanel.appSidePanel--right {
     overflow-y: auto;
     overscroll-behavior: contain;
@@ -222,6 +225,26 @@
 
   body.appPanelResizing .appSidePanel {
     transition: none;
+  }
+}
+
+@media (min-width: 641px) and (max-width: 1179px) {
+  body.appRightPanelOpen[data-right-panel="settings"],
+  body.appRightPanelOpen[data-right-panel="system-info"] {
+    --app-layout-right-width: 100vw;
+  }
+
+  .settingsPanel.appSidePanel--right,
+  .systemInfoPanel.appSidePanel--right {
+    inset: 0;
+    width: 100vw;
+    max-width: 100vw;
+    border-left: 0;
+  }
+
+  .settingsPanel.appSidePanel--right > .appPanelResizeHandle,
+  .systemInfoPanel.appSidePanel--right > .appPanelResizeHandle {
+    display: none;
   }
 }
 

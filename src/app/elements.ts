@@ -29,6 +29,8 @@ export type AppElements = {
   sessionDrawer: HTMLElement;
   sessionBackdrop: HTMLDivElement;
   sessionCloseButton: HTMLButtonElement;
+  sessionDrawerSettingsButton: HTMLButtonElement;
+  sessionDrawerInfoButton: HTMLButtonElement;
   sessionNewButton: HTMLButtonElement;
   sessionListEl: HTMLDivElement;
   sessionBarEl: HTMLDivElement;
@@ -88,6 +90,7 @@ export type AppElements = {
   waitingSessionsEl: HTMLElement;
   settingsStatusEl: HTMLSpanElement;
   extensionSettingsContainer: HTMLElement;
+  tokenShareUnavailable: HTMLElement;
   tokenShareSection: HTMLElement;
   tokenShareQr: HTMLDivElement;
   tokenShareUrl: HTMLInputElement;
@@ -140,6 +143,8 @@ export function getAppElements(): AppElements {
     sessionDrawer: requiredElement<HTMLElement>("#sessionDrawer"),
     sessionBackdrop: requiredElement<HTMLDivElement>("#sessionBackdrop"),
     sessionCloseButton: requiredElement<HTMLButtonElement>("#sessionCloseButton"),
+    sessionDrawerSettingsButton: requiredElement<HTMLButtonElement>("#sessionDrawerSettingsButton"),
+    sessionDrawerInfoButton: requiredElement<HTMLButtonElement>("#sessionDrawerInfoButton"),
     sessionNewButton: requiredElement<HTMLButtonElement>("#sessionNewButton"),
     sessionListEl: requiredElement<HTMLDivElement>("#sessionList"),
     sessionBarEl: requiredElement<HTMLDivElement>("#sessionBar"),
@@ -199,6 +204,7 @@ export function getAppElements(): AppElements {
     waitingSessionsEl: requiredElement<HTMLElement>("#waitingSessions"),
     settingsStatusEl: requiredElement<HTMLSpanElement>("#settingsStatus"),
     extensionSettingsContainer: requiredElement<HTMLElement>("#extensionSettingsContainer"),
+    tokenShareUnavailable: requiredElement<HTMLElement>("#tokenShareUnavailable"),
     tokenShareSection: requiredElement<HTMLElement>("#tokenShareSection"),
     tokenShareQr: requiredElement<HTMLDivElement>("#tokenShareQr"),
     tokenShareUrl: requiredElement<HTMLInputElement>("#tokenShareUrl"),

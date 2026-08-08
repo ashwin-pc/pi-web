@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 
 // These tests run against the auth-enabled server (PI_WEB_TOKEN=test-secret).
 // The "auth" playwright project sets baseURL to the auth port.
@@ -75,7 +75,8 @@ test.describe("token overlay", () => {
     await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
 
     await page.locator("#sessionButton").click();
-    await openLauncherAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "Settings");
+    await page.locator("#settingsNavAccess").click();
     await expect(page.locator("#tokenShareSection")).toBeVisible();
     await expect(page.locator("#tokenShareQr")).toBeHidden();
     await expect(page.locator("#tokenShareUrl")).toBeHidden();

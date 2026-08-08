@@ -1,0 +1,253 @@
+.systemInfoBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: rgba(0, 0, 0, .42);
+}
+
+.systemInfoPanel {
+  position: fixed;
+  inset: 0 0 0 auto;
+  z-index: 31;
+  display: grid;
+  width: min(640px, 100vw);
+  max-width: 100vw;
+  max-height: 100dvh;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  border-left: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 96%, black);
+  box-shadow: -18px 0 60px rgba(0, 0, 0, .35);
+}
+
+.systemInfoPanel[hidden],
+.systemInfoBackdrop[hidden] {
+  display: none;
+}
+
+.systemInfoHeader {
+  display: flex;
+  min-height: 64px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 14px 10px 20px;
+}
+
+.systemInfoIdentity {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.systemInfoIdentity h2 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.systemInfoIdentity h2:focus { outline: none; }
+
+.systemInfoIdentity p,
+.systemInfoStatus {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.systemInfoHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.systemInfoHeader .iconButton {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.systemInfoHeader .iconButton:hover {
+  border: 0;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.systemInfoHeader .iconButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.systemInfoBody {
+  display: grid;
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.systemInfoStatus {
+  min-height: 31px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 9px 20px;
+}
+
+.systemInfoContent {
+  display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 22px 24px 40px;
+  scrollbar-width: thin;
+}
+
+.systemInfoOverview {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 15px;
+  background:
+    radial-gradient(circle at 100% 0%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 42%),
+    color-mix(in srgb, var(--panel-2) 50%, transparent);
+  padding: 15px;
+}
+
+.systemInfoMark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+  color: var(--accent);
+}
+
+.systemInfoMark svg {
+  width: 21px;
+  height: 21px;
+}
+
+.systemInfoOverviewCopy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.systemInfoOverviewCopy > span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.systemInfoOverviewCopy strong {
+  font-size: 20px;
+  letter-spacing: -.02em;
+}
+
+.systemInfoOverviewCopy small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.systemInfoSection {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel-2) 42%, transparent);
+}
+
+.systemInfoSection h3 {
+  margin: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.systemInfoList {
+  margin: 0;
+}
+
+.systemInfoRow {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(110px, .72fr) minmax(0, 1.4fr);
+  gap: 14px;
+  padding: 10px 14px;
+}
+
+.systemInfoRow + .systemInfoRow {
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.systemInfoRow dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.systemInfoRow dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.systemInfoActions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.systemInfoActions button {
+  min-height: 34px;
+  font-size: 12px;
+}
+
+.systemInfoError {
+  border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--danger) 9%, transparent);
+  color: var(--danger);
+  padding: 14px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .systemInfoHeader {
+    min-height: 56px;
+    padding: 8px 10px 8px 14px;
+  }
+
+  .systemInfoIdentity p { display: none; }
+
+  .systemInfoStatus {
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .systemInfoContent {
+    gap: 12px;
+    padding: 14px 11px 32px;
+  }
+
+  .systemInfoOverview {
+    padding: 13px;
+  }
+
+  .systemInfoRow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    padding: 10px 13px;
+  }
+}

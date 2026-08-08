@@ -23,9 +23,11 @@ import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessio
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
+import { createSystemInfoProvider } from "./server/systemInfo.js";
 
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
+const agentDir = getAgentDir();
 const distDir = join(appDir, "dist");
 const staticDir = distDir;
 
@@ -38,6 +40,13 @@ const knownCwds = new Set<string>([piCwd]);
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
 const mockMode = process.env.PI_WEB_MOCK === "1";
+const systemInfoSnapshot = createSystemInfoProvider({
+  appDir,
+  agentDir,
+  environment: mockMode ? "mock" : isDev ? "development" : "production",
+  host,
+  port,
+});
 let mockStateOverrides: Record<string, unknown> = {};
 
 const contentTypes: Record<string, string> = {
@@ -247,9 +256,9 @@ function envMs(name: string, fallback: number) {
 }
 
 const modelRuntime = await ModelRuntime.create();
-const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(getAgentDir(), "pi-web-session-ui-state.json"));
+const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(agentDir, "pi-web-session-ui-state.json"));
 const pushNotifications = createPushNotificationService(
-  process.env.PI_WEB_PUSH_FILE || join(getAgentDir(), "pi-web-push.json"),
+  process.env.PI_WEB_PUSH_FILE || join(agentDir, "pi-web-push.json"),
   process.env.PI_WEB_VAPID_SUBJECT || "https://github.com/ashwin-pc/pi-web",
 );
 let sessionService: LocalSessionService;
@@ -627,6 +636,10 @@ const server = createServer(async (req, res) => {
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
+      }
+
+      if (method === "GET" && url.pathname === "/api/system-info") {
+        return sendJson(res, 200, { ok: true, system: systemInfoSnapshot() });
       }
 
       if (method === "GET" && url.pathname === "/api/state") {

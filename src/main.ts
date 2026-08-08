@@ -46,6 +46,7 @@ import { createRealtime, type RealtimeController } from "./realtime/realtime.js"
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
+import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
 import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
 
@@ -66,6 +67,7 @@ let contextMeter: ContextMeterController;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
 let settings: SettingsController;
+let systemInfo: SystemInfoController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
 let gitPanel: GitPanelController;
@@ -453,6 +455,14 @@ settings = createSettings({
   addMessage: messages.addMessage,
 });
 
+systemInfo = createSystemInfo({
+  api,
+  rightPanels,
+  trigger: elements.sessionDrawerInfoButton,
+  focusOnClose: elements.sessionButton,
+  onError: (message) => messages.addMessage("system", message, "error"),
+});
+
 contextMeter = createContextMeter({ elements });
 
 sessions = createSessions({
@@ -528,6 +538,7 @@ webPanels = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId
 actionLauncher = initActionLauncher(elements, { onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey) });
 statusBar.init();
 sessions.init();
+systemInfo.init();
 contextMeter.init();
 composer.init();
 conversationTree.init();

@@ -6,8 +6,7 @@
 #statusBar > #filesButton,
 #statusBar > #conversationTreeButton,
 #statusBar > #gitButton,
-#statusBar > #settingsButton,
-.sessionDrawerFooter > #settingsButton { display: none; }
+#statusBar > #settingsButton { display: none; }
 
 .actionLauncher {
   position: absolute;

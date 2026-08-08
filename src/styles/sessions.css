@@ -254,7 +254,10 @@
   min-height: 34px;
   margin: 0;
   border-radius: 6px;
-  font-size: 13px;
+  padding-right: 8px;
+  padding-left: 8px;
+  font-size: 12px;
+  white-space: nowrap;
 }
 .sessionDrawerFooter .sessionDrawerFooterButton svg {
   width: 15px;

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -472,11 +472,13 @@ test.describe("composer layout", () => {
     });
 
     const openSettings = async () => {
-      if (await page.locator("#settingsPanel").isVisible()) return;
-      await page.locator("#prompt").blur();
-      if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
-      await openLauncherAction(page, "Settings");
-      await expect(page.locator("#settingsPanel")).toBeVisible();
+      if (!await page.locator("#settingsPanel").isVisible()) {
+        await page.locator("#prompt").blur();
+        if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+        await openSessionDrawerFooterAction(page, "Settings");
+        await expect(page.locator("#settingsPanel")).toBeVisible();
+      }
+      if (!await page.locator("#settingAccentMenuButton").isVisible()) await page.locator("#settingsNavAppearance").click();
     };
 
     const before = await readAccentStyles();
@@ -536,11 +538,13 @@ test.describe("composer layout", () => {
     await page.goto("/");
 
     const openSettings = async () => {
-      if (await page.locator("#settingsPanel").isVisible()) return;
-      await page.locator("#prompt").blur();
-      if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
-      await openLauncherAction(page, "Settings");
-      await expect(page.locator("#settingsPanel")).toBeVisible();
+      if (!await page.locator("#settingsPanel").isVisible()) {
+        await page.locator("#prompt").blur();
+        if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+        await openSessionDrawerFooterAction(page, "Settings");
+        await expect(page.locator("#settingsPanel")).toBeVisible();
+      }
+      if (!await page.locator("#settingLoadingAnimationSelect").isVisible()) await page.locator("#settingsNavAppearance").click();
     };
 
     await expect.poll(() => page.evaluate(() => document.documentElement.dataset.loadingAnimation)).toBe("fireworks");
@@ -1056,6 +1060,7 @@ test.describe("attachments and prompt", () => {
     await page.locator("#imageInput").setInputFiles({ name: "debug.png", mimeType: "image/png", buffer: VALID_PNG });
     await page.reload();
     await page.locator("#settingsButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator("#settingsNavDiagnostics").click();
     await page.locator("#openDebugDiagnosticsButton").click();
 
     const report = page.locator(".debugDiagnostics textarea");

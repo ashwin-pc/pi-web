@@ -102,13 +102,18 @@ function storeWidth(id: string, width: string) {
 }
 
 function panelWidth(registration: RegisteredPanel) {
-  return registration.currentWidth
+  const configured = registration.currentWidth
     || readStoredWidth(registration.id)
     || registration.width
     || registration.panel.dataset.panelWidth
     || registration.panel.dataset.rightPanelWidth
     || getComputedStyle(registration.panel).getPropertyValue("--app-side-panel-width").trim()
     || (registration.side === "left" ? "360px" : "420px");
+  const pixelWidth = /^(\d+(?:\.\d+)?)px$/.exec(configured);
+  if (!pixelWidth) return configured;
+  const min = registration.minWidth ?? defaultMinWidth;
+  const max = registration.maxWidth ?? defaultMaxWidth;
+  return `${Math.min(Math.max(Number(pixelWidth[1]), min), max)}px`;
 }
 
 function oppositeSide(side: AppPanelSide): AppPanelSide {

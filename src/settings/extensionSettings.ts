@@ -470,7 +470,7 @@ export function createExtensionSettings(options: {
   function renderSchema(schema: WebSettingsSchema): HTMLElement {
     const draft = ensureDraft(schema);
     const section = el("section", { class: "settingsSection extSettingsSection" });
-    section.append(el("h3", {}, [schema.title]));
+    section.append(el("h4", {}, [schema.title]));
     if (schema.migrationError) {
       const warning = el("div", { class: "extSettingsError extSettingsMigrationWarning" }, [
         "Your stored settings were reset to defaults because migration failed. The previous values were kept as a backup. ",
@@ -519,7 +519,7 @@ export function createExtensionSettings(options: {
   // "Data retained" card for owners with stored values but no live schema.
   function renderRetained(id: string, valueCount: number): HTMLElement {
     const section = el("section", { class: "settingsSection extSettingsSection extSettingsRetained" });
-    section.append(el("h3", {}, [id]));
+    section.append(el("h4", {}, [id]));
     section.append(el("p", { class: "settingsHint" }, [`Extension not loaded — ${valueCount} value${valueCount === 1 ? "" : "s"} retained. Load the extension to edit.`]));
     const actions = el("div", { class: "settingsActions" });
     const resetBtn = el("button", { type: "button" }, ["Reset"]);

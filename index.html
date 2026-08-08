@@ -194,17 +194,93 @@
           <button id="sessionCloseButton" class="iconButton" type="button" aria-label="Close sessions" title="Close sessions">×</button>
         </div>
         <div id="sessionList" class="sessionList" aria-live="polite"></div>
-        <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+        <div class="sessionDrawerFooter">
+          <button id="sessionDrawerSettingsButton" class="sessionDrawerFooterButton" type="button" aria-controls="settingsPanel" aria-expanded="false">Settings</button>
+          <button id="sessionDrawerInfoButton" class="sessionDrawerFooterButton" type="button" aria-label="System info" title="System info">Info</button>
+          <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+        </div>
       </aside>
 
       <div id="settingsBackdrop" class="settingsBackdrop" hidden></div>
       <aside id="settingsPanel" class="settingsPanel" aria-label="Settings" hidden>
-        <div class="settingsHeader">
-          <h2>Settings</h2>
-          <button id="settingsCloseButton" class="iconButton" type="button" aria-label="Close settings" title="Close settings">×</button>
-        </div>
-        <section class="settingsSection">
-          <h3>Appearance</h3>
+        <header class="settingsHeader">
+          <div class="settingsHeaderPrimary">
+            <button id="settingsBackButton" class="settingsBackButton" type="button" aria-label="Back to settings categories" title="Back to settings categories" hidden>‹</button>
+            <div class="settingsHeaderTitles">
+              <h2 class="settingsDesktopTitle">Settings</h2>
+              <h2 id="settingsMobileTitle" class="settingsMobileTitle" tabindex="-1">Settings</h2>
+              <p class="settingsDesktopSubtitle">Preferences and system configuration</p>
+            </div>
+          </div>
+          <div class="settingsHeaderActions">
+            <span id="settingsStatus" class="settingsStatus" aria-live="polite"></span>
+            <button id="settingsCloseButton" class="iconButton" type="button" aria-label="Close settings" title="Close settings">×</button>
+          </div>
+        </header>
+        <div class="settingsShell">
+          <nav id="settingsNavigation" class="settingsNavigation" aria-label="Settings categories">
+            <label class="settingsSearch">
+              <span aria-hidden="true">⌕</span>
+              <input id="settingsSearchInput" type="search" placeholder="Search settings" autocomplete="off" aria-label="Search settings" />
+            </label>
+            <div class="settingsNavGroups">
+              <section class="settingsNavGroup" data-settings-nav-group>
+                <h3>Experience</h3>
+                <button id="settingsNavAppearance" class="settingsNavButton active" type="button" data-settings-page-target="appearance" data-settings-search="appearance interface density comfortable compact loading animation fireworks glow pulse color accent theme" aria-current="page" aria-controls="settingsPageAppearance">
+                  <span class="settingsNavIcon" data-settings-icon="star" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Appearance</span><span class="settingsNavSummary">Interface and color</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavComposer" class="settingsNavButton" type="button" data-settings-page-target="composer" data-settings-search="composer queue mode steer follow up expanded editor" aria-controls="settingsPageComposer">
+                  <span class="settingsNavIcon" data-settings-icon="notebook-pen" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Composer</span><span class="settingsNavSummary">Queue and editor behavior</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavNotifications" class="settingsNavButton" type="button" data-settings-page-target="notifications" data-settings-search="notifications alerts completion sound vibration browser push test" aria-controls="settingsPageNotifications">
+                  <span class="settingsNavIcon" data-settings-icon="bell" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Notifications</span><span class="settingsNavSummary">Run completion alerts</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+              </section>
+              <section class="settingsNavGroup" data-settings-nav-group>
+                <h3>Workflow</h3>
+                <button id="settingsNavNewSessions" class="settingsNavButton" type="button" data-settings-page-target="new-sessions" data-settings-search="new sessions defaults model reasoning thinking bucket color" aria-controls="settingsPageNewSessions">
+                  <span class="settingsNavIcon" data-settings-icon="square-pen" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">New sessions</span><span class="settingsNavSummary">Model and bucket defaults</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+              </section>
+              <section class="settingsNavGroup" data-settings-nav-group>
+                <h3>System</h3>
+                <button id="settingsNavExtensions" class="settingsNavButton" type="button" data-settings-page-target="extensions" data-settings-search="extensions plugins runtime health retry reload contributed settings" aria-controls="settingsPageExtensions">
+                  <span class="settingsNavIcon" data-settings-icon="settings" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Extensions</span><span class="settingsNavSummary">Health and contributed settings</span></span>
+                  <span class="settingsNavBadge" data-tone="neutral" hidden></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavAccess" class="settingsNavButton" type="button" data-settings-page-target="access" data-settings-search="access sharing token trusted device qr code copy link connect" aria-controls="settingsPageAccess">
+                  <span class="settingsNavIcon" data-settings-icon="key-round" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Access &amp; sharing</span><span class="settingsNavSummary">Connect another device</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavDiagnostics" class="settingsNavButton" type="button" data-settings-page-target="diagnostics" data-settings-search="diagnostics debug report troubleshooting lifecycle attachments mobile reload" aria-controls="settingsPageDiagnostics">
+                  <span class="settingsNavIcon" data-settings-icon="scroll-text" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Diagnostics</span><span class="settingsNavSummary">Debugging tools</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+              </section>
+            </div>
+            <p id="settingsSearchEmpty" class="settingsSearchEmpty" hidden>No settings match your search.</p>
+          </nav>
+          <div id="settingsContent" class="settingsContent" tabindex="-1">
+            <section id="settingsPageAppearance" class="settingsPage" data-settings-page="appearance" aria-labelledby="settingsPageAppearanceTitle">
+              <header class="settingsPageHeader">
+                <span>Experience</span>
+                <h3 id="settingsPageAppearanceTitle" class="settingsPageTitle" tabindex="-1">Appearance</h3>
+                <p>Adjust the density, motion, and signature color of pi-web.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Interface</h4>
           <label class="settingsField">
             <span>Density</span>
             <select id="settingDensitySelect">
@@ -220,6 +296,9 @@
               <option value="pulse">Pulse</option>
             </select>
           </label>
+              </section>
+              <section class="settingsSection">
+                <h4>Color</h4>
           <div class="settingsField settingsAccentField">
             <span>Accent color</span>
             <div class="settingsAccentPicker">
@@ -287,9 +366,16 @@
               </div>
             </div>
           </div>
-        </section>
-        <section class="settingsSection">
-          <h3>Composer</h3>
+              </section>
+            </section>
+            <section id="settingsPageComposer" class="settingsPage" data-settings-page="composer" aria-labelledby="settingsPageComposerTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>Experience</span>
+                <h3 id="settingsPageComposerTitle" class="settingsPageTitle" tabindex="-1">Composer</h3>
+                <p>Choose how messages queue and how the editor opens.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Behavior</h4>
           <label class="settingsField">
             <span>Default queue mode</span>
             <select id="settingQueueModeSelect">
@@ -301,9 +387,16 @@
             <input id="settingComposerExpandedCheckbox" type="checkbox" />
             <span>Keep composer expanded</span>
           </label>
-        </section>
-        <section class="settingsSection">
-          <h3>Notifications</h3>
+              </section>
+            </section>
+            <section id="settingsPageNotifications" class="settingsPage" data-settings-page="notifications" aria-labelledby="settingsPageNotificationsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>Experience</span>
+                <h3 id="settingsPageNotificationsTitle" class="settingsPageTitle" tabindex="-1">Notifications</h3>
+                <p>Control completion alerts on this browser and device.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Run completion</h4>
           <label class="settingsCheckbox">
             <input id="settingRunNotificationsCheckbox" type="checkbox" />
             <span>Notify when runs complete</span>
@@ -320,9 +413,16 @@
           <div class="settingsActions">
             <button id="settingRunNotificationsTestButton" type="button">Send test notification</button>
           </div>
-        </section>
-        <section class="settingsSection">
-          <h3>New sessions</h3>
+              </section>
+            </section>
+            <section id="settingsPageNewSessions" class="settingsPage" data-settings-page="new-sessions" aria-labelledby="settingsPageNewSessionsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>Workflow</span>
+                <h3 id="settingsPageNewSessionsTitle" class="settingsPageTitle" tabindex="-1">New sessions</h3>
+                <p>Set defaults for sessions created from now on.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Defaults</h4>
           <label class="settingsField">
             <span>Default bucket</span>
             <select id="settingDefaultBucketColorSelect" aria-label="Default session bucket color"></select>
@@ -333,17 +433,31 @@
             <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>
             <button id="settingClearModelDefaultsButton" type="button">Clear model</button>
           </div>
-        </section>
-        <section class="settingsSection">
-          <h3>Diagnostics</h3>
+              </section>
+            </section>
+            <section id="settingsPageDiagnostics" class="settingsPage" data-settings-page="diagnostics" aria-labelledby="settingsPageDiagnosticsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>System</span>
+                <h3 id="settingsPageDiagnosticsTitle" class="settingsPageTitle" tabindex="-1">Diagnostics</h3>
+                <p>Inspect durable browser events when something goes wrong.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Debug report</h4>
           <p class="settingsHint">Capture durable browser lifecycle and attachment events for troubleshooting mobile reloads.</p>
           <div class="settingsActions">
             <button id="openDebugDiagnosticsButton" type="button">Open debug report</button>
           </div>
-        </section>
-        <section class="settingsSection settingsExtensions">
+              </section>
+            </section>
+            <section id="settingsPageExtensions" class="settingsPage" data-settings-page="extensions" aria-labelledby="settingsPageExtensionsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>System</span>
+                <h3 id="settingsPageExtensionsTitle" class="settingsPageTitle" tabindex="-1">Extensions</h3>
+                <p>Review runtime health and configure settings contributed by extensions.</p>
+              </header>
+              <section class="settingsSection settingsExtensions">
           <div class="settingsExtensionHeader">
-            <h3>Extensions</h3>
+            <h4>Runtime</h4>
             <span id="extensionStatusBadge" class="extensionStatusBadge loading">Checking…</span>
           </div>
           <p id="extensionStatusMessage" class="settingsHint">Checking extension status…</p>
@@ -351,10 +465,21 @@
           <div class="settingsActions">
             <button id="extensionReloadButton" type="button">Retry extensions</button>
           </div>
-        </section>
-        <div id="extensionSettingsContainer" class="extensionSettings"></div>
-        <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
-          <h3>Token sharing</h3>
+              </section>
+              <div id="extensionSettingsContainer" class="extensionSettings"></div>
+            </section>
+            <section id="settingsPageAccess" class="settingsPage" data-settings-page="access" aria-labelledby="settingsPageAccessTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>System</span>
+                <h3 id="settingsPageAccessTitle" class="settingsPageTitle" tabindex="-1">Access &amp; sharing</h3>
+                <p>Connect another trusted device to this pi-web server.</p>
+              </header>
+              <section id="tokenShareUnavailable" class="settingsSection">
+                <h4>Token sharing</h4>
+                <p class="settingsHint">This server does not require a browser token, so there is no token link to share.</p>
+              </section>
+              <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
+                <h4>Token sharing</h4>
           <p class="settingsHint">Use Show QR or Copy link to open pi web on another trusted device with this browser’s saved token.</p>
           <div id="tokenShareQr" class="tokenShareQr" aria-live="polite"></div>
           <input id="tokenShareUrl" class="tokenShareUrl" type="text" readonly aria-label="Token share link" />
@@ -362,8 +487,10 @@
             <button id="tokenShareFullscreenButton" type="button">Show QR</button>
             <button id="tokenShareCopyButton" type="button">Copy link</button>
           </div>
-        </section>
-        <span id="settingsStatus" class="settingsStatus" aria-live="polite"></span>
+              </section>
+            </section>
+          </div>
+        </div>
       </aside>
 
       <section id="pendingMessages" class="pendingMessages" aria-label="Pending messages" aria-live="polite" hidden></section>
