@@ -2,6 +2,8 @@
 
 GitHub issue #3 proposes running normal host sessions and sandboxed sessions at the same time. Runtime selection is per session; changing where one session runs must not create a reduced pi-web feature set.
 
+> **Amendments (issue #92, multi-harness).** Runtime (which box) and harness (which agent) are orthogonal session attributes sharing this seam; see [`multi-harness-design.md`](./multi-harness-design.md). Four contract amendments apply before Stage 3 freezes the wire protocol: (1) the event boundary carries a **typed agent-neutral event union** instead of raw `pi` events verbatim (all 21 pi event types map; disposition table in the #92 Track-0 comment); (2) the state DTO gains a **`capabilities`** block — capabilities may come only from the harness, never from the transport, and the Stage-3 parity ratchet asserts identical behavior *and identical capability set* across transports; (3) the extension-UI inversion generalizes to one **interaction request/respond channel** (extension dialogs, tool approvals, clarify/sudo/secret); (4) Stage-4 bindings are keyed **`sessionId → { runtimeId, harnessId }`**.
+
 ## Product invariants
 
 - Local behavior remains the default and must not change.
@@ -39,7 +41,7 @@ The service can be constructed without `server.ts`. Its dependency interface con
 
 ### Event boundary
 
-`SessionService.subscribe()` emits serializable `SessionServiceEvent` values. Pi events are emitted with `sessionId` and `sessionFile`; state, stats, blocked-model updates, errors, and shutdown are explicit typed variants. The local implementation intentionally JSON-round-trips each event before delivery. This normalizes unsupported non-JSON values at the future runner boundary rather than exposing in-process-only behavior. Listener failures are also intentionally isolated and logged so one serving adapter cannot interrupt wire-order delivery to other subscribers. On the supported JSON event domain, values are unchanged and safe to pass through `JSON.stringify`/`JSON.parse`.
+`SessionService.subscribe()` emits serializable `SessionServiceEvent` values. Agent events are emitted with `sessionId` and `sessionFile` as members of the typed agent-neutral union (amendment #1 above; formerly raw Pi events verbatim); state, stats, blocked-model updates, errors, and shutdown are explicit typed variants. The local implementation intentionally JSON-round-trips each event before delivery. This normalizes unsupported non-JSON values at the future runner boundary rather than exposing in-process-only behavior. Listener failures are also intentionally isolated and logged so one serving adapter cannot interrupt wire-order delivery to other subscribers. On the supported JSON event domain, values are unchanged and safe to pass through `JSON.stringify`/`JSON.parse`.
 
 The local server subscribes once. For each Pi event it performs host activity enrichment and preserves this exact browser wire order:
 
@@ -111,7 +113,7 @@ export type SandboxRuntime = {
 };
 ```
 
-Bindings map `sessionId -> RuntimeRef`. Cwd history is runtime-relative. The drawer may render cached locator rows immediately and reconcile in the background, but a successful authoritative runtime listing is required before removing stale rows.
+Bindings map `sessionId -> { runtime: RuntimeRef, harnessId: HarnessId }` (amendment #4; harness routing may land after runtime routing, but the store schema reserves the field). Cwd history is runtime-relative. The drawer may render cached locator rows immediately and reconcile in the background, but a successful authoritative runtime listing is required before removing stale rows.
 
 ## UX and lifecycle rules
 
