@@ -1,5 +1,8 @@
+import type { AttachedImage, QuoteReplyAttachment } from "../app/types.js";
+
 export type QuoteReplySubmission = {
   message: string;
+  attachments: QuoteReplyAttachment[];
   referenceIds: number[];
 };
 
@@ -31,32 +34,10 @@ export type QuoteRepliesController = {
   prepareSubmission: (overallInstruction: string) => QuoteReplySubmission | undefined;
   commitSubmission: (submission: QuoteReplySubmission) => void;
   clear: () => void;
-  renderSubmittedMessage: (body: HTMLElement, message: string) => boolean;
+  renderSubmittedMessage: (body: HTMLElement, message: string, attachments: AttachedImage[]) => boolean;
 };
 
-const promptStart = '<pi-web-quote-replies version="1">';
-const promptEnd = "</pi-web-quote-replies>";
 const selectableBlockSelector = "p, li, blockquote, pre, td, th";
-
-function escapeXml(value: string) {
-  return value.replace(/[&<>"']/g, (character) => ({
-    "&": "&amp;",
-    "<": "&lt;",
-    ">": "&gt;",
-    '"': "&quot;",
-    "'": "&apos;",
-  })[character]!);
-}
-
-function unescapeXml(value: string) {
-  return value.replace(/&(amp|lt|gt|quot|apos);/g, (_, entity: string) => ({
-    amp: "&",
-    lt: "<",
-    gt: ">",
-    quot: '"',
-    apos: "'",
-  })[entity]!);
-}
 
 function textOffset(root: HTMLElement, target: Node, targetOffset: number) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -68,17 +49,6 @@ function textOffset(root: HTMLElement, target: Node, targetOffset: number) {
     offset += node.data.length;
   }
   return offset;
-}
-
-function parseSubmittedMessage(message: string) {
-  if (!message.includes(promptStart) || !message.includes(promptEnd)) return undefined;
-  const references = Array.from(message.matchAll(/<quote-reply\s+([^>]*)>\s*<quote>([\s\S]*?)<\/quote>\s*<question>([\s\S]*?)<\/question>\s*<\/quote-reply>/g)).map((match) => {
-    const id = match[1].match(/\bid="(\d+)"/)?.[1] || "?";
-    return { id, quote: unescapeXml(match[2].trim()), question: unescapeXml(match[3].trim()) };
-  });
-  if (!references.length) return undefined;
-  const overall = message.match(/<overall-instruction>([\s\S]*?)<\/overall-instruction>/)?.[1];
-  return { references, overall: overall ? unescapeXml(overall.trim()) : "" };
 }
 
 export function createQuoteReplies(options: {
@@ -406,13 +376,20 @@ export function createQuoteReplies(options: {
         window.setTimeout(() => incomplete.note.querySelector<HTMLInputElement>("input")?.focus(), 350);
         throw new Error("Each linked quote needs its own question.");
       }
-      const entries = drafts.map((reference) => {
-        const source = reference.sourceMessageId ? ` source-message-id="${escapeXml(reference.sourceMessageId)}"` : "";
-        return `  <quote-reply id="${reference.id}"${source} start-offset="${reference.startOffset}" end-offset="${reference.endOffset}">\n    <quote>${escapeXml(reference.quote)}</quote>\n    <question>${escapeXml(reference.question.trim())}</question>\n  </quote-reply>`;
-      }).join("\n");
-      const overall = overallInstruction.trim() ? `\n  <overall-instruction>${escapeXml(overallInstruction.trim())}</overall-instruction>` : "";
       return {
-        message: `${promptStart}\n${entries}${overall}\n${promptEnd}`,
+        message: overallInstruction.trim(),
+        attachments: drafts.map((reference) => ({
+          type: "quote-reply" as const,
+          id: `quote-reply-${reference.id}`,
+          label: `Excerpt ${reference.id}`,
+          quote: reference.quote,
+          question: reference.question.trim(),
+          source: {
+            ...(reference.sourceMessageId ? { messageId: reference.sourceMessageId } : {}),
+            startOffset: reference.startOffset,
+            endOffset: reference.endOffset,
+          },
+        })),
         referenceIds: drafts.map((reference) => reference.id),
       };
     },
@@ -435,31 +412,31 @@ export function createQuoteReplies(options: {
       summaryPopover.hidden = true;
       updateSummary();
     },
-    renderSubmittedMessage(body, message) {
-      const parsed = parseSubmittedMessage(message);
-      if (!parsed) return false;
+    renderSubmittedMessage(body, message, attachments) {
+      const quoteReplies = attachments.filter((attachment) => attachment.type === "quote-reply" && attachment.quote && attachment.question);
+      if (!quoteReplies.length) return false;
       body.classList.add("submittedQuoteReplies");
-      if (parsed.overall) {
+      if (message) {
         const overall = document.createElement("div");
         overall.className = "submittedQuoteOverall";
-        overall.textContent = parsed.overall;
+        overall.textContent = message;
         body.append(overall);
       }
       const details = document.createElement("details");
       details.className = "submittedQuoteDetails";
       const detailsSummary = document.createElement("summary");
-      detailsSummary.textContent = `${parsed.references.length} linked ${parsed.references.length === 1 ? "excerpt" : "excerpts"}`;
+      detailsSummary.textContent = `${quoteReplies.length} linked ${quoteReplies.length === 1 ? "excerpt" : "excerpts"}`;
       details.append(detailsSummary);
-      parsed.references.forEach((reference) => {
+      quoteReplies.forEach((reference, index) => {
         const row = document.createElement("div");
         row.className = "submittedQuoteRow";
         const number = document.createElement("b");
-        number.textContent = reference.id;
+        number.textContent = reference.label?.match(/\d+/)?.[0] || String(index + 1);
         const copy = document.createElement("span");
         const quote = document.createElement("small");
         quote.textContent = `“${reference.quote}”`;
         const question = document.createElement("strong");
-        question.textContent = reference.question;
+        question.textContent = reference.question || "";
         copy.append(quote, question);
         row.append(number, copy);
         details.append(row);

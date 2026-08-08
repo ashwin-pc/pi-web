@@ -41,6 +41,20 @@ describe("attachment message markup", () => {
     expect(normalizeSubmittedAttachments(cwd, [reference])).toEqual([reference]);
   });
 
+  it("round trips quote replies as structured reference attachments", () => {
+    const quoteReply = {
+      type: "quote-reply" as const,
+      id: "quote-reply-1",
+      label: "Excerpt 1",
+      quote: "Use the shared attachment lifecycle.",
+      question: "Why is this important?",
+      source: { messageId: "entry-42", startOffset: 12, endOffset: 48 },
+    };
+    const message = serializeAttachmentMarkup("Keep the answer concise.", [quoteReply]);
+    expect(parseAttachmentMarkup(message, cwd)).toEqual({ text: "Keep the answer concise.", attachments: [quoteReply] });
+    expect(normalizeSubmittedAttachments(cwd, [quoteReply])).toEqual([quoteReply]);
+  });
+
   it("leaves malformed or non-trailing markup visible", () => {
     expect(parseAttachmentMarkup("hello\n\n~~~json pi-web-attachments-v1\n{}\n~~~")).toEqual({ text: "hello\n\n~~~json pi-web-attachments-v1\n{}\n~~~", attachments: [] });
     const valid = serializeAttachmentMarkup("hello", [attachment]);

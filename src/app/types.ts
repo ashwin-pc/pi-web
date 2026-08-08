@@ -48,7 +48,20 @@ export type ReferenceAttachment = {
 
 /** @deprecated Compatibility name for extension-provided reference attachments. */
 export type ComposerContextAttachment = ReferenceAttachment;
-export type MessageAttachment = FileAttachment | ReferenceAttachment;
+export type QuoteReplyAttachment = {
+  type: "quote-reply";
+  id: string;
+  label: string;
+  quote: string;
+  question: string;
+  source: {
+    messageId?: string;
+    startOffset: number;
+    endOffset: number;
+  };
+};
+
+export type MessageAttachment = FileAttachment | ReferenceAttachment | QuoteReplyAttachment;
 
 export type PiWebModelSetting = {
   provider: string;
@@ -147,12 +160,15 @@ export type StoredExtensionSettings = {
 export type WebSettingsValidationError = { path: string; message: string };
 
 export type AttachedImage = {
-  type?: "file" | "reference";
+  type?: "file" | "reference" | "quote-reply";
   id?: string;
   name?: string;
   label?: string;
   title?: string;
   reference?: ReferenceAttachment["reference"];
+  quote?: string;
+  question?: string;
+  source?: QuoteReplyAttachment["source"];
   data?: string;
   mimeType?: string;
   mediaType?: string;

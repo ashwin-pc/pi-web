@@ -654,7 +654,8 @@ export function createMessageList(options: {
     const body = document.createElement("div");
     body.className = "body";
 
-    const renderedQuoteReplies = role === "user" && quoteReplies?.renderSubmittedMessage(body, text);
+    const renderedQuoteReplies = role === "user" && quoteReplies?.renderSubmittedMessage(body, text, images);
+    const standardAttachments = images.filter((attachment) => attachment.type !== "quote-reply");
     if (renderedQuoteReplies) {
       // Structured quote prompts render as a compact linked-excerpt summary.
     } else if (role === "user" && images.length > 0) {
@@ -677,8 +678,8 @@ export function createMessageList(options: {
 
     if (role === "user") {
       const baseline = document.createElement("div");
-      baseline.className = `messageAttachmentBaseline${images.length ? "" : " messageAttachmentBaseline--timeOnly"}`;
-      if (images.length) {
+      baseline.className = `messageAttachmentBaseline${standardAttachments.length ? "" : " messageAttachmentBaseline--timeOnly"}`;
+      if (standardAttachments.length) {
         const summary = document.createElement("button");
         summary.type = "button";
         summary.className = "messageAttachmentSummary";
@@ -689,7 +690,7 @@ export function createMessageList(options: {
         popover.className = "messageAttachmentPopover";
         popover.hidden = true;
         const missingRows = new Map<number, HTMLElement>();
-        images.forEach((attachment, index) => {
+        standardAttachments.forEach((attachment, index) => {
           const row = document.createElement("div");
           row.className = "messageAttachmentRow";
           const name = document.createElement("span");
@@ -702,7 +703,7 @@ export function createMessageList(options: {
           missingRows.set(index, row);
           popover.append(row);
         });
-        images.slice(0, 3).forEach((attachment, index) => appendAttachedImage(previews, attachment, apiHeaders, () => {
+        standardAttachments.slice(0, 3).forEach((attachment, index) => appendAttachedImage(previews, attachment, apiHeaders, () => {
           const row = missingRows.get(index);
           if (!row || row.classList.contains("missing")) return;
           row.classList.add("missing");
@@ -714,7 +715,7 @@ export function createMessageList(options: {
         }));
         const label = document.createElement("span");
         label.className = "messageAttachmentCount";
-        label.textContent = `${images.length} attached`;
+        label.textContent = `${standardAttachments.length} attached`;
         summary.append(previews, label);
         summary.addEventListener("click", (event) => {
           event.stopPropagation();

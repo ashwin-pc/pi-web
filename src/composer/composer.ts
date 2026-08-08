@@ -687,6 +687,7 @@ export function createComposer(options: {
       const attachments = [
         ...submittedAttachments.map(({ type, id, name, mediaType, bytes, path, contentUrl }) => ({ type, id, name, mediaType, bytes, path, contentUrl })),
         ...contexts,
+        ...(quoteSubmission?.attachments || []),
       ];
       if (!message && attachments.length === 0) return;
 

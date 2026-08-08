@@ -112,12 +112,23 @@ test("links questions to multiple assistant responses and sends structured quote
   await page.locator("#primaryButton").click();
   const payload = (await promptRequest).postDataJSON();
 
-  expect(payload.message).toContain('<pi-web-quote-replies version="1">');
-  expect(payload.message).toContain("<quote>Image attachment support</quote>");
-  expect(payload.message).toContain("<question>How should this behave on mobile?</question>");
-  expect(payload.message).toContain("<quote>Mock response</quote>");
-  expect(payload.message).toContain("<question>What should happen next?</question>");
-  expect(payload.message).toContain("<overall-instruction>Keep the answer concise.</overall-instruction>");
+  expect(payload.message).toBe("Keep the answer concise.");
+  expect(payload.attachments).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      type: "quote-reply",
+      label: "Excerpt 1",
+      quote: "Image attachment support",
+      question: "How should this behave on mobile?",
+      source: expect.objectContaining({ startOffset: expect.any(Number), endOffset: expect.any(Number) }),
+    }),
+    expect.objectContaining({
+      type: "quote-reply",
+      label: "Excerpt 2",
+      quote: "Mock response",
+      question: "What should happen next?",
+      source: expect.objectContaining({ startOffset: expect.any(Number), endOffset: expect.any(Number) }),
+    }),
+  ]));
   await expect(page.locator(".message.user .submittedQuoteDetails").last()).toContainText("2 linked excerpts");
   await expect(page.locator(".quoteReplySummaryButton")).toBeHidden();
 });

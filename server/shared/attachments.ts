@@ -34,7 +34,20 @@ export type ReferenceMessageAttachment = {
   };
 };
 
-export type MessageAttachment = FileMessageAttachment | ReferenceMessageAttachment;
+export type QuoteReplyMessageAttachment = {
+  type: "quote-reply";
+  id: string;
+  label: string;
+  quote: string;
+  question: string;
+  source: {
+    messageId?: string;
+    startOffset: number;
+    endOffset: number;
+  };
+};
+
+export type MessageAttachment = FileMessageAttachment | ReferenceMessageAttachment | QuoteReplyMessageAttachment;
 type StoredFileAttachment = Omit<FileMessageAttachment, "contentUrl">;
 
 function safeStoredName(value: string) {
@@ -70,7 +83,7 @@ export function attachmentContentUrl(id: string, name: string) {
 
 export function serializeAttachmentMarkup(text: string, attachments: MessageAttachment[] = []) {
   if (!attachments.length) return text;
-  const stored = attachments.map((attachment) => attachment.type === "reference"
+  const stored = attachments.map((attachment) => attachment.type !== "file"
     ? attachment
     : (({ type, id, name, mediaType, bytes, path }) => ({ type, id, name, mediaType, bytes, path }))(attachment));
   return `${text}\n\n${attachmentFence}\n${JSON.stringify({ version: 2, attachments: stored })}\n~~~`;
@@ -109,7 +122,34 @@ function validReferenceAttachment(value: unknown): ReferenceMessageAttachment | 
   };
 }
 
+function validQuoteReplyAttachment(value: unknown): QuoteReplyMessageAttachment | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const item = value as Record<string, unknown>;
+  const source = item.source && typeof item.source === "object" ? item.source as Record<string, unknown> : undefined;
+  if (item.type !== "quote-reply" || typeof item.id !== "string" || !item.id || item.id.length > 500) return undefined;
+  if (typeof item.label !== "string" || !item.label || item.label.length > 200) return undefined;
+  if (typeof item.quote !== "string" || !item.quote.trim() || item.quote.length > 20_000) return undefined;
+  if (typeof item.question !== "string" || !item.question.trim() || item.question.length > 10_000) return undefined;
+  if (!source || !Number.isSafeInteger(source.startOffset) || Number(source.startOffset) < 0) return undefined;
+  if (!Number.isSafeInteger(source.endOffset) || Number(source.endOffset) <= Number(source.startOffset)) return undefined;
+  if (source.messageId !== undefined && (typeof source.messageId !== "string" || !source.messageId || source.messageId.length > 500)) return undefined;
+  return {
+    type: "quote-reply",
+    id: item.id,
+    label: item.label,
+    quote: item.quote,
+    question: item.question,
+    source: {
+      ...(typeof source.messageId === "string" ? { messageId: source.messageId } : {}),
+      startOffset: Number(source.startOffset),
+      endOffset: Number(source.endOffset),
+    },
+  };
+}
+
 function normalizeAttachment(cwd: string | undefined, item: unknown): MessageAttachment | undefined {
+  const quoteReply = validQuoteReplyAttachment(item);
+  if (quoteReply) return quoteReply;
   const reference = validReferenceAttachment(item);
   if (reference) return reference;
   const stored = validStoredAttachment(item, cwd);

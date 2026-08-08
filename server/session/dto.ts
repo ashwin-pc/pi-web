@@ -57,6 +57,17 @@ export type AttachmentDto = {
     number: number;
     url: string;
   };
+} | {
+  type: "quote-reply";
+  id: string;
+  label: string;
+  quote: string;
+  question: string;
+  source: {
+    messageId?: string;
+    startOffset: number;
+    endOffset: number;
+  };
 };
 
 type MessageDtoBase = {
