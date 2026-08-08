@@ -51,9 +51,10 @@ export function createRealtime(options: {
   sessionState: SessionStateController;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  updateWebContribution?: (key: string, sessionId: string) => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -780,6 +781,12 @@ export function createRealtime(options: {
       }
       if (data.type === "web_contributions_changed") {
         sessionState.applySnapshot(data);
+        return;
+      }
+      if (data.type === "web_contribution_updated") {
+        const sessionId = String(data.sessionId || "");
+        const key = typeof data.key === "string" ? data.key : "";
+        if (key && sessionId === state.currentSessionId) updateWebContribution?.(key, sessionId);
         return;
       }
       if (data.type === "committed_message") {

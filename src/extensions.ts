@@ -39,6 +39,36 @@ export type PiWebFooter =
 export type PiWebEffect =
   | { type: "open-panel"; key: string };
 
+export type PiWebContributionEvent = {
+  action?: string;
+  payload?: unknown;
+  fields?: Record<string, string | string[]>;
+  context?: Record<string, unknown>;
+};
+
+export type PiWebContributionView = {
+  title?: string;
+  html?: string;
+  markdown?: string;
+  message?: string;
+  composerContext?: PiWebComposerContext;
+  download?: { filename?: string };
+  effects?: PiWebEffect[];
+};
+
+export type PiWebContribution =
+  | { slot: "footer"; kind: "static"; view: PiWebFooter }
+  | { slot: "fab"; kind: "static"; title: string; label?: string; icon?: string; opens: string }
+  | {
+      slot: "header-action" | "artifact-action" | "git-tab" | "panel";
+      kind: "rendered";
+      title: string;
+      label?: string;
+      icon?: string;
+      match?: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
+      render: (event?: PiWebContributionEvent) => PiWebContributionView | Promise<PiWebContributionView>;
+    };
+
 export type PiWebHeaderActionResult = {
   /** Markdown rendered in the shared dismissible popover. */
   markdown?: string;
@@ -204,7 +234,23 @@ export type PiWebRegisterSettingsResult = {
   error?: string;
 };
 
+export type PiWebCapabilities = Readonly<{
+  apiVersion: 1;
+  slots: readonly string[];
+  kinds: readonly string[];
+  effects: readonly string[];
+}>;
+
 export type PiWebUi = {
+  /** Runtime feature discovery for independently distributed extensions. */
+  readonly capabilities: PiWebCapabilities;
+
+  /** Register or clear a normalized browser contribution. */
+  contribute(key: string, contribution: PiWebContribution | undefined): void;
+
+  /** Notify the active host that a rendered contribution should be pulled again. */
+  update(key: string): void;
+
   /**
    * Set or clear a pi-web footer region.
    *

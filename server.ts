@@ -454,6 +454,15 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, ...state });
       }
 
+      if (mockMode && method === "POST" && url.pathname === "/api/mock/event") {
+        const body = await readBody(req);
+        if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as any).type !== "string") {
+          return sendJson(res, 400, { ok: false, error: "Mock event requires a type" });
+        }
+        broadcast(body);
+        return sendJson(res, 200, { ok: true });
+      }
+
       if (mockMode && method === "GET" && url.pathname === "/api/mock/live-sessions") {
         return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(), lifecycle: getMockLifecycle() });
       }

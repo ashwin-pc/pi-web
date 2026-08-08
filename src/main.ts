@@ -516,6 +516,10 @@ realtime = createRealtime({
   sessionState,
   refreshMessages,
   refreshState,
+  updateWebContribution: (key) => {
+    webPanels?.update(key);
+    gitPanel?.updateExtensionTab(key);
+  },
   addMessage: messages.addMessage,
 });
 

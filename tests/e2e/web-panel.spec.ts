@@ -18,6 +18,7 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
   });
 
   const invocations: any[] = [];
+  let revision = 1;
   await page.route("**/api/web-contributions/invoke", async (route) => {
     const input = route.request().postDataJSON();
     invocations.push(input);
@@ -31,7 +32,7 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
       return;
     }
     const value = input.event?.fields?.content || "Initial global note";
-    const status = input.event?.action === "save" ? "Saved globally" : "Shared with every conversation";
+    const status = input.event?.action === "save" ? "Saved globally" : `Shared with every conversation · revision ${revision}`;
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -53,6 +54,19 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
   const panel = page.locator("#webExtensionPanel");
   await expect(panel).toBeVisible();  await expect(panel.locator("h2")).toHaveText("Global notepad");
   await expect(panel.locator("textarea")).toHaveValue("Initial global note");
+  await expect(panel.getByRole("status")).toContainText("revision 1");
+
+  const invokesBeforeUpdate = invocations.length;
+  await panel.locator("textarea").fill("Unsubmitted draft");
+  revision = 2;
+  await page.request.post("/api/mock/event", { data: { type: "web_contribution_updated", sessionId: "mock-current", key: "notes" } });
+  await page.waitForTimeout(100);
+  await expect(panel.locator("textarea")).toHaveValue("Unsubmitted draft");
+  expect(invocations.length).toBe(invokesBeforeUpdate);
+
+  await page.locator("#prompt").focus();
+  await expect(panel.getByRole("status")).toContainText("revision 2");
+  expect(invocations.length).toBe(invokesBeforeUpdate + 1);
 
   await panel.locator("textarea").fill("Remember this everywhere");
   await panel.getByRole("button", { name: "Save" }).click();

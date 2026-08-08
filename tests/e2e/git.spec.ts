@@ -52,6 +52,35 @@ test("GitHub issue numbers attach issue details to the composer context", async 
   await page.unrouteAll({ behavior: "wait" });
 });
 
+test("Git-tab invalidation ignores an older in-flight response", async ({ page }) => {
+  await page.request.post("/api/mock/state", { data: {
+    webContributions: [{ version: 1, key: "github", slot: "git-tab", kind: "rendered", title: "GitHub issues", label: "GitHub" }],
+  } });
+  let requestCount = 0;
+  let releaseOld!: () => void;
+  const oldPending = new Promise<void>((resolve) => { releaseOld = resolve; });
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    requestCount += 1;
+    if (requestCount === 1) {
+      await oldPending;
+      await route.fulfill({ json: { ok: true, html: '<div class="gitRevision">old</div>' } });
+      return;
+    }
+    await route.fulfill({ json: { ok: true, html: '<div class="gitRevision">fresh</div>' } });
+  });
+
+  await page.goto("/");
+  await page.locator("#sessionInfoButton").click();
+  await page.locator("#sessionInfoGit").click();
+  await page.locator(".gitExtensionTab", { hasText: "GitHub" }).click();
+  await expect.poll(() => requestCount).toBe(1);
+  await page.request.post("/api/mock/event", { data: { type: "web_contribution_updated", sessionId: "mock-current", key: "github" } });
+  await expect(page.locator(".gitRevision")).toHaveText("fresh");
+  releaseOld();
+  await expect.poll(() => requestCount).toBe(2);
+  await expect(page.locator(".gitRevision")).toHaveText("fresh");
+});
+
 test("extension tabs remain available in split view with a reduced viewport height", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 500 });
   await page.request.post("/api/mock/state", { data: {
