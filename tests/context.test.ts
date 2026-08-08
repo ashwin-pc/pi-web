@@ -52,11 +52,12 @@ describe("agent context organization", () => {
     expect(service).not.toContain("pi-web-agent-context.md");
   });
 
-  it("labels compatibility-wrapper examples and points authors to the current API exemplar", async () => {
-    const legacyExamples = ["git-footer.ts", "recap.ts", "download-artifact.ts", "github-repo-panel.ts"];
-    for (const filename of legacyExamples) {
+  it("teaches the canonical contribution API throughout the first-party UI examples", async () => {
+    const uiExamples = ["git-footer.ts", "recap.ts", "download-artifact.ts", "github-repo-panel.ts", "notepad.ts"];
+    for (const filename of uiExamples) {
       const example = await text(`examples/pi-web-extensions/${filename}`);
-      expect(example).toContain("Uses typed compatibility wrappers; see notepad.ts for the current contribute() API.");
+      expect(example).toContain(".contribute(");
+      expect(example).not.toMatch(/\.set(?:Footer|HeaderAction|ArtifactAction|GitTab|Panel|FabAction)\(/);
     }
   });
 });

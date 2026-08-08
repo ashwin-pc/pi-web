@@ -69,13 +69,19 @@ describe("bundled extension path discovery", () => {
     const handlers = new Map<string, (event: unknown, context: any) => unknown>();
     downloadArtifactExtension({ on: (event: string, handler: (event: unknown, context: any) => unknown) => handlers.set(event, handler) } as any);
     const calls: Array<[string, any]> = [];
-    const context = { ui: { web: { setArtifactAction: (key: string, action: unknown) => calls.push([key, action]) } } };
+    const context = { ui: { web: { contribute: (key: string, contribution: unknown) => calls.push([key, contribution]) } } };
 
     await handlers.get("session_start")?.({}, context);
     const action = calls.at(-1)?.[1];
     expect(calls.at(-1)?.[0]).toBe("download-artifact");
-    expect(action).toMatchObject({ title: "Download artifact to this device", label: "Download" });
-    expect(await action.invoke({ name: "report.md", path: "/api/artifacts/report.md", kind: "markdown" })).toEqual({ download: { filename: "report.md" } });
+    expect(action).toMatchObject({
+      slot: "artifact-action",
+      kind: "rendered",
+      title: "Download artifact to this device",
+      label: "Download",
+    });
+    expect(await action.render({ context: { name: "report.md", path: "/api/artifacts/report.md", kind: "markdown" } }))
+      .toEqual({ download: { filename: "report.md" } });
 
     await handlers.get("session_shutdown")?.({}, context);
     expect(calls.at(-1)).toEqual(["download-artifact", undefined]);
@@ -305,7 +311,7 @@ describe("bundled extension path discovery", () => {
           context: {
             cwd: process.cwd(),
             sessionManager,
-            ui: { web: { setFooter: (key: string, footer: unknown) => calls.push([key, footer]) } },
+            ui: { web: { contribute: (key: string, contribution: unknown) => calls.push([key, contribution]) } },
           },
         };
       };
@@ -318,11 +324,11 @@ describe("bundled extension path discovery", () => {
       await vi.advanceTimersByTimeAsync(0);
       await start({}, replacement.context);
       await vi.advanceTimersByTimeAsync(0);
-      expect(first.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
-      expect(replacement.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
+      expect(first.calls.at(-1)?.[1]).toMatchObject({ slot: "footer", kind: "static", view: { kind: "html" } });
+      expect(replacement.calls.at(-1)?.[1]).toMatchObject({ slot: "footer", kind: "static", view: { kind: "html" } });
 
       await shutdown({}, first.context);
-      expect(replacement.calls.at(-1)?.[1]).toMatchObject({ kind: "html" });
+      expect(replacement.calls.at(-1)?.[1]).toMatchObject({ slot: "footer", kind: "static", view: { kind: "html" } });
       await shutdown({}, replacement.context);
       expect(replacement.calls.at(-1)).toEqual(["local-git-footer", undefined]);
     } finally {
@@ -343,7 +349,7 @@ describe("bundled extension path discovery", () => {
       const context = {
         cwd: process.cwd(),
         sessionManager,
-        ui: { web: { setFooter: (key: string, footer: unknown) => calls.push([key, footer]) } },
+        ui: { web: { contribute: (key: string, contribution: unknown) => calls.push([key, contribution]) } },
       };
 
       handlers.get("session_start")?.({}, context);

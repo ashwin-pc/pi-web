@@ -1,4 +1,3 @@
-// Uses typed compatibility wrappers; see notepad.ts for the current contribute() API.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web/extensions";
@@ -149,7 +148,11 @@ export function createGitFooterExtension(options: {
           || sessions.get(key) !== state
           || state.lastHtml === html) return;
         state.lastHtml = html;
-        ctx.ui.web.setFooter(FOOTER_KEY, { kind: "html", html });
+        ctx.ui.web.contribute(FOOTER_KEY, {
+          slot: "footer",
+          kind: "static",
+          view: { kind: "html", html },
+        });
       })
       .finally(() => {
         state.refreshing = undefined;
@@ -190,7 +193,7 @@ export function createGitFooterExtension(options: {
     state.stopped = true;
     clearInterval(state.interval);
     sessions.delete(key);
-    ctx.ui.web.setFooter(FOOTER_KEY, undefined);
+    ctx.ui.web.contribute(FOOTER_KEY, undefined);
   }
 
   return function gitFooterExtension(pi: PiWebExtensionAPI) {

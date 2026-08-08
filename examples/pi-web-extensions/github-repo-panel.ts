@@ -1,4 +1,3 @@
-// Uses typed compatibility wrappers; see notepad.ts for the current contribute() API.
 import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebGitTabEvent } from "@ashwin-pc/pi-web/extensions";
 
 const GIT_TAB_KEY = "github";
@@ -574,17 +573,23 @@ async function updateGitTab(pi: PiWebExtensionAPI, ctx: PiWebExtensionContext) {
 
   if (!repo) {
     if (installedSessions.has(key)) {
-      web.setGitTab(GIT_TAB_KEY, undefined);
+      web.contribute(GIT_TAB_KEY, undefined);
       installedSessions.delete(key);
     }
     return;
   }
 
   installedSessions.add(key);
-  web.setGitTab(GIT_TAB_KEY, {
+  web.contribute(GIT_TAB_KEY, {
+    slot: "git-tab",
+    kind: "rendered",
     title: `GitHub issues and pull requests for ${repo.nameWithOwner}`,
     label: "GitHub",
-    render: (event) => renderGitTab(pi, ctx, event),
+    render: (event) => renderGitTab(pi, ctx, {
+      action: event?.action,
+      payload: event?.payload,
+      repo: event?.context as PiWebGitTabEvent["repo"],
+    }),
   });
 }
 
@@ -606,7 +611,7 @@ export default function githubRepoPanel(pi: PiWebExtensionAPI) {
   pi.on("session_shutdown", (_event, ctx) => {
     const key = sessionKey(ctx);
     if (installedSessions.has(key)) {
-      ctx.ui.web.setGitTab(GIT_TAB_KEY, undefined);
+      ctx.ui.web.contribute(GIT_TAB_KEY, undefined);
       installedSessions.delete(key);
     }
   });
