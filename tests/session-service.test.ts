@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonRoundTrip, type MessageDto, type SessionServiceEvent } from "../server/session/dto.js";
 import { SessionActivity } from "../server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
+import { mapPiEvent } from "../server/session/piEventMap.js";
+import { pi084Events } from "./fixtures/pi-0.84-events.js";
 import { LocalSessionService, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 
@@ -77,7 +79,7 @@ type FixtureServiceOptions = {
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: LocalSessionFactory["list"];
-  clientCount?: number;
+  clientCount?: number | (() => number);
 };
 
 async function fixtureService(options: FixtureServiceOptions = {}) {
@@ -105,7 +107,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
       finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined),
     },
     globalCwd: () => cwd,
-    clientCount: () => options.clientCount ?? 0,
+    clientCount: () => typeof options.clientCount === "function" ? options.clientCount() : options.clientCount ?? 0,
   };
   const service = new LocalSessionService(deps);
   const initial = await service.initialize();
@@ -302,6 +304,20 @@ describe("LocalSessionService contract", () => {
     await expect(answer).resolves.toBe(true);
   });
 
+  it("denies timed-out and disconnected interactions through the service boundary", async () => {
+    vi.useFakeTimers();
+    let clients = 1;
+    const { service, fixture } = await fixtureService({ clientCount: () => clients });
+    const timedOut = fixture.extensionOptions.uiContext.confirm("Timed", "Wait", { timeout: 10 });
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(timedOut).resolves.toBe(false);
+
+    const disconnected = fixture.extensionOptions.uiContext.confirm("Disconnected", "Wait", { timeout: 1_000 });
+    clients = 0;
+    service.cancelInteractions();
+    await expect(disconnected).resolves.toBe(false);
+  });
+
   it("carries unknown harness events through the service and host wire unchanged", async () => {
     const { service, initial } = await fixtureService();
     const activity = new SessionActivity((path) => service.sessionForPath(path));
@@ -323,6 +339,26 @@ describe("LocalSessionService contract", () => {
       event: { type: "harness_event", harness: "future", payload: { type: "new_event", value: 1 } },
     });
     expect(wire[1]).toMatchObject({ type: "session_runtime_changed", sessionId: initial.sessionId });
+  });
+
+  it("replays the recorded pi 0.84 event fixture through the service/host wire boundary", async () => {
+    const { service, initial } = await fixtureService();
+    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const wire: any[] = [];
+    const handler = createHostSessionEventHandler({
+      sessionForId: (id) => service.sessionForId(id), projectState: (value) => service.projectState(value),
+      webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity,
+      broadcast: (value) => wire.push(value), markSessionUnreadCompleted: () => undefined,
+    });
+    const mapped = pi084Events.map(mapPiEvent).filter((item) => item.kind === "event");
+    for (const item of mapped) {
+      if (item.kind === "event") handler({ type: "agent", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: item.event });
+    }
+    expect(wire.filter((event) => event.type === "agent_event")).toHaveLength(mapped.length);
+    expect(wire.find((event) => event.type === "agent_event" && event.event.type === "message_update")?.event).not.toHaveProperty("assistantMessageEvent.partial");
+    for (let index = 0; index < wire.length; index += 1) {
+      if (wire[index]?.type === "agent_event") expect(wire[index + 1]?.type).toBe("session_runtime_changed");
+    }
   });
 
   it("marks unread and sends exactly one notification from the same final completion transition", async () => {
@@ -350,6 +386,21 @@ describe("LocalSessionService contract", () => {
     handler(completed);
 
     expect(transitions).toEqual(["unread", "notification"]);
+    expect(activity.hasStarted(initial.sessionFile)).toBe(false);
+  });
+
+  it("clears aborted work without marking unread or sending completion push", async () => {
+    const { service, initial } = await fixtureService();
+    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const transitions: string[] = [];
+    const handler = createHostSessionEventHandler({
+      sessionForId: (id) => service.sessionForId(id), projectState: (value) => service.projectState(value),
+      webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity, broadcast: () => undefined,
+      markSessionUnreadCompleted: () => transitions.push("unread"), notifySessionCompleted: () => transitions.push("notification"),
+    });
+    activity.ensureStarted(initial);
+    handler({ type: "runtime", action: "completed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, aborted: true });
+    expect(transitions).toEqual([]);
     expect(activity.hasStarted(initial.sessionFile)).toBe(false);
   });
 

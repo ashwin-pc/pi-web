@@ -172,7 +172,7 @@ describe("pi-web mock API", () => {
     ws.on("message", (data) => events.push(JSON.parse(String(data))));
     await fetch(`${baseUrl}/api/prompt`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId: "mock-current", message: "thinking", mode: "steer", attachments: [] }),
+      body: JSON.stringify({ sessionId: "mock-current", message: "thinking card", mode: "steer", attachments: [] }),
     });
     await waitForCondition(() => events.some((event) => event.type === "agent_event" && event.event?.type === "agent_settled"));
     const lifecycle = events.filter((event) => event.type === "agent_event" || event.type === "session_runtime_changed");
@@ -184,6 +184,13 @@ describe("pi-web mock API", () => {
       expect(event.event.assistantMessageEvent).toHaveProperty("contentIndex");
       expect(event.event.assistantMessageEvent).not.toHaveProperty("partial");
     }
+    const assistantLifecycle = events
+      .filter((event) => event.type === "agent_event" && (event.event?.type === "message_start" || event.event?.type === "message_update"))
+      .map((event) => event.event.type === "message_start" ? "message_start" : `${event.event.assistantMessageEvent.type}:${event.event.assistantMessageEvent.contentIndex}`);
+    expect(assistantLifecycle).toEqual([
+      "message_start", "thinking_start:0", "thinking_delta:0", "thinking_delta:0", "thinking_end:0",
+      "text_start:1", "text_delta:1", "text_end:1",
+    ]);
     expect(events.find((event) => event.type === "agent_event" && event.event?.type === "agent_end")?.event).toMatchObject({ aborted: false, willRetry: false });
     ws.close();
   });

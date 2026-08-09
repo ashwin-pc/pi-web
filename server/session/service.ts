@@ -767,13 +767,14 @@ export class LocalSessionService implements SessionService {
     });
   }
 
-  private emitRuntime(value: PiWebSession, action: "ensure" | "clear" | "changed" | "completed", activitySessionFile?: string) {
+  private emitRuntime(value: PiWebSession, action: "ensure" | "clear" | "changed" | "completed", activitySessionFile?: string, aborted = false) {
     this.emit({
       type: "runtime",
       sessionId: value.sessionId,
       sessionFile: value.sessionFile,
       action,
       ...(activitySessionFile && activitySessionFile !== value.sessionFile ? { activitySessionFile } : {}),
+      ...(action === "completed" ? { aborted } : {}),
     });
   }
 
@@ -1102,7 +1103,8 @@ export class LocalSessionService implements SessionService {
       this.emitError(value, error, input.clientMessageId);
     }).finally(() => {
       release();
-      this.emitRuntime(value, "completed", promptSessionFile);
+      const lastMessage = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages.at(-1) : undefined;
+      this.emitRuntime(value, "completed", promptSessionFile, isAssistantAbortedMessage(lastMessage));
     });
   }
 
@@ -1184,7 +1186,8 @@ export class LocalSessionService implements SessionService {
       // cannot emit pi's authoritative idle event itself. Translate settlement
       // only after releasing the compatibility lease.
       if (usesCompatibilityFallback) this.handlePiEvent(value, { type: "agent_settled" });
-      this.emitRuntime(value, "completed", retrySessionFile);
+      const lastMessage = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages.at(-1) : undefined;
+      this.emitRuntime(value, "completed", retrySessionFile, isAssistantAbortedMessage(lastMessage));
     });
   }
 

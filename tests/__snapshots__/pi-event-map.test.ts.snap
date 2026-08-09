@@ -58,8 +58,29 @@ exports[`pi event wire mapping > maps the recorded pi event surface without cumu
     "event": {
       "assistantMessageEvent": {
         "contentIndex": 0,
+        "type": "text_start",
+      },
+      "type": "message_update",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "assistantMessageEvent": {
+        "contentIndex": 0,
         "delta": "hi",
         "type": "text_delta",
+      },
+      "type": "message_update",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "assistantMessageEvent": {
+        "content": "hi",
+        "contentIndex": 0,
+        "type": "text_end",
       },
       "type": "message_update",
     },
@@ -163,18 +184,17 @@ exports[`pi event wire mapping > maps the recorded pi event surface without cumu
   },
   {
     "event": {
-      "attempt": 1,
+      "attempt": 2,
       "delayMs": 100,
       "errorMessage": "busy",
-      "maxAttempts": 2,
-      "source": "compaction",
+      "maxAttempts": 3,
+      "source": "summarization",
       "type": "auto_retry_start",
     },
     "kind": "event",
   },
   {
     "event": {
-      "attempt": 1,
       "source": "branchSummary",
       "type": "auto_retry_start",
     },
@@ -182,7 +202,6 @@ exports[`pi event wire mapping > maps the recorded pi event surface without cumu
   },
   {
     "event": {
-      "attempt": 1,
       "reason": "manual",
       "source": "compaction",
       "type": "auto_retry_start",
@@ -191,8 +210,7 @@ exports[`pi event wire mapping > maps the recorded pi event surface without cumu
   },
   {
     "event": {
-      "attempt": 1,
-      "source": "compaction",
+      "source": "summarization",
       "success": true,
       "type": "auto_retry_end",
     },

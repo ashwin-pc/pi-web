@@ -492,6 +492,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const withInterruptedTool = /incomplete tool|interrupted tool|timed out tool|timeout after tool/i.test(message);
         const withAbortedAssistant = /aborted assistant|interrupted assistant/i.test(message);
         const withThinking = /thinking card/i.test(message);
+        const withSummaryRetry = /summary retry/i.test(message);
         const withFlatEditTool = /flat edit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
         const withEditTool = !withShowcase && !withFlatEditTool && !withMalformedEditTool && /edit diff/i.test(message);
@@ -511,6 +512,13 @@ export function createMockHarness(options: MockSessionOptions) {
         }
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
         broadcastPiEvent({ type: "message_start", message: { role: "assistant", content: [], timestamp: new Date().toISOString() } });
+        if (withSummaryRetry) {
+          broadcastPiEvent({ type: "summarization_retry_scheduled", attempt: 2, maxAttempts: 3, delayMs: 500, errorMessage: "summary provider busy" });
+          if (!(await waitForMockRun(800))) return;
+          broadcastPiEvent({ type: "summarization_retry_attempt_start", source: "branchSummary" });
+          if (!(await waitForMockRun(500))) return;
+          broadcastPiEvent({ type: "summarization_retry_finished" });
+        }
         if (withLiveMessageKinds) {
           // Let the browser apply agent_start before exercising interleaved
           // committed messages; this keeps the scenario deterministic on CI.
@@ -609,6 +617,7 @@ export function createMockHarness(options: MockSessionOptions) {
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: thinking } });
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 1 } });
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: finalText } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 1, content: finalText } });
           appendMockMessage({ role: "assistant", content: [
             { type: "thinking", thinking },
             { type: "text", text: finalText },
@@ -641,6 +650,7 @@ export function createMockHarness(options: MockSessionOptions) {
           const toolCallId = withPendingToolRefresh ? `call-pending-${Date.now()}` : "call-1";
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "Let me check that for you. " } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content: "Let me check that for you. " } });
           if (!(await waitForMockRun(80))) return;
           const toolStartedAt = new Date().toISOString();
           if (withPendingToolRefresh) {
@@ -660,6 +670,7 @@ export function createMockHarness(options: MockSessionOptions) {
           if (!(await waitForMockRun(80))) return;
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 1 } });
           broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Done reading." } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 1, content: "Done reading." } });
           if (!(await waitForMockRun(80))) return;
           if (!withPendingToolRefresh) {
             appendMockMessage({ role: "assistant", content: [

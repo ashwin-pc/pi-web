@@ -120,8 +120,10 @@ Track 0 (contract) → R1 (Stage-3 shim + ratchet) → then in parallel:
 
 Convergence is free: a harness-in-sandbox session is the runner shim hosting a harness adapter; the ratchet already proves the transport can't change its capability set.
 
-## Validation
+## Validation plan
 
-- Contract suite (`describeSessionService`) runs in-process and over the runner; asserts JSON round-trip stability, unknown-variant tolerance, and capability-set equality across transports.
-- Black-box adapter suite runs against every adapter in CI: prompt→stream→idle, tool ordering, approval allow/deny/cancel/timeout, abort mid-tool, resume after restart, unknown-enum tolerance, crash recovery, two-session interaction isolation.
-- Per-adapter version pins with capability probes at init; upgrades gated on replay-fixture diffs.
+Track 0 includes the type-coupled pi 0.84 event fixture, mapper snapshot, service/host traversal, unknown-variant tolerance, capability-gating checks, and interaction lifecycle tests. Later milestones add:
+
+- **R1:** `describeSessionService` runs in-process and over the runner, asserting JSON round-trip stability and capability-set equality across transports.
+- **H1+:** a black-box suite runs against every adapter in CI: prompt→stream→idle, tool ordering, approval allow/deny/cancel/timeout, abort mid-tool, resume after restart, unknown-enum tolerance, crash recovery, and two-session interaction isolation.
+- **Per adapter:** version pins and capability probes at initialization; upgrades gated on recorded-fixture diffs.

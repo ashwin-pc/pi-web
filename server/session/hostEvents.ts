@@ -145,8 +145,10 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
           const isRunning = Boolean(target.isStreaming || target.isCompacting);
           if (deps.sessionActivity.hasStarted(activitySessionFile) && !isRunning) {
             deps.sessionActivity.clearStarted(target, activitySessionFile);
-            deps.markSessionUnreadCompleted(serviceEvent.sessionId);
-            deps.notifySessionCompleted?.(serviceEvent.sessionId);
+            if (!serviceEvent.aborted) {
+              deps.markSessionUnreadCompleted(serviceEvent.sessionId);
+              deps.notifySessionCompleted?.(serviceEvent.sessionId);
+            }
           }
         }
         deps.broadcast({ type: "session_runtime_changed", sessionId: serviceEvent.sessionId, sessionFile: serviceEvent.sessionFile, runtime: deps.sessionActivity.runtimeForPath(serviceEvent.sessionFile) });

@@ -4,7 +4,7 @@ import { jsonRoundTrip, type JsonValue } from "./dto.js";
 
 type WithoutCumulativePartial<T> = T extends unknown ? Omit<T, "partial"> : never;
 export type AssistantDeltaDto = WithoutCumulativePartial<AssistantMessageEvent>;
-export type RetrySourceDto = "agent" | "branchSummary" | "compaction";
+export type RetrySourceDto = "agent" | "summarization" | "branchSummary" | "compaction";
 
 export type AgentEventDto =
   | { type: "agent_start"; startedAt?: string; lastActivityAt?: string }
@@ -19,8 +19,8 @@ export type AgentEventDto =
   | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: JsonValue; partialResult: JsonValue }
   | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: JsonValue; isError: boolean }
   | { type: "queue_update"; steering: string[]; followUp: string[] }
-  | { type: "auto_retry_start"; source: RetrySourceDto; attempt: number; maxAttempts?: number; delayMs?: number; errorMessage?: string; reason?: "manual" | "threshold" | "overflow" }
-  | { type: "auto_retry_end"; source: RetrySourceDto; success: boolean; attempt: number; finalError?: string }
+  | { type: "auto_retry_start"; source: RetrySourceDto; attempt?: number; maxAttempts?: number; delayMs?: number; errorMessage?: string; reason?: "manual" | "threshold" | "overflow" }
+  | { type: "auto_retry_end"; source: RetrySourceDto; success: boolean; attempt?: number; finalError?: string }
   | { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
   | { type: "compaction_end"; reason: "manual" | "threshold" | "overflow"; result?: JsonValue; aborted: boolean; willRetry: boolean; errorMessage?: string }
   | { type: "session_info_changed"; name?: string }
@@ -93,9 +93,9 @@ export function mapPiEvent(event: AgentSessionEvent): PiEventMapResult {
     case "queue_update": return { kind: "event", event: { type: "queue_update", steering: [...event.steering], followUp: [...event.followUp] } };
     case "auto_retry_start": return { kind: "event", event: { ...event, source: "agent" } };
     case "auto_retry_end": return { kind: "event", event: { ...event, source: "agent" } };
-    case "summarization_retry_scheduled": return { kind: "event", event: { type: "auto_retry_start", source: "compaction", attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, errorMessage: event.errorMessage } };
-    case "summarization_retry_attempt_start": return { kind: "event", event: { type: "auto_retry_start", source: event.source, attempt: 1, ...(event.source === "compaction" ? { reason: event.reason } : {}) } };
-    case "summarization_retry_finished": return { kind: "event", event: { type: "auto_retry_end", source: "compaction", success: true, attempt: 1 } };
+    case "summarization_retry_scheduled": return { kind: "event", event: { type: "auto_retry_start", source: "summarization", attempt: event.attempt, maxAttempts: event.maxAttempts, delayMs: event.delayMs, errorMessage: event.errorMessage } };
+    case "summarization_retry_attempt_start": return { kind: "event", event: { type: "auto_retry_start", source: event.source, ...(event.source === "compaction" ? { reason: event.reason } : {}) } };
+    case "summarization_retry_finished": return { kind: "event", event: { type: "auto_retry_end", source: "summarization", success: true } };
     case "compaction_start": return { kind: "event", event: { ...event } };
     case "compaction_end": return { kind: "event", event: {
       type: "compaction_end",

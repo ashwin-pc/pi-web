@@ -26,4 +26,7 @@ test("hides harness-specific controls when capabilities are absent", async ({ pa
   await page.locator("#modelSettingsButton").click();
   await expect(page.locator("#thinkingSelect")).toBeHidden();
   await expect(page.locator("#extensionFooter")).toBeEmpty();
+  await page.locator("#prompt").fill("/");
+  await expect(page.locator("#slashCommands")).toBeVisible();
+  await expect(page.locator(".slashCommandItem", { hasText: "/compact" })).toHaveCount(0);
 });

@@ -37,6 +37,17 @@ test("shows retryable model errors live and terminal retry affordances", async (
   await expect(page.locator(".message.user", { hasText: "Please retry the previous request." })).toHaveCount(0);
 });
 
+test("shows summarization retries through the generic retry UI without invented metadata", async ({ page }) => {
+  await page.request.post("/api/mock/reset");
+  await page.goto("/");
+  await page.locator("#prompt").fill("summary retry");
+  await page.locator("#primaryButton").click();
+  const card = page.locator(".toolCard.runtimeErrorCard").last();
+  await expect(card).toContainText("retrying summary");
+  await expect(card).toContainText("attempt 2/3");
+  await expect(card).toContainText("retrying branch summary");
+});
+
 test("continues an incomplete tool-result turn without adding a user message", async ({ page }) => {
   await page.goto("/");
   await page.locator("#prompt").fill("incomplete tool result");

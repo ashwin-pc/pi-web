@@ -227,6 +227,7 @@ export function createComposer(options: {
       .filter((command) => {
         const name = command.name.toLowerCase();
         const description = command.description?.toLowerCase() || "";
+        if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) return false;
         return !query || name.includes(query) || description.includes(query);
       })
       .sort((a, b) => {
@@ -636,6 +637,7 @@ export function createComposer(options: {
 
   async function runSlashCommand(command: string) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
+    if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) throw new Error("Compaction is not supported by this harness.");
     if (name === "logout") {
       stopTokenScanner();
       state.token = "";

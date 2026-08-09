@@ -191,7 +191,7 @@ export type SessionServiceEvent =
   | { type: "models"; sessionId: string; models: ModelDto[] }
   | { type: "error"; sessionId?: string; sessionFile?: string; error: string; clientMessageId?: string }
   | { type: "shutdown"; sessionId: string; sessionFile: string; sessionKey: string }
-  | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed" }
+  | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed"; aborted?: boolean }
   | { type: "wire"; value: JsonValue };
 
 /**
@@ -223,6 +223,7 @@ export interface SessionService {
   rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;
   navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
   respondInteraction(response: InteractionResponseDto): boolean;
+  cancelInteractions(): void;
   invokeContribution(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
   invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;

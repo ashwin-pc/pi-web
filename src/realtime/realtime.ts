@@ -385,7 +385,7 @@ export function createRealtime(options: {
     retryFinalError = null;
     const attemptText = retryAttemptText(info.attempt, info.maxAttempts);
     const delayText = formatRetryDelay(info.delayMs);
-    const retryTarget = event.source === "branchSummary" ? "branch summary" : event.source === "compaction" ? "compaction summary" : "assistant request";
+    const retryTarget = event.source === "branchSummary" ? "branch summary" : event.source === "compaction" ? "compaction summary" : event.source === "summarization" ? "summary" : "assistant request";
     const retryText = `retrying${attemptText ? ` (${attemptText})` : ""}${delayText ? ` in ${delayText}` : ""}…`;
     status.markActivityProgress(`${info.text} — ${retryText}`, event.lastActivityAt);
     const card = ensureRetryErrorCard(info);
