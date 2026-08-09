@@ -23,6 +23,8 @@ import type {
   BaseSessionStateDto,
   DeleteSessionResultDto,
   JsonValue,
+  InteractionRequestDto,
+  InteractionResponseDto,
   MessageDto,
   NavigationResult,
   AttachmentDto,
@@ -143,6 +145,20 @@ function jsonSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function interactionRequestFromWire(value: Record<string, unknown>): InteractionRequestDto | undefined {
+  if (value.type !== "interaction_request" || typeof value.id !== "string" || typeof value.source !== "string" || typeof value.kind !== "string" || typeof value.sessionId !== "string" || typeof value.sessionFile !== "string") return undefined;
+  if (!["extension", "approval", "clarify", "sudo", "secret"].includes(value.source) || !value.payload || typeof value.payload !== "object" || Array.isArray(value.payload)) return undefined;
+  return {
+    id: value.id,
+    source: value.source as InteractionRequestDto["source"],
+    kind: value.kind,
+    payload: jsonSafe(value.payload) as InteractionRequestDto["payload"],
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    timeout: Number(value.timeout) || 120_000,
+  };
+}
+
 function hasUserMessages(value: PiWebSession) {
   return value.messages.some((message: any) => message?.role === "user");
 }
@@ -170,7 +186,15 @@ export class LocalSessionService implements SessionService {
   constructor(private readonly deps: LocalSessionServiceDependencies) {
     this.knownSessionCwds.add(resolve(deps.globalCwd()));
     this.webUiBridge = createWebUiBridge({
-      emit: (value) => this.emit({ type: "wire", value: value as JsonValue }),
+      emit: (input) => {
+        const value = input as Record<string, unknown>;
+        const request = interactionRequestFromWire(value);
+        if (request) {
+          this.emit({ type: "interaction", request });
+        } else {
+          this.emit({ type: "wire", value: value as JsonValue });
+        }
+      },
       clientCount: deps.clientCount,
       acquireWorkLease: (session) => this.acquireWorkLease(session),
       createNewSession: (cwd, previousSessionFile) => this.createNewLiveSession(cwd, previousSessionFile),
@@ -415,7 +439,7 @@ export class LocalSessionService implements SessionService {
     return this.require(sessionId).then((value) => this.webUiBridge.invokePanel(value, input));
   }
 
-  respondInteraction(id: string, response: Record<string, unknown>) { return this.webUiBridge.respond(id, response); }
+  respondInteraction(response: InteractionResponseDto) { return this.webUiBridge.respond(response.id, response); }
   cancelInteractions() { this.webUiBridge.cancelPendingInteractions(); }
 
   private extensionStatusFor(value: PiWebSession, loader: ResilientResourceLoader) {

@@ -17,7 +17,7 @@ import { assertDirectory, createDirectory, listDirectories } from "./server/shar
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, WorkspaceFileError, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
 import type { PiWebSession } from "./server/types.js";
-import type { BaseSessionStateDto, SessionInfoDto } from "./server/session/dto.js";
+import type { BaseSessionStateDto, InteractionResponseDto, SessionInfoDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessionState, resolveWebSocketHelloSession, type DecoratedSessionState, type WireSessionState } from "./server/session/hostEvents.js";
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
@@ -930,7 +930,8 @@ const server = createServer(async (req, res) => {
         const body = await readBody(req) as { id?: unknown } & Record<string, unknown>;
         const id = String(body.id || "").trim();
         if (!id) return sendJson(res, 400, { ok: false, error: "id is required" });
-        if (!sessionService.respondInteraction(id, body)) return sendJson(res, 404, { ok: false, error: "Extension UI request not found" });
+        const response = { ...body, id } as InteractionResponseDto;
+        if (!sessionService.respondInteraction(response)) return sendJson(res, 404, { ok: false, error: "Interaction request not found" });
         return sendJson(res, 200, { ok: true });
       }
 

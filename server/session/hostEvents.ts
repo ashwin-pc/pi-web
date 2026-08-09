@@ -94,6 +94,9 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         });
         return;
       }
+      case "interaction":
+        deps.broadcast({ type: "interaction_request", ...serviceEvent.request });
+        return;
       case "entry":
         deps.broadcast({
           type: "committed_message",

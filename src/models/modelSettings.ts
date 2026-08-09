@@ -3,7 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import { iconElement } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState } from "../app/types.js";
-import type { SessionStateController } from "../app/sessionState.js";
+import { activeSessionState, type SessionStateController } from "../app/sessionState.js";
 import { bindCompactInactiveAction } from "../composer/compactInteractions.js";
 
 export type ModelSettings = {
@@ -155,6 +155,10 @@ export function createModelSettings(options: {
   }
 
   function updateSummary() {
+    const supportsThinking = activeSessionState(state)?.capabilities?.thinkingLevel !== false;
+    elements.thinkingSelectEl.hidden = !supportsThinking;
+    elements.thinkingSelectEl.closest?.<HTMLElement>("label")?.toggleAttribute("hidden", !supportsThinking);
+    elements.modelSettingsThinking.hidden = !supportsThinking;
     const level = elements.thinkingSelectEl.value || state.currentThinkingLevel || "off";
     const selectedModelOption = elements.modelSelectEl.selectedOptions[0] as HTMLOptionElement | undefined;
     const selectedModelLabel = selectedModelOption?.textContent?.trim();

@@ -553,7 +553,7 @@ function createPiWebUi(value: any): PiWebUi {
 function broadcastInteractionRequest(value: any, method: string, payload: Record<string, unknown>) {
   const id = randomUUID();
   deps.emit({
-    type: "interaction_request",
+    type: "interaction_effect",
     id,
     source: "extension",
     kind: method,

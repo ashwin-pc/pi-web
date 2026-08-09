@@ -164,6 +164,30 @@ describe("pi-web mock API", () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
   });
 
+  it("routes mock agent events through contract shapes and event-before-runtime order", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    await once(ws, "open");
+    const events: any[] = [];
+    ws.on("message", (data) => events.push(JSON.parse(String(data))));
+    await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-current", message: "thinking", mode: "steer", attachments: [] }),
+    });
+    await waitForCondition(() => events.some((event) => event.type === "agent_event" && event.event?.type === "agent_settled"));
+    const lifecycle = events.filter((event) => event.type === "agent_event" || event.type === "session_runtime_changed");
+    for (let index = 0; index < lifecycle.length; index += 1) {
+      if (lifecycle[index].type === "agent_event") expect(lifecycle[index + 1]?.type).toBe("session_runtime_changed");
+    }
+    const deltas = events.filter((event) => event.type === "agent_event" && event.event?.type === "message_update");
+    for (const event of deltas) {
+      expect(event.event.assistantMessageEvent).toHaveProperty("contentIndex");
+      expect(event.event.assistantMessageEvent).not.toHaveProperty("partial");
+    }
+    expect(events.find((event) => event.type === "agent_event" && event.event?.type === "agent_end")?.event).toMatchObject({ aborted: false, willRetry: false });
+    ws.close();
+  });
+
   it("returns the tree navigation response and emits its terminal runtime event", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);

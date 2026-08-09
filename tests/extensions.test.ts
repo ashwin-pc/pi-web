@@ -190,6 +190,16 @@ describe("bundled extension path discovery", () => {
     });
     expect(bridge.respond(emitted.at(-1).id, { value: "two" })).toBe(true);
     await expect(answer).resolves.toBe("two");
+
+    const disconnected = ui.confirm("Allow?", "Run tool", { timeout: 1_000 });
+    bridge.cancelPendingInteractions();
+    await expect(disconnected).resolves.toBe(false);
+
+    vi.useFakeTimers();
+    const timedOut = ui.input("Secret", "value", { timeout: 25 });
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(timedOut).resolves.toBeUndefined();
+    vi.useRealTimers();
   });
 
   it("publishes normalized contributions and emits pull invalidations", async () => {

@@ -1,4 +1,4 @@
-import type { AgentEventDto } from "./piEventMap.js";
+import type { HarnessEventDto } from "./piEventMap.js";
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
@@ -46,10 +46,10 @@ export interface BaseSessionStateDto {
   isStreaming: boolean;
   isRetrying: boolean;
   isCompacting: boolean;
-  queue: { steering: string[]; followUp: string[] };
+  queue?: { steering: string[]; followUp: string[] };
   model?: ModelDto;
-  thinkingLevel: string;
-  thinkingLevels: string[];
+  thinkingLevel?: string;
+  thinkingLevels?: string[];
   stats: SessionStatsDto;
 }
 
@@ -160,13 +160,30 @@ export interface ModelsResultDto {
   models: ModelDto[];
 }
 
+export interface InteractionRequestDto {
+  id: string;
+  source: "extension" | "approval" | "clarify" | "sudo" | "secret";
+  kind: string;
+  payload: { [key: string]: JsonValue };
+  sessionId: string;
+  sessionFile: string;
+  timeout: number;
+}
+
+export interface InteractionResponseDto {
+  id: string;
+  cancelled?: boolean;
+  [key: string]: JsonValue | undefined;
+}
+
 export interface DeleteSessionResultDto {
   id: string;
   disposition: "trashed" | "deleted";
 }
 
 export type SessionServiceEvent =
-  | { type: "agent"; sessionId: string; sessionFile: string; event: AgentEventDto; clientMessageId?: string; sourceClientId?: string }
+  | { type: "agent"; sessionId: string; sessionFile: string; event: HarnessEventDto; clientMessageId?: string; sourceClientId?: string }
+  | { type: "interaction"; request: InteractionRequestDto }
   | { type: "entry"; sessionId: string; sessionFile: string; entryId: string; parentId?: string; entryKind: string }
   | { type: "state"; state: BaseSessionStateDto; includeThinkingLevels?: boolean }
   | { type: "committed"; sessionId: string; sessionFile: string; message: MessageDto }
@@ -205,6 +222,7 @@ export interface SessionService {
   abortBranchSummary(sessionId: string): Promise<{ sessionId: string }>;
   rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;
   navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
+  respondInteraction(response: InteractionResponseDto): boolean;
   invokeContribution(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
   invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;

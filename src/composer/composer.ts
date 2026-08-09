@@ -2,7 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
-import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
+import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { recordDebugEvent } from "../app/debugDiagnostics.js";
@@ -119,13 +119,16 @@ export function createComposer(options: {
   function updatePrimaryAction() {
     const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0 || quoteReplies.hasDrafts();
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
-    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady;
-    elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
     const runtime = sessionRuntime(state);
+    const canSendWhileRunning = activeSessionState(state)?.capabilities?.queue !== false;
+    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady || runtime.isRunning && !canSendWhileRunning;
+    elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
     elements.stopButton.style.display = runtime.isStreaming || runtime.isRetrying ? "" : "none";
   }
 
   function updateQueueToggle() {
+    const capabilities = activeSessionState(state)?.capabilities;
+    elements.queueToggle.hidden = capabilities?.queue === false;
     const isSteer = state.queueMode === "steer";
     elements.queueToggle.setAttribute("aria-pressed", String(isSteer));
     elements.queueToggle.title = isSteer ? "Queue mode: steer while running" : "Queue mode: follow up after running";
@@ -614,6 +617,7 @@ export function createComposer(options: {
   }
 
   async function runShellEscape(input: string) {
+    if (activeSessionState(state)?.capabilities?.bash === false) throw new Error("Shell commands are not supported by this harness.");
     const trimmed = input.trim();
     const excludeFromContext = trimmed.startsWith("!!");
     const command = trimmed.slice(excludeFromContext ? 2 : 1).trim();

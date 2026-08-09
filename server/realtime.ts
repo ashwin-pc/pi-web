@@ -95,6 +95,8 @@ interface SessionUnreadStateStore {
 }
 
 export class SessionUnreadTracker {
+  private readonly abortedRuns = new Map<string, boolean>();
+
   constructor(
     private readonly store: SessionUnreadStateStore,
     private readonly activity: SessionActivity,
@@ -109,11 +111,13 @@ export class SessionUnreadTracker {
     if (sessionFile) this.activity.noteEvent(sessionFile, data.event);
     const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
     if (!sessionId) return;
+    if (data.event?.type === "agent_start") this.abortedRuns.set(sessionId, false);
+    if (data.event?.type === "agent_end") this.abortedRuns.set(sessionId, Boolean(data.event.aborted));
     if (data.event?.type === "agent_start" || data.event?.type === "compaction_start") {
       this.update(this.store.markRead(sessionId), "Could not clear session unread state:");
       return;
     }
-    if (!this.shouldMark(data.event)) return;
+    if (!this.shouldMark(data.event, sessionId)) return;
     this.update(this.store.markUnread(sessionId, this.timestamp(data.event)), "Could not mark session unread:");
   }
 
@@ -129,9 +133,14 @@ export class SessionUnreadTracker {
     void operation.then((sessionUiState) => this.emit({ type: "session_ui_state_changed", sessionUiState })).catch((error) => console.warn(warning, error));
   }
 
-  private shouldMark(event: any): boolean {
+  private shouldMark(event: any, sessionId: string): boolean {
     if (!event || event.aborted || event.willRetry) return false;
-    return event.type === "agent_settled" || event.type === "compaction_end";
+    if (event.type === "agent_settled") {
+      const aborted = this.abortedRuns.get(sessionId);
+      this.abortedRuns.delete(sessionId);
+      return !aborted;
+    }
+    return event.type === "compaction_end";
   }
 
   private timestamp(event: any): string {

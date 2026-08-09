@@ -77,6 +77,7 @@ type FixtureServiceOptions = {
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: LocalSessionFactory["list"];
+  clientCount?: number;
 };
 
 async function fixtureService(options: FixtureServiceOptions = {}) {
@@ -104,7 +105,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
       finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined),
     },
     globalCwd: () => cwd,
-    clientCount: () => 0,
+    clientCount: () => options.clientCount ?? 0,
   };
   const service = new LocalSessionService(deps);
   const initial = await service.initialize();
@@ -284,6 +285,44 @@ describe("LocalSessionService contract", () => {
       { type: "session_stats_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, stats: (await service.stats(initial.sessionId)).stats },
       { type: "models_updated", sessionId: initial.sessionId, models: [] },
     ]);
+  });
+
+  it("carries extension interactions through the typed service request/respond contract", async () => {
+    const { service, fixture } = await fixtureService({ clientCount: 1 });
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    const answer = fixture.extensionOptions.uiContext.confirm("Allow?", "Run tool", { timeout: 1_000 });
+    const interaction = events.find((event) => event.type === "interaction");
+    expect(interaction).toMatchObject({
+      type: "interaction",
+      request: { source: "extension", kind: "confirm", payload: { title: "Allow?", message: "Run tool" }, timeout: 1_000 },
+    });
+    if (!interaction || interaction.type !== "interaction") throw new Error("Missing interaction request");
+    expect(service.respondInteraction({ id: interaction.request.id, confirmed: true })).toBe(true);
+    await expect(answer).resolves.toBe(true);
+  });
+
+  it("carries unknown harness events through the service and host wire unchanged", async () => {
+    const { service, initial } = await fixtureService();
+    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const wire: any[] = [];
+    const handler = createHostSessionEventHandler({
+      sessionForId: (id) => service.sessionForId(id),
+      projectState: (value) => service.projectState(value),
+      webUiEntries: (value) => service.webUiEntries(value),
+      sessionActivity: activity,
+      broadcast: (value) => wire.push(value),
+      markSessionUnreadCompleted: () => undefined,
+    });
+    handler({
+      type: "agent", sessionId: initial.sessionId, sessionFile: initial.sessionFile,
+      event: { type: "harness_event", harness: "future", payload: { type: "new_event", value: 1 } },
+    });
+    expect(wire[0]).toEqual({
+      type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile,
+      event: { type: "harness_event", harness: "future", payload: { type: "new_event", value: 1 } },
+    });
+    expect(wire[1]).toMatchObject({ type: "session_runtime_changed", sessionId: initial.sessionId });
   });
 
   it("marks unread and sends exactly one notification from the same final completion transition", async () => {

@@ -1,7 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
-import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
+import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import type { MessageDto } from "../../server/session/dto.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
@@ -65,6 +65,8 @@ export function createRealtime(options: {
   let incompleteResponseSessionId = "";
   let lastAssistantError: AssistantErrorInfo | null = null;
   let retryFinalError: AssistantErrorInfo | null = null;
+  let runAborted = false;
+  const abortedRuns = new Map<string, boolean>();
   let latestRetryAttempt: number | undefined;
   let latestRetryMaxAttempts: number | undefined;
   let sessionRefreshTimer: number | undefined;
@@ -383,15 +385,16 @@ export function createRealtime(options: {
     retryFinalError = null;
     const attemptText = retryAttemptText(info.attempt, info.maxAttempts);
     const delayText = formatRetryDelay(info.delayMs);
+    const retryTarget = event.source === "branchSummary" ? "branch summary" : event.source === "compaction" ? "compaction summary" : "assistant request";
     const retryText = `retrying${attemptText ? ` (${attemptText})` : ""}${delayText ? ` in ${delayText}` : ""}…`;
     status.markActivityProgress(`${info.text} — ${retryText}`, event.lastActivityAt);
     const card = ensureRetryErrorCard(info);
     setRuntimeCardKind(card, "running");
     setRuntimeErrorCardText(
       card,
-      "retrying assistant request",
+      `retrying ${retryTarget}`,
       `${info.text} · ${retryText}`,
-      `pi is retrying automatically after a transient provider error.${attemptText ? `\n${attemptText}` : ""}${delayText ? `\nBackoff: ${delayText}` : ""}`,
+      `pi is retrying ${retryTarget} automatically.${attemptText ? `\n${attemptText}` : ""}${delayText ? `\nBackoff: ${delayText}` : ""}`,
     );
   }
 
@@ -481,7 +484,7 @@ export function createRealtime(options: {
     expandRuntimeErrorCard(terminalFailureCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
-    appendTerminalFailureAction(actions, "Retry", "Retry the failed model request without adding a user message", (button) => resumeFromTerminalCard(button, "Retrying…"));
+    if (activeSessionState(state)?.capabilities?.retry !== false) appendTerminalFailureAction(actions, "Retry", "Retry the failed model request without adding a user message", (button) => resumeFromTerminalCard(button, "Retrying…"));
     appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", () => focusComposerWith("/model "));
     terminalFailureCard.append(actions);
     messages.scrollToBottom();
@@ -496,7 +499,7 @@ export function createRealtime(options: {
     expandRuntimeErrorCard(incompleteResponseCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
-    appendTerminalFailureAction(actions, "Continue", "Continue the incomplete turn without adding a user message", (button) => resumeFromTerminalCard(button, "Continuing…"));
+    if (activeSessionState(state)?.capabilities?.retry !== false) appendTerminalFailureAction(actions, "Continue", "Continue the incomplete turn without adding a user message", (button) => resumeFromTerminalCard(button, "Continuing…"));
     appendTerminalFailureAction(actions, "Switch model", "Use /model to switch providers or models", () => focusComposerWith("/model "));
     incompleteResponseCard.append(actions);
     messages.scrollToBottom();
@@ -564,6 +567,7 @@ export function createRealtime(options: {
         if ("name" in event) sessionState.applySnapshot({ sessionId: state.currentSessionId, sessionName: event.name });
         break;
       case "agent_start":
+        runAborted = false;
         clearTransientFailureUi();
         sessionState.patchRuntime(state.currentSessionId, {
           loaded: true,
@@ -576,9 +580,14 @@ export function createRealtime(options: {
         messages.resetStreamingAssistant();
         messages.beginStreamFollow();
         break;
+      case "message_start":
+        if (event.message?.role === "assistant") messages.beginStreamingAssistant();
+        break;
       case "message_update": {
         const deltaEvent = event.assistantMessageEvent;
-        if (deltaEvent?.type === "text_delta") messages.appendStreamingDelta(deltaEvent.delta || "");
+        if (deltaEvent?.type === "text_start") messages.startStreamingText(deltaEvent.contentIndex);
+        else if (deltaEvent?.type === "text_delta") messages.appendStreamingDelta(deltaEvent.delta || "", deltaEvent.contentIndex);
+        else if (deltaEvent?.type === "text_end") messages.endStreamingText(deltaEvent.content, deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_start") messages.startStreamingThinking(deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_delta") messages.appendStreamingThinkingDelta(deltaEvent.delta || "", deltaEvent.contentIndex);
         else if (deltaEvent?.type === "thinking_end") messages.endStreamingThinking(deltaEvent.content || deltaEvent.thinking, deltaEvent.contentIndex);
@@ -601,7 +610,7 @@ export function createRealtime(options: {
         status.markActivityProgress("waiting for assistant", event.lastActivityAt);
         break;
       case "queue_update":
-        sessionState.applySnapshot({ sessionId: state.currentSessionId, queue: { steering: event.steering, followUp: event.followUp } }, { activity: { kind: "preserve" } });
+        if (activeSessionState(state)?.capabilities?.queue !== false) sessionState.applySnapshot({ sessionId: state.currentSessionId, queue: { steering: event.steering, followUp: event.followUp } }, { activity: { kind: "preserve" } });
         break;
       case "message_end": {
         const deliveredMessage = messageFromEvent(event.message);
@@ -633,6 +642,7 @@ export function createRealtime(options: {
         updateRetryEnd(event);
         break;
       case "agent_end": {
+        runAborted = Boolean(event.aborted);
         if (eventWillRetry(event)) {
           sessionState.patchRuntime(state.currentSessionId, { isRetrying: true }, { kind: "progress", label: "waiting to retry", lastActivityAt: event.lastActivityAt });
           break;
@@ -688,6 +698,7 @@ export function createRealtime(options: {
         break;
       }
       case "thinking_level_changed":
+        if (activeSessionState(state)?.capabilities?.thinkingLevel === false) break;
         sessionState.applySnapshot({ sessionId: state.currentSessionId, thinkingLevel: event.level || state.currentThinkingLevel });
         elements.thinkingSelectEl.value = state.currentThinkingLevel;
         models.updateSummary();
@@ -780,7 +791,7 @@ export function createRealtime(options: {
         status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
         return;
       }
-      if (data.type === "interaction_request") {
+      if (data.type === "interaction_request" || data.type === "interaction_effect") {
         handleInteractionRequest(data);
         return;
       }
@@ -818,9 +829,10 @@ export function createRealtime(options: {
       if (data.type === "agent_event") {
         const eventSessionKey = String(data.sessionId || data.sessionFile || "");
         noteRuntimeEvent(eventSessionKey, data.event);
-        if (!isReplay && data.event?.type === "agent_settled") {
-          playCompletionAlerts();
-        }
+        if (data.event?.type === "agent_start") abortedRuns.set(eventSessionKey, false);
+        if (data.event?.type === "agent_end") abortedRuns.set(eventSessionKey, Boolean(data.event.aborted));
+        if (!isReplay && data.event?.type === "agent_settled" && !abortedRuns.get(eventSessionKey)) playCompletionAlerts();
+        if (data.event?.type === "agent_settled") abortedRuns.delete(eventSessionKey);
         if (!isReplay && data.event?.type === "session_info_changed") {
           sessions.updateSessionName(String(data.sessionId || ""), String(data.event.name || ""));
         } else if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
