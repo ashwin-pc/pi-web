@@ -149,6 +149,48 @@ body.artifactPreviewDocument {
   background: transparent;
   padding: 0;
 }
+.htmlPreview {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  margin: 0 0 .8em;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 5px 18px rgba(0,0,0,.12);
+}
+.htmlPreviewFrame {
+  display: block;
+  width: 100%;
+  height: 160px;
+  max-height: min(70vh, 720px);
+  border: 0;
+  background: #fff;
+}
+.htmlPreviewToggle {
+  position: absolute;
+  z-index: 1;
+  top: 7px;
+  right: 7px;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid rgba(0,0,0,.18);
+  border-radius: 6px;
+  background: rgba(255,255,255,.92);
+  color: #27272a;
+  font-size: 11px;
+  opacity: 0;
+  transition: opacity .15s ease;
+}
+.htmlPreview:hover .htmlPreviewToggle,
+.htmlPreview:focus-within .htmlPreviewToggle { opacity: 1; }
+.htmlPreview > pre[hidden], .htmlPreviewFrame[hidden] { display: none; }
+.htmlPreview--source { width: 100% !important; overflow: visible; border: 0; background: transparent; box-shadow: none; }
+.htmlPreview--source > pre { margin: 0; padding-right: 72px; }
+.htmlPreview--compact { margin-right: .5em; border-color: color-mix(in srgb, var(--border) 72%, transparent); box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+.htmlPreview--compact .htmlPreviewToggle { top: 4px; right: 4px; }
+
 .mermaidDiagram {
   position: relative;
   margin: 0 0 .8em;

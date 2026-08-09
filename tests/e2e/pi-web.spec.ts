@@ -1292,6 +1292,30 @@ test.describe("assistant markdown rendering", () => {
     await expect(latestAssistant.locator(".body")).not.toContainText("**bold**");
   });
 
+  test("renders sandboxed interactive HTML previews with sizing and a source toggle", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return html preview");
+    await page.locator("#primaryButton").click();
+
+    const assistant = page.locator(".message.assistant", { hasText: "Interactive result" }).last();
+    const preview = assistant.locator(".htmlPreview");
+    const frame = preview.locator("iframe");
+    await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame.contentFrame().locator("#ran")).toHaveText("script ran");
+    await expect.poll(() => preview.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(300);
+    await expect(preview).toHaveClass(/htmlPreview--compact/);
+
+    const initialHeight = await frame.evaluate((element) => element.getBoundingClientRect().height);
+    await frame.contentFrame().getByRole("button", { name: "Toggle" }).click();
+    await expect.poll(() => frame.evaluate((element) => element.getBoundingClientRect().height)).toBeGreaterThan(initialHeight + 100);
+    await expect(preview).not.toHaveClass(/htmlPreview--compact/);
+
+    await preview.getByRole("button", { name: "Show HTML source" }).click();
+    await expect(preview.locator("pre code.language-html")).toBeVisible();
+    await preview.getByRole("button", { name: "Show interactive preview" }).click();
+    await expect(frame).toBeVisible();
+  });
+
   test("renders Mermaid code fences as diagrams", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("please return mermaid");

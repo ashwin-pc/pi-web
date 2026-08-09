@@ -15,6 +15,9 @@ const maxCachedMarkdown = 160;
 const mermaidSvgCache = new Map<string, string>();
 const maxCachedMermaid = 32;
 const maxMermaidSourceLength = 20_000;
+const maxInlineHtmlSourceLength = 50_000;
+const inlineHtmlFrames = new Set<HTMLIFrameElement>();
+let inlineHtmlListenerAttached = false;
 let mermaidImportPromise: Promise<typeof import("mermaid")> | null = null;
 let mermaidRenderCounter = 0;
 const allowedMarkdownTags = new Set([
@@ -257,6 +260,72 @@ function enhanceMermaid(root: ParentNode) {
   }
 }
 
+function ensureInlineHtmlResizeListener() {
+  if (inlineHtmlListenerAttached) return;
+  inlineHtmlListenerAttached = true;
+  window.addEventListener("message", (event) => {
+    for (const frame of inlineHtmlFrames) {
+      if (!frame.isConnected) {
+        inlineHtmlFrames.delete(frame);
+        continue;
+      }
+      if (event.source !== frame.contentWindow) continue;
+      const data = event.data as { type?: unknown; height?: unknown; width?: unknown } | null;
+      if (data?.type !== "pi-web-html-preview-size" || typeof data.height !== "number" || typeof data.width !== "number") return;
+      const container = frame.closest<HTMLElement>(".htmlPreview");
+      if (!container) return;
+      frame.style.height = `${Math.min(Math.max(Math.ceil(data.height), 1), 720)}px`;
+      container.style.width = `${Math.max(Math.ceil(data.width), 1)}px`;
+      container.classList.toggle("htmlPreview--compact", data.height <= 140);
+      return;
+    }
+  });
+}
+
+function inlineHtmlReporter() {
+  return `<script>(()=>{const report=()=>{const b=document.body,e=document.documentElement,cs=getComputedStyle(b);let right=0,bottom=0;for(const n of b.children){const r=n.getBoundingClientRect();right=Math.max(right,r.right);bottom=Math.max(bottom,r.bottom)}const width=Math.ceil(right+parseFloat(cs.marginRight||'0')+parseFloat(cs.paddingRight||'0'));parent.postMessage({type:'pi-web-html-preview-size',height:Math.ceil(bottom+parseFloat(cs.marginBottom||'0')+parseFloat(cs.paddingBottom||'0')),width},'*')};addEventListener('load',report);new ResizeObserver(report).observe(document.documentElement);new MutationObserver(report).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});report()})()<\/script>`;
+}
+
+function enhanceInlineHtmlPreviews(root: ParentNode) {
+  for (const code of Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-html-preview"))) {
+    const pre = code.closest<HTMLPreElement>("pre");
+    if (!pre || pre.dataset.htmlPreviewEnhanced) continue;
+    const source = code.textContent || "";
+    if (!source.trim() || source.length > maxInlineHtmlSourceLength) continue;
+    pre.dataset.htmlPreviewEnhanced = "true";
+    code.classList.remove("language-html-preview");
+    code.classList.add("language-html");
+    pre.hidden = true;
+
+    const container = document.createElement("div");
+    container.className = "htmlPreview";
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "htmlPreviewToggle";
+    toggle.textContent = "Source";
+    toggle.title = "Show HTML source";
+    toggle.setAttribute("aria-label", toggle.title);
+    const frame = document.createElement("iframe");
+    frame.className = "htmlPreviewFrame";
+    frame.title = "Interactive HTML preview";
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.srcdoc = source + inlineHtmlReporter();
+    toggle.addEventListener("click", () => {
+      const showingSource = pre.hidden;
+      pre.hidden = !showingSource;
+      frame.hidden = showingSource;
+      container.classList.toggle("htmlPreview--source", showingSource);
+      toggle.textContent = showingSource ? "Preview" : "Source";
+      toggle.title = showingSource ? "Show interactive preview" : "Show HTML source";
+      toggle.setAttribute("aria-label", toggle.title);
+    });
+    pre.replaceWith(container);
+    container.append(frame, pre, toggle);
+    inlineHtmlFrames.add(frame);
+    ensureInlineHtmlResizeListener();
+  }
+}
+
 function enhanceCodeBlocks(root: ParentNode) {
   for (const pre of Array.from(root.querySelectorAll<HTMLPreElement>("pre"))) {
     if (pre.querySelector(".copyCode")) continue;
@@ -490,6 +559,7 @@ export function renderStandaloneMarkdown(body: HTMLElement, text: string) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
   enhanceMermaid(body);
+  enhanceInlineHtmlPreviews(body);
   enhanceCodeBlocks(body);
   enhanceImages(body);
   enhanceArtifactLinks(body);
