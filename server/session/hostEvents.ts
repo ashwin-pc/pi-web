@@ -73,13 +73,13 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
 
   return (serviceEvent: SessionServiceEvent): void => {
     switch (serviceEvent.type) {
-      case "pi": {
+      case "agent": {
         const target = deps.sessionForId(serviceEvent.sessionId);
         const enriched = target
           ? deps.sessionActivity.enrichEvent(target, serviceEvent.event)
           : { event: serviceEvent.event, sessionId: serviceEvent.sessionId, sessionFile: serviceEvent.sessionFile };
         deps.broadcast({
-          type: "pi_event",
+          type: "agent_event",
           sessionId: enriched.sessionId,
           sessionFile: enriched.sessionFile,
           event: enriched.event,
@@ -94,6 +94,16 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         });
         return;
       }
+      case "entry":
+        deps.broadcast({
+          type: "committed_message",
+          sessionId: serviceEvent.sessionId,
+          sessionFile: serviceEvent.sessionFile,
+          entryId: serviceEvent.entryId,
+          ...(serviceEvent.parentId ? { parentId: serviceEvent.parentId } : {}),
+          kind: serviceEvent.entryKind,
+        });
+        return;
       case "committed":
         deps.broadcast({
           type: "committed_message",

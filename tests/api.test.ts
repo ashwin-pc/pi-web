@@ -392,8 +392,8 @@ describe("pi-web mock API", () => {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ message: "after correlation reset" }),
     });
-    await waitForCondition(() => events.some((event) => event.type === "pi_event" && event.event?.type === "message_end" && event.event?.message?.content === "after correlation reset"));
-    const nextUserEvent = events.find((event) => event.type === "pi_event" && event.event?.message?.content === "after correlation reset");
+    await waitForCondition(() => events.some((event) => event.type === "agent_event" && event.event?.type === "message_end" && event.event?.message?.content === "after correlation reset"));
+    const nextUserEvent = events.find((event) => event.type === "agent_event" && event.event?.message?.content === "after correlation reset");
     expect(nextUserEvent).not.toHaveProperty("clientMessageId");
     expect(nextUserEvent).not.toHaveProperty("sourceClientId");
     ws.close();

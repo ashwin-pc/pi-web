@@ -14,6 +14,7 @@ export class RealtimeHub {
     private readonly maxMissedHeartbeats: number,
     private readonly onBroadcast: (value: unknown) => void,
     private readonly maxEventLogSize = 1000,
+    private readonly onClientCountChanged?: (count: number) => void,
   ) {
     if (heartbeatMs > 0) {
       const timer = setInterval(() => this.checkHeartbeats(), heartbeatMs);
@@ -49,6 +50,7 @@ export class RealtimeHub {
     client.missedPongs = 0;
     client.on("pong", () => { client.missedPongs = 0; });
     this.clients.add(client);
+    this.onClientCountChanged?.(this.clients.size);
 
     const latestSeq = this.latestSeq;
     const oldestSeq = this.eventLog[0]?.seq || this.nextSeq;
@@ -61,14 +63,18 @@ export class RealtimeHub {
         }
       }
     }
-    client.on("close", () => this.clients.delete(client));
+    client.on("close", () => this.deleteClient(client));
     return latestSeq;
+  }
+
+  private deleteClient(client: RealtimeSocket): void {
+    if (this.clients.delete(client)) this.onClientCountChanged?.(this.clients.size);
   }
 
   private checkHeartbeats(): void {
     for (const client of this.clients) {
       if (client.readyState === client.CLOSED || client.readyState === client.CLOSING) {
-        this.clients.delete(client);
+        this.deleteClient(client);
         continue;
       }
       if (client.readyState !== client.OPEN) continue;
@@ -98,7 +104,7 @@ export class SessionUnreadTracker {
   handle(value: unknown): void {
     if (!value || typeof value !== "object") return;
     const data = value as Record<string, any>;
-    if (data.type !== "pi_event") return;
+    if (data.type !== "agent_event") return;
     const sessionFile = typeof data.sessionFile === "string" ? data.sessionFile.trim() : "";
     if (sessionFile) this.activity.noteEvent(sessionFile, data.event);
     const sessionId = typeof data.sessionId === "string" ? data.sessionId.trim() : "";
@@ -125,7 +131,7 @@ export class SessionUnreadTracker {
 
   private shouldMark(event: any): boolean {
     if (!event || event.aborted || event.willRetry) return false;
-    return event.type === "agent_end" || event.type === "compaction_end";
+    return event.type === "agent_settled" || event.type === "compaction_end";
   }
 
   private timestamp(event: any): string {

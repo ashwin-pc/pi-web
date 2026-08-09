@@ -220,7 +220,7 @@ export function createMockHarness(options: MockSessionOptions) {
       const lastActivityAt = activityAt === false ? runtimeLastActivityAt : markRuntimeActivity(activityAt || new Date().toISOString());
       const committedMessage = event.type === "message_end" ? simplifyMessage(event.message) : undefined;
       broadcast({
-        type: "pi_event",
+        type: "agent_event",
         sessionId: mockSession.sessionId,
         sessionFile: mockSession.sessionFile,
         event: lastActivityAt ? { ...event, lastActivityAt } : event,
@@ -246,7 +246,7 @@ export function createMockHarness(options: MockSessionOptions) {
       clearRuntimeTimestamps();
       if (compactionAbortRequested) {
         broadcastRuntimeChanged();
-        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", aborted: true } });
+        broadcast({ type: "agent_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", aborted: true } });
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
         return undefined;
       }
@@ -256,7 +256,7 @@ export function createMockHarness(options: MockSessionOptions) {
       };
       appendMockMessage({ role: "compactionSummary", content: result.summary, tokensBefore: result.tokensBefore, summary: result.summary, timestamp: new Date().toISOString() } as any);
       broadcastRuntimeChanged();
-      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", result } });
+      broadcast({ type: "agent_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "compaction_end", reason: "manual", result } });
       if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       return result;
     }
@@ -356,7 +356,8 @@ export function createMockHarness(options: MockSessionOptions) {
       mockSession.isStreaming = false;
       clearRuntimeTimestamps();
       broadcastRuntimeChanged();
-      broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
+      broadcast({ type: "agent_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end", willRetry: false } });
+      broadcast({ type: "agent_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_settled" } });
       if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
     }
 
@@ -411,7 +412,7 @@ export function createMockHarness(options: MockSessionOptions) {
       setSessionName: (name: string) => {
         const info = mockSessions.find((item) => item.path === mockSession.sessionFile);
         if (info) info.name = name.trim();
-        broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "session_info_changed", name: name.trim() || undefined } });
+        broadcast({ type: "agent_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "session_info_changed", name: name.trim() || undefined } });
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       },
       setModel: async (model: unknown) => { mockSession.model = model as typeof mockModel; },
@@ -684,7 +685,8 @@ export function createMockHarness(options: MockSessionOptions) {
         clearRuntimeTimestamps();
         broadcastRuntimeChanged();
         if (!withoutAgentEnd) {
-          broadcast({ type: "pi_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end" } });
+          broadcast({ type: "agent_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_end", willRetry: false } });
+          broadcast({ type: "agent_event", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, event: { type: "agent_settled" } });
         }
         while (followUpQueue.length) deliverQueuedMessage(followUpQueue);
         if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });

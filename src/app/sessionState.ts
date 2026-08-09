@@ -162,6 +162,7 @@ export function reduceSessionSnapshot(state: AppState, value: unknown, fallbackS
   else if (completeSnapshot) next.model = undefined;
   if (hasOwn(data, "thinkingLevel")) next.thinkingLevel = optionalString(data.thinkingLevel) || "off";
   if (hasOwn(data, "thinkingLevels")) next.thinkingLevels = stringArray(data.thinkingLevels);
+  if (hasOwn(data, "capabilities")) next.capabilities = recordValue(data.capabilities) as SessionViewState["capabilities"];
   if (hasOwn(data, "stats")) next.stats = recordValue(data.stats) as SessionStats | undefined;
   if (hasOwn(data, "queue")) {
     const queue = recordValue(data.queue);

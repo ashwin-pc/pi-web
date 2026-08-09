@@ -1,3 +1,5 @@
+import type { AgentEventDto } from "./piEventMap.js";
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
@@ -20,12 +22,27 @@ export interface SessionStatsDto {
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
 
+export interface HarnessCapabilitiesDto {
+  harness: string;
+  queue: boolean;
+  steering: boolean;
+  followUp: boolean;
+  thinkingLevel: boolean;
+  tree: boolean;
+  compaction: boolean;
+  retry: boolean;
+  bash: boolean;
+  extensions: boolean;
+  interactions: boolean;
+}
+
 export interface BaseSessionStateDto {
   cwd: string;
   sessionFile: string;
   sessionId: string;
   sessionName?: string;
   sessionTitle: string;
+  capabilities: HarnessCapabilitiesDto;
   isStreaming: boolean;
   isRetrying: boolean;
   isCompacting: boolean;
@@ -149,7 +166,8 @@ export interface DeleteSessionResultDto {
 }
 
 export type SessionServiceEvent =
-  | { type: "pi"; sessionId: string; sessionFile: string; event: JsonValue; clientMessageId?: string; sourceClientId?: string }
+  | { type: "agent"; sessionId: string; sessionFile: string; event: AgentEventDto; clientMessageId?: string; sourceClientId?: string }
+  | { type: "entry"; sessionId: string; sessionFile: string; entryId: string; parentId?: string; entryKind: string }
   | { type: "state"; state: BaseSessionStateDto; includeThinkingLevels?: boolean }
   | { type: "committed"; sessionId: string; sessionFile: string; message: MessageDto }
   | { type: "stats"; sessionId: string; sessionFile: string; stats: SessionStatsDto }

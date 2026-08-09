@@ -1,0 +1,232 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`pi event wire mapping > maps the recorded pi event surface without cumulative streaming messages 1`] = `
+[
+  {
+    "event": {
+      "type": "agent_start",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "type": "agent_end",
+      "willRetry": false,
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "type": "agent_settled",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "type": "turn_start",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "message": {
+        "role": "assistant",
+        "timestamp": "1",
+      },
+      "toolResults": [
+        {
+          "role": "toolResult",
+          "timestamp": "2",
+        },
+      ],
+      "type": "turn_end",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "message": {
+        "role": "assistant",
+        "timestamp": "1",
+      },
+      "type": "message_start",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "assistantMessageEvent": {
+        "contentIndex": 0,
+        "delta": "hi",
+        "type": "text_delta",
+      },
+      "type": "message_update",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "message": {
+        "content": [
+          {
+            "text": "hello",
+            "type": "text",
+          },
+        ],
+        "role": "assistant",
+        "timestamp": 1,
+      },
+      "type": "message_end",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "args": {
+        "path": "a",
+      },
+      "toolCallId": "call-1",
+      "toolName": "read",
+      "type": "tool_execution_start",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "args": {
+        "path": "a",
+      },
+      "partialResult": {
+        "content": [
+          {
+            "text": "partial",
+            "type": "text",
+          },
+        ],
+      },
+      "toolCallId": "call-1",
+      "toolName": "read",
+      "type": "tool_execution_update",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "isError": false,
+      "result": {
+        "content": [
+          {
+            "text": "done",
+            "type": "text",
+          },
+        ],
+      },
+      "toolCallId": "call-1",
+      "toolName": "read",
+      "type": "tool_execution_end",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "followUp": [
+        "two",
+      ],
+      "steering": [
+        "one",
+      ],
+      "type": "queue_update",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "attempt": 1,
+      "delayMs": 100,
+      "errorMessage": "busy",
+      "maxAttempts": 3,
+      "type": "auto_retry_start",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "attempt": 1,
+      "success": true,
+      "type": "auto_retry_end",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "attempt": 1,
+      "delayMs": 100,
+      "errorMessage": "busy",
+      "maxAttempts": 2,
+      "type": "summarization_retry_scheduled",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "reason": "manual",
+      "source": "compaction",
+      "type": "summarization_retry_attempt_start",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "type": "summarization_retry_finished",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "reason": "manual",
+      "type": "compaction_start",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "aborted": false,
+      "reason": "manual",
+      "result": {
+        "summary": "short",
+      },
+      "type": "compaction_end",
+      "willRetry": false,
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "name": "Named",
+      "type": "session_info_changed",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "level": "high",
+      "type": "thinking_level_changed",
+    },
+    "kind": "event",
+  },
+  {
+    "event": {
+      "delta": "output",
+      "id": "bash-1",
+      "type": "bash_execution_update",
+    },
+    "kind": "event",
+  },
+  {
+    "entryId": "entry-1",
+    "entryKind": "message",
+    "kind": "entry",
+    "parentId": "parent-1",
+  },
+]
+`;

@@ -374,6 +374,20 @@ export type SessionInfo = {
 
 export type SessionRecord = Partial<Omit<SessionInfo, "id">> & { id: string };
 
+export type HarnessCapabilities = {
+  harness: string;
+  queue: boolean;
+  steering: boolean;
+  followUp: boolean;
+  thinkingLevel: boolean;
+  tree: boolean;
+  compaction: boolean;
+  retry: boolean;
+  bash: boolean;
+  extensions: boolean;
+  interactions: boolean;
+};
+
 export type SessionQueueState = {
   steering: string[];
   followUp: string[];
@@ -387,6 +401,7 @@ export type SessionViewState = SessionRecord & {
   model?: SessionModel;
   thinkingLevel?: string;
   thinkingLevels?: string[];
+  capabilities?: HarnessCapabilities;
   stats?: SessionStats;
   queue?: SessionQueueState;
   webContributions?: unknown;

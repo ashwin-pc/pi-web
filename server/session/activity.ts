@@ -146,9 +146,8 @@ export class SessionActivity {
     if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
       return this.runtimeForPath(path, { isRetrying: true });
     }
-    if (event?.type === "agent_end" || event?.type === "compaction_end") {
-      // AgentSession may still expose stale streaming state while delivering its
-      // terminal event. Only an outer work lease should keep that event running.
+    if (event?.type === "agent_settled") {
+      // pi emits this only after the run and all post-run continuations finish.
       return this.hasActiveRetryForPath(path) ? this.runtimeForPath(path) : this.stoppedRuntimeForPath(path);
     }
     return this.runtimeForPath(path);
@@ -175,7 +174,7 @@ export class SessionActivity {
         this.runtimeLastActivityAts.set(sessionFile, this.activityTimestamp(event, startedAt));
         return;
       }
-      case "agent_end":
+      case "agent_settled":
       case "compaction_end":
         if (!event.willRetry) {
           this.runtimeStartedAts.delete(sessionFile);
@@ -193,7 +192,7 @@ export class SessionActivity {
     let eventForClient = e;
     if (e?.type === "agent_start" || e?.type === "compaction_start") {
       eventForClient = { ...e, startedAt: this.ensureStarted(targetSession, typeof e.startedAt === "string" ? e.startedAt : undefined) };
-    } else if ((e?.type === "agent_end" || e?.type === "compaction_end") && !e.willRetry) {
+    } else if ((e?.type === "agent_settled" || e?.type === "compaction_end") && !e.willRetry) {
       this.clearStarted(targetSession, sessionFile);
     }
 

@@ -1526,14 +1526,14 @@ test.describe("context compaction", () => {
 
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "pi_event", event: { type: "compaction_start", reason: "manual" } }));
+    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "agent_event", event: { type: "compaction_start", reason: "manual" } }));
 
     await expect(page.locator("#contextMeter")).toHaveClass(/compacting/);
     await expect(page.locator("#contextMeterLabel")).toHaveText("compacting");
     await expect(page.locator(".message.system.compaction")).toHaveCount(0);
 
     expect(abortRequested).toBe(false);
-    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "pi_event", event: { type: "compaction_end", reason: "manual", aborted: true } }));
+    await page.evaluate(() => (window as any).__piWebSockets.at(-1).emit({ type: "agent_event", event: { type: "compaction_end", reason: "manual", aborted: true } }));
     const compaction = page.locator(".message.system.compaction").last();
     await expect(compaction).toContainText("Compaction cancelled.");
     await expect(page.locator("#contextMeter")).not.toHaveClass(/compacting/);

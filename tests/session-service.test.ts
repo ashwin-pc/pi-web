@@ -120,9 +120,12 @@ describe("LocalSessionService contract", () => {
     const created = await service.create(initial.sessionId);
     await service.prompt(created.sessionId, { message: "hello", mode: "steer", images: [] });
 
-    expect((await service.state(created.sessionId)).sessionId).toBe(created.sessionId);
+    expect(await service.state(created.sessionId)).toMatchObject({
+      sessionId: created.sessionId,
+      capabilities: { harness: "pi", queue: true, tree: true, interactions: true },
+    });
     expect(await service.messages(created.sessionId)).toContainEqual(expect.objectContaining({ role: "user", text: "hello" }));
-    expect(events.map((event) => event.type)).toContain("pi");
+    expect(events.map((event) => event.type)).toContain("agent");
     expect(events.map((event) => event.type)).toContain("stats");
     expect(events).toContainEqual(expect.objectContaining({
       type: "committed",
@@ -152,7 +155,7 @@ describe("LocalSessionService contract", () => {
       service.open(initial.sessionId), service.create(initial.sessionId),
     ]);
     for (const result of results) expect(jsonRoundTrip(result)).toStrictEqual(result);
-    expect(events.map((event) => event.type)).toEqual(["pi", "state", "pi", "stats", "models"]);
+    expect(events.map((event) => event.type)).toEqual(["agent", "state", "agent", "stats", "models"]);
     for (const event of events) expect(jsonRoundTrip(event)).toStrictEqual(event);
   });
 
@@ -246,7 +249,7 @@ describe("LocalSessionService contract", () => {
     const firstActivityAt = "2026-02-01T00:00:01.000Z";
     fixture.emit({ type: "agent_start", startedAt, lastActivityAt: firstActivityAt });
     expect(wire).toEqual([
-      { type: "pi_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "agent_start", startedAt, lastActivityAt: firstActivityAt } },
+      { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "agent_start", startedAt, lastActivityAt: firstActivityAt } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
     ]);
 
@@ -254,7 +257,7 @@ describe("LocalSessionService contract", () => {
     fixture.emit({ type: "session_info_changed", name: "Renamed" });
     const { thinkingLevels: _thinkingLevels, ...stateWithoutThinkingLevels } = service.projectState(initial);
     expect(wire).toEqual([
-      { type: "pi_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "session_info_changed", name: "Renamed" } },
+      { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "session_info_changed", name: "Renamed" } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
       {
         type: "state_changed",
@@ -272,7 +275,7 @@ describe("LocalSessionService contract", () => {
     fixture.emit({ type: "message_end", message, timestamp: messageAt });
     expect(wire).toEqual([
       {
-        type: "pi_event",
+        type: "agent_event",
         sessionId: initial.sessionId,
         sessionFile: initial.sessionFile,
         event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt },
@@ -334,6 +337,23 @@ describe("LocalSessionService contract", () => {
 });
 
 describe("LocalSessionService standalone lifecycle", () => {
+  it("keeps agent_end running and uses agent_settled as the idle boundary", async () => {
+    const { service, fixture, initial } = await fixtureService();
+    const activity = new SessionActivity(
+      (path) => service.sessionForPath(path),
+      (path) => service.hasActiveWorkForPath(path),
+      (path) => service.hasActiveRetryForPath(path),
+    );
+    initial.isStreaming = true;
+    fixture.emit({ type: "agent_start" });
+    fixture.emit({ type: "agent_end", messages: [], willRetry: false });
+    expect(activity.runtimeForEvent(initial.sessionFile, { type: "agent_end", willRetry: false })).toMatchObject({ isRunning: true });
+
+    initial.isStreaming = false;
+    fixture.emit({ type: "agent_settled" });
+    expect(activity.runtimeForEvent(initial.sessionFile, { type: "agent_settled" })).toMatchObject({ isRunning: false });
+  });
+
   it("reports a gated retry as running, rejects a concurrent retry, and settles once", async () => {
     const { service, initial } = await fixtureService();
     let releaseRetry!: () => void;
