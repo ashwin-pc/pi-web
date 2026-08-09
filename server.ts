@@ -340,14 +340,15 @@ function additionalExtensionPaths(cwd = piCwd) {
 async function transferCurrentTabUiState(oldSessionId: string, newSessionId: string, _newLabel: string, cwd: string) {
   if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return sessionUiStateStore.read();
   const current = await sessionUiStateStore.read();
-  const oldPinnedIndex = current.pinnedSessions.findIndex((item) => item.id === oldSessionId);
+  const oldLaneIndex = current.lanes.findIndex((item) => item.sessionId === oldSessionId);
   const oldMarker = current.sessionMarkers.find((item) => item.sessionId === oldSessionId);
   const hasUnreadState = current.sessionUnreadStates.some((item) => item.sessionId === oldSessionId || item.sessionId === newSessionId);
-  if (oldPinnedIndex === -1 && !oldMarker && !hasUnreadState) return current;
+  if (oldLaneIndex === -1 && !oldMarker && !hasUnreadState) return current;
 
-  const pinnedSessions = current.pinnedSessions.filter((item) => item.id !== oldSessionId && item.id !== newSessionId);
-  if (oldPinnedIndex !== -1) {
-    pinnedSessions.splice(Math.min(oldPinnedIndex, pinnedSessions.length), 0, { id: newSessionId, cwd });
+  const lanes = current.lanes.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
+  if (oldLaneIndex !== -1) {
+    const oldLane = current.lanes[oldLaneIndex]!;
+    lanes.splice(Math.min(oldLaneIndex, lanes.length), 0, { ...oldLane, sessionId: newSessionId, cwd });
   }
 
   const sessionMarkers = current.sessionMarkers.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
@@ -356,7 +357,7 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   }
   const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
 
-  const next = await sessionUiStateStore.write({ ...current, pinnedSessions, sessionMarkers, sessionUnreadStates });
+  const next = await sessionUiStateStore.write({ ...current, lanes, sessionMarkers, sessionUnreadStates });
   broadcast({ type: "session_ui_state_changed", sessionUiState: next });
   return next;
 }

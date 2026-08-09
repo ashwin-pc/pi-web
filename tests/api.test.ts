@@ -303,7 +303,7 @@ describe("pi-web mock API", () => {
   it("persists and returns server session UI state", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
-    expect(initial.sessionUiState.pinnedSessions).toEqual([]);
+    expect(initial.sessionUiState.lanes).toEqual([]);
     expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
@@ -324,7 +324,7 @@ describe("pi-web mock API", () => {
     expect(patchedRes.status).toBe(200);
     const patched = await patchedRes.json();
     expect(patched.sessionUiState).toMatchObject({
-      pinnedSessions: [{ id: "mock-current", cwd: "." }],
+      lanes: [{ sessionId: "mock-current", lane: "pinned", cwd: ".", since: expect.any(String) }],
       pinnedFolders: ["/tmp/pi-web"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],

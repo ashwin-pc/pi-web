@@ -1170,3 +1170,27 @@ body.hasPinnedSessions .app {
   border-bottom: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
   border-bottom-left-radius: 6px;
 }
+/* Session lanes */
+.sessionLayersButton { flex:0 0 38px; align-self:stretch; border:0; border-right:1px solid var(--border); background:var(--bg); color:var(--muted); display:grid; place-items:center; cursor:pointer; position:sticky; left:0; z-index:4 }
+.sessionLayersButton svg,.sessionLaneTerritory svg,.sessionLaneFilter svg,.sessionLaneBadge svg { width:16px;height:16px;display:block }
+.sessionLayersButton:hover,.sessionLayersButton.cur { color:var(--accent,#d8a657); background:color-mix(in srgb,var(--accent,#d8a657) 8%,var(--bg)) }
+.sessionLaneTerritory { min-width:112px; height:100%; border:0; border-top:2px solid transparent; border-right:1px solid var(--border); background:var(--bg); color:var(--muted); display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;font:inherit }
+.sessionLaneTerritory:hover { background:var(--bg-hover) }.sessionLaneTerritory.cur { border-top-color:var(--accent,#d8a657);color:var(--text) }
+.sessionBarTab.away { opacity:.62; filter:saturate(.6) }.sessionBarTab.away.active { opacity:.9 }
+.sessionLaneFilters { display:flex;align-items:center;gap:5px;padding:8px 10px 5px;position:sticky;top:0;z-index:3;background:var(--bg) }
+.sessionLaneFilter { border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:999px;min-height:27px;padding:3px 9px;display:flex;align-items:center;gap:5px;cursor:pointer;font:inherit }
+.sessionLaneFilter.selected { color:var(--text);border-color:color-mix(in srgb,var(--text) 42%,transparent);background:var(--bg-hover) }
+.sessionLaneBadge { flex:0 0 20px;color:var(--muted);display:grid;place-items:center }
+.sessionLaneNote { display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px }
+.sessionStaleBadge { color:#f07b72;border:1px solid color-mix(in srgb,#f07b72 50%,transparent);border-radius:999px;padding:1px 5px;font-size:9px;text-transform:uppercase;letter-spacing:.04em }
+.sessionFolderMatchCount { color:var(--muted);font-size:10px;margin-left:6px }
+@media(max-width:640px){.sessionLaneTerritory{min-width:0}.sessionLaneTerritory span{font-size:11px}.sessionLayersButton{flex-basis:34px}.sessionLaneFilters{overflow-x:auto}}
+.sessionDrawerFilters .sessionDrawerSearch { flex:1; width:100% }
+.sessionBucketFilters { margin-left:auto;display:flex;align-items:center;gap:7px;padding-left:8px }
+.sessionBucketFilterLabel { color:var(--muted);font-size:10px;margin-right:1px }
+.sessionBucketFilter { width:14px;height:14px;padding:0;border:2px solid transparent;border-radius:50%;background:var(--session-marker-color);cursor:pointer;opacity:.72;box-shadow:0 0 0 1px color-mix(in srgb,var(--text) 22%,transparent) }
+.sessionBucketFilter.selected { opacity:1;border-color:var(--bg);box-shadow:0 0 0 2px var(--text) }
+@media(max-width:420px){.sessionLaneFilters{gap:4px}.sessionLaneFilter{padding-inline:7px}.sessionBucketFilters{gap:5px}.sessionBucketFilter{width:10px;height:10px}}
+/* Drawer filters override the global mobile touch-target sizing: the rail itself is the target area. */
+.sessionLaneFilters .sessionLaneFilter { min-height:26px !important;max-height:26px }
+.sessionLaneFilters .sessionBucketFilter { box-sizing:border-box;min-width:12px !important;max-width:12px;min-height:12px !important;max-height:12px;padding:0 !important;aspect-ratio:1;border-radius:50% }
