@@ -18,7 +18,10 @@ async function buildRecap(ctx: PiWebExtensionContext) {
   if (!messages.length) throw new Error("This session has no messages to recap yet");
   const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
   if (!auth.ok) throw new Error(auth.error);
-  const markdown = await generateSummary(messages, model, 4096, auth.apiKey, auth.headers, ctx.signal, RECAP_INSTRUCTIONS);
+  const headers = auth.headers
+    ? Object.fromEntries(Object.entries(auth.headers).filter((entry): entry is [string, string] => entry[1] !== null))
+    : undefined;
+  const markdown = await generateSummary(messages, model, 4096, auth.apiKey, headers, ctx.signal, RECAP_INSTRUCTIONS);
   return { markdown: markdown.trim() };
 }
 

@@ -183,8 +183,16 @@ export class ResilientResourceLoader implements ResourceLoader {
     return this.active.getSystemPrompt();
   }
 
+  getSystemPromptSource() {
+    return this.active.getSystemPromptSource();
+  }
+
   getAppendSystemPrompt() {
     return this.active.getAppendSystemPrompt();
+  }
+
+  getAppendSystemPromptSources() {
+    return this.active.getAppendSystemPromptSources();
   }
 
   extendResources(paths: Parameters<ResourceLoader["extendResources"]>[0]) {
