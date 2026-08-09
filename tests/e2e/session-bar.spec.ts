@@ -158,6 +158,44 @@ test.describe("session quick bar", () => {
     }).toEqual(["mock-older", "mock-current"]);
   });
 
+  test("touch hold and drag reorders pinned tabs", async ({ page }) => {
+    await seedServerPinned(
+      page,
+      { id: "mock-current" },
+      { id: "mock-older" },
+    );
+    await page.goto("/");
+
+    const tabs = page.locator(".sessionBarTab.pinned");
+    const draggedTab = tabs.filter({ hasText: "Current mock session" });
+    const targetTab = tabs.filter({ hasText: "Older mock session" });
+    await expect(draggedTab).toBeVisible();
+    await expect(targetTab).toBeVisible();
+    const firstBox = await draggedTab.boundingBox();
+    const secondBox = await targetTab.boundingBox();
+    expect(firstBox).not.toBeNull();
+    expect(secondBox).not.toBeNull();
+
+    const pointer = { pointerId: 7, pointerType: "touch", isPrimary: true };
+    const start = { clientX: firstBox!.x + firstBox!.width / 2, clientY: firstBox!.y + firstBox!.height / 2 };
+    await draggedTab.dispatchEvent("pointerdown", { ...pointer, ...start, button: 0 });
+    await page.waitForTimeout(350);
+    await page.locator("body").dispatchEvent("pointermove", {
+      ...pointer,
+      clientX: secondBox!.x + secondBox!.width * 0.75,
+      clientY: start.clientY,
+    });
+    await expect(draggedTab).toHaveClass(/\bdragging\b/);
+    await page.locator("body").dispatchEvent("pointerup", {
+      ...pointer,
+      clientX: secondBox!.x + secondBox!.width * 0.75,
+      clientY: start.clientY,
+    });
+
+    await expect(tabs.nth(0)).toContainText("Older mock session");
+    await expect(tabs.nth(1)).toContainText("Current mock session");
+  });
+
   test("shows unread indicators in tabs and session drawer rows", async ({ page }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [

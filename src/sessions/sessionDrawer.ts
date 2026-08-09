@@ -1302,6 +1302,8 @@ export function createSessions(options: {
       const startY = downEvent.clientY;
       let lastClientX = startX;
       let lifted = false;
+      let scrolling = false;
+      let longPressReady = false;
       let pressActive = true;
       let holdTimer: number | undefined;
       let autoScrollFrame: number | undefined;
@@ -1450,8 +1452,28 @@ export function createSessions(options: {
         lastClientX = event.clientX;
         const distance = Math.hypot(event.clientX - startX, event.clientY - startY);
         if (!lifted) {
-          if (downEvent.pointerType === "mouse" && distance > mouseLiftDistancePx) lift();
-          else if (downEvent.pointerType !== "mouse" && distance >= touchMoveTolerancePx) finishPress();
+          if (downEvent.pointerType === "mouse" && distance > mouseLiftDistancePx) {
+            lift();
+          } else if (downEvent.pointerType !== "mouse") {
+            const dx = event.clientX - startX;
+            const dy = event.clientY - startY;
+            if (longPressReady && distance > mouseLiftDistancePx) {
+              lift();
+            } else if (scrolling) {
+              event.preventDefault();
+              bar.scrollLeft = scrollLeft0 - dx;
+            } else if (distance >= touchMoveTolerancePx) {
+              if (Math.abs(dx) > Math.abs(dy)) {
+                scrolling = true;
+                scrollLeft0 = bar.scrollLeft;
+                if (holdTimer !== undefined) window.clearTimeout(holdTimer);
+                suppressTabClickUntil = performance.now() + 400;
+                event.preventDefault();
+              } else {
+                finishPress();
+              }
+            }
+          }
         }
         if (lifted) {
           event.preventDefault();
@@ -1465,6 +1487,12 @@ export function createSessions(options: {
         if (lifted) {
           updateDrag();
           settle(true);
+        } else if (longPressReady) {
+          suppressTabClickUntil = performance.now() + 400;
+          finishPress();
+          openSessionTabMenu(tab.dataset.sessionId!, tab);
+        } else if (scrolling) {
+          finishPress();
         } else {
           // Keep the old tab alive until the synthetic click following pointerup.
           finishPress(250);
@@ -1483,10 +1511,9 @@ export function createSessions(options: {
       if (downEvent.pointerType !== "mouse") {
         holdTimer = window.setTimeout(() => {
           if (!pressActive) return;
+          longPressReady = true;
           suppressTabClickUntil = performance.now() + 400;
           navigator.vibrate?.(10);
-          finishPress();
-          openSessionTabMenu(tab.dataset.sessionId!, tab);
         }, holdDelayMs);
       }
     });
