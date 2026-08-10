@@ -17,7 +17,7 @@ import { assertDirectory, createDirectory, listDirectories } from "./server/shar
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, WorkspaceFileError, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
 import type { PiWebSession } from "./server/types.js";
-import type { BaseSessionStateDto, SessionInfoDto } from "./server/session/dto.js";
+import type { BaseSessionStateDto, InteractionResponseDto, SessionInfoDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessionState, resolveWebSocketHelloSession, type DecoratedSessionState, type WireSessionState } from "./server/session/hostEvents.js";
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
@@ -273,11 +273,17 @@ const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 let realtimeHub: RealtimeHub;
 const unreadTracker = new SessionUnreadTracker(sessionUiStateStore, sessionActivity, (value) => realtimeHub.broadcast(value));
-realtimeHub = new RealtimeHub(websocketHeartbeatMs, websocketMaxMissedHeartbeats, (value) => unreadTracker.handle(value));
+realtimeHub = new RealtimeHub(
+  websocketHeartbeatMs,
+  websocketMaxMissedHeartbeats,
+  (value) => unreadTracker.handle(value),
+  1000,
+  (count) => { if (count === 0) sessionService?.cancelInteractions(); },
+);
 
 const mockPromptCorrelations = new Map<string, Array<{ clientMessageId: string; sourceClientId: string }>>();
 function broadcast(value: unknown) {
-  if (mockMode && value && typeof value === "object" && (value as any).type === "pi_event") {
+  if (mockMode && value && typeof value === "object" && (value as any).type === "agent_event") {
     const envelope = value as Record<string, any>;
     const eventMessage = envelope.event?.message;
     const raw = eventMessage?.message && typeof eventMessage.message === "object" ? eventMessage.message : eventMessage;
@@ -920,11 +926,12 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, ...await sessionService.executeShell(resolveSessionId(body.sessionId), command, Boolean(body.excludeFromContext)) });
       }
 
-      if (method === "POST" && url.pathname === "/api/extension-ui/respond") {
+      if (method === "POST" && url.pathname === "/api/interactions/respond") {
         const body = await readBody(req) as { id?: unknown } & Record<string, unknown>;
         const id = String(body.id || "").trim();
         if (!id) return sendJson(res, 400, { ok: false, error: "id is required" });
-        if (!sessionService.respondExtensionUi(id, body)) return sendJson(res, 404, { ok: false, error: "Extension UI request not found" });
+        const response = { ...body, id } as InteractionResponseDto;
+        if (!sessionService.respondInteraction(response)) return sendJson(res, 404, { ok: false, error: "Interaction request not found" });
         return sendJson(res, 200, { ok: true });
       }
 

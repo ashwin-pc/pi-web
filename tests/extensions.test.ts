@@ -171,6 +171,37 @@ describe("bundled extension path discovery", () => {
     expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed" });
   });
 
+  it("uses the generic interaction request/respond envelope for extension dialogs", async () => {
+    let ui: any;
+    const emitted: any[] = [];
+    const bridge = createWebUiBridge({
+      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    await bridge.bind({
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    });
+
+    const answer = ui.select("Choose", ["one", "two"], { timeout: 1_000 });
+    expect(emitted.at(-1)).toMatchObject({
+      type: "interaction_request", source: "extension", kind: "select",
+      payload: { title: "Choose", options: ["one", "two"] }, sessionId: "session",
+    });
+    expect(bridge.respond(emitted.at(-1).id, { value: "two" })).toBe(true);
+    await expect(answer).resolves.toBe("two");
+
+    const disconnected = ui.confirm("Allow?", "Run tool", { timeout: 1_000 });
+    bridge.cancelPendingInteractions();
+    await expect(disconnected).resolves.toBe(false);
+
+    vi.useFakeTimers();
+    const timedOut = ui.input("Secret", "value", { timeout: 25 });
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(timedOut).resolves.toBeUndefined();
+    vi.useRealTimers();
+  });
+
   it("publishes normalized contributions and emits pull invalidations", async () => {
     let ui: any;
     let bindOptions: any;

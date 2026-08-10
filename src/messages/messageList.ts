@@ -52,7 +52,10 @@ type ToolCallSummary = {
 
 export type MessageList = {
   addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[], metadata?: MessageMetadata) => HTMLDivElement;
-  appendStreamingDelta: (delta: string) => void;
+  beginStreamingAssistant: () => void;
+  startStreamingText: (contentIndex?: number | string) => void;
+  appendStreamingDelta: (delta: string, contentIndex?: number | string) => void;
+  endStreamingText: (content?: string, contentIndex?: number | string) => void;
   startStreamingThinking: (contentIndex?: number | string) => void;
   appendStreamingThinkingDelta: (delta: string, contentIndex?: number | string) => void;
   endStreamingThinking: (content?: string, contentIndex?: number | string) => void;
@@ -277,6 +280,8 @@ export function createMessageList(options: {
 }): MessageList {
   const { messagesEl, markdown, onMessageAction, openSession, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
+  const streamingTextBlocks = new Map<string, HTMLDivElement>();
+  let currentStreamingTextKey = "current";
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
   let currentStreamingThinkingKey = "current";
@@ -964,6 +969,8 @@ export function createMessageList(options: {
     quoteReplies?.clear();
     messagesEl.textContent = "";
     streamingAssistant = null;
+    streamingTextBlocks.clear();
+    currentStreamingTextKey = "current";
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
     setJumpButtonVisible(false);
@@ -975,21 +982,55 @@ export function createMessageList(options: {
 
   function resetStreamingAssistant() {
     streamingAssistant = null;
+    streamingTextBlocks.clear();
+    currentStreamingTextKey = "current";
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
   }
 
-  function appendStreamingDelta(delta: string) {
+  function textKey(contentIndex?: number | string) {
+    return contentIndex === undefined || contentIndex === null ? currentStreamingTextKey : String(contentIndex);
+  }
+
+  function beginStreamingAssistant() {
     invalidatePendingRefreshes();
-    // Text after a tool result/thinking card belongs in a new assistant segment.
-    // Otherwise all deltas keep appending to the first assistant bubble, so live
-    // rendering loses the same interleaving that static history gets from parts.
-    if (!streamingAssistant || messagesEl.lastElementChild !== streamingAssistant) {
-      streamingAssistant = addMessage("assistant", "");
+    if (!streamingAssistant?.isConnected) streamingAssistant = addMessage("assistant", "");
+  }
+
+  function startStreamingText(contentIndex?: number | string) {
+    const key = textKey(contentIndex);
+    currentStreamingTextKey = key;
+    let card = streamingTextBlocks.get(key);
+    if (!card?.isConnected) {
+      beginStreamingAssistant();
+      card = streamingAssistant!;
+      streamingTextBlocks.set(key, card);
     }
-    const body = streamingAssistant.querySelector<HTMLElement>(".body");
+  }
+
+  function appendStreamingDelta(delta: string, contentIndex?: number | string) {
+    invalidatePendingRefreshes();
+    const key = textKey(contentIndex);
+    currentStreamingTextKey = key;
+    let card = streamingTextBlocks.get(key);
+    if (!card?.isConnected || messagesEl.lastElementChild !== card) {
+      streamingAssistant = addMessage("assistant", "");
+      card = streamingAssistant;
+      streamingTextBlocks.set(key, card);
+    }
+    const body = card.querySelector<HTMLElement>(".body");
     if (body) body.textContent += delta || "";
     scrollToBottom();
+  }
+
+  function endStreamingText(content?: string, contentIndex?: number | string) {
+    const key = textKey(contentIndex);
+    const card = streamingTextBlocks.get(key);
+    if (card?.isConnected && typeof content === "string") {
+      const body = card.querySelector<HTMLElement>(".body");
+      if (body) body.textContent = content;
+    }
+    streamingTextBlocks.delete(key);
   }
 
   function thinkingKey(contentIndex?: number | string) {
@@ -1255,7 +1296,10 @@ export function createMessageList(options: {
   return {
     addMessage,
     appendCommittedMessage,
+    beginStreamingAssistant,
+    startStreamingText,
     appendStreamingDelta,
+    endStreamingText,
     appendStreamingThinkingDelta,
     beginStreamFollow,
     clear,

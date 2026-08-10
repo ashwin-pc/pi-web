@@ -73,13 +73,13 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
 
   return (serviceEvent: SessionServiceEvent): void => {
     switch (serviceEvent.type) {
-      case "pi": {
+      case "agent": {
         const target = deps.sessionForId(serviceEvent.sessionId);
         const enriched = target
           ? deps.sessionActivity.enrichEvent(target, serviceEvent.event)
           : { event: serviceEvent.event, sessionId: serviceEvent.sessionId, sessionFile: serviceEvent.sessionFile };
         deps.broadcast({
-          type: "pi_event",
+          type: "agent_event",
           sessionId: enriched.sessionId,
           sessionFile: enriched.sessionFile,
           event: enriched.event,
@@ -94,6 +94,19 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         });
         return;
       }
+      case "interaction":
+        deps.broadcast({ type: "interaction_request", ...serviceEvent.request });
+        return;
+      case "entry":
+        deps.broadcast({
+          type: "committed_message",
+          sessionId: serviceEvent.sessionId,
+          sessionFile: serviceEvent.sessionFile,
+          entryId: serviceEvent.entryId,
+          ...(serviceEvent.parentId ? { parentId: serviceEvent.parentId } : {}),
+          kind: serviceEvent.entryKind,
+        });
+        return;
       case "committed":
         deps.broadcast({
           type: "committed_message",
@@ -132,8 +145,10 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
           const isRunning = Boolean(target.isStreaming || target.isCompacting);
           if (deps.sessionActivity.hasStarted(activitySessionFile) && !isRunning) {
             deps.sessionActivity.clearStarted(target, activitySessionFile);
-            deps.markSessionUnreadCompleted(serviceEvent.sessionId);
-            deps.notifySessionCompleted?.(serviceEvent.sessionId);
+            if (!serviceEvent.aborted) {
+              deps.markSessionUnreadCompleted(serviceEvent.sessionId);
+              deps.notifySessionCompleted?.(serviceEvent.sessionId);
+            }
           }
         }
         deps.broadcast({ type: "session_runtime_changed", sessionId: serviceEvent.sessionId, sessionFile: serviceEvent.sessionFile, runtime: deps.sessionActivity.runtimeForPath(serviceEvent.sessionFile) });

@@ -1,8 +1,20 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
 });
+
+async function routeStableRepo(page: Page) {
+  await page.route("**/api/git/repos**", (route) => route.fulfill({ json: {
+    ok: true, cwd: "/workspace", depth: 1,
+    repos: [{ path: ".", root: "/workspace", branch: "main", upstream: "origin/main", ahead: 0, behind: 0, dirtyCount: 0, isCurrent: true }],
+  } }));
+  await page.route("**/api/git/status?**", (route) => route.fulfill({ json: {
+    ok: true, isRepo: true, root: "/workspace", branch: "main", upstream: "origin/main",
+    defaultRemoteBranch: "origin/main", ahead: 0, behind: 0, files: [],
+    diffStats: { staged: { files: 0, additions: 0, deletions: 0 }, unstaged: { files: 0, additions: 0, deletions: 0 } },
+  } }));
+}
 
 test("GitHub issue numbers attach a structured reference to the prompt", async ({ page }) => {
   await page.request.post("/api/mock/state", { data: {
@@ -126,6 +138,8 @@ test("extension tabs remain available in split view with a reduced viewport heig
 });
 
 test("git panel opens, switches views, and commit rows do not overlap", async ({ page }) => {
+  await routeStableRepo(page);
+  await page.route("**/api/git/log?**", (route) => route.fulfill({ json: { ok: true, isRepo: true, commits: Array.from({ length: 15 }, (_, index) => ({ hash: String(index).padStart(40, "0"), shortHash: String(index), parents: index < 14 ? [String(index + 1).padStart(40, "0")] : [], author: "Test", date: "2026-01-01T00:00:00Z", refs: index === 0 ? ["HEAD -> main"] : [], subject: `Commit ${index}` })) } }));
   await page.goto("/");
   await page.locator("#sessionInfoButton").click();
   await page.locator("#sessionInfoGit").click();
@@ -144,6 +158,7 @@ test("git panel opens, switches views, and commit rows do not overlap", async ({
 });
 
 test("git graph renders nested branches and merges with continuous, stable-colour lanes", async ({ page }) => {
+  await routeStableRepo(page);
   const definitions: Array<[string, string[], string[]?]> = [
     ["merge-release", ["main-five", "hotfix-two"], ["HEAD -> main", "tag: v2.0.0"]],
     ["main-five", ["merge-feature"]],

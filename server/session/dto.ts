@@ -1,3 +1,5 @@
+import type { HarnessEventDto } from "./piEventMap.js";
+
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
 
@@ -20,19 +22,34 @@ export interface SessionStatsDto {
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
 
+export interface HarnessCapabilitiesDto {
+  harness: string;
+  queue: boolean;
+  steering: boolean;
+  followUp: boolean;
+  thinkingLevel: boolean;
+  tree: boolean;
+  compaction: boolean;
+  retry: boolean;
+  bash: boolean;
+  extensions: boolean;
+  interactions: boolean;
+}
+
 export interface BaseSessionStateDto {
   cwd: string;
   sessionFile: string;
   sessionId: string;
   sessionName?: string;
   sessionTitle: string;
+  capabilities: HarnessCapabilitiesDto;
   isStreaming: boolean;
   isRetrying: boolean;
   isCompacting: boolean;
-  queue: { steering: string[]; followUp: string[] };
+  queue?: { steering: string[]; followUp: string[] };
   model?: ModelDto;
-  thinkingLevel: string;
-  thinkingLevels: string[];
+  thinkingLevel?: string;
+  thinkingLevels?: string[];
   stats: SessionStatsDto;
 }
 
@@ -143,20 +160,38 @@ export interface ModelsResultDto {
   models: ModelDto[];
 }
 
+export interface InteractionRequestDto {
+  id: string;
+  source: "extension" | "approval" | "clarify" | "sudo" | "secret";
+  kind: string;
+  payload: { [key: string]: JsonValue };
+  sessionId: string;
+  sessionFile: string;
+  timeout: number;
+}
+
+export interface InteractionResponseDto {
+  id: string;
+  cancelled?: boolean;
+  [key: string]: JsonValue | undefined;
+}
+
 export interface DeleteSessionResultDto {
   id: string;
   disposition: "trashed" | "deleted";
 }
 
 export type SessionServiceEvent =
-  | { type: "pi"; sessionId: string; sessionFile: string; event: JsonValue; clientMessageId?: string; sourceClientId?: string }
+  | { type: "agent"; sessionId: string; sessionFile: string; event: HarnessEventDto; clientMessageId?: string; sourceClientId?: string }
+  | { type: "interaction"; request: InteractionRequestDto }
+  | { type: "entry"; sessionId: string; sessionFile: string; entryId: string; parentId?: string; entryKind: string }
   | { type: "state"; state: BaseSessionStateDto; includeThinkingLevels?: boolean }
   | { type: "committed"; sessionId: string; sessionFile: string; message: MessageDto }
   | { type: "stats"; sessionId: string; sessionFile: string; stats: SessionStatsDto }
   | { type: "models"; sessionId: string; models: ModelDto[] }
   | { type: "error"; sessionId?: string; sessionFile?: string; error: string; clientMessageId?: string }
   | { type: "shutdown"; sessionId: string; sessionFile: string; sessionKey: string }
-  | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed" }
+  | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed"; aborted?: boolean }
   | { type: "wire"; value: JsonValue };
 
 /**
@@ -187,6 +222,8 @@ export interface SessionService {
   abortBranchSummary(sessionId: string): Promise<{ sessionId: string }>;
   rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;
   navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
+  respondInteraction(response: InteractionResponseDto): boolean;
+  cancelInteractions(): void;
   invokeContribution(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
   invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;

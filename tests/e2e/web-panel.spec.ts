@@ -44,7 +44,9 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
     });
   });
 
+  const stateLoaded = page.waitForResponse((response) => response.url().includes("/api/state") && response.ok());
   await page.goto("/");
+  await stateLoaded;
   await page.locator("#prompt").blur();
   await page.locator(".actionLauncherToggle").click();
   await expect(page.locator(".actionLauncherItem", { hasText: "Notepad" })).toBeVisible();

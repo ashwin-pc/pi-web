@@ -39,19 +39,21 @@ The service can be constructed without `server.ts`. Its dependency interface con
 
 ### Event boundary
 
-`SessionService.subscribe()` emits serializable `SessionServiceEvent` values. Pi events are emitted with `sessionId` and `sessionFile`; state, stats, blocked-model updates, errors, and shutdown are explicit typed variants. The local implementation intentionally JSON-round-trips each event before delivery. This normalizes unsupported non-JSON values at the future runner boundary rather than exposing in-process-only behavior. Listener failures are also intentionally isolated and logged so one serving adapter cannot interrupt wire-order delivery to other subscribers. On the supported JSON event domain, values are unchanged and safe to pass through `JSON.stringify`/`JSON.parse`.
+`SessionService.subscribe()` emits serializable `SessionServiceEvent` values. Harness events cross this boundary as the typed, agent-neutral union defined by the Track-0 mapping; pi's exhaustive adapter lives in `server/session/piEventMap.ts`. Heavy content is sent once through deltas and committed-message projections rather than copied into lifecycle events. Unknown harness variants remain visible through `harness_event`. State, capabilities, stats, blocked-model updates, interactions, errors, and shutdown are explicit typed variants. See [multi-harness-design.md](./multi-harness-design.md).
 
-The local server subscribes once. For each Pi event it performs host activity enrichment and preserves this exact browser wire order:
+The local implementation JSON-round-trips each event before delivery. This normalizes unsupported non-JSON values at the future runner boundary rather than exposing in-process-only behavior. Listener failures are isolated so one serving adapter cannot interrupt wire-order delivery.
+
+The local server subscribes once. For each agent event it performs host activity enrichment and preserves this browser wire order:
 
 ```text
-pi_event
+agent_event
 session_runtime_changed
 [state_changed]
 [session_stats_changed]
 [models_updated]
 ```
 
-The bracketed messages are emitted only for the same source events as before. Extension web-UI events use the same service event sink and retain their existing browser wire shapes. Browser activity, realtime replay/sequence numbers, unread tracking, and UI stores are deliberately not part of the runner protocol.
+`agent_settled`, not `agent_end`, is the authoritative idle transition. Durable `entry_appended` semantics travel through `committed_message`. Generic `interaction_request` values use the same service event sink. Browser activity, realtime replay/sequence numbers, unread tracking, and UI stores remain outside the runner protocol.
 
 `NavigationResult.finish()` is the one intentional non-serializable value. It is a serving-side finalizer: the serving adapter writes the navigation response and calls `finish()` in `finally`. A future remote runner must likewise finalize after writing its own response; the callback is never sent over stdio.
 
@@ -111,7 +113,7 @@ export type SandboxRuntime = {
 };
 ```
 
-Bindings map `sessionId -> RuntimeRef`. Cwd history is runtime-relative. The drawer may render cached locator rows immediately and reconcile in the background, but a successful authoritative runtime listing is required before removing stale rows.
+Bindings map `sessionId -> { runtimeId, harnessId }`; `runtimeId` resolves to a `RuntimeRef`. Cwd history is runtime-relative. Harness capabilities come from the selected harness and must be identical across transports. The drawer may render cached locator rows immediately and reconcile in the background, but a successful authoritative runtime listing is required before removing stale rows.
 
 ## UX and lifecycle rules
 

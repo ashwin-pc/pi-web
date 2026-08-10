@@ -33,11 +33,11 @@ const plainExtensionTheme = {
   getBashModeBorderColor: () => (text: string) => text,
 };
 
-type PendingExtensionUiRequest = {
+type PendingInteractionRequest = {
   resolve: (response: Record<string, unknown>) => void;
   cleanup: () => void;
 };
-const pendingExtensionUiRequests = new Map<string, PendingExtensionUiRequest>();
+const pendingInteractionRequests = new Map<string, PendingInteractionRequest>();
 
 type WebContribution =
   | { version: 1; key: string; slot: "footer"; kind: "static"; view: PiWebFooter }
@@ -550,20 +550,21 @@ function createPiWebUi(value: any): PiWebUi {
   };
 }
 
-function broadcastExtensionUiRequest(value: any, method: string, payload: Record<string, unknown>) {
+function broadcastInteractionRequest(value: any, method: string, payload: Record<string, unknown>) {
   const id = randomUUID();
   deps.emit({
-    type: "extension_ui_request",
+    type: "interaction_effect",
     id,
-    method,
+    source: "extension",
+    kind: method,
+    payload,
     sessionId: value.sessionId,
     sessionFile: value.sessionFile,
-    ...payload,
   });
   return id;
 }
 
-function requestExtensionUi<T>(
+function requestInteraction<T>(
   value: any,
   method: string,
   payload: Record<string, unknown>,
@@ -577,11 +578,12 @@ function requestExtensionUi<T>(
     const id = randomUUID();
     const releaseWorkLease = deps.acquireWorkLease(value);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    const timeoutMs = opts?.timeout ?? 120_000;
 
     const cleanup = () => {
       if (timeoutId) clearTimeout(timeoutId);
       opts?.signal?.removeEventListener("abort", onAbort);
-      pendingExtensionUiRequests.delete(id);
+      pendingInteractionRequests.delete(id);
       releaseWorkLease();
     };
     const finish = (result: T) => {
@@ -591,21 +593,23 @@ function requestExtensionUi<T>(
     const onAbort = () => finish(defaultValue);
 
     opts?.signal?.addEventListener("abort", onAbort, { once: true });
-    if (opts?.timeout) timeoutId = setTimeout(() => finish(defaultValue), opts.timeout);
+    timeoutId = setTimeout(() => finish(defaultValue), timeoutMs);
+    timeoutId.unref?.();
 
-    pendingExtensionUiRequests.set(id, {
+    pendingInteractionRequests.set(id, {
       cleanup,
       resolve: (response) => finish(parse(response)),
     });
 
     deps.emit({
-      type: "extension_ui_request",
+      type: "interaction_request",
       id,
-      method,
+      source: "extension",
+      kind: method,
+      payload,
       sessionId: value.sessionId,
       sessionFile: value.sessionFile,
-      timeout: opts?.timeout,
-      ...payload,
+      timeout: timeoutMs,
     });
   });
 }
@@ -613,7 +617,7 @@ function requestExtensionUi<T>(
 function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: PiWebUi } {
   return {
     web: createPiWebUi(value),
-    select: (title, options, opts) => requestExtensionUi(
+    select: (title, options, opts) => requestInteraction(
       value,
       "select",
       { title, options },
@@ -621,7 +625,7 @@ function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: Pi
       undefined,
       (response) => response.cancelled ? undefined : typeof response.value === "string" ? response.value : undefined,
     ),
-    confirm: (title, message, opts) => requestExtensionUi(
+    confirm: (title, message, opts) => requestInteraction(
       value,
       "confirm",
       { title, message },
@@ -629,7 +633,7 @@ function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: Pi
       false,
       (response) => response.cancelled ? false : Boolean(response.confirmed),
     ),
-    input: (title, placeholder, opts) => requestExtensionUi(
+    input: (title, placeholder, opts) => requestInteraction(
       value,
       "input",
       { title, placeholder },
@@ -638,11 +642,11 @@ function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: Pi
       (response) => response.cancelled ? undefined : typeof response.value === "string" ? response.value : undefined,
     ),
     notify(message, type = "info") {
-      broadcastExtensionUiRequest(value, "notify", { message, notifyType: type });
+      broadcastInteractionRequest(value, "notify", { message, notifyType: type });
     },
     onTerminalInput: () => () => undefined,
     setStatus(key, text) {
-      broadcastExtensionUiRequest(value, "setStatus", { statusKey: key, statusText: text });
+      broadcastInteractionRequest(value, "setStatus", { statusKey: key, statusText: text });
     },
     setWorkingMessage: () => undefined,
     setWorkingVisible: () => undefined,
@@ -650,13 +654,13 @@ function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: Pi
     setHiddenThinkingLabel: () => undefined,
     setWidget(key, content, options) {
       if (content === undefined || Array.isArray(content)) {
-        broadcastExtensionUiRequest(value, "setWidget", { widgetKey: key, widgetLines: content, widgetPlacement: options?.placement });
+        broadcastInteractionRequest(value, "setWidget", { widgetKey: key, widgetLines: content, widgetPlacement: options?.placement });
       }
     },
     setFooter: () => undefined,
     setHeader: () => undefined,
     setTitle(title) {
-      broadcastExtensionUiRequest(value, "setTitle", { title });
+      broadcastInteractionRequest(value, "setTitle", { title });
     },
     async custom() {
       return undefined as never;
@@ -665,10 +669,10 @@ function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: Pi
       this.setEditorText(text);
     },
     setEditorText(text) {
-      broadcastExtensionUiRequest(value, "set_editor_text", { text });
+      broadcastInteractionRequest(value, "set_editor_text", { text });
     },
     getEditorText: () => "",
-    editor: (title, prefill) => requestExtensionUi(
+    editor: (title, prefill) => requestInteraction(
       value,
       "editor",
       { title, prefill },
@@ -865,10 +869,14 @@ async function bindWebExtensions(value: any) {
   }
 
   function respond(id: string, response: Record<string, unknown>): boolean {
-    const pending = pendingExtensionUiRequests.get(id);
+    const pending = pendingInteractionRequests.get(id);
     if (!pending) return false;
     pending.resolve(response);
     return true;
+  }
+
+  function cancelPendingInteractions() {
+    for (const pending of [...pendingInteractionRequests.values()]) pending.resolve({ cancelled: true });
   }
 
   return {
@@ -880,6 +888,7 @@ async function bindWebExtensions(value: any) {
     invokeGitTab,
     invokePanel,
     respond,
+    cancelPendingInteractions,
     runtimeErrors: (value: object) => [...(extensionRuntimeErrors.get(value) || [])],
     registerSettings: (session: any, schema: PiWebSettingsRegistration) => registerSessionSettings(session, schema),
     settingsSchemas: activeSettingsSchemaList,

@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
   getAgentDir,
+  type AgentSessionEvent,
   type ModelRuntime,
   SessionManager,
   type SessionStartEvent,
@@ -16,11 +17,14 @@ import { assertDirectory } from "../shared/fsList.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { createWebUiBridge } from "../extensions/webUi.js";
 import { ResilientResourceLoader } from "../extensions/resilientLoader.js";
+import { mapPiEvent } from "./piEventMap.js";
 import { createSettingsStore } from "../settings.js";
 import type {
   BaseSessionStateDto,
   DeleteSessionResultDto,
   JsonValue,
+  InteractionRequestDto,
+  InteractionResponseDto,
   MessageDto,
   NavigationResult,
   AttachmentDto,
@@ -141,6 +145,20 @@ function jsonSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function interactionRequestFromWire(value: Record<string, unknown>): InteractionRequestDto | undefined {
+  if (value.type !== "interaction_request" || typeof value.id !== "string" || typeof value.source !== "string" || typeof value.kind !== "string" || typeof value.sessionId !== "string" || typeof value.sessionFile !== "string") return undefined;
+  if (!["extension", "approval", "clarify", "sudo", "secret"].includes(value.source) || !value.payload || typeof value.payload !== "object" || Array.isArray(value.payload)) return undefined;
+  return {
+    id: value.id,
+    source: value.source as InteractionRequestDto["source"],
+    kind: value.kind,
+    payload: jsonSafe(value.payload) as InteractionRequestDto["payload"],
+    sessionId: value.sessionId,
+    sessionFile: value.sessionFile,
+    timeout: Number(value.timeout) || 120_000,
+  };
+}
+
 function hasUserMessages(value: PiWebSession) {
   return value.messages.some((message: any) => message?.role === "user");
 }
@@ -168,7 +186,15 @@ export class LocalSessionService implements SessionService {
   constructor(private readonly deps: LocalSessionServiceDependencies) {
     this.knownSessionCwds.add(resolve(deps.globalCwd()));
     this.webUiBridge = createWebUiBridge({
-      emit: (value) => this.emit({ type: "wire", value: value as JsonValue }),
+      emit: (input) => {
+        const value = input as Record<string, unknown>;
+        const request = interactionRequestFromWire(value);
+        if (request) {
+          this.emit({ type: "interaction", request });
+        } else {
+          this.emit({ type: "wire", value: value as JsonValue });
+        }
+      },
       clientCount: deps.clientCount,
       acquireWorkLease: (session) => this.acquireWorkLease(session),
       createNewSession: (cwd, previousSessionFile) => this.createNewLiveSession(cwd, previousSessionFile),
@@ -413,7 +439,8 @@ export class LocalSessionService implements SessionService {
     return this.require(sessionId).then((value) => this.webUiBridge.invokePanel(value, input));
   }
 
-  respondExtensionUi(id: string, response: Record<string, unknown>) { return this.webUiBridge.respond(id, response); }
+  respondInteraction(response: InteractionResponseDto) { return this.webUiBridge.respond(response.id, response); }
+  cancelInteractions() { this.webUiBridge.cancelPendingInteractions(); }
 
   private extensionStatusFor(value: PiWebSession, loader: ResilientResourceLoader) {
     const status = loader.getStatus();
@@ -689,19 +716,25 @@ export class LocalSessionService implements SessionService {
   }
 
   private handlePiEvent(value: PiWebSession, event: unknown) {
-    const e = event as any;
+    const e = event as AgentSessionEvent;
     const sessionId = value.sessionId;
     const sessionFile = value.sessionFile;
+    const mapped = mapPiEvent(e);
+    const raw = event as any;
+    if (mapped.kind === "entry") {
+      this.emit({ type: "entry", sessionId, sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, entryKind: mapped.entryKind });
+      return;
+    }
     const correlation = this.takePromptCorrelation(sessionPathKey(value), e);
     this.emit({
-      type: "pi",
+      type: "agent",
       sessionId,
       sessionFile,
-      event: event as JsonValue,
+      event: mapped.event,
       ...(correlation ? { clientMessageId: correlation.clientMessageId, sourceClientId: correlation.sourceClientId } : {}),
     });
-    if (e?.type === "message_end") {
-      const committed = e.message;
+    if (raw?.type === "message_end") {
+      const committed = raw.message;
       // agent-core inserts this object before notifying listeners; the agent
       // relay persists its entry after listeners return, while idle custom
       // messages persist before emitting. Defer so both paths expose entry metadata.
@@ -710,12 +743,12 @@ export class LocalSessionService implements SessionService {
         if (message) this.emit({ type: "committed", sessionId, sessionFile: value.sessionFile, message });
       });
     }
-    if (e?.type === "session_info_changed") this.emit({ type: "state", state: this.projectState(value) });
-    if (e?.type === "message_end" || e?.type === "agent_end" || e?.type === "compaction_end") {
+    if (raw?.type === "session_info_changed") this.emit({ type: "state", state: this.projectState(value) });
+    if (raw?.type === "message_end" || raw?.type === "agent_end" || raw?.type === "compaction_end") {
       this.emit({ type: "stats", sessionId, sessionFile, stats: sessionStats(value) });
     }
-    if (e?.type === "message_end" || e?.type === "turn_end") {
-      const message = e?.message ?? e?.toolResults?.[0];
+    if (raw?.type === "message_end" || raw?.type === "turn_end") {
+      const message = raw?.message ?? raw?.toolResults?.[0];
       const error: string = message?.errorMessage || message?.message?.errorMessage || "";
       const modelId: string = message?.model || message?.message?.model || "";
       if (modelId && (error.includes("model_not_supported") || error.includes("model_not_available")) && !this.blockedModelIds.has(modelId)) {
@@ -734,13 +767,14 @@ export class LocalSessionService implements SessionService {
     });
   }
 
-  private emitRuntime(value: PiWebSession, action: "ensure" | "clear" | "changed" | "completed", activitySessionFile?: string) {
+  private emitRuntime(value: PiWebSession, action: "ensure" | "clear" | "changed" | "completed", activitySessionFile?: string, aborted = false) {
     this.emit({
       type: "runtime",
       sessionId: value.sessionId,
       sessionFile: value.sessionFile,
       action,
       ...(activitySessionFile && activitySessionFile !== value.sessionFile ? { activitySessionFile } : {}),
+      ...(action === "completed" ? { aborted } : {}),
     });
   }
 
@@ -1069,7 +1103,8 @@ export class LocalSessionService implements SessionService {
       this.emitError(value, error, input.clientMessageId);
     }).finally(() => {
       release();
-      this.emitRuntime(value, "completed", promptSessionFile);
+      const lastMessage = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages.at(-1) : undefined;
+      this.emitRuntime(value, "completed", promptSessionFile, isAssistantAbortedMessage(lastMessage));
     });
   }
 
@@ -1138,6 +1173,7 @@ export class LocalSessionService implements SessionService {
     try { this.assertCanRetry(value); } catch (error) { throw new SessionServiceError(errorMessage(error), 409); }
     this.emitRuntime(value, "ensure");
     const retrySessionFile = value.sessionFile;
+    const usesCompatibilityFallback = !value.retryFromFailure;
     const release = this.acquireWorkLease(value, "retry");
     void this.retryFromFailure(value).catch((error) => {
       this.emitRuntime(value, "clear", retrySessionFile);
@@ -1146,7 +1182,12 @@ export class LocalSessionService implements SessionService {
       // The terminal projection must happen after releasing the lease, or it
       // would report this completed continuation as still running.
       release();
-      this.emitRuntime(value, "completed", retrySessionFile);
+      // The private SDK fallback bypasses AgentSession._runAgentPrompt(), so it
+      // cannot emit pi's authoritative idle event itself. Translate settlement
+      // only after releasing the compatibility lease.
+      if (usesCompatibilityFallback) this.handlePiEvent(value, { type: "agent_settled" });
+      const lastMessage = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages.at(-1) : undefined;
+      this.emitRuntime(value, "completed", retrySessionFile, isAssistantAbortedMessage(lastMessage));
     });
   }
 

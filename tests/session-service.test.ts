@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonRoundTrip, type MessageDto, type SessionServiceEvent } from "../server/session/dto.js";
 import { SessionActivity } from "../server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
+import { mapPiEvent } from "../server/session/piEventMap.js";
+import { pi084Events } from "./fixtures/pi-0.84-events.js";
 import { LocalSessionService, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 
@@ -77,6 +79,7 @@ type FixtureServiceOptions = {
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: LocalSessionFactory["list"];
+  clientCount?: number | (() => number);
 };
 
 async function fixtureService(options: FixtureServiceOptions = {}) {
@@ -104,7 +107,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
       finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined),
     },
     globalCwd: () => cwd,
-    clientCount: () => 0,
+    clientCount: () => typeof options.clientCount === "function" ? options.clientCount() : options.clientCount ?? 0,
   };
   const service = new LocalSessionService(deps);
   const initial = await service.initialize();
@@ -120,9 +123,12 @@ describe("LocalSessionService contract", () => {
     const created = await service.create(initial.sessionId);
     await service.prompt(created.sessionId, { message: "hello", mode: "steer", images: [] });
 
-    expect((await service.state(created.sessionId)).sessionId).toBe(created.sessionId);
+    expect(await service.state(created.sessionId)).toMatchObject({
+      sessionId: created.sessionId,
+      capabilities: { harness: "pi", queue: true, tree: true, interactions: true },
+    });
     expect(await service.messages(created.sessionId)).toContainEqual(expect.objectContaining({ role: "user", text: "hello" }));
-    expect(events.map((event) => event.type)).toContain("pi");
+    expect(events.map((event) => event.type)).toContain("agent");
     expect(events.map((event) => event.type)).toContain("stats");
     expect(events).toContainEqual(expect.objectContaining({
       type: "committed",
@@ -152,7 +158,7 @@ describe("LocalSessionService contract", () => {
       service.open(initial.sessionId), service.create(initial.sessionId),
     ]);
     for (const result of results) expect(jsonRoundTrip(result)).toStrictEqual(result);
-    expect(events.map((event) => event.type)).toEqual(["pi", "state", "pi", "stats", "models"]);
+    expect(events.map((event) => event.type)).toEqual(["agent", "state", "agent", "stats", "models"]);
     for (const event of events) expect(jsonRoundTrip(event)).toStrictEqual(event);
   });
 
@@ -246,7 +252,7 @@ describe("LocalSessionService contract", () => {
     const firstActivityAt = "2026-02-01T00:00:01.000Z";
     fixture.emit({ type: "agent_start", startedAt, lastActivityAt: firstActivityAt });
     expect(wire).toEqual([
-      { type: "pi_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "agent_start", startedAt, lastActivityAt: firstActivityAt } },
+      { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "agent_start", startedAt, lastActivityAt: firstActivityAt } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
     ]);
 
@@ -254,7 +260,7 @@ describe("LocalSessionService contract", () => {
     fixture.emit({ type: "session_info_changed", name: "Renamed" });
     const { thinkingLevels: _thinkingLevels, ...stateWithoutThinkingLevels } = service.projectState(initial);
     expect(wire).toEqual([
-      { type: "pi_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "session_info_changed", name: "Renamed" } },
+      { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "session_info_changed", name: "Renamed" } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
       {
         type: "state_changed",
@@ -272,7 +278,7 @@ describe("LocalSessionService contract", () => {
     fixture.emit({ type: "message_end", message, timestamp: messageAt });
     expect(wire).toEqual([
       {
-        type: "pi_event",
+        type: "agent_event",
         sessionId: initial.sessionId,
         sessionFile: initial.sessionFile,
         event: { type: "message_end", message, timestamp: messageAt, lastActivityAt: messageAt },
@@ -281,6 +287,78 @@ describe("LocalSessionService contract", () => {
       { type: "session_stats_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, stats: (await service.stats(initial.sessionId)).stats },
       { type: "models_updated", sessionId: initial.sessionId, models: [] },
     ]);
+  });
+
+  it("carries extension interactions through the typed service request/respond contract", async () => {
+    const { service, fixture } = await fixtureService({ clientCount: 1 });
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    const answer = fixture.extensionOptions.uiContext.confirm("Allow?", "Run tool", { timeout: 1_000 });
+    const interaction = events.find((event) => event.type === "interaction");
+    expect(interaction).toMatchObject({
+      type: "interaction",
+      request: { source: "extension", kind: "confirm", payload: { title: "Allow?", message: "Run tool" }, timeout: 1_000 },
+    });
+    if (!interaction || interaction.type !== "interaction") throw new Error("Missing interaction request");
+    expect(service.respondInteraction({ id: interaction.request.id, confirmed: true })).toBe(true);
+    await expect(answer).resolves.toBe(true);
+  });
+
+  it("denies timed-out and disconnected interactions through the service boundary", async () => {
+    vi.useFakeTimers();
+    let clients = 1;
+    const { service, fixture } = await fixtureService({ clientCount: () => clients });
+    const timedOut = fixture.extensionOptions.uiContext.confirm("Timed", "Wait", { timeout: 10 });
+    await vi.advanceTimersByTimeAsync(10);
+    await expect(timedOut).resolves.toBe(false);
+
+    const disconnected = fixture.extensionOptions.uiContext.confirm("Disconnected", "Wait", { timeout: 1_000 });
+    clients = 0;
+    service.cancelInteractions();
+    await expect(disconnected).resolves.toBe(false);
+  });
+
+  it("carries unknown harness events through the service and host wire unchanged", async () => {
+    const { service, initial } = await fixtureService();
+    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const wire: any[] = [];
+    const handler = createHostSessionEventHandler({
+      sessionForId: (id) => service.sessionForId(id),
+      projectState: (value) => service.projectState(value),
+      webUiEntries: (value) => service.webUiEntries(value),
+      sessionActivity: activity,
+      broadcast: (value) => wire.push(value),
+      markSessionUnreadCompleted: () => undefined,
+    });
+    handler({
+      type: "agent", sessionId: initial.sessionId, sessionFile: initial.sessionFile,
+      event: { type: "harness_event", harness: "future", payload: { type: "new_event", value: 1 } },
+    });
+    expect(wire[0]).toEqual({
+      type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile,
+      event: { type: "harness_event", harness: "future", payload: { type: "new_event", value: 1 } },
+    });
+    expect(wire[1]).toMatchObject({ type: "session_runtime_changed", sessionId: initial.sessionId });
+  });
+
+  it("replays the recorded pi 0.84 event fixture through the service/host wire boundary", async () => {
+    const { service, initial } = await fixtureService();
+    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const wire: any[] = [];
+    const handler = createHostSessionEventHandler({
+      sessionForId: (id) => service.sessionForId(id), projectState: (value) => service.projectState(value),
+      webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity,
+      broadcast: (value) => wire.push(value), markSessionUnreadCompleted: () => undefined,
+    });
+    const mapped = pi084Events.map(mapPiEvent).filter((item) => item.kind === "event");
+    for (const item of mapped) {
+      if (item.kind === "event") handler({ type: "agent", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: item.event });
+    }
+    expect(wire.filter((event) => event.type === "agent_event")).toHaveLength(mapped.length);
+    expect(wire.find((event) => event.type === "agent_event" && event.event.type === "message_update")?.event).not.toHaveProperty("assistantMessageEvent.partial");
+    for (let index = 0; index < wire.length; index += 1) {
+      if (wire[index]?.type === "agent_event") expect(wire[index + 1]?.type).toBe("session_runtime_changed");
+    }
   });
 
   it("marks unread and sends exactly one notification from the same final completion transition", async () => {
@@ -311,6 +389,21 @@ describe("LocalSessionService contract", () => {
     expect(activity.hasStarted(initial.sessionFile)).toBe(false);
   });
 
+  it("clears aborted work without marking unread or sending completion push", async () => {
+    const { service, initial } = await fixtureService();
+    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const transitions: string[] = [];
+    const handler = createHostSessionEventHandler({
+      sessionForId: (id) => service.sessionForId(id), projectState: (value) => service.projectState(value),
+      webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity, broadcast: () => undefined,
+      markSessionUnreadCompleted: () => transitions.push("unread"), notifySessionCompleted: () => transitions.push("notification"),
+    });
+    activity.ensureStarted(initial);
+    handler({ type: "runtime", action: "completed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, aborted: true });
+    expect(transitions).toEqual([]);
+    expect(activity.hasStarted(initial.sessionFile)).toBe(false);
+  });
+
   it("propagates WebSocket open failures but keeps unknown-ID fallback eligible", async () => {
     const { initial } = await fixtureService();
     await expect(resolveWebSocketHelloSession("unknown", initial, async () => undefined)).resolves.toBeUndefined();
@@ -334,6 +427,23 @@ describe("LocalSessionService contract", () => {
 });
 
 describe("LocalSessionService standalone lifecycle", () => {
+  it("keeps agent_end running and uses agent_settled as the idle boundary", async () => {
+    const { service, fixture, initial } = await fixtureService();
+    const activity = new SessionActivity(
+      (path) => service.sessionForPath(path),
+      (path) => service.hasActiveWorkForPath(path),
+      (path) => service.hasActiveRetryForPath(path),
+    );
+    initial.isStreaming = true;
+    fixture.emit({ type: "agent_start" });
+    fixture.emit({ type: "agent_end", messages: [], willRetry: false });
+    expect(activity.runtimeForEvent(initial.sessionFile, { type: "agent_end", willRetry: false })).toMatchObject({ isRunning: true });
+
+    initial.isStreaming = false;
+    fixture.emit({ type: "agent_settled" });
+    expect(activity.runtimeForEvent(initial.sessionFile, { type: "agent_settled" })).toMatchObject({ isRunning: false });
+  });
+
   it("reports a gated retry as running, rejects a concurrent retry, and settles once", async () => {
     const { service, initial } = await fixtureService();
     let releaseRetry!: () => void;

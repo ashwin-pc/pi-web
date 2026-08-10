@@ -251,7 +251,8 @@ function renderActiveSessionRuntime(
 ) {
   const view = activeSessionState(state);
   const runtime = sessionRuntime(state);
-  composer?.updatePendingQueue(view?.queue?.steering, view?.queue?.followUp);
+  composer?.updatePendingQueue(view?.capabilities?.queue === false ? [] : view?.queue?.steering, view?.capabilities?.queue === false ? [] : view?.queue?.followUp);
+  composer?.updateQueueToggle();
   composer?.updatePrimaryAction();
   contextMeter?.update({ stats: view?.stats, isCompacting: runtime.isCompacting });
   renderRuntimeActivity(runtime, previous, activity);
@@ -265,7 +266,9 @@ function renderActiveSessionMetadata() {
   state.currentCwd = view?.cwd || "";
   filesPanel?.sessionChanged();
 
-  const contributions = Array.isArray(view?.webContributions) ? view.webContributions as Array<Record<string, any>> : [];
+  const contributions = view?.capabilities?.extensions === false
+    ? []
+    : Array.isArray(view?.webContributions) ? view.webContributions as Array<Record<string, any>> : [];
   const inSlot = (slot: string) => contributions.filter((entry) => entry?.version === 1 && entry.slot === slot);
   renderWebFooters(elements.extensionFooterEl, inSlot("footer").map(({ key, view: footer }) => ({ key, footer })));
   webHeaderActions.render(inSlot("header-action"));
@@ -275,6 +278,7 @@ function renderActiveSessionMetadata() {
   actionLauncher?.setExtensionActions(inSlot("fab"));
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
+  elements.conversationTreeButton.hidden = view?.capabilities?.tree === false;
   const idValue = elements.sessionInfoId.querySelector("strong");
   const cwdValue = elements.sessionInfoCwd.querySelector("strong");
   if (idValue) idValue.textContent = state.currentSessionId || "Not started";
