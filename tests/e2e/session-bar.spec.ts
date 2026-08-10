@@ -171,10 +171,13 @@ test.describe("session quick bar", () => {
     const targetTab = tabs.filter({ hasText: "Older mock session" });
     await expect(draggedTab).toBeVisible();
     await expect(targetTab).toBeVisible();
-    const firstBox = await draggedTab.boundingBox();
-    const secondBox = await targetTab.boundingBox();
-    expect(firstBox).not.toBeNull();
-    expect(secondBox).not.toBeNull();
+    let firstBox = await draggedTab.boundingBox();
+    let secondBox = await targetTab.boundingBox();
+    await expect.poll(async () => {
+      firstBox = await draggedTab.boundingBox();
+      secondBox = await targetTab.boundingBox();
+      return Boolean(firstBox && secondBox);
+    }).toBe(true);
 
     const pointer = { pointerId: 7, pointerType: "touch", isPrimary: true };
     const start = { clientX: firstBox!.x + firstBox!.width / 2, clientY: firstBox!.y + firstBox!.height / 2 };
