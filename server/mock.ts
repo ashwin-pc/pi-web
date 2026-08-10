@@ -511,7 +511,7 @@ export function createMockHarness(options: MockSessionOptions) {
           setRuntimeStartedAt();
         }
         broadcastPiEvent({ type: "agent_start", startedAt: runtimeStartedAt }, runtimeLastActivityAt || runtimeStartedAt);
-        broadcastPiEvent({ type: "message_start", message: { role: "assistant", content: [], timestamp: new Date().toISOString() } });
+        broadcastPiEvent({ type: "message_start", message: { role: "assistant", content: [], timestamp: new Date().toISOString() } }, withQuietRuntime ? false : undefined);
         if (withSummaryRetry) {
           broadcastPiEvent({ type: "summarization_retry_scheduled", attempt: 2, maxAttempts: 3, delayMs: 500, errorMessage: "summary provider busy" });
           if (!(await waitForMockRun(800))) return;

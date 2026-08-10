@@ -15,9 +15,9 @@ export type AgentEventDto =
   | { type: "message_start"; message: MessageRefDto }
   | { type: "message_update"; assistantMessageEvent: AssistantDeltaDto }
   | { type: "message_end"; message: JsonValue; timestamp?: string; lastActivityAt?: string }
-  | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: JsonValue }
-  | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: JsonValue; partialResult: JsonValue }
-  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: JsonValue; isError: boolean }
+  | { type: "tool_execution_start"; toolCallId: string; toolName: string; args: JsonValue; startedAt?: string }
+  | { type: "tool_execution_update"; toolCallId: string; toolName: string; args: JsonValue; partialResult: JsonValue; startedAt?: string }
+  | { type: "tool_execution_end"; toolCallId: string; toolName: string; result: JsonValue; isError: boolean; startedAt?: string }
   | { type: "queue_update"; steering: string[]; followUp: string[] }
   | { type: "auto_retry_start"; source: RetrySourceDto; attempt?: number; maxAttempts?: number; delayMs?: number; errorMessage?: string; reason?: "manual" | "threshold" | "overflow" }
   | { type: "auto_retry_end"; source: RetrySourceDto; success: boolean; attempt?: number; finalError?: string }
@@ -87,9 +87,18 @@ export function mapPiEvent(event: AgentSessionEvent): PiEventMapResult {
         ...(timed.lastActivityAt ? { lastActivityAt: timed.lastActivityAt } : {}),
       } };
     }
-    case "tool_execution_start": return { kind: "event", event: { type: "tool_execution_start", toolCallId: event.toolCallId, toolName: event.toolName, args: value(event.args) } };
-    case "tool_execution_update": return { kind: "event", event: { type: "tool_execution_update", toolCallId: event.toolCallId, toolName: event.toolName, args: value(event.args), partialResult: value(event.partialResult) } };
-    case "tool_execution_end": return { kind: "event", event: { type: "tool_execution_end", toolCallId: event.toolCallId, toolName: event.toolName, result: value(event.result), isError: event.isError } };
+    case "tool_execution_start": {
+      const timed = event as typeof event & { startedAt?: string };
+      return { kind: "event", event: { type: "tool_execution_start", toolCallId: event.toolCallId, toolName: event.toolName, args: value(event.args), ...(timed.startedAt ? { startedAt: timed.startedAt } : {}) } };
+    }
+    case "tool_execution_update": {
+      const timed = event as typeof event & { startedAt?: string };
+      return { kind: "event", event: { type: "tool_execution_update", toolCallId: event.toolCallId, toolName: event.toolName, args: value(event.args), partialResult: value(event.partialResult), ...(timed.startedAt ? { startedAt: timed.startedAt } : {}) } };
+    }
+    case "tool_execution_end": {
+      const timed = event as typeof event & { startedAt?: string };
+      return { kind: "event", event: { type: "tool_execution_end", toolCallId: event.toolCallId, toolName: event.toolName, result: value(event.result), isError: event.isError, ...(timed.startedAt ? { startedAt: timed.startedAt } : {}) } };
+    }
     case "queue_update": return { kind: "event", event: { type: "queue_update", steering: [...event.steering], followUp: [...event.followUp] } };
     case "auto_retry_start": return { kind: "event", event: { ...event, source: "agent" } };
     case "auto_retry_end": return { kind: "event", event: { ...event, source: "agent" } };
