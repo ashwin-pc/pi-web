@@ -408,11 +408,12 @@ test.describe("composer layout", () => {
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     expect(overflow).toBe(false);
 
-    const composerBox = await composer.boundingBox();
-    const sendBox = await page.locator("#primaryButton").boundingBox();
-    expect(composerBox).toBeTruthy();
-    expect(sendBox).toBeTruthy();
-    expect(sendBox!.x + sendBox!.width).toBeLessThanOrEqual(composerBox!.x + composerBox!.width + 1);
+    await expect.poll(async () => {
+      const composerBox = await composer.boundingBox();
+      const sendBox = await page.locator("#primaryButton").boundingBox();
+      if (!composerBox || !sendBox) return false;
+      return sendBox.x + sendBox.width <= composerBox.x + composerBox.width + 1;
+    }).toBe(true);
   });
 
   test("composer action row is flush, 40px tall, and has rounded bottom corners", async ({ page }) => {
