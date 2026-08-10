@@ -625,6 +625,10 @@ button:disabled:hover { border-color: var(--border); }
   color: var(--accent);
 }
 #queueToggle[aria-pressed="true"] { color: var(--accent); }
+#stopButton {
+  position: relative;
+  z-index: 13;
+}
 #primaryButton {
   position: relative;
   z-index: 2;

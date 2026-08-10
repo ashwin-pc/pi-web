@@ -1058,6 +1058,7 @@ test.describe("attachments and prompt", () => {
 
   test("keeps a copyable attachment lifecycle report across reloads", async ({ page }) => {
     await page.locator("#imageInput").setInputFiles({ name: "debug.png", mimeType: "image/png", buffer: VALID_PNG });
+    await expect(page.locator(".attachmentChip")).toContainText("debug.png");
     await page.reload();
     await page.locator("#settingsButton").evaluate((button: HTMLButtonElement) => button.click());
     await page.locator("#settingsNavDiagnostics").click();

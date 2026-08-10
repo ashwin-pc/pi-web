@@ -6,6 +6,7 @@ const isWin = process.platform === "win32";
 const bin = (name) => `node_modules/.bin/${name}${isWin ? ".cmd" : ""}`;
 
 const e2eOnly = process.argv.includes("--e2e-only");
+const skipBuild = process.argv.includes("--skip-build");
 // One long-lived process per viewport avoids repeated browser/server startup and
 // retry-trace contention. CI can still opt into shards when it has more capacity.
 const e2eShards = Math.max(1, Number(process.env.PI_WEB_E2E_SHARDS || 1));
@@ -123,8 +124,8 @@ async function runE2eTasks() {
 }
 
 if (e2eOnly) {
-  const buildTask = preflightTasks.filter((task) => task.name === "build");
-  if (await runPhase(buildTask)) await runE2eTasks();
+  const buildTask = skipBuild ? [] : preflightTasks.filter((task) => task.name === "build");
+  if (buildTask.length === 0 || await runPhase(buildTask)) await runE2eTasks();
 } else if (await runPhase(preflightTasks)) await runE2eTasks();
 
 const elapsed = ((Date.now() - started) / 1000).toFixed(1);

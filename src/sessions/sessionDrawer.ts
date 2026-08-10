@@ -247,8 +247,10 @@ export function createSessions(options: {
 
     transcriptLoading = false;
     updateEmptyCwdChooser();
-    video.addEventListener("playing", () => video.classList.remove("resetting"), { once: true });
-    void video.play().catch(() => video.classList.remove("resetting"));
+    // Visibility must not depend on codec support: nested source failures can
+    // leave play() pending forever in Chromium builds without H.264.
+    video.classList.remove("resetting");
+    void video.play().catch(() => undefined);
   }
 
   async function selectSessionCwd(cwd: string) {
