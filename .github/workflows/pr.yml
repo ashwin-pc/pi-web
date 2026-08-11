@@ -32,12 +32,11 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Functional realtime E2E suite
-        run: >-
-          npx playwright test --project=desktop --reporter=html,list
-          tests/e2e/custom-messages.spec.ts
-          tests/e2e/interleaving.spec.ts
-          tests/e2e/retry-errors.spec.ts
+      - name: Complete E2E matrix
+        env:
+          PI_WEB_E2E_SHARDS: 2
+          PI_WEB_E2E_CONCURRENCY: 2
+        run: node scripts/run-all-tests.mjs --e2e-only --skip-build
 
       - name: Upload Playwright report
         if: always()
