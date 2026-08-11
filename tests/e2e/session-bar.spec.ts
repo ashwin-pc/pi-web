@@ -238,7 +238,7 @@ test.describe("session quick bar", () => {
     const pointer = { pointerId: 7, pointerType: "touch", isPrimary: true };
     const start = { clientX: firstBox!.x + firstBox!.width / 2, clientY: firstBox!.y + firstBox!.height / 2 };
     await draggedTab.dispatchEvent("pointerdown", { ...pointer, ...start, button: 0 });
-    await page.waitForTimeout(350);
+    await expect(draggedTab).toHaveClass(/\breorder-ready\b/);
     await page.locator("body").dispatchEvent("pointermove", {
       ...pointer,
       clientX: secondBox!.x + secondBox!.width * 0.75,

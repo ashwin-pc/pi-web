@@ -1347,6 +1347,7 @@ export function createSessions(options: {
       const finishPress = (delay = 0) => {
         if (!pressActive) return;
         pressActive = false;
+        tab.classList.remove("reorder-ready");
         clearListeners();
         if (delay > 0) window.setTimeout(() => flushQueuedSessionBarRender(), delay);
         else flushQueuedSessionBarRender();
@@ -1410,6 +1411,7 @@ export function createSessions(options: {
         maxScrollLeft = Math.max(0, bar.scrollWidth - bar.clientWidth);
         barRect = bar.getBoundingClientRect();
         lifted = true;
+        tab.classList.remove("reorder-ready");
         if (holdTimer !== undefined) window.clearTimeout(holdTimer);
         try {
           tab.setPointerCapture(pointerId);
@@ -1429,7 +1431,7 @@ export function createSessions(options: {
         clearListeners();
         suppressTabClickUntil = performance.now() + 400;
         bar.classList.remove("reordering");
-        tab.classList.remove("dragging");
+        tab.classList.remove("reorder-ready", "dragging");
         tab.classList.add("settling");
 
         let targetOffset = 0;
@@ -1529,6 +1531,7 @@ export function createSessions(options: {
         holdTimer = window.setTimeout(() => {
           if (!pressActive) return;
           longPressReady = true;
+          tab.classList.add("reorder-ready");
           suppressTabClickUntil = performance.now() + 400;
           navigator.vibrate?.(10);
         }, holdDelayMs);
@@ -1682,7 +1685,9 @@ export function createSessions(options: {
       const tab = document.createElement("div");
       tab.className = `sessionBarTab${focusedLane !== "pinned" ? " away" : ""}${isActive ? " active" : ""}${unread ? " unread" : ""}${options.running ? " running" : ""}${options.laned ? ` laned${focusedLane === "pinned" ? " pinned" : ""}` : " temporary"}${markerColor ? ` marked marker-${markerColor.id}` : ""}`;
       tab.dataset.sessionId = sessionId;
-      sessionInspector.attach(tab, sessionId, 360);
+      // Give the reorder gesture a clear head start; a stationary hold still
+      // opens the Inspector, while hold-and-move reliably becomes a drag.
+      sessionInspector.attach(tab, sessionId, 650);
       if (options.laned) attachLaneTabReorder(tab);
       if (isActive) activeTab = tab;
       if (options.running) {
