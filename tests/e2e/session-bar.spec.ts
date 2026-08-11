@@ -235,21 +235,19 @@ test.describe("session quick bar", () => {
       return Boolean(firstBox && secondBox);
     }).toBe(true);
 
-    const pointer = { pointerId: 7, pointerType: "touch", isPrimary: true };
     const start = { clientX: firstBox!.x + firstBox!.width / 2, clientY: firstBox!.y + firstBox!.height / 2 };
-    await draggedTab.dispatchEvent("pointerdown", { ...pointer, ...start, button: 0 });
-    await expect(draggedTab).toHaveClass(/\breorder-ready\b/);
-    await page.locator("body").dispatchEvent("pointermove", {
-      ...pointer,
-      clientX: secondBox!.x + secondBox!.width * 0.75,
-      clientY: start.clientY,
-    });
-    await expect(draggedTab).toHaveClass(/\bdragging\b/);
-    await page.locator("body").dispatchEvent("pointerup", {
-      ...pointer,
-      clientX: secondBox!.x + secondBox!.width * 0.75,
-      clientY: start.clientY,
-    });
+    const end = { clientX: secondBox!.x + secondBox!.width * 0.75, clientY: start.clientY };
+    // Run the timed gesture in one browser task sequence. Crossing the
+    // Playwright boundary between hold and move lets a loaded CI worker delay
+    // the move until the Inspector's later long-press timer has won.
+    await draggedTab.evaluate(async (tab, points) => {
+      const pointer = { pointerId: 7, pointerType: "touch", isPrimary: true, bubbles: true };
+      tab.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, ...points.start, button: 0 }));
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      tab.dispatchEvent(new PointerEvent("pointermove", { ...pointer, ...points.end }));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      tab.dispatchEvent(new PointerEvent("pointerup", { ...pointer, ...points.end }));
+    }, { start, end });
 
     await expect(tabs.nth(0)).toContainText("Older mock session");
     await expect(tabs.nth(1)).toContainText("Current mock session");

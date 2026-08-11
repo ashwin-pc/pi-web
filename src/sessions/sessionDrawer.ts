@@ -199,9 +199,19 @@ export function createSessions(options: {
     const label = document.createElement("label"); label.textContent = title;
     const input = document.createElement("input"); input.type = "text"; input.value = initial; input.placeholder = "Add a one-line note"; label.append(input);
     const actions = document.createElement("div"); const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel"; const save = document.createElement("button"); save.type = "submit"; save.textContent = "Save"; actions.append(cancel, save); prompt.append(label, actions); backdrop.append(prompt); document.body.append(backdrop);
-    const close = () => backdrop.remove(); cancel.addEventListener("click", close); backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+    };
+    const close = () => {
+      document.removeEventListener("keydown", onEscape, true);
+      backdrop.remove();
+    };
+    document.addEventListener("keydown", onEscape, true);
+    cancel.addEventListener("click", close); backdrop.addEventListener("click", (event) => { if (event.target === backdrop) close(); });
     prompt.addEventListener("submit", (event) => { event.preventDefault(); const note = input.value.trim(); close(); onCommit(note); });
-    input.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.preventDefault(); close(); } });
     requestAnimationFrame(() => { input.focus(); input.scrollIntoView({ block: "center", behavior: "smooth" }); });
   }
   function moveToLane(sessionId: string, lane: SessionLaneId, opts: { note?: string; cwd?: string } = {}) {
