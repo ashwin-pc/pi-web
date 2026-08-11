@@ -306,7 +306,6 @@ test.describe("visual regression", () => {
     await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.locator(".sessionSpinner")).toBeVisible();
     await expect(page.locator(".sessionBarTab.pinned")).toHaveCount(4);
-    await expect(page.locator(".sessionMarkerColorButton.selected")).toContainText("Green");
     await expect(page.locator(".sessionItem.marker-green")).toContainText("Older mock session");
 
     await expect(page).toHaveScreenshot(`sessions-drawer-${testInfo.project.name}.png`, {

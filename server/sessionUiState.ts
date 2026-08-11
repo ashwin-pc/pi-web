@@ -32,6 +32,7 @@ export type SessionOrigin = {
 
 export type SessionUiState = {
   version: 2;
+  revision: number;
   lanes: SessionLaneEntry[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
@@ -63,6 +64,7 @@ const legacyBucketToColor: Record<string, SessionMarkerColorId> = {
 
 export const defaultSessionUiState: SessionUiState = {
   version: 2,
+  revision: 0,
   lanes: [],
   pinnedFolders: [],
   sessionMarkers: [],
@@ -172,6 +174,8 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   const state = cloneState(defaultSessionUiState);
   if (!isRecord(value)) return state;
 
+  if (typeof value.revision === "number" && Number.isSafeInteger(value.revision) && value.revision >= 0) state.revision = value.revision;
+
   if (Array.isArray(value.lanes)) state.lanes = uniqueBy(value.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
 
   if (Array.isArray(value.pinnedFolders)) {
@@ -259,7 +263,8 @@ export function createSessionUiStateStore(file: string) {
   }
 
   async function writeState(state: SessionUiState) {
-    cached = normalizeSessionUiState(state);
+    const normalized = normalizeSessionUiState(state);
+    cached = { ...normalized, revision: Math.max(cached?.revision || 0, normalized.revision) + 1 };
     await mkdir(dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, `${JSON.stringify(cached, null, 2)}\n`, "utf-8");

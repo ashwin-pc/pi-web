@@ -303,6 +303,7 @@ describe("pi-web mock API", () => {
   it("persists and returns server session UI state", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
+    expect(initial.sessionUiState.revision).toEqual(expect.any(Number));
     expect(initial.sessionUiState.lanes).toEqual([]);
     expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
@@ -323,6 +324,7 @@ describe("pi-web mock API", () => {
     });
     expect(patchedRes.status).toBe(200);
     const patched = await patchedRes.json();
+    expect(patched.sessionUiState.revision).toBeGreaterThan(initial.sessionUiState.revision);
     expect(patched.sessionUiState).toMatchObject({
       lanes: [{ sessionId: "mock-current", lane: "pinned", cwd: ".", since: expect.any(String) }],
       pinnedFolders: ["/tmp/pi-web"],
@@ -339,6 +341,7 @@ describe("pi-web mock API", () => {
     });
     expect(readRes.status).toBe(200);
     const read = await readRes.json();
+    expect(read.sessionUiState.revision).toBeGreaterThan(patched.sessionUiState.revision);
     expect(read.sessionUiState.sessionUnreadStates).toEqual([]);
 
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();

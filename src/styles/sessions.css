@@ -786,7 +786,7 @@
   color: var(--muted);
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, transform 0.2s cubic-bezier(0.2, 0, 0, 1);
 }
-.sessionBarTab.pinned {
+.sessionBarTab.laned {
   /* Keep vertical page scrolling native; horizontal swipes and held drags are
      distinguished in the pointer gesture handler. */
   touch-action: pan-y;
@@ -1171,10 +1171,10 @@ body.hasPinnedSessions .app {
   border-bottom-left-radius: 6px;
 }
 /* Session lanes */
-.sessionLayersButton { flex:0 0 38px; align-self:stretch; border:0; border-right:1px solid var(--border); background:var(--bg); color:var(--muted); display:grid; place-items:center; cursor:pointer; position:sticky; left:0; z-index:4 }
+.sessionLayersButton { flex:0 0 38px; align-self:flex-start; width:38px; height:28px; min-width:38px; min-height:28px; max-height:28px; padding:0; border:0; border-right:1px solid var(--border); border-radius:0; background:var(--bg); color:var(--muted); display:grid; place-items:center; cursor:pointer; position:sticky; left:0; z-index:4 }
 .sessionLayersButton svg,.sessionLaneTerritory svg,.sessionLaneFilter svg,.sessionLaneBadge svg { width:16px;height:16px;display:block }
 .sessionLayersButton:hover,.sessionLayersButton.cur { color:var(--accent,#d8a657); background:color-mix(in srgb,var(--accent,#d8a657) 8%,var(--bg)) }
-.sessionLaneTerritory { min-width:112px; height:100%; border:0; border-top:2px solid transparent; border-right:1px solid var(--border); background:var(--bg); color:var(--muted); display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;font:inherit }
+.sessionLaneTerritory { min-width:112px; height:28px; min-height:28px; max-height:28px; padding:0; border:0; border-top:2px solid transparent; border-right:1px solid var(--border); border-radius:0; background:var(--bg); color:var(--muted); display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;font:inherit }
 .sessionLaneTerritory:hover { background:var(--bg-hover) }.sessionLaneTerritory.cur { border-top-color:var(--accent,#d8a657);color:var(--text) }
 .sessionBarTab.away { opacity:.62; filter:saturate(.6) }.sessionBarTab.away.active { opacity:.9 }
 .sessionLaneFilters { display:flex;align-items:center;gap:5px;padding:8px 10px 5px;position:sticky;top:0;z-index:3;background:var(--bg) }
@@ -1194,3 +1194,56 @@ body.hasPinnedSessions .app {
 /* Drawer filters override the global mobile touch-target sizing: the rail itself is the target area. */
 .sessionLaneFilters .sessionLaneFilter { min-height:26px !important;max-height:26px }
 .sessionLaneFilters .sessionBucketFilter { box-sizing:border-box;min-width:12px !important;max-width:12px;min-height:12px !important;max-height:12px;padding:0 !important;aspect-ratio:1;border-radius:50% }
+/* Dedicated mobile lane drawer */
+.sessionLaneDrawerBackdrop { position:fixed;inset:0;z-index:1200;display:flex;align-items:flex-end;justify-content:center;background:rgba(0,0,0,0);transition:background .18s ease }
+.sessionLaneDrawerBackdrop.open { background:rgba(0,0,0,.58) }
+.sessionLaneDrawer { box-sizing:border-box;width:min(100%,520px);max-height:min(78dvh,680px);overflow:hidden;display:flex;flex-direction:column;background:var(--bg);border:1px solid var(--border);border-bottom:0;border-radius:18px 18px 0 0;box-shadow:0 -18px 50px rgba(0,0,0,.42);transform:translateY(18px);opacity:.96;transition:transform .18s ease,opacity .18s ease;padding-bottom:env(safe-area-inset-bottom) }
+.sessionLaneDrawerBackdrop.open .sessionLaneDrawer { transform:translateY(0);opacity:1 }
+.sessionLaneDrawer>header { flex:0 0 46px;display:flex;align-items:center;padding:0 10px 0 16px;border-bottom:1px solid var(--border) }
+.sessionLaneDrawer>header:before { content:"";position:absolute;width:34px;height:4px;border-radius:2px;background:color-mix(in srgb,var(--muted) 45%,transparent);left:50%;transform:translateX(-50%);margin-top:-35px }
+.sessionLaneDrawer h2 { margin:0;font-size:14px;font-weight:650;letter-spacing:.01em }
+.sessionLaneDrawerClose { margin-left:auto;width:32px;height:32px;min-width:32px!important;min-height:32px!important;padding:7px;border:0;border-radius:8px;background:transparent;color:var(--muted) }
+.sessionLaneDrawerClose svg { width:16px;height:16px }
+.sessionLaneDrawerBody { overflow:auto;padding:8px 10px 14px }
+.sessionLaneDrawerSection { padding:3px 0 8px }
+.sessionLaneDrawerHeading { box-sizing:border-box;width:100%;height:28px;display:flex;align-items:center;gap:7px;padding:0 7px;color:var(--muted);text-align:left }
+.sessionLaneDrawerHeading svg { width:14px;height:14px }.sessionLaneDrawerHeading strong { color:var(--text);font-size:12px;font-weight:650 }.sessionLaneDrawerHeading>span:last-child { margin-left:auto;font-size:11px;font-variant-numeric:tabular-nums }
+.sessionLaneDrawerItem { box-sizing:border-box;width:100%;min-height:44px!important;padding:7px 9px;border:0;border-radius:9px;background:transparent;color:var(--text);display:flex;align-items:center;gap:9px;text-align:left }
+.sessionLaneDrawerItem:hover,.sessionLaneDrawerItem:focus-visible { background:var(--bg-hover) }.sessionLaneDrawerItem.current { background:color-mix(in srgb,var(--accent,#d8a657) 10%,transparent);color:var(--accent,#d8a657) }
+.sessionLaneDrawerBucket { flex:0 0 8px;width:8px;height:8px;border-radius:50%;background:var(--session-marker-color) }
+.sessionLaneDrawerItemCopy { min-width:0;display:flex;flex-direction:column;gap:2px }.sessionLaneDrawerItemTitle,.sessionLaneDrawerItemNote { overflow:hidden;text-overflow:ellipsis;white-space:nowrap }.sessionLaneDrawerItemTitle { font-size:13px;font-weight:570 }.sessionLaneDrawerItemNote { color:var(--muted);font-size:11px }
+.sessionLaneDrawerEmpty { margin:2px 7px 5px;color:var(--muted);font-size:11px }
+/* Mobile lane board — stacked-sheet mock */
+.sessionLaneDrawer { background:var(--panel,#111);padding-bottom:env(safe-area-inset-bottom) }
+.sessionLaneDrawerGrab { flex:0 0 auto;display:flex;justify-content:center;padding:8px 0 2px }.sessionLaneDrawerGrab:after{content:"";width:36px;height:4px;border-radius:99px;background:#333}
+.sessionLaneDrawer>header { flex:0 0 auto;height:auto;padding:4px 16px 8px;border:0 }.sessionLaneDrawer>header:before{display:none}.sessionLaneDrawer h2{font-size:12px;font-weight:700}.sessionLaneDrawerSummary{margin-left:auto;color:var(--muted);font-size:10.5px;font-weight:600}
+.sessionLaneDrawerBody { padding:0 12px 14px }
+.sessionLaneDrawerSection { min-height:62px;padding:0 }
+.sessionLaneDrawerHeading { box-sizing:border-box;height:auto;padding:10px 4px 6px;gap:6px;text-transform:uppercase;letter-spacing:.07em }.sessionLaneDrawerHeading strong{font-size:10.5px;text-transform:uppercase;letter-spacing:.07em}.sessionLaneDrawerHeading svg{width:13px;height:13px}.sessionLaneDrawerCount{color:var(--muted);font-size:10.5px}.sessionLaneDrawerMore{margin-left:auto!important;color:var(--muted);font-size:10.5px;text-transform:none;letter-spacing:0}
+.sessionLaneDrawerCard { position:relative;background:transparent;border:0;border-bottom:1px solid var(--border);border-radius:0;margin:0;overflow:hidden }.sessionLaneDrawerCard.current{background:color-mix(in srgb,var(--accent,#d8a657) 8%,transparent)}
+.sessionLaneDrawerItem { width:100%;height:auto!important;min-height:0!important;padding:9px 38px 9px 38px;border:0;border-radius:0;background:transparent;display:block;text-align:left;color:var(--text) }.sessionLaneDrawerItem:hover,.sessionLaneDrawerItem:focus-visible{background:var(--bg-hover)}
+.sessionLaneDrawerItemCopy{display:flex;flex-direction:column;gap:1px}.sessionLaneDrawerItemTitle{font-size:12.5px;font-weight:600}.sessionLaneDrawerItemNote{font-size:11.5px;color:var(--muted)}.sessionLaneDrawerItemMeta{min-height:14px;margin-top:3px;display:flex;align-items:center;gap:6px;color:color-mix(in srgb,var(--muted) 65%,transparent);font-size:10px}
+.sessionLaneDrawerBucket{display:inline-block;flex:0 0 7px;width:7px;height:7px;border-radius:50%;background:var(--session-marker-color)}
+.sessionLaneDrawerActions { position:absolute;top:7px;right:7px;width:26px!important;height:26px!important;min-width:26px!important;min-height:26px!important;padding:0!important;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:14px;line-height:1 }.sessionLaneDrawerActions:hover{background:var(--bg-hover)}
+.sessionLaneDragHandle { position:absolute;z-index:1;top:7px;left:5px;width:28px!important;height:28px!important;min-width:28px!important;min-height:28px!important;padding:0!important;border:0;border-radius:7px;background:transparent;color:var(--muted);font-size:18px;line-height:1;cursor:grab;touch-action:none }.sessionLaneDragHandle:hover,.sessionLaneDragHandle:focus-visible{background:var(--bg-hover);color:var(--text)}.sessionLaneDragHandle:active{cursor:grabbing}
+.sessionLaneDrawerEmpty{margin:0 4px 7px;padding:9px 11px;border:1px dashed var(--border);border-radius:10px}
+.sessionLaneDrawer>footer { flex:0 0 auto;border-top:1px solid var(--border);padding:9px 16px 14px;display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:10.5px }.sessionLaneDrawer>footer button{min-height:0!important;padding:0;border:0;background:transparent;color:var(--accent,#d8a657);font:600 10.5px inherit}
+/* Lane drawer interaction fixes */
+.sessionLaneDrawerCard { touch-action:pan-y;transition:transform .12s ease,opacity .12s ease }
+.sessionLaneDrawerCard.dragging { z-index:2;opacity:.78;transform:scale(.985);box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none }
+.sessionLaneDrawerItem,.sessionLaneDrawerItemCopy { min-width:0;overflow:visible }
+.sessionLaneDrawerItemTitle,.sessionLaneDrawerItemNote { white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;line-height:1.3 }
+.sessionLaneDrawerItemMeta { overflow:visible;white-space:normal;flex-wrap:wrap }
+.sessionLaneDrawerBackdrop~.sessionActionsMenu { z-index:1301 }
+.sessionLaneNotePromptBackdrop{position:fixed;inset:0;z-index:1700;display:grid;place-items:center;padding:16px;background:rgba(0,0,0,.64)}
+@media(max-width:640px){.sessionLaneNotePromptBackdrop{align-items:start;padding-top:max(16px,8dvh)}.sessionLaneNotePrompt{max-height:calc(100dvh - 32px);overflow:auto}}
+.sessionLaneNotePrompt{box-sizing:border-box;width:min(360px,100%);padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--panel);box-shadow:0 18px 50px rgba(0,0,0,.5)}.sessionLaneNotePrompt label{display:flex;flex-direction:column;gap:9px;color:var(--text);font-size:13px;font-weight:650}.sessionLaneNotePrompt input{box-sizing:border-box;width:100%;height:38px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}.sessionLaneNotePrompt>div{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.sessionLaneNotePrompt button{min-height:32px!important;height:32px!important;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)}.sessionLaneNotePrompt button[type=submit]{border-color:color-mix(in srgb,var(--accent,#d8a657) 55%,var(--border));color:var(--accent,#d8a657)}
+/* Compact session inspector */
+.sessionInspectorBackdrop{position:fixed;inset:0;z-index:1500;background:rgba(0,0,0,.22);opacity:0;transition:opacity .12s}.sessionInspectorBackdrop.open{opacity:1}
+.sessionInspector{position:fixed;box-sizing:border-box;width:min(300px,calc(100vw - 16px));border:1px solid #353735;border-radius:13px;background:color-mix(in srgb,var(--panel) 98%,black);box-shadow:0 18px 45px rgba(0,0,0,.6);overflow:hidden;color:var(--text)}
+.sessionInspector>header{height:36px;display:flex;align-items:center;padding:0 11px;border-bottom:1px solid var(--border)}.sessionInspector>header strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:650}
+.sessionInspectorRow{display:flex;align-items:center;gap:7px;padding:7px 9px}.sessionInspectorRow>span{flex:0 0 43px;color:var(--muted);font-size:10px}.sessionInspectorLanes{flex:1;display:grid;grid-template-columns:repeat(4,1fr);gap:3px}.sessionInspectorLanes button{height:29px!important;min-height:29px!important;padding:0!important;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted);display:grid;place-items:center}.sessionInspectorLanes button:hover{background:var(--bg-hover);color:var(--text)}.sessionInspectorLanes button.selected{border-color:#575a56;background:rgba(255,255,255,.05);color:var(--text)}.sessionInspectorLanes svg{width:14px;height:14px;fill:currentColor}
+.sessionInspectorBuckets{display:flex;align-items:center;gap:10px}.sessionInspectorBuckets button{box-sizing:border-box;width:15px!important;height:15px!important;min-width:15px!important;min-height:15px!important;padding:0!important;border:2px solid color-mix(in srgb,var(--panel) 94%,black);border-radius:50%;background:var(--session-marker-color);box-shadow:0 0 0 1px color-mix(in srgb,var(--text) 26%,transparent)}.sessionInspectorBuckets button.selected{box-shadow:0 0 0 2px white}
+.sessionInspectorNote{box-sizing:border-box;width:calc(100% - 18px);height:31px;margin:0 9px 8px;padding:0 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font:11px inherit}.sessionInspectorNote:disabled{opacity:.5}
+.sessionInspector>footer{display:grid;grid-template-columns:1fr 1fr;border-top:1px solid var(--border)}.sessionInspector>footer button{height:34px!important;min-height:34px!important;padding:0;border:0;border-right:1px solid var(--border);background:transparent;color:var(--muted);font:inherit}.sessionInspector>footer button:last-child{border:0}.sessionInspector>footer button:hover:not(:disabled){background:var(--bg-hover);color:var(--text)}.sessionInspector>footer button.danger{color:var(--danger)}.sessionInspector>footer button:disabled{opacity:.35}
+.sessionInspectorPressing{filter:brightness(1.14)}

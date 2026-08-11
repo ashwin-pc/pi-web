@@ -187,6 +187,7 @@ export type SessionUnreadState = { sessionId: string; unreadAt: string; updatedA
 export type SessionOrigin = { sessionId: string; originSessionId: string; kind: string; updatedAt: string };
 export type SessionUiState = {
   version: 2;
+  revision: number;
   lanes: SessionLaneEntry[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
@@ -206,6 +207,7 @@ export const sessionMarkerColors: SessionMarkerColor[] = [
 
 export const defaultSessionUiState: SessionUiState = {
   version: 2,
+  revision: 0,
   lanes: [],
   pinnedFolders: [],
   sessionMarkers: [],
@@ -339,6 +341,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   const legacy = normalizePinnedSessions(raw.pinnedSessions);
   return {
     version: 2,
+    revision: typeof raw.revision === "number" && Number.isSafeInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0,
     lanes: normalizeSessionLanes(raw.lanes).length ? normalizeSessionLanes(raw.lanes) : legacy.map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
