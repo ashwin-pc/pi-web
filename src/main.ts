@@ -557,7 +557,7 @@ modelSettings.init();
 settings.init();
 const hasBlockingShortcutOverlay = () => Boolean(document.fullscreenElement
   || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop, .imageOverlay'));
-const canCyclePinnedSessions = () => state.pinnedSessions.length > 1
+const canCyclePinnedSessions = () => sessions.focusedLaneSessionCount() > 1
   && elements.tokenOverlay.hidden
   && !elements.formEl.classList.contains("expanded")
   && !hasBlockingShortcutOverlay();
@@ -585,9 +585,31 @@ const keyboardShortcuts: Shortcut[] = [
     run: () => sessions.toggleCurrentSessionPin(),
   },
   {
+    id: "sessions.parkCurrent",
+    key: "k",
+    description: "Park current session",
+    scope: "global",
+    mod: true,
+    shift: true,
+    allowInEditable: true,
+    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    run: () => sessions.moveCurrentSessionToLane("parked"),
+  },
+  {
+    id: "sessions.bookmarkCurrent",
+    key: "b",
+    description: "Bookmark current session",
+    scope: "global",
+    mod: true,
+    shift: true,
+    allowInEditable: true,
+    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    run: () => sessions.moveCurrentSessionToLane("bookmarks"),
+  },
+  {
     id: "sessions.previousPinned",
     key: "ArrowLeft",
-    description: "Previous pinned session",
+    description: "Previous session in current lane",
     scope: "global",
     mod: true,
     shift: true,
@@ -597,7 +619,7 @@ const keyboardShortcuts: Shortcut[] = [
   {
     id: "sessions.nextPinned",
     key: "ArrowRight",
-    description: "Next pinned session",
+    description: "Next session in current lane",
     scope: "global",
     mod: true,
     shift: true,

@@ -177,15 +177,18 @@ export type AttachedImage = {
   contentUrl?: string;
 };
 
-export type PinnedSession = { id: string; cwd?: string };
+export type PinnedSession = { id: string; cwd?: string }; // legacy bootstrap/runtime projection
+export type SessionLaneId = "pinned" | "parked" | "bookmarks";
+export type SessionLaneEntry = { sessionId: string; lane: SessionLaneId; cwd?: string; note?: string; since: string };
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
 export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
 export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
 export type SessionUnreadState = { sessionId: string; unreadAt: string; updatedAt: string };
 export type SessionOrigin = { sessionId: string; originSessionId: string; kind: string; updatedAt: string };
 export type SessionUiState = {
-  version: 1;
-  pinnedSessions: PinnedSession[];
+  version: 2;
+  revision: number;
+  lanes: SessionLaneEntry[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
@@ -203,8 +206,9 @@ export const sessionMarkerColors: SessionMarkerColor[] = [
 ];
 
 export const defaultSessionUiState: SessionUiState = {
-  version: 1,
-  pinnedSessions: [],
+  version: 2,
+  revision: 0,
+  lanes: [],
   pinnedFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
@@ -242,6 +246,22 @@ export function normalizePinnedSessions(value: unknown): PinnedSession[] {
     seen.add(id);
     const cwd = typeof item?.cwd === "string" && item.cwd.trim() ? item.cwd.trim() : undefined;
     result.push({ id, ...(cwd ? { cwd } : {}) });
+  }
+  return result;
+}
+
+export function normalizeSessionLanes(value: unknown): SessionLaneEntry[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>(); const result: SessionLaneEntry[] = [];
+  for (const item of value) {
+    const sessionId = typeof item?.sessionId === "string" ? item.sessionId.trim() : "";
+    const lane = item?.lane;
+    if (!sessionId || seen.has(sessionId) || (lane !== "pinned" && lane !== "parked" && lane !== "bookmarks")) continue;
+    seen.add(sessionId);
+    const sinceDate = typeof item.since === "string" ? new Date(item.since) : new Date(NaN);
+    const cwd = typeof item.cwd === "string" && item.cwd.trim() ? item.cwd.trim() : undefined;
+    const note = typeof item.note === "string" && item.note.trim() ? item.note.trim() : undefined;
+    result.push({ sessionId, lane, ...(cwd ? { cwd } : {}), ...(note ? { note } : {}), since: Number.isNaN(sinceDate.getTime()) ? new Date().toISOString() : sinceDate.toISOString() });
   }
   return result;
 }
@@ -318,9 +338,12 @@ export function normalizeSessionOrigins(value: unknown): SessionOrigin[] {
 
 export function normalizeSessionUiState(value: unknown): SessionUiState {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  const legacy = normalizePinnedSessions(raw.pinnedSessions);
+  const lanes = normalizeSessionLanes(raw.lanes);
   return {
-    version: 1,
-    pinnedSessions: normalizePinnedSessions(raw.pinnedSessions),
+    version: 2,
+    revision: typeof raw.revision === "number" && Number.isSafeInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0,
+    lanes: lanes.length ? lanes : legacy.map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
@@ -424,6 +447,7 @@ export type AppState = {
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
   pinnedSessions: PinnedSession[];
+  lanes: SessionLaneEntry[];
   sessionsById: Record<string, SessionViewState>;
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
@@ -531,6 +555,7 @@ export function createAppState(): AppState {
     connectionLostTimer: undefined,
     reconnectedClearTimer: undefined,
     pinnedSessions: readLegacyPinnedSessions(),
+    lanes: readLegacyPinnedSessions().map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     sessionsById: {},
     pinnedFolders: [],
     sessionMarkers: readLegacySessionMarkers(),

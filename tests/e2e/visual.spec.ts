@@ -22,7 +22,11 @@ async function startEmptySession(page: import("@playwright/test").Page) {
   await page.locator("#sessionButton").click();
   await page.locator("#sessionNewButton").click();
   await expect(page.locator("#statusTitle")).toHaveText("New session");
-  if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
+  if (await page.locator("#sessionDrawer").isVisible()) {
+    // New-session setup may auto-close the mobile drawer between the visibility
+    // check and an actionability-based click; a DOM click is safely idempotent.
+    await page.locator("#sessionCloseButton").evaluate((button: HTMLButtonElement) => button.click());
+  }
 }
 
 async function seedSessionShowcaseState(page: import("@playwright/test").Page, currentSessionId = "mock-current", currentLabel = "Current mock session") {
@@ -306,7 +310,6 @@ test.describe("visual regression", () => {
     await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.locator(".sessionSpinner")).toBeVisible();
     await expect(page.locator(".sessionBarTab.pinned")).toHaveCount(4);
-    await expect(page.locator(".sessionMarkerColorButton.selected")).toContainText("Green");
     await expect(page.locator(".sessionItem.marker-green")).toContainText("Older mock session");
 
     await expect(page).toHaveScreenshot(`sessions-drawer-${testInfo.project.name}.png`, {
