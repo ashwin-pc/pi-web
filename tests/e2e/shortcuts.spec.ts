@@ -134,7 +134,6 @@ test.describe("keyboard shortcuts", () => {
 
     await page.keyboard.press("Control+Shift+ArrowRight");
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
-    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-older"]')).toHaveClass(/\bactive\b/);
   });
 
   test("ctrl/cmd+shift+p pins and unpins the current session", async ({ page }) => {

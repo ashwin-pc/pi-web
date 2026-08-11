@@ -47,6 +47,8 @@ test("opens an extension panel from the FAB and submits its form", async ({ page
   const stateLoaded = page.waitForResponse((response) => response.url().includes("/api/state") && response.ok());
   await page.goto("/");
   await stateLoaded;
+  // The response can complete before contributions have been applied to the UI.
+  await expect(page.locator('.webHeaderActionButton[title="Open notes"]')).toBeVisible();
   await page.locator("#prompt").blur();
   await page.locator(".actionLauncherToggle").click();
   await expect(page.locator(".actionLauncherItem", { hasText: "Notepad" })).toBeVisible();
