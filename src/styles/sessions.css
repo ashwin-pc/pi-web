@@ -124,91 +124,12 @@
   width: 6px;
   height: 6px;
 }
-.sessionMarkerPalette {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  min-width: 0;
-}
-.sessionMarkerColorButton {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: 18px;
-  min-width: 18px;
-  height: 22px;
-  min-height: 22px;
-  border: 0;
-  border-radius: 999px;
-  background: transparent;
-  color: var(--session-marker-color);
-  padding: 0;
-}
-.sessionMarkerColorButton.selected {
-  width: auto;
-  min-width: 0;
-  border: 1px solid color-mix(in srgb, var(--session-marker-color) 42%, transparent);
-  background: color-mix(in srgb, var(--session-marker-color) 12%, transparent);
-  padding: 0 6px;
-}
-.sessionMarkerColorButton:hover,
-.sessionMarkerColorButton:focus-visible {
-  border-color: color-mix(in srgb, var(--session-marker-color) 60%, transparent);
-  background: color-mix(in srgb, var(--session-marker-color) 16%, transparent);
-}
-.sessionMarkerPinTool {
-  --session-marker-color: var(--accent);
-  color: var(--muted);
-}
-.sessionMarkerPinTool svg {
-  width: 12px;
-  height: 12px;
-  stroke-width: 2.25;
-}
-.sessionMarkerPinTool.selected {
-  width: 22px;
-  min-width: 22px;
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-  color: var(--accent);
-  padding: 0;
-}
-.sessionMarkerColorSwatch {
-  flex: 0 0 auto;
-  width: 9px;
-  height: 9px;
-  border-radius: 999px;
-  background: var(--session-marker-color);
-}
-.sessionMarkerColorLabel {
-  color: color-mix(in srgb, var(--session-marker-color) 82%, var(--text));
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-}
 @media (max-width: 420px) {
   .sessionDrawerHeader {
     padding-left: 10px;
   }
   .sessionColorFilterButton {
     max-width: 58px;
-  }
-  .sessionMarkerColorButton,
-  .sessionMarkerColorButton.selected {
-    width: 24px;
-    min-width: 24px;
-    height: 26px;
-    min-height: 26px;
-    padding: 0;
-  }
-  .sessionMarkerPinTool.selected {
-    width: 24px;
-    min-width: 24px;
-  }
-  .sessionMarkerColorLabel {
-    display: none;
   }
 }
 .sessionDrawerSearch:focus {
@@ -1172,10 +1093,8 @@ body.hasPinnedSessions .app {
 }
 /* Session lanes */
 .sessionLayersButton { flex:0 0 38px; align-self:flex-start; width:38px; height:28px; min-width:38px; min-height:28px; max-height:28px; padding:0; border:0; border-right:1px solid var(--border); border-radius:0; background:var(--bg); color:var(--muted); display:grid; place-items:center; cursor:pointer; position:sticky; left:0; z-index:4 }
-.sessionLayersButton svg,.sessionLaneTerritory svg,.sessionLaneFilter svg,.sessionLaneBadge svg { width:16px;height:16px;display:block }
+.sessionLayersButton svg,.sessionLaneFilter svg,.sessionLaneBadge svg { width:16px;height:16px;display:block }
 .sessionLayersButton:hover,.sessionLayersButton.cur { color:var(--accent,#d8a657); background:color-mix(in srgb,var(--accent,#d8a657) 8%,var(--bg)) }
-.sessionLaneTerritory { min-width:112px; height:28px; min-height:28px; max-height:28px; padding:0; border:0; border-top:2px solid transparent; border-right:1px solid var(--border); border-radius:0; background:var(--bg); color:var(--muted); display:flex;align-items:center;justify-content:center;gap:7px;cursor:pointer;font:inherit }
-.sessionLaneTerritory:hover { background:var(--bg-hover) }.sessionLaneTerritory.cur { border-top-color:var(--accent,#d8a657);color:var(--text) }
 .sessionBarTab.away { opacity:.62; filter:saturate(.6) }.sessionBarTab.away.active { opacity:.9 }
 .sessionLaneFilters { display:flex;align-items:center;gap:5px;padding:8px 10px 5px;position:sticky;top:0;z-index:3;background:var(--bg) }
 .sessionLaneFilter { border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:999px;min-height:27px;padding:3px 9px;display:flex;align-items:center;gap:5px;cursor:pointer;font:inherit }
@@ -1184,7 +1103,7 @@ body.hasPinnedSessions .app {
 .sessionLaneNote { display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px }
 .sessionStaleBadge { color:#f07b72;border:1px solid color-mix(in srgb,#f07b72 50%,transparent);border-radius:999px;padding:1px 5px;font-size:9px;text-transform:uppercase;letter-spacing:.04em }
 .sessionFolderMatchCount { color:var(--muted);font-size:10px;margin-left:6px }
-@media(max-width:640px){.sessionLaneTerritory{min-width:0}.sessionLaneTerritory span{font-size:11px}.sessionLayersButton{flex-basis:34px}.sessionLaneFilters{overflow-x:auto}}
+@media(max-width:640px){.sessionLayersButton{flex-basis:34px}.sessionLaneFilters{overflow-x:auto}}
 .sessionDrawerFilters .sessionDrawerSearch { flex:1; width:100% }
 .sessionBucketFilters { margin-left:auto;display:flex;align-items:center;gap:7px;padding-left:8px }
 .sessionBucketFilterLabel { color:var(--muted);font-size:10px;margin-right:1px }
@@ -1202,8 +1121,6 @@ body.hasPinnedSessions .app {
 .sessionLaneDrawer>header { flex:0 0 46px;display:flex;align-items:center;padding:0 10px 0 16px;border-bottom:1px solid var(--border) }
 .sessionLaneDrawer>header:before { content:"";position:absolute;width:34px;height:4px;border-radius:2px;background:color-mix(in srgb,var(--muted) 45%,transparent);left:50%;transform:translateX(-50%);margin-top:-35px }
 .sessionLaneDrawer h2 { margin:0;font-size:14px;font-weight:650;letter-spacing:.01em }
-.sessionLaneDrawerClose { margin-left:auto;width:32px;height:32px;min-width:32px!important;min-height:32px!important;padding:7px;border:0;border-radius:8px;background:transparent;color:var(--muted) }
-.sessionLaneDrawerClose svg { width:16px;height:16px }
 .sessionLaneDrawerBody { overflow:auto;padding:8px 10px 14px }
 .sessionLaneDrawerSection { padding:3px 0 8px }
 .sessionLaneDrawerHeading { box-sizing:border-box;width:100%;height:28px;display:flex;align-items:center;gap:7px;padding:0 7px;color:var(--muted);text-align:left }

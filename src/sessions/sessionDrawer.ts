@@ -8,6 +8,7 @@ import { sessionRuntime, type SessionStateController } from "../app/sessionState
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 import { orderItemsWithChildren as orderLineage, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type WaitingInfo } from "./lineage.js";
 import { buildSessionInspector } from "./sessionInspector.js";
+import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -23,6 +24,8 @@ export type SessionsController = {
   startNewSession: (cwd?: string) => Promise<void>;
   toggleCurrentSessionPin: () => void;
   openAdjacentPinnedSession: (direction: -1 | 1) => Promise<void>;
+  moveCurrentSessionToLane: (lane: SessionLaneId) => void;
+  focusedLaneSessionCount: () => number;
   updateSessionRuntime: (sessionId: string, runtime: SessionInfo["runtime"]) => void;
   updateSessionName: (sessionId: string, name: string) => void;
   removeSession: (sessionId: string) => void;
@@ -172,7 +175,6 @@ export function createSessions(options: {
   let currentSessionPinButton: HTMLButtonElement | undefined;
   let sessionSearchInput: HTMLInputElement | undefined;
   let sessionColorFilterButton: HTMLButtonElement | undefined;
-  let markerPaletteEl: HTMLDivElement | undefined;
   let closeSessionColorFilterMenu: (() => void) | undefined;
   let closeCurrentSessionBucketMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
@@ -183,20 +185,13 @@ export function createSessions(options: {
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let suppressTabClickUntil = 0;
-  type SessionRowTool = "pin" | SessionMarkerColorId;
-  let selectedSessionRowTool: SessionRowTool = state.selectedMarkerColor;
   let laneFilter: SessionLaneId | "all" = "all";
   let focusedLane: SessionLaneId = "pinned";
-  const laneMeta: Record<SessionLaneId, { label: string; path: string }> = {
-    pinned: { label: "Pinned", path: "M8 1a5 5 0 0 0-5 5c0 3.6 5 9 5 9s5-5.4 5-9a5 5 0 0 0-5-5zm0 6.8A1.8 1.8 0 1 1 8 4.2a1.8 1.8 0 0 1 0 3.6z" },
-    parked: { label: "Parked", path: "M5 3h2.2v10H5zM8.8 3H11v10H8.8z" },
-    bookmarks: { label: "Bookmarks", path: "M4 2h8v12l-4-3-4 3z" },
-  };
-  function laneIcon(lane: SessionLaneId) { const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("aria-hidden", "true"); const path = document.createElementNS(svg.namespaceURI, "path"); path.setAttribute("d", laneMeta[lane].path); path.setAttribute("fill", "currentColor"); svg.append(path); return svg; }
-  function laneOf(sessionId: string) { return state.lanes.find((entry) => entry.sessionId === sessionId)?.lane; }
+  function laneEntry(sessionId: string) { return state.lanes.find((entry) => entry.sessionId === sessionId); }
+  function laneOf(sessionId: string) { return laneEntry(sessionId)?.lane; }
   function sessionsInLane(lane: SessionLaneId) { return state.lanes.filter((entry) => entry.lane === lane); }
   function syncPinnedProjection() { state.pinnedSessions = sessionsInLane("pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) })); }
-  function commitLanes() { const refreshLaneDrawer = Boolean(document.querySelector(".sessionLaneDrawerBackdrop")); syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }); renderSessionList(cachedSessions); renderSessionBar(); if (refreshLaneDrawer) openLaneDrawer(); }
+  function commitLanes() { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function openLaneNotePrompt(title: string, initial: string, onCommit: (note: string) => void) {
     document.querySelector(".sessionLaneNotePromptBackdrop")?.remove();
     const backdrop = document.createElement("div"); backdrop.className = "sessionLaneNotePromptBackdrop";
@@ -210,11 +205,22 @@ export function createSessions(options: {
     requestAnimationFrame(() => { input.focus(); input.scrollIntoView({ block: "center", behavior: "smooth" }); });
   }
   function moveToLane(sessionId: string, lane: SessionLaneId, opts: { note?: string; cwd?: string } = {}) {
-    const previous = state.lanes.find((entry) => entry.sessionId === sessionId);
+    const previous = laneEntry(sessionId);
     const note = opts.note ?? previous?.note;
     const entry: SessionLaneEntry = { sessionId, lane, ...(opts.cwd || previous?.cwd ? { cwd: opts.cwd || previous?.cwd } : {}), ...(note?.trim() ? { note: note.trim() } : {}), since: previous?.lane === lane ? previous.since : new Date().toISOString() };
+    const promptForNote = lane === "parked" && previous?.lane !== "parked" && !entry.note;
     if (previous?.lane === focusedLane && previous.lane !== lane) focusedLane = lane;
     state.lanes = [...state.lanes.filter((item) => item.sessionId !== sessionId), entry]; commitLanes();
+    if (promptForNote) requestAnimationFrame(() => promptForParkedNote(sessionId));
+  }
+  function promptForParkedNote(sessionId: string) {
+    const entry = laneEntry(sessionId);
+    if (entry?.lane !== "parked" || entry.note) return;
+    openLaneNotePrompt("Optional parking note", "", (note) => {
+      if (!note || laneOf(sessionId) !== "parked") return;
+      state.lanes = state.lanes.map((item) => item.sessionId === sessionId ? { ...item, note } : item);
+      commitLanes();
+    });
   }
   function setLaneNote(sessionId: string) {
     const entry = state.lanes.find((item) => item.sessionId === sessionId); if (!entry) return;
@@ -224,7 +230,7 @@ export function createSessions(options: {
   function isStale(entry: SessionLaneEntry) { return entry.lane === "parked" && Date.now() - new Date(entry.since).getTime() > 14 * 864e5; }
   const sessionInspector = buildSessionInspector({
     item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: state.lanes.find((entry) => entry.sessionId === sessionId)?.note }; },
-    moveToLane: (sessionId, lane) => moveToLane(sessionId, lane, { cwd: cachedSessions.find((entry) => entry.id === sessionId)?.cwd || state.currentCwd }),
+    moveToLane: (sessionId, lane) => moveToLane(sessionId, lane, { cwd: cachedSessions.find((entry) => entry.id === sessionId)?.cwd || laneEntry(sessionId)?.cwd || state.currentCwd }),
     setBucket: (sessionId, color) => setSessionMarker(sessionId, color),
     setNote: (sessionId, note) => { state.lanes = state.lanes.map((entry) => entry.sessionId === sessionId ? { ...entry, note: note || undefined } : entry); commitLanes(); },
     removeFromLanes,
@@ -583,9 +589,7 @@ export function createSessions(options: {
     state.selectedMarkerColor = next.selectedMarkerColor;
     allowedMarkerColors.clear();
     for (const color of next.allowedMarkerColors) allowedMarkerColors.add(color);
-    if (selectedSessionRowTool !== "pin") selectedSessionRowTool = next.selectedMarkerColor;
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
-    renderMarkerPalette();
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
     updateSessionButtonUnread();
@@ -861,24 +865,6 @@ export function createSessions(options: {
     sessionColorFilterButton.append(dots);
   }
 
-  function setSelectedMarkerColor(color: SessionMarkerColorId) {
-    const colorChanged = state.selectedMarkerColor !== color;
-    const toolChanged = selectedSessionRowTool !== color;
-    if (!colorChanged && !toolChanged) return;
-    state.selectedMarkerColor = color;
-    selectedSessionRowTool = color;
-    renderMarkerPalette();
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-    if (colorChanged) persistSessionUiState({ selectedMarkerColor: color });
-  }
-
-  function setSelectedPinTool() {
-    if (selectedSessionRowTool === "pin") return;
-    selectedSessionRowTool = "pin";
-    renderMarkerPalette();
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-  }
-
   function setSessionMarker(sessionId: string, color: SessionMarkerColorId) {
     const next = { sessionId, color, updatedAt: new Date().toISOString() };
     state.sessionMarkers = [next, ...state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId)];
@@ -896,63 +882,6 @@ export function createSessions(options: {
     renderSessionBar();
     renderCurrentSessionBucketButton();
     persistSessionUiState({ sessionMarkers: state.sessionMarkers });
-  }
-
-  function markerButtonTitle(markerColor: { id?: string; label: string } | undefined) {
-    const selected = selectedMarkerColor();
-    if (!markerColor) return `Mark session ${selected.label}. Current marker color: ${selected.label}.`;
-    return markerColor.id === selected.id
-      ? `Marked ${markerColor.label}. Click to clear.`
-      : `Marked ${markerColor.label}. Click to change to ${selected.label}.`;
-  }
-
-  function sessionStatusButtonTitle(pinned: boolean, markerColor: { id?: string; label: string } | undefined) {
-    if (selectedSessionRowTool !== "pin") return markerButtonTitle(markerColor);
-    const markerText = markerColor ? ` ${markerColor.label} marker.` : "";
-    return pinned
-      ? `Pinned to tab bar.${markerText} Click to unpin.`
-      : `Pin session to tab bar.${markerText}`;
-  }
-
-  function renderMarkerPalette() {
-    if (!markerPaletteEl) return;
-    markerPaletteEl.textContent = "";
-    markerPaletteEl.setAttribute("aria-label", selectedSessionRowTool === "pin"
-      ? "Session row action: pin or unpin tabs"
-      : `Current marker color: ${selectedMarkerColor().label}`);
-
-    const pinSelected = selectedSessionRowTool === "pin";
-    const pinButton = document.createElement("button");
-    pinButton.type = "button";
-    pinButton.className = `sessionMarkerColorButton sessionMarkerPinTool${pinSelected ? " selected" : ""}`;
-    pinButton.title = pinSelected ? "Row action: pin or unpin tabs" : "Use row button to pin or unpin tabs";
-    pinButton.setAttribute("aria-label", pinButton.title);
-    pinButton.setAttribute("aria-pressed", String(pinSelected));
-    setIcon(pinButton, "pin");
-    pinButton.addEventListener("click", setSelectedPinTool);
-    markerPaletteEl.append(pinButton);
-
-    for (const color of sessionMarkerColors) {
-      const selected = color.id === selectedSessionRowTool;
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `sessionMarkerColorButton marker-${color.id}${selected ? " selected" : ""}`;
-      button.title = selected ? `Current marker color: ${color.label}` : `Use ${color.label} marker`;
-      button.setAttribute("aria-label", button.title);
-      button.setAttribute("aria-pressed", String(selected));
-      const swatch = document.createElement("span");
-      swatch.className = "sessionMarkerColorSwatch";
-      swatch.setAttribute("aria-hidden", "true");
-      button.append(swatch);
-      if (selected) {
-        const label = document.createElement("span");
-        label.className = "sessionMarkerColorLabel";
-        label.textContent = color.label;
-        button.append(label);
-      }
-      button.addEventListener("click", () => setSelectedMarkerColor(color.id));
-      markerPaletteEl.append(button);
-    }
   }
 
   function closeOpenSessionColorFilterMenu() {
@@ -1276,8 +1205,8 @@ export function createSessions(options: {
     const previousFocusedLane = focusedLane;
     const targetLane = laneOf(sessionId);
     const switchingSessions = state.currentSessionId !== sessionId;
+    if (targetLane) focusedLane = targetLane;
     if (switchingSessions) {
-      if (targetLane) focusedLane = targetLane;
       sessionState.activate(sessionId);
       beginTranscriptLoading();
       clearMessages();
@@ -1310,11 +1239,11 @@ export function createSessions(options: {
   async function openSessionById(sessionId: string) {
     if (!sessionId) return;
     const cached = cachedSessions.find((item) => item.id === sessionId);
-    await openSessionTab(sessionId, cached?.cwd || state.currentCwd || "");
+    await openSessionTab(sessionId, cached?.cwd || laneEntry(sessionId)?.cwd || state.currentCwd || "");
   }
 
   async function openAdjacentPinnedSession(direction: -1 | 1) {
-    const pinned = state.pinnedSessions;
+    const pinned = sessionsInLane(focusedLane).map((entry) => ({ id: entry.sessionId, cwd: entry.cwd }));
     if (pinned.length < 2) return;
     const currentIndex = pinned.findIndex((item) => item.id === state.currentSessionId);
     const targetIndex = currentIndex < 0
@@ -1324,6 +1253,14 @@ export function createSessions(options: {
     const cached = cachedSessions.find((item) => item.id === target.id);
     await openSessionTab(target.id, cached?.cwd || target.cwd || state.currentCwd || "");
   }
+
+  function moveCurrentSessionToLane(lane: SessionLaneId) {
+    const sessionId = state.currentSessionId;
+    if (!sessionId) return;
+    moveToLane(sessionId, lane, { cwd: cachedSessions.find((item) => item.id === sessionId)?.cwd || laneEntry(sessionId)?.cwd || state.currentCwd });
+  }
+
+  function focusedLaneSessionCount() { return sessionsInLane(focusedLane).length; }
 
   function updateCurrentSessionPinButton() {
     if (!currentSessionPinButton) return;
@@ -1606,7 +1543,7 @@ export function createSessions(options: {
     });
   }
 
-  function openLaneDrawer() {
+  function openLaneDrawer(scrollTop = 0) {
     closeLaneDrawer?.();
     if (cachedSessions.length === 0) void refreshSessions().then(() => { if (document.querySelector(".sessionLaneDrawerBackdrop")) openLaneDrawer(); });
     const backdrop = document.createElement("div");
@@ -1629,8 +1566,8 @@ export function createSessions(options: {
     for (const lane of ["pinned", "parked", "bookmarks"] as SessionLaneId[]) {
       const entries = sessionsInLane(lane);
       const section = document.createElement("section"); section.className = `sessionLaneDrawerSection lane-${lane}`; section.dataset.lane = lane;
-      const laneHeading = document.createElement("div"); laneHeading.className = "sessionLaneDrawerHeading"; laneHeading.append(laneIcon(lane));
-      const laneLabel = document.createElement("strong"); laneLabel.textContent = laneMeta[lane].label;
+      const laneHeading = document.createElement("div"); laneHeading.className = "sessionLaneDrawerHeading"; laneHeading.append(sessionLaneIcon(lane));
+      const laneLabel = document.createElement("strong"); laneLabel.textContent = sessionLaneMeta[lane].label;
       const count = document.createElement("span"); count.className = "sessionLaneDrawerCount"; count.textContent = String(entries.length); laneHeading.append(laneLabel, count);
       if (lane === "pinned") { const more = document.createElement("span"); more.className = "sessionLaneDrawerMore"; more.textContent = "in tab bar"; laneHeading.append(more); }
       section.append(laneHeading);
@@ -1667,6 +1604,7 @@ export function createSessions(options: {
             const moved = nextLanes.find((item) => item.sessionId === entry.sessionId);
             if (entry.lane === focusedLane && moved && moved.lane !== entry.lane) focusedLane = moved.lane;
             state.lanes = nextLanes; commitLanes();
+            if (moved?.lane === "parked" && entry.lane !== "parked" && !moved.note) requestAnimationFrame(() => promptForParkedNote(entry.sessionId));
           }
           dragPointer = undefined; dragging = false;
         };
@@ -1706,7 +1644,7 @@ export function createSessions(options: {
     closeLaneDrawer = () => { window.removeEventListener("keydown", onKeyDown); backdrop.remove(); closeLaneDrawer = undefined; };
     backdrop.addEventListener("click", (event) => { if (event.target === backdrop) closeLaneDrawer?.(); });
     window.addEventListener("keydown", onKeyDown);
-    requestAnimationFrame(() => { backdrop.classList.add("open"); drawer.focus(); });
+    requestAnimationFrame(() => { backdrop.classList.add("open"); body.scrollTop = scrollTop; drawer.focus(); });
   }
 
   function renderSessionBar() {
@@ -1731,7 +1669,7 @@ export function createSessions(options: {
     bar.hidden = false;
     document.body.classList.add("hasPinnedSessions");
     bar.textContent = "";
-    const layers = document.createElement("button"); layers.type = "button"; layers.className = `sessionLayersButton${focusedLane !== "pinned" ? " away cur" : ""}`; layers.title = "Session lanes"; layers.append(focusedLane === "pinned" ? (() => { const svg = laneIcon("pinned"); svg.querySelector("path")?.setAttribute("d", "M8 1.6 14.6 5.3 8 9 1.4 5.3zM3.1 7.8 8 10.5l4.9-2.7 1.7 1L8 12.6 1.4 8.8zM3.1 10.4 8 13.1l4.9-2.7 1.7 1L8 15.2 1.4 11.4z"); return svg; })() : laneIcon(focusedLane)); layers.addEventListener("click", openLaneDrawer); bar.append(layers);
+    const layers = document.createElement("button"); layers.type = "button"; layers.className = `sessionLayersButton${focusedLane !== "pinned" ? " away cur" : ""}`; layers.title = "Session lanes"; layers.append(focusedLane === "pinned" ? (() => { const svg = sessionLaneIcon("pinned"); svg.querySelector("path")?.setAttribute("d", "M8 1.6 14.6 5.3 8 9 1.4 5.3zM3.1 7.8 8 10.5l4.9-2.7 1.7 1L8 12.6 1.4 8.8zM3.1 10.4 8 13.1l4.9-2.7 1.7 1L8 15.2 1.4 11.4z"); return svg; })() : sessionLaneIcon(focusedLane)); layers.addEventListener("click", () => openLaneDrawer()); bar.append(layers);
 
     updateCurrentSessionPinButton();
 
@@ -1803,7 +1741,7 @@ export function createSessions(options: {
         const close = document.createElement("button");
         close.type = "button";
         close.className = "sessionBarTabAction";
-        close.title = focusedLane === "pinned" ? "Unpin tab" : `Remove from ${laneMeta[focusedLane].label}`;
+        close.title = focusedLane === "pinned" ? "Unpin tab" : `Remove from ${sessionLaneMeta[focusedLane].label}`;
         close.setAttribute("aria-label", `${close.title}: ${label}`);
         setIcon(close, "x");
         close.addEventListener("click", () => focusedLane === "pinned" ? unpinSession(sessionId) : removeFromLanes(sessionId));
@@ -1832,7 +1770,7 @@ export function createSessions(options: {
       );
     }
 
-    if (currentId && !currentIsInFocusedLane && focusedLane === "pinned") {
+    if (currentId && !currentIsInFocusedLane) {
       const live = cachedSessions.find((s) => s.id === currentId);
       if (laneEntries.length > 0) {
         const separator = document.createElement("div");
@@ -1893,7 +1831,7 @@ export function createSessions(options: {
     const pinned = isPinned(item.id);
     const lane = laneOf(item.id);
     return [
-      ...(["pinned", "parked", "bookmarks"] as SessionLaneId[]).map((target) => ({ id: `lane-${target}`, label: `${lane === target ? "✓ " : ""}Move to ${laneMeta[target].label}`, icon: target === "pinned" ? "pin" as IconName : undefined, run: () => moveToLane(item.id, target, { cwd: item.cwd || cwd }) })),
+      ...(["pinned", "parked", "bookmarks"] as SessionLaneId[]).map((target) => ({ id: `lane-${target}`, label: `${lane === target ? "✓ " : ""}Move to ${sessionLaneMeta[target].label}`, icon: target === "pinned" ? "pin" as IconName : undefined, run: () => moveToLane(item.id, target, { cwd: item.cwd || cwd }) })),
       ...(lane ? [
         { id: "edit-lane-note", label: state.lanes.find((entry) => entry.sessionId === item.id)?.note ? "Edit note" : "Add note", run: () => setLaneNote(item.id) },
         { id: "drop-lane", label: "Remove from lanes", run: () => removeFromLanes(item.id) },
@@ -2039,9 +1977,9 @@ export function createSessions(options: {
     const laneDivider = document.createElement("span"); laneDivider.className = "sessionFilterDivider"; laneFilters.append(laneDivider);
     for (const lane of ["all", "pinned", "parked", "bookmarks"] as const) {
       const chip = document.createElement("button"); chip.type = "button"; chip.className = `sessionLaneFilter${laneFilter === lane ? " selected" : ""}`;
-      if (lane !== "all") chip.append(laneIcon(lane));
+      if (lane !== "all") chip.append(sessionLaneIcon(lane));
       if (lane === "all") { const label = document.createElement("span"); label.textContent = "All"; chip.append(label); }
-      chip.title = lane === "all" ? "All lanes" : `${laneMeta[lane].label} (${sessionsInLane(lane).length})`;
+      chip.title = lane === "all" ? "All lanes" : `${sessionLaneMeta[lane].label} (${sessionsInLane(lane).length})`;
       chip.setAttribute("aria-label", chip.title);
       chip.addEventListener("click", () => { laneFilter = lane; renderSessionList(cachedSessions); }); laneFilters.append(chip);
     }
@@ -2337,10 +2275,6 @@ export function createSessions(options: {
       sessionColorFilterButton.setAttribute("aria-haspopup", "menu");
       sessionColorFilterButton.addEventListener("click", () => openSessionColorFilterMenu(sessionColorFilterButton!));
       renderSessionColorFilterButton();
-      markerPaletteEl = document.createElement("div");
-      markerPaletteEl.className = "sessionMarkerPalette";
-      markerPaletteEl.setAttribute("role", "toolbar");
-      renderMarkerPalette();
       filterWrap.append(sessionSearchInput);
       headerTitle.replaceWith(filterWrap);
     }
@@ -2432,5 +2366,7 @@ export function createSessions(options: {
     openSessionTab,
     openSessionById,
     openAdjacentPinnedSession,
+    moveCurrentSessionToLane,
+    focusedLaneSessionCount,
   };
 }

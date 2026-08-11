@@ -1,4 +1,5 @@
 import type { SessionLaneId, SessionMarkerColorId } from "../app/types.js";
+import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
 
 export type SessionInspectorItem = {
   sessionId: string;
@@ -17,18 +18,7 @@ type InspectorOptions = {
   openSession: (sessionId: string) => void;
 };
 
-const lanePaths: Record<SessionLaneId, string> = {
-  pinned: "M8 1a5 5 0 0 0-5 5c0 3.6 5 9 5 9s5-5.4 5-9a5 5-9a5 5 0 0 0-5-5zm0 6.8A1.8 1.8 0 1 1 8 4.2a1.8 1.8 0 0 1 0 3.6z",
-  parked: "M5 3h2.2v10H5zM8.8 3H11v10H8.8z",
-  bookmarks: "M4 2h8v12l-4-3-4 3z",
-};
-const laneLabels: Record<SessionLaneId, string> = { pinned: "Pinned", parked: "Parked", bookmarks: "Bookmarks" };
 const colors: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green"];
-
-function laneIcon(lane: SessionLaneId) {
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("aria-hidden", "true");
-  const path = document.createElementNS(svg.namespaceURI, "path"); path.setAttribute("d", lanePaths[lane]); svg.append(path); return svg;
-}
 
 export function buildSessionInspector(options: InspectorOptions) {
   let backdrop: HTMLDivElement | undefined;
@@ -45,7 +35,7 @@ export function buildSessionInspector(options: InspectorOptions) {
     const lanes = document.createElement("div"); lanes.className = "sessionInspectorLanes";
     const none = document.createElement("button"); none.type = "button"; none.textContent = "×"; none.title = "Remove from lanes"; none.className = item.lane ? "" : "selected"; none.addEventListener("click", () => { options.removeFromLanes(item.sessionId); close(); }); lanes.append(none);
     for (const lane of ["pinned", "parked", "bookmarks"] as SessionLaneId[]) {
-      const button = document.createElement("button"); button.type = "button"; button.className = item.lane === lane ? "selected" : ""; button.title = laneLabels[lane]; button.setAttribute("aria-label", `Move to ${laneLabels[lane]}`); button.append(laneIcon(lane)); button.addEventListener("click", () => { if (item.lane !== lane) options.moveToLane(item.sessionId, lane); close(); }); lanes.append(button);
+      const button = document.createElement("button"); button.type = "button"; button.className = item.lane === lane ? "selected" : ""; button.title = sessionLaneMeta[lane].label; button.setAttribute("aria-label", `Move to ${sessionLaneMeta[lane].label}`); button.append(sessionLaneIcon(lane)); button.addEventListener("click", () => { if (item.lane !== lane) options.moveToLane(item.sessionId, lane); close(); }); lanes.append(button);
     }
     laneRow.append(lanes); card.append(laneRow);
 

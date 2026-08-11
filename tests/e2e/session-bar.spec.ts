@@ -375,6 +375,23 @@ test.describe("session quick bar", () => {
     expect(uiState.sessionUiState.sessionMarkers).toEqual([expect.objectContaining({ sessionId: "mock-current", color: "green" })]);
   });
 
+  test("parking commits immediately and offers a non-blocking optional note", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" });
+    await page.goto("/");
+    await page.locator('.sessionBarTab[data-session-id="mock-current"]').click({ button: "right" });
+    await page.getByRole("button", { name: "Move to Parked" }).click();
+
+    await expect.poll(async () => {
+      const value = await (await page.request.get("/api/session-ui-state")).json();
+      return value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "mock-current");
+    }).toMatchObject({ lane: "parked" });
+    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toHaveCount(0);
+    const value = await (await page.request.get("/api/session-ui-state")).json();
+    expect(value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "mock-current")).toEqual(expect.not.objectContaining({ note: expect.anything() }));
+  });
+
   test("session notes can be edited in every lane and survive moves and reloads", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" });
     await page.goto("/");
@@ -399,8 +416,9 @@ test.describe("session quick bar", () => {
     await openTabInspector();
     await expect(page.locator(".sessionInspectorNote")).toHaveValue("Pinned note");
     await page.getByRole("button", { name: "Move to Parked" }).click();
-    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toHaveCount(0);
+    // The move commits immediately; the follow-up prompt is optional and may be dismissed.
     await expectStoredLane("parked", "Pinned note");
+    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toHaveCount(0);
 
     await openTabInspector();
     await page.locator(".sessionInspectorNote").fill("Parked note");
@@ -474,6 +492,39 @@ test.describe("session quick bar", () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.find((entry: { sessionId: string; lane: string }) => entry.sessionId === "mock-current")?.lane;
     }).toBe("bookmarks");
+  });
+
+  test("removing the active lane entry keeps it visible as a temporary tab", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [{ sessionId: "mock-current", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" }] });
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+    await page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"] .sessionLaneDrawerItem').click();
+    await page.locator('.sessionBarTab[data-session-id="mock-current"] .sessionBarTabAction').click();
+
+    await expect(page.locator('.sessionBarTab.temporary[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
+  });
+
+  test("lane inspector preserves saved cross-workspace cwd for move and open", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [{ sessionId: "remote-session", lane: "parked", cwd: "/saved/workspace", since: "2026-01-01T00:00:00.000Z" }] });
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+    let row = page.locator('.sessionLaneDrawerCard[data-session-id="remote-session"]');
+    await row.click({ button: "right" });
+    await page.getByRole("button", { name: "Move to Bookmarks" }).click();
+    await expect.poll(async () => {
+      const value = await (await page.request.get("/api/session-ui-state")).json();
+      return value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "remote-session");
+    }).toMatchObject({ lane: "bookmarks", cwd: "/saved/workspace" });
+
+    let openedCwd = "";
+    await page.route("**/api/sessions/open", async (route) => {
+      openedCwd = JSON.parse(route.request().postData() || "{}").cwd;
+      await route.abort();
+    });
+    row = page.locator('.sessionLaneDrawerCard[data-session-id="remote-session"]');
+    await row.click({ button: "right" });
+    await page.getByRole("button", { name: "↗ Open" }).click();
+    await expect.poll(() => openedCwd).toBe("/saved/workspace");
   });
 
   test("clicking a lane drawer header does not change the active tab lane", async ({ page }) => {

@@ -52,12 +52,14 @@ test.describe("keyboard shortcuts", () => {
     const dialog = page.locator(".shortcutHelp");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("heading")).toHaveText("Keyboard shortcuts");
-    await expect(dialog.locator(".shortcutHelpRow")).toHaveCount(9);
+    await expect(dialog.locator(".shortcutHelpRow")).toHaveCount(11);
     await expect(dialog).toContainText("Pin or unpin current session");
+    await expect(dialog).toContainText("Park current session");
+    await expect(dialog).toContainText("Bookmark current session");
     await expect(dialog.locator(".shortcutHelpRow").filter({ hasText: "Focus composer" }).locator("kbd").last()).toHaveText(".");
     await expect(dialog).toContainText("Open a new session");
-    const previous = dialog.locator(".shortcutHelpRow").filter({ hasText: "Previous pinned session" });
-    const next = dialog.locator(".shortcutHelpRow").filter({ hasText: "Next pinned session" });
+    const previous = dialog.locator(".shortcutHelpRow").filter({ hasText: "Previous session in current lane" });
+    const next = dialog.locator(".shortcutHelpRow").filter({ hasText: "Next session in current lane" });
     await expect(previous.locator("kbd").last()).toHaveText("←");
     await expect(next.locator("kbd").last()).toHaveText("→");
 
@@ -119,6 +121,22 @@ test.describe("keyboard shortcuts", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
   });
 
+  test("ctrl/cmd+shift+arrows cycle sessions in the focused lane", async ({ page }) => {
+    await page.goto("about:blank");
+    await page.request.post("/api/mock/reset");
+    await page.request.patch("/api/session-ui-state", { data: { lanes: [
+      { sessionId: "mock-current", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
+    ] } });
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+    await page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"] .sessionLaneDrawerItem').click();
+
+    await page.keyboard.press("Control+Shift+ArrowRight");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-older"]')).toHaveClass(/\bactive\b/);
+  });
+
   test("ctrl/cmd+shift+p pins and unpins the current session", async ({ page }) => {
     const prompt = page.locator("#prompt");
     await expect(page.locator(".sessionBarTab.temporary")).toContainText("Current mock session");
@@ -129,6 +147,23 @@ test.describe("keyboard shortcuts", () => {
 
     await page.keyboard.press("Control+Shift+P");
     await expect(page.locator(".sessionBarTab.temporary")).toContainText("Current mock session");
+  });
+
+  test("ctrl/cmd+shift+k parks and ctrl/cmd+shift+b bookmarks the current session", async ({ page }) => {
+    await page.locator("#prompt").focus();
+    await page.keyboard.press("Control+Shift+K");
+    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect.poll(async () => {
+      const value = await (await page.request.get("/api/session-ui-state")).json();
+      return value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "mock-current")?.lane;
+    }).toBe("parked");
+
+    await page.keyboard.press("Control+Shift+B");
+    await expect.poll(async () => {
+      const value = await (await page.request.get("/api/session-ui-state")).json();
+      return value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "mock-current")?.lane;
+    }).toBe("bookmarks");
   });
 
   test("ctrl/cmd+shift+o opens a new session", async ({ page }) => {

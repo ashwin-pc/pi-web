@@ -339,10 +339,11 @@ export function normalizeSessionOrigins(value: unknown): SessionOrigin[] {
 export function normalizeSessionUiState(value: unknown): SessionUiState {
   const raw = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const legacy = normalizePinnedSessions(raw.pinnedSessions);
+  const lanes = normalizeSessionLanes(raw.lanes);
   return {
     version: 2,
     revision: typeof raw.revision === "number" && Number.isSafeInteger(raw.revision) && raw.revision >= 0 ? raw.revision : 0,
-    lanes: normalizeSessionLanes(raw.lanes).length ? normalizeSessionLanes(raw.lanes) : legacy.map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
+    lanes: lanes.length ? lanes : legacy.map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),

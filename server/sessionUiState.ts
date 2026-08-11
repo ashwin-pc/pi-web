@@ -205,7 +205,8 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   if ("lanes" in patch && Array.isArray(patch.lanes)) next.lanes = uniqueBy(patch.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
   else if ("pinnedSessions" in patch && Array.isArray(patch.pinnedSessions)) {
-    const pinned = patch.pinnedSessions.map((item) => isRecord(item) ? normalizeLaneEntry({ sessionId: item.id, lane: "pinned", cwd: item.cwd, since: new Date().toISOString() }) : undefined).filter(Boolean) as SessionLaneEntry[];
+    const existingPinned = new Map(next.lanes.filter((item) => item.lane === "pinned").map((item) => [item.sessionId, item]));
+    const pinned = patch.pinnedSessions.map((item) => isRecord(item) ? normalizeLaneEntry({ sessionId: item.id, lane: "pinned", cwd: item.cwd, since: existingPinned.get(typeof item.id === "string" ? item.id.trim() : "")?.since || new Date().toISOString() }) : undefined).filter(Boolean) as SessionLaneEntry[];
     next.lanes = [...uniqueBy(pinned, (item) => item.sessionId), ...next.lanes.filter((item) => item.lane !== "pinned")];
   }
 
@@ -237,6 +238,7 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
 export function createSessionUiStateStore(file: string) {
   let cached: SessionUiState | undefined;
+  let futureVersion: number | undefined;
   let writeQueue = Promise.resolve();
 
   async function serializeWrite<T>(operation: () => Promise<T>) {
@@ -250,6 +252,7 @@ export function createSessionUiStateStore(file: string) {
     try {
       const raw = JSON.parse(await readFile(file, "utf-8"));
       if (isRecord(raw) && typeof raw.version === "number" && raw.version > 2) {
+        futureVersion = raw.version;
         console.warn(`Refusing to read future session UI state version ${raw.version} at ${file}`);
         cached = cloneState(defaultSessionUiState);
       } else cached = normalizeSessionUiState(migrateSessionUiState(raw));
@@ -263,6 +266,7 @@ export function createSessionUiStateStore(file: string) {
   }
 
   async function writeState(state: SessionUiState) {
+    if (futureVersion !== undefined) throw new Error(`Session UI state version ${futureVersion} is newer than this build; refusing to overwrite ${file}`);
     const normalized = normalizeSessionUiState(state);
     cached = { ...normalized, revision: Math.max(cached?.revision || 0, normalized.revision) + 1 };
     await mkdir(dirname(file), { recursive: true });
