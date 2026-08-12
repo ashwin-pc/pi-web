@@ -31,11 +31,11 @@ async function startEmptySession(page: import("@playwright/test").Page) {
 
 async function seedSessionShowcaseState(page: import("@playwright/test").Page, currentSessionId = "mock-current", currentLabel = "Current mock session") {
   await page.request.patch("/api/session-ui-state", { data: {
-    pinnedSessions: [
-      { id: currentSessionId, label: currentLabel },
-      { id: "mock-older", label: "Older mock session" },
-      { id: "mock-release", label: "Release notes" },
-      { id: "mock-git", label: "Git diff review" },
+    lanes: [
+      { sessionId: currentSessionId, lane: "pinned", note: "Active implementation work", since: "2026-01-04T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "pinned", since: "2026-01-03T00:00:00.000Z" },
+      { sessionId: "mock-release", lane: "parked", note: "Resume after the next release", since: "2026-01-02T00:00:00.000Z" },
+      { sessionId: "mock-git", lane: "bookmarks", note: "Reference implementation", since: "2026-01-01T00:00:00.000Z" },
     ],
     sessionMarkers: [
       { sessionId: currentSessionId, color: "blue", updatedAt: "2026-01-01T00:00:00.000Z" },
@@ -299,20 +299,19 @@ test.describe("visual regression", () => {
     });
   });
 
-  test("sessions drawer", async ({ page }, testInfo) => {
+  test("session lanes", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1600, height: 1000 });
 
     await seedSessionShowcaseState(page);
     await page.goto("/");
-    await sendPrompt(page, "slow background task");
-    await page.locator("#sessionButton").click();
-    await expect(page.locator("#sessionDrawer")).toBeVisible();
-    await expect(page.locator(".sessionSpinner")).toBeVisible();
-    await expect(page.locator(".sessionBarTab.pinned")).toHaveCount(4);
-    await expect(page.locator(".sessionItem.marker-green")).toContainText("Older mock session");
+    await page.locator(".sessionLayersButton").click();
+    await expect(page.locator(".sessionLaneDrawer")).toBeVisible();
+    await expect(page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerCard')).toHaveCount(2);
+    await expect(page.locator('.sessionLaneDrawerSection[data-lane="parked"]')).toContainText("Resume after the next release");
+    await expect(page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]')).toContainText("Reference implementation");
 
-    await expect(page).toHaveScreenshot(`sessions-drawer-${testInfo.project.name}.png`, {
+    await expect(page).toHaveScreenshot(`session-lanes-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
     });

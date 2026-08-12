@@ -99,7 +99,9 @@ PI_WEB_CWD=/Users/ashwin/projects/comfy-lan-webapp npm run dev
 
 ### Mobile-first sessions
 
-The session UI is built for small screens first, then scales up to desktop. Tabs, the session drawer, pinned sessions, bucket filters, and conversation navigation are designed to keep long-running pi work reachable from a phone without hiding the desktop workflow.
+The session UI is built for small screens first, then scales up to desktop. Session lanes keep active work **Pinned**, paused work **Parked**, and useful references in **Bookmarks**. The dedicated lane drawer supports notes, bucket markers, stale parked-session badges, and drag-and-drop ordering within or across lanes, while pinned sessions remain immediately available in the tab bar.
+
+Right-click a session—or long-press it on touch devices—to open the Inspector Card and change its lane, bucket, or optional note. Keyboard shortcuts cover pinning (`Ctrl/Cmd+Shift+P`), parking (`Ctrl/Cmd+Shift+K`), bookmarking (`Ctrl/Cmd+Shift+B`), and cycling through the focused lane (`Ctrl/Cmd+Shift+←/→`).
 
 ### Workspace Explorer
 
@@ -151,13 +153,13 @@ The Explorer uses the same session-scoped file tree and CodeMirror editor on eve
 | --- | --- |
 | ![pi-web diff review desktop](tests/e2e/visual.spec.ts-snapshots/diff-review-desktop.png) | ![pi-web diff review mobile](tests/e2e/visual.spec.ts-snapshots/diff-review-mobile.png) |
 
-### Session workspace
+### Session lanes
 
-Tabs, pinned sessions, bucket colors, running indicators, and the session drawer are designed to stay usable on mobile while expanding naturally on desktop.
+Pinned, Parked, and Bookmarks form a persistent session workspace. The same lane manager becomes a desktop drawer or mobile bottom sheet, with flat session rows, optional notes, bucket markers, timestamps, drag handles, and quick access to the Inspector Card.
 
 | Desktop | Mobile |
 | --- | --- |
-| ![pi-web session workspace desktop](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-desktop.png) | ![pi-web session workspace mobile](tests/e2e/visual.spec.ts-snapshots/sessions-drawer-mobile.png) |
+| ![pi-web session lanes desktop](tests/e2e/visual.spec.ts-snapshots/session-lanes-desktop.png) | ![pi-web session lanes mobile](tests/e2e/visual.spec.ts-snapshots/session-lanes-mobile.png) |
 
 ### Git panel
 
