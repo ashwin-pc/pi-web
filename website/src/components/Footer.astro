@@ -1,0 +1,34 @@
+---
+const base = import.meta.env.BASE_URL;
+const year = new Date().getFullYear();
+---
+
+<footer class="site-footer">
+  <div class="container site-footer__grid">
+    <div class="site-footer__brand">
+      <a class="brand brand--footer" href={base} aria-label="pi-web home"><span class="brand__mark" aria-hidden="true">π</span><span>pi-web</span></a>
+      <p>The best interface for working with your agents.</p>
+      <p class="site-footer__fine">Runs on your machine. MIT licensed.</p>
+    </div>
+    <nav aria-label="Product links">
+      <h2>Product</h2>
+      <a href={`${base}features/`}>Features</a>
+      <a href={`${base}getting-started/`}>Getting started</a>
+      <a href={`${base}extensions/`}>Extensions</a>
+      <a href={`${base}principles/`}>Principles</a>
+    </nav>
+    <nav aria-label="Project links">
+      <h2>Project</h2>
+      <a href="https://github.com/ashwin-pc/pi-web">GitHub</a>
+      <a href="https://www.npmjs.com/package/@ashwin-pc/pi-web">npm</a>
+      <a href="https://github.com/ashwin-pc/pi-web/blob/main/docs/pi-web-extensions.md">Extensions docs</a>
+      <a href="https://github.com/ashwin-pc/pi-web/issues">Issues</a>
+    </nav>
+    <nav aria-label="Trust links">
+      <h2>Trust</h2>
+      <a href="https://github.com/ashwin-pc/pi-web#security">Security</a>
+      <a href="https://github.com/ashwin-pc/pi-web/blob/main/LICENSE">License</a>
+    </nav>
+  </div>
+  <div class="container site-footer__bottom"><span>© {year} pi-web contributors</span><span>Built for agents that do real work.</span></div>
+</footer>

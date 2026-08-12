@@ -1,0 +1,177 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import ButtonLink from '../../components/ButtonLink.astro';
+import InstallCommand from '../../components/InstallCommand.astro';
+import ProductShot from '../../components/ProductShot.astro';
+import Section from '../../components/Section.astro';
+
+const base = import.meta.env.BASE_URL;
+---
+
+<BaseLayout
+  title="Getting started"
+  description="Install pi-web, connect pi to a model provider, and start your first local agent session. Node.js 24+ required."
+>
+  <section class="page-hero page-hero--getting-started">
+    <div class="container page-hero__grid">
+      <div>
+        <p class="eyebrow">Getting started</p>
+        <h1>From install to your first agent session.</h1>
+        <p class="page-hero__lede">Run pi-web from the folder where work should happen, connect <code>pi</code> to your model provider, and open the browser workspace on your machine.</p>
+        <InstallCommand label="Recommended" />
+        <div class="requirement-row">
+          <span><strong>Node.js</strong> 24 or newer</span>
+          <span><strong>Current harness</strong> pi</span>
+          <span><strong>Default address</strong> localhost:8787</span>
+        </div>
+      </div>
+      <ProductShot variant="first-run" caption="pi-web starts a local browser workspace in the directory you choose." />
+    </div>
+  </section>
+
+  <Section narrow>
+    <div class="docs-layout">
+      <aside class="docs-nav" aria-label="On this page">
+        <p>On this page</p>
+        <a href="#prerequisite">1. Check Node.js</a>
+        <a href="#install">2. Run pi-web</a>
+        <a href="#provider">3. Connect a provider</a>
+        <a href="#open">4. Open the workspace</a>
+        <a href="#first-session">5. Start a session</a>
+        <a href="#remote-access">Optional remote access</a>
+        <a href="#updates">Updates and help</a>
+      </aside>
+
+      <div class="docs-content">
+        <div class="notice notice--plain">
+          <span aria-hidden="true">◉</span>
+          <div><strong>No live demo</strong><p>pi-web works with local projects and your own provider credentials, so the useful first experience starts on your machine.</p></div>
+        </div>
+
+        <section class="doc-step" id="prerequisite">
+          <div class="doc-step__number">1</div>
+          <div>
+            <p class="eyebrow">Prerequisite</p>
+            <h2>Check Node.js 24+</h2>
+            <p>pi-web supports Node.js 24 or newer. Check the version available in your terminal before you start.</p>
+            <InstallCommand command="node --version" label="Check your version" compact />
+            <p class="doc-hint">Need Node.js? Use the installation method recommended for your operating system at <a href="https://nodejs.org/en/download">nodejs.org</a>.</p>
+          </div>
+        </section>
+
+        <section class="doc-step" id="install">
+          <div class="doc-step__number">2</div>
+          <div>
+            <p class="eyebrow">Recommended install</p>
+            <h2>Run pi-web where the work lives.</h2>
+            <p>Open a terminal in the desired working directory and run the current package without a global installation:</p>
+            <InstallCommand compact />
+            <p>pi-web uses the directory where you run the command. To launch from elsewhere, set <code>PI_WEB_CWD</code> explicitly:</p>
+            <InstallCommand command="PI_WEB_CWD=/path/to/workspace npx -y @ashwin-pc/pi-web@latest" label="Choose a working directory" compact />
+
+            <details class="doc-disclosure">
+              <summary>Prefer a global command?</summary>
+              <div>
+                <p>Install once, then run <code>pi-web</code> in the directory you want the agent to use.</p>
+                <InstallCommand command="npm install -g @ashwin-pc/pi-web" label="Global install" compact />
+                <InstallCommand command="pi-web" label="Start the installed command" compact />
+              </div>
+            </details>
+          </div>
+        </section>
+
+        <section class="doc-step" id="provider">
+          <div class="doc-step__number">3</div>
+          <div>
+            <p class="eyebrow">First-run setup</p>
+            <h2>Connect <code>pi</code> to a model provider.</h2>
+            <p><code>pi</code> is the current default and full-capability reference harness. If pi-web cannot find an existing provider login, API key, or custom model configuration, it offers to open the bundled <code>pi</code> CLI in the same terminal.</p>
+            <ol class="check-list">
+              <li><span>1</span><p>Accept the prompt to open the bundled <code>pi</code> CLI.</p></li>
+              <li><span>2</span><p>Run <code>/login</code> and connect the provider you use.</p></li>
+              <li><span>3</span><p>Exit <code>pi</code>. pi-web continues starting automatically.</p></li>
+            </ol>
+            <p class="doc-hint">Already configured? pi-web uses the credentials and model configuration available to <code>pi</code>. Provider credentials stay on the server side.</p>
+          </div>
+        </section>
+
+        <section class="doc-step" id="open">
+          <div class="doc-step__number">4</div>
+          <div>
+            <p class="eyebrow">Local workspace</p>
+            <h2>Open pi-web in your browser.</h2>
+            <p>By default, the server listens only on your machine. Keep the terminal process running and open:</p>
+            <div class="address-card">
+              <code>http://127.0.0.1:8787</code>
+              <span>localhost only</span>
+            </div>
+            <p>There is no hosted account or relay in this setup. The browser connects directly to the pi-web process running locally.</p>
+          </div>
+        </section>
+
+        <section class="doc-step" id="first-session">
+          <div class="doc-step__number">5</div>
+          <div>
+            <p class="eyebrow">First successful session</p>
+            <h2>Give the agent a bounded, inspectable task.</h2>
+            <p>Start with useful work that has a clear outcome and lives inside the selected directory. Then confirm the full loop:</p>
+            <ul class="first-session-list">
+              <li><span>✓</span><div><strong>Working directory</strong><p>Confirm the folder shown for the new session.</p></div></li>
+              <li><span>✓</span><div><strong>Model and reasoning</strong><p>Choose from the options exposed by <code>pi</code>.</p></div></li>
+              <li><span>✓</span><div><strong>Meaningful request</strong><p>Ask for a concrete result, not only a conversational answer.</p></div></li>
+              <li><span>✓</span><div><strong>Inspect the work</strong><p>Expand tools, open artifacts or files, and review changes as they appear.</p></div></li>
+              <li><span>✓</span><div><strong>Keep the thread</strong><p>Name or pin the session so you can return to it later.</p></div></li>
+            </ul>
+          </div>
+        </section>
+
+        <section class="doc-step doc-step--optional" id="remote-access">
+          <div class="doc-step__number">+</div>
+          <div>
+            <p class="eyebrow">Optional</p>
+            <h2>Connect another device on a network you control.</h2>
+            <p>pi-web does not provide hosted remote access. To reach it from a phone or another computer, place the localhost-bound app behind Tailscale or another secure network or reverse proxy you manage.</p>
+            <div class="notice notice--warning">
+              <span aria-hidden="true">!</span>
+              <div><strong>A bearer token is not transport security.</strong><p>Set <code>PI_WEB_TOKEN</code> to protect API and WebSocket access, and use HTTPS plus appropriate network controls. Do not expose plain public HTTP because a token is enabled.</p></div>
+            </div>
+            <InstallCommand command={'PI_WEB_TOKEN="$(openssl rand -hex 32)" npx -y @ashwin-pc/pi-web@latest'} label="Start with an optional access token" compact />
+            <p>Keep pi-web bound to <code>127.0.0.1</code> when using a local reverse proxy such as Tailscale Serve. A trusted-device link or QR can be generated explicitly from Settings; treat it like the token it contains.</p>
+            <div class="inline-links">
+              <a href="https://github.com/ashwin-pc/pi-web#remote-access">Remote access guide ↗</a>
+              <a href="https://github.com/ashwin-pc/pi-web#security">Security notes ↗</a>
+            </div>
+          </div>
+        </section>
+
+        <section class="doc-step doc-step--last" id="updates">
+          <div class="doc-step__number">?</div>
+          <div>
+            <p class="eyebrow">Updates and troubleshooting</p>
+            <h2>Keep the setup current and diagnosable.</h2>
+            <p>The recommended <code>npx …@latest</code> command resolves the latest published package. A global install can be updated by running its install command again.</p>
+            <div class="resource-grid">
+              <a href="https://github.com/ashwin-pc/pi-web#install"><strong>Install guide</strong><span>Package and release options ↗</span></a>
+              <a href="https://github.com/ashwin-pc/pi-web#environment-variables"><strong>Environment variables</strong><span>Host, port, cwd, and token ↗</span></a>
+              <a href="https://github.com/ashwin-pc/pi-web/issues"><strong>Known issues</strong><span>Search or report a problem ↗</span></a>
+              <a href="https://github.com/ashwin-pc/pi-web"><strong>Repository</strong><span>Source and complete docs ↗</span></a>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </Section>
+
+  <section class="closing-cta">
+    <div class="container closing-cta__inner">
+      <div>
+        <p class="eyebrow">Ready for the first session?</p>
+        <h2>Run pi-web in your working directory.</h2>
+      </div>
+      <div class="closing-cta__actions">
+        <InstallCommand compact />
+        <ButtonLink href={`${base}features/`} variant="secondary">See what it can do</ButtonLink>
+      </div>
+    </div>
+  </section>
+</BaseLayout>

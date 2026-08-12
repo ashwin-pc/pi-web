@@ -1,0 +1,41 @@
+---
+import type { FeatureRoute } from '../data/features';
+import BaseLayout from '../layouts/BaseLayout.astro';
+import BottomCTA from './BottomCTA.astro';
+import ButtonLink from './ButtonLink.astro';
+import CapabilityGrid from './CapabilityGrid.astro';
+import MarketingHero from './MarketingHero.astro';
+import Section from './Section.astro';
+
+interface Link { label: string; href: string; }
+interface Props {
+  feature: FeatureRoute;
+  description: string;
+  primary: Link;
+  secondary: Link;
+  technicalLinks: readonly Link[];
+}
+
+const { feature, description, primary, secondary, technicalLinks } = Astro.props;
+---
+
+<BaseLayout title={feature.eyebrow} description={description}>
+  <MarketingHero eyebrow={feature.eyebrow} title={feature.title} lede={feature.lede}>
+    <ButtonLink href={primary.href}>{primary.label}</ButtonLink>
+    <ButtonLink href={secondary.href} variant="secondary">{secondary.label}</ButtonLink>
+  </MarketingHero>
+
+  <Section eyebrow="Available core" title={feature.summary} intro="These capabilities are available in the current repository. Controls that depend on the agent harness use pi, the current default and full-capability reference harness.">
+    <CapabilityGrid items={feature.capabilities} />
+  </Section>
+
+  <slot />
+
+  <Section tone="tinted" narrow eyebrow="Read the evidence" title="Technical details stay close to the source." intro="The website explains outcomes; repository docs and tests carry the full operational detail.">
+    <nav class="source-links" aria-label={`${feature.eyebrow} technical resources`}>
+      {technicalLinks.map((link) => <a href={link.href}>{link.label}<span aria-hidden="true">↗</span></a>)}
+    </nav>
+  </Section>
+
+  <BottomCTA eyebrow={feature.eyebrow} title="Put the workspace around real work." primaryHref={primary.href} primaryLabel={primary.label} secondaryHref={secondary.href} secondaryLabel={secondary.label} />
+</BaseLayout>

@@ -1,0 +1,57 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import BottomCTA from '../../components/BottomCTA.astro';
+import ButtonLink from '../../components/ButtonLink.astro';
+import MarketingHero from '../../components/MarketingHero.astro';
+import Section from '../../components/Section.astro';
+import StatusLabel from '../../components/StatusLabel.astro';
+
+const base = import.meta.env.BASE_URL;
+const docs = 'https://github.com/ashwin-pc/pi-web/blob/main/docs/pi-web-extensions.md';
+---
+
+<BaseLayout title="Extensions" description="Describe the workflow and ask your agent to add it with project-local or global pi-web extensions powered by pi's current extension runtime.">
+  <MarketingHero eyebrow="Extensions" title="Describe the workflow. Ask your agent to add it." lede="A decision panel, a tailored artifact action, or a status surface can begin as an ordinary request and become trusted TypeScript source you own.">
+    <ButtonLink href={`${base}extensions/examples/`}>Try an example</ButtonLink>
+    <ButtonLink href={docs} external variant="secondary">Read the extension API</ButtonLink>
+  </MarketingHero>
+
+  <Section eyebrow="Agent-assisted workflow" title="Request → source file → reload → use." intro="This is a documented way to work with an agent, not a one-click generator. Point the agent to the shipped API docs and examples, then inspect the code it writes.">
+    <ol class="extension-loop">
+      <li><span>01</span><div><strong>Describe the workflow</strong><p>Name the outcome, where it should appear, and what data or actions it needs.</p></div></li>
+      <li><span>02</span><div><strong>Create the source</strong><p>Ask the agent to read <code>docs/pi-web-extensions.md</code> and write <code>.pi/web/extensions/your-workflow.ts</code>.</p></div></li>
+      <li><span>03</span><div><strong>Review and reload</strong><p>Inspect the trusted TypeScript, then run <code>/reload</code> or restart pi-web.</p></div></li>
+      <li><span>04</span><div><strong>Use and refine</strong><p>Open the contribution in pi-web and ask the agent to adjust the same source file.</p></div></li>
+    </ol>
+    <div class="prompt-block"><span>Example request</span><p>“Read <code>docs/pi-web-extensions.md</code>. Add a project-local decision log panel with title, owner, and status, plus a launcher. Put it in <code>.pi/web/extensions/decision-log.ts</code> and explain how to reload it.”</p></div>
+  </Section>
+
+  <Section tone="tinted" eyebrow="Choose the right extension" title="Shared agent behavior or browser-only workflow UI?" intro="Both styles currently execute through pi's extension runtime; current pi-web extensions are not harness-neutral add-ons.">
+    <div class="comparison-grid">
+      <article><StatusLabel /><h3>Regular <code>pi</code> extension</h3><p>Use for tools, commands, prompts, event handlers, and permission gates that should run in the pi terminal UI and pi-web.</p><code>.pi/extensions/*.ts</code><small>Global: ~/.pi/agent/extensions</small></article>
+      <article><StatusLabel /><h3>pi-web-only extension</h3><p>Use when the workflow depends on browser surfaces or trusted HTML and should not appear in the terminal UI.</p><code>.pi/web/extensions/*.ts</code><small>Global: ~/.pi/web/extensions</small></article>
+    </div>
+    <p class="scope-note"><strong>Project-local</strong> source travels with one workspace and is easier to review in context. <strong>User-global</strong> source applies across projects on your machine.</p>
+  </Section>
+
+  <Section eyebrow="Contribution surfaces" title="Add the smallest useful piece of interface." intro="One typed contribution kernel covers the supported browser surfaces, so an extension can stay focused instead of rebuilding the app shell.">
+    <div class="surface-list">
+      <span>Footer regions</span><span>Header actions</span><span>Artifact actions</span><span>Git tabs</span><span>Right panels</span><span>FAB launchers</span><span>Effects</span><span>Invalidations</span>
+    </div>
+    <div class="extension-operations">
+      <article><h3>Settings and health</h3><p>Register validated settings schemas with persistence and migration. Loader failures appear in extension health, and failed extensions can be retried without restarting the whole app.</p></article>
+      <article id="api"><h3>Capability discovery</h3><p>Inspect <code>apiVersion</code>, supported slots, kinds, and effects before using newer facilities. Extensions can degrade honestly, but declarative pre-execution requirements are not a shipping claim.</p></article>
+    </div>
+  </Section>
+
+  <Section tone="dark" narrow eyebrow="Trusted local code" title="Read the source before you reload it." intro="Extensions execute with the same local trust as regular pi extensions. Their browser contributions may contain trusted HTML, access local data, invoke commands, or affect agent behavior. Install only code you understand from sources you trust." />
+
+  <Section tone="tinted" narrow>
+    <div class="feature-callout">
+      <div><StatusLabel status="direction" /><p class="eyebrow">Architecture direction</p><h2>The current extension pillar is powered by <code>pi</code>.</h2><p>A future harness-neutral host add-on model is design direction, not something available extensions can target today.</p></div>
+      <ButtonLink href={`${base}principles/`} variant="secondary">See product direction</ButtonLink>
+    </div>
+  </Section>
+
+  <BottomCTA eyebrow="Start from working source" title="Install an example. Ask your agent to make it yours." primaryHref={`${base}extensions/examples/`} primaryLabel="Browse six examples" secondaryHref={docs} secondaryLabel="Read the API docs" />
+</BaseLayout>

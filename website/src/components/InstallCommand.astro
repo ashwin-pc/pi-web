@@ -1,0 +1,55 @@
+---
+interface Props {
+  command?: string;
+  label?: string;
+  compact?: boolean;
+}
+
+const {
+  command = 'npx -y @ashwin-pc/pi-web@latest',
+  label = 'Run in your terminal',
+  compact = false,
+} = Astro.props;
+---
+
+<div class:list={['install-command', { 'install-command--compact': compact }]} data-install-command>
+  <span class="install-command__label">{label}</span>
+  <div class="install-command__row">
+    <span class="install-command__prompt" aria-hidden="true">$</span>
+    <code>{command}</code>
+    <button type="button" data-copy-command aria-label={`Copy command: ${command}`}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="11" height="11" rx="2"></rect><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"></path></svg>
+      <span data-copy-label>Copy</span>
+    </button>
+  </div>
+  <span class="sr-only" aria-live="polite" data-copy-status></span>
+</div>
+
+<script>
+  document.querySelectorAll<HTMLElement>('[data-install-command]').forEach((container) => {
+    const button = container.querySelector<HTMLButtonElement>('[data-copy-command]');
+    const code = container.querySelector<HTMLElement>('code');
+    const label = container.querySelector<HTMLElement>('[data-copy-label]');
+    const status = container.querySelector<HTMLElement>('[data-copy-status]');
+
+    button?.addEventListener('click', async () => {
+      if (!code || !label || !status) return;
+      try {
+        await navigator.clipboard.writeText(code.textContent ?? '');
+        label.textContent = 'Copied';
+        status.textContent = 'Command copied to clipboard.';
+        window.setTimeout(() => {
+          label.textContent = 'Copy';
+          status.textContent = '';
+        }, 1800);
+      } catch {
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(code);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        status.textContent = 'Select the highlighted command and copy it.';
+      }
+    });
+  });
+</script>

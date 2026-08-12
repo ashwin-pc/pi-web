@@ -1,0 +1,30 @@
+---
+import FeaturePage from '../../../components/FeaturePage.astro';
+import Section from '../../../components/Section.astro';
+import { getFeatureRoute } from '../../../data/features';
+
+const base = import.meta.env.BASE_URL;
+const feature = getFeatureRoute('work-from-anywhere');
+const repo = 'https://github.com/ashwin-pc/pi-web';
+---
+
+<FeaturePage
+  feature={feature}
+  description="Use pi-web's responsive, installable agent workspace across your devices with user-managed remote access and honest security boundaries."
+  primary={{ label: 'Set up pi-web', href: `${base}getting-started/` }}
+  secondary={{ label: 'See session organization', href: `${base}features/keep-the-thread/` }}
+  technicalLinks={[
+    { label: 'Remote access guide', href: `${repo}#remote-access` },
+    { label: 'Security notes', href: `${repo}#security` },
+    { label: 'PWA configuration', href: `${repo}/blob/main/vite.config.ts` },
+    { label: 'Notification settings source', href: `${repo}/blob/main/src/settings/runNotifications.ts` },
+  ]}
+>
+  <Section tone="dark" eyebrow="Access boundary" title="Anywhere you choose to expose it—not hosted everywhere." intro="pi-web starts on localhost. Another device connects only after you place it behind a secure network or reverse proxy you operate.">
+    <div class="boundary-grid">
+      <article><span>1</span><h3>Keep localhost as the origin</h3><p>Run the app and its provider credentials on your machine.</p></article>
+      <article><span>2</span><h3>Add your secure path</h3><p>Use Tailscale or an HTTPS reverse proxy with network controls you understand.</p></article>
+      <article><span>3</span><h3>Protect app access</h3><p>An optional bearer token covers API and WebSocket requests. It does not replace transport security.</p></article>
+    </div>
+  </Section>
+</FeaturePage>

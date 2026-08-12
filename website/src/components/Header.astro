@@ -1,0 +1,40 @@
+---
+interface Props { currentPath: string; }
+
+const { currentPath } = Astro.props;
+const base = import.meta.env.BASE_URL;
+const routes = {
+  home: base,
+  features: `${base}features/`,
+  extensions: `${base}extensions/`,
+  principles: `${base}principles/`,
+  gettingStarted: `${base}getting-started/`,
+};
+const isCurrent = (route: string, exact = false) => exact ? currentPath === route : currentPath.startsWith(route);
+const links = [
+  { label: 'Home', href: routes.home, current: isCurrent(routes.home, true) },
+  { label: 'Features', href: routes.features, current: isCurrent(routes.features) },
+  { label: 'Extensions', href: routes.extensions, current: isCurrent(routes.extensions) },
+  { label: 'Principles', href: routes.principles, current: isCurrent(routes.principles) },
+  { label: 'Getting started', href: routes.gettingStarted, current: isCurrent(routes.gettingStarted) },
+];
+---
+
+<header class="site-header">
+  <div class="container site-header__inner">
+    <a class="brand" href={routes.home} aria-label="pi-web home"><span class="brand__mark" aria-hidden="true">π</span><span>pi-web</span></a>
+
+    <nav class="desktop-nav" aria-label="Primary navigation">
+      {links.map((link) => <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>)}
+      <a href="https://github.com/ashwin-pc/pi-web">GitHub <span aria-hidden="true">↗</span></a>
+    </nav>
+
+    <details class="mobile-nav">
+      <summary aria-label="Open navigation"><span></span><span></span><span></span></summary>
+      <nav aria-label="Mobile navigation">
+        {links.map((link) => <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>)}
+        <a href="https://github.com/ashwin-pc/pi-web">GitHub ↗</a>
+      </nav>
+    </details>
+  </div>
+</header>

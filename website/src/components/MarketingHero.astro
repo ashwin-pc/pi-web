@@ -1,0 +1,27 @@
+---
+import type { Availability } from '../data/features';
+import StatusLabel from './StatusLabel.astro';
+
+interface Props {
+  eyebrow: string;
+  title: string;
+  lede: string;
+  status?: Availability;
+  compact?: boolean;
+}
+
+const { eyebrow, title, lede, status = 'available', compact = false } = Astro.props;
+---
+
+<section class:list={['marketing-hero', { 'marketing-hero--compact': compact }] }>
+  <div class="container marketing-hero__inner">
+    <p class="eyebrow">{eyebrow}</p>
+    <h1>{title}</h1>
+    <p class="marketing-hero__lede">{lede}</p>
+    <div class="marketing-hero__meta">
+      <StatusLabel status={status} />
+      <slot name="meta" />
+    </div>
+    <div class="marketing-hero__actions"><slot /></div>
+  </div>
+</section>

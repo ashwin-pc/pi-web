@@ -1,0 +1,25 @@
+---
+interface Props {
+  id?: string;
+  eyebrow?: string;
+  title?: string;
+  intro?: string;
+  tone?: 'default' | 'tinted' | 'dark';
+  narrow?: boolean;
+}
+
+const { id, eyebrow, title, intro, tone = 'default', narrow = false } = Astro.props;
+---
+
+<section class:list={['section', `section--${tone}`, { 'section--narrow': narrow }]} id={id}>
+  <div class="container">
+    {(eyebrow || title || intro) && (
+      <header class="section__header">
+        {eyebrow && <p class="eyebrow">{eyebrow}</p>}
+        {title && <h2>{title}</h2>}
+        {intro && <p class="section__intro">{intro}</p>}
+      </header>
+    )}
+    <slot />
+  </div>
+</section>

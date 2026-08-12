@@ -5,6 +5,9 @@ node_modules/
 dist/
 dev-dist/
 release/
+site-dist/
+website/.astro/
+website/public/generated/
 
 # Local uploads / screenshots
 .pi-web-uploads/

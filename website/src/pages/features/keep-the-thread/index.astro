@@ -1,0 +1,36 @@
+---
+import FeaturePage from '../../../components/FeaturePage.astro';
+import Section from '../../../components/Section.astro';
+import StatusLabel from '../../../components/StatusLabel.astro';
+import ButtonLink from '../../../components/ButtonLink.astro';
+import { getFeatureRoute } from '../../../data/features';
+
+const base = import.meta.env.BASE_URL;
+const feature = getFeatureRoute('keep-the-thread');
+const repo = 'https://github.com/ashwin-pc/pi-web';
+---
+
+<FeaturePage
+  feature={feature}
+  description="Organize parallel agent work in persistent pi-web sessions, lanes, branches, queues, and linked quote replies."
+  primary={{ label: 'Start a session', href: `${base}getting-started/` }}
+  secondary={{ label: 'See the orchestration example', href: `${base}extensions/examples/#session-orchestration` }}
+  technicalLinks={[
+    { label: 'Sessions in the README', href: `${repo}#mobile-first-sessions` },
+    { label: 'Conversation tree', href: `${repo}#conversation-tree` },
+    { label: 'Session lane behavior', href: `${repo}/blob/main/tests/e2e/session-bar.spec.ts` },
+    { label: 'Linked quote replies', href: `${repo}/blob/main/tests/e2e/quote-replies.spec.ts` },
+  ]}
+>
+  <Section tone="tinted">
+    <div class="feature-callout">
+      <div>
+        <StatusLabel status="experimental" />
+        <p class="eyebrow">Visible delegation</p>
+        <h2>Workers can remain ordinary, reviewable sessions.</h2>
+        <p>The shipped session-orchestration extension and companion skill let a parent spawn, monitor, steer, read, and interrupt workers. It is source you explicitly install—not core behavior and not enabled by default.</p>
+      </div>
+      <ButtonLink href={`${base}extensions/examples/#session-orchestration`} variant="secondary">Review the experimental example</ButtonLink>
+    </div>
+  </Section>
+</FeaturePage>

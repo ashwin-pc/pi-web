@@ -1,0 +1,24 @@
+---
+import ButtonLink from './ButtonLink.astro';
+
+interface Props {
+  eyebrow: string;
+  title: string;
+  primaryHref: string;
+  primaryLabel: string;
+  secondaryHref?: string;
+  secondaryLabel?: string;
+}
+
+const { eyebrow, title, primaryHref, primaryLabel, secondaryHref, secondaryLabel } = Astro.props;
+---
+
+<section class="closing-cta">
+  <div class="container closing-cta__inner">
+    <div><p class="eyebrow">{eyebrow}</p><h2>{title}</h2></div>
+    <div class="cta-button-row">
+      <ButtonLink href={primaryHref}>{primaryLabel}</ButtonLink>
+      {secondaryHref && secondaryLabel && <ButtonLink href={secondaryHref} variant="secondary">{secondaryLabel}</ButtonLink>}
+    </div>
+  </div>
+</section>

@@ -1,7 +1,7 @@
 {
   "name": "@ashwin-pc/pi-web",
   "version": "0.5.0",
-  "description": "A responsive web UI for the pi coding agent on mobile, desktop, and tablet.",
+  "description": "The responsive, extensible browser workspace for working with your agents.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -34,6 +34,12 @@
     "dev": "PI_WEB_DEV=1 node --import tsx supervisor.ts",
     "dev:server": "PI_WEB_DEV=1 node --import tsx --watch server.ts",
     "build": "vite build && tsc -p tsconfig.extensions.json",
+    "website:assets": "node scripts/copy-website-assets.mjs",
+    "website:dev": "npm run website:assets && astro dev --root website",
+    "website:check": "npm run website:assets && astro check --root website",
+    "website:build": "npm run website:assets && astro build --root website",
+    "website:test": "node scripts/validate-website.mjs",
+    "website:preview": "astro preview --root website",
     "start": "node --import tsx server.ts",
     "start:supervised": "node --import tsx supervisor.ts",
     "typecheck": "tsc --noEmit",
@@ -47,7 +53,7 @@
     "test:all": "npm test"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
   "dependencies": {
     "@codemirror/commands": "^6.10.4",
@@ -81,10 +87,12 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@astrojs/check": "^0.9.10",
     "@playwright/test": "^1.59.1",
     "@types/node": "^24.10.1",
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.14",
+    "astro": "^7.2.1",
     "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.1.5"
   }

@@ -1,0 +1,23 @@
+---
+import type { Capability } from '../data/features';
+import StatusLabel from './StatusLabel.astro';
+
+interface Props {
+  items: readonly Capability[];
+}
+
+const { items } = Astro.props;
+---
+
+<div class="capability-grid">
+  {items.map((item, index) => (
+    <article class="capability-card">
+      <div class="capability-card__top">
+        <span aria-hidden="true">{String(index + 1).padStart(2, '0')}</span>
+        {item.status && <StatusLabel status={item.status} />}
+      </div>
+      <h3>{item.title}</h3>
+      <p>{item.description}</p>
+    </article>
+  ))}
+</div>

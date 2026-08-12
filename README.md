@@ -1,8 +1,12 @@
 # pi-web
 
-A focused web UI for [`@earendil-works/pi-coding-agent`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent), designed for mobile, desktop, and tablet.
+**The best interface for working with your agents.**
 
-pi-web's goal is simple: provide the best interface for pi on every device. It stays close to the core agent experience while giving pi the web-specific context it needs to render artifacts, images, sessions, diffs, diagrams, and tool output clearly.
+[Website](https://ashwin-pc.github.io/pi-web/) · [Getting started](https://ashwin-pc.github.io/pi-web/getting-started/) · [Extensions](https://ashwin-pc.github.io/pi-web/extensions/)
+
+pi-web is a focused browser workspace for substantial, inspectable agent work across mobile, desktop, and tablet. [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) is its current default and full-capability reference harness; the architecture is being designed to support additional harnesses without reducing what pi can do.
+
+It keeps the surrounding work visible—sessions, rich artifacts, files, diagrams, tool output, diffs, and extension-built workflow UI—without trying to become a full IDE.
 
 | Desktop | Mobile |
 | --- | --- |

@@ -6,6 +6,29 @@ on:
       - "**"
 
 jobs:
+  website:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Check website
+        run: npm run website:check
+
+      - name: Build website
+        run: npm run website:build
+
+      - name: Validate website output
+        run: npm run website:test
+
   test:
     runs-on: macos-latest
 

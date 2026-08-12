@@ -1,0 +1,18 @@
+---
+import type { Availability } from '../data/features';
+
+interface Props {
+  status?: Availability;
+}
+
+const { status = 'available' } = Astro.props;
+const labels: Record<Availability, string> = {
+  available: 'Available now',
+  'opt-in': 'Opt-in example',
+  experimental: 'Experimental · opt-in',
+  foundation: 'In-progress foundation',
+  direction: 'Direction',
+};
+---
+
+<span class:list={['status-label', `status-label--${status}`]}><i aria-hidden="true"></i>{labels[status]}</span>
