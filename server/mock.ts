@@ -680,6 +680,8 @@ export function createMockHarness(options: MockSessionOptions) {
             ], timestamp: new Date().toISOString() });
           }
           appendMockMessage({ role: "toolResult", toolCallId, toolName: "read", content: "file contents here", timestamp: new Date().toISOString() });
+        } else if (/long markdown artifact/i.test(message)) {
+          appendMockMessage({ role: "assistant", content: "Here is a long markdown artifact:\n\n[Long artifact report](/api/artifacts/long-report.md)", timestamp: new Date().toISOString() });
         } else if (/markdown artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a markdown artifact:\n\n[Artifact report](/api/artifacts/report.md)", timestamp: new Date().toISOString() });
         } else if (/html artifact/i.test(message)) {

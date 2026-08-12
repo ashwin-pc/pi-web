@@ -1,13 +1,37 @@
+.app::before,
+.app::after {
+  content: "";
+  grid-row: 2;
+  grid-column: 1;
+  z-index: 2;
+  align-self: start;
+  height: 36px;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% -12rem, rgba(54, 54, 54, .62) 0, rgba(28, 28, 28, .28) 22rem, transparent 44rem),
+    linear-gradient(180deg, #090909 0%, var(--bg) 55%, #010101 100%);
+  background-attachment: fixed;
+  -webkit-mask-image: linear-gradient(to bottom, #000, transparent);
+  mask-image: linear-gradient(to bottom, #000, transparent);
+}
+.app::after {
+  align-self: end;
+  -webkit-mask-image: linear-gradient(to top, #000, transparent);
+  mask-image: linear-gradient(to top, #000, transparent);
+}
+.app:has(#emptyCwdChooser:not([hidden]))::before,
+.app:has(#emptyCwdChooser:not([hidden]))::after { display: none; }
+
 .messages {
   grid-row: 2;
+  grid-column: 1;
   min-height: 0;
   overflow: auto;
-  padding: 8px 0 32px;
+  border-top: 8px solid transparent;
+  padding: 0 0 32px;
   display: flex;
   flex-direction: column;
   gap: 0;
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 36px, black calc(100% - 36px), transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 36px, black calc(100% - 36px), transparent 100%);
 }
 
 .message {
@@ -326,21 +350,30 @@ body.artifactPreviewDocument {
 }
 .markdownBody a { color: var(--accent); }
 .artifactPreview {
-  width: calc(100% + 28px);
-  margin: 10px -14px 14px;
-  border: 0;
-  border-radius: 0;
+  width: 100%;
+  margin: 10px 0 14px;
+  border: 1px solid color-mix(in srgb, #c7a86d 30%, var(--border));
+  border-radius: 12px;
   background: var(--panel);
-  overflow: hidden;
+  box-shadow: 0 8px 28px rgba(0,0,0,.22), inset 0 1px rgba(255,255,255,.025);
+  overflow: clip;
+}
+.artifactPreview--interactive {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+  box-shadow: 0 8px 28px rgba(0,0,0,.22), 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 .artifactPreviewHeader {
+  position: sticky;
+  top: 0;
+  z-index: 3;
   display: flex;
+  height: 29px;
+  min-height: 29px;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-height: 16px;
-  padding: 0 16px;
+  gap: 8px;
+  padding: 0 12px;
   border-bottom: 1px solid color-mix(in srgb, #c7a86d 35%, var(--border));
+  box-sizing: border-box;
   background-color: color-mix(in srgb, #171b25 84%, var(--panel));
   background-image:
     repeating-linear-gradient(
@@ -356,7 +389,29 @@ body.artifactPreviewDocument {
   color: var(--muted);
   font-size: 9px;
   line-height: 1;
+  cursor: pointer;
 }
+.artifactPreviewDisclosure {
+  display: grid;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  min-height: 0;
+  flex: 0 0 16px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.artifactPreviewDisclosure::before {
+  content: "";
+  width: 8px;
+  height: 6px;
+  background: linear-gradient(90deg, #7e6a43, #d8c18d 50%, #7e6a43);
+  clip-path: polygon(0 10%, 50% 70%, 100% 10%, 100% 35%, 50% 100%, 0 35%);
+  transition: transform 140ms ease;
+}
+.artifactPreview--minimized .artifactPreviewDisclosure::before { transform: rotate(-90deg); }
 .artifactPreviewTitle {
   flex: 1 1 auto;
   min-width: 0;
@@ -372,16 +427,88 @@ body.artifactPreviewDocument {
   align-items: center;
   gap: 8px;
 }
-.artifactPreviewAction { border: 0; padding: 0; background: none; color: var(--accent); font: inherit; cursor: pointer; }
+.artifactPreviewAction {
+  height: auto;
+  min-height: 0;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}
 .artifactPreviewAction:hover { text-decoration: underline; }
 .artifactPreviewAction:disabled { color: var(--muted); cursor: wait; text-decoration: none; }
 .artifactPreviewActionResult { padding: 10px; border-bottom: 1px solid var(--border); }
-.artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: auto; }
-.artifactPreview--html .artifactPreviewContent { padding: 0; overflow: hidden; }
-.artifactPreviewFrame { display: block; width: 100%; height: min(70vh, 720px); border: 0; background: #fff; border-radius: 0; }
+.artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: clip; }
+.artifactPreview--expanded > .artifactPreviewContent { max-height: none; }
+.artifactPreview--html .artifactPreviewContent { position: relative; padding: 0; }
+.artifactPreviewFrame { display: block; width: 100%; height: min(70vh, 720px); border: 0; background: #fff; border-radius: 0; pointer-events: none; }
+.artifactPreview--interactive .artifactPreviewFrame { pointer-events: auto; }
+.artifactPreviewShield {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.artifactPreviewShield span {
+  padding: 6px 9px;
+  border: 1px solid rgba(255,255,255,.24);
+  border-radius: 7px;
+  background: rgba(0,0,0,.68);
+  color: #fff;
+  font-size: 11px;
+  opacity: 0;
+  box-shadow: 0 4px 16px rgba(0,0,0,.3);
+  transition: opacity 140ms ease;
+}
+.artifactPreviewShield:hover span,
+.artifactPreviewShield:focus-visible span { opacity: 1; }
+.artifactPreview--interactive .artifactPreviewShield { pointer-events: none; }
 .artifactPreviewVideo { display: block; width: 100%; max-height: min(70vh, 720px); border-radius: 0 0 12px 12px; background: #000; }
-.artifactPreview--video .artifactPreviewContent { padding: 0; overflow: hidden; }
+.artifactPreview--video .artifactPreviewContent { padding: 0; }
 .artifactPreview--error .artifactPreviewContent { color: #fecdd3; }
+.artifactPreviewExpandFooter {
+  position: relative;
+  z-index: 2;
+  margin-top: -42px;
+  padding-top: 30px;
+  background: linear-gradient(transparent, var(--panel) 30px);
+}
+.artifactPreviewExpandFooter[hidden] { display: none; }
+.artifactPreviewExpand {
+  display: block;
+  width: 100%;
+  height: 29px;
+  min-height: 29px;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: var(--panel);
+  color: var(--accent);
+  padding: 0 12px;
+  font-size: 10px;
+}
+.artifactPreview--expanded > .artifactPreviewExpandFooter { margin-top: 0; padding-top: 0; background: none; }
+.artifactPreview--minimized > :not(.artifactPreviewHeader) { display: none; }
+.artifactPreview--minimized .artifactPreviewHeader { border-bottom: 0; }
+@media (max-width: 700px) {
+  .message.assistant > .body > .artifactPreview {
+    width: calc(100% + 28px);
+    margin-right: -14px;
+    margin-left: -14px;
+    border-right: 0;
+    border-left: 0;
+    border-radius: 0;
+  }
+}
 .markdownBody img {
   display: block;
   max-width: min(100%, 900px);

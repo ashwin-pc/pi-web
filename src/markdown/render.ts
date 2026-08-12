@@ -30,6 +30,9 @@ type ArtifactPreviewAction = { key?: unknown; title?: unknown; label?: unknown; 
 let artifactPreviewActions: ArtifactPreviewAction[] = [];
 let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type": "application/json" });
 let artifactActionSessionId = () => "";
+let artifactPreviewId = 0;
+const interactiveArtifactCards = new Set<HTMLElement>();
+let artifactInteractionListenerAttached = false;
 
 export function configureArtifactPreviewActions(options: { headers: () => Record<string, string>; getSessionId: () => string }) {
   artifactActionHeaders = options.headers;
@@ -462,6 +465,94 @@ function renderArtifactActions(card: HTMLElement, name: string, path: string, ki
   card.querySelector(".artifactPreviewHeader")?.append(container);
 }
 
+function setArtifactFrameInteraction(card: HTMLElement, interactive: boolean) {
+  card.classList.toggle("artifactPreview--interactive", interactive);
+  if (interactive) interactiveArtifactCards.add(card);
+  else interactiveArtifactCards.delete(card);
+}
+
+function ensureArtifactInteractionListener() {
+  if (artifactInteractionListenerAttached) return;
+  artifactInteractionListenerAttached = true;
+  document.addEventListener("pointerdown", (event) => {
+    for (const card of interactiveArtifactCards) {
+      if (!card.isConnected) {
+        interactiveArtifactCards.delete(card);
+        continue;
+      }
+      if (!card.contains(event.target as Node)) setArtifactFrameInteraction(card, false);
+    }
+  }, true);
+}
+
+function attachArtifactDisclosure(card: HTMLElement, header: HTMLElement, content: HTMLElement) {
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "artifactPreviewDisclosure";
+  toggle.title = "Minimize preview";
+  toggle.setAttribute("aria-label", toggle.title);
+  toggle.setAttribute("aria-expanded", "true");
+  toggle.setAttribute("aria-controls", content.id);
+  header.prepend(toggle);
+
+  const setMinimized = (minimized: boolean) => {
+    card.classList.toggle("artifactPreview--minimized", minimized);
+    toggle.setAttribute("aria-expanded", String(!minimized));
+    toggle.title = minimized ? "Restore preview" : "Minimize preview";
+    toggle.setAttribute("aria-label", toggle.title);
+    if (minimized) {
+      card.querySelector<HTMLVideoElement>("video")?.pause();
+      setArtifactFrameInteraction(card, false);
+    }
+  };
+  toggle.addEventListener("click", () => setMinimized(!card.classList.contains("artifactPreview--minimized")));
+  header.addEventListener("click", (event) => {
+    if ((event.target as Element).closest("a, button")) return;
+    setMinimized(!card.classList.contains("artifactPreview--minimized"));
+  });
+}
+
+function attachArtifactOverflowControl(card: HTMLElement, content: HTMLElement) {
+  let resizeObserver: ResizeObserver | undefined;
+  const footer = document.createElement("div");
+  footer.className = "artifactPreviewExpandFooter";
+  footer.hidden = true;
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "artifactPreviewExpand";
+  toggle.textContent = "⌄ Show more";
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-controls", content.id);
+  footer.append(toggle);
+  card.append(footer);
+
+  const refresh = () => {
+    if (!card.isConnected) {
+      resizeObserver?.disconnect();
+      return;
+    }
+    const expanded = card.classList.contains("artifactPreview--expanded");
+    const overflows = content.scrollHeight > content.clientHeight + 1;
+    card.classList.toggle("artifactPreview--overflowing", overflows || expanded);
+    footer.hidden = !overflows && !expanded;
+  };
+  toggle.addEventListener("click", () => {
+    const expanded = !card.classList.contains("artifactPreview--expanded");
+    card.classList.toggle("artifactPreview--expanded", expanded);
+    toggle.textContent = expanded ? "⌃ Show less" : "⌄ Show more";
+    toggle.setAttribute("aria-expanded", String(expanded));
+    refresh();
+    if (!expanded) card.scrollIntoView({ block: "nearest" });
+  });
+  content.addEventListener("load", refresh, true);
+  if ("ResizeObserver" in window) {
+    resizeObserver = new ResizeObserver(refresh);
+    resizeObserver.observe(content);
+  }
+  requestAnimationFrame(refresh);
+  return refresh;
+}
+
 function enhanceArtifactLinks(root: ParentNode) {
   for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/api/artifacts/"]'))) {
     if (link.dataset.artifactPreviewEnhanced) continue;
@@ -496,8 +587,11 @@ function enhanceArtifactLinks(root: ParentNode) {
     header.append(title, builtInActions);
     const content = document.createElement("div");
     content.className = "artifactPreviewContent";
+    content.id = `artifact-preview-content-${++artifactPreviewId}`;
     content.textContent = "Loading preview…";
     card.append(header, content);
+    attachArtifactDisclosure(card, header, content);
+    const refreshOverflow = attachArtifactOverflowControl(card, content);
     card.dataset.artifactName = title.textContent;
     card.dataset.artifactPath = url.pathname;
     card.dataset.artifactKind = kind;
@@ -515,7 +609,21 @@ function enhanceArtifactLinks(root: ParentNode) {
       // Allow artifact scripts (for diagrams and interactive previews) while omitting
       // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
       iframe.setAttribute("sandbox", "allow-scripts");
-      content.append(iframe);
+      const shield = document.createElement("button");
+      shield.type = "button";
+      shield.className = "artifactPreviewShield";
+      shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
+      const shieldHint = document.createElement("span");
+      shieldHint.textContent = "Click to interact";
+      shield.append(shieldHint);
+      shield.addEventListener("click", () => {
+        setArtifactFrameInteraction(card, true);
+        iframe.focus();
+      });
+      card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
+      content.append(iframe, shield);
+      ensureArtifactInteractionListener();
+      refreshOverflow();
       continue;
     }
 
@@ -531,6 +639,7 @@ function enhanceArtifactLinks(root: ParentNode) {
       source.type = videoMimeType(url.pathname);
       video.append(source);
       content.append(video);
+      refreshOverflow();
       continue;
     }
 
@@ -547,10 +656,12 @@ function enhanceArtifactLinks(root: ParentNode) {
         enhanceCodeBlocks(content);
         enhanceImages(content);
         enhanceArtifactLinks(content);
+        refreshOverflow();
       })
       .catch((error) => {
         content.textContent = error instanceof Error ? error.message : String(error);
         card.classList.add("artifactPreview--error");
+        refreshOverflow();
       });
   }
 }

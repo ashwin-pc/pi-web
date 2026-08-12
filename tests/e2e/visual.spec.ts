@@ -254,7 +254,9 @@ test.describe("visual regression", () => {
     await startEmptySession(page);
     const state = await (await page.request.get("/api/state")).json();
     await seedSessionShowcaseState(page, state.sessionId, state.sessionTitle || "New session");
-    await expect(page.locator(".sessionBarTab.pinned")).toHaveCount(4);
+    // The bar renders the focused lane only. Two showcase sessions are pinned;
+    // parked and bookmarked sessions remain available from the lanes drawer.
+    await expect(page.locator(".sessionBarTab.pinned")).toHaveCount(2);
 
     await sendPrompt(page, "showcase");
     await expect(page.locator(".message.assistant .markdownBody pre").last()).toBeVisible();

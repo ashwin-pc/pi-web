@@ -233,10 +233,21 @@ describe("connected transcript and header styling", () => {
     expect(entryAnimationTs).toContain('card.classList.add("toolCard--stateChanging")');
   });
 
-  it("keeps artifact headers compact with a pinstripe treatment", () => {
-    expect(messagesCss).toContain("min-height: 16px;");
-    expect(messagesCss).toContain("padding: 0 16px;");
+  it("frames artifacts with compact sticky chrome and no nested vertical scroller", () => {
+    expect(messagesCss).toContain("border: 1px solid color-mix(in srgb, #c7a86d 30%, var(--border));");
+    expect(messagesCss).toContain("overflow: clip;");
+    expect(messagesCss).toContain("position: sticky;\n  top: 0;\n  z-index: 3;");
+    expect(messagesCss).toContain("height: 29px;\n  min-height: 29px;");
+    expect(messagesCss).toContain(".artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: clip; }");
     expect(messagesCss).toContain("repeating-linear-gradient(\n      90deg,");
+  });
+
+  it("moves transcript fades outside the scroller and keeps phone previews flush", () => {
+    expect(messagesCss).toContain(".app::before,\n.app::after {");
+    expect(messagesCss).toContain("border-top: 8px solid transparent;");
+    expect(messagesCss).not.toContain("mask-image: linear-gradient(to bottom, transparent 0%, black 36px");
+    expect(messagesCss).toContain(".message.assistant > .body > .artifactPreview {");
+    expect(messagesCss).toContain("border-right: 0;\n    border-left: 0;");
   });
 
   it("lets the session title use free header space before truncating", () => {

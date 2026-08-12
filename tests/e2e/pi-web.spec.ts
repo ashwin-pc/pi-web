@@ -1593,6 +1593,7 @@ test.describe("image rendering", () => {
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
     await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n```ts\nconst preview = true;\n```\n");
+    await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
     await writeFile(join(artifactDir, "preview.html"), htmlPreview);
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
   });
@@ -1612,6 +1613,103 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
     await expect(preview.locator(".artifactPreviewContent strong")).toHaveText("markdown");
     await expect(preview.locator(".artifactPreviewContent pre code")).toContainText("const preview = true;");
+  });
+
+  test("expands long artifacts in the chat flow without trapping the wheel", async ({ page }) => {
+    await page.locator("#prompt").fill("show long markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const messages = page.locator("#messages");
+    const preview = page.locator(".artifactPreview--markdown").last();
+    const content = preview.locator(".artifactPreviewContent");
+    const expand = preview.locator(".artifactPreviewExpand");
+    await expect(content.locator("h1")).toHaveText("Long artifact report");
+    await expect(expand).toBeVisible();
+    await expect(expand).toHaveText("⌄ Show more");
+
+    await messages.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    const chatScrollBefore = await messages.evaluate((element) => element.scrollTop);
+    await content.hover({ force: true });
+    await page.mouse.wheel(0, -240);
+    await expect.poll(() => messages.evaluate((element) => element.scrollTop)).toBeLessThan(chatScrollBefore);
+    expect(await content.evaluate((element) => element.scrollTop)).toBe(0);
+
+    await expand.click();
+    await expect(preview).toHaveClass(/artifactPreview--expanded/);
+    await expect(expand).toHaveText("⌃ Show less");
+    const expandedSize = await content.evaluate((element) => ({ clientHeight: element.clientHeight, scrollHeight: element.scrollHeight }));
+    expect(expandedSize.clientHeight).toBeGreaterThan(0);
+    expect(Math.abs(expandedSize.scrollHeight - expandedSize.clientHeight)).toBeLessThanOrEqual(1);
+
+    const header = preview.locator(".artifactPreviewHeader");
+    await header.evaluate((element) => element.scrollIntoView({ block: "start" }));
+    const pinnedGeometry = await header.evaluate((element) => {
+      const messages = document.querySelector<HTMLElement>("#messages")!;
+      return { headerTop: element.getBoundingClientRect().top, scrollportTop: messages.getBoundingClientRect().top + messages.clientTop };
+    });
+    expect(Math.abs(pinnedGeometry.headerTop - pinnedGeometry.scrollportTop)).toBeLessThanOrEqual(1);
+
+    await expand.click();
+    await expect(preview).not.toHaveClass(/artifactPreview--expanded/);
+    await expect(expand).toHaveText("⌄ Show more");
+  });
+
+  test("minimizes an artifact to its compact sticky header", async ({ page }) => {
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--markdown").last();
+    const disclosure = preview.locator(".artifactPreviewDisclosure");
+    await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
+    await disclosure.click();
+    await expect(preview).toHaveClass(/artifactPreview--minimized/);
+    await expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    await expect(preview.locator(".artifactPreviewContent")).toBeHidden();
+
+    await preview.locator(".artifactPreviewTitle").click();
+    await expect(preview).not.toHaveClass(/artifactPreview--minimized/);
+    await expect(disclosure).toHaveAttribute("aria-expanded", "true");
+    await expect(preview.locator(".artifactPreviewContent")).toBeVisible();
+  });
+
+  test("keeps artifact headers at tool-row height when extension actions are present", async ({ page }) => {
+    await page.request.post("/api/mock/state", { data: {
+      webContributions: [{
+        version: 1,
+        key: "artifact-download",
+        slot: "artifact-action",
+        kind: "rendered",
+        title: "Download artifact",
+        label: "Download",
+        match: { kinds: ["markdown"] },
+      }],
+    } });
+    await page.reload();
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--markdown").last();
+    const header = preview.locator(".artifactPreviewHeader");
+    await expect(preview.locator(".artifactPreviewAction", { hasText: "Download" })).toBeVisible();
+    await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
+    expect((await header.boundingBox())?.height).toBeLessThanOrEqual(30);
+  });
+
+  test("keeps top-level artifact cards flush on phones", async ({ page }) => {
+    test.skip((page.viewportSize()?.width || 0) > 700, "Phone-only geometry");
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--markdown").last();
+    await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
+    const geometry = await preview.evaluate((card) => {
+      const cardRect = card.getBoundingClientRect();
+      const messageRect = card.closest(".message.assistant")!.getBoundingClientRect();
+      return { cardLeft: cardRect.left, cardRight: cardRect.right, messageLeft: messageRect.left, messageRight: messageRect.right };
+    });
+    expect(Math.abs(geometry.cardLeft - geometry.messageLeft)).toBeLessThanOrEqual(1);
+    expect(Math.abs(geometry.cardRight - geometry.messageRight)).toBeLessThanOrEqual(1);
   });
 
   test("opens markdown artifacts in a rendered preview page", async ({ page }) => {
@@ -1645,6 +1743,15 @@ test.describe("image rendering", () => {
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
     await expect(frame).toHaveAttribute("src", "/api/artifacts/preview.html");
+    await expect(frame).toHaveCSS("pointer-events", "none");
+    const shield = preview.locator(".artifactPreviewShield");
+    await expect(shield).toBeVisible();
+    await shield.click();
+    await expect(preview).toHaveClass(/artifactPreview--interactive/);
+    await expect(frame).toHaveCSS("pointer-events", "auto");
+    await page.mouse.move(0, 0);
+    await expect(preview).not.toHaveClass(/artifactPreview--interactive/);
+    await expect(frame).toHaveCSS("pointer-events", "none");
     const artifactFrame = frame.contentFrame();
     await expect(artifactFrame.locator("#script-status")).toHaveText("script ran");
     await expect(artifactFrame.locator("#sandbox-status")).toContainText("parent blocked");
