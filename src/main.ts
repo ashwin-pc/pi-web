@@ -148,6 +148,7 @@ async function handleMessageAction(context: MessageActionContext) {
 const quoteReplies = createQuoteReplies({
   messagesEl: elements.messagesEl,
   composerEl: elements.formEl,
+  getSessionId: () => state.currentSessionId,
   onChange: () => composer?.updatePrimaryAction(),
 });
 const markdown = createMarkdownRenderer(elements.messagesEl, quoteReplies.restoreSubmittedReferences);

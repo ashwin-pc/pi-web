@@ -83,6 +83,23 @@ test("keeps one reply action tethered to the highlighted text and dismisses it w
   await expect.poll(() => page.evaluate(() => getSelection()?.isCollapsed)).toBe(true);
 });
 
+test("restores unfinished quote replies and composer text after reload", async ({ page }) => {
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("How should this work offline?");
+  await page.getByRole("button", { name: "Confirm question" }).click();
+  await page.locator("#prompt").fill("Please compare the tradeoffs.");
+
+  await page.reload();
+
+  await expect(page.locator("#prompt")).toHaveValue("Please compare the tradeoffs.");
+  await expect(page.locator(".quoteReplyMark")).toHaveCount(1);
+  await expect(page.locator(".quoteReplySummaryButton")).toContainText("1 linked reply");
+  await page.locator(".quoteReplyPin").click();
+  await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("How should this work offline?");
+});
+
 test("links questions to multiple assistant responses and sends structured quote pairs", async ({ page }) => {
   await page.goto("/");
   await page.locator("#prompt").fill("Create another response");

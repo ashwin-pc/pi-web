@@ -78,14 +78,19 @@ function textRange(root: HTMLElement, startOffset: number, endOffset: number) {
 export function createQuoteReplies(options: {
   messagesEl: HTMLElement;
   composerEl: HTMLFormElement;
+  getSessionId: () => string;
   onChange: () => void;
 }): QuoteRepliesController {
-  const { messagesEl, composerEl, onChange } = options;
+  const { messagesEl, composerEl, getSessionId, onChange } = options;
   let references: QuoteReference[] = [];
   let pending: PendingSelection | undefined;
   let nextId = 1;
   let settleTimer = 0;
   const persistedReplies = new Map<string, Map<string, AttachedImage>>();
+  const draftStorageKey = "pi-web-quote-reply-drafts-v1";
+  type StoredDraft = Pick<QuoteReference, "id" | "quote" | "question" | "sourceMessageId" | "startOffset" | "endOffset">;
+  let restoredDraftSession = "";
+  let persistTimer = 0;
   const isMobileSelection = () => matchMedia("(pointer: coarse)").matches || innerWidth <= 760;
 
   const toolbar = document.createElement("div");
@@ -118,6 +123,37 @@ export function createQuoteReplies(options: {
 
   function draftReferences() {
     return references.filter((reference) => !reference.submitted);
+  }
+
+  function readStoredDrafts() {
+    try {
+      const value = JSON.parse(localStorage.getItem(draftStorageKey) || "{}") as Record<string, StoredDraft[]>;
+      return value && typeof value === "object" ? value : {};
+    } catch {
+      return {};
+    }
+  }
+
+  function persistDrafts() {
+    window.clearTimeout(persistTimer);
+    persistTimer = 0;
+    const sessionId = getSessionId();
+    if (!sessionId) return;
+    const stored = readStoredDrafts();
+    const drafts = draftReferences().map(({ id, quote, question, sourceMessageId, startOffset, endOffset }) => ({
+      id, quote, question, sourceMessageId, startOffset, endOffset,
+    }));
+    if (drafts.length) stored[sessionId] = drafts;
+    else delete stored[sessionId];
+    try {
+      if (Object.keys(stored).length) localStorage.setItem(draftStorageKey, JSON.stringify(stored));
+      else localStorage.removeItem(draftStorageKey);
+    } catch { /* ignore unavailable storage */ }
+  }
+
+  function schedulePersistDrafts() {
+    window.clearTimeout(persistTimer);
+    persistTimer = window.setTimeout(persistDrafts, 120);
   }
 
   function hideToolbar(clearSelection = false) {
@@ -261,6 +297,7 @@ export function createQuoteReplies(options: {
     reference.pin.remove();
     reference.note.remove();
     references = references.filter((candidate) => candidate !== reference);
+    persistDrafts();
     updateSummary();
   }
 
@@ -279,6 +316,7 @@ export function createQuoteReplies(options: {
     reference.note.querySelector<HTMLElement>(".quoteFootnoteQuestion")!.textContent = question;
     reference.note.classList.add("saved");
     reference.note.classList.remove("editing", "open");
+    persistDrafts();
     updateSummary();
   }
 
@@ -339,7 +377,77 @@ export function createQuoteReplies(options: {
     });
   }
 
+  function restoreDraftReference(draft: StoredDraft, body: HTMLElement) {
+    if (!draft.sourceMessageId || body.closest<HTMLElement>(".message.assistant")?.dataset.entryId !== draft.sourceMessageId) return;
+    const attachmentId = `quote-reply-${draft.id}`;
+    if (body.querySelector(`[data-quote-attachment-id="${CSS.escape(attachmentId)}"]`)) return;
+    const range = textRange(body, draft.startOffset, draft.endOffset);
+    if (!range || range.collapsed || range.toString().replace(/\s+/g, " ").trim() !== draft.quote.replace(/\s+/g, " ").trim()) return;
+
+    const mark = document.createElement("mark");
+    mark.className = "quoteReplyMark";
+    mark.dataset.quoteReference = String(draft.id);
+    mark.dataset.quoteAttachmentId = attachmentId;
+    try {
+      mark.append(range.extractContents());
+      range.insertNode(mark);
+    } catch {
+      return;
+    }
+    const pin = document.createElement("button");
+    pin.type = "button";
+    pin.className = "quoteReplyPin";
+    pin.dataset.quoteReplyUi = "true";
+    pin.textContent = String(draft.id);
+    pin.title = draft.question || "Open linked question";
+    mark.after(pin);
+
+    const note = document.createElement("div");
+    note.className = `quoteFootnote ${draft.question.trim() ? "saved" : "editing"}`;
+    note.dataset.quoteReplyUi = "true";
+    note.innerHTML = `<span class="quoteFootnoteNumber">${draft.id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><input aria-label="Question for quote ${draft.id}" placeholder="Question for this quote…"><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Confirm question">✓</button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
+    const input = note.querySelector<HTMLInputElement>("input")!;
+    input.value = draft.question;
+    note.querySelector<HTMLElement>(".quoteFootnoteQuestion")!.textContent = draft.question;
+    let noteAnchor: Element = mark.closest(selectableBlockSelector) || body;
+    while (noteAnchor.nextElementSibling?.classList.contains("quoteFootnote")) noteAnchor = noteAnchor.nextElementSibling;
+    noteAnchor.after(note);
+
+    const reference: QuoteReference = { ...draft, mark, pin, note, submitted: false };
+    references.push(reference);
+    nextId = Math.max(nextId, draft.id + 1);
+    input.addEventListener("input", () => { reference.question = input.value; schedulePersistDrafts(); updateSummary(); });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") { event.preventDefault(); saveReference(reference); }
+    });
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
+      note.classList.remove("saved");
+      note.classList.add("editing", "open");
+      input.focus();
+      input.select();
+    });
+    note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
+    pin.addEventListener("click", () => {
+      note.classList.toggle("open");
+      if (note.classList.contains("open")) jumpToReference(reference);
+    });
+    updateSummary();
+  }
+
   function restoreSubmittedReferences(body?: HTMLElement) {
+    const sessionId = getSessionId();
+    if (sessionId && restoredDraftSession !== sessionId) {
+      restoredDraftSession = sessionId;
+      const drafts = readStoredDrafts()[sessionId];
+      if (Array.isArray(drafts)) {
+        for (const draft of drafts) {
+          if (!draft || !Number.isSafeInteger(draft.id) || typeof draft.quote !== "string" || typeof draft.question !== "string" || typeof draft.sourceMessageId !== "string" || !Number.isSafeInteger(draft.startOffset) || !Number.isSafeInteger(draft.endOffset)) continue;
+          const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
+          if (sourceBody) restoreDraftReference(draft, sourceBody);
+        }
+      }
+    }
     const bodies = body
       ? [body]
       : Array.from(messagesEl.querySelectorAll<HTMLElement>(".message.assistant > .body"));
@@ -394,9 +502,11 @@ export function createQuoteReplies(options: {
       submitted: false,
     };
     references.push(reference);
+    persistDrafts();
     const input = note.querySelector<HTMLInputElement>("input")!;
     input.addEventListener("input", () => {
       reference.question = input.value;
+      schedulePersistDrafts();
       updateSummary();
     });
     input.addEventListener("keydown", (event) => {
@@ -447,6 +557,7 @@ export function createQuoteReplies(options: {
   });
   messagesEl.addEventListener("scroll", () => hideToolbar(), { passive: true });
   window.addEventListener("resize", () => hideToolbar());
+  window.addEventListener("pagehide", persistDrafts);
   summaryButton.addEventListener("click", (event) => {
     event.stopPropagation();
     summaryPopover.hidden = !summaryPopover.hidden;
@@ -496,11 +607,13 @@ export function createQuoteReplies(options: {
         reference.note.classList.remove("open");
         reference.pin.classList.add("submitted");
       });
+      persistDrafts();
       updateSummary();
     },
     clear() {
       references = [];
       persistedReplies.clear();
+      restoredDraftSession = "";
       pending = undefined;
       nextId = 1;
       toolbar.hidden = true;
