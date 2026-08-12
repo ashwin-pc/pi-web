@@ -1,6 +1,6 @@
 ---
-import CapturePair from '../../../components/CapturePair.astro';
 import FeaturePage from '../../../components/FeaturePage.astro';
+import ProductStory from '../../../components/ProductStory.astro';
 import Section from '../../../components/Section.astro';
 import { getFeatureRoute } from '../../../data/features';
 
@@ -9,36 +9,14 @@ const feature = getFeatureRoute('rich-results');
 const repo = 'https://github.com/ashwin-pc/pi-web';
 ---
 
-<FeaturePage
-  feature={feature}
-  description="Turn agent work into inspectable pi-web transcripts, tool activity, diagrams, interactive previews, and browsable artifacts."
-  primary={{ label: 'Get started', href: `${base}getting-started/` }}
-  secondary={{ label: 'Add an artifact workflow', href: `${base}extensions/` }}
-  technicalLinks={[
-    { label: 'Rich response guidance', href: `${repo}/blob/main/contexts/web-ui.md#rich-visual-responses` },
-    { label: 'Artifact browser source', href: `${repo}/blob/main/src/files/artifactBrowser.ts` },
-    { label: 'Artifact browser tests', href: `${repo}/blob/main/tests/e2e/files.spec.ts` },
-    { label: 'Workspace Explorer', href: `${repo}#workspace-explorer` },
-  ]}
->
-  <Section tone="dark" eyebrow="Deterministic product capture" title="Browse the handoff, then open the result." intro="These maintained test captures use the real pi-web interface. The current fixture is synthetic and the surrounding transcript is incidental; the gallery and preview are the product surfaces shown.">
-    <div class="capture-grid">
-      <CapturePair
-        desktop="artifacts-explorer-desktop.png"
-        mobile="artifacts-explorer-mobile.png"
-        desktopWidth={1600}
-        alt="pi-web Artifacts view showing folders and image, HTML, Markdown, and video deliverables"
-        caption="Artifacts gallery with several supported deliverable types. Deterministic product capture."
-      />
-      <CapturePair
-        desktop="artifact-preview-desktop.png"
-        mobile="artifact-preview-mobile.png"
-        desktopWidth={1600}
-        alt="pi-web large preview of an interactive HTML constellation artifact with open and download controls"
-        caption="Large preview of an interactive HTML artifact; this still image is not a live demo."
-      />
+<FeaturePage feature={feature} description="Turn agent work into inspectable transcripts, tool activity, previews, and browsable artifacts." primary={{ label: 'Get started', href: `${base}getting-started/` }} secondary={{ label: 'Add an artifact workflow', href: `${base}extensions/` }} technicalLinks={[{ label: 'Rich response guidance', href: `${repo}/blob/main/contexts/web-ui.md#rich-visual-responses` }, { label: 'Artifact browser source', href: `${repo}/blob/main/src/files/artifactBrowser.ts` }, { label: 'Artifact tests', href: `${repo}/blob/main/tests/e2e/files.spec.ts` }]}>
+  <Section eyebrow="Gallery to preview" title="Find the handoff. Open the result.">
+    <div class="story-stack">
+      <ProductStory desktop="artifacts-explorer-desktop.png" mobile="artifacts-explorer-mobile.png" width={1600} height={1000} alt="Artifacts gallery containing folders, image, HTML, Markdown, and video results" title="Browse deliverables" caption="Folders, HTML, images, Markdown, video, and more." />
+      <ProductStory desktop="artifact-preview-desktop.png" mobile="artifact-preview-mobile.png" width={1600} height={1000} alt="Interactive HTML artifact preview with open and download controls" title="Inspect the result" caption="A sandboxed interactive HTML artifact with open and download controls." />
     </div>
   </Section>
-
-  <Section narrow eyebrow="Content boundary" title="Rich does not mean unrestricted." intro="Markdown is sanitized. Agent-produced inline HTML runs in a sandbox, while extension-provided HTML follows the trusted local-code model. Open or download unknown files with the same care you would use elsewhere on your machine." />
+  <Section tone="dark" narrow eyebrow="Rendering boundary" title="Rich output, contained.">
+    <p class="boundary-copy">Markdown is sanitized and agent-produced HTML is sandboxed. The current default and full-capability reference harness is <code>pi</code>.</p>
+  </Section>
 </FeaturePage>

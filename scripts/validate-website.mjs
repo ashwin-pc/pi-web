@@ -18,7 +18,7 @@ const expectedPages = {
   ],
   '/features/': [
     'More work done. Every thread visible.',
-    'In-progress foundation',
+    'Visual index',
     'Current harness',
   ],
   '/features/work-from-anywhere/': [

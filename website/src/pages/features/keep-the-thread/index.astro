@@ -1,8 +1,7 @@
 ---
 import FeaturePage from '../../../components/FeaturePage.astro';
+import ProductStory from '../../../components/ProductStory.astro';
 import Section from '../../../components/Section.astro';
-import StatusLabel from '../../../components/StatusLabel.astro';
-import ButtonLink from '../../../components/ButtonLink.astro';
 import { getFeatureRoute } from '../../../data/features';
 
 const base = import.meta.env.BASE_URL;
@@ -10,27 +9,14 @@ const feature = getFeatureRoute('keep-the-thread');
 const repo = 'https://github.com/ashwin-pc/pi-web';
 ---
 
-<FeaturePage
-  feature={feature}
-  description="Organize parallel agent work in persistent pi-web sessions, lanes, branches, queues, and linked quote replies."
-  primary={{ label: 'Start a session', href: `${base}getting-started/` }}
-  secondary={{ label: 'See the orchestration example', href: `${base}extensions/examples/#session-orchestration` }}
-  technicalLinks={[
-    { label: 'Sessions in the README', href: `${repo}#mobile-first-sessions` },
-    { label: 'Conversation tree', href: `${repo}#conversation-tree` },
-    { label: 'Session lane behavior', href: `${repo}/blob/main/tests/e2e/session-bar.spec.ts` },
-    { label: 'Linked quote replies', href: `${repo}/blob/main/tests/e2e/quote-replies.spec.ts` },
-  ]}
->
-  <Section tone="tinted">
-    <div class="feature-callout">
-      <div>
-        <StatusLabel status="experimental" />
-        <p class="eyebrow">Visible delegation</p>
-        <h2>Workers can remain ordinary, reviewable sessions.</h2>
-        <p>The shipped session-orchestration extension and companion skill let a parent spawn, monitor, steer, read, and interrupt workers. It is source you explicitly install—not core behavior and not enabled by default.</p>
-      </div>
-      <ButtonLink href={`${base}extensions/examples/#session-orchestration`} variant="secondary">Review the experimental example</ButtonLink>
+<FeaturePage feature={feature} description="Organize parallel work in persistent pi-web sessions, lanes, and conversation branches." primary={{ label: 'Start a session', href: `${base}getting-started/` }} secondary={{ label: 'Orchestration example', href: `${base}extensions/examples/#session-orchestration` }} technicalLinks={[{ label: 'Sessions', href: `${repo}#mobile-first-sessions` }, { label: 'Conversation tree', href: `${repo}#conversation-tree` }, { label: 'Lane behavior', href: `${repo}/blob/main/tests/e2e/session-bar.spec.ts` }]}>
+  <Section eyebrow="Sessions and branches" title="Organize the work. Preserve the path.">
+    <div class="story-stack">
+      <ProductStory desktop="session-lanes-desktop.png" mobile="session-lanes-mobile.png" width={1600} height={1000} alt="Pinned, Parked, and Bookmarks session lanes" title="Parallel work at a glance" caption="Pinned, Parked, and Bookmarks." />
+      <ProductStory desktop="conversation-tree-desktop.png" mobile="conversation-tree-mobile.png" width={1280} height={1000} alt="Conversation tree showing branches and current path" title="Branch without erasing" caption="Search and return to any conversation path." />
     </div>
+  </Section>
+  <Section tone="tinted" narrow eyebrow="Experimental · opt-in" title="Visible worker sessions are an example, not core.">
+    <p class="boundary-copy">The session-orchestration extension can spawn and monitor ordinary sessions. <a href={`${base}extensions/examples/#session-orchestration`}>Inspect its source and setup →</a></p>
   </Section>
 </FeaturePage>

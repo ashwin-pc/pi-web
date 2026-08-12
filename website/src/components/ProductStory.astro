@@ -1,0 +1,58 @@
+---
+interface Props {
+  desktop: string;
+  mobile: string;
+  width: number;
+  height: number;
+  mobileWidth?: number;
+  mobileHeight?: number;
+  title?: string;
+  caption: string;
+  alt: string;
+  href?: string;
+  linkLabel?: string;
+  priority?: boolean;
+  size?: 'large' | 'card';
+}
+
+const {
+  desktop,
+  mobile,
+  width,
+  height,
+  mobileWidth = 393,
+  mobileHeight = 727,
+  title,
+  caption,
+  alt,
+  href,
+  linkLabel = 'Explore',
+  priority = false,
+  size = 'large',
+} = Astro.props;
+const base = import.meta.env.BASE_URL;
+---
+
+<figure class:list={['product-story', `product-story--${size}`]} style={`--story-ratio: ${width} / ${height}; --story-mobile-ratio: ${mobileWidth} / ${mobileHeight}`}>
+  <div class="product-story__image">
+    <picture>
+      <source media="(max-width: 600px)" srcset={`${base}generated/${mobile}`} width={mobileWidth} height={mobileHeight} />
+      <img
+        src={`${base}generated/${desktop}`}
+        width={width}
+        height={height}
+        alt={alt}
+        loading={priority ? 'eager' : 'lazy'}
+        decoding="async"
+        fetchpriority={priority ? 'high' : 'auto'}
+      />
+    </picture>
+  </div>
+  <figcaption>
+    <div>
+      {title && <strong>{title}</strong>}
+      <span>{caption}</span>
+    </div>
+    {href && <a href={href}>{linkLabel} <span aria-hidden="true">→</span></a>}
+  </figcaption>
+</figure>

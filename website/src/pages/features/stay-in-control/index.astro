@@ -1,6 +1,6 @@
 ---
-import CapturePair from '../../../components/CapturePair.astro';
 import FeaturePage from '../../../components/FeaturePage.astro';
+import ProductStory from '../../../components/ProductStory.astro';
 import Section from '../../../components/Section.astro';
 import { getFeatureRoute } from '../../../data/features';
 
@@ -9,36 +9,14 @@ const feature = getFeatureRoute('stay-in-control');
 const repo = 'https://github.com/ashwin-pc/pi-web';
 ---
 
-<FeaturePage
-  feature={feature}
-  description="Inspect and steer agent work with pi-web run controls, tool cards, workspace files, safe saves, diffs, and Git context."
-  primary={{ label: 'Install and inspect a first run', href: `${base}getting-started/` }}
-  secondary={{ label: 'Read the principles', href: `${base}principles/` }}
-  technicalLinks={[
-    { label: 'Diff review', href: `${repo}#diffs-and-tool-review` },
-    { label: 'Git status, graph, and diffs', href: `${repo}#git-status-graph-and-commit-diffs` },
-    { label: 'Workspace file safety tests', href: `${repo}/blob/main/tests/workspace-files.test.ts` },
-    { label: 'Security notes', href: `${repo}#security` },
-  ]}
->
-  <Section tone="dark" eyebrow="Concrete review surfaces" title="Open the workspace. Verify the repository." intro="Files and Git are one part of the wider control story: they make technical work inspectable when the task touches a repository.">
-    <div class="capture-grid">
-      <CapturePair
-        desktop="workspace-explorer-desktop.png"
-        mobile="workspace-explorer-mobile.png"
-        desktopWidth={1600}
-        alt="pi-web Workspace Explorer with a conversation, file tree, and open editor"
-        caption="Workspace Explorer in a deterministic coding-oriented fixture; shown here specifically as file-control evidence."
-      />
-      <CapturePair
-        desktop="git-diff-viewer-desktop.png"
-        mobile="git-diff-viewer-mobile.png"
-        desktopWidth={1280}
-        alt="pi-web Git view showing commit metadata, changed files, and a split diff"
-        caption="Git commit and file diff inspection. pi-web does not claim to commit or push."
-      />
+<FeaturePage feature={feature} description="Inspect and steer agent work with workspace files, diffs, and Git context." primary={{ label: 'Install pi-web', href: `${base}getting-started/` }} secondary={{ label: 'Read the principles', href: `${base}principles/` }} technicalLinks={[{ label: 'Diff review', href: `${repo}#diffs-and-tool-review` }, { label: 'Git views', href: `${repo}#git-status-graph-and-commit-diffs` }, { label: 'Workspace safety tests', href: `${repo}/blob/main/tests/workspace-files.test.ts` }]}>
+  <Section eyebrow="Review surfaces" title="Open the file. Verify the change.">
+    <div class="story-stack">
+      <ProductStory desktop="workspace-explorer-desktop.png" mobile="workspace-explorer-mobile.png" width={1600} height={1000} alt="Workspace Explorer with conversation, file tree, and editor" title="Workspace Explorer" caption="Browse and edit files beside the session." />
+      <ProductStory desktop="git-diff-viewer-desktop.png" mobile="git-diff-viewer-mobile.png" width={1280} height={1000} alt="Git view with commit metadata, changed files, and split diff" title="Git and diff inspection" caption="Review repository history and exact changes. pi-web does not commit or push." />
     </div>
   </Section>
-
-  <Section narrow eyebrow="Local-first boundary" title="The operator keeps the access decision." intro="pi-web binds to localhost by default, keeps provider credentials server-side, and scopes workspace and artifact access. If you expose it, the bearer token is only one layer; transport and network controls remain yours." />
+  <Section tone="dark" narrow eyebrow="Local-first boundary" title="Access remains your decision.">
+    <p class="boundary-copy">Provider credentials stay server-side. If you expose pi-web, transport and network controls remain yours.</p>
+  </Section>
 </FeaturePage>

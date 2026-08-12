@@ -5,30 +5,18 @@ import StatusLabel from './StatusLabel.astro';
 interface Props { example: ExtensionExample; }
 const { example } = Astro.props;
 const sourceBase = 'https://github.com/ashwin-pc/pi-web/blob/main/examples/pi-web-extensions';
-const projectCommand = `mkdir -p .pi/web/extensions\ncp examples/pi-web-extensions/${example.file} .pi/web/extensions/${example.file}`;
-const globalCommand = `mkdir -p ~/.pi/web/extensions\ncp examples/pi-web-extensions/${example.file} ~/.pi/web/extensions/${example.file}`;
+const command = `mkdir -p .pi/web/extensions && cp examples/pi-web-extensions/${example.file} .pi/web/extensions/`;
 ---
 
 <article class="example-card" id={example.id}>
-  <div class="example-card__header">
-    <StatusLabel status={example.status} />
-    <span>{example.surface}</span>
-  </div>
+  <div class="example-card__header"><StatusLabel status={example.status} /><span>{example.surface}</span></div>
   <h2>{example.title}</h2>
   <p class="example-card__outcome">{example.outcome}</p>
-  <dl>
-    <div><dt>Maturity</dt><dd>{example.maturity}</dd></div>
-    <div><dt>Prerequisites</dt><dd>{example.prerequisites}</dd></div>
-    <div><dt>Install note</dt><dd>{example.installNote}</dd></div>
-  </dl>
+  {example.note && <p class="example-card__note">{example.note}</p>}
   <details class="install-details">
-    <summary>Project install from a checkout</summary>
-    <pre><code>{projectCommand}{example.extraProjectCommand && `\n${example.extraProjectCommand}`}</code></pre>
+    <summary>Copy from a checkout</summary>
+    <pre><code>{command}{'\n/reload'}</code></pre>
   </details>
-  <details class="install-details">
-    <summary>Global install from a checkout</summary>
-    <pre><code>{globalCommand}{example.extraGlobalCommand && `\n${example.extraGlobalCommand}`}</code></pre>
-  </details>
-  <div class="adapt-prompt"><strong>Ask your agent to adapt it</strong><p>“{example.adaptPrompt}”</p></div>
-  <a class="example-card__source" href={`${sourceBase}/${example.file}`}>Open source <span aria-hidden="true">↗</span></a>
+  <div class="adapt-prompt"><strong>Ask your agent</strong><p>“{example.adaptPrompt}”</p></div>
+  <a class="example-card__source" href={`${sourceBase}/${example.file}`}>Source ↗</a>
 </article>

@@ -10,6 +10,16 @@ const output = resolve(root, 'website/public/generated');
 // docs/website-phase-one.md. Keep this list explicit so new snapshots never
 // become website claims by accident.
 const allowlist = [
+  'website-work-desktop.png',
+  'website-work-mobile.png',
+  'website-extension-desktop.png',
+  'website-extension-mobile.png',
+  'new-session-desktop.png',
+  'new-session-mobile.png',
+  'session-lanes-desktop.png',
+  'session-lanes-mobile.png',
+  'conversation-tree-desktop.png',
+  'conversation-tree-mobile.png',
   'artifacts-explorer-desktop.png',
   'artifacts-explorer-mobile.png',
   'artifact-preview-desktop.png',

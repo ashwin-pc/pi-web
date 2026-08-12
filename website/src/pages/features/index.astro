@@ -3,54 +3,50 @@ import BaseLayout from '../../layouts/BaseLayout.astro';
 import BottomCTA from '../../components/BottomCTA.astro';
 import ButtonLink from '../../components/ButtonLink.astro';
 import MarketingHero from '../../components/MarketingHero.astro';
+import ProductStory from '../../components/ProductStory.astro';
 import Section from '../../components/Section.astro';
-import StatusLabel from '../../components/StatusLabel.astro';
 import { outcomes } from '../../data/outcomes';
 
 const base = import.meta.env.BASE_URL;
 ---
 
-<BaseLayout title="Features" description="Explore the outcomes pi-web supports now: work across devices, preserve every thread, inspect rich results, stay in control, and extend the interface.">
-  <MarketingHero eyebrow="Features" title="More work done. Every thread visible." lede="Choose the outcome that matters now. Each page separates available product capability from opt-in examples and future direction.">
-    <ButtonLink href={`${base}features/work-from-anywhere/`}>Choose an outcome</ButtonLink>
-    <ButtonLink href={`${base}getting-started/`} variant="secondary">Install pi-web</ButtonLink>
+<BaseLayout title="Features" description="A visual index of pi-web sessions, artifacts, responsive layouts, workspace files, Git, and extensions.">
+  <MarketingHero eyebrow="Features" title="More work done. Every thread visible." lede="Choose a product surface and see it in the real interface.">
+    <ButtonLink href={`${base}getting-started/`}>Install pi-web</ButtonLink>
   </MarketingHero>
 
-  <Section eyebrow="Five outcomes" title="The workspace around substantial agent work." intro="Sessions, tools, files, Git, and artifacts are evidence for these outcomes—not the opening premise.">
-    <div class="feature-index">
-      {outcomes.map((outcome, index) => (
-        <a href={`${base}${outcome.href}`} class={`feature-index__item feature-index__item--${outcome.id}`}>
-          <span class="feature-index__number">0{index + 1}</span>
-          <div><p class="eyebrow">{outcome.eyebrow}</p><h2>{outcome.title}</h2><p>{outcome.description}</p></div>
-          <span class="feature-index__arrow" aria-hidden="true">↗</span>
+  <Section eyebrow="Visual index" title="What pi-web can do.">
+    <div class="visual-index">
+      {outcomes.map((outcome) => outcome.screenshot ? (
+        <ProductStory
+          desktop={outcome.screenshot.desktop}
+          mobile={outcome.screenshot.mobile}
+          width={outcome.screenshot.width}
+          height={outcome.screenshot.height}
+          mobileWidth={outcome.screenshot.mobileWidth}
+          mobileHeight={outcome.screenshot.mobileHeight}
+          alt={outcome.screenshot.alt}
+          title={outcome.title}
+          caption={outcome.screenshot.caption}
+          href={`${base}${outcome.href}`}
+          linkLabel={outcome.eyebrow}
+          size="card"
+        />
+      ) : (
+        <a class="code-feature-card" href={`${base}${outcome.href}`}>
+          <span class="eyebrow">{outcome.eyebrow}</span>
+          <h2>{outcome.title}</h2>
+          <code>.pi/web/extensions/*.ts</code>
+          <code>/reload</code>
+          <strong>Explore extensions →</strong>
         </a>
       ))}
     </div>
   </Section>
 
-  <Section tone="dark" eyebrow="Capability index" title="Available now, with honest boundaries." intro="Core browser surfaces ship in the current repository. Extensions and examples are clearly marked when they require installation; roadmap belongs on Principles.">
-    <div class="compact-index">
-      <div><strong>Across devices</strong><span>Responsive UI · PWA · continuity · alerts · token handoff</span></div>
-      <div><strong>Across threads</strong><span>Sessions · tabs · lanes · queues · branches · quote replies</span></div>
-      <div><strong>Across outputs</strong><span>Markdown · tools · diagrams · HTML · artifacts · attachments</span></div>
-      <div><strong>Across controls</strong><span>Stop and steer · models · context · files · diffs · Git</span></div>
-      <div><strong>Across workflows</strong><span>Regular pi extensions · pi-web UI extensions · settings · examples</span></div>
-    </div>
+  <Section tone="dark" narrow>
+    <div class="harness-inline"><span>Current harness</span><strong><code>pi</code></strong><p>The full-capability reference today. Additional harnesses are product direction, not shipping support.</p><a href={`${base}principles/`}>Read the boundary →</a></div>
   </Section>
 
-  <Section tone="tinted" narrow>
-    <div class="state-explainer">
-      <div><StatusLabel /><strong>Available now</strong><p>Implemented and visible in the current repository.</p></div>
-      <div><StatusLabel status="opt-in" /><strong>Opt-in example</strong><p>Source ships for you to inspect and install.</p></div>
-      <div><StatusLabel status="foundation" /><strong>In-progress foundation</strong><p>Enabling contracts exist; the complete product outcome does not ship.</p></div>
-      <div><StatusLabel status="direction" /><strong>Direction</strong><p>Documented intent, not a compatibility promise.</p></div>
-    </div>
-    <div class="harness-note">
-      <p class="eyebrow">Current harness</p>
-      <h2><code>pi</code> is the full-capability reference.</h2>
-      <p>It currently supplies the session model, models and reasoning, tree navigation, queues, compaction, commands, and extension runtime. Additional harness support does not ship today; <a href={`${base}principles/`}>Principles explains the direction</a>.</p>
-    </div>
-  </Section>
-
-  <BottomCTA eyebrow="Choose your starting point" title="See the outcome, then put it to work." primaryHref={`${base}getting-started/`} primaryLabel="Install pi-web" secondaryHref={`${base}extensions/`} secondaryLabel="Explore extensions" />
+  <BottomCTA eyebrow="Start local" title="Put pi-web around your first task." primaryHref={`${base}getting-started/`} primaryLabel="Install pi-web" secondaryHref={`${base}extensions/`} secondaryLabel="Explore extensions" />
 </BaseLayout>

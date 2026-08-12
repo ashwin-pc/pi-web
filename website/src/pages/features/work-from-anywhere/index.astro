@@ -1,5 +1,6 @@
 ---
 import FeaturePage from '../../../components/FeaturePage.astro';
+import ProductStory from '../../../components/ProductStory.astro';
 import Section from '../../../components/Section.astro';
 import { getFeatureRoute } from '../../../data/features';
 
@@ -8,23 +9,14 @@ const feature = getFeatureRoute('work-from-anywhere');
 const repo = 'https://github.com/ashwin-pc/pi-web';
 ---
 
-<FeaturePage
-  feature={feature}
-  description="Use pi-web's responsive, installable agent workspace across your devices with user-managed remote access and honest security boundaries."
-  primary={{ label: 'Set up pi-web', href: `${base}getting-started/` }}
-  secondary={{ label: 'See session organization', href: `${base}features/keep-the-thread/` }}
-  technicalLinks={[
-    { label: 'Remote access guide', href: `${repo}#remote-access` },
-    { label: 'Security notes', href: `${repo}#security` },
-    { label: 'PWA configuration', href: `${repo}/blob/main/vite.config.ts` },
-    { label: 'Notification settings source', href: `${repo}/blob/main/src/settings/runNotifications.ts` },
-  ]}
->
-  <Section tone="dark" eyebrow="Access boundary" title="Anywhere you choose to expose it—not hosted everywhere." intro="pi-web starts on localhost. Another device connects only after you place it behind a secure network or reverse proxy you operate.">
-    <div class="boundary-grid">
-      <article><span>1</span><h3>Keep localhost as the origin</h3><p>Run the app and its provider credentials on your machine.</p></article>
-      <article><span>2</span><h3>Add your secure path</h3><p>Use Tailscale or an HTTPS reverse proxy with network controls you understand.</p></article>
-      <article><span>3</span><h3>Protect app access</h3><p>An optional bearer token covers API and WebSocket requests. It does not replace transport security.</p></article>
+<FeaturePage feature={feature} description="Use pi-web's responsive agent workspace across devices with user-managed remote access." primary={{ label: 'Set up pi-web', href: `${base}getting-started/` }} secondary={{ label: 'Keep the thread', href: `${base}features/keep-the-thread/` }} technicalLinks={[{ label: 'Remote access', href: `${repo}#remote-access` }, { label: 'Security', href: `${repo}#security` }, { label: 'PWA configuration', href: `${repo}/blob/main/vite.config.ts` }]}>
+  <Section eyebrow="Responsive by design" title="Start here. Return from anywhere.">
+    <div class="story-stack">
+      <ProductStory desktop="new-session-desktop.png" mobile="new-session-mobile.png" width={1280} height={800} alt="New pi-web session on desktop and mobile" title="One workspace" caption="New session, adapted to each screen." />
+      <ProductStory desktop="artifacts-explorer-desktop.png" mobile="artifacts-explorer-mobile.png" width={1600} height={1000} alt="Artifacts gallery on desktop and mobile" title="The result travels too" caption="Artifacts remain browsable on a phone." />
     </div>
+  </Section>
+  <Section tone="dark" narrow eyebrow="Access boundary" title="You choose the network.">
+    <p class="boundary-copy">pi-web starts on localhost. Use Tailscale or an HTTPS proxy you operate, with the optional bearer token as one layer. pi-web provides no hosted relay or identity service.</p>
   </Section>
 </FeaturePage>

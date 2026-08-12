@@ -328,7 +328,7 @@ const mockHarness = createMockHarness({
   isCurrentSession: (value: PiWebSession) => value === session,
   currentState,
 });
-const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle } = mockHarness;
+const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled } = mockHarness;
 
 function additionalExtensionPaths(cwd = piCwd) {
   return [
@@ -450,13 +450,14 @@ const server = createServer(async (req, res) => {
       if (!isAuthorized(req)) return unauthorized(res);
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
+        const body = await readBody(req) as { websiteWorkflowExtension?: unknown };
         await sessionService.disposeAll("reset");
         mockPromptCorrelations.clear();
         mockStateOverrides = {};
+        setWebsiteWorkflowExtensionEnabled(body.websiteWorkflowExtension === true);
         resetMockSessions();
         await sessionUiStateStore.write(defaultSessionUiState);
-        session = createMockSession();
-        sessionService.setCurrentSession(session);
+        session = await sessionService.initialize();
         broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });

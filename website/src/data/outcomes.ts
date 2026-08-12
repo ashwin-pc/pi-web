@@ -1,64 +1,54 @@
-export type OutcomeStatus = 'available' | 'direction';
-
 export interface ProductOutcome {
   id: 'anywhere' | 'thread' | 'results' | 'control' | 'adapt';
   eyebrow: string;
   title: string;
-  description: string;
-  proof: readonly string[];
   href: string;
-  status: OutcomeStatus;
+  screenshot?: {
+    desktop: string;
+    mobile: string;
+    width: number;
+    height: number;
+    mobileWidth?: number;
+    mobileHeight?: number;
+    alt: string;
+    caption: string;
+  };
 }
 
-export const outcomes = [
+export const outcomes: readonly ProductOutcome[] = [
   {
-    id: 'anywhere',
-    eyebrow: 'Work from anywhere',
-    title: 'Carry the workspace with you.',
-    description:
-      'Move between desktop, tablet, and phone while keeping the active session, drafts, and results within reach.',
-    proof: ['Responsive workspace', 'Installable PWA', 'Completion alerts'],
-    href: 'features/work-from-anywhere/',
-    status: 'available',
+    id: 'results',
+    eyebrow: 'Rich results',
+    title: 'Turn responses into deliverables.',
+    href: 'features/rich-results/',
+    screenshot: { desktop: 'artifacts-explorer-desktop.png', mobile: 'artifacts-explorer-mobile.png', width: 1600, height: 1000, alt: 'Artifacts gallery with folders and image, HTML, Markdown, and video results', caption: 'Artifacts gallery' },
   },
   {
     id: 'thread',
     eyebrow: 'Keep the thread',
     title: 'Parallel work stays understandable.',
-    description:
-      'Organize meaningful efforts into persistent sessions, quick tabs, and lanes—then steer, queue, branch, or resume.',
-    proof: ['Persistent sessions', 'Pinned · Parked · Bookmarks', 'Branches and queues'],
     href: 'features/keep-the-thread/',
-    status: 'available',
-  },
-  {
-    id: 'results',
-    eyebrow: 'Rich results',
-    title: 'Turn responses into deliverables.',
-    description:
-      'Inspect tools and rich transcripts, then open images, Markdown, HTML, diagrams, video, PDFs, and files as real outputs.',
-    proof: ['Inspectable tools', 'Artifact gallery', 'Interactive previews'],
-    href: 'features/rich-results/',
-    status: 'available',
+    screenshot: { desktop: 'session-lanes-desktop.png', mobile: 'session-lanes-mobile.png', width: 1600, height: 1000, alt: 'Session lanes for pinned, parked, and bookmarked work', caption: 'Pinned, Parked, and Bookmarks' },
   },
   {
     id: 'control',
     eyebrow: 'Stay in control',
     title: 'See the work, not just the answer.',
-    description:
-      'Redirect a run, inspect workspace files and changes, choose models, and understand Git state without losing context.',
-    proof: ['Run controls', 'Files and diffs', 'Git inspection and sync'],
     href: 'features/stay-in-control/',
-    status: 'available',
+    screenshot: { desktop: 'workspace-explorer-desktop.png', mobile: 'workspace-explorer-mobile.png', width: 1600, height: 1000, alt: 'Workspace Explorer with conversation, file tree, and editor', caption: 'Workspace Explorer' },
+  },
+  {
+    id: 'anywhere',
+    eyebrow: 'Work from anywhere',
+    title: 'Carry the workspace with you.',
+    href: 'features/work-from-anywhere/',
+    screenshot: { desktop: 'new-session-desktop.png', mobile: 'new-session-mobile.png', width: 1280, height: 800, alt: 'New pi-web session on desktop and responsive mobile layouts', caption: 'Responsive new session' },
   },
   {
     id: 'adapt',
     eyebrow: 'Make it yours',
-    title: 'Shape the interface around the work.',
-    description:
-      'Ask your agent to build a project-specific panel, action, setting, or workflow UI with pi-web extensions.',
-    proof: ['Typed contribution API', 'Project or global scope', 'Shipped examples'],
+    title: 'Ask your agent to shape the interface.',
     href: 'extensions/',
-    status: 'available',
+    screenshot: { desktop: 'website-extension-desktop.png', mobile: 'website-extension-mobile.png', width: 1440, height: 1000, mobileWidth: 390, mobileHeight: 844, alt: 'A launch decisions extension open in the real pi-web side panel', caption: 'A real extension-contributed workflow panel' },
   },
-] as const satisfies readonly ProductOutcome[];
+] as const;

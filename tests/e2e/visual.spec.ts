@@ -47,6 +47,64 @@ async function seedSessionShowcaseState(page: import("@playwright/test").Page, c
   } });
 }
 
+async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, projectName: string) {
+  await page.setViewportSize(projectName === "desktop" ? { width: 1440, height: 1000 } : { width: 390, height: 844 });
+  await page.request.post("/api/mock/reset", { data: { websiteWorkflowExtension: true } });
+  const defaultModel = { provider: "mock", id: "model", name: "Default test model", reasoning: true, contextWindow: 128000, maxTokens: 4096 };
+  const marketingModel = { provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4", reasoning: true, contextWindow: 200000, maxTokens: 8192 };
+  let selectedModel = defaultModel;
+  await page.route("**/api/models**", (route) => route.fulfill({ json: {
+    ok: true, cwd: "/workspace/launch-plan", current: selectedModel, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"], models: [defaultModel, marketingModel],
+  } }));
+  await page.route("**/api/model", (route) => {
+    selectedModel = marketingModel;
+    return route.fulfill({ json: {
+      ok: true, sessionId: "website-launch", cwd: "/workspace/launch-plan", model: marketingModel, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"],
+    } });
+  });
+  await page.route("**/api/artifacts/launch-brief.html", (route) => route.fulfill({
+    contentType: "text/html; charset=utf-8",
+    body: `<!doctype html><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:28px;background:#0d1015;color:#f6f2e8;font:15px system-ui}.brief{max-width:760px;margin:auto}.eyebrow{color:#e2b15f;font-size:11px;font-weight:750;letter-spacing:.16em;text-transform:uppercase}h1{margin:8px 0 6px;font-size:34px;line-height:1.05}p{margin:0;color:#aeb4bf;line-height:1.5}.signal{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:24px 0}.card{min-height:112px;padding:15px;border:1px solid #343a45;border-radius:14px;background:#161a21}.card strong{display:block;margin-bottom:9px;color:#e2b15f;font-size:24px}.card span{color:#c8cdd5;font-size:12px;line-height:1.4}.direction{padding:17px;border-left:3px solid #e2b15f;border-radius:4px 14px 14px 4px;background:#191a1c}.direction b{display:block;margin-bottom:5px}@media(max-width:520px){body{padding:20px}.signal{grid-template-columns:1fr 1fr}.signal .card:last-child{grid-column:1/-1}h1{font-size:29px}}</style><main class="brief"><div class="eyebrow">Spring launch · research brief</div><h1>Make every handoff feel effortless.</h1><p>A launch direction grounded in 14 customer conversations and six market notes.</p><section class="signal"><div class="card"><strong>11/14</strong><span>called team handoffs their biggest source of delay</span></div><div class="card"><strong>3×</strong><span>more confidence when progress stayed visible</span></div><div class="card"><strong>1</strong><span>clear promise across the launch story</span></div></section><section class="direction"><b>Recommended direction</b><p>Lead with faster handoffs. Prove it with customer evidence. End with one simple next step.</p></section></main>`,
+  }));
+
+  await page.goto("/");
+  await expect(page.locator("#prompt")).toBeVisible();
+  await page.locator("#statusTitle").click();
+  await page.locator("#statusTitle input").fill("Launch brief from customer research");
+  await page.locator("#statusTitle input").press("Enter");
+  await expect(page.locator("#statusTitle")).toHaveText("Launch brief from customer research");
+  const state = await (await page.request.get("/api/state")).json();
+  const sessionId = state.sessionId as string;
+  await page.request.post("/api/session/name", { data: { sessionId: "mock-older", name: "Customer evidence library" } });
+  await page.request.patch("/api/session-ui-state", { data: {
+    lanes: [
+      { sessionId, lane: "pinned", note: "Final brief ready for review", since: "2026-05-07T08:00:00.000Z" },
+      { sessionId: "mock-older", lane: "pinned", note: "Interview excerpts and source notes", since: "2026-05-06T08:00:00.000Z" },
+    ],
+    sessionMarkers: [
+      { sessionId, color: "blue", updatedAt: "2026-05-07T08:00:00.000Z" },
+      { sessionId: "mock-older", color: "green", updatedAt: "2026-05-06T08:00:00.000Z" },
+    ],
+    selectedMarkerColor: "blue",
+  } });
+  await sendPrompt(page, "Create the launch brief story from the interview and research notes.");
+  await expect(page.locator(".message.assistant", { hasText: "Launch brief ready" })).toBeVisible();
+  await expect(page.locator(".toolCard.toolCard--success", { hasText: "read" })).toBeVisible();
+  await expect(page.locator(".toolCard.toolCard--success", { hasText: "write" })).toBeVisible();
+  const artifact = page.locator(".artifactPreview--html", { hasText: "Open the visual launch brief" });
+  await expect(artifact).toBeVisible();
+  await expect(artifact.locator("iframe").contentFrame().locator("h1")).toHaveText("Make every handoff feel effortless.");
+  await page.locator("#modelSettingsButton").click();
+  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.mouse.click(5, 5);
+  await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+  await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
+  if (projectName === "mobile") await artifact.getByRole("button", { name: "Minimize preview" }).click();
+  await page.locator(".message.assistant", { hasText: "Launch brief ready" }).evaluate((element) => element.scrollIntoView({ block: "start" }));
+  await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.messageTimestamp{visibility:hidden!important}" });
+  await page.evaluate(async () => { await document.fonts.ready; await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); });
+}
+
 async function mockConversationTreeApi(page: import("@playwright/test").Page) {
   const timestamp = "2026-05-07T10:00:00Z";
   const treeNode = (
@@ -244,6 +302,34 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("visual regression", () => {
+  test("website work story", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use the maintained desktop and mobile projects");
+    await prepareWebsiteWorkStory(page, testInfo.project.name);
+
+    await expect(page).toHaveScreenshot(`website-work-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+    });
+  });
+
+  test("website extension workflow", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use the maintained desktop and mobile projects");
+    await prepareWebsiteWorkStory(page, testInfo.project.name);
+
+    await openLauncherAction(page, "Decisions");
+    const panel = page.locator("#webExtensionPanel");
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole("heading", { name: "Launch decisions" })).toBeVisible();
+    await expect(panel.locator(".launchDecision")).toHaveCount(3);
+    await expect(panel.getByRole("status")).toHaveText("3 decisions ready for launch");
+    await page.evaluate(async () => { await document.fonts.ready; await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); });
+
+    await expect(page).toHaveScreenshot(`website-extension-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+    });
+  });
+
   test("hero showcase", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
 

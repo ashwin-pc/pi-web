@@ -5,42 +5,26 @@ import ButtonLink from '../../../components/ButtonLink.astro';
 import ExampleCard from '../../../components/ExampleCard.astro';
 import MarketingHero from '../../../components/MarketingHero.astro';
 import Section from '../../../components/Section.astro';
-import StatusLabel from '../../../components/StatusLabel.astro';
 import { extensionExamples } from '../../../data/extensionExamples';
 
 const base = import.meta.env.BASE_URL;
 const docs = 'https://github.com/ashwin-pc/pi-web/blob/main/docs/pi-web-extensions.md';
 ---
 
-<BaseLayout title="Extension examples" description="Install, inspect, and adapt six audited pi-web extension examples, including the explicitly experimental session orchestration example.">
-  <MarketingHero eyebrow="Extension examples" title="Start with a working extension. Make it yours." lede="Six audited source examples show different contribution surfaces. Nothing here is a marketplace or enabled by default: choose, inspect, copy, reload, and adapt.">
+<BaseLayout title="Extension examples" description="Inspect, copy, and adapt six opt-in pi-web extension examples.">
+  <MarketingHero eyebrow="Extension examples" title="Start with a working extension. Make it yours." lede="Six small source examples. Inspect, copy, reload, adapt.">
     <ButtonLink href="#examples">Choose an example</ButtonLink>
     <ButtonLink href={`${base}extensions/#api`} variant="secondary">Build your own</ButtonLink>
   </MarketingHero>
 
-  <Section tone="tinted" narrow>
-    <div class="example-boundary">
-      <div><StatusLabel status="opt-in" /><p><strong>Opt-in source.</strong> Copying a file installs it; deleting that copy and reloading removes it.</p></div>
-      <div><StatusLabel status="experimental" /><p><strong>One experimental example.</strong> Session orchestration carries extra setup and maturity limits.</p></div>
-    </div>
-    <div class="notice notice--warning">
-      <span aria-hidden="true">!</span><div><strong>Inspect trusted code before installation.</strong><p>Extensions execute locally through <code>pi</code>'s extension runtime and may access files, invoke commands, alter agent behavior, or render trusted HTML.</p></div>
-    </div>
+  <Section id="examples" eyebrow="Opt-in source" title="Pick the closest surface.">
+    <div class="example-grid">{extensionExamples.map((example) => <ExampleCard example={example} />)}</div>
   </Section>
 
-  <Section id="examples" eyebrow="Audited examples" title="Pick the surface closest to your workflow." intro="Commands below assume a checkout of the pi-web repository. After copying an extension, run /reload in pi-web or restart it.">
-    <nav class="example-jump" aria-label="Jump to extension example">
-      {extensionExamples.map((example) => <a href={`#${example.id}`}>{example.title}</a>)}
-    </nav>
-    <div class="example-grid">
-      {extensionExamples.map((example) => <ExampleCard example={example} />)}
-    </div>
+  <Section tone="dark" narrow eyebrow="Trusted code" title="Read before reload.">
+    <p class="boundary-copy">Extensions run locally through <code>pi</code> and may access files, invoke commands, affect agent behavior, or render trusted HTML. Delete the copied file and run <code>/reload</code> to remove one.</p>
+    <p class="orchestration-skill-link"><strong>Experimental · opt-in:</strong> orchestration also needs its <a href="https://github.com/ashwin-pc/pi-web/blob/main/examples/pi-web-skills/session-orchestration/SKILL.md">companion skill ↗</a>.</p>
   </Section>
 
-  <Section tone="dark" narrow eyebrow="Update or remove" title="The installed copy stays under your control." intro="Run the same copy command again to update from a checkout. Remove the copied TypeScript file and run /reload to disable an extension. Session orchestration also installs a companion skill; remove that skill directory separately.">
-    <pre class="removal-command"><code>rm .pi/web/extensions/example-name.ts<br />/reload</code></pre>
-    <p class="orchestration-skill-link">Using orchestration? Read its <a href="https://github.com/ashwin-pc/pi-web/blob/main/examples/pi-web-skills/session-orchestration/SKILL.md">companion skill source ↗</a>.</p>
-  </Section>
-
-  <BottomCTA eyebrow="Need a different workflow?" title="Use the examples as source, not a ceiling." primaryHref={`${base}extensions/`} primaryLabel="Build your own" secondaryHref={docs} secondaryLabel="Read complete extension docs" />
+  <BottomCTA eyebrow="Need a different workflow?" title="Use the source as a starting point." primaryHref={`${base}extensions/`} primaryLabel="Build your own" secondaryHref={docs} secondaryLabel="Extension docs" />
 </BaseLayout>

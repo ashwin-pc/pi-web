@@ -3,6 +3,7 @@ import type { PiWebSession, PiWebSessionInfo } from "./types.js";
 import { simplifyMessage } from "./session/projection.js";
 import { mapPiEvent } from "./session/piEventMap.js";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
+import websiteWorkflowExtension from "./fixtures/websiteWorkflowExtension.js";
 
 interface MockSessionOptions {
   piCwd: string;
@@ -45,6 +46,11 @@ export function createMockHarness(options: MockSessionOptions) {
   const mockSessions: PiWebSessionInfo[] = initialMockSessions();
   const mockLifecycle = new Map<string, { shutdowns: number; disposes: number }>();
   let mockGeneration = 0;
+  let websiteWorkflowExtensionEnabled = false;
+
+  function setWebsiteWorkflowExtensionEnabled(enabled: boolean) {
+    websiteWorkflowExtensionEnabled = enabled;
+  }
 
   function lifecycleFor(id: string) {
     let stats = mockLifecycle.get(id);
@@ -180,6 +186,8 @@ export function createMockHarness(options: MockSessionOptions) {
 
     syncMessagesToLeaf();
     let mockSession: PiWebSession;
+    const extensionHandlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
+    let extensionContext: any;
     let compactionAbortRequested = false;
     let runtimeStartedAt: string | undefined;
     let runtimeLastActivityAt: string | undefined;
@@ -385,12 +393,30 @@ export function createMockHarness(options: MockSessionOptions) {
           description: "Mock extension command",
           sourceInfo: { path: "<mock-extension>", source: "mock", scope: "temporary", origin: "top-level" },
         }],
-        hasHandlers: (eventType: string) => eventType === "session_shutdown",
+        hasHandlers: (eventType: string) => eventType === "session_shutdown" || Boolean(extensionHandlers.get(eventType)?.length),
         emit: async (event: { type?: string }) => {
           if (event?.type === "session_shutdown") lifecycleFor(mockSession.sessionId).shutdowns += 1;
+          if (event?.type && extensionContext) {
+            for (const handler of extensionHandlers.get(event.type) || []) await handler(event, extensionContext);
+          }
           return undefined;
         },
       } as any,
+      bindExtensions: async ({ uiContext }: { uiContext: any }) => {
+        extensionHandlers.clear();
+        const api = {
+          on(eventType: string, handler: (event: any, ctx: any) => unknown) {
+            const handlers = extensionHandlers.get(eventType) || [];
+            handlers.push(handler);
+            extensionHandlers.set(eventType, handlers);
+          },
+        };
+        if (websiteWorkflowExtensionEnabled) websiteWorkflowExtension(api as any);
+        extensionContext = { cwd: piCwd, ui: uiContext, sessionManager: mockSessionManager };
+        for (const handler of extensionHandlers.get("session_start") || []) {
+          await handler({ type: "session_start", reason: "resume" }, extensionContext);
+        }
+      },
       promptTemplates: [{
         name: "mock-prompt",
         description: "Mock prompt template",
@@ -485,7 +511,8 @@ export function createMockHarness(options: MockSessionOptions) {
           return;
         }
         const slow = /slow|running/i.test(message);
-        const withShowcase = /showcase/i.test(message);
+        const withWebsiteWork = /launch brief story/i.test(message);
+        const withShowcase = !withWebsiteWork && /showcase/i.test(message);
         const withProviderError = /provider error|assistant error|usage limit/i.test(message);
         const withRetryFailure = /retry failure|retry exhausted|throttle failure/i.test(message);
         const withRetrySuccess = !withRetryFailure && /retry demo|retry success|throttle retry/i.test(message);
@@ -622,6 +649,16 @@ export function createMockHarness(options: MockSessionOptions) {
             { type: "thinking", thinking },
             { type: "text", text: finalText },
           ], timestamp: new Date().toISOString() });
+        } else if (withWebsiteWork) {
+          const timestamp = "2026-05-07T10:15:00.000Z";
+          appendMockMessage({ role: "assistant", content: [
+            { type: "text", text: "## Launch brief ready\n\nI synthesized **14 customer interviews** and the latest market notes into one focused launch story." },
+            { type: "toolCall", id: "call-launch-read", toolName: "read", arguments: { path: "/workspace/launch-plan/research/interview-notes.md" } },
+            { type: "toolCall", id: "call-launch-write", toolName: "write", arguments: { path: "/workspace/launch-plan/deliverables/spring-launch-brief.html", content: "Concise launch brief and visual summary" } },
+            { type: "text", text: "### Recommended direction\n\n- **Lead with faster handoffs** — the clearest repeated customer outcome.\n- **Support it with proof** — three interview moments are ready to quote.\n- **Keep the launch focused** — one audience, one promise, one next step.\n\n[Open the visual launch brief](/api/artifacts/launch-brief.html)" },
+          ], usage: { input: 12840, output: 960, cacheRead: 6800, cacheWrite: 0, cost: { total: 0.047 } }, timestamp });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-launch-read", toolName: "read", content: "14 interview summaries, 38 tagged observations, and 6 supporting market notes.", timestamp });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-launch-write", toolName: "write", content: "Visual launch brief saved to /workspace/launch-plan/deliverables/spring-launch-brief.html", timestamp });
         } else if (withShowcase) {
           const editArgs = { path: "/Users/ashwin/projects/pi-web/src/style.css", edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };
           const editDetails = { diff: " 118 .sessionList { overflow-y: auto; }\n 119 \n 120 .sessionItem {\n-121   min-height: 40px;\n+121   height: auto;\n+122   min-height: 0;\n 123 }\n+124 \n+125 @media (max-width: 700px) {\n+126   .sessionDrawer { width: 100vw; }\n+127 }", firstChangedLine: 121 };
@@ -736,5 +773,5 @@ export function createMockHarness(options: MockSessionOptions) {
     return mockSession;
   }
 
-  return { mockSessions, createMockSession, resetMockSessions, getMockLifecycle };
+  return { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled };
 }

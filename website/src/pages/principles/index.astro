@@ -4,46 +4,33 @@ import BottomCTA from '../../components/BottomCTA.astro';
 import ButtonLink from '../../components/ButtonLink.astro';
 import MarketingHero from '../../components/MarketingHero.astro';
 import Section from '../../components/Section.astro';
-import StatusLabel from '../../components/StatusLabel.astro';
 
 const base = import.meta.env.BASE_URL;
 const repo = 'https://github.com/ashwin-pc/pi-web';
+const principles = [
+  ['Outcomes over chat', 'The result matters more than transcript mechanics.'],
+  ['Sessions preserve work', 'Threads stay named, resumable, and branchable.'],
+  ['Everything inspectable', 'Tools, artifacts, files, and changes remain visible.'],
+  ['Local-first control', 'The server starts on localhost; wider access is your choice.'],
+  ['Focused, not an IDE', 'Review and intervention stay close to agent work.'],
+  ['Extensions are core', 'Specific workflows can live as source you own.'],
+];
 ---
 
-<BaseLayout title="Principles" description="The durable product principles and honest roadmap direction behind pi-web: outcome-first, session-first, inspectable, local-first, and extensible.">
-  <MarketingHero eyebrow="Principles" title="Built for agents that do real work." lede="pi-web optimizes for substantial, inspectable effort: durable context around the conversation, useful results, user-controlled access, and workflows you can shape.">
+<BaseLayout title="Principles" description="The concise product principles and roadmap boundary behind pi-web.">
+  <MarketingHero eyebrow="Principles" title="Built for agents that do real work." lede="Protect the work. Show the result. Keep control with the operator.">
     <ButtonLink href={`${base}getting-started/`}>Get started</ButtonLink>
-    <ButtonLink href="#direction" variant="secondary">Read the direction</ButtonLink>
   </MarketingHero>
 
-  <Section eyebrow="Durable choices" title="The product should protect the work, not decorate the chat." intro="These principles guide what becomes core, what belongs in an extension, and how pi-web describes capability.">
-    <div class="principles-list">
-      <article><span>01</span><div><h2>Outcomes over chat mechanics.</h2><p>The value is completed research, a decision, a handoff, or a verified change. Transcript UI is useful only when it supports that outcome.</p></div></article>
-      <article><span>02</span><div><h2>Sessions preserve continuity.</h2><p>Substantial work needs named, resumable threads, parallel effort, queues, branches, and precise continuations—not one flattened feed.</p></div></article>
-      <article><span>03</span><div><h2>Results stay inspectable.</h2><p>Tools, artifacts, files, and changes remain visible so people can understand both the path and the result.</p></div></article>
-      <article><span>04</span><div><h2>Local-first means user-controlled.</h2><p>The server starts on localhost and credentials remain server-side. Users choose any wider network path and remain responsible for transport and access controls.</p></div></article>
-      <article><span>05</span><div><h2>Focused workspace, not full IDE.</h2><p>pi-web brings review and intervention surfaces close to agent work without trying to absorb every tool used to produce it.</p></div></article>
-      <article><span>06</span><div><h2>Extensions are a product pillar.</h2><p>When a workflow is specific, trusted source you can ask an agent to write is often better than waiting for a universal core control.</p></div></article>
-    </div>
+  <Section eyebrow="Durable choices" title="Six product principles.">
+    <div class="principles-grid">{principles.map(([title, copy], index) => <article><span>0{index + 1}</span><h2>{title}</h2><p>{copy}</p></article>)}</div>
   </Section>
 
-  <Section id="direction" tone="dark" eyebrow="Roadmap direction" title="Broaden the architecture without pretending every agent works alike." intro="pi is the current default and full-capability reference harness. The session contract is being designed so additional harnesses can fit without flattening their differences or reducing what pi can do.">
-    <div class="direction-flow">
-      <div><StatusLabel /><h3>Reference today</h3><p><code>pi</code> supplies the complete current session and extension behavior.</p></div>
-      <div><StatusLabel status="foundation" /><h3>Neutral contracts</h3><p>Typed events, capabilities, and interaction plumbing provide enabling structure. They are not multi-harness product support.</p></div>
-      <div><StatusLabel status="direction" /><h3>Capability-honest adapters</h3><p>Future harnesses should expose real strengths and omit unsupported controls rather than imitate pi.</p></div>
-    </div>
-    <p class="direction-statement">Harness choice and runtime location are separate concerns. The design leaves room for both, but pi-web does not currently ship alternate harness adapters, per-session remote or sandbox runtime selection, generic cross-harness approvals, harness-neutral add-ons, hosted access, or multi-user operation.</p>
-    <div class="direction-links">
-      <a href={`${repo}/blob/main/docs/multi-harness-design.md`}>Multi-harness design ↗</a>
-      <a href={`${repo}/blob/main/docs/runtime-binding-design.md`}>Runtime binding design ↗</a>
-      <a href={`${repo}/issues/92`}>Open design issue #92 ↗</a>
-    </div>
+  <Section id="direction" tone="dark" narrow eyebrow="Direction boundary" title="Broaden without flattening.">
+    <p class="direction-lede"><code>pi</code> is the current default and full-capability reference harness. Typed events, capabilities, and interaction plumbing are enabling foundations. They are not multi-harness product support.</p>
+    <p class="boundary-copy">Alternate harnesses, per-session remote runtimes, generic cross-harness approvals, harness-neutral add-ons, hosted access, and multi-user operation do not ship today.</p>
+    <div class="direction-links"><a href={`${repo}/blob/main/docs/multi-harness-design.md`}>Multi-harness design ↗</a><a href={`${repo}/blob/main/docs/runtime-binding-design.md`}>Runtime design ↗</a><a href={`${repo}/issues/92`}>Issue #92 ↗</a></div>
   </Section>
 
-  <Section tone="tinted" narrow>
-    <div class="roadmap-disclaimer"><StatusLabel status="direction" /><h2>Direction is not a delivery promise.</h2><p>Plans can change as contracts meet real adapters and runtimes. Shipping pages describe only current core capability or clearly labeled opt-in examples; this page is the single home for broader roadmap language.</p></div>
-  </Section>
-
-  <BottomCTA eyebrow="Start with what ships" title="Use pi-web with the full-capability pi harness today." primaryHref={`${base}getting-started/`} primaryLabel="Get started" secondaryHref={`${base}features/`} secondaryLabel="Explore current features" />
+  <BottomCTA eyebrow="What ships now" title="Use pi-web with pi today." primaryHref={`${base}getting-started/`} primaryLabel="Get started" secondaryHref={`${base}features/`} secondaryLabel="See the product" />
 </BaseLayout>
