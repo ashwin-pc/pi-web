@@ -6,6 +6,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const output = resolve(root, 'site-dist');
 const origin = 'https://ashwin-pc.github.io';
 const base = '/pi-web/';
+const socialImageURL = new URL(`${base}social-preview.png`, origin).href;
 
 const expectedPages = {
   '/': [
@@ -208,6 +209,18 @@ for (const [route, markers] of Object.entries(expectedPages)) {
     if (actual !== expected) report(route, `canonical is ${actual}; expected ${expected}`);
   }
 
+  const requiredSocialMetadata = [
+    `<meta property="og:image" content="${socialImageURL}">`,
+    '<meta property="og:image:type" content="image/png">',
+    '<meta property="og:image:width" content="1200">',
+    '<meta property="og:image:height" content="630">',
+    '<meta name="twitter:card" content="summary_large_image">',
+    `<meta name="twitter:image" content="${socialImageURL}">`,
+  ];
+  for (const metadata of requiredSocialMetadata) {
+    if (!page.html.includes(metadata)) report(route, `missing required social preview metadata ${JSON.stringify(metadata)}`);
+  }
+
   const text = visibleText(page.html);
   for (const marker of markers) {
     if (!text.includes(marker)) report(route, `missing required headline/status-boundary marker ${JSON.stringify(marker)}`);
@@ -224,4 +237,4 @@ if (errors.length) {
   process.exit(1);
 }
 
-console.log(`Validated ${pages.size} routes: canonical URLs, base-safe links, local assets, fragments, and required content markers.`);
+console.log(`Validated ${pages.size} routes: canonical URLs, social previews, base-safe links, local assets, fragments, and required content markers.`);
