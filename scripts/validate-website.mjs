@@ -13,6 +13,7 @@ const visibleVersion = `v${packageJson.version}`;
 const expectedPages = {
   '/': [
     'The best interface for working with your agents.',
+    `${visibleVersion} · Local-first · open source`,
     'install and sign in to pi first',
   ],
   '/getting-started/': [

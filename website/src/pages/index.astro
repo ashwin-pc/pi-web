@@ -5,6 +5,7 @@ import InstallCommand from '../components/InstallCommand.astro';
 import ProductStory from '../components/ProductStory.astro';
 import Section from '../components/Section.astro';
 import { outcomes } from '../data/outcomes';
+import packageJson from '../../../package.json';
 
 const base = import.meta.env.BASE_URL;
 const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
@@ -19,7 +20,7 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
           <source src={`${base}generated/new-chat-loading.mp4`} type='video/mp4; codecs="avc1.64001e"' />
         </video>
       </div>
-      <div class="hero__kicker"><span>Local-first · open source</span></div>
+      <div class="hero__kicker"><span>v{packageJson.version} · Local-first · open source</span></div>
       <h1>The best interface for working with your agents.</h1>
       <p>Run meaningful work, keep every thread visible, and inspect the result.</p>
       <InstallCommand label="Run after installing and signing in to pi" />
