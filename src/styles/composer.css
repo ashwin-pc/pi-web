@@ -187,7 +187,8 @@ textarea:focus { border-bottom-color: var(--accent); }
 .expandButton svg { width: 14px; height: 14px; }
 .composer:hover .expandButton,
 .composer.expanded .expandButton { display: inline-grid; }
-.composer { position: relative; z-index: 2; }
+/* Keep composer chrome that protrudes into the message row above its edge fade. */
+.composer { position: relative; z-index: 3; }
 .composer.dragOver::after {
   content: "Drop files to attach";
   position: absolute;
