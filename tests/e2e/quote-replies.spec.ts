@@ -111,6 +111,21 @@ test("links questions to multiple assistant responses and sends structured quote
   await page.getByRole("button", { name: "Reply", exact: true }).click();
   const firstQuestion = page.getByRole("textbox", { name: "Question for quote 1" });
   await expect(firstQuestion).toBeFocused();
+  if (await page.evaluate(() => matchMedia("(pointer: coarse)").matches || innerWidth <= 760)) {
+    const animation = await page.locator(".quoteFootnoteEntering").evaluate((note) => {
+      const style = getComputedStyle(note);
+      return {
+        names: style.animationName,
+        delays: style.animationDelay,
+        durations: style.animationDuration,
+      };
+    });
+    expect(animation).toEqual({
+      names: "quoteFootnoteInputIn, quoteFootnoteAttention",
+      delays: "0.32s, 0.5s",
+      durations: "0.46s, 0.78s",
+    });
+  }
   await firstQuestion.fill("How should this behave on mobile?");
   await page.getByRole("button", { name: "Confirm question" }).click();
 

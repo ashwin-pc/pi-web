@@ -482,7 +482,7 @@ export function createQuoteReplies(options: {
     mark.after(pin);
 
     const note = document.createElement("div");
-    note.className = "quoteFootnote editing open";
+    note.className = "quoteFootnote editing open quoteFootnoteEntering";
     note.dataset.quoteReplyUi = "true";
     note.innerHTML = `<span class="quoteFootnoteNumber">${id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><input aria-label="Question for quote ${id}" placeholder="Question for this quote…"><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Confirm question">✓</button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
     let noteAnchor: Element = selection.block;
@@ -531,6 +531,7 @@ export function createQuoteReplies(options: {
     updateSummary();
     hideToolbar(true);
     window.setTimeout(() => input.focus(), 30);
+    window.setTimeout(() => note.classList.remove("quoteFootnoteEntering"), 1800);
   }
 
   toolbar.addEventListener("pointerdown", (event) => event.preventDefault());
