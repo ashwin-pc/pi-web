@@ -43,20 +43,27 @@ For development:
 npm install
 ```
 
-From npm:
+pi-web currently works through a local, authenticated [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) installation. Prepare the harness first:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+pi
+```
+
+Run `/login` inside pi, complete provider authentication, then exit pi. Authentication belongs to the harness rather than pi-web. As support for additional harnesses arrives, the boundary remains the same: install and sign in to the harness locally before using it through pi-web.
+
+Then install and run pi-web from npm:
 
 ```bash
 npm i -g @ashwin-pc/pi-web
 pi-web
 ```
 
-Or run without a global install:
+Or run pi-web without a global install:
 
 ```bash
 npx -y @ashwin-pc/pi-web@latest
 ```
-
-First run: if pi-web does not find an existing Pi provider login, API key, or custom model config, it prompts in the same terminal to open the bundled Pi CLI. Run `/login` there, connect your provider, exit Pi, and pi-web continues starting. You can skip this prompt with `PI_WEB_SKIP_PROVIDER_ONBOARDING=1`.
 
 From a GitHub release asset:
 

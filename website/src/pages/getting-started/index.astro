@@ -8,14 +8,14 @@ import Section from '../../components/Section.astro';
 const base = import.meta.env.BASE_URL;
 ---
 
-<BaseLayout title="Getting started" description="Install pi-web, connect pi to a model provider, and start your first local agent session. Node.js 24+ required.">
+<BaseLayout title="Getting started" description="Install and sign in to pi locally, then run pi-web for your first agent session. Node.js 24+ required.">
   <section class="page-hero">
     <div class="container page-hero__grid">
       <div>
         <p class="eyebrow">Getting started</p>
         <h1>From install to your first agent session.</h1>
-        <p class="page-hero__lede">Run pi-web in the folder where work should happen.</p>
-        <InstallCommand label="Node.js 24+" />
+        <p class="page-hero__lede">Prepare <code>pi</code> locally, then run pi-web in the folder where work should happen.</p>
+        <InstallCommand command="npm install -g @earendil-works/pi-coding-agent" label="1 · Install pi · Node.js 24+" />
       </div>
       <ProductStory
         desktop="new-session-desktop.png"
@@ -34,13 +34,15 @@ const base = import.meta.env.BASE_URL;
     </div>
   </section>
 
-  <Section narrow eyebrow="Three commands" title="Install. Connect. Work.">
+  <Section narrow eyebrow="Local setup" title="Prepare pi. Then start pi-web.">
     <div class="command-guide">
-      <article id="install"><span>01</span><div><h2>Start in your workspace</h2><InstallCommand compact /><p>Or set <code>PI_WEB_CWD=/path/to/workspace</code>.</p></div></article>
-      <article id="provider"><span>02</span><div><h2>Connect a provider</h2><pre><code>/login</code></pre><p>If prompted, pi-web opens the bundled <code>pi</code> CLI. Log in, exit, and startup continues.</p></div></article>
-      <article id="open"><span>03</span><div><h2>Open the workspace</h2><pre><code>http://127.0.0.1:8787</code></pre><p>Give the first session a bounded task, then inspect its tools, files, or artifacts.</p></div></article>
+      <article id="install"><span>01</span><div><h2>Install pi</h2><InstallCommand command="npm install -g @earendil-works/pi-coding-agent" compact /><p><code>pi</code> is the supported harness today.</p></div></article>
+      <article id="provider"><span>02</span><div><h2>Open pi and sign in</h2><pre><code>pi
+/login</code></pre><p>Complete provider login inside <code>pi</code>, then exit it. Authentication belongs to the harness, not pi-web.</p></div></article>
+      <article id="start"><span>03</span><div><h2>Start pi-web in your workspace</h2><InstallCommand compact /><p>Run it from the folder where work should happen, or set <code>PI_WEB_CWD=/path/to/workspace</code>.</p></div></article>
+      <article id="open"><span>04</span><div><h2>Open the workspace</h2><pre><code>http://127.0.0.1:8787</code></pre><p>pi-web uses the local harness you already installed and authenticated.</p></div></article>
     </div>
-    <p class="setup-boundary">There is no hosted account or relay in this setup. pi-web runs with your local projects and credentials.</p>
+    <p class="setup-boundary">There is no hosted account or relay in this setup. As additional harnesses arrive, the boundary stays the same: install and sign in to the harness locally first, then let pi-web work through it.</p>
   </Section>
 
   <Section id="remote-access" tone="dark" narrow eyebrow="Optional remote access" title="Bring your own secure path.">

@@ -191,6 +191,7 @@
 
   .page-hero { padding-block: clamp(4rem, 8vw, 7rem); border-bottom: 1px solid var(--line); }
   .page-hero__grid { display: grid; grid-template-columns: .85fr 1.15fr; align-items: center; gap: clamp(2rem, 6vw, 5rem); }
+  .page-hero__grid > * { min-width: 0; }
   .page-hero .eyebrow { margin-bottom: .9rem; }
   .page-hero__lede { margin: 1rem 0 1.5rem; color: var(--ink-soft); font: clamp(1.1rem, 2vw, 1.35rem)/1.45 Georgia, serif; }
   .command-guide { display: grid; gap: .5rem; }

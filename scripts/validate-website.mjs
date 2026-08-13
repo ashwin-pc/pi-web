@@ -10,11 +10,12 @@ const base = '/pi-web/';
 const expectedPages = {
   '/': [
     'The best interface for working with your agents.',
-    'Current harness: pi',
+    'install and sign in to pi first',
   ],
   '/getting-started/': [
     'From install to your first agent session.',
-    'There is no hosted account or relay in this setup.',
+    'Authentication belongs to the harness, not pi-web.',
+    'install and sign in to the harness locally first',
   ],
   '/features/': [
     'More work done. Every thread visible.',
