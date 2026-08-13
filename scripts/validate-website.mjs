@@ -7,6 +7,8 @@ const output = resolve(root, 'site-dist');
 const origin = 'https://ashwin-pc.github.io';
 const base = '/pi-web/';
 const socialImageURL = new URL(`${base}social-preview.png`, origin).href;
+const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8'));
+const visibleVersion = `v${packageJson.version}`;
 
 const expectedPages = {
   '/': [
@@ -220,8 +222,13 @@ for (const [route, markers] of Object.entries(expectedPages)) {
   for (const metadata of requiredSocialMetadata) {
     if (!page.html.includes(metadata)) report(route, `missing required social preview metadata ${JSON.stringify(metadata)}`);
   }
+  for (const property of ['og:title', 'twitter:title']) {
+    const pattern = new RegExp(`<meta (?:property|name)="${property}" content="[^"]*${visibleVersion.replaceAll('.', '\\.')}[^"]*">`);
+    if (!pattern.test(page.html)) report(route, `${property} does not expose package version ${visibleVersion}`);
+  }
 
   const text = visibleText(page.html);
+  if (!text.includes(visibleVersion)) report(route, `footer does not expose package version ${visibleVersion}`);
   for (const marker of markers) {
     if (!text.includes(marker)) report(route, `missing required headline/status-boundary marker ${JSON.stringify(marker)}`);
   }

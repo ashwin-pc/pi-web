@@ -1,4 +1,6 @@
 ---
+import packageJson from '../../../package.json';
+
 const base = import.meta.env.BASE_URL;
 const year = new Date().getFullYear();
 ---
@@ -8,7 +10,7 @@ const year = new Date().getFullYear();
     <div class="site-footer__brand">
       <a class="brand brand--footer" href={base} aria-label="pi-web home"><span class="brand__mark" aria-hidden="true">π</span><span>pi-web</span></a>
       <p>The best interface for working with your agents.</p>
-      <p class="site-footer__fine">Runs on your machine. MIT licensed.</p>
+      <p class="site-footer__fine"><a href="https://www.npmjs.com/package/@ashwin-pc/pi-web">v{packageJson.version}</a> · Runs on your machine · MIT licensed.</p>
     </div>
     <nav aria-label="Product links">
       <h2>Product</h2>
