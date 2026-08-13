@@ -12,8 +12,8 @@ const repo = 'https://github.com/ashwin-pc/pi-web';
 <FeaturePage feature={feature} description="Inspect and steer agent work with workspace files, diffs, and Git context." primary={{ label: 'Install pi-web', href: `${base}getting-started/` }} secondary={{ label: 'Read the principles', href: `${base}principles/` }} technicalLinks={[{ label: 'Diff review', href: `${repo}#diffs-and-tool-review` }, { label: 'Git views', href: `${repo}#git-status-graph-and-commit-diffs` }, { label: 'Workspace safety tests', href: `${repo}/blob/main/tests/workspace-files.test.ts` }]}>
   <Section eyebrow="Review surfaces" title="Open the file. Verify the change.">
     <div class="story-stack">
-      <ProductStory desktop="workspace-explorer-desktop.png" mobile="workspace-explorer-mobile.png" width={1600} height={1000} alt="Workspace Explorer with conversation, file tree, and editor" title="Workspace Explorer" caption="Browse and edit files beside the session." />
-      <ProductStory desktop="git-diff-viewer-desktop.png" mobile="git-diff-viewer-mobile.png" width={1280} height={1000} alt="Git view with commit metadata, changed files, and split diff" title="Git and diff inspection" caption="Review repository history and exact changes. pi-web does not commit or push." />
+      <ProductStory desktop="workspace-explorer-desktop.png" mobile="workspace-explorer-mobile.png" width={1600} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Workspace Explorer with conversation, file tree, and editor" title="Workspace Explorer" caption="Browse and edit files beside the session." />
+      <ProductStory desktop="git-diff-viewer-desktop.png" mobile="git-diff-viewer-mobile.png" width={1280} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Git view with commit metadata, changed files, and split diff" title="Git and diff inspection" caption="Review repository history and exact changes. pi-web does not commit or push." />
     </div>
   </Section>
   <Section tone="dark" narrow eyebrow="Local-first boundary" title="Access remains your decision.">

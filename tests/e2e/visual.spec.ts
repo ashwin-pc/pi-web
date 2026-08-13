@@ -309,6 +309,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`website-work-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
     });
   });
 
@@ -327,6 +328,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`website-extension-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
     });
   });
 
@@ -384,6 +386,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`new-session-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
     });
   });
 
@@ -402,6 +405,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`session-lanes-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
     });
   });
 
@@ -438,10 +442,12 @@ test.describe("visual regression", () => {
       await expect(page).toHaveScreenshot("conversation-tree-desktop.png", {
         fullPage: true,
         animations: "disabled",
+        scale: testInfo.project.name === "mobile" ? "device" : "css",
       });
     } else {
       await expect(panel).toHaveScreenshot("conversation-tree-mobile.png", {
         animations: "disabled",
+        scale: testInfo.project.name === "mobile" ? "device" : "css",
       });
     }
   });
@@ -462,6 +468,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`workspace-explorer-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
     });
   });
 
@@ -480,6 +487,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`artifacts-explorer-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
     });
   });
 
@@ -498,6 +506,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`artifact-preview-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
     });
   });
 
@@ -532,6 +541,7 @@ test.describe("visual regression", () => {
     await expect(page).toHaveScreenshot(`git-diff-viewer-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
     });
   });
 });

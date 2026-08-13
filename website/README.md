@@ -19,7 +19,9 @@ npm run website:preview   # preview the existing build
 
 ## Screenshot assets
 
-Website screenshots come from deterministic captures in `tests/e2e/visual.spec.ts-snapshots/`. `scripts/copy-website-assets.mjs` owns an explicit allowlist and copies only those approved files into `website/public/generated/`; do not add a snapshot to the website merely by placing it in the source directory. Update the allowlist intentionally when approving a new capture.
+Website screenshots come from deterministic captures in `tests/e2e/visual.spec.ts-snapshots/`. `scripts/copy-website-assets.mjs` owns an explicit allowlist and copies only those approved files into `website/public/generated/`; it also copies both checked-in `public/new-chat-loading` video formats used by the Home welcome animation. Do not add a snapshot to the website merely by placing it in the source directory or duplicate generated assets by hand. Update the allowlist intentionally when approving a new capture.
+
+Every screenshot story offers an independent Desktop/Mobile switch. Its initial view follows the browser width until the visitor makes a selection; source-pixel dimensions and logical display ratios are maintained separately so high-DPI captures stay truthful without rendering oversized.
 
 ## Deployment
 

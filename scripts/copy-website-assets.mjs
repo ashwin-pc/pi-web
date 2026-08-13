@@ -30,19 +30,31 @@ const allowlist = [
   'git-diff-viewer-mobile.png',
 ];
 
+const animationAssets = [
+  'new-chat-loading.webm',
+  'new-chat-loading.mp4',
+];
+
 await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 
-for (const filename of allowlist) {
-  const source = resolve(snapshots, filename);
+async function copyRequired(source, filename, kind) {
   try {
     const info = await stat(source);
     if (!info.isFile()) throw new Error('not a file');
   } catch (error) {
-    console.error(`Required website capture is missing: ${source}`);
+    console.error(`Required website ${kind} is missing: ${source}`);
     throw error;
   }
   await copyFile(source, resolve(output, filename));
 }
 
-console.log(`Copied ${allowlist.length} approved website captures to ${output}`);
+for (const filename of allowlist) {
+  await copyRequired(resolve(snapshots, filename), filename, 'capture');
+}
+
+for (const filename of animationAssets) {
+  await copyRequired(resolve(root, 'public', filename), filename, 'welcome animation');
+}
+
+console.log(`Copied ${allowlist.length} approved website captures and ${animationAssets.length} welcome animation files to ${output}`);

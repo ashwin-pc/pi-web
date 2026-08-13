@@ -4,8 +4,10 @@ interface Props {
   mobile: string;
   width: number;
   height: number;
-  mobileWidth?: number;
-  mobileHeight?: number;
+  mobileWidth: number;
+  mobileHeight: number;
+  mobileAspectWidth?: number;
+  mobileAspectHeight?: number;
   title?: string;
   caption: string;
   alt: string;
@@ -20,8 +22,10 @@ const {
   mobile,
   width,
   height,
-  mobileWidth = 393,
-  mobileHeight = 727,
+  mobileWidth,
+  mobileHeight,
+  mobileAspectWidth = 393,
+  mobileAspectHeight = 727,
   title,
   caption,
   alt,
@@ -31,23 +35,51 @@ const {
   size = 'large',
 } = Astro.props;
 const base = import.meta.env.BASE_URL;
+const desktopSrc = `${base}generated/${desktop}`;
+const mobileSrc = `${base}generated/${mobile}`;
 ---
 
-<figure class:list={['product-story', `product-story--${size}`]} style={`--story-ratio: ${width} / ${height}; --story-mobile-ratio: ${mobileWidth} / ${mobileHeight}`}>
-  <div class="product-story__image">
-    <picture>
-      <source media="(max-width: 600px)" srcset={`${base}generated/${mobile}`} width={mobileWidth} height={mobileHeight} />
-      <img
-        src={`${base}generated/${desktop}`}
-        width={width}
-        height={height}
-        alt={alt}
-        loading={priority ? 'eager' : 'lazy'}
-        decoding="async"
-        fetchpriority={priority ? 'high' : 'auto'}
-      />
-    </picture>
+<figure
+  class:list={['product-story', `product-story--${size}`]}
+  style={`--story-ratio: ${width} / ${height}; --story-mobile-ratio: ${mobileAspectWidth} / ${mobileAspectHeight}; --story-mobile-width: ${mobileAspectWidth}px`}
+  data-product-story
+  data-desktop-src={desktopSrc}
+  data-desktop-width={width}
+  data-desktop-height={height}
+  data-mobile-src={mobileSrc}
+  data-mobile-width={mobileWidth}
+  data-mobile-height={mobileHeight}
+>
+  <div class="product-story__controls">
+    <div class="product-story__switcher" role="group" aria-label="Screenshot view">
+      <button type="button" data-story-choice="desktop" aria-pressed="true">Desktop</button>
+      <button type="button" data-story-choice="mobile" aria-pressed="false">Mobile</button>
+    </div>
   </div>
+
+  <div class="product-story__device" data-story-device>
+    <div class="product-story__desktop-toolbar" aria-hidden="true">
+      <span></span><span></span><span></span><i></i>
+    </div>
+    <div class="product-story__phone-top" aria-hidden="true"><span></span></div>
+    <div class="product-story__viewport">
+      <picture>
+        <source data-story-source media="(max-width: 600px)" srcset={mobileSrc} width={mobileWidth} height={mobileHeight} />
+        <img
+          data-story-image
+          src={desktopSrc}
+          width={width}
+          height={height}
+          alt={alt}
+          loading={priority ? 'eager' : 'lazy'}
+          decoding="async"
+          fetchpriority={priority ? 'high' : 'auto'}
+        />
+      </picture>
+    </div>
+    <div class="product-story__phone-bottom" aria-hidden="true"><span></span></div>
+  </div>
+
   <figcaption>
     <div>
       {title && <strong>{title}</strong>}
@@ -56,3 +88,53 @@ const base = import.meta.env.BASE_URL;
     {href && <a href={href}>{linkLabel} <span aria-hidden="true">→</span></a>}
   </figcaption>
 </figure>
+
+<script>
+  const defaultView = window.matchMedia('(max-width: 600px)');
+
+  document.querySelectorAll<HTMLElement>('[data-product-story]').forEach((story) => {
+    if (story.dataset.storyReady === 'true') return;
+    story.dataset.storyReady = 'true';
+
+    const image = story.querySelector<HTMLImageElement>('[data-story-image]');
+    const source = story.querySelector<HTMLSourceElement>('[data-story-source]');
+    const device = story.querySelector<HTMLElement>('[data-story-device]');
+    const buttons = [...story.querySelectorAll<HTMLButtonElement>('[data-story-choice]')];
+    let selected: 'desktop' | 'mobile' | null = null;
+
+    const apply = (view: 'desktop' | 'mobile') => {
+      if (!image || !device) return;
+      const prefix = view === 'mobile' ? 'mobile' : 'desktop';
+      const src = story.dataset[`${prefix}Src`];
+      const width = story.dataset[`${prefix}Width`];
+      const height = story.dataset[`${prefix}Height`];
+      if (!src || !width || !height) return;
+
+      // Keep the responsive <picture> useful without JavaScript, then disable
+      // its media override once this instance has an explicit active view.
+      if (source) source.media = 'not all';
+      image.src = src;
+      image.width = Number(width);
+      image.height = Number(height);
+      story.dataset.device = view;
+      device.classList.toggle('product-story__device--desktop', view === 'desktop');
+      device.classList.toggle('product-story__device--mobile', view === 'mobile');
+      for (const button of buttons) {
+        button.setAttribute('aria-pressed', String(button.dataset.storyChoice === view));
+      }
+    };
+
+    for (const button of buttons) {
+      button.addEventListener('click', () => {
+        selected = button.dataset.storyChoice === 'mobile' ? 'mobile' : 'desktop';
+        apply(selected);
+      });
+    }
+
+    const applyDefault = () => {
+      if (!selected) apply(defaultView.matches ? 'mobile' : 'desktop');
+    };
+    defaultView.addEventListener('change', applyDefault);
+    applyDefault();
+  });
+</script>

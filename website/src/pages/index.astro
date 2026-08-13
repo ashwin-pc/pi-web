@@ -13,7 +13,13 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
 <BaseLayout title="pi-web" description="Give agents meaningful work, keep every thread understandable, and inspect rich results from any device with pi-web.">
   <section class="home-hero">
     <div class="container home-hero__copy">
-      <div class="hero__kicker"><img src={`${base}pi-mascot.png`} width="38" height="38" alt="" /><span>Local-first · open source</span></div>
+      <div class="home-hero__welcome">
+        <video data-welcome-animation muted playsinline autoplay preload="auto" aria-hidden="true">
+          <source src={`${base}generated/new-chat-loading.webm`} type='video/webm; codecs="vp8"' />
+          <source src={`${base}generated/new-chat-loading.mp4`} type='video/mp4; codecs="avc1.64001e"' />
+        </video>
+      </div>
+      <div class="hero__kicker"><span>Local-first · open source</span></div>
       <h1>The best interface for working with your agents.</h1>
       <p>Run meaningful work, keep every thread visible, and inspect the result.</p>
       <InstallCommand />
@@ -29,8 +35,10 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
         mobile="website-work-mobile.png"
         width={1440}
         height={1000}
-        mobileWidth={390}
-        mobileHeight={844}
+        mobileWidth={1073}
+        mobileHeight={2321}
+        mobileAspectWidth={390}
+        mobileAspectHeight={844}
         alt="A customer research session in pi-web producing a launch brief and visual artifact"
         caption="Customer research turned into a launch brief in the real pi-web interface."
         priority
@@ -52,6 +60,8 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
           height={outcome.screenshot.height}
           mobileWidth={outcome.screenshot.mobileWidth}
           mobileHeight={outcome.screenshot.mobileHeight}
+          mobileAspectWidth={outcome.screenshot.mobileAspectWidth}
+          mobileAspectHeight={outcome.screenshot.mobileAspectHeight}
           alt={outcome.screenshot.alt}
           title={outcome.title}
           caption={outcome.screenshot.caption}
@@ -69,8 +79,10 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
         mobile="website-extension-mobile.png"
         width={1440}
         height={1000}
-        mobileWidth={390}
-        mobileHeight={844}
+        mobileWidth={1073}
+        mobileHeight={2321}
+        mobileAspectWidth={390}
+        mobileAspectHeight={844}
         alt="A launch decisions extension open in the real pi-web side panel"
         caption="A real extension contribution rendered inside pi-web."
         href="https://github.com/ashwin-pc/pi-web/blob/main/server/fixtures/websiteWorkflowExtension.ts"
@@ -92,3 +104,19 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
     </div>
   </Section>
 </BaseLayout>
+
+<script>
+  const welcomeAnimation = document.querySelector<HTMLVideoElement>('[data-welcome-animation]');
+  const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+  const syncWelcomeAnimation = () => {
+    if (!welcomeAnimation) return;
+    if (reducedMotion.matches) {
+      welcomeAnimation.pause();
+      welcomeAnimation.currentTime = 0;
+      return;
+    }
+    if (welcomeAnimation.currentTime === 0) void welcomeAnimation.play().catch(() => undefined);
+  };
+  reducedMotion.addEventListener('change', syncWelcomeAnimation);
+  syncWelcomeAnimation();
+</script>
