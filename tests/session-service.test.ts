@@ -34,7 +34,7 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
     session.agent.state.messages = messages;
   };
   session = {
-    sessionId: id, sessionFile: path, isStreaming: false, isCompacting: false,
+    sessionId: id, sessionFile: path, sessionName: "Fixture", isStreaming: false, isCompacting: false,
     model, thinkingLevel: "medium", messages: [], agent: { state: { messages: [] } },
     sessionManager: {
       newSession() {
@@ -47,14 +47,14 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
       getBranch: () => entries,
       getLeafId: () => entries.at(-1)?.id || null,
       getTree: () => entries.length ? [{ entry: entries[0], children: entries.slice(1).map((entry) => ({ entry, children: [] })) }] : [],
-      getSessionName: () => "Fixture",
+      getSessionName: () => session.sessionName,
       getCwd: () => cwd,
     } as PiWebSession["sessionManager"],
     modelRuntime: { getAvailableSnapshot: () => [model], getModel: () => model },
     extensionRunner: { getRegisteredCommands: () => [] }, promptTemplates: [], resourceLoader: { getSkills: () => ({ skills: [] }) },
     bindExtensions: async (options) => { extensionOptions = options; },
-    getAvailableThinkingLevels: () => ["off", "medium"], getSessionName: () => "Fixture", getContextUsage: () => ({ tokens: 1, contextWindow: 1000, percent: 0.1 }),
-    setSessionName: (name) => { session.sessionName = name; },
+    getAvailableThinkingLevels: () => ["off", "medium"], getSessionName: () => session.sessionName, getContextUsage: () => ({ tokens: 1, contextWindow: 1000, percent: 0.1 }),
+    setSessionName: (name) => { session.sessionName = name || undefined; },
     setModel: vi.fn(async () => undefined), setThinkingLevel: vi.fn(), abort: async () => undefined,
     navigateTree: async () => ({ cancelled: false, editorText: "draft" }),
     prompt: async (message) => {
@@ -212,6 +212,30 @@ describe("LocalSessionService contract", () => {
     });
     const extraCwd = await mkdtemp(join(cwd, "extra-cwd-"));
     expect((await service.list([extraCwd])).map((info) => info.id)).toEqual(["duplicate", "duplicate"]);
+  });
+
+  it("keeps authoritative renamed and cleared names after live-session disposal", async () => {
+    const modified = new Date("2026-01-02T00:00:00Z");
+    const { service, initial, cwd } = await fixtureService({
+      list: async (listedCwd) => [{
+        id: "current",
+        path: join(listedCwd, "current.jsonl"),
+        name: "Stale shallow name",
+        created: modified,
+        modified,
+        messageCount: 1,
+        cwd: listedCwd,
+      }],
+    });
+
+    await service.rename(initial.sessionId, "Renamed");
+    await service.disposeAll("reset");
+    expect(await service.list()).toContainEqual(expect.objectContaining({ id: "current", name: "Renamed", cwd }));
+
+    await service.open("current");
+    await service.rename("current", "");
+    await service.disposeAll("reset");
+    expect((await service.list()).find((info) => info.id === "current")?.name).toBeUndefined();
   });
 
   it("runs the host post-create finalizer before extension-created state publication", async () => {

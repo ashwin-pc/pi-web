@@ -43,6 +43,7 @@ import {
   projectCommittedMessage,
   projectMessages,
   projectSessionState,
+  sessionDisplayName,
   sessionStats,
   simplifyModel,
 } from "./projection.js";
@@ -167,6 +168,8 @@ export class LocalSessionService implements SessionService {
   private readonly listeners = new Set<(event: SessionServiceEvent) => void>();
   private readonly liveSessions = new Map<string, LiveSessionEntry>();
   private readonly liveById = new Map<string, PiWebSession>();
+  /** Names learned from fully loaded sessions remain authoritative after their live session is disposed. */
+  private readonly sessionNamesByPath = new Map<string, string | undefined>();
   private readonly sessionLocations = new Map<string, { path: string; cwd: string }>();
   private readonly openingById = new Map<string, Promise<PiWebSession | undefined>>();
   private readonly sessionListRequests = new Map<string, Promise<SessionInfoDto[]>>();
@@ -390,6 +393,7 @@ export class LocalSessionService implements SessionService {
     const value = await this.require(sessionId);
     if (!value.setSessionName) throw new SessionServiceError("Renaming sessions is not available");
     value.setSessionName(name);
+    this.rememberSessionName(value);
     return this.projectState(value);
   }
 
@@ -486,17 +490,11 @@ export class LocalSessionService implements SessionService {
         try {
           if (this.deps.sessionFactory?.list) {
             const infos = await this.deps.sessionFactory.list(cwd);
-            return infos.map((info) => this.simplifySessionInfo(info, cwd));
+            return infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
           }
           return (await shallowListSessions(cwd, this.defaultSessionDir(cwd))).map((info) => {
             this.rememberSessionLocation(info, cwd);
-            const live = this.liveById.get(info.id);
-            return live ? {
-              ...info,
-              name: live.getSessionName?.() || info.name,
-              messageCount: live.messages.length,
-              cwd: this.sessionCwd(live),
-            } : info;
+            return this.overlaySessionName(info);
           });
         } catch { return []; }
       }));
@@ -531,6 +529,7 @@ export class LocalSessionService implements SessionService {
     const disposition = this.deps.sessionFactory?.remove
       ? await this.deps.sessionFactory.remove(sessionId, info.path)
       : await this.trashOrRemoveSessionFile(info.path);
+    this.sessionNamesByPath.delete(resolve(info.path));
     return { id: sessionId, disposition };
   }
 
@@ -711,6 +710,7 @@ export class LocalSessionService implements SessionService {
     this.liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0, retryLeases: 0 });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
+    this.rememberSessionName(value);
     queueMicrotask(() => this.scheduleLiveSessionCleanup(key));
     return value;
   }
@@ -743,7 +743,10 @@ export class LocalSessionService implements SessionService {
         if (message) this.emit({ type: "committed", sessionId, sessionFile: value.sessionFile, message });
       });
     }
-    if (raw?.type === "session_info_changed") this.emit({ type: "state", state: this.projectState(value) });
+    if (raw?.type === "session_info_changed") {
+      this.rememberSessionName(value);
+      this.emit({ type: "state", state: this.projectState(value) });
+    }
     if (raw?.type === "message_end" || raw?.type === "agent_end" || raw?.type === "compaction_end") {
       this.emit({ type: "stats", sessionId, sessionFile, stats: sessionStats(value) });
     }
@@ -883,6 +886,25 @@ export class LocalSessionService implements SessionService {
 
   private rememberSessionLocation(info: { id: string; path: string; cwd?: string }, cwd = this.deps.globalCwd()) {
     if (info.id && info.path) this.sessionLocations.set(info.id, { path: resolve(info.path), cwd: resolve(info.cwd || cwd) });
+  }
+
+  private rememberSessionName(value: PiWebSession) {
+    if (!value.sessionFile) return;
+    this.sessionNamesByPath.set(resolve(value.sessionFile), sessionDisplayName(value));
+  }
+
+  private overlaySessionName(info: SessionInfoDto): SessionInfoDto {
+    const live = this.liveById.get(info.id);
+    if (live && resolve(live.sessionFile || "") === resolve(info.path)) {
+      return {
+        ...info,
+        name: sessionDisplayName(live),
+        messageCount: live.messages.length,
+        cwd: this.sessionCwd(live),
+      };
+    }
+    const path = resolve(info.path);
+    return this.sessionNamesByPath.has(path) ? { ...info, name: this.sessionNamesByPath.get(path) } : info;
   }
 
   private simplifySessionInfo(info: PiWebSessionInfo | Awaited<ReturnType<typeof SessionManager.list>>[number], cwd: string): SessionInfoDto {
