@@ -91,7 +91,7 @@ describe("bundled extension path discovery", () => {
     let ui: any;
     const emitted: any[] = [];
     const bridge = createWebUiBridge({
-      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      emit: (value) => emitted.push(value), clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
       createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
     });
     const session = {
@@ -132,7 +132,7 @@ describe("bundled extension path discovery", () => {
     let ui: any;
     const emitted: any[] = [];
     const bridge = createWebUiBridge({
-      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      emit: (value) => emitted.push(value), clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
       createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
     });
     const session = {
@@ -175,7 +175,7 @@ describe("bundled extension path discovery", () => {
     let ui: any;
     const emitted: any[] = [];
     const bridge = createWebUiBridge({
-      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      emit: (value) => emitted.push(value), clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
       createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
     });
     await bridge.bind({
@@ -207,7 +207,7 @@ describe("bundled extension path discovery", () => {
     let bindOptions: any;
     const emitted: any[] = [];
     const bridge = createWebUiBridge({
-      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      emit: (value) => emitted.push(value), clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
       createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
     });
     const session = {
@@ -267,7 +267,7 @@ describe("bundled extension path discovery", () => {
     let ui: any;
     const emitted: any[] = [];
     const bridge = createWebUiBridge({
-      emit: (value) => emitted.push(value), clientCount: () => 1, acquireWorkLease: () => () => undefined,
+      emit: (value) => emitted.push(value), clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
       createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
     } as any);
     const session = {

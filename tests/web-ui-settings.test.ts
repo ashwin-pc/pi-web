@@ -34,7 +34,7 @@ async function makeBridge() {
   const bridge = createWebUiBridge({
     emit: (value) => emitted.push(value),
     clientCount: () => 1,
-    acquireWorkLease: () => () => undefined,
+    withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
     createNewSession: async () => ({}),
     sessionCwd: () => "/repo",
     state: () => ({}),
