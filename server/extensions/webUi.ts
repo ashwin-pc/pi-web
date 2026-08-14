@@ -8,7 +8,7 @@ import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } fro
 export interface WebUiBridgeDependencies {
   emit(value: unknown): void;
   clientCount(): number;
-  acquireWorkLease(session: any): () => void;
+  withWorkLease<T>(session: any, label: string, operation: () => Promise<T>): Promise<T>;
   createNewSession(cwd: string, previousSessionFile?: string): Promise<any>;
   sessionCwd(session: any): string;
   state(session: any): Record<string, unknown>;
@@ -574,9 +574,8 @@ function requestInteraction<T>(
 ): Promise<T> {
   if (opts?.signal?.aborted || deps.clientCount() === 0) return Promise.resolve(defaultValue);
 
-  return new Promise<T>((resolvePromise) => {
+  return deps.withWorkLease(value, `extension-interaction:${method}`, () => new Promise<T>((resolvePromise) => {
     const id = randomUUID();
-    const releaseWorkLease = deps.acquireWorkLease(value);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const timeoutMs = opts?.timeout ?? 120_000;
 
@@ -584,7 +583,6 @@ function requestInteraction<T>(
       if (timeoutId) clearTimeout(timeoutId);
       opts?.signal?.removeEventListener("abort", onAbort);
       pendingInteractionRequests.delete(id);
-      releaseWorkLease();
     };
     const finish = (result: T) => {
       cleanup();
@@ -611,7 +609,7 @@ function requestInteraction<T>(
       sessionFile: value.sessionFile,
       timeout: timeoutMs,
     });
-  });
+  }));
 }
 
 function createWebExtensionUiContext(value: any): ExtensionUIContext & { web: PiWebUi } {

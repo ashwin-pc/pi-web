@@ -722,6 +722,10 @@ const server = createServer(async (req, res) => {
         }
       }
 
+      if (method === "GET" && url.pathname === "/api/session/lifecycle") {
+        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot() });
+      }
+
       if (method === "GET" && url.pathname === "/api/session/stats") {
         return sendJson(res, 200, { ok: true, ...await sessionService.stats(resolveSessionId(url.searchParams.get("sessionId"))) });
       }
@@ -736,18 +740,14 @@ const server = createServer(async (req, res) => {
         await sessionService.require(requestedSessionId);
         const targetId = String(body.targetId || "").trim();
         if (!targetId) return sendJson(res, 400, { ok: false, error: "targetId is required" });
-        const { finish, state: baseState, ...result } = await sessionService.navigate(requestedSessionId, targetId, {
+        const { state: baseState, ...result } = await sessionService.navigate(requestedSessionId, targetId, {
           summarize: Boolean(body.summarize),
           customInstructions: typeof body.customInstructions === "string" && body.customInstructions.trim() ? body.customInstructions.trim() : undefined,
           replaceInstructions: Boolean(body.replaceInstructions),
           label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : undefined,
         });
         const state = await decorateServiceState(baseState);
-        try {
-          return sendJson(res, 200, { ok: true, ...result, state });
-        } finally {
-          finish();
-        }
+        return sendJson(res, 200, { ok: true, ...result, state });
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/abort-summary") {

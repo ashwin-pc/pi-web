@@ -101,6 +101,9 @@ describe("pi-web mock API", () => {
     const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
     expect(sessions.sessions).toHaveLength(2);
     expect(sessions.sessions.every((item: any) => item.isCurrent === false)).toBe(true);
+
+    const lifecycle = await (await fetch(`${baseUrl}/api/session/lifecycle`)).json();
+    expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
   it("deletes a requested session", async () => {
@@ -756,9 +759,13 @@ describe("artifact serving", () => {
       // artifact accessible without token
       const artifactRes = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`);
       expect(artifactRes.status).toBe(200);
-      // api route still requires token
+      // normal API routes, including diagnostics, still require the token
       const apiRes = await fetch(`${tokenBaseUrl}/api/state`);
       expect(apiRes.status).toBe(401);
+      expect((await fetch(`${tokenBaseUrl}/api/session/lifecycle`)).status).toBe(401);
+      const diagnostics = await fetch(`${tokenBaseUrl}/api/session/lifecycle`, { headers: { authorization: "Bearer secret" } });
+      expect(diagnostics.status).toBe(200);
+      expect(await diagnostics.json()).toMatchObject({ ok: true, liveSessions: expect.any(Array) });
     } finally {
       tokenChild.kill();
     }

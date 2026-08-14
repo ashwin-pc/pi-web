@@ -85,12 +85,23 @@ export interface LocalSessionServiceDependencies {
   clientCount(): number;
 }
 
+type WorkLeaseKind = "general" | "retry";
+
+type WorkLeaseToken = { sessionKey: string; key: symbol };
+
+type WorkLease = {
+  id: number;
+  label: string;
+  kind: WorkLeaseKind;
+  acquiredAt: number;
+  watchdogTimer?: ReturnType<typeof setTimeout>;
+};
+
 type LiveSessionEntry = {
   session: PiWebSession;
   unsubscribe?: () => void;
   viewerClientIds: Set<string>;
-  workLeases: number;
-  retryLeases: number;
+  workLeases: Map<symbol, WorkLease>;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
 };
@@ -180,10 +191,12 @@ export class LocalSessionService implements SessionService {
   private readonly pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
   private readonly knownSessionCwds = new Set<string>();
   private readonly protectedSessionIds = new Set<string>();
+  private nextWorkLeaseId = 1;
   readonly settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
   private readonly noSession = process.env.PI_WEB_NO_SESSION === "1";
   private readonly idleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 24 * 60 * 60 * 1000);
   private readonly viewerGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, this.idleGraceMs));
+  private readonly workLeaseWatchdogMs = envMs("PI_WEB_WORK_LEASE_WATCHDOG_MS", 3 * 60 * 1000);
   private readonly webUiBridge;
 
   constructor(private readonly deps: LocalSessionServiceDependencies) {
@@ -199,7 +212,7 @@ export class LocalSessionService implements SessionService {
         }
       },
       clientCount: deps.clientCount,
-      acquireWorkLease: (session) => this.acquireWorkLease(session),
+      withWorkLease: (session, label, operation) => this.withWorkLease(session, label, "general", operation),
       createNewSession: (cwd, previousSessionFile) => this.createNewLiveSession(cwd, previousSessionFile),
       sessionCwd: (session) => this.sessionCwd(session),
       state: (session) => this.projectState(session) as unknown as Record<string, unknown>,
@@ -249,8 +262,8 @@ export class LocalSessionService implements SessionService {
   }
 
   sessionForPath(path: string) { return this.liveSessions.get(path)?.session; }
-  hasActiveWorkForPath(path: string) { return (this.liveSessions.get(path)?.workLeases || 0) > 0; }
-  hasActiveRetryForPath(path: string) { return (this.liveSessions.get(path)?.retryLeases || 0) > 0; }
+  hasActiveWorkForPath(path: string) { return (this.liveSessions.get(path)?.workLeases.size || 0) > 0; }
+  hasActiveRetryForPath(path: string) { return Array.from(this.liveSessions.get(path)?.workLeases.values() || []).some((lease) => lease.kind === "retry"); }
   sessionForId(id: string) { return this.liveById.get(id); }
   cwdForSession(value: PiWebSession) { return this.sessionCwd(value); }
   async cwdForSessionId(id: string) {
@@ -372,7 +385,7 @@ export class LocalSessionService implements SessionService {
 
   async abort(sessionId: string) {
     const value = await this.require(sessionId);
-    void value.abort().catch((error) => this.emitError(value, error));
+    void this.abortSession(value);
     return { sessionId: value.sessionId };
   }
 
@@ -402,25 +415,12 @@ export class LocalSessionService implements SessionService {
     if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before navigating the tree", 409);
     if (value.isCompacting) throw new SessionServiceError("Wait for the current compaction to finish before navigating the tree", 409);
     if (!value.navigateTree) throw new SessionServiceError("Tree navigation is not available");
-    const releaseWorkLease = this.acquireWorkLease(value);
-    let finished = false;
-    const finish = () => {
-      if (finished) return;
-      finished = true;
-      releaseWorkLease();
-      this.emitRuntime(value, "changed");
-    };
-    try {
-      const navigation = value.navigateTree(targetId, options as any);
-      this.emitRuntime(value, "changed");
-      const result = await navigation;
+    return this.withWorkLease(value, "navigate", "general", async () => {
+      const result = await value.navigateTree!(targetId, options as any);
       const state = this.projectState(value);
       this.emit({ type: "state", state, includeThinkingLevels: true });
-      return { ...jsonSafe(result as Record<string, JsonValue>), leafId: value.sessionManager.getLeafId?.() || null, state, finish };
-    } catch (error) {
-      finish();
-      throw error;
-    }
+      return { ...jsonSafe(result as Record<string, JsonValue>), leafId: value.sessionManager.getLeafId?.() || null, state };
+    });
   }
 
   invokeContribution(sessionId: string | undefined, input: Record<string, unknown>) {
@@ -603,7 +603,15 @@ export class LocalSessionService implements SessionService {
         sessionId: entry.session.sessionId,
         sessionFile: entry.session.sessionFile,
         viewerLeases: entry.viewerClientIds.size,
-        workLeases: entry.workLeases,
+        workLeases: entry.workLeases.size,
+        retryLeases: Array.from(entry.workLeases.values()).filter((lease) => lease.kind === "retry").length,
+        leases: Array.from(entry.workLeases.values()).map((lease) => ({
+          id: lease.id,
+          label: lease.label,
+          kind: lease.kind,
+          acquiredAt: new Date(lease.acquiredAt).toISOString(),
+          heldForMs: Math.max(0, Date.now() - lease.acquiredAt),
+        })),
         hasDisposeTimer: Boolean(entry.disposeTimer),
         isStreaming: Boolean(entry.session.isStreaming),
         isCompacting: Boolean(entry.session.isCompacting),
@@ -707,7 +715,7 @@ export class LocalSessionService implements SessionService {
     const key = sessionPathKey(value);
     if (!key || this.liveSessions.get(key)?.session === value) return value;
     const unsubscribe = value.subscribe?.((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: 0, retryLeases: 0 });
+    this.liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: new Map() });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
@@ -811,26 +819,65 @@ export class LocalSessionService implements SessionService {
     else this.pendingPromptCorrelations.delete(sessionKey);
   }
 
-  private acquireWorkLease(value: PiWebSession, kind: "general" | "retry" = "general") {
+  private acquireWorkLease(value: PiWebSession, label: string, kind: WorkLeaseKind) {
     const key = sessionPathKey(value);
     const entry = this.liveSessions.get(key);
-    if (!entry) return () => undefined;
-    entry.workLeases++;
-    if (kind === "retry") entry.retryLeases++;
+    if (!entry) return undefined;
+    const token = Symbol(label);
+    const lease: WorkLease = { id: this.nextWorkLeaseId++, label, kind, acquiredAt: Date.now() };
+    if (this.workLeaseWatchdogMs > 0) {
+      lease.watchdogTimer = setTimeout(() => {
+        if (!entry.workLeases.has(token)) return;
+        console.warn("Session work lease watchdog: lease remains active", {
+          sessionId: value.sessionId, sessionFile: value.sessionFile, leaseId: lease.id,
+          label: lease.label, kind: lease.kind, acquiredAt: new Date(lease.acquiredAt).toISOString(),
+          heldForMs: Date.now() - lease.acquiredAt,
+        });
+      }, this.workLeaseWatchdogMs);
+      lease.watchdogTimer.unref?.();
+    }
+    entry.workLeases.set(token, lease);
     this.cancelLiveSessionCleanup(entry);
-    let released = false;
-    return () => {
-      if (released) return;
-      released = true;
-      entry.workLeases = Math.max(0, entry.workLeases - 1);
-      if (kind === "retry") entry.retryLeases = Math.max(0, entry.retryLeases - 1);
-      this.scheduleLiveSessionCleanup(key);
-    };
+    this.emitRuntime(value, "changed");
+    return { sessionKey: key, key: token } satisfies WorkLeaseToken;
+  }
+
+  private releaseWorkLease(value: PiWebSession, token: WorkLeaseToken | undefined) {
+    if (!token) return;
+    const entry = this.liveSessions.get(token.sessionKey);
+    const lease = entry?.workLeases.get(token.key);
+    if (!entry || !lease) return;
+    this.clearTimer(lease.watchdogTimer);
+    entry.workLeases.delete(token.key);
+    this.scheduleLiveSessionCleanup(token.sessionKey);
+    this.emitRuntime(value, "changed");
+  }
+
+  private async withWorkLease<T>(value: PiWebSession, label: string, kind: WorkLeaseKind, operation: () => T | Promise<T>): Promise<T> {
+    const token = this.acquireWorkLease(value, label, kind);
+    try { return await operation(); }
+    finally { this.releaseWorkLease(value, token); }
+  }
+
+  private clearWorkLeases(value: PiWebSession, reason: string) {
+    const located = Array.from(this.liveSessions.entries()).find(([, candidate]) => candidate.session === value);
+    const key = located?.[0] || sessionPathKey(value);
+    const entry = located?.[1] || this.liveSessions.get(key);
+    if (!entry?.workLeases.size) return;
+    const leases = Array.from(entry.workLeases.values());
+    for (const lease of leases) this.clearTimer(lease.watchdogTimer);
+    entry.workLeases.clear();
+    console.warn("Cleared session work leases", {
+      sessionId: value.sessionId, sessionFile: value.sessionFile, reason,
+      leases: leases.map(({ id, label, kind, acquiredAt }) => ({ id, label, kind, acquiredAt: new Date(acquiredAt).toISOString() })),
+    });
+    this.scheduleLiveSessionCleanup(key);
+    this.emitRuntime(value, "changed");
   }
 
   private clearTimer(timer?: ReturnType<typeof setTimeout>) { if (timer) clearTimeout(timer); }
   private cancelLiveSessionCleanup(entry: LiveSessionEntry) { this.clearTimer(entry.disposeTimer); entry.disposeTimer = undefined; }
-  private isLiveSessionBusy(entry: LiveSessionEntry) { return Boolean(entry.session.isStreaming || entry.session.isCompacting || entry.workLeases > 0); }
+  private isLiveSessionBusy(entry: LiveSessionEntry) { return Boolean(entry.session.isStreaming || entry.session.isCompacting || entry.workLeases.size > 0); }
   private shouldKeepLiveSession(entry: LiveSessionEntry) { return this.protectedSessionIds.has(entry.session.sessionId) || entry.viewerClientIds.size > 0 || this.isLiveSessionBusy(entry); }
 
   private scheduleLiveSessionCleanup(key: string) {
@@ -861,6 +908,8 @@ export class LocalSessionService implements SessionService {
     if (!entry || entry.disposing || (!force && this.shouldKeepLiveSession(entry))) return;
     entry.disposing = true;
     this.cancelLiveSessionCleanup(entry);
+    for (const lease of entry.workLeases.values()) this.clearTimer(lease.watchdogTimer);
+    entry.workLeases.clear();
     const value = entry.session;
     const sessionId = value.sessionId;
     const sessionFile = value.sessionFile || key;
@@ -1098,18 +1147,27 @@ export class LocalSessionService implements SessionService {
         if (value.isCompacting) throw new Error("Compaction is already running.");
         if (!value.compact) throw new Error("Compaction is not available in this session.");
         this.emitRuntime(value, "ensure");
-        const release = this.acquireWorkLease(value);
-        void value.compact(args || undefined).catch((error) => {
+        void this.withWorkLease(value, "compact", "general", () => value.compact!(args || undefined)).catch((error) => {
           this.emitRuntime(value, "clear");
           this.emitError(value, error);
-        }).finally(release);
+        });
         return { message: "Compaction started.", state: state() };
       }
       case "abort": case "stop":
-        await value.abort();
+        await this.abortSession(value);
         return { message: "Aborted.", state: state() };
       default: throw new Error(`Unknown slash command: /${name}. Try /help.`);
     }
+  }
+
+  private abortSession(value: PiWebSession) {
+    const wasSdkActive = Boolean(value.isStreaming || value.isCompacting);
+    const aborting = value.abort().catch((error) => this.emitError(value, error));
+    if (!wasSdkActive) this.clearWorkLeases(value, "abort while SDK idle");
+    else void aborting.then(() => {
+      if (!value.isStreaming && !value.isCompacting) this.clearWorkLeases(value, "active abort settled");
+    });
+    return aborting;
   }
 
   private async startSessionPrompt(value: PiWebSession, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }) {
@@ -1117,14 +1175,12 @@ export class LocalSessionService implements SessionService {
     if (!this.deps.sessionFactory?.isMock && input.clientMessageId && input.sourceClientId) this.rememberPromptCorrelation(sessionPathKey(value), { clientMessageId: input.clientMessageId, sourceClientId: input.sourceClientId, createdAt: Date.now() });
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;
-    const release = this.acquireWorkLease(value);
-    void value.prompt(promptText, {
+    void this.withWorkLease(value, "prompt", "general", () => value.prompt(promptText, {
       ...(value.isStreaming ? { streamingBehavior: input.mode } : {}),
-    }).catch((error) => {
+    })).catch((error) => {
       if (!this.deps.sessionFactory?.isMock && input.clientMessageId) this.forgetPromptCorrelation(sessionPathKey(value), input.clientMessageId);
       this.emitError(value, error, input.clientMessageId);
     }).finally(() => {
-      release();
       const lastMessage = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages.at(-1) : undefined;
       this.emitRuntime(value, "completed", promptSessionFile, isAssistantAbortedMessage(lastMessage));
     });
@@ -1196,14 +1252,10 @@ export class LocalSessionService implements SessionService {
     this.emitRuntime(value, "ensure");
     const retrySessionFile = value.sessionFile;
     const usesCompatibilityFallback = !value.retryFromFailure;
-    const release = this.acquireWorkLease(value, "retry");
-    void this.retryFromFailure(value).catch((error) => {
+    void this.withWorkLease(value, "retry", "retry", () => this.retryFromFailure(value)).catch((error) => {
       this.emitRuntime(value, "clear", retrySessionFile);
       this.emitError(value, error);
     }).finally(() => {
-      // The terminal projection must happen after releasing the lease, or it
-      // would report this completed continuation as still running.
-      release();
       // The private SDK fallback bypasses AgentSession._runAgentPrompt(), so it
       // cannot emit pi's authoritative idle event itself. Translate settlement
       // only after releasing the compatibility lease.

@@ -162,12 +162,12 @@ describe("LocalSessionService contract", () => {
     for (const event of events) expect(jsonRoundTrip(event)).toStrictEqual(event);
   });
 
-  it("keeps navigation data serializable and its finalizer serving-side", async () => {
+  it("returns serializable navigation data after releasing its lease", async () => {
     const { service, initial } = await fixtureService();
-    const { finish, ...result } = await service.navigate(initial.sessionId, "result", {});
+    const result = await service.navigate(initial.sessionId, "result", {});
     expect(jsonRoundTrip(result)).toStrictEqual(result);
-    expect(finish).toEqual(expect.any(Function));
-    finish();
+    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
+    expect(result).not.toHaveProperty("finish");
   });
 
   it("maps unavailable conversation trees to the legacy 400 status", async () => {
@@ -252,7 +252,7 @@ describe("LocalSessionService contract", () => {
 
   it("keeps the dependency surface to six true externals", async () => {
     const source = await readFile(new URL("../server/session/service.ts", import.meta.url), "utf8");
-    const body = source.slice(source.indexOf("export interface LocalSessionServiceDependencies"), source.indexOf("}\n\ntype LiveSessionEntry"));
+    const body = source.slice(source.indexOf("export interface LocalSessionServiceDependencies"), source.indexOf("}\n\ntype WorkLeaseKind"));
     expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(6);
     expect(body).not.toContain("decorateState");
     expect(body).not.toContain("resolve(sessionId");
@@ -324,8 +324,12 @@ describe("LocalSessionService contract", () => {
       request: { source: "extension", kind: "confirm", payload: { title: "Allow?", message: "Run tool" }, timeout: 1_000 },
     });
     if (!interaction || interaction.type !== "interaction") throw new Error("Missing interaction request");
+    expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([
+      expect.objectContaining({ label: "extension-interaction:confirm", kind: "general" }),
+    ]);
     expect(service.respondInteraction({ id: interaction.request.id, confirmed: true })).toBe(true);
     await expect(answer).resolves.toBe(true);
+    expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
   });
 
   it("denies timed-out and disconnected interactions through the service boundary", async () => {
@@ -510,12 +514,60 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(service.sessionForId(viewed.sessionId)).toBeUndefined();
 
     const working = await service.create(undefined);
-    const navigation = await service.navigate(working.sessionId, "result", {});
-    await vi.advanceTimersByTimeAsync(100);
+    await service.navigate(working.sessionId, "result", {});
+    await vi.advanceTimersByTimeAsync(29);
     expect(service.sessionForId(working.sessionId)).toBeDefined();
-    navigation.finish();
-    await vi.advanceTimersByTimeAsync(30);
+    await vi.advanceTimersByTimeAsync(1);
     expect(service.sessionForId(working.sessionId)).toBeUndefined();
+  });
+
+  it("exposes per-lease diagnostics and warns without expiring long work", async () => {
+    vi.stubEnv("PI_WEB_WORK_LEASE_WATCHDOG_MS", "20");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { service, initial } = await fixtureService();
+    let finishNavigate!: () => void;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    initial.navigateTree = () => { markEntered(); return new Promise((resolve) => { finishNavigate = () => resolve({ cancelled: false }); }); };
+    vi.useFakeTimers();
+
+    const navigation = service.navigate(initial.sessionId, "result", {});
+    await entered;
+    expect(service.lifecycleSnapshot().liveSessions[0]).toMatchObject({
+      workLeases: 1,
+      retryLeases: 0,
+      leases: [{ label: "navigate", kind: "general", heldForMs: 0 }],
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(warn).toHaveBeenCalledWith("Session work lease watchdog: lease remains active", expect.objectContaining({ label: "navigate", heldForMs: 20 }));
+    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(true);
+
+    finishNavigate();
+    await navigation;
+    expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
+    warn.mockRestore();
+  });
+
+  it("lets abort recover a gated lease and ignores its late scoped release", async () => {
+    const { service, initial } = await fixtureService();
+    let finishNavigate!: () => void;
+    let markEntered!: () => void;
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    initial.navigateTree = () => { markEntered(); return new Promise((resolve) => { finishNavigate = () => resolve({ cancelled: false }); }); };
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+
+    const navigation = service.navigate(initial.sessionId, "result", {});
+    await entered;
+    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(true);
+    await service.abort(initial.sessionId);
+    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
+    const changedAfterAbort = events.filter((event) => event.type === "runtime" && event.action === "changed").length;
+
+    finishNavigate();
+    await navigation;
+    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
+    expect(events.filter((event) => event.type === "runtime" && event.action === "changed")).toHaveLength(changedAfterAbort);
   });
 
   it("does not let a stale socket release a replacement viewer lease", async () => {
@@ -612,12 +664,14 @@ describe("session route boundary", () => {
     expect(routes).not.toContain("targetSession.");
   });
 
-  it("writes a navigation response before calling its serving-side finalizer", async () => {
+  it("keeps navigation lease finalization inside the service and exposes lifecycle diagnostics", async () => {
     const source = await readFile(new URL("../server.ts", import.meta.url), "utf8");
     const start = source.indexOf('url.pathname === "/api/session/tree/navigate"');
     const route = source.slice(start, source.indexOf('url.pathname === "/api/session/tree/abort-summary"', start));
-    expect(route.indexOf("sendJson(res, 200")).toBeGreaterThan(-1);
-    expect(route.indexOf("sendJson(res, 200")).toBeLessThan(route.indexOf("finish();"));
+    expect(route).toContain("sessionService.navigate");
+    expect(route).not.toContain("finish");
+    expect(source).toContain('url.pathname === "/api/session/lifecycle"');
+    expect(source).toContain("sessionService.lifecycleSnapshot()");
     expect(route).not.toContain("setTimeout");
   });
 });

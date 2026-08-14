@@ -194,14 +194,8 @@ export type SessionServiceEvent =
   | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed"; aborted?: boolean }
   | { type: "wire"; value: JsonValue };
 
-/**
- * Navigation has one serving-side finalizer. `finish` is intentionally not
- * serializable: a remote runner returns the data first and its serving adapter
- * finalizes only after writing that data to its own transport.
- */
 export type NavigationResult = {
   state: BaseSessionStateDto;
-  finish(): void;
   [key: string]: unknown;
 };
 
