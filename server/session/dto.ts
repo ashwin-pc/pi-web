@@ -89,6 +89,7 @@ export type AttachmentDto = {
 
 type MessageDtoBase = {
   entryId?: string;
+  parentEntryId?: string;
   text?: string;
   timestamp?: string;
   attachments?: AttachmentDto[];

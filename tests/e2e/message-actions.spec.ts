@@ -80,7 +80,7 @@ test.describe("message actions", () => {
     const rerunUser = page.locator(".message.user", { hasText: "Can you add image attachments?" }).first();
     await clickMessageAction(page, rerunUser, "Rerun message from here", "Rerun");
 
-    await expect(page.locator(".message.user", { hasText: "Can you add image attachments?" })).toBeVisible();
+    await expect(page.locator(".message.user", { hasText: "Can you add image attachments?" })).toHaveCount(1);
     await expect(page.locator(".message.assistant", { hasText: "Mock response" })).toBeVisible();
   });
 

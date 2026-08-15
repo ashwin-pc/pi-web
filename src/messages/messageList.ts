@@ -16,11 +16,13 @@ export type MessageActionKind = "edit" | "rerun" | "continue";
 export type MessageActionContext = {
   action: MessageActionKind;
   entryId: string;
+  parentEntryId?: string;
   role: "user" | "assistant";
   text: string;
 };
 export type MessageMetadata = {
   entryId?: string;
+  parentEntryId?: string;
   copyText?: string;
   timestamp?: string;
 };
@@ -628,7 +630,7 @@ export function createMessageList(options: {
     if (entryId && onMessageAction) {
       messageEl.dataset.entryId = entryId;
       const runAction = (action: MessageActionKind) => {
-        void onMessageAction({ action, entryId, role, text: actionText() });
+        void onMessageAction({ action, entryId, parentEntryId: metadata.parentEntryId?.trim(), role, text: actionText() });
       };
       if (role === "user") {
         appendMessageActionButton(actions, "square-pen", "Edit message from here", "Edit", () => runAction("edit"));
@@ -1181,7 +1183,7 @@ export function createMessageList(options: {
         return;
       case "user": {
         const text = messageText(message);
-        if (text) addMessage("user", text, message.isError ? "error" : "", message.attachments || imagesFromRawContent(rawContent(message)), { entryId: message.entryId, timestamp: message.timestamp });
+        if (text) addMessage("user", text, message.isError ? "error" : "", message.attachments || imagesFromRawContent(rawContent(message)), { entryId: message.entryId, parentEntryId: message.parentEntryId, timestamp: message.timestamp });
         return;
       }
       case "system":

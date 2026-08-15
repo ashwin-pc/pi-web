@@ -32,15 +32,18 @@ export function simplifyModel(model: any): ModelDto | undefined {
 }
 
 
-export function appendMessageEntryRef(refs: Array<{ entryId?: string }>, entry: any) {
+type MessageEntryRef = { entryId?: string; parentEntryId?: string };
+
+export function appendMessageEntryRef(refs: MessageEntryRef[], entry: any) {
   if (!entry || typeof entry !== "object") return;
   if (entry.type === "message" || entry.type === "custom_message" || entry.type === "branch_summary" && entry.summary) {
     const entryId = typeof entry.id === "string" && entry.id.trim() ? entry.id : undefined;
-    refs.push({ entryId });
+    const parentEntryId = typeof entry.parentId === "string" && entry.parentId.trim() ? entry.parentId : undefined;
+    refs.push({ entryId, parentEntryId });
   }
 }
 
-export function messageEntryRefs(targetSession: PiWebSession): Array<{ entryId?: string }> {
+export function messageEntryRefs(targetSession: PiWebSession): MessageEntryRef[] {
   const getBranch = targetSession.sessionManager?.getBranch;
   if (typeof getBranch !== "function") return [];
 
@@ -52,7 +55,7 @@ export function messageEntryRefs(targetSession: PiWebSession): Array<{ entryId?:
   }
   if (!Array.isArray(branch)) return [];
 
-  const refs: Array<{ entryId?: string }> = [];
+  const refs: MessageEntryRef[] = [];
   let compaction: any | undefined;
   for (const entry of branch) {
     if (entry?.type === "compaction") compaction = entry;
@@ -64,7 +67,8 @@ export function messageEntryRefs(targetSession: PiWebSession): Array<{ entryId?:
   }
 
   const compactionId = typeof compaction.id === "string" && compaction.id.trim() ? compaction.id : undefined;
-  refs.push({ entryId: compactionId });
+  const compactionParentId = typeof compaction.parentId === "string" && compaction.parentId.trim() ? compaction.parentId : undefined;
+  refs.push({ entryId: compactionId, parentEntryId: compactionParentId });
   const compactionIndex = branch.findIndex((entry) => entry?.type === "compaction" && entry?.id === compaction.id);
   let foundFirstKept = false;
   for (let index = 0; index < compactionIndex; index += 1) {
@@ -78,12 +82,15 @@ export function messageEntryRefs(targetSession: PiWebSession): Array<{ entryId?:
 
 export function simplifyMessage(
   message: unknown,
-  options: { toolCallArgs?: Map<string, Record<string, unknown>>; decorateContent?: ContentDecorator; entryId?: string } = {},
+  options: { toolCallArgs?: Map<string, Record<string, unknown>>; decorateContent?: ContentDecorator; entryId?: string; parentEntryId?: string } = {},
 ): MessageDto | undefined {
   if (!message || typeof message !== "object") return undefined;
   const m = message as Record<string, unknown>;
   const content = options.decorateContent ? options.decorateContent(m.content) : m.content;
-  const entry = options.entryId ? { entryId: options.entryId } : {};
+  const entry = {
+    ...(options.entryId ? { entryId: options.entryId } : {}),
+    ...(options.parentEntryId ? { parentEntryId: options.parentEntryId } : {}),
+  };
   const toolCallArgs = options.toolCallArgs;
   if (m.role === "bashExecution") {
     return jsonRoundTrip({
@@ -182,7 +189,7 @@ function messageProjectionContext(targetSession: PiWebSession) {
 export function projectMessages(targetSession: PiWebSession): MessageDto[] {
   const { toolCallArgs, refs } = messageProjectionContext(targetSession);
   return targetSession.messages.flatMap((message, index) => {
-    const projected = simplifyMessage(message, { toolCallArgs, entryId: refs[index]?.entryId });
+    const projected = simplifyMessage(message, { toolCallArgs, ...refs[index] });
     return projected ? [projected] : [];
   });
 }
@@ -191,7 +198,7 @@ export function projectCommittedMessage(targetSession: PiWebSession, committed: 
   const index = targetSession.messages.lastIndexOf(committed as never);
   if (index < 0) return undefined;
   const { toolCallArgs, refs } = messageProjectionContext(targetSession);
-  return simplifyMessage(targetSession.messages[index], { toolCallArgs, entryId: refs[index]?.entryId });
+  return simplifyMessage(targetSession.messages[index], { toolCallArgs, ...refs[index] });
 }
 
 export function truncatePreview(value: string, max = 220) {

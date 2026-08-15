@@ -114,7 +114,10 @@ async function navigateMessageActionTarget(context: MessageActionContext) {
   const res = await fetch("/api/session/tree/navigate", {
     method: "POST",
     headers: api.headers(),
-    body: JSON.stringify({ sessionId: state.currentSessionId, targetId: context.entryId }),
+    body: JSON.stringify({
+      sessionId: state.currentSessionId,
+      targetId: context.role === "user" && context.parentEntryId ? context.parentEntryId : context.entryId,
+    }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
