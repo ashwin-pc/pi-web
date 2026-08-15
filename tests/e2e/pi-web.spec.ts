@@ -1692,7 +1692,7 @@ test.describe("image rendering", () => {
 
     const preview = page.locator(".artifactPreview--markdown").last();
     const header = preview.locator(".artifactPreviewHeader");
-    await expect(preview.locator(".artifactPreviewAction", { hasText: "Download" })).toBeVisible();
+    await expect(preview.getByRole("button", { name: "Download artifact" })).toHaveCount(1);
     await expect(preview.locator(".artifactPreviewContent h1")).toHaveText("Artifact report");
     expect((await header.boundingBox())?.height).toBeLessThanOrEqual(30);
   });
@@ -1784,7 +1784,7 @@ test.describe("image rendering", () => {
     await expect(audio.locator("source")).toHaveAttribute("type", "audio/mpeg");
 
     const downloadStarted = page.waitForEvent("download");
-    await preview.getByRole("button", { name: "Download" }).click();
+    await preview.getByRole("button", { name: "Download artifact" }).click();
     expect((await downloadStarted).suggestedFilename()).toBe("e2e-audio-artifact.mp3");
   });
 

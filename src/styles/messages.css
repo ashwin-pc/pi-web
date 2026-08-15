@@ -438,6 +438,15 @@ body.artifactPreviewDocument {
   cursor: pointer;
 }
 .artifactPreviewAction:hover { text-decoration: underline; }
+.artifactPreviewAction--icon {
+  display: inline-grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 6px;
+}
+.artifactPreviewAction--icon svg { width: 14px; height: 14px; }
+.artifactPreviewAction--icon:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); text-decoration: none; }
 .artifactPreviewAction:disabled { color: var(--muted); cursor: wait; text-decoration: none; }
 .artifactPreviewActionResult { padding: 10px; border-bottom: 1px solid var(--border); }
 .artifactPreviewContent { padding: 12px; max-height: 70vh; overflow: clip; }

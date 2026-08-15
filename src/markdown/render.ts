@@ -1,6 +1,6 @@
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, Copy, createElement } from "lucide";
+import { Check, Copy, createElement, Download, ExternalLink } from "lucide";
 import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 
@@ -421,7 +421,9 @@ async function downloadArtifact(path: string, filename: string) {
 
 function renderArtifactActions(card: HTMLElement, name: string, path: string, kind: string) {
   card.querySelector(".artifactPreviewActions")?.remove();
-  const actions = matchingArtifactActions(name, kind);
+  // Download is a canonical built-in action. Extensions may still contribute
+  // artifact-specific operations, but not a duplicate generic download.
+  const actions = matchingArtifactActions(name, kind).filter((action) => !/download/i.test(`${action.label || ""} ${action.title}`));
   if (!actions.length) return;
   const container = document.createElement("span");
   container.className = "artifactPreviewActions";
@@ -585,25 +587,29 @@ function enhanceArtifactLinks(root: ParentNode) {
       open.target = "_blank";
       open.rel = "noopener noreferrer";
     }
-    open.textContent = "Open";
-    open.className = "artifactPreviewAction";
+    open.className = "artifactPreviewAction artifactPreviewAction--icon";
+    open.title = "Open artifact";
+    open.setAttribute("aria-label", open.title);
+    open.append(createElement(ExternalLink, { "aria-hidden": "true" }));
     const download = document.createElement("button");
     download.type = "button";
-    download.className = "artifactPreviewAction";
-    download.textContent = "Download";
+    download.className = "artifactPreviewAction artifactPreviewAction--icon";
+    download.title = "Download artifact";
+    download.setAttribute("aria-label", download.title);
+    download.append(createElement(Download, { "aria-hidden": "true" }));
     download.addEventListener("click", async () => {
       download.disabled = true;
-      const original = download.textContent;
-      download.textContent = "Downloading…";
       try {
         await downloadArtifact(url.pathname, fileName);
-        download.textContent = "Downloaded";
-        window.setTimeout(() => { if (download.isConnected) download.textContent = original; }, 1_500);
+        download.title = "Downloaded";
       } catch (error) {
         download.title = error instanceof Error ? error.message : String(error);
-        download.textContent = "Failed";
       } finally {
         download.disabled = false;
+        window.setTimeout(() => {
+          if (!download.isConnected) return;
+          download.title = "Download artifact";
+        }, 1_500);
       }
     });
     const builtInActions = document.createElement("span");
