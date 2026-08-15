@@ -1771,6 +1771,18 @@ test.describe("image rendering", () => {
     await expect(video.locator("source")).toHaveAttribute("type", "video/webm");
   });
 
+  test("renders audio artifact links inline", async ({ page }) => {
+    await page.locator("#prompt").fill("show audio artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+
+    const preview = page.locator(".artifactPreview--audio").last();
+    await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-audio-artifact.mp3");
+    const audio = preview.locator("audio.artifactPreviewAudio");
+    await expect(audio).toBeVisible();
+    await expect(audio.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-audio-artifact.mp3");
+    await expect(audio.locator("source")).toHaveAttribute("type", "audio/mpeg");
+  });
+
   test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();

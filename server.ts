@@ -69,6 +69,10 @@ const contentTypes: Record<string, string> = {
   ".webm": "video/webm",
   ".mov": "video/quicktime",
   ".ogv": "video/ogg",
+  ".mp3": "audio/mpeg",
+  ".wav": "audio/wav",
+  ".flac": "audio/flac",
+  ".opus": "audio/ogg",
   ".pdf": "application/pdf",
 };
 

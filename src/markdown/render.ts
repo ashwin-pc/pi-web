@@ -374,16 +374,21 @@ function artifactKind(pathname: string) {
   if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "markdown";
   if (lower.endsWith(".html") || lower.endsWith(".htm")) return "html";
   if (lower.endsWith(".mp4") || lower.endsWith(".webm") || lower.endsWith(".mov") || lower.endsWith(".ogv")) return "video";
+  if (lower.endsWith(".mp3") || lower.endsWith(".wav") || lower.endsWith(".flac") || lower.endsWith(".opus")) return "audio";
   return "";
 }
 
-function videoMimeType(pathname: string) {
+function mediaMimeType(pathname: string) {
   const lower = pathname.toLowerCase();
   if (lower.endsWith(".mp4")) return "video/mp4";
   if (lower.endsWith(".webm")) return "video/webm";
   if (lower.endsWith(".mov")) return "video/quicktime";
   if (lower.endsWith(".ogv")) return "video/ogg";
-  return "video/*";
+  if (lower.endsWith(".mp3")) return "audio/mpeg";
+  if (lower.endsWith(".wav")) return "audio/wav";
+  if (lower.endsWith(".flac")) return "audio/flac";
+  if (lower.endsWith(".opus")) return "audio/ogg";
+  return "application/octet-stream";
 }
 
 function isStandalonePwa() {
@@ -501,7 +506,7 @@ function attachArtifactDisclosure(card: HTMLElement, header: HTMLElement, conten
     toggle.title = minimized ? "Restore preview" : "Minimize preview";
     toggle.setAttribute("aria-label", toggle.title);
     if (minimized) {
-      card.querySelector<HTMLVideoElement>("video")?.pause();
+      card.querySelector<HTMLMediaElement>("video, audio")?.pause();
       setArtifactFrameInteraction(card, false);
     }
   };
@@ -627,18 +632,18 @@ function enhanceArtifactLinks(root: ParentNode) {
       continue;
     }
 
-    if (kind === "video") {
+    if (kind === "video" || kind === "audio") {
       content.textContent = "";
-      const video = document.createElement("video");
-      video.className = "artifactPreviewVideo";
-      video.controls = true;
-      video.playsInline = true;
-      video.preload = "metadata";
+      const media = document.createElement(kind);
+      media.className = kind === "video" ? "artifactPreviewVideo" : "artifactPreviewAudio";
+      media.controls = true;
+      if (media instanceof HTMLVideoElement) media.playsInline = true;
+      media.preload = "metadata";
       const source = document.createElement("source");
       source.src = url.pathname;
-      source.type = videoMimeType(url.pathname);
-      video.append(source);
-      content.append(video);
+      source.type = mediaMimeType(url.pathname);
+      media.append(source);
+      content.append(media);
       refreshOverflow();
       continue;
     }

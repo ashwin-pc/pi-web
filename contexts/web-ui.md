@@ -11,7 +11,7 @@ When creating files the user should view from the web UI, such as screenshots, d
   `![description](/api/artifacts/<path>/<filename>)`
 - Reference non-image files in your response with Markdown link syntax:
   `[filename](/api/artifacts/<path>/<filename>)`
-- Markdown (`.md`, `.markdown`), HTML (`.html`, `.htm`), and video (`.mp4`, `.webm`, `.mov`, `.ogv`) artifact links are previewed inline in chat.
+- Markdown (`.md`, `.markdown`), HTML (`.html`, `.htm`), video (`.mp4`, `.webm`, `.mov`, `.ogv`), and audio (`.mp3`, `.wav`, `.flac`, `.opus`) artifact links are previewed inline in chat.
 - HTML artifact previews allow scripts but run in a sandboxed opaque origin; guard any `localStorage`/`sessionStorage` access with `try`/`catch`.
 - Prefer short, stable, URL-safe filenames.
 - Do not ask users to open arbitrary local filesystem paths like `/tmp/...` for user-visible artifacts unless they explicitly ask for the local path.

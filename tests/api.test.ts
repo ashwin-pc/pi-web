@@ -676,6 +676,7 @@ describe("artifact serving", () => {
     await mkdir(legacyArtifactDir, { recursive: true });
     await writeFile(join(artifactDir, "test.png"), Buffer.from("PNG"));
     await writeFile(join(artifactDir, "test.webm"), Buffer.from("WEBM"));
+    await writeFile(join(artifactDir, "test.mp3"), Buffer.from("MP3"));
     await mkdir(join(artifactDir, "image-edits", "run-1"), { recursive: true });
     await writeFile(join(artifactDir, "image-edits", "run-1", "output.png"), Buffer.from("NESTED"));
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
@@ -692,6 +693,7 @@ describe("artifact serving", () => {
     child?.kill();
     await rm(join(artifactDir, "test.png"), { force: true });
     await rm(join(artifactDir, "test.webm"), { force: true });
+    await rm(join(artifactDir, "test.mp3"), { force: true });
     await rm(join(artifactDir, "e2e-test.png"), { force: true });
     await rm(join(artifactDir, "image-edits"), { recursive: true, force: true });
     await rm(join(legacyArtifactDir, "legacy.png"), { force: true });
@@ -724,6 +726,10 @@ describe("artifact serving", () => {
   });
 
   it("serves preview media with the correct MIME type, byte ranges, and a session preference", async () => {
+    const audio = await fetch(`${baseUrl}/api/artifacts/test.mp3`);
+    expect(audio.status).toBe(200);
+    expect(audio.headers.get("content-type")).toBe("audio/mpeg");
+
     const video = await fetch(`${baseUrl}/api/artifacts/test.webm?sessionId=unknown-session`, { headers: { range: "bytes=1-2" } });
     expect(video.status).toBe(206);
     expect(video.headers.get("content-type")).toBe("video/webm");
