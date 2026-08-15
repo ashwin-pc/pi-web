@@ -13,10 +13,10 @@ test("streams assistant thinking parts as separate cards", async ({ page }) => {
   await expect(card.locator(".toolCardName")).toHaveText("thinking");
   await expect(card).toHaveClass(/toolCard--thinkingStreaming/);
   await expect(card.locator(".toolCardBody")).toContainText("First I will inspect the request");
+  await expect(page.locator(".message.assistant > .body:empty")).toHaveCount(0);
   await expect(card.locator(".toolCardThinkingHeading")).toHaveText("Inspecting request");
   await expect(card.locator(".toolCardThinkingHeading")).toHaveCSS("font-weight", "800");
   await expect(card.locator(".toolCardBody")).not.toContainText("**Inspecting request**");
-  await expect(page.locator(".message.assistant", { hasText: "Final answer after thinking." })).toHaveCount(0);
 
   await expect(page.locator(".message.assistant").last()).toContainText("Final answer after thinking.");
   await expect(page.locator(".message.assistant").last()).not.toContainText("First I will inspect");

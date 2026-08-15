@@ -580,9 +580,6 @@ export function createRealtime(options: {
         messages.resetStreamingAssistant();
         messages.beginStreamFollow();
         break;
-      case "message_start":
-        if (event.message?.role === "assistant") messages.beginStreamingAssistant();
-        break;
       case "message_update": {
         const deltaEvent = event.assistantMessageEvent;
         if (deltaEvent?.type === "text_start") messages.startStreamingText(deltaEvent.contentIndex);

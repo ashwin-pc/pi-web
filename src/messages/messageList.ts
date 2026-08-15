@@ -52,7 +52,6 @@ type ToolCallSummary = {
 
 export type MessageList = {
   addMessage: (role: Role, text: string, extraClass?: string, images?: AttachedImage[], metadata?: MessageMetadata) => HTMLDivElement;
-  beginStreamingAssistant: () => void;
   startStreamingText: (contentIndex?: number | string) => void;
   appendStreamingDelta: (delta: string, contentIndex?: number | string) => void;
   endStreamingText: (content?: string, contentIndex?: number | string) => void;
@@ -1296,7 +1295,6 @@ export function createMessageList(options: {
   return {
     addMessage,
     appendCommittedMessage,
-    beginStreamingAssistant,
     startStreamingText,
     appendStreamingDelta,
     endStreamingText,
