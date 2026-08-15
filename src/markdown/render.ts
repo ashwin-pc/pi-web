@@ -586,9 +586,29 @@ function enhanceArtifactLinks(root: ParentNode) {
       open.rel = "noopener noreferrer";
     }
     open.textContent = "Open";
+    open.className = "artifactPreviewAction";
+    const download = document.createElement("button");
+    download.type = "button";
+    download.className = "artifactPreviewAction";
+    download.textContent = "Download";
+    download.addEventListener("click", async () => {
+      download.disabled = true;
+      const original = download.textContent;
+      download.textContent = "Downloading…";
+      try {
+        await downloadArtifact(url.pathname, fileName);
+        download.textContent = "Downloaded";
+        window.setTimeout(() => { if (download.isConnected) download.textContent = original; }, 1_500);
+      } catch (error) {
+        download.title = error instanceof Error ? error.message : String(error);
+        download.textContent = "Failed";
+      } finally {
+        download.disabled = false;
+      }
+    });
     const builtInActions = document.createElement("span");
     builtInActions.className = "artifactPreviewBuiltInActions";
-    builtInActions.append(open);
+    builtInActions.append(open, download);
     header.append(title, builtInActions);
     const content = document.createElement("div");
     content.className = "artifactPreviewContent";

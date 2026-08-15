@@ -1596,6 +1596,7 @@ test.describe("image rendering", () => {
     await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
     await writeFile(join(artifactDir, "preview.html"), htmlPreview);
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
+    await writeFile(join(artifactDir, "e2e-audio-artifact.mp3"), Buffer.from("MP3"));
   });
 
   test.beforeEach(async ({ page }) => {
@@ -1781,6 +1782,10 @@ test.describe("image rendering", () => {
     await expect(audio).toBeVisible();
     await expect(audio.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-audio-artifact.mp3");
     await expect(audio.locator("source")).toHaveAttribute("type", "audio/mpeg");
+
+    const downloadStarted = page.waitForEvent("download");
+    await preview.getByRole("button", { name: "Download" }).click();
+    expect((await downloadStarted).suggestedFilename()).toBe("e2e-audio-artifact.mp3");
   });
 
   test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {
