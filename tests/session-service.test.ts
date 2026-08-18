@@ -35,7 +35,7 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
   };
   session = {
     sessionId: id, sessionFile: path, sessionName: "Fixture", isStreaming: false, isCompacting: false,
-    model, thinkingLevel: "medium", messages: [], agent: { state: { messages: [] } },
+    model, thinkingLevel: "medium", systemPrompt: "Fixture effective prompt", messages: [], agent: { state: { messages: [] } },
     sessionManager: {
       newSession() {
         session.sessionId = `created-${++fixtureSessionSequence}`;
@@ -53,6 +53,7 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
     modelRuntime: { getAvailableSnapshot: () => [model], getModel: () => model },
     extensionRunner: { getRegisteredCommands: () => [] }, promptTemplates: [], resourceLoader: { getSkills: () => ({ skills: [] }) },
     bindExtensions: async (options) => { extensionOptions = options; },
+    getActiveToolNames: () => ["read"], getAllTools: () => [{ name: "read", description: "Read files", sourceInfo: { source: "built-in" } }],
     getAvailableThinkingLevels: () => ["off", "medium"], getSessionName: () => session.sessionName, getContextUsage: () => ({ tokens: 1, contextWindow: 1000, percent: 0.1 }),
     setSessionName: (name) => { session.sessionName = name || undefined; },
     setModel: vi.fn(async () => undefined), setThinkingLevel: vi.fn(), abort: async () => undefined,
@@ -115,6 +116,38 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
 }
 
 describe("LocalSessionService contract", () => {
+  it("projects effective context and persisted tool call counts", async () => {
+    const { service, initial } = await fixtureService();
+    const context = await service.context(initial.sessionId);
+    expect(context.systemPrompt).toBe("Fixture effective prompt");
+    expect(context.provenance.encoding).toBe("utf-16");
+    expect(context.provenance.spans).toEqual([{ start: 0, end: 24, source: { kind: "unknown", label: "Unattributed prompt text" }, confidence: "unknown" }]);
+    expect(context.provenance.coverage).toEqual({ exact: 0, derived: 0, unknown: 24, total: 24 });
+    expect(context.tools).toMatchObject({ activeNames: ["read"], callsByName: { read: 1 } });
+    expect(context.tools.configured).toContainEqual(expect.objectContaining({ name: "read", callCount: 1 }));
+    expect(context.capturedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  });
+
+  it("attributes observable prompt fragments and leaves gaps unknown", async () => {
+    const { service, initial } = await fixtureService();
+    (initial as any).systemPrompt = "core😀\nContext body\nTool guidance\ntail";
+    initial.resourceLoader = {
+      getSkills: () => ({ skills: [] }),
+      getAgentsFiles: () => ({ agentsFiles: [{ path: "/project/AGENTS.md", content: "Context body" }] }),
+    };
+    initial.getAllTools = () => [{ name: "read", description: "Tool guidance", sourceInfo: { path: "<built-in>" } }];
+    const { provenance } = await service.context(initial.sessionId);
+    expect(provenance.spans.map(({ start, end, source, confidence }) => ["core😀\nContext body\nTool guidance\ntail".slice(start, end), source.kind, confidence])).toEqual([
+      ["core😀\n", "unknown", "unknown"],
+      ["Context body", "context-file", "exact"],
+      ["\n", "unknown", "unknown"],
+      ["Tool guidance", "tool", "exact"],
+      ["\ntail", "unknown", "unknown"],
+    ]);
+    expect(provenance.spans.at(-1)?.end).toBe((initial as any).systemPrompt.length);
+    expect(provenance.coverage.total).toBe((initial as any).systemPrompt.length);
+  });
+
   it("constructs and works standalone without importing server.ts", async () => {
     const { service, initial } = await fixtureService();
     const events: SessionServiceEvent[] = [];

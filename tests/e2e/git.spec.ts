@@ -4,6 +4,11 @@ test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
 });
 
+async function openSessionDetails(page: Page) {
+  await page.locator(".actionLauncherToggle").click();
+  await page.getByRole("menuitem", { name: "Session details" }).click();
+}
+
 async function routeStableRepo(page: Page) {
   await page.route("**/api/git/repos**", (route) => route.fulfill({ json: {
     ok: true, cwd: "/workspace", depth: 1,
@@ -50,7 +55,7 @@ test("GitHub issue numbers attach a structured reference to the prompt", async (
   });
 
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
   await expect(page.locator(".gitExtensionTab", { hasText: "GitHub" })).toBeVisible();
   await page.locator(".gitExtensionTab", { hasText: "GitHub" }).click();
@@ -100,7 +105,7 @@ test("Git-tab invalidation ignores an older in-flight response", async ({ page }
   });
 
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
   await page.locator(".gitExtensionTab", { hasText: "GitHub" }).click();
   await expect.poll(() => requestCount).toBe(1);
@@ -123,7 +128,7 @@ test("extension tabs remain available in split view with a reduced viewport heig
   } }));
 
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
   const extensionTab = page.locator(".gitExtensionTab", { hasText: "GitHub" });
   await expect(extensionTab).toBeVisible();
@@ -141,7 +146,7 @@ test("git panel opens, switches views, and commit rows do not overlap", async ({
   await routeStableRepo(page);
   await page.route("**/api/git/log?**", (route) => route.fulfill({ json: { ok: true, isRepo: true, commits: Array.from({ length: 15 }, (_, index) => ({ hash: String(index).padStart(40, "0"), shortHash: String(index), parents: index < 14 ? [String(index + 1).padStart(40, "0")] : [], author: "Test", date: "2026-01-01T00:00:00Z", refs: index === 0 ? ["HEAD -> main"] : [], subject: `Commit ${index}` })) } }));
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
   await expect(page.locator("#gitPanel")).toBeVisible();
   await expect(page.locator("#gitStatusTab")).toHaveClass(/active/);
@@ -192,7 +197,7 @@ test("git graph renders nested branches and merges with continuous, stable-colou
   } }));
 
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
   await page.locator("#gitGraphTab").click();
   const rows = page.locator(".gitCommitItem");
@@ -254,7 +259,7 @@ test("git status repo accordions switch the selected file", async ({ page }) => 
   await page.route("**/api/git/diff?**", (route) => route.fulfill({ json: { ok: true, path: "file.txt", staged: false, diff: "" } }));
 
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
   await expect(page.locator(".gitRepoChangesAccordion .gitRepoName")).toHaveText(["repo-a", "repo-b"]);
   await expect(page.locator(".gitRepoChangesAccordion").first().locator("summary")).not.toContainText("↑0");
@@ -314,7 +319,7 @@ test("git panel switches to a single visible pane when its container is narrow",
   } }));
 
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
 
   await expect(page.locator("#gitPrimaryPane")).toBeVisible();
@@ -333,7 +338,7 @@ test("git panel switches to a single visible pane when its container is narrow",
 test("git panel remains split when the software keyboard reduces viewport height", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 500 });
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
 
   const panel = page.locator("#gitPanel");
@@ -348,7 +353,7 @@ test("git panel remains split when the software keyboard reduces viewport height
 
 test("git commit detail shows changed files, diff, and layout toggle", async ({ page }) => {
   await page.goto("/");
-  await page.locator("#sessionInfoButton").click();
+  await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
   await page.locator("#gitGraphTab").click();
   // Plain `git show` has no combined patch for merge commits, so exercise a

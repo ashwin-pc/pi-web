@@ -144,6 +144,37 @@ describe("pi-web mock API", () => {
     }
   });
 
+  it("returns the current effective session context without resource file contents", async () => {
+    const response = await fetch(`${baseUrl}/api/session/context?sessionId=mock-current`);
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body).toMatchObject({
+      ok: true,
+      sessionId: "mock-current",
+      systemPrompt: "Mock effective Pi system prompt.",
+      tools: {
+        activeNames: ["read", "mock-tool"],
+        configured: expect.arrayContaining([expect.objectContaining({ name: "mock-tool", callCount: 0 })]),
+        callsByName: {},
+      },
+      resources: {
+        skills: [expect.objectContaining({ name: "mock-skill", filePath: "/mock/SKILL.md" })],
+        extensions: [expect.objectContaining({ path: "/mock/extension.ts", contributions: expect.objectContaining({ tools: 1, commands: 1 }) })],
+        contextFiles: ["/mock/AGENTS.md"],
+        systemPromptSource: "/mock/SYSTEM.md",
+        appendSystemPromptSources: ["/mock/APPEND.md"],
+        diagnostics: expect.arrayContaining([expect.objectContaining({ message: "Mock skill diagnostic" }), expect.objectContaining({ error: "Mock extension error" })]),
+      },
+    });
+    expect(body.provenance).toEqual({
+      encoding: "utf-16",
+      spans: [{ start: 0, end: 32, source: { kind: "system-prompt", label: "System prompt", path: "/mock/SYSTEM.md" }, confidence: "exact" }],
+      coverage: { exact: 32, derived: 0, unknown: 0, total: 32 },
+    });
+    expect(Date.parse(body.capturedAt)).not.toBeNaN();
+    expect(JSON.stringify(body)).not.toContain("not exposed");
+  });
+
   it("returns and navigates the conversation tree", async () => {
     const tree = await (await fetch(`${baseUrl}/api/session/tree`)).json();
     expect(tree.sessionId).toBe("mock-current");

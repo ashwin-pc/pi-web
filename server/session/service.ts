@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createAgentSession,
+  formatSkillsForPrompt,
   getAgentDir,
   type AgentSessionEvent,
   type ModelRuntime,
@@ -29,6 +30,9 @@ import type {
   NavigationResult,
   AttachmentDto,
   SessionInfoDto,
+  SessionContextDto,
+  PromptProvenanceDto,
+  PromptProvenanceSourceKind,
   SessionService,
   SessionServiceEvent,
   SlashCommandDto,
@@ -175,6 +179,40 @@ function hasUserMessages(value: PiWebSession) {
   return value.messages.some((message: any) => message?.role === "user");
 }
 
+type ProvenanceCandidate = {
+  text: string;
+  source: { kind: PromptProvenanceSourceKind; label: string; path?: string };
+  confidence?: "exact" | "derived";
+};
+
+/** Project only text we can observe; everything else stays explicitly unknown. */
+function projectPromptProvenance(prompt: string, candidates: ProvenanceCandidate[]): PromptProvenanceDto {
+  if (prompt.length === 0) return { encoding: "utf-16", spans: [], coverage: { exact: 0, derived: 0, unknown: 0, total: 0 } };
+  const matches: Array<{ start: number; end: number; candidate: ProvenanceCandidate }> = [];
+  for (const candidate of candidates.filter(({ text }) => text.length > 0).sort((a, b) => b.text.length - a.text.length)) {
+    let from = 0;
+    while (from <= prompt.length - candidate.text.length) {
+      const start = prompt.indexOf(candidate.text, from);
+      if (start < 0) break;
+      const end = start + candidate.text.length;
+      if (!matches.some((match) => start < match.end && end > match.start)) matches.push({ start, end, candidate });
+      from = start + Math.max(1, candidate.text.length);
+    }
+  }
+  matches.sort((a, b) => a.start - b.start);
+  const spans: PromptProvenanceDto["spans"] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    if (cursor < match.start) spans.push({ start: cursor, end: match.start, source: { kind: "unknown", label: "Unattributed prompt text" }, confidence: "unknown" });
+    spans.push({ start: match.start, end: match.end, source: match.candidate.source, confidence: match.candidate.confidence || "exact" });
+    cursor = match.end;
+  }
+  if (cursor < prompt.length) spans.push({ start: cursor, end: prompt.length, source: { kind: "unknown", label: "Unattributed prompt text" }, confidence: "unknown" });
+  const coverage = { exact: 0, derived: 0, unknown: 0, total: prompt.length };
+  for (const span of spans) coverage[span.confidence] += span.end - span.start;
+  return { encoding: "utf-16", spans, coverage };
+}
+
 export class LocalSessionService implements SessionService {
   private readonly listeners = new Set<(event: SessionServiceEvent) => void>();
   private readonly liveSessions = new Map<string, LiveSessionEntry>();
@@ -305,6 +343,101 @@ export class LocalSessionService implements SessionService {
   }
 
   async state(sessionId: string) { return this.projectState(await this.require(sessionId)); }
+
+  async context(sessionId: string): Promise<SessionContextDto> {
+    const value = await this.require(sessionId);
+    const loader = value.resourceLoader;
+    const callsByName: Record<string, number> = {};
+    for (const message of value.messages as any[]) {
+      if (message?.role !== "assistant") continue;
+      for (const block of Array.isArray(message.content) ? message.content : []) {
+        const toolName = typeof block?.name === "string" ? block.name : typeof block?.toolName === "string" ? block.toolName : undefined;
+        if (block?.type !== "toolCall" || !toolName) continue;
+        callsByName[toolName] = (callsByName[toolName] || 0) + 1;
+      }
+    }
+    const skillsResult = loader?.getSkills?.() || { skills: [], diagnostics: [] };
+    const extensionsResult = loader?.getExtensions?.() || { extensions: [], errors: [] };
+    const promptsResult = loader?.getPrompts?.() || { prompts: [], diagnostics: [] };
+    const allTools = value.getAllTools?.() || [];
+    const activeNames = [...(value.getActiveToolNames?.() || [])];
+    const activeToolSet = new Set(activeNames);
+    const configured = allTools.map((tool: any) => ({
+      name: String(tool.name || tool.definition?.name || ""),
+      ...(typeof tool.description === "string" || typeof tool.definition?.description === "string" ? { description: String(tool.description || tool.definition.description) } : {}),
+      ...(tool.sourceInfo ? { sourceInfo: jsonSafe(tool.sourceInfo) as JsonValue } : {}),
+      callCount: callsByName[String(tool.name || tool.definition?.name || "")] || 0,
+    })).filter((tool) => tool.name);
+    const contributionCount = (value: unknown) => value instanceof Map ? value.size : Array.isArray(value) ? value.length : value && typeof value === "object" ? Object.keys(value).length : 0;
+    const handlerCount = (value: unknown) => value instanceof Map
+      ? [...value.values()].reduce((sum, handlers) => sum + (Array.isArray(handlers) ? handlers.length : 0), 0)
+      : contributionCount(value);
+    const candidates: ProvenanceCandidate[] = [];
+    const addCandidate = (text: unknown, kind: PromptProvenanceSourceKind, label: string, path?: string, confidence: "exact" | "derived" = "exact") => {
+      if (typeof text === "string" && text.length > 0) candidates.push({ text, source: { kind, label, ...(path ? { path } : {}) }, confidence });
+    };
+    const systemPromptSource = loader?.getSystemPromptSource?.();
+    addCandidate(loader?.getSystemPrompt?.(), "system-prompt", "System prompt", systemPromptSource?.path);
+    for (const file of loader?.getAgentsFiles?.().agentsFiles || []) addCandidate(file.content, "context-file", file.path, file.path);
+    for (const skill of skillsResult.skills as any[]) {
+      if (skill.disableModelInvocation) continue;
+      const label = String(skill.name || skill.filePath || "Skill");
+      const formatted = formatSkillsForPrompt([skill]);
+      const entry = formatted.match(/<skill>[\s\S]*?<\/skill>/)?.[0];
+      addCandidate(entry, "skill", label, skill.filePath, "derived");
+    }
+    for (const tool of allTools) {
+      const definition = tool.definition || tool;
+      const name = String(definition.name || tool.name || "Tool");
+      if (!activeToolSet.has(name)) continue;
+      const sourceInfo = tool.sourceInfo && typeof tool.sourceInfo === "object" ? tool.sourceInfo as Record<string, unknown> : undefined;
+      const path = typeof sourceInfo?.path === "string" ? sourceInfo.path : undefined;
+      const declaration = value.systemPrompt.split("\n").find((line) => line.startsWith(`- ${name}: `));
+      addCandidate(declaration, "tool", name, path, "derived");
+      addCandidate(definition.description || tool.description, "tool", name, path);
+      for (const guideline of definition.promptGuidelines || tool.promptGuidelines || []) addCandidate(guideline, "tool", name, path);
+    }
+    const appendValues = loader?.getAppendSystemPrompt?.() || [];
+    const appendSources = loader?.getAppendSystemPromptSources?.() || [];
+    appendValues.forEach((text, index) => {
+      const path = appendSources[index]?.path;
+      const isWeb = !path && (text.includes("pi-web extension documentation") || text.includes("pi-web-attachments-v2"));
+      addCandidate(text, isWeb ? "pi-web" : "append-prompt", isWeb ? "pi-web injected context" : path || `Append prompt ${index + 1}`, path);
+    });
+    const provenance = projectPromptProvenance(value.systemPrompt, candidates);
+    const diagnostics = [
+      ...(skillsResult.diagnostics || []),
+      ...(promptsResult.diagnostics || []),
+      ...(extensionsResult.errors || []),
+      ...(loader?.getStatus?.().errors || []),
+    ].map((item) => jsonSafe(item) as JsonValue);
+    return {
+      sessionId: value.sessionId,
+      systemPrompt: value.systemPrompt,
+      provenance,
+      capturedAt: new Date().toISOString(),
+      tools: { activeNames, configured, callsByName },
+      resources: {
+        skills: (skillsResult.skills as any[]).map((skill) => jsonSafe({ name: String(skill.name || ""), description: skill.description, filePath: skill.filePath, disableModelInvocation: skill.disableModelInvocation, sourceInfo: skill.sourceInfo }) as SessionContextDto["resources"]["skills"][number]),
+        extensions: (extensionsResult.extensions as any[]).map((extension) => ({
+          path: String(extension.path || ""), resolvedPath: extension.resolvedPath, hidden: extension.hidden,
+          ...(extension.sourceInfo ? { sourceInfo: jsonSafe(extension.sourceInfo) as JsonValue } : {}),
+          contributions: {
+            tools: contributionCount(extension.tools),
+            commands: contributionCount(extension.commands),
+            handlers: handlerCount(extension.handlers),
+            renderers: contributionCount(extension.messageRenderers) + contributionCount(extension.entryRenderers) + (extension.markdownTransformer ? 1 : 0),
+            flags: contributionCount(extension.flags),
+            shortcuts: contributionCount(extension.shortcuts),
+          },
+        })),
+        contextFiles: (loader?.getAgentsFiles?.().agentsFiles || []).map((file) => file.path),
+        ...(loader?.getSystemPromptSource?.()?.path ? { systemPromptSource: loader.getSystemPromptSource()!.path } : {}),
+        appendSystemPromptSources: (loader?.getAppendSystemPromptSources?.() || []).map((source) => source.path),
+        diagnostics,
+      },
+    };
+  }
 
   async stats(sessionId: string) {
     const value = await this.require(sessionId);

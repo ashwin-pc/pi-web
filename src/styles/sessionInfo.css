@@ -1,0 +1,667 @@
+.sessionInfoPanel {
+  overflow: hidden;
+}
+
+.sessionInfoPanel[hidden],
+.sessionInfoBackdrop[hidden],
+.sessionInfoMainView[hidden],
+.sessionInfoPromptView[hidden],
+.sessionInfoBackButton[hidden] {
+  display: none;
+}
+
+.sessionInfoHeader {
+  display: grid;
+  min-height: 72px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 12px 10px 18px;
+}
+
+.sessionInfoHeaderCopy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sessionInfoEyebrow {
+  color: var(--accent);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+
+.sessionInfoHeader h2 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.2;
+}
+
+.sessionInfoHeader h2:focus { outline: none; }
+
+.sessionInfoHeader p {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionInfoHeader .iconButton {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.sessionInfoHeader .iconButton:hover {
+  border: 0;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.sessionInfoHeader .iconButton svg {
+  width: 16px;
+  height: 16px;
+}
+
+.sessionInfoContent.webPanelBody {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0;
+  scrollbar-width: thin;
+}
+
+.sessionInfoMainView,
+.sessionInfoPromptView {
+  display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
+}
+
+.sessionInfoMainView { padding: 0 0 38px; }
+.sessionInfoPromptView { gap: 14px; padding: 16px 14px 38px; }
+
+.sessionInfoSessionRow {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 14px 16px;
+}
+
+.sessionInfoSessionDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--success, #4ade80);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--success, #4ade80) 12%, transparent);
+}
+
+.sessionInfoSessionTitle {
+  overflow: hidden;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionInfoRuntimeBadge,
+.sessionInfoHealthBadge,
+.sessionInfoScope {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--muted) 28%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 7%, transparent);
+  color: var(--muted);
+  padding: 3px 7px;
+  font-size: 8px;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: .03em;
+  white-space: nowrap;
+}
+
+.sessionInfoRuntimeBadge[data-tone="active"],
+.sessionInfoHealthBadge[data-tone="healthy"] {
+  border-color: color-mix(in srgb, var(--success, #4ade80) 38%, transparent);
+  background: color-mix(in srgb, var(--success, #4ade80) 9%, transparent);
+  color: var(--success, #4ade80);
+}
+
+.sessionInfoRuntimeBadge[data-tone="warning"],
+.sessionInfoHealthBadge[data-tone="warning"] {
+  border-color: color-mix(in srgb, #f59e0b 42%, transparent);
+  background: color-mix(in srgb, #f59e0b 9%, transparent);
+  color: #fbbf24;
+}
+
+.sessionInfoStatsLine {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-2) 28%, transparent);
+}
+
+.sessionInfoStat {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: center;
+  gap: 5px;
+  padding: 10px 5px;
+}
+
+.sessionInfoStat + .sessionInfoStat {
+  border-left: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+}
+
+.sessionInfoStat strong {
+  overflow: hidden;
+  font: 750 10px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+}
+
+.sessionInfoStat small {
+  color: var(--muted);
+  font-size: 7.5px;
+  white-space: nowrap;
+}
+
+.sessionInfoSection {
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+}
+
+.sessionInfoStatsLine + .sessionInfoSection,
+.sessionInfoSection + .sessionInfoSection { border-top: 8px solid color-mix(in srgb, var(--panel-2) 38%, transparent); }
+
+.sessionInfoSectionHeader {
+  display: flex;
+  min-height: 47px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--panel-2) 24%, transparent);
+  padding: 12px 16px;
+}
+
+.sessionInfoSectionHeader > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sessionInfoSectionHeader h3 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.sessionInfoSectionHeader p {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionInfoSectionAction,
+.sessionInfoPrimaryAction {
+  flex: 0 0 auto;
+  min-height: 28px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--accent);
+  padding: 5px 8px;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.sessionInfoSectionAction:hover,
+.sessionInfoPrimaryAction:hover {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent) 13%, transparent);
+}
+
+.sessionInfoSectionAction:disabled {
+  cursor: default;
+  opacity: .45;
+}
+
+.sessionInfoWorkspaceCard {
+  display: grid;
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  text-align: left;
+}
+
+.sessionInfoWorkspaceCard:hover {
+  border: 0;
+  background: color-mix(in srgb, var(--panel-2) 45%, transparent);
+}
+
+.sessionInfoRepoHead {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px;
+}
+
+.sessionInfoRepoMark {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--success, #4ade80) 8%, transparent);
+  color: var(--success, #4ade80);
+}
+
+.sessionInfoRepoMark svg { width: 14px; height: 14px; }
+
+.sessionInfoRepoCopy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sessionInfoRepoCopy strong,
+.sessionInfoRepoCopy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionInfoRepoCopy strong { font-size: 10px; }
+.sessionInfoRepoCopy small { color: var(--muted); font-size: 8.5px; }
+
+.sessionInfoRepoGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+}
+
+.sessionInfoRepoCell {
+  display: grid;
+  min-width: 0;
+  gap: 4px;
+  padding: 9px 10px;
+}
+
+.sessionInfoRepoCell:nth-child(n + 4) { border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent); }
+.sessionInfoRepoCell:not(:nth-child(3n + 1)) { border-left: 1px solid color-mix(in srgb, var(--border) 75%, transparent); }
+.sessionInfoRepoCell small { color: var(--muted); font-size: 7px; text-transform: uppercase; }
+.sessionInfoRepoCell strong { overflow: hidden; font: 650 9px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; }
+.sessionInfoAdditions { color: var(--success, #4ade80); }
+.sessionInfoDeletions { color: var(--danger, #f87171); }
+
+.sessionInfoRepoFoot,
+.sessionInfoCardNote {
+  display: block;
+  margin: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  color: var(--muted);
+  padding: 9px 12px;
+  font-size: 8px;
+  line-height: 1.45;
+}
+
+.sessionInfoToolTable {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.sessionInfoToolTable th,
+.sessionInfoToolTable td {
+  overflow: hidden;
+  padding: 10px 8px;
+  font-size: 9px;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionInfoToolTable th {
+  color: var(--muted);
+  font-size: 6.5px;
+  font-weight: 650;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.sessionInfoToolTable th:first-child,
+.sessionInfoToolTable td:first-child {
+  width: 43%;
+  padding-left: 16px;
+  text-align: left;
+}
+.sessionInfoToolTable th:nth-child(2),
+.sessionInfoToolTable td:nth-child(2) { width: 22%; }
+.sessionInfoToolTable th:nth-child(3),
+.sessionInfoToolTable td:nth-child(3) { width: 12%; }
+.sessionInfoToolTable th:last-child,
+.sessionInfoToolTable td:last-child { width: 23%; padding-right: 16px; }
+.sessionInfoToolTable tbody tr { border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
+.sessionInfoToolTable tbody tr[data-enabled="false"] { opacity: .62; }
+.sessionInfoToolName { display: grid; min-width: 0; gap: 2px; }
+.sessionInfoToolName strong,
+.sessionInfoToolName small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessionInfoToolName strong { font: 650 9.5px/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.sessionInfoToolName small { color: var(--muted); font-size: 7.5px; }
+.sessionInfoToolStatus { display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 8px; }
+.sessionInfoToolStatus::before { width: 6px; height: 6px; border-radius: 50%; background: currentColor; content: ""; }
+.sessionInfoToolStatus[data-enabled="true"] { color: var(--success, #4ade80); }
+.sessionInfoEmptyCell { color: var(--muted); text-align: left !important; }
+
+.sessionInfoScope {
+  overflow: hidden;
+  padding: 3px 5px;
+  font-size: 6.5px;
+  text-overflow: ellipsis;
+}
+
+.sessionInfoScope--project { border-color: color-mix(in srgb, var(--accent) 38%, transparent); color: var(--accent); }
+.sessionInfoScope--user { border-color: color-mix(in srgb, #a78bfa 38%, transparent); color: #c4b5fd; }
+.sessionInfoScope--built-in { border-color: color-mix(in srgb, var(--muted) 30%, transparent); }
+.sessionInfoScope--temporary { border-color: color-mix(in srgb, #38bdf8 36%, transparent); color: #7dd3fc; }
+
+.sessionInfoContextStatus {
+  display: grid;
+}
+
+.sessionInfoContextSummary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.sessionInfoContextSummary + .sessionInfoContextSummary {
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.sessionInfoContextSummary > span:first-child {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.sessionInfoContextSummary strong { font-size: 9.5px; }
+.sessionInfoContextSummary small { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+
+.sessionInfoResourceGroups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.sessionInfoResourceGroup { min-width: 0; padding: 10px; }
+.sessionInfoResourceGroup + .sessionInfoResourceGroup { border-left: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
+.sessionInfoResourceGroup h4 { margin: 0 0 7px; color: var(--muted); font-size: 7px; letter-spacing: .08em; text-transform: uppercase; }
+.sessionInfoResourceList { display: grid; gap: 5px; }
+
+.sessionInfoResourceItem {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.sessionInfoResourceMark {
+  display: grid;
+  width: 19px;
+  height: 19px;
+  place-items: center;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--accent);
+  font: 750 7px/1 ui-monospace, monospace;
+}
+
+.sessionInfoResourceCopy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.sessionInfoResourceCopy strong,
+.sessionInfoResourceCopy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionInfoResourceCopy strong { font-size: 8px; }
+.sessionInfoResourceCopy small { color: var(--muted); font-size: 6.5px; }
+.sessionInfoEmptyResource { color: var(--muted); font-size: 8px; }
+
+.sessionInfoDetails {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.sessionInfoDetails > div {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  padding: 10px 12px;
+}
+
+.sessionInfoDetails > div:nth-child(n + 3) { border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
+.sessionInfoDetails > div:nth-child(even) { border-left: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
+.sessionInfoDetails dt { color: var(--muted); font-size: 7px; }
+.sessionInfoDetails dd { overflow: hidden; margin: 0; font-size: 8.5px; text-overflow: ellipsis; white-space: nowrap; }
+
+.sessionInfoMetadataAction {
+  display: flex;
+  width: 100%;
+  min-height: 46px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.sessionInfoMetadataAction:hover { border-right: 0; border-bottom-color: transparent; border-left: 0; background: color-mix(in srgb, var(--panel-2) 70%, transparent); }
+.sessionInfoMetadataAction > span:first-child { display: grid; min-width: 0; gap: 3px; }
+.sessionInfoMetadataAction small { color: var(--muted); font-size: 7px; }
+.sessionInfoMetadataAction strong { overflow: hidden; max-width: 310px; font: 600 8px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.sessionInfoMetadataAction svg { width: 13px; height: 13px; color: var(--muted); }
+
+.sessionInfoPromptHero {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  padding: 12px;
+}
+
+.sessionInfoPromptHero > div { display: grid; min-width: 0; gap: 3px; }
+.sessionInfoPromptHero strong { font-size: 12px; }
+.sessionInfoPromptHero small { overflow: hidden; color: var(--muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+
+.sessionInfoFidelityNote {
+  margin: 0;
+  border: 1px solid color-mix(in srgb, #f59e0b 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, #f59e0b 5%, transparent);
+  color: var(--muted);
+  padding: 9px 10px;
+  font-size: 8px;
+  line-height: 1.5;
+}
+
+.sessionInfoProvenanceBar {
+  display: grid;
+  gap: 8px;
+}
+
+.sessionInfoProvenanceBar > strong {
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 650;
+}
+
+.sessionInfoProvenanceFilters {
+  display: flex;
+  gap: 5px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: thin;
+}
+
+.sessionInfoProvenanceFilter {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--panel-2) 50%, transparent);
+  color: var(--muted);
+  padding: 4px 7px;
+  font-size: 7px;
+  white-space: nowrap;
+}
+
+.sessionInfoProvenanceFilter[data-active="true"] {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+}
+
+.sessionInfoPromptCode {
+  min-height: 360px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, #080a0b 82%, var(--panel));
+  tab-size: 2;
+}
+
+.sessionInfoPromptCode:focus { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); outline: none; }
+.sessionInfoPromptPlain,
+.sessionInfoPromptEmpty { padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font: 8.5px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.sessionInfoPromptEmpty { color: var(--muted); }
+
+.sessionInfoPromptGroup + .sessionInfoPromptGroup { border-top: 1px solid var(--border); }
+.sessionInfoPromptGroup[hidden] { display: none; }
+.sessionInfoPromptGroupHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: color-mix(in srgb, var(--panel-2) 66%, transparent);
+  padding: 6px 9px;
+}
+.sessionInfoPromptGroupHeader strong { overflow: hidden; color: #7dd3fc; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.sessionInfoPromptGroupHeader strong[data-kind="context-file"] { color: #fb923c; }
+.sessionInfoPromptGroupHeader strong[data-kind="skill"] { color: #c4b5fd; }
+.sessionInfoPromptGroupHeader strong[data-kind="tool"] { color: #67e8f9; }
+.sessionInfoPromptGroupHeader strong[data-kind="pi-web"] { color: #60a5fa; }
+.sessionInfoPromptGroupHeader strong[data-kind="system-prompt"] { color: #fbbf24; }
+.sessionInfoPromptGroupHeader strong[data-kind="unknown"] { color: var(--muted); }
+.sessionInfoPromptGroupHeader span { flex: 0 0 auto; color: var(--muted); font-size: 7px; text-transform: capitalize; }
+.sessionInfoPromptLine {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 30px minmax(0, 1fr);
+  font: 8.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.sessionInfoPromptLine + .sessionInfoPromptLine { border-top: 1px solid color-mix(in srgb, var(--border) 38%, transparent); }
+.sessionInfoPromptLine:hover { background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
+.sessionInfoPromptLineNumber { border-right: 1px solid color-mix(in srgb, var(--border) 65%, transparent); color: var(--muted); padding: 4px 6px; text-align: right; user-select: none; }
+.sessionInfoPromptLine code { min-width: 0; color: color-mix(in srgb, var(--text) 92%, white); padding: 4px 8px; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+.sessionInfoPromptBlank { color: color-mix(in srgb, var(--muted) 55%, transparent) !important; }
+
+.sessionInfoPromptSources {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.sessionInfoPromptSources h3 { margin: 0; border-bottom: 1px solid var(--border); padding: 10px 12px; font-size: 10px; }
+.sessionInfoPromptSourceList { display: grid; }
+.sessionInfoPromptSource { display: grid; min-width: 0; grid-template-columns: 105px minmax(0, 1fr); gap: 10px; padding: 8px 12px; }
+.sessionInfoPromptSource + .sessionInfoPromptSource { border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); }
+.sessionInfoPromptSource strong { font-size: 7.5px; }
+.sessionInfoPromptSource span { overflow: hidden; color: var(--muted); font: 7.5px/1.35 ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
+
+@media (max-width: 640px) {
+  .sessionInfoPromptView { gap: 12px; padding: 12px 10px 28px; }
+  .sessionInfoPromptHero { align-items: flex-start; }
+  .sessionInfoProvenanceBar > strong { font-size: 9px; }
+  .sessionInfoProvenanceFilter { padding: 6px 9px; font-size: 9px; }
+  .sessionInfoToolTable thead { display: none; }
+  .sessionInfoToolTable,
+  .sessionInfoToolTable tbody { display: block; }
+  .sessionInfoToolTable tbody tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 3px 12px;
+    min-height: 58px;
+    padding: 9px 14px;
+  }
+  .sessionInfoToolTable tbody td { width: auto !important; padding: 0 !important; text-align: left; }
+  .sessionInfoToolTable tbody td:first-child { grid-row: 1 / 3; }
+  .sessionInfoToolTable tbody td:nth-child(2) { grid-column: 2; grid-row: 1; }
+  .sessionInfoToolTable tbody td:nth-child(3) { grid-column: 3; grid-row: 1; color: var(--muted); font-size: 9px; text-align: right; }
+  .sessionInfoToolTable tbody td:nth-child(3)::after { content: " calls"; }
+  .sessionInfoToolTable tbody td:last-child { grid-column: 2 / 4; grid-row: 2; justify-self: end; }
+  .sessionInfoToolName strong { font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
+  .sessionInfoToolName small { font-size: 8px; white-space: normal; }
+  .sessionInfoToolStatus { font-size: 9px; }
+  .sessionInfoScope { font-size: 7.5px; }
+
+  .sessionInfoPromptGroupHeader { padding: 8px 9px; }
+  .sessionInfoPromptGroupHeader strong { font-size: 10px; }
+  .sessionInfoPromptGroupHeader span { font-size: 8px; }
+  .sessionInfoPromptLine { font-size: 10.5px; line-height: 1.5; }
+  .sessionInfoPromptLine code { padding: 6px 8px; }
+}
+
+@media (max-width: 400px) {
+  .sessionInfoStat { display: grid; justify-items: center; gap: 3px; }
+  .sessionInfoStat small { font-size: 7px; }
+  .sessionInfoResourceGroups { grid-template-columns: 1fr; }
+  .sessionInfoResourceGroup + .sessionInfoResourceGroup { border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent); border-left: 0; }
+}
+
+@media (min-width: 641px) {
+  .sessionInfoPanel { box-shadow: none; }
+}

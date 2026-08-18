@@ -23,13 +23,13 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusPath")).toContainText("pi-web");
   });
 
-  test("running activity badge keeps header actions right-aligned", async ({ page }) => {
+  test("running activity badge keeps the header within the viewport", async ({ page }) => {
     await page.goto("/");
 
     const readLayout = () =>
       page.locator("#statusBar").evaluate((bar) => {
         const rect = bar.getBoundingClientRect();
-        const visibleActions = Array.from(bar.querySelectorAll<HTMLElement>(".statusBarButton"))
+        const visibleActions = Array.from(bar.querySelectorAll<HTMLElement>("#headerActions .statusBarButton, #newSessionHeaderButton"))
           .map((element) => element.getBoundingClientRect())
           .filter((actionRect) => actionRect.width > 0);
         const lastActionRect = visibleActions.at(-1);
@@ -44,8 +44,10 @@ test.describe("composer layout", () => {
     const expectActionsAtRight = (layout: Awaited<ReturnType<typeof readLayout>>) => {
       expect(layout.scrollWidth).toBeLessThanOrEqual(layout.clientWidth + 1);
       expect(layout.right).toBeLessThanOrEqual(layout.viewportWidth + 1);
-      expect(layout.lastActionRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
-      expect(layout.lastActionRight).toBeGreaterThanOrEqual(layout.right - 12);
+      if (layout.lastActionRight) {
+        expect(layout.lastActionRight).toBeLessThanOrEqual(layout.viewportWidth + 1);
+        expect(layout.lastActionRight).toBeGreaterThanOrEqual(layout.right - 12);
+      }
     };
 
     expectActionsAtRight(await readLayout());

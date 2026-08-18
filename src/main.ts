@@ -48,6 +48,7 @@ import { createSessions, type SessionsController } from "./sessions/sessionDrawe
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
+import { createSessionInfo, type SessionInfoController } from "./sessionInfo/sessionInfo.js";
 import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
 
@@ -68,6 +69,7 @@ let modelSettings: ModelSettings;
 let sessions: SessionsController;
 let settings: SettingsController;
 let systemInfo: SystemInfoController;
+let sessionInfo: SessionInfoController;
 let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
 let gitPanel: GitPanelController;
@@ -166,55 +168,6 @@ const webHeaderActions = createWebHeaderActions({
   openPanel: (key) => webPanels?.open(key),
 });
 
-function setSessionInfoOpen(open: boolean) {
-  elements.sessionInfoPopover.hidden = !open;
-  elements.sessionInfoButton.setAttribute("aria-expanded", String(open));
-}
-
-async function copySessionInfo(value: string, button: HTMLButtonElement) {
-  if (!value) return;
-  await navigator.clipboard.writeText(value);
-  const label = button.querySelector("small");
-  const previous = label?.textContent;
-  if (label) label.textContent = "Copied";
-  window.setTimeout(() => { if (label) label.textContent = previous || ""; }, 1200);
-}
-
-elements.sessionInfoButton.addEventListener("click", () => setSessionInfoOpen(elements.sessionInfoPopover.hidden));
-elements.sessionInfoId.addEventListener("click", () => void copySessionInfo(state.currentSessionId, elements.sessionInfoId));
-elements.sessionInfoCwd.addEventListener("click", () => void copySessionInfo(state.currentCwd, elements.sessionInfoCwd));
-elements.sessionInfoGit.addEventListener("click", () => { setSessionInfoOpen(false); elements.gitButton.click(); });
-document.addEventListener("pointerdown", (event) => {
-  if (!elements.sessionInfoPopover.hidden && !elements.sessionInfoPopover.contains(event.target as Node) && !elements.sessionInfoButton.contains(event.target as Node)) setSessionInfoOpen(false);
-});
-
-async function refreshSessionGitCount() {
-  const sessionId = state.currentSessionId;
-  try {
-    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-    const res = await fetch(`/api/git/status${query}`, { headers: api.headers() });
-    const data = await res.json();
-    if (sessionId !== state.currentSessionId) return;
-    const stats = data.diffStats as { staged?: { files?: number; additions?: number; deletions?: number }; unstaged?: { files?: number; additions?: number; deletions?: number } } | undefined;
-    elements.sessionInfoGitCount.textContent = "";
-    for (const [label, values] of [["Staged", stats?.staged], ["Unstaged", stats?.unstaged]] as const) {
-      const group = document.createElement("span");
-      group.className = "sessionInfoDiffGroup";
-      const name = document.createElement("span");
-      name.className = "sessionInfoDiffLabel";
-      name.textContent = `${label} ${values?.files || 0}`;
-      const added = document.createElement("span");
-      added.className = "sessionInfoAdditions";
-      added.textContent = `+${values?.additions || 0}`;
-      const deleted = document.createElement("span");
-      deleted.className = "sessionInfoDeletions";
-      deleted.textContent = `−${values?.deletions || 0}`;
-      group.append(name, added, deleted);
-      elements.sessionInfoGitCount.append(group);
-    }
-  } catch { if (sessionId === state.currentSessionId) elements.sessionInfoGitCount.textContent = "—"; }
-}
-
 function showSystemError(error: unknown) {
   messages.addMessage("system", error instanceof Error ? error.message : String(error), "error");
 }
@@ -259,6 +212,7 @@ function renderActiveSessionRuntime(
   composer?.updateQueueToggle();
   composer?.updatePrimaryAction();
   contextMeter?.update({ stats: view?.stats, isCompacting: runtime.isCompacting });
+  sessionInfo?.update();
   renderRuntimeActivity(runtime, previous, activity);
 }
 
@@ -283,11 +237,7 @@ function renderActiveSessionMetadata() {
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
   elements.conversationTreeButton.hidden = view?.capabilities?.tree === false;
-  const idValue = elements.sessionInfoId.querySelector("strong");
-  const cwdValue = elements.sessionInfoCwd.querySelector("strong");
-  if (idValue) idValue.textContent = state.currentSessionId || "Not started";
-  if (cwdValue) cwdValue.textContent = state.currentCwd || "Not set";
-  void refreshSessionGitCount();
+  sessionInfo?.update();
   modelSettings?.updateSummary();
   sessions?.renderSessionBar();
   sessions?.renderCurrentSessionBucketButton();
@@ -436,7 +386,6 @@ function initStaticIcons() {
   setIcon(elements.primaryButton, "send-horizontal");
   setIcon(elements.expandButton, "maximize-2");
   setIcon(elements.gitButton, "git-branch");
-  setIcon(elements.sessionInfoButton, "info");
   setIcon(elements.currentSessionBucketButton, "flag");
   setIcon(elements.settingsButton, "settings");
   setIcon(elements.stopButton, "square");
@@ -498,6 +447,14 @@ sessions = createSessions({
   addMessage: messages.addMessage,
 });
 
+sessionInfo = createSessionInfo({
+  state,
+  rightPanels,
+  apiHeaders: api.headers,
+  refreshSessions: () => sessions.refreshSessions(),
+  openGit: () => elements.gitButton.click(),
+});
+
 composer = createComposer({
   state,
   elements,
@@ -550,9 +507,13 @@ realtime = createRealtime({
 
 initStaticIcons();
 webPanels = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
-actionLauncher = initActionLauncher(elements, { onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey) });
+actionLauncher = initActionLauncher(elements, {
+  onSessionDetails: () => sessionInfo.open(),
+  onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey),
+});
 statusBar.init();
 sessions.init();
+sessionInfo.init();
 systemInfo.init();
 contextMeter.init();
 composer.init();

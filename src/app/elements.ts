@@ -46,12 +46,6 @@ export type AppElements = {
   modelSelectEl: HTMLSelectElement;
   thinkingSelectEl: HTMLSelectElement;
   headerActionsEl: HTMLSpanElement;
-  sessionInfoButton: HTMLButtonElement;
-  sessionInfoPopover: HTMLDivElement;
-  sessionInfoId: HTMLButtonElement;
-  sessionInfoCwd: HTMLButtonElement;
-  sessionInfoGit: HTMLButtonElement;
-  sessionInfoGitCount: HTMLSpanElement;
   newSessionHeaderButton: HTMLButtonElement;
   conversationTreeButton: HTMLButtonElement;
   filesButton: HTMLButtonElement;
@@ -160,12 +154,6 @@ export function getAppElements(): AppElements {
     modelSelectEl: requiredElement<HTMLSelectElement>("#modelSelect"),
     thinkingSelectEl: requiredElement<HTMLSelectElement>("#thinkingSelect"),
     headerActionsEl: requiredElement<HTMLSpanElement>("#headerActions"),
-    sessionInfoButton: requiredElement<HTMLButtonElement>("#sessionInfoButton"),
-    sessionInfoPopover: requiredElement<HTMLDivElement>("#sessionInfoPopover"),
-    sessionInfoId: requiredElement<HTMLButtonElement>("#sessionInfoId"),
-    sessionInfoCwd: requiredElement<HTMLButtonElement>("#sessionInfoCwd"),
-    sessionInfoGit: requiredElement<HTMLButtonElement>("#sessionInfoGit"),
-    sessionInfoGitCount: requiredElement<HTMLSpanElement>("#sessionInfoGitCount"),
     newSessionHeaderButton: requiredElement<HTMLButtonElement>("#newSessionHeaderButton"),
     conversationTreeButton: requiredElement<HTMLButtonElement>("#conversationTreeButton"),
     filesButton: requiredElement<HTMLButtonElement>("#filesButton"),

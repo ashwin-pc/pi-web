@@ -38,7 +38,7 @@ export type ActionLauncherController = {
 
 export function initActionLauncher(
   elements: AppElements,
-  options: { onExtensionAction?: (opensPanelKey: string) => void } = {},
+  options: { onSessionDetails?: () => void; onExtensionAction?: (opensPanelKey: string) => void } = {},
 ): ActionLauncherController {
   const root = document.createElement("div");
   root.className = "actionLauncher";
@@ -50,6 +50,7 @@ export function initActionLauncher(
   menu.hidden = true;
 
   const builtInActions: LauncherAction[] = [
+    { label: "Session details", icon: "info", run: () => options.onSessionDetails?.() },
     { label: "Git", icon: "git-branch", run: () => elements.gitButton.click() },
     { label: "File explorer", icon: "folder-tree", run: () => elements.filesButton.click() },
     { label: "Conversation tree", icon: "git-fork", run: () => elements.conversationTreeButton.click() },
@@ -78,6 +79,8 @@ export function initActionLauncher(
 
   function renderActions() {
     menu.textContent = "";
+    const measure = document.createElement("canvas").getContext("2d");
+    if (measure) measure.font = "13px system-ui";
     const actions: LauncherAction[] = [
       ...builtInActions,
       ...extensionActions.map((action) => ({
@@ -85,7 +88,9 @@ export function initActionLauncher(
         icon: action.icon,
         run: () => options.onExtensionAction?.(action.opens),
       })),
-    ];
+    ].map((action, index) => ({ action, index, width: measure?.measureText(action.label).width || action.label.length }))
+      .sort((a, b) => a.width - b.width || a.index - b.index)
+      .map(({ action }) => action);
     const lastIndex = Math.max(0, actions.length - 1);
     actions.forEach((action, index) => {
       const button = document.createElement("button");

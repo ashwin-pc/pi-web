@@ -734,6 +734,10 @@ const server = createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, ...await sessionService.stats(resolveSessionId(url.searchParams.get("sessionId"))) });
       }
 
+      if (method === "GET" && url.pathname === "/api/session/context") {
+        return sendJson(res, 200, { ok: true, ...await sessionService.context(resolveSessionId(url.searchParams.get("sessionId"))) });
+      }
+
       if (method === "GET" && url.pathname === "/api/session/tree") {
         return sendJson(res, 200, await sessionService.tree(resolveSessionId(url.searchParams.get("sessionId"))));
       }

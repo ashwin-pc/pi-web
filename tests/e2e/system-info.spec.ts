@@ -45,10 +45,13 @@ test("settings lives in the drawer and the FAB contains session actions only", a
   await page.locator(".actionLauncherToggle").click();
   const launcher = page.locator(".actionLauncherMenu");
   await expect(launcher.getByRole("menuitem", { name: "Settings" })).toHaveCount(0);
+  await expect(launcher.getByRole("menuitem", { name: "Session details" })).toBeVisible();
   await expect(launcher.getByRole("menuitem", { name: "Git" })).toBeVisible();
   await expect(launcher.getByRole("menuitem", { name: "File explorer" })).toBeVisible();
   await expect(launcher.getByRole("menuitem", { name: "Conversation tree" })).toBeVisible();
   await expect(launcher.getByRole("menuitem", { name: "New session" })).toBeVisible();
+  const widths = await launcher.getByRole("menuitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().width));
+  expect(widths).toEqual([...widths].sort((a, b) => a - b));
   await expect(page.locator(".actionLauncherToggle")).toHaveAttribute("aria-label", "Close session actions");
   await page.locator(".actionLauncherToggle").click();
 

@@ -153,6 +153,43 @@ export interface SessionInfoDto {
   isCurrent: false;
 }
 
+export type PromptProvenanceSourceKind = "system-prompt" | "context-file" | "skill" | "tool" | "append-prompt" | "pi-web" | "unknown";
+export type PromptProvenanceConfidence = "exact" | "derived" | "unknown";
+
+export interface PromptProvenanceSpanDto {
+  /** UTF-16 code-unit offsets, matching JavaScript String#slice and browser selections. */
+  start: number;
+  end: number;
+  source: { kind: PromptProvenanceSourceKind; label: string; path?: string };
+  confidence: PromptProvenanceConfidence;
+}
+
+export interface PromptProvenanceDto {
+  encoding: "utf-16";
+  spans: PromptProvenanceSpanDto[];
+  coverage: { exact: number; derived: number; unknown: number; total: number };
+}
+
+export interface SessionContextDto {
+  sessionId: string;
+  systemPrompt: string;
+  provenance: PromptProvenanceDto;
+  capturedAt: string;
+  tools: {
+    activeNames: string[];
+    configured: Array<{ name: string; description?: string; sourceInfo?: JsonValue; callCount: number }>;
+    callsByName: Record<string, number>;
+  };
+  resources: {
+    skills: Array<{ name: string; description?: string; filePath?: string; disableModelInvocation?: boolean; sourceInfo?: JsonValue }>;
+    extensions: Array<{ path: string; resolvedPath?: string; hidden?: boolean; sourceInfo?: JsonValue; contributions: { tools: number; commands: number; handlers: number; renderers: number; flags: number; shortcuts: number } }>;
+    contextFiles: string[];
+    systemPromptSource?: string;
+    appendSystemPromptSources: string[];
+    diagnostics: JsonValue[];
+  };
+}
+
 export interface ModelsResultDto {
   cwd: string;
   current?: ModelDto;
@@ -202,6 +239,7 @@ export type NavigationResult = {
 
 export interface SessionService {
   state(sessionId: string): Promise<BaseSessionStateDto>;
+  context(sessionId: string): Promise<SessionContextDto>;
   stats(sessionId: string): Promise<{ sessionId: string; stats: SessionStatsDto }>;
   tree(sessionId: string): Promise<ConversationTreeDto>;
   messages(sessionId: string): Promise<MessageDto[]>;
