@@ -56,4 +56,43 @@ describe("shallow session listing", () => {
     expect(metrics.files).toBe(200);
     expect(metrics.bytesRead).toBeLessThanOrEqual(metrics.files * 40 * 1024);
   });
+
+  it("stat-gated cache makes a repeated scan read zero bytes", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-web-cache-"));
+    roots.push(cwd);
+    const directory = join(cwd, "sessions");
+    await mkdir(directory);
+    const mkSession = async (name: string, id: string) => {
+      const path = join(directory, `2026-07-05T13-49-40-780Z_${id}.jsonl`);
+      await writeFile(path, `${JSON.stringify({ type: "session", id, timestamp: "2026-07-05T13:49:40.780Z", cwd })}\n${JSON.stringify({ type: "session_info", name })}\n`);
+      return path;
+    };
+    await mkSession("Alpha", "a");
+    await mkSession("Beta", "b");
+
+    const first: ShallowListMetrics = { files: 0, bytesRead: 0 };
+    const firstList = await shallowListSessions(cwd, directory, first);
+    expect(first.files).toBe(2);
+    expect(first.bytesRead).toBeGreaterThan(0);
+
+    // The same directory, unchanged, must be served entirely from the stat-gated
+    // cache: stat the 2 files, read 0 bytes (#112 regression guard).
+    const second: ShallowListMetrics = { files: 0, bytesRead: 0 };
+    const secondList = await shallowListSessions(cwd, directory, second);
+    expect(second.files).toBe(2);
+    expect(second.bytesRead).toBe(0);
+    expect(secondList).toEqual(firstList);
+
+    // Appending to one file invalidates only that entry (size changed); the other
+    // stays cached. The rebuilt DTO must reflect the new tail bytes.
+    const betaPath = join(directory, `2026-07-05T13-49-40-780Z_b.jsonl`);
+    await writeFile(betaPath, `${JSON.stringify({ type: "session_info", name: "Beta renamed" })}\n`, { flag: "a" });
+    const third: ShallowListMetrics = { files: 0, bytesRead: 0 };
+    const thirdList = await shallowListSessions(cwd, directory, third);
+    expect(third.files).toBe(2);
+    expect(third.bytesRead).toBeGreaterThan(0);
+    expect(third.bytesRead).toBeLessThan(second.bytesRead + 40 * 1024);
+    expect(thirdList.find((s) => s.id === "b")?.name).toBe("Beta renamed");
+    expect(thirdList.find((s) => s.id === "a")?.name).toBe("Alpha");
+  });
 });

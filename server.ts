@@ -24,6 +24,7 @@ import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
+import { byteLengthOf, logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -439,9 +440,26 @@ session = await sessionService.initialize();
 let viteDevServer: ViteDevServer | undefined;
 
 const server = createServer(async (req, res) => {
+  const start = performance.now();
+  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const method = req.method || "GET";
+  // Count response body bytes written on any path (sendJson, image buffers,
+  // streamed file pipes) for the access log.
+  let responseBytes = 0;
+  const rawWrite = res.write.bind(res);
+  const rawEnd = res.end.bind(res);
+  res.write = ((chunk: unknown, encoding?: unknown, cb?: unknown) => {
+    responseBytes += byteLengthOf(chunk);
+    return rawWrite(chunk as any, encoding as any, cb as any);
+  }) as typeof res.write;
+  res.end = ((chunk?: unknown, encoding?: unknown, cb?: unknown) => {
+    if (chunk !== undefined && chunk !== null) responseBytes += byteLengthOf(chunk);
+    return rawEnd(chunk as any, encoding as any, cb as any);
+  }) as typeof res.end;
+  res.on("finish", () => {
+    logRequest(method, url.pathname, res.statusCode, performance.now() - start, responseBytes);
+  });
   try {
-    const method = req.method || "GET";
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
     if (url.pathname.startsWith("/api/")) {
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
@@ -1105,8 +1123,11 @@ server.on("upgrade", (req, socket, head) => {
 });
 
 wss.on("connection", async (ws, req) => {
+  const wsStart = performance.now();
   const realtimeWs = ws;
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  logWebSocket(url.pathname, "open");
+  ws.on("close", () => logWebSocket(url.pathname, "close", performance.now() - wsStart));
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
   const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
 
@@ -1140,6 +1161,8 @@ if (isDev) {
     },
   });
 }
+
+startEventLoopTelemetry();
 
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);

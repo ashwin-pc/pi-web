@@ -21,6 +21,7 @@ export type SessionsController = {
   init: () => void;
   refreshSessions: () => Promise<void>;
   setSessionDrawerOpen: (open: boolean) => void;
+  lastDrawerOpenAt: () => number;
   startNewSession: (cwd?: string) => Promise<void>;
   toggleCurrentSessionPin: () => void;
   openAdjacentPinnedSession: (direction: -1 | 1) => Promise<void>;
@@ -169,6 +170,10 @@ export function createSessions(options: {
   let cachedSessions: SessionInfo[] = [];
   const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
+  // Anchor for coalescing message_end-driven session-list refetches with the
+  // drawer-open refresh (issue #112). Set synchronously on open so realtime can
+  // skip a redundant refetch that arrives right after the drawer was opened.
+  let lastDrawerOpenAt = 0;
   let closeSessionActionsMenu: (() => void) | undefined;
   let closeLaneDrawer: (() => void) | undefined;
   let sessionPanelHandle: RightPanelHandle | undefined;
@@ -463,6 +468,7 @@ export function createSessions(options: {
       closeOpenSessionColorFilterMenu();
       return;
     }
+    lastDrawerOpenAt = Date.now();
     return refreshSessions().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   }
 
@@ -2365,6 +2371,7 @@ export function createSessions(options: {
     init,
     refreshSessions,
     setSessionDrawerOpen,
+    lastDrawerOpenAt: () => lastDrawerOpenAt,
     startNewSession,
     toggleCurrentSessionPin,
     beginTranscriptLoading,

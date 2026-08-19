@@ -35,6 +35,35 @@ function filenameMetadata(name: string) {
 
 export interface ShallowListMetrics { files: number; bytesRead: number }
 
+// Stat-gated cache for the session-list scan (issue #112: message_end-driven
+// refetches rescanned ~1,223 JSONLs / ~40MB on the main thread each time).
+// Session files are append-only, so head+tail bytes are unchanged iff the file
+// size is unchanged; `mtimeMs` adds redundancy against a same-size rewrite
+// within git's "racily clean" mtime granularity.
+//
+// The cached DTO is a pure function of (filename, head+tail bytes, file stat), so
+// it stays valid while size and mtime are unchanged. Entries whose path is no
+// longer in the current readdir are evicted, bounding the map to the live file
+// set. `metrics.bytesRead` counts only actual boundedContents reads (0 on hits).
+interface CachedEntry { size: number; mtimeMs: number; dto: SessionInfoDto }
+const cache = new Map<string, CachedEntry>();
+
+const SCAN_CONCURRENCY = 16;
+
+/** Run `fn` over `items` with at most `limit` in-flight at once. */
+async function mapConcurrent<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let index = 0;
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = index++;
+      if (i >= items.length) break;
+      results[i] = await fn(items[i]);
+    }
+  }));
+  return results;
+}
+
 async function boundedContents(path: string, size: number, metrics?: ShallowListMetrics) {
   const handle = await open(path, "r");
   try {
@@ -70,7 +99,14 @@ export async function shallowSessionCwd(path: string): Promise<string | undefine
 export async function shallowListSessions(cwd: string, directory: string, metrics?: ShallowListMetrics): Promise<SessionInfoDto[]> {
   let names: string[];
   try { names = await readdir(directory); } catch { return []; }
-  return (await Promise.all(names.filter((name) => name.endsWith(".jsonl")).map(async (name) => {
+  const jsonlNames = names.filter((name) => name.endsWith(".jsonl"));
+
+  // Evict cache entries whose path is no longer in the current directory listing.
+  const seen = new Set<string>();
+  for (const name of jsonlNames) seen.add(join(directory, name));
+  for (const key of cache.keys()) if (!seen.has(key)) cache.delete(key);
+
+  const results = await mapConcurrent(jsonlNames, SCAN_CONCURRENCY, async (name) => {
     const metadata = filenameMetadata(name);
     if (!metadata) return undefined;
     const path = join(directory, name);
@@ -78,6 +114,10 @@ export async function shallowListSessions(cwd: string, directory: string, metric
       const fileStat = await stat(path);
       if (!fileStat.isFile()) return undefined;
       if (metrics) metrics.files += 1;
+      const cached = cache.get(path);
+      if (cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs) {
+        return cached.dto;
+      }
       const entries = parseLines(await boundedContents(path, fileStat.size, metrics));
       const header = entries.find((entry) => entry?.type === "session");
       if (header?.id && header.id !== metadata.id) return undefined;
@@ -99,7 +139,9 @@ export async function shallowListSessions(cwd: string, directory: string, metric
         cwd: typeof header?.cwd === "string" && header.cwd ? header.cwd : cwd,
         isCurrent: false as const,
       };
+      cache.set(path, { size: fileStat.size, mtimeMs: fileStat.mtimeMs, dto: result });
       return result;
     } catch { return undefined; }
-  }))).filter((value): value is SessionInfoDto => value !== undefined);
+  });
+  return results.filter((value): value is SessionInfoDto => value !== undefined);
 }

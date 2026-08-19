@@ -74,6 +74,10 @@ export function createRealtime(options: {
   let sessionRefreshInFlight = false;
   let sessionRefreshQueued = false;
   const terminalRuntimeSessions = new Set<string>();
+  // Coalesce message_end-driven refreshes with a just-opened drawer (#112): the
+  // drawer-open refresh already fetched the list, so a message_end arriving right
+  // after opening is almost always the user's own just-sent prompt — redundant.
+  const SESSION_REFRESH_COALESCE_MS = 1000;
 
   function eventWillRetry(event: PiEvent | undefined) {
     return Boolean(event?.willRetry);
@@ -104,6 +108,7 @@ export function createRealtime(options: {
 
   function scheduleSessionRefresh(delay = 250) {
     if (elements.sessionDrawer.hidden) return;
+    if (Date.now() - sessions.lastDrawerOpenAt() < SESSION_REFRESH_COALESCE_MS) return;
     if (sessionRefreshTimer !== undefined) return;
     sessionRefreshTimer = window.setTimeout(() => {
       sessionRefreshTimer = undefined;
