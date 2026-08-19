@@ -46,7 +46,11 @@ export interface ShallowListMetrics { files: number; bytesRead: number }
 // longer in the current readdir are evicted, bounding the map to the live file
 // set. `metrics.bytesRead` counts only actual boundedContents reads (0 on hits).
 interface CachedEntry { size: number; mtimeMs: number; dto: SessionInfoDto }
-const cache = new Map<string, CachedEntry>();
+// Two-level cache: directory -> (absolute file path -> entry). Per-directory so
+// concurrent scans of different cwds (service.list() runs one per known cwd via
+// Promise.all) never evict each other's entries — a single shared map would leave
+// only the last-finished directory cached after one list().
+const cache = new Map<string, Map<string, CachedEntry>>();
 
 const SCAN_CONCURRENCY = 16;
 
@@ -101,10 +105,12 @@ export async function shallowListSessions(cwd: string, directory: string, metric
   try { names = await readdir(directory); } catch { return []; }
   const jsonlNames = names.filter((name) => name.endsWith(".jsonl"));
 
-  // Evict cache entries whose path is no longer in the current directory listing.
+  // Evict entries for THIS directory whose path is no longer in its listing.
+  let dirCache = cache.get(directory);
+  if (!dirCache) { dirCache = new Map(); cache.set(directory, dirCache); }
   const seen = new Set<string>();
   for (const name of jsonlNames) seen.add(join(directory, name));
-  for (const key of cache.keys()) if (!seen.has(key)) cache.delete(key);
+  for (const key of dirCache.keys()) if (!seen.has(key)) dirCache.delete(key);
 
   const results = await mapConcurrent(jsonlNames, SCAN_CONCURRENCY, async (name) => {
     const metadata = filenameMetadata(name);
@@ -114,7 +120,7 @@ export async function shallowListSessions(cwd: string, directory: string, metric
       const fileStat = await stat(path);
       if (!fileStat.isFile()) return undefined;
       if (metrics) metrics.files += 1;
-      const cached = cache.get(path);
+      const cached = dirCache.get(path);
       if (cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs) {
         return cached.dto;
       }
@@ -139,7 +145,10 @@ export async function shallowListSessions(cwd: string, directory: string, metric
         cwd: typeof header?.cwd === "string" && header.cwd ? header.cwd : cwd,
         isCurrent: false as const,
       };
-      cache.set(path, { size: fileStat.size, mtimeMs: fileStat.mtimeMs, dto: result });
+      // Freeze cached DTOs: they are shared references across calls. Today every
+      // consumer spreads copies, but a future in-place mutation would silently
+      // corrupt the cache; freezing makes that a loud error in dev.
+      dirCache.set(path, { size: fileStat.size, mtimeMs: fileStat.mtimeMs, dto: Object.freeze(result) });
       return result;
     } catch { return undefined; }
   });

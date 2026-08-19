@@ -95,4 +95,31 @@ describe("shallow session listing", () => {
     expect(thirdList.find((s) => s.id === "b")?.name).toBe("Beta renamed");
     expect(thirdList.find((s) => s.id === "a")?.name).toBe("Alpha");
   });
+
+  it("keeps the cache warm across directories (multi-cwd list)", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-web-multicwd-"));
+    roots.push(root);
+    const mkSession = async (directory: string, name: string, id: string) => {
+      await writeFile(join(directory, `2026-07-05T13-49-40-780Z_${id}.jsonl`),
+        `${JSON.stringify({ type: "session", id, timestamp: "2026-07-05T13:49:40.780Z", cwd: directory })}\n${JSON.stringify({ type: "session_info", name })}\n`);
+    };
+    const dirA = join(root, "a", "sessions");
+    const dirB = join(root, "b", "sessions");
+    await mkdir(dirA, { recursive: true });
+    await mkdir(dirB, { recursive: true });
+    await mkSession(dirA, "Alpha", "a");
+    await mkSession(dirB, "Beta", "b");
+
+    // Model the multi-cwd pathology: a second directory's scan must NOT evict the
+    // first directory's entries (service.list() scans one directory per known cwd;
+    // with a single shared map, B's eviction deletes A's entries). Sequential here
+    // so the regression is deterministic — concurrent scans make the old bug ~50/50.
+    await shallowListSessions(dirA, dirA);
+    await shallowListSessions(dirB, dirB);
+    const again: ShallowListMetrics = { files: 0, bytesRead: 0 };
+    const listA = await shallowListSessions(dirA, dirA, again);
+    expect(again.files).toBe(1);
+    expect(again.bytesRead).toBe(0); // FAILS with the old single shared map
+    expect(listA[0]?.name).toBe("Alpha");
+  });
 });

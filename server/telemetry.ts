@@ -20,20 +20,37 @@ import { monitorEventLoopDelay } from "node:perf_hooks";
 
 const STALL_THRESHOLD_MS = 100;
 const STALL_CHECK_MS = 10_000;
-let stallHistogram: ReturnType<typeof monitorEventLoopDelay> | undefined;
+let stallMonitor: ReturnType<typeof createStallMonitor> | undefined;
+
+/** Pure window-check: converts a histogram `.max` (NANOSECONDS) to ms and applies
+ *  the threshold. Exported separately so the unit test can hit it directly. */
+export function stallLine(maxNs: number): string | undefined {
+  const maxMs = maxNs / 1e6;
+  return maxMs >= STALL_THRESHOLD_MS
+    ? `[event-loop] max delay ${Math.round(maxMs)}ms in last ${STALL_CHECK_MS / 1000}s`
+    : undefined;
+}
+
+/** Factory for the production stall monitor. `.enable()` here is REQUIRED: the
+ *  histogram starts disabled and records nothing (max stays 0) without it.
+ *  Exported so the regression test exercises the real wiring rather than a
+ *  manually-enabled histogram. */
+export function createStallMonitor() {
+  const histogram = monitorEventLoopDelay({ resolution: 10 });
+  histogram.enable();
+  const check = () => {
+    const line = stallLine(histogram.max);
+    histogram.reset();
+    if (line) console.log(line);
+    return line;
+  };
+  return { histogram, check };
+}
 
 export function startEventLoopTelemetry() {
-  if (stallHistogram) return;
-  stallHistogram = monitorEventLoopDelay({ resolution: 10 });
-  const timer = setInterval(() => {
-    const histogram = stallHistogram;
-    if (!histogram) return;
-    const max = histogram.max;
-    histogram.reset();
-    if (max >= STALL_THRESHOLD_MS) {
-      console.log(`[event-loop] max delay ${Math.round(max)}ms in last ${STALL_CHECK_MS / 1000}s`);
-    }
-  }, STALL_CHECK_MS);
+  if (stallMonitor) return;
+  stallMonitor = createStallMonitor();
+  const timer = setInterval(() => stallMonitor?.check(), STALL_CHECK_MS);
   timer.unref?.();
 }
 
@@ -48,14 +65,15 @@ export function startEventLoopTelemetry() {
 // unbounded over long uptime even at modest request rates, so we cap aggregate
 // output with a rolling window budget: once a window exceeds its line/byte cap
 // we stop emitting per-request lines and emit a single aggregate line per window
-// instead. Slow requests (>= ACCESS_SLOW_MS) are always emitted individually —
-// they are the diagnostic signal (e.g. the /api/sessions scan stalls), and they
-// are inherently rare, so they cannot dominate.
+// instead. Slow requests (>= ACCESS_SLOW_MS) and aborted requests are always
+// emitted individually — they are the diagnostic signal (e.g. the /api/sessions
+// scan stalls and the timeouts it causes), and they are inherently rare, so they
+// cannot dominate.
 //
 // Worst-case steady output is therefore bounded to ~ACCESS_MAX_BYTES per window
-// (plus rare slow outliers), independent of request rate. That is the bound that
-// prevents "blows up over time" — normal cumulative growth no longer scales
-// linearly with request count.
+// (plus rare slow/aborted outliers), independent of request rate. That is the
+// bound that prevents "blows up over time" — normal cumulative growth no longer
+// scales linearly with request count.
 
 const ACCESS_WINDOW_MS = 60_000;
 const ACCESS_MAX_LINES = 1_000;
@@ -67,6 +85,7 @@ let accessWindowLines = 0;
 let accessWindowBytes = 0;
 let accessCoalesced = false;
 let accessAgg = { requests: 0, bytes: 0, slow: 0 };
+let accessFlushTimer: ReturnType<typeof setInterval> | undefined;
 
 function fmtBytes(n: number): string {
   if (n < 1024) return `${n}B`;
@@ -85,8 +104,18 @@ function accessRollWindow(now: number) {
   accessAgg = { requests: 0, bytes: 0, slow: 0 };
 }
 
-export function logRequest(method: string, pathname: string, status: number, durationMs: number, bytes: number) {
-  const line = `[access] ${new Date().toISOString()} ${method} ${pathname} ${status} ${Math.round(durationMs)}ms ${fmtBytes(bytes)}`;
+// Roll the window on a wall-clock timer so an aggregate line flushes even if a
+// request storm is followed by silence (a later-request-only roll would delay it
+// indefinitely). unref()'d so it never keeps the process alive.
+function ensureAccessFlushTimer() {
+  if (accessFlushTimer) return;
+  accessFlushTimer = setInterval(() => accessRollWindow(performance.now()), ACCESS_WINDOW_MS);
+  accessFlushTimer.unref?.();
+}
+
+export function logRequest(method: string, pathname: string, status: number, durationMs: number, bytes: number, aborted = false) {
+  ensureAccessFlushTimer();
+  const line = `[access] ${new Date().toISOString()} ${method} ${pathname} ${status} ${Math.round(durationMs)}ms ${fmtBytes(bytes)}${aborted ? " aborted" : ""}`;
   const lineBytes = Buffer.byteLength(line) + 1;
   const now = performance.now();
   if (now - accessWindowStart >= ACCESS_WINDOW_MS) accessRollWindow(now);
@@ -99,8 +128,8 @@ export function logRequest(method: string, pathname: string, status: number, dur
 
   const overBudget = accessWindowLines > ACCESS_MAX_LINES || accessWindowBytes > ACCESS_MAX_BYTES;
   if (overBudget) accessCoalesced = true;
-  // Slow outliers are always emitted; everything else only while under budget.
-  if (durationMs >= ACCESS_SLOW_MS || !overBudget) console.log(line);
+  // Slow/aborted outliers are always emitted; everything else only while under budget.
+  if (durationMs >= ACCESS_SLOW_MS || aborted || !overBudget) console.log(line);
 }
 
 export function logWebSocket(pathname: string, event: "open" | "close", durationMs?: number) {

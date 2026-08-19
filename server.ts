@@ -441,8 +441,20 @@ let viteDevServer: ViteDevServer | undefined;
 
 const server = createServer(async (req, res) => {
   const start = performance.now();
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const method = req.method || "GET";
+  // req.headers.host is attacker-controlled; new URL() throws on a malformed base
+  // (e.g. `Host: a b`). Parse defensively and answer 400 instead of letting the
+  // throw escape the request listener and crash the whole process (it used to be
+  // caught by the handler's try/catch; hoisting it out required the guard).
+  let url: URL;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  } catch {
+    res.statusCode = 400;
+    res.end("Bad Request");
+    logRequest(method, "(malformed)", 400, performance.now() - start, 0);
+    return;
+  }
   // Count response body bytes written on any path (sendJson, image buffers,
   // streamed file pipes) for the access log.
   let responseBytes = 0;
@@ -456,9 +468,17 @@ const server = createServer(async (req, res) => {
     if (chunk !== undefined && chunk !== null) responseBytes += byteLengthOf(chunk);
     return rawEnd(chunk as any, encoding as any, cb as any);
   }) as typeof res.end;
-  res.on("finish", () => {
-    logRequest(method, url.pathname, res.statusCode, performance.now() - start, responseBytes);
-  });
+  // `finish` fires only on a completed response; a client timeout/disconnect (the
+  // #112 symptom: `curl --max-time 10` giving up on /api/sessions) emits `close`
+  // WITHOUT `finish`. Log once on whichever comes first, marking aborts.
+  let accessLogged = false;
+  const logAccess = (aborted: boolean) => {
+    if (accessLogged) return;
+    accessLogged = true;
+    logRequest(method, url.pathname, res.statusCode, performance.now() - start, responseBytes, aborted);
+  };
+  res.on("finish", () => logAccess(false));
+  res.on("close", () => logAccess(!res.writableFinished));
   try {
 
     if (url.pathname.startsWith("/api/")) {

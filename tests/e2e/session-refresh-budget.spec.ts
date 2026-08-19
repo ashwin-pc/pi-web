@@ -42,7 +42,8 @@ test.describe("session-list refetch budget", () => {
     await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
 
     // Allow any late message_end-driven refetch to land before asserting the budget.
-    await page.waitForTimeout(400);
+    // 600ms leaves comfortable margin over the 250ms refresh debounce.
+    await page.waitForTimeout(600);
     expect(sessionListRequests).toBeLessThanOrEqual(1);
   });
 });
