@@ -35,23 +35,6 @@ function filenameMetadata(name: string) {
 
 export interface ShallowListMetrics { files: number; bytesRead: number }
 
-// Stat-gated cache for the session-list scan (issue #112: message_end-driven
-// refetches rescanned ~1,223 JSONLs / ~40MB on the main thread each time).
-// Session files are append-only, so head+tail bytes are unchanged iff the file
-// size is unchanged; `mtimeMs` adds redundancy against a same-size rewrite
-// within git's "racily clean" mtime granularity.
-//
-// The cached DTO is a pure function of (filename, head+tail bytes, file stat), so
-// it stays valid while size and mtime are unchanged. Entries whose path is no
-// longer in the current readdir are evicted, bounding the map to the live file
-// set. `metrics.bytesRead` counts only actual boundedContents reads (0 on hits).
-interface CachedEntry { size: number; mtimeMs: number; dto: SessionInfoDto }
-// Two-level cache: directory -> (absolute file path -> entry). Per-directory so
-// concurrent scans of different cwds (service.list() runs one per known cwd via
-// Promise.all) never evict each other's entries — a single shared map would leave
-// only the last-finished directory cached after one list().
-const cache = new Map<string, Map<string, CachedEntry>>();
-
 const SCAN_CONCURRENCY = 16;
 
 /** Run `fn` over `items` with at most `limit` in-flight at once. */
@@ -99,58 +82,86 @@ export async function shallowSessionCwd(path: string): Promise<string | undefine
   } catch { return undefined; }
 }
 
-/** A bounded projection of pi's append-only JSONL. It never reads transcript bodies. */
-export async function shallowListSessions(cwd: string, directory: string, metrics?: ShallowListMetrics): Promise<SessionInfoDto[]> {
-  let names: string[];
-  try { names = await readdir(directory); } catch { return []; }
-  const jsonlNames = names.filter((name) => name.endsWith(".jsonl"));
+// Stat-gated cache for the session-list scan (issue #112: message_end-driven
+// refetches rescanned ~1,223 JSONLs / ~40MB on the main thread each time).
+// Session files are append-only, so head+tail bytes are unchanged iff the file
+// size is unchanged; `mtimeMs` adds redundancy against a same-size rewrite
+// within git's "racily clean" mtime granularity.
+//
+// The cached DTO is a pure function of (filename, head+tail bytes, file stat), so
+// it stays valid while size and mtime are unchanged. Entries whose path is no
+// longer in the current readdir are evicted, bounding each directory's map to its
+// live file set. `metrics.bytesRead` counts only actual boundedContents reads (0
+// on hits).
+//
+// The cache is INSTANCE-OWNED, not module-global: each ShallowLister owns its own
+// directory->map so concurrent scans of different cwds (service.list() runs one
+// per known cwd via Promise.all) never touch each other's maps, and tests get
+// fresh, isolated state with no reset hook. When the service is hosted per-runtime
+// (PR #43 Stage 3), the cache lifecycle rides along for free.
+interface CachedEntry { size: number; mtimeMs: number; dto: SessionInfoDto }
 
-  // Evict entries for THIS directory whose path is no longer in its listing.
-  let dirCache = cache.get(directory);
-  if (!dirCache) { dirCache = new Map(); cache.set(directory, dirCache); }
-  const seen = new Set<string>();
-  for (const name of jsonlNames) seen.add(join(directory, name));
-  for (const key of dirCache.keys()) if (!seen.has(key)) dirCache.delete(key);
+export interface ShallowLister {
+  list(cwd: string, directory: string, metrics?: ShallowListMetrics): Promise<SessionInfoDto[]>;
+}
 
-  const results = await mapConcurrent(jsonlNames, SCAN_CONCURRENCY, async (name) => {
-    const metadata = filenameMetadata(name);
-    if (!metadata) return undefined;
-    const path = join(directory, name);
-    try {
-      const fileStat = await stat(path);
-      if (!fileStat.isFile()) return undefined;
-      if (metrics) metrics.files += 1;
-      const cached = dirCache.get(path);
-      if (cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs) {
-        return cached.dto;
-      }
-      const entries = parseLines(await boundedContents(path, fileStat.size, metrics));
-      const header = entries.find((entry) => entry?.type === "session");
-      if (header?.id && header.id !== metadata.id) return undefined;
-      let sessionName: string | undefined;
-      let firstMessage: string | undefined;
-      for (const entry of entries) {
-        if (entry?.type === "session_info") sessionName = typeof entry.name === "string" && entry.name ? entry.name : undefined;
-        if (!firstMessage && entry?.type === "message" && entry.message?.role === "user") {
-          firstMessage = textContent(entry.message.content).replace(/\s+/g, " ").trim() || undefined;
-        }
-      }
-      const result: SessionInfoDto = {
-        id: metadata.id,
-        path,
-        name: sessionName,
-        firstMessage,
-        created: metadata.created.toISOString(),
-        modified: fileStat.mtime.toISOString(),
-        cwd: typeof header?.cwd === "string" && header.cwd ? header.cwd : cwd,
-        isCurrent: false as const,
-      };
-      // Freeze cached DTOs: they are shared references across calls. Today every
-      // consumer spreads copies, but a future in-place mutation would silently
-      // corrupt the cache; freezing makes that a loud error in dev.
-      dirCache.set(path, { size: fileStat.size, mtimeMs: fileStat.mtimeMs, dto: Object.freeze(result) });
-      return result;
-    } catch { return undefined; }
-  });
-  return results.filter((value): value is SessionInfoDto => value !== undefined);
+export function createShallowLister(): ShallowLister {
+  // directory -> (absolute file path -> entry). Owned by this instance.
+  const cache = new Map<string, Map<string, CachedEntry>>();
+
+  return {
+    async list(cwd, directory, metrics) {
+      let names: string[];
+      try { names = await readdir(directory); } catch { return []; }
+      const jsonlNames = names.filter((name) => name.endsWith(".jsonl"));
+
+      // Eviction only ever touches THIS directory's entries.
+      let dirCache = cache.get(directory);
+      if (!dirCache) { dirCache = new Map(); cache.set(directory, dirCache); }
+      const seen = new Set(jsonlNames.map((name) => join(directory, name)));
+      for (const key of dirCache.keys()) if (!seen.has(key)) dirCache.delete(key);
+
+      const results = await mapConcurrent(jsonlNames, SCAN_CONCURRENCY, async (name) => {
+        const metadata = filenameMetadata(name);
+        if (!metadata) return undefined;
+        const path = join(directory, name);
+        try {
+          const fileStat = await stat(path);
+          if (!fileStat.isFile()) return undefined;
+          if (metrics) metrics.files += 1;
+          const cached = dirCache.get(path);
+          if (cached && cached.size === fileStat.size && cached.mtimeMs === fileStat.mtimeMs) {
+            return cached.dto;
+          }
+          const entries = parseLines(await boundedContents(path, fileStat.size, metrics));
+          const header = entries.find((entry) => entry?.type === "session");
+          if (header?.id && header.id !== metadata.id) return undefined;
+          let sessionName: string | undefined;
+          let firstMessage: string | undefined;
+          for (const entry of entries) {
+            if (entry?.type === "session_info") sessionName = typeof entry.name === "string" && entry.name ? entry.name : undefined;
+            if (!firstMessage && entry?.type === "message" && entry.message?.role === "user") {
+              firstMessage = textContent(entry.message.content).replace(/\s+/g, " ").trim() || undefined;
+            }
+          }
+          const result: SessionInfoDto = {
+            id: metadata.id,
+            path,
+            name: sessionName,
+            firstMessage,
+            created: metadata.created.toISOString(),
+            modified: fileStat.mtime.toISOString(),
+            cwd: typeof header?.cwd === "string" && header.cwd ? header.cwd : cwd,
+            isCurrent: false as const,
+          };
+          // Freeze cached DTOs: they are shared references across calls. Today every
+          // consumer spreads copies, but a future in-place mutation would silently
+          // corrupt the cache; freezing makes that a loud error in dev.
+          dirCache.set(path, { size: fileStat.size, mtimeMs: fileStat.mtimeMs, dto: Object.freeze(result) });
+          return result;
+        } catch { return undefined; }
+      });
+      return results.filter((value): value is SessionInfoDto => value !== undefined);
+    },
+  };
 }

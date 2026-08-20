@@ -3,10 +3,11 @@ import { expect, test } from "@playwright/test";
 // Issue #112 regression guard: the sessions drawer refetches `/api/sessions` on
 // every message_end while open. With the drawer open and one basic streaming
 // turn, the message_end-driven refetch is redundant — the drawer-open refresh
-// already fetched the list right before the prompt. This asserts the coalesce
-// keeps the whole interaction to at most one `/api/sessions` request.
+// already fetched the list right before the prompt, so a TTL dedupe in
+// refreshSessions() absorbs it. This asserts the whole interaction makes at most
+// one `/api/sessions` request (counted from before the drawer opens).
 //
-// On today's HEAD (no coalesce) this fails: drawer-open (1) + message_end (1) = 2.
+// On today's HEAD (no dedupe) this fails: drawer-open (1) + message_end (1) = 2.
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -21,9 +22,9 @@ test.describe("session-list refetch budget", () => {
       if (new URL(req.url()).pathname === "/api/sessions") sessionListRequests += 1;
     });
 
-    // Start counting just before opening the drawer (excludes any load-time fetches).
+    // Counter stays live from before the drawer click: drawer-open fetch (1) +
+    // message_end (absorbed by the 1s TTL) must total <= 1.
     await page.locator("#sessionButton").click();
-    sessionListRequests = 0;
     await expect(page.locator("#sessionDrawer")).toBeVisible();
 
     const isMobile = testInfo.project.name === "mobile";

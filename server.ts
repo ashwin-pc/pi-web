@@ -24,7 +24,7 @@ import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
-import { byteLengthOf, logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
+import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -439,46 +439,54 @@ session = await sessionService.initialize();
 
 let viteDevServer: ViteDevServer | undefined;
 
-const server = createServer(async (req, res) => {
-  const start = performance.now();
-  const method = req.method || "GET";
-  // req.headers.host is attacker-controlled; new URL() throws on a malformed base
-  // (e.g. `Host: a b`). Parse defensively and answer 400 instead of letting the
-  // throw escape the request listener and crash the whole process (it used to be
-  // caught by the handler's try/catch; hoisting it out required the guard).
-  let url: URL;
-  try {
-    url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  } catch {
-    res.statusCode = 400;
-    res.end("Bad Request");
-    logRequest(method, "(malformed)", 400, performance.now() - start, 0);
-    return;
-  }
-  // Count response body bytes written on any path (sendJson, image buffers,
-  // streamed file pipes) for the access log.
-  let responseBytes = 0;
-  const rawWrite = res.write.bind(res);
-  const rawEnd = res.end.bind(res);
-  res.write = ((chunk: unknown, encoding?: unknown, cb?: unknown) => {
-    responseBytes += byteLengthOf(chunk);
-    return rawWrite(chunk as any, encoding as any, cb as any);
-  }) as typeof res.write;
-  res.end = ((chunk?: unknown, encoding?: unknown, cb?: unknown) => {
-    if (chunk !== undefined && chunk !== null) responseBytes += byteLengthOf(chunk);
-    return rawEnd(chunk as any, encoding as any, cb as any);
-  }) as typeof res.end;
-  // `finish` fires only on a completed response; a client timeout/disconnect (the
-  // #112 symptom: `curl --max-time 10` giving up on /api/sessions) emits `close`
-  // WITHOUT `finish`. Log once on whichever comes first, marking aborts.
-  let accessLogged = false;
-  const logAccess = (aborted: boolean) => {
-    if (accessLogged) return;
-    accessLogged = true;
-    logRequest(method, url.pathname, res.statusCode, performance.now() - start, responseBytes, aborted);
+// Owns ALL access-log concerns for a request and hands the handler a pre-parsed
+// URL. This keeps the URL parse inside a guard (a malformed Host header threw
+// and crashed the process when it was hoisted above the try/catch) and removes
+// the per-request write/end monkeypatching: response byte counts come from
+// `socket.bytesWritten` deltas, which are correct under HTTP/1.1 keep-alive
+// because responses on one socket are sequential.
+//
+// `finish` fires only on a completed response; a client timeout/disconnect (the
+// #112 symptom: `curl --max-time 10` giving up on /api/sessions) emits `close`
+// WITHOUT `finish`, so we log once on whichever comes first, marking aborts.
+function withAccessLog(
+  handler: (req: IncomingMessage, res: ServerResponse, url: URL) => void | Promise<void>,
+) {
+  return async (req: IncomingMessage, res: ServerResponse) => {
+    const start = performance.now();
+    const startBytes = req.socket.bytesWritten; // counts everything, headers included
+    const method = req.method || "GET";
+    let pathname = "(malformed)";
+    let logged = false;
+    const log = (aborted: boolean) => {
+      if (logged) return;
+      logged = true;
+      logRequest(
+        method,
+        pathname,
+        res.statusCode,
+        performance.now() - start,
+        Math.max(0, req.socket.bytesWritten - startBytes),
+        aborted,
+      );
+    };
+    res.on("finish", () => log(false));
+    res.on("close", () => log(!res.writableFinished));
+    let url: URL;
+    try {
+      url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      pathname = url.pathname;
+    } catch {
+      res.statusCode = 400;
+      res.end("Bad Request"); // hostile Host header -> 400, never a crash
+      return;
+    }
+    return handler(req, res, url);
   };
-  res.on("finish", () => logAccess(false));
-  res.on("close", () => logAccess(!res.writableFinished));
+}
+
+const server = createServer(withAccessLog(async (req, res, url) => {
+  const method = req.method || "GET";
   try {
 
     if (url.pathname.startsWith("/api/")) {
@@ -1126,7 +1134,7 @@ const server = createServer(async (req, res) => {
     const status = error instanceof SessionServiceError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
-});
+}));
 
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {

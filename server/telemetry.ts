@@ -137,14 +137,5 @@ export function logWebSocket(pathname: string, event: "open" | "close", duration
   console.log(`[ws] ${new Date().toISOString()} ${pathname} ${event}${suffix}`);
 }
 
-// Response body byte counting: monkeypatching res.write/res.end lets us count
-// the bytes actually written for any response shape (sendJson, image buffers,
-// streamed file pipes) rather than trusting a content-length header.
-
-export function byteLengthOf(chunk: unknown): number {
-  if (typeof chunk === "string") return Buffer.byteLength(chunk);
-  if (Buffer.isBuffer(chunk)) return chunk.length;
-  const sized = chunk as { length?: number } | null | undefined;
-  if (sized && typeof sized.length === "number") return sized.length;
-  return 0;
-}
+// (The wrapper in server.ts computes response bytes from `socket.bytesWritten`
+//  deltas, so no per-request write/end patching is needed.)
