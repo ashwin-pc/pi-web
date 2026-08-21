@@ -24,6 +24,7 @@ import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
+import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -438,10 +439,55 @@ session = await sessionService.initialize();
 
 let viteDevServer: ViteDevServer | undefined;
 
-const server = createServer(async (req, res) => {
-  try {
+// Owns ALL access-log concerns for a request and hands the handler a pre-parsed
+// URL. This keeps the URL parse inside a guard (a malformed Host header threw
+// and crashed the process when it was hoisted above the try/catch) and removes
+// the per-request write/end monkeypatching: response byte counts come from
+// `socket.bytesWritten` deltas, which are correct under HTTP/1.1 keep-alive
+// because responses on one socket are sequential.
+//
+// `finish` fires only on a completed response; a client timeout/disconnect (the
+// #112 symptom: `curl --max-time 10` giving up on /api/sessions) emits `close`
+// WITHOUT `finish`, so we log once on whichever comes first, marking aborts.
+function withAccessLog(
+  handler: (req: IncomingMessage, res: ServerResponse, url: URL) => void | Promise<void>,
+) {
+  return async (req: IncomingMessage, res: ServerResponse) => {
+    const start = performance.now();
+    const startBytes = req.socket.bytesWritten; // counts everything, headers included
     const method = req.method || "GET";
-    const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    let pathname = "(malformed)";
+    let logged = false;
+    const log = (aborted: boolean) => {
+      if (logged) return;
+      logged = true;
+      logRequest(
+        method,
+        pathname,
+        res.statusCode,
+        performance.now() - start,
+        Math.max(0, req.socket.bytesWritten - startBytes),
+        aborted,
+      );
+    };
+    res.on("finish", () => log(false));
+    res.on("close", () => log(!res.writableFinished));
+    let url: URL;
+    try {
+      url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+      pathname = url.pathname;
+    } catch {
+      res.statusCode = 400;
+      res.end("Bad Request"); // hostile Host header -> 400, never a crash
+      return;
+    }
+    return handler(req, res, url);
+  };
+}
+
+const server = createServer(withAccessLog(async (req, res, url) => {
+  const method = req.method || "GET";
+  try {
 
     if (url.pathname.startsWith("/api/")) {
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
@@ -1088,11 +1134,19 @@ const server = createServer(async (req, res) => {
     const status = error instanceof SessionServiceError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
-});
+}));
 
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  let url: URL;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  } catch {
+    // Malformed Host header must not crash the process (#112 review follow-up:
+    // same hostile-input class as the request-path guard this PR added).
+    socket.destroy();
+    return;
+  }
   if (url.pathname !== "/ws") return;
 
   if (!isAuthorized(req)) {
@@ -1101,12 +1155,15 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
 
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
 });
 
-wss.on("connection", async (ws, req) => {
+wss.on("connection", async (ws, req, urlParam?: URL) => {
+  const wsStart = performance.now();
   const realtimeWs = ws;
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const url = urlParam ?? new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  logWebSocket(url.pathname, "open");
+  ws.on("close", () => logWebSocket(url.pathname, "close", performance.now() - wsStart));
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
   const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
 
@@ -1140,6 +1197,8 @@ if (isDev) {
     },
   });
 }
+
+startEventLoopTelemetry();
 
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);

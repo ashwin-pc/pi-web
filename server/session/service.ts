@@ -37,7 +37,7 @@ import type {
   SessionServiceEvent,
   SlashCommandDto,
 } from "./dto.js";
-import { shallowListSessions, shallowSessionCwd } from "./shallowList.js";
+import { createShallowLister, shallowSessionCwd } from "./shallowList.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -224,6 +224,10 @@ export class LocalSessionService implements SessionService {
   private readonly sessionListRequests = new Map<string, Promise<SessionInfoDto[]>>();
   private readonly viewerLeases = new Map<string, ViewerLease>();
   private readonly viewerConnections = new Map<symbol, string>();
+  // Instance-owned shallow list cache: each SessionService owns its lister so the
+  // per-cwd cache lifecycle rides along with the service (PR #43 Stage 3), and
+  // concurrent scans of different cwds never share/evict each other's maps.
+  private readonly shallowLister = createShallowLister();
   private readonly extensionLoaders = new WeakMap<object, ResilientResourceLoader>();
   private readonly blockedModelIds = new Set<string>();
   private readonly pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
@@ -625,7 +629,7 @@ export class LocalSessionService implements SessionService {
             const infos = await this.deps.sessionFactory.list(cwd);
             return infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
           }
-          return (await shallowListSessions(cwd, this.defaultSessionDir(cwd))).map((info) => {
+          return (await this.shallowLister.list(cwd, this.defaultSessionDir(cwd))).map((info) => {
             this.rememberSessionLocation(info, cwd);
             return this.overlaySessionName(info);
           });

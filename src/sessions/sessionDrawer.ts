@@ -169,6 +169,13 @@ export function createSessions(options: {
   let cachedSessions: SessionInfo[] = [];
   const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
+  // TTL dedupe (issue #112): a message_end-driven refetch arriving within a short
+  // window of the last list fetch is redundant — the just-fetched list already
+  // includes it (e.g. the drawer-open refresh right before the prompt). The
+  // knowledge "did we just fetch?" lives HERE, not in realtime inspecting drawer
+  // timestamps. `force` bypasses for paths where the list actually changed.
+  const SESSION_LIST_TTL_MS = 1000;
+  let lastListFetchedAt = 0;
   let closeSessionActionsMenu: (() => void) | undefined;
   let closeLaneDrawer: (() => void) | undefined;
   let sessionPanelHandle: RightPanelHandle | undefined;
@@ -482,8 +489,9 @@ export function createSessions(options: {
       ?.scrollIntoView({ block: "nearest" });
   }
 
-  function refreshSessions() {
-    if (sessionRefreshPromise) return sessionRefreshPromise;
+  function refreshSessions(force = false): Promise<void> {
+    if (sessionRefreshPromise) return sessionRefreshPromise; // in-flight reuse
+    if (!force && Date.now() - lastListFetchedAt < SESSION_LIST_TTL_MS) return Promise.resolve();
     sessionRefreshPromise = (async () => {
       rememberSessionCwd(state.currentCwd);
       const params = new URLSearchParams();
@@ -511,6 +519,7 @@ export function createSessions(options: {
       renderSessionBar();
       updateSessionButtonUnread();
       options.onDerivedSessionStateChanged?.();
+      lastListFetchedAt = Date.now();
     })().finally(() => { sessionRefreshPromise = undefined; });
     return sessionRefreshPromise;
   }
@@ -559,7 +568,9 @@ export function createSessions(options: {
     if (refreshSoonTimer !== undefined) return;
     refreshSoonTimer = window.setTimeout(() => {
       refreshSoonTimer = undefined;
-      void refreshSessions();
+      // Newly discovered sessions (just spawned / named) must appear immediately,
+      // so bypass the TTL dedupe.
+      void refreshSessions(true);
     }, 400);
   }
 
