@@ -1138,7 +1138,15 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
 const wss = new WebSocketServer({ noServer: true });
 server.on("upgrade", (req, socket, head) => {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  let url: URL;
+  try {
+    url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  } catch {
+    // Malformed Host header must not crash the process (#112 review follow-up:
+    // same hostile-input class as the request-path guard this PR added).
+    socket.destroy();
+    return;
+  }
   if (url.pathname !== "/ws") return;
 
   if (!isAuthorized(req)) {
@@ -1147,13 +1155,13 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
 
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
 });
 
-wss.on("connection", async (ws, req) => {
+wss.on("connection", async (ws, req, urlParam?: URL) => {
   const wsStart = performance.now();
   const realtimeWs = ws;
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  const url = urlParam ?? new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   logWebSocket(url.pathname, "open");
   ws.on("close", () => logWebSocket(url.pathname, "close", performance.now() - wsStart));
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
