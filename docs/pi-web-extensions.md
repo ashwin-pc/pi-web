@@ -225,17 +225,17 @@ ctx.ui.web.setArtifactAction("publish", {
 });
 ```
 
-An action can also trigger an authenticated browser download of the current artifact:
+Downloading the current artifact is built into pi-web, so extensions do not need to add a generic download action. An action result may still request an authenticated browser download when an extension creates or transforms content and downloading that result is useful:
 
 ```ts
-ctx.ui.web.setArtifactAction("download", {
-  title: "Download artifact",
-  label: "Download",
-  invoke: ({ name }) => ({ download: { filename: name } }),
+ctx.ui.web.setArtifactAction("export", {
+  title: "Export transformed artifact",
+  label: "Export",
+  invoke: ({ name }) => ({ download: { filename: `exported-${name}` } }),
 });
 ```
 
-The repo includes this as an installable example at [`examples/pi-web-extensions/download-artifact.ts`](../examples/pi-web-extensions/download-artifact.ts).
+For a complete artifact-action example, see [`examples/pi-web-extensions/artifact-reference.ts`](../examples/pi-web-extensions/artifact-reference.ts). Its **Reference** action returns the artifact name and kind, API path, and a ready-to-copy Markdown link.
 
 Omit `kinds` and `extensions` to show the action on every artifact preview. Clear it with:
 

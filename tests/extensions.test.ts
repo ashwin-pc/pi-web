@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { discoverExtensionEntryPaths, resolveBundledExtensionPaths } from "../server/extensions.js";
 import { createWebUiBridge } from "../server/extensions/webUi.js";
-import downloadArtifactExtension from "../examples/pi-web-extensions/download-artifact.js";
+import artifactReferenceExtension from "../examples/pi-web-extensions/artifact-reference.js";
 import { createGitFooterExtension } from "../examples/pi-web-extensions/git-footer.js";
 
 const tempDirs: string[] = [];
@@ -65,26 +65,28 @@ describe("bundled extension path discovery", () => {
     expect(resolveBundledExtensionPaths({ piCwd: appDir, appDir, bundledExtensionsDir })).toEqual([]);
   });
 
-  it("registers the download example for every artifact and clears it on shutdown", async () => {
+  it("registers the artifact reference example and safely formats untrusted context", async () => {
     const handlers = new Map<string, (event: unknown, context: any) => unknown>();
-    downloadArtifactExtension({ on: (event: string, handler: (event: unknown, context: any) => unknown) => handlers.set(event, handler) } as any);
+    artifactReferenceExtension({ on: (event: string, handler: (event: unknown, context: any) => unknown) => handlers.set(event, handler) } as any);
     const calls: Array<[string, any]> = [];
     const context = { ui: { web: { contribute: (key: string, contribution: unknown) => calls.push([key, contribution]) } } };
 
     await handlers.get("session_start")?.({}, context);
     const action = calls.at(-1)?.[1];
-    expect(calls.at(-1)?.[0]).toBe("download-artifact");
+    expect(calls.at(-1)?.[0]).toBe("artifact-reference");
     expect(action).toMatchObject({
       slot: "artifact-action",
       kind: "rendered",
-      title: "Download artifact to this device",
-      label: "Download",
+      title: "Copy an artifact reference",
+      label: "Reference",
     });
-    expect(await action.render({ context: { name: "report.md", path: "/api/artifacts/report.md", kind: "markdown" } }))
-      .toEqual({ download: { filename: "report.md" } });
+    expect(await action.render({ context: { name: "report](bad).md", path: "/api/artifacts/report (final).md?raw", kind: "mark*down" } }))
+      .toEqual({
+        markdown: "**Artifact:** report\\]\\(bad\\)\\.md (mark\\*down)\n\n**API path:** /api/artifacts/report \\(final\\)\\.md?raw\n\n**Markdown link:**\n\n    [report\\]\\(bad\\)\\.md](/api/artifacts/report%20%28final%29.md%3Fraw)",
+      });
 
     await handlers.get("session_shutdown")?.({}, context);
-    expect(calls.at(-1)).toEqual(["download-artifact", undefined]);
+    expect(calls.at(-1)).toEqual(["artifact-reference", undefined]);
   });
 
   it("serializes and securely invokes artifact actions through the web bridge", async () => {

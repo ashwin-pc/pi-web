@@ -54,7 +54,7 @@ describe("agent context organization", () => {
   });
 
   it("teaches the canonical contribution API throughout the first-party UI examples", async () => {
-    const uiExamples = ["git-footer.ts", "recap.ts", "download-artifact.ts", "github-repo-panel.ts", "notepad.ts"];
+    const uiExamples = ["git-footer.ts", "recap.ts", "artifact-reference.ts", "github-repo-panel.ts", "notepad.ts"];
     for (const filename of uiExamples) {
       const example = await text(`examples/pi-web-extensions/${filename}`);
       expect(example).toContain(".contribute(");
