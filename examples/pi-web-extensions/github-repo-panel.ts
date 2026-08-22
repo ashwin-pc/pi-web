@@ -483,7 +483,7 @@ async function detailBody(pi: PiWebExtensionAPI, cwd: string, repo: RepoInfo, ki
 
 function requestedTab(event?: PiWebGitTabEvent): Tab {
   const payload = event?.payload && typeof event.payload === "object" ? event.payload as { tab?: unknown } : {};
-  return payload.tab === "issues" ? "issues" : "prs";
+  return payload.tab === "prs" ? "prs" : "issues";
 }
 
 function itemRequest(event: PiWebGitTabEvent | undefined, action: "open" | "attach-context"): { kind: ItemKind; number: number; tab: Tab } | undefined {
@@ -533,7 +533,7 @@ async function renderGitTab(pi: PiWebExtensionAPI, ctx: PiWebExtensionContext, e
     return { title, html: shell(repo, request.tab, await detailBody(pi, cwd, repo, request.kind, result.items, request.tab)) };
   }
 
-  const tab = event?.action === "tab" ? requestedTab(event) : "prs";
+  const tab = event?.action === "tab" ? requestedTab(event) : "issues";
   const [prs, issues] = await Promise.all([
     listPullRequests(pi, cwd, repo),
     listIssues(pi, cwd, repo),
