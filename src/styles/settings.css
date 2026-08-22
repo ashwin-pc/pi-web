@@ -328,6 +328,48 @@
   color: var(--text);
   padding: 6px 8px;
 }
+.settingsBucketNamesField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.settingsBucketNamesTitle {
+  color: var(--muted);
+  font-size: 13px;
+}
+.settingsBucketNames {
+  display: grid;
+  gap: 8px;
+}
+.settingsBucketNameRow {
+  display: grid;
+  grid-template-columns: 14px minmax(60px, 1fr) minmax(120px, 2fr);
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+.settingsBucketNameSwatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--session-marker-color);
+}
+.settingsBucketNameDefault { color: var(--muted); }
+.settingsBucketNameRow input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 6px 8px;
+}
+.settingsBucketNameRow input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 .settingsAccentField {
   position: relative;
 }

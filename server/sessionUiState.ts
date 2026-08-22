@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
+export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green" | "orange" | "cyan" | "pink";
 
 export type SessionLaneId = "pinned" | "parked" | "bookmarks";
 export type SessionLaneEntry = { sessionId: string; lane: SessionLaneId; cwd?: string; note?: string; since: string };
@@ -40,6 +40,7 @@ export type SessionUiState = {
   sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
+  bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
 };
 
 export type SessionUiStatePatch = Partial<{
@@ -51,9 +52,10 @@ export type SessionUiStatePatch = Partial<{
   sessionOrigins: unknown;
   selectedMarkerColor: unknown;
   allowedMarkerColors: unknown;
+  bucketLabels: unknown;
 }>;
 
-const markerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green"]);
+const markerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"]);
 const legacyBucketToColor: Record<string, SessionMarkerColorId> = {
   later: "blue",
   review: "purple",
@@ -72,6 +74,7 @@ export const defaultSessionUiState: SessionUiState = {
   sessionOrigins: [],
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
+  bucketLabels: {},
 };
 
 function cloneState(value: SessionUiState): SessionUiState {
@@ -86,6 +89,17 @@ function normalizeMarkerColor(value: unknown): SessionMarkerColorId | undefined 
   return typeof value === "string" && markerColors.has(value as SessionMarkerColorId)
     ? value as SessionMarkerColorId
     : undefined;
+}
+
+function normalizeBucketLabels(value: unknown): Partial<Record<SessionMarkerColorId, string>> {
+  if (!isRecord(value)) return {};
+  const result: Partial<Record<SessionMarkerColorId, string>> = {};
+  for (const [key, rawLabel] of Object.entries(value)) {
+    const color = normalizeMarkerColor(key);
+    const label = typeof rawLabel === "string" ? rawLabel.trim().slice(0, 40) : "";
+    if (color && label) result[color] = label;
+  }
+  return result;
 }
 
 function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
@@ -196,6 +210,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
 
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;
   state.allowedMarkerColors = normalizeMarkerColors(value.allowedMarkerColors);
+  state.bucketLabels = normalizeBucketLabels(value.bucketLabels);
   return state;
 }
 
@@ -231,6 +246,9 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   if ("allowedMarkerColors" in patch && Array.isArray(patch.allowedMarkerColors)) {
     next.allowedMarkerColors = normalizeMarkerColors(patch.allowedMarkerColors);
+  }
+  if ("bucketLabels" in patch && isRecord(patch.bucketLabels)) {
+    next.bucketLabels = normalizeBucketLabels(patch.bucketLabels);
   }
 
   return normalizeSessionUiState(next);

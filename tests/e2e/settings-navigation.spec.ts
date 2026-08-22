@@ -38,6 +38,40 @@ test("desktop settings uses category navigation and focused pages", async ({ pag
   expect(navigationBox?.x).toBeLessThan(contentBox?.x ?? 0);
 });
 
+test("bucket names edit, persist, reset, and propagate to bucket controls", async ({ page }) => {
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "Settings");
+  await page.locator("#settingsNavNewSessions").click();
+
+  const rows = page.locator(".settingsBucketNameRow");
+  await expect(rows).toHaveCount(8);
+  await expect(rows.locator(".settingsBucketNameSwatch")).toHaveCount(8);
+  await expect(rows.locator(".settingsBucketNameDefault")).toHaveText(["Blue", "Purple", "Yellow", "Red", "Green", "Orange", "Cyan", "Pink"]);
+  const cyan = page.getByRole("textbox", { name: "Cyan bucket name" });
+  await expect(cyan).toHaveAttribute("maxlength", "40");
+  await expect(cyan).toHaveAttribute("placeholder", "Cyan");
+
+  await cyan.fill("  Builds  ");
+  await cyan.press("Tab");
+  await expect.poll(async () => (await (await page.request.get("/api/session-ui-state")).json()).sessionUiState.bucketLabels).toEqual({ cyan: "Builds" });
+  await expect(cyan).toHaveValue("Builds");
+
+  await page.locator("#settingsCloseButton").click();
+  await page.locator("#sessionButton").click();
+  await expect(page.getByRole("button", { name: "Mark multiple sessions Builds" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await openSessionDrawerFooterAction(page, "Settings");
+  await page.locator("#settingsNavNewSessions").click();
+  await expect(page.getByRole("textbox", { name: "Cyan bucket name" })).toHaveValue("Builds");
+
+  await page.getByRole("textbox", { name: "Cyan bucket name" }).fill("");
+  await page.getByRole("textbox", { name: "Cyan bucket name" }).press("Tab");
+  await expect.poll(async () => (await (await page.request.get("/api/session-ui-state")).json()).sessionUiState.bucketLabels).toEqual({});
+  await page.locator("#settingsCloseButton").click();
+  await page.locator("#sessionButton").click();
+  await expect(page.getByRole("button", { name: "Mark multiple sessions Cyan" })).toBeVisible();
+});
+
 test("mobile settings drills into one page and Escape returns before closing", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile");
   await page.goto("/");

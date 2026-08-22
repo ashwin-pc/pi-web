@@ -462,7 +462,50 @@ export function createSettings(options: {
     applySettings(data.settings);
   }
 
+  function renderBucketNames() {
+    const container = elements.settingsPanel.querySelector<HTMLElement>("#settingBucketNames");
+    if (!container) return;
+    container.replaceChildren();
+    for (const color of sessionMarkerColors) {
+      const row = document.createElement("label");
+      row.className = `settingsBucketNameRow marker-${color.id}`;
+      const swatch = document.createElement("span");
+      swatch.className = "settingsBucketNameSwatch";
+      swatch.setAttribute("aria-hidden", "true");
+      const copy = document.createElement("span");
+      copy.className = "settingsBucketNameDefault";
+      copy.textContent = color.label;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.maxLength = 40;
+      input.value = state.bucketLabels[color.id] || "";
+      input.placeholder = color.label;
+      input.setAttribute("aria-label", `${color.label} bucket name`);
+      input.addEventListener("change", async () => {
+        const label = input.value.trim().slice(0, 40);
+        input.value = label;
+        const bucketLabels = { ...state.bucketLabels };
+        if (!label || label === color.label) delete bucketLabels[color.id];
+        else bucketLabels[color.id] = label;
+        try {
+          const res = await fetch("/api/session-ui-state", { method: "PATCH", headers: api.headers(), body: JSON.stringify({ bucketLabels }) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+          state.bucketLabels = data.sessionUiState?.bucketLabels || bucketLabels;
+          document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
+          setSettingsStatus("Bucket names saved");
+        } catch (error) {
+          setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+          renderBucketNames();
+        }
+      });
+      row.append(swatch, copy, input);
+      container.append(row);
+    }
+  }
+
   function prepareOpenSettings() {
+    renderBucketNames();
     elements.sessionDrawerSettingsButton.setAttribute("aria-expanded", "true");
     elements.sessionDrawerSettingsButton.classList.add("active");
     settingsShell?.prepareOpen();

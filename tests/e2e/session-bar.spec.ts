@@ -7,6 +7,7 @@ async function seedServerSessionUiState(page: import("@playwright/test").Page, s
   sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
   sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string; updatedAt: string }>;
   sessionOrigins?: Array<{ sessionId: string; originSessionId: string; kind: string; updatedAt: string }>;
+  bucketLabels?: Record<string, string>;
 }) {
   await page.request.patch("/api/session-ui-state", { data: state });
 }
@@ -411,6 +412,31 @@ test.describe("session quick bar", () => {
     expect(uiState.sessionUiState.sessionMarkers).toEqual([expect.objectContaining({ sessionId: "mock-current", color: "green" })]);
   });
 
+  test("mobile inspector omits Open for tabs and keeps lane footer actions on one row", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== "mobile", "Mobile footer layout coverage");
+    await seedServerPinned(page, { id: "mock-current" });
+    await page.goto("/");
+
+    const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
+    await tab.click({ button: "right" });
+    let footer = page.locator(".sessionInspector > footer");
+    await expect(footer.getByRole("button")).toHaveCount(2);
+    await expect(footer.getByRole("button", { name: "↗ Open" })).toHaveCount(0);
+    let boxes = await footer.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().toJSON()));
+    expect(new Set(boxes.map((box) => box.y)).size).toBe(1);
+
+    await page.keyboard.press("Escape");
+    await page.locator(".sessionLayersButton").click();
+    await page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"] .sessionLaneDrawerActions').click();
+    footer = page.locator(".sessionInspector > footer");
+    await expect(footer.getByRole("button")).toHaveCount(3);
+    await expect(footer.getByRole("button", { name: "↗ Open" })).toBeVisible();
+    boxes = await footer.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getBoundingClientRect().toJSON()));
+    expect(new Set(boxes.map((box) => box.y)).size).toBe(1);
+    const footerBox = await footer.boundingBox();
+    expect(Math.max(...boxes.map((box) => box.right))).toBeLessThanOrEqual(footerBox!.x + footerBox!.width + 0.5);
+  });
+
   test("parking commits immediately and offers a non-blocking optional note", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" });
     await page.goto("/");
@@ -481,6 +507,34 @@ test.describe("session quick bar", () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.find((item: { sessionId: string }) => item.sessionId === "mock-current")?.note ?? null;
     }).toBeNull();
+  });
+
+  test("lane drawer filters all lanes by custom bucket names", async ({ page }) => {
+    const since = "2026-01-01T00:00:00.000Z";
+    await seedServerSessionUiState(page, {
+      lanes: [
+        { sessionId: "mock-current", lane: "pinned", since },
+        { sessionId: "mock-older", lane: "bookmarks", since },
+      ],
+      sessionMarkers: [
+        { sessionId: "mock-current", color: "cyan", updatedAt: since },
+        { sessionId: "mock-older", color: "pink", updatedAt: since },
+      ],
+      bucketLabels: { cyan: "Builds" },
+    });
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+
+    const filters = page.getByRole("group", { name: "Filter lanes by bucket" });
+    await expect(filters.getByRole("button")).toHaveCount(9);
+    await filters.getByRole("button", { name: "Show Builds bucket" }).click();
+    await expect(page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]')).toBeVisible();
+    await expect(page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]')).toHaveCount(0);
+    await expect(page.locator(".sessionLaneDragHandle")).toBeDisabled();
+    await expect(page.locator(".sessionLaneDrawerSummary")).toHaveText("1 of 2 sessions");
+
+    await filters.getByRole("button", { name: "All" }).click();
+    await expect(page.locator(".sessionLaneDrawerCard")).toHaveCount(2);
   });
 
   test("a stale mark-read response cannot revert a lane drawer move", async ({ page }) => {
@@ -695,7 +749,7 @@ test.describe("session quick bar", () => {
 
     const filters = page.locator(".sessionLaneFilters");
     await expect(filters.locator(".sessionColorFilterButton")).toHaveCount(1);
-    await expect(filters.locator(".sessionBucketFilter")).toHaveCount(5);
+    await expect(filters.locator(".sessionBucketFilter")).toHaveCount(8);
     await expect(filters).toHaveCSS("overflow", "visible");
     const filterBox = await filters.boundingBox();
     const listBox = await page.locator("#sessionList").boundingBox();

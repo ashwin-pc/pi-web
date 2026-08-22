@@ -180,7 +180,7 @@ export type AttachedImage = {
 export type PinnedSession = { id: string; cwd?: string }; // legacy bootstrap/runtime projection
 export type SessionLaneId = "pinned" | "parked" | "bookmarks";
 export type SessionLaneEntry = { sessionId: string; lane: SessionLaneId; cwd?: string; note?: string; since: string };
-export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green";
+export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green" | "orange" | "cyan" | "pink";
 export type SessionMarkerColor = { id: SessionMarkerColorId; label: string };
 export type SessionMarker = { sessionId: string; color: SessionMarkerColorId; note?: string; updatedAt: string };
 export type SessionUnreadState = { sessionId: string; unreadAt: string; updatedAt: string };
@@ -195,6 +195,7 @@ export type SessionUiState = {
   sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
+  bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
 };
 
 export const sessionMarkerColors: SessionMarkerColor[] = [
@@ -203,6 +204,9 @@ export const sessionMarkerColors: SessionMarkerColor[] = [
   { id: "yellow", label: "Yellow" },
   { id: "red", label: "Red" },
   { id: "green", label: "Green" },
+  { id: "orange", label: "Orange" },
+  { id: "cyan", label: "Cyan" },
+  { id: "pink", label: "Pink" },
 ];
 
 export const defaultSessionUiState: SessionUiState = {
@@ -215,6 +219,7 @@ export const defaultSessionUiState: SessionUiState = {
   sessionOrigins: [],
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
+  bucketLabels: {},
 };
 
 const markerColorIds = new Set<SessionMarkerColorId>(sessionMarkerColors.map((color) => color.id));
@@ -308,6 +313,17 @@ export function normalizeSessionUnreadStates(value: unknown): SessionUnreadState
   return result;
 }
 
+export function normalizeBucketLabels(value: unknown): Partial<Record<SessionMarkerColorId, string>> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: Partial<Record<SessionMarkerColorId, string>> = {};
+  for (const [key, rawLabel] of Object.entries(value)) {
+    const color = normalizeMarkerColor(key);
+    const label = typeof rawLabel === "string" ? rawLabel.trim().slice(0, 40) : "";
+    if (color && label) result[color] = label;
+  }
+  return result;
+}
+
 export function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<SessionMarkerColorId>();
@@ -350,6 +366,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     sessionOrigins: normalizeSessionOrigins(raw.sessionOrigins),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
     allowedMarkerColors: normalizeMarkerColors(raw.allowedMarkerColors),
+    bucketLabels: normalizeBucketLabels(raw.bucketLabels),
   };
 }
 
@@ -454,6 +471,7 @@ export type AppState = {
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
+  bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   expandedWorkerBranches: Set<string>;
@@ -577,6 +595,7 @@ export function createAppState(): AppState {
     sessionUnreadStates: [],
     sessionOrigins: [],
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
+    bucketLabels: {},
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     expandedWorkerBranches: new Set(readExpandedWorkerBranches()),

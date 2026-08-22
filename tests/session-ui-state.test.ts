@@ -20,6 +20,21 @@ describe("session UI state store", () => {
     expect(JSON.parse(await readFile(file, "utf8"))).toEqual(future);
   });
 
+  it("persists renamed buckets and accepts the three additional bucket colors", async () => {
+    const store = createSessionUiStateStore(await tempFile());
+    const next = await store.patch({
+      bucketLabels: { cyan: "Builds", orange: "  Urgent  ", pink: "", invalid: "Nope" },
+      sessionMarkers: [
+        { sessionId: "a", color: "cyan" },
+        { sessionId: "b", color: "orange" },
+        { sessionId: "c", color: "pink" },
+      ],
+    });
+
+    expect(next.bucketLabels).toEqual({ cyan: "Builds", orange: "Urgent" });
+    expect(next.sessionMarkers.map(({ color }) => color)).toEqual(["cyan", "orange", "pink"]);
+  });
+
   it("preserves since for unchanged pins sent through the legacy alias", async () => {
     const file = await tempFile();
     const store = createSessionUiStateStore(file);

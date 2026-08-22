@@ -10,6 +10,8 @@ export type SessionInspectorItem = {
   unread?: boolean;
 };
 
+export type SessionInspectorInvocationContext = "tab" | "lane" | "session";
+
 type InspectorOptions = {
   item: (sessionId: string) => SessionInspectorItem;
   moveToLane: (sessionId: string, lane: SessionLaneId) => void;
@@ -20,14 +22,14 @@ type InspectorOptions = {
   setUnread: (sessionId: string, unread: boolean) => void;
 };
 
-const colors: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green"];
+const colors: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
 
 export function buildSessionInspector(options: InspectorOptions) {
   let backdrop: HTMLDivElement | undefined;
   let suppressClickUntil = 0;
   const close = () => { backdrop?.remove(); backdrop = undefined; };
 
-  const show = (clientX: number, clientY: number, item: SessionInspectorItem) => {
+  const show = (clientX: number, clientY: number, item: SessionInspectorItem, context: SessionInspectorInvocationContext) => {
     close();
     backdrop = document.createElement("div"); backdrop.className = "sessionInspectorBackdrop";
     const card = document.createElement("section"); card.className = "sessionInspector"; card.setAttribute("role", "dialog"); card.setAttribute("aria-label", `Actions for ${item.name}`);
@@ -62,8 +64,10 @@ export function buildSessionInspector(options: InspectorOptions) {
 
     const actions = document.createElement("footer");
     const unread = document.createElement("button"); unread.type = "button"; unread.textContent = item.unread ? "Mark as read" : "Mark as unread"; unread.addEventListener("click", () => { options.setUnread(item.sessionId, !item.unread); close(); });
-    const open = document.createElement("button"); open.type = "button"; open.textContent = "↗ Open"; open.addEventListener("click", () => { options.openSession(item.sessionId); close(); });
-    const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "Remove"; remove.disabled = !item.lane; remove.addEventListener("click", () => { options.removeFromLanes(item.sessionId); close(); }); actions.append(unread, open, remove); card.append(actions);
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "Remove"; remove.disabled = !item.lane; remove.addEventListener("click", () => { options.removeFromLanes(item.sessionId); close(); });
+    actions.append(unread);
+    if (context !== "tab") { const open = document.createElement("button"); open.type = "button"; open.textContent = "↗ Open"; open.addEventListener("click", () => { options.openSession(item.sessionId); close(); }); actions.append(open); }
+    actions.append(remove); actions.dataset.actionCount = String(actions.childElementCount); card.append(actions);
     backdrop.append(card); document.body.append(backdrop);
 
     requestAnimationFrame(() => {
@@ -76,15 +80,15 @@ export function buildSessionInspector(options: InspectorOptions) {
   };
 
   window.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
-  const attach = (element: HTMLElement, sessionId: string, holdDelayMs = 280) => {
+  const attach = (element: HTMLElement, sessionId: string, context: SessionInspectorInvocationContext, holdDelayMs = 280) => {
     let timer: number | undefined; let startX = 0; let startY = 0;
     const cancel = () => { if (timer !== undefined) window.clearTimeout(timer); timer = undefined; element.classList.remove("sessionInspectorPressing"); };
-    element.addEventListener("pointerdown", (event) => { if (event.button !== 0 || (event.target as Element | null)?.closest(".sessionLaneDragHandle,.sessionLaneDrawerActions,.sessionBarTabAction")) return; startX = event.clientX; startY = event.clientY; element.classList.add("sessionInspectorPressing"); timer = window.setTimeout(() => { timer = undefined; element.classList.remove("sessionInspectorPressing"); element.dispatchEvent(new CustomEvent("session-inspector-open", { bubbles: true })); suppressClickUntil = performance.now() + 350; show(startX, startY, options.item(sessionId)); }, holdDelayMs); });
+    element.addEventListener("pointerdown", (event) => { if (event.button !== 0 || (event.target as Element | null)?.closest(".sessionLaneDragHandle,.sessionLaneDrawerActions,.sessionBarTabAction")) return; startX = event.clientX; startY = event.clientY; element.classList.add("sessionInspectorPressing"); timer = window.setTimeout(() => { timer = undefined; element.classList.remove("sessionInspectorPressing"); element.dispatchEvent(new CustomEvent("session-inspector-open", { bubbles: true })); suppressClickUntil = performance.now() + 350; show(startX, startY, options.item(sessionId), context); }, holdDelayMs); });
     element.addEventListener("pointermove", (event) => { if (timer !== undefined && Math.hypot(event.clientX - startX, event.clientY - startY) > 10) cancel(); });
     element.addEventListener("pointerup", cancel); element.addEventListener("pointercancel", cancel);
-    element.addEventListener("contextmenu", (event) => { if ((event.target as Element | null)?.closest(".sessionLaneDragHandle,.sessionLaneDrawerActions,.sessionBarTabAction")) return; event.preventDefault(); cancel(); show(event.clientX, event.clientY, options.item(sessionId)); });
+    element.addEventListener("contextmenu", (event) => { if ((event.target as Element | null)?.closest(".sessionLaneDragHandle,.sessionLaneDrawerActions,.sessionBarTabAction")) return; event.preventDefault(); cancel(); show(event.clientX, event.clientY, options.item(sessionId), context); });
     element.addEventListener("click", (event) => { if (performance.now() < suppressClickUntil) { event.preventDefault(); event.stopPropagation(); } }, true);
   };
-  const openAt = (element: HTMLElement, sessionId: string) => { const rect = element.getBoundingClientRect(); show(rect.left + rect.width / 2, rect.bottom, options.item(sessionId)); };
+  const openAt = (element: HTMLElement, sessionId: string, context: SessionInspectorInvocationContext) => { const rect = element.getBoundingClientRect(); show(rect.left + rect.width / 2, rect.bottom, options.item(sessionId), context); };
   return { attach, openAt, close };
 }

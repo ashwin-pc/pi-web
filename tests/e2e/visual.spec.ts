@@ -403,7 +403,7 @@ test.describe("visual regression", () => {
     const drawer = page.locator("#sessionDrawer");
     await expect(drawer).toBeVisible();
     await expect(drawer.locator(".sessionColorFilterButton")).toHaveCount(1);
-    await expect(drawer.locator(".sessionBucketFilter")).toHaveCount(5);
+    await expect(drawer.locator(".sessionBucketFilter")).toHaveCount(8);
     await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
 
     await expect(drawer).toHaveScreenshot(`session-workers-collapsed-${testInfo.project.name}.png`, {

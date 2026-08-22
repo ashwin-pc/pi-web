@@ -179,6 +179,7 @@ export function createSessions(options: {
   let lastListFetchedAt = 0;
   let closeSessionActionsMenu: (() => void) | undefined;
   let closeLaneDrawer: (() => void) | undefined;
+  let laneDrawerBucketFilter: SessionMarkerColorId | undefined;
   let sessionPanelHandle: RightPanelHandle | undefined;
   let currentSessionPinButton: HTMLButtonElement | undefined;
   let sessionSearchInput: HTMLInputElement | undefined;
@@ -628,6 +629,7 @@ export function createSessions(options: {
     state.sessionOrigins = next.sessionOrigins;
     syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
+    state.bucketLabels = next.bucketLabels;
     allowedMarkerColors.clear();
     for (const color of next.allowedMarkerColors) allowedMarkerColors.add(color);
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
@@ -648,6 +650,7 @@ export function createSessions(options: {
       // "empty" and a legacy-localStorage push would wipe every recorded origin.
       || (value.sessionOrigins?.length ?? 0) > 0
       || value.allowedMarkerColors.length > 0
+      || Object.keys(value.bucketLabels).length > 0
       || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
   }
 
@@ -706,6 +709,7 @@ export function createSessions(options: {
       sessionUnreadStates: state.sessionUnreadStates,
       selectedMarkerColor: state.selectedMarkerColor,
       allowedMarkerColors: Array.from(allowedMarkerColors),
+      bucketLabels: state.bucketLabels,
     });
     if (!hasAnySessionUiState(serverState) && hasAnySessionUiState(localState)) {
       await patchSessionUiState(localState);
@@ -882,7 +886,7 @@ export function createSessions(options: {
   }
 
   function markerColorLabel(color: SessionMarkerColorId) {
-    return colorForMarker(color)?.label || color;
+    return state.bucketLabels[color] || colorForMarker(color)?.label || color;
   }
 
   function sortedAllowedMarkerColors() {
@@ -971,7 +975,7 @@ export function createSessions(options: {
     button.title = !state.currentSessionId
       ? "Open a session to set its bucket"
       : color
-        ? `Current session bucket: ${color.label}. Click to change or unset.`
+        ? `Current session bucket: ${markerColorLabel(color.id)}. Click to change or unset.`
         : "Set current session bucket";
     button.setAttribute("aria-label", button.title);
     button.setAttribute("aria-expanded", String(Boolean(closeCurrentSessionBucketMenu)));
@@ -1017,7 +1021,7 @@ export function createSessions(options: {
       swatch.className = "sessionColorFilterMenuSwatch";
       swatch.setAttribute("aria-hidden", "true");
       const label = document.createElement("span");
-      label.textContent = color.label;
+      label.textContent = markerColorLabel(color.id);
       item.append(swatch, label);
       item.addEventListener("click", () => {
         setSessionMarker(sessionId, color.id);
@@ -1196,7 +1200,7 @@ export function createSessions(options: {
       swatch.className = "sessionColorFilterMenuSwatch";
       swatch.setAttribute("aria-hidden", "true");
       const label = document.createElement("span");
-      label.textContent = color.label;
+      label.textContent = markerColorLabel(color.id);
       button.append(swatch, label);
       button.addEventListener("click", () => {
         if (allowedMarkerColors.has(color.id)) allowedMarkerColors.delete(color.id);
@@ -1656,20 +1660,36 @@ export function createSessions(options: {
     const header = document.createElement("header");
     const heading = document.createElement("h2"); heading.textContent = "Lanes";
     const allEntries = state.lanes;
+    const visibleEntries = laneDrawerBucketFilter
+      ? allEntries.filter((entry) => markerForSession(entry.sessionId)?.color === laneDrawerBucketFilter)
+      : allEntries;
     const bucketCount = new Set(allEntries.map((entry) => markerForSession(entry.sessionId)?.color).filter(Boolean)).size;
-    const summary = document.createElement("span"); summary.className = "sessionLaneDrawerSummary"; summary.textContent = `${allEntries.length} session${allEntries.length === 1 ? "" : "s"} · ${bucketCount} bucket${bucketCount === 1 ? "" : "s"}`;
+    const summary = document.createElement("span"); summary.className = "sessionLaneDrawerSummary"; summary.textContent = laneDrawerBucketFilter
+      ? `${visibleEntries.length} of ${allEntries.length} sessions`
+      : `${allEntries.length} session${allEntries.length === 1 ? "" : "s"} · ${bucketCount} bucket${bucketCount === 1 ? "" : "s"}`;
     header.append(heading, summary); drawer.append(header);
+
+    const filters = document.createElement("div"); filters.className = "sessionLaneDrawerBucketFilters"; filters.setAttribute("role", "group"); filters.setAttribute("aria-label", "Filter lanes by bucket");
+    const allBuckets = document.createElement("button"); allBuckets.type = "button"; allBuckets.className = `sessionLaneDrawerBucketFilterAll${laneDrawerBucketFilter ? "" : " selected"}`; allBuckets.textContent = "All"; allBuckets.setAttribute("aria-pressed", String(!laneDrawerBucketFilter)); allBuckets.addEventListener("click", () => { laneDrawerBucketFilter = undefined; openLaneDrawer(); }); filters.append(allBuckets);
+    for (const color of sessionMarkerColors) {
+      const selected = laneDrawerBucketFilter === color.id;
+      const button = document.createElement("button"); button.type = "button"; button.className = `sessionLaneDrawerBucketFilter marker-${color.id}${selected ? " selected" : ""}`;
+      const label = markerColorLabel(color.id); button.title = label; button.setAttribute("aria-label", `Show ${label} bucket`); button.setAttribute("aria-pressed", String(selected));
+      const swatch = document.createElement("span"); swatch.setAttribute("aria-hidden", "true"); const text = document.createElement("span"); text.textContent = label; button.append(swatch, text);
+      button.addEventListener("click", () => { laneDrawerBucketFilter = selected ? undefined : color.id; openLaneDrawer(); }); filters.append(button);
+    }
+    drawer.append(filters);
 
     const body = document.createElement("div"); body.className = "sessionLaneDrawerBody";
     for (const lane of ["pinned", "parked", "bookmarks"] as SessionLaneId[]) {
-      const entries = sessionsInLane(lane);
+      const entries = sessionsInLane(lane).filter((entry) => !laneDrawerBucketFilter || markerForSession(entry.sessionId)?.color === laneDrawerBucketFilter);
       const section = document.createElement("section"); section.className = `sessionLaneDrawerSection lane-${lane}`; section.dataset.lane = lane;
       const laneHeading = document.createElement("div"); laneHeading.className = "sessionLaneDrawerHeading"; laneHeading.append(sessionLaneIcon(lane));
       const laneLabel = document.createElement("strong"); laneLabel.textContent = sessionLaneMeta[lane].label;
       const count = document.createElement("span"); count.className = "sessionLaneDrawerCount"; count.textContent = String(entries.length); laneHeading.append(laneLabel, count);
       if (lane === "pinned") { const more = document.createElement("span"); more.className = "sessionLaneDrawerMore"; more.textContent = "in tab bar"; laneHeading.append(more); }
       section.append(laneHeading);
-      if (entries.length === 0) { const empty = document.createElement("p"); empty.className = "sessionLaneDrawerEmpty"; empty.textContent = "No sessions"; section.append(empty); }
+      if (entries.length === 0) { const empty = document.createElement("p"); empty.className = "sessionLaneDrawerEmpty"; empty.textContent = laneDrawerBucketFilter ? `No ${markerColorLabel(laneDrawerBucketFilter)} sessions` : "No sessions"; section.append(empty); }
       for (const entry of entries) {
         const live = cachedSessions.find((item) => item.id === entry.sessionId);
         const card = document.createElement("div"); card.className = `sessionLaneDrawerCard${state.currentSessionId === entry.sessionId ? " current" : ""}`; card.dataset.sessionId = entry.sessionId; card.dataset.lane = lane;
@@ -1680,13 +1700,13 @@ export function createSessions(options: {
         if (entry.note) { const note = document.createElement("span"); note.className = "sessionLaneDrawerItemNote"; note.textContent = entry.note; copy.append(note); }
         const meta = document.createElement("span"); meta.className = "sessionLaneDrawerItemMeta";
         const marker = markerForSession(entry.sessionId);
-        if (marker) { const bucket = document.createElement("span"); bucket.className = `sessionLaneDrawerBucket marker-${marker.color}`; bucket.title = `${marker.color} bucket`; meta.append(bucket); }
+        if (marker) { const bucket = document.createElement("span"); bucket.className = `sessionLaneDrawerBucket marker-${marker.color}`; bucket.title = `${markerColorLabel(marker.color)} bucket`; meta.append(bucket); }
         if (live?.modified) { const age = document.createElement("span"); age.textContent = formatRelativeTime(live.modified); meta.append(age); }
         if (isStale(entry)) { const stale = document.createElement("span"); stale.className = "sessionStaleBadge"; stale.textContent = "stale"; meta.append(stale); }
         copy.append(meta); open.append(copy);
         open.addEventListener("click", () => { if (performance.now() < suppressOpenUntil) return; closeLaneDrawer?.(); void openSessionTab(entry.sessionId, live?.cwd || entry.cwd || state.currentCwd); });
         card.append(open);
-        const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.title = "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
+        const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter); dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
         let dragPointer: number | undefined; let dragStartY = 0; let dragging = false;
         const finishDrag = () => {
           if (dragPointer === undefined) return;
@@ -1727,8 +1747,8 @@ export function createSessions(options: {
           dragPointer = event.pointerId; dragStartY = event.clientY;
           window.addEventListener("pointermove", moveDrag, { passive: false }); window.addEventListener("pointerup", endDrag); window.addEventListener("pointercancel", endDrag);
         });
-        sessionInspector.attach(card, entry.sessionId);
-        if (live) { const actions = document.createElement("button"); actions.type = "button"; actions.className = "sessionLaneDrawerActions"; actions.textContent = "⋯"; actions.title = "Session actions"; actions.setAttribute("aria-label", actions.title); actions.addEventListener("click", (event) => { event.stopPropagation(); sessionInspector.openAt(actions, entry.sessionId); }); card.append(actions); }
+        sessionInspector.attach(card, entry.sessionId, "lane");
+        if (live) { const actions = document.createElement("button"); actions.type = "button"; actions.className = "sessionLaneDrawerActions"; actions.textContent = "⋯"; actions.title = "Session actions"; actions.setAttribute("aria-label", actions.title); actions.addEventListener("click", (event) => { event.stopPropagation(); sessionInspector.openAt(actions, entry.sessionId, "lane"); }); card.append(actions); }
         section.append(card);
       }
       body.append(section);
@@ -1809,7 +1829,7 @@ export function createSessions(options: {
       tab.dataset.sessionId = sessionId;
       // Give the reorder gesture a clear head start; a stationary hold still
       // opens the Inspector, while hold-and-move reliably becomes a drag.
-      sessionInspector.attach(tab, sessionId, 650);
+      sessionInspector.attach(tab, sessionId, "tab", 650);
       if (options.laned) attachLaneTabReorder(tab);
       if (isActive) activeTab = tab;
       if (options.running) {
@@ -2016,7 +2036,7 @@ export function createSessions(options: {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `sessionActionsMarkerButton marker-${color.id}${selected ? " selected" : ""}`;
-      button.title = selected ? `${color.label} marker selected` : `Mark ${color.label}`;
+      button.title = selected ? `${markerColorLabel(color.id)} marker selected` : `Mark ${markerColorLabel(color.id)}`;
       button.setAttribute("aria-label", button.title);
       button.setAttribute("aria-pressed", String(selected));
       const swatch = document.createElement("span");
@@ -2176,7 +2196,7 @@ export function createSessions(options: {
     for (const color of sessionMarkerColors) {
       const selected = quickBucketColor === color.id;
       const dot = document.createElement("button"); dot.type = "button"; dot.className = `sessionBucketFilter marker-${color.id}${selected ? " selected" : ""}`;
-      dot.title = selected ? `Stop marking ${color.label}` : `Mark multiple sessions ${color.label}`;
+      dot.title = selected ? `Stop marking ${markerColorLabel(color.id)}` : `Mark multiple sessions ${markerColorLabel(color.id)}`;
       dot.setAttribute("aria-label", dot.title);
       dot.setAttribute("aria-pressed", String(selected));
       dot.addEventListener("click", () => {
@@ -2571,11 +2591,17 @@ export function createSessions(options: {
       row.append(workerToggleSpacer);
     }
     row.append(navBtn, actionsBtn);
-    sessionInspector.attach(row, item.id);
+    sessionInspector.attach(row, item.id, "session");
     return row;
   }
 
   function init() {
+    document.addEventListener("pi-web-bucket-labels-changed", () => {
+      renderSessionList(cachedSessions);
+      renderSessionBar();
+      renderCurrentSessionBucketButton();
+      renderSessionColorFilterButton();
+    });
     new MutationObserver(updateEmptyCwdChooser).observe(elements.messagesEl, { childList: true });
     elements.emptyCwdButton.addEventListener("click", () => openFolderPicker(state.currentCwd));
     const headerTitle = elements.sessionDrawer.querySelector(".sessionDrawerHeader h2");
