@@ -744,6 +744,8 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: "Here is an audio artifact:\n\n[e2e-audio-artifact.mp3](/api/artifacts/e2e-audio-artifact.mp3)", timestamp: new Date().toISOString() });
         } else if (/artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a screenshot:\n\n![e2e-test](/api/artifacts/e2e-test.png)", timestamp: new Date().toISOString() });
+        } else if (/stable html preview/i.test(message)) {
+          appendMockMessage({ role: "assistant", content: "Stable previews:\n\n```html-preview\n<style>html,body{margin:0}.full{box-sizing:border-box;width:100%;padding:12px;background:#eef}</style><div class=\"full\">Full-width preview</div>\n```\n\n```html-preview\nBare preview text\n```", timestamp: new Date().toISOString() });
         } else if (/html preview/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Interactive result:\n\n```html-preview\n<style>body{margin:8px}.widget{display:inline-block;width:240px;background:#eef;padding:8px}#more{height:180px}</style><div class=\"widget\"><button onclick=\"more.hidden=!more.hidden\">Toggle</button><span id=\"ran\">waiting</span><div id=\"more\" hidden></div></div><script>ran.textContent='script ran'</script>\n```", timestamp: new Date().toISOString() });
         } else if (/mermaid/i.test(message)) {

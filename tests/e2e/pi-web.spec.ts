@@ -1320,6 +1320,28 @@ test.describe("assistant markdown rendering", () => {
     await expect(frame).toBeVisible();
   });
 
+  test("keeps full-width and bare-text HTML previews from collapsing", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return stable html preview");
+    await page.locator("#primaryButton").click();
+
+    const assistant = page.locator(".message.assistant", { hasText: "Stable previews" }).last();
+    const previews = assistant.locator(".htmlPreview");
+    await expect(previews).toHaveCount(2);
+    await expect(previews.nth(0).locator("iframe").contentFrame().getByText("Full-width preview")).toBeVisible();
+    await expect(previews.nth(1).locator("iframe").contentFrame().getByText("Bare preview text")).toBeVisible();
+
+    const width = (index: number) => previews.nth(index).evaluate((element) => element.getBoundingClientRect().width);
+    const initialFullWidth = await width(0);
+    const initialBareWidth = await width(1);
+    expect(initialFullWidth).toBeGreaterThan(250);
+    expect(initialBareWidth).toBeGreaterThan(100);
+
+    await page.waitForTimeout(3_000);
+    expect(await width(0)).toBeGreaterThanOrEqual(initialFullWidth - 2);
+    expect(await width(1)).toBeGreaterThanOrEqual(initialBareWidth - 2);
+  });
+
   test("renders Mermaid code fences as diagrams", async ({ page }) => {
     await page.goto("/");
     await page.locator("#prompt").fill("please return mermaid");

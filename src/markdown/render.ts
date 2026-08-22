@@ -263,6 +263,47 @@ function enhanceMermaid(root: ParentNode) {
   }
 }
 
+function elementContentWidth(element: HTMLElement) {
+  const style = getComputedStyle(element);
+  return element.clientWidth - parseFloat(style.paddingLeft || "0") - parseFloat(style.paddingRight || "0");
+}
+
+function applyInlineHtmlPreviewWidth(container: HTMLElement, frame: HTMLIFrameElement, reportedWidth: number) {
+  const parent = container.parentElement;
+  if (!parent) return;
+
+  const available = Math.max(elementContentWidth(parent), 1);
+  const pinnedAvailable = Number(container.dataset.pinnedAvailable);
+  if (Number.isFinite(pinnedAvailable) && Math.abs(available - pinnedAvailable) > 24) {
+    container.style.width = "";
+    delete container.dataset.pinnedAvailable;
+    return;
+  }
+
+  const outerWidth = container.getBoundingClientRect().width;
+  const frameWidth = frame.getBoundingClientRect().width;
+  const chrome = Math.max(outerWidth - frameWidth, 0);
+  const desiredOuterWidth = Math.max(Math.ceil(reportedWidth) + chrome, 1);
+  const isPinned = container.dataset.pinnedAvailable !== undefined;
+
+  if (isPinned) {
+    if (desiredOuterWidth >= available - 1) {
+      container.style.width = "";
+      delete container.dataset.pinnedAvailable;
+    } else if (desiredOuterWidth > outerWidth + 1) {
+      container.style.width = `${Math.min(desiredOuterWidth, available)}px`;
+    }
+    return;
+  }
+
+  // Only a report measured at full column width can tell us that content is
+  // intrinsically narrower. Reports after pinning are viewport resize echoes.
+  if (frameWidth >= available - chrome - 1 && desiredOuterWidth < available - 1) {
+    container.style.width = `${desiredOuterWidth}px`;
+    container.dataset.pinnedAvailable = String(available);
+  }
+}
+
 function ensureInlineHtmlResizeListener() {
   if (inlineHtmlListenerAttached) return;
   inlineHtmlListenerAttached = true;
@@ -278,7 +319,7 @@ function ensureInlineHtmlResizeListener() {
       const container = frame.closest<HTMLElement>(".htmlPreview");
       if (!container) return;
       frame.style.height = `${Math.min(Math.max(Math.ceil(data.height), 1), 720)}px`;
-      container.style.width = `${Math.max(Math.ceil(data.width), 1)}px`;
+      applyInlineHtmlPreviewWidth(container, frame, data.width);
       container.classList.toggle("htmlPreview--compact", data.height <= 140);
       return;
     }
@@ -286,7 +327,7 @@ function ensureInlineHtmlResizeListener() {
 }
 
 function inlineHtmlReporter() {
-  return `<script>(()=>{const report=()=>{const b=document.body,e=document.documentElement,cs=getComputedStyle(b);let right=0,bottom=0;for(const n of b.children){const r=n.getBoundingClientRect();right=Math.max(right,r.right);bottom=Math.max(bottom,r.bottom)}const width=Math.ceil(right+parseFloat(cs.marginRight||'0')+parseFloat(cs.paddingRight||'0'));parent.postMessage({type:'pi-web-html-preview-size',height:Math.ceil(bottom+parseFloat(cs.marginBottom||'0')+parseFloat(cs.paddingBottom||'0')),width},'*')};addEventListener('load',report);new ResizeObserver(report).observe(document.documentElement);new MutationObserver(report).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});report()})()<\/script>`;
+  return `<script>(()=>{const report=()=>{const b=document.body,e=document.documentElement,cs=getComputedStyle(b);let right=0,bottom=0,measured=false;for(const n of b.childNodes){let r;if(n.nodeType===1)r=n.getBoundingClientRect();else if(n.nodeType===3&&n.textContent.trim()){const range=document.createRange();range.selectNodeContents(n);r=range.getBoundingClientRect()}if(!r)continue;measured=true;right=Math.max(right,r.right);bottom=Math.max(bottom,r.bottom)}const width=measured?Math.ceil(right+parseFloat(cs.marginRight||'0')+parseFloat(cs.paddingRight||'0')):e.clientWidth;parent.postMessage({type:'pi-web-html-preview-size',height:Math.ceil(bottom+parseFloat(cs.marginBottom||'0')+parseFloat(cs.paddingBottom||'0')),width},'*')};addEventListener('load',report);new ResizeObserver(report).observe(document.documentElement);new MutationObserver(report).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});report()})()<\/script>`;
 }
 
 function enhanceInlineHtmlPreviews(root: ParentNode) {

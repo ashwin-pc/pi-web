@@ -296,10 +296,15 @@ test.describe("session quick bar", () => {
     await page.getByRole("menuitem", { name: "Mark as read" }).click();
     await expect(olderTab).not.toHaveClass(/\bunread\b/);
 
+    // On mobile the open drawer overlays the tab bar; close it before opening
+    // the tab inspector.
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#sessionButton")).toHaveAttribute("aria-expanded", "false");
     await olderTab.click({ button: "right" });
     await page.getByRole("button", { name: "Mark as unread" }).click();
-    await expect(olderRow).toHaveClass(/\bunread\b/);
     await expect(olderTab).toHaveClass(/\bunread\b/);
+    await page.locator("#sessionButton").click();
+    await expect(olderRow).toHaveClass(/\bunread\b/);
 
     const uiState = await (await page.request.get("/api/session-ui-state")).json();
     expect(uiState.sessionUiState.sessionUnreadStates).toEqual([
