@@ -251,12 +251,13 @@ export function createSessions(options: {
   function removeFromLanes(sessionId: string) { const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; state.lanes = next; commitLanes(); }
   function isStale(entry: SessionLaneEntry) { return entry.lane === "parked" && Date.now() - new Date(entry.since).getTime() > 14 * 864e5; }
   const sessionInspector = buildSessionInspector({
-    item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: state.lanes.find((entry) => entry.sessionId === sessionId)?.note }; },
+    item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: state.lanes.find((entry) => entry.sessionId === sessionId)?.note, unread: Boolean(unreadStateForSession(sessionId)) }; },
     moveToLane: (sessionId, lane) => moveToLane(sessionId, lane, { cwd: cachedSessions.find((entry) => entry.id === sessionId)?.cwd || laneEntry(sessionId)?.cwd || state.currentCwd }),
     setBucket: (sessionId, color) => setSessionMarker(sessionId, color),
     setNote: (sessionId, note) => { state.lanes = state.lanes.map((entry) => entry.sessionId === sessionId ? { ...entry, note: note || undefined } : entry); commitLanes(); },
     removeFromLanes,
     openSession: (sessionId) => { void openSessionById(sessionId); },
+    setUnread: (sessionId, unread) => { (unread ? markSessionUnread(sessionId) : markSessionRead(sessionId)).catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error")); },
   });
 
   type SessionAction = {
@@ -834,6 +835,26 @@ export function createSessions(options: {
     if (!id) return;
     clearLocalUnread(id);
     const res = await fetch("/api/session-ui-state/read", {
+      method: "POST",
+      headers: api.headers(),
+      body: JSON.stringify({ sessionId: id }),
+    });
+    if (res.status === 401) return;
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    applySessionUiState(data.sessionUiState);
+  }
+
+  async function markSessionUnread(sessionId = state.currentSessionId) {
+    const id = sessionId.trim();
+    if (!id) return;
+    const now = new Date().toISOString();
+    state.sessionUnreadStates = [...state.sessionUnreadStates.filter((item) => item.sessionId !== id), { sessionId: id, unreadAt: now, updatedAt: now }];
+    syncCachedUnreadFromState();
+    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
+    renderSessionBar();
+    updateSessionButtonUnread();
+    const res = await fetch("/api/session-ui-state/unread", {
       method: "POST",
       headers: api.headers(),
       body: JSON.stringify({ sessionId: id }),
@@ -1937,6 +1958,11 @@ export function createSessions(options: {
     const pinned = isPinned(item.id);
     const lane = laneOf(item.id);
     return [
+      {
+        id: unreadStateForSession(item.id) ? "mark-read" : "mark-unread",
+        label: unreadStateForSession(item.id) ? "Mark as read" : "Mark as unread",
+        run: () => unreadStateForSession(item.id) ? markSessionRead(item.id) : markSessionUnread(item.id),
+      },
       ...(["pinned", "parked", "bookmarks"] as SessionLaneId[]).map((target) => ({ id: `lane-${target}`, label: `${lane === target ? "✓ " : ""}Move to ${sessionLaneMeta[target].label}`, icon: target === "pinned" ? "pin" as IconName : undefined, run: () => moveToLane(item.id, target, { cwd: item.cwd || cwd }) })),
       ...(lane ? [
         { id: "edit-lane-note", label: state.lanes.find((entry) => entry.sessionId === item.id)?.note ? "Edit note" : "Add note", run: () => setLaneNote(item.id) },

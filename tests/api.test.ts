@@ -378,10 +378,24 @@ describe("pi-web mock API", () => {
     expect(read.sessionUiState.revision).toBeGreaterThan(patched.sessionUiState.revision);
     expect(read.sessionUiState.sessionUnreadStates).toEqual([]);
 
+    const unreadRes = await fetch(`${baseUrl}/api/session-ui-state/unread`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: "mock-older" }),
+    });
+    expect(unreadRes.status).toBe(200);
+    const unread = await unreadRes.json();
+    expect(unread.sessionUiState.revision).toBeGreaterThan(read.sessionUiState.revision);
+    expect(unread.sessionUiState.sessionUnreadStates).toEqual([
+      expect.objectContaining({ sessionId: "mock-older", unreadAt: expect.any(String) }),
+    ]);
+
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
     expect(current.sessionUiState.allowedMarkerColors).toEqual(["green", "yellow"]);
-    expect(current.sessionUiState.sessionUnreadStates).toEqual([]);
+    expect(current.sessionUiState.sessionUnreadStates).toEqual([
+      expect.objectContaining({ sessionId: "mock-older", unreadAt: expect.any(String) }),
+    ]);
   });
 
   it("applies saved defaults to new sessions", async () => {

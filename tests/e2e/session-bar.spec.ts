@@ -275,6 +275,38 @@ test.describe("session quick bar", () => {
     await expect(olderRow.locator(".sessionItemUnreadDot")).toBeVisible();
   });
 
+  test("marks a read session unread from the drawer and tab inspector", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      pinnedSessions: [
+        { id: "mock-current" },
+        { id: "mock-older" },
+      ],
+    });
+    await page.goto("/");
+
+    const olderTab = page.locator(".sessionBarTab").filter({ hasText: "Older mock session" });
+    await page.locator("#sessionButton").click();
+    const olderRow = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
+    await olderRow.locator(".sessionItemActionsBtn").click();
+    await page.getByRole("menuitem", { name: "Mark as unread" }).click();
+    await expect(olderRow).toHaveClass(/\bunread\b/);
+    await expect(olderTab).toHaveClass(/\bunread\b/);
+
+    await olderRow.locator(".sessionItemActionsBtn").click();
+    await page.getByRole("menuitem", { name: "Mark as read" }).click();
+    await expect(olderTab).not.toHaveClass(/\bunread\b/);
+
+    await olderTab.click({ button: "right" });
+    await page.getByRole("button", { name: "Mark as unread" }).click();
+    await expect(olderRow).toHaveClass(/\bunread\b/);
+    await expect(olderTab).toHaveClass(/\bunread\b/);
+
+    const uiState = await (await page.request.get("/api/session-ui-state")).json();
+    expect(uiState.sessionUiState.sessionUnreadStates).toEqual([
+      expect.objectContaining({ sessionId: "mock-older", unreadAt: expect.any(String) }),
+    ]);
+  });
+
   test("opening an unread session clears it in other browser views", async ({ page, context }) => {
     await seedServerSessionUiState(page, {
       pinnedSessions: [

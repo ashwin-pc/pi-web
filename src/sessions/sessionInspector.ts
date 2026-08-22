@@ -7,6 +7,7 @@ export type SessionInspectorItem = {
   lane?: SessionLaneId;
   bucket?: SessionMarkerColorId;
   note?: string;
+  unread?: boolean;
 };
 
 type InspectorOptions = {
@@ -16,6 +17,7 @@ type InspectorOptions = {
   setNote: (sessionId: string, note: string) => void;
   removeFromLanes: (sessionId: string) => void;
   openSession: (sessionId: string) => void;
+  setUnread: (sessionId: string, unread: boolean) => void;
 };
 
 const colors: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green"];
@@ -58,7 +60,10 @@ export function buildSessionInspector(options: InspectorOptions) {
     note.addEventListener("blur", () => { card.classList.remove("editing-note"); window.visualViewport?.removeEventListener("resize", keepNoteVisible); });
     note.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); saveNote(); close(); } }); card.append(note);
 
-    const actions = document.createElement("footer"); const open = document.createElement("button"); open.type = "button"; open.textContent = "↗ Open"; open.addEventListener("click", () => { options.openSession(item.sessionId); close(); }); const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "Remove"; remove.disabled = !item.lane; remove.addEventListener("click", () => { options.removeFromLanes(item.sessionId); close(); }); actions.append(open, remove); card.append(actions);
+    const actions = document.createElement("footer");
+    const unread = document.createElement("button"); unread.type = "button"; unread.textContent = item.unread ? "Mark as read" : "Mark as unread"; unread.addEventListener("click", () => { options.setUnread(item.sessionId, !item.unread); close(); });
+    const open = document.createElement("button"); open.type = "button"; open.textContent = "↗ Open"; open.addEventListener("click", () => { options.openSession(item.sessionId); close(); });
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "danger"; remove.textContent = "Remove"; remove.disabled = !item.lane; remove.addEventListener("click", () => { options.removeFromLanes(item.sessionId); close(); }); actions.append(unread, open, remove); card.append(actions);
     backdrop.append(card); document.body.append(backdrop);
 
     requestAnimationFrame(() => {

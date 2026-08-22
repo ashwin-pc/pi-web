@@ -831,10 +831,12 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, { ok: true, sessionUiState });
       }
 
-      if (method === "POST" && url.pathname === "/api/session-ui-state/read") {
+      if (method === "POST" && (url.pathname === "/api/session-ui-state/read" || url.pathname === "/api/session-ui-state/unread")) {
         const body = await readBody(req) as { sessionId?: unknown };
         const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : session.sessionId;
-        const sessionUiState = await sessionUiStateStore.markRead(sessionId);
+        const sessionUiState = url.pathname.endsWith("/unread")
+          ? await sessionUiStateStore.markUnread(sessionId)
+          : await sessionUiStateStore.markRead(sessionId);
         broadcast({ type: "session_ui_state_changed", sessionUiState });
         return sendJson(res, 200, { ok: true, sessionUiState });
       }
