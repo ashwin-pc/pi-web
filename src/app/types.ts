@@ -456,6 +456,7 @@ export type AppState = {
   selectedMarkerColor: SessionMarkerColorId;
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
+  expandedWorkerBranches: Set<string>;
   queueMode: QueueMode;
   attachedImages: FileAttachment[];
   editorExpanded: boolean;
@@ -477,6 +478,7 @@ export const defaultPiWebSettings: PiWebSettings = {
 
 const tokenStorageKey = "pi-web-token";
 const collapsedFoldersStorageKey = "pi-web-collapsed-session-folders";
+const expandedWorkerBranchesStorageKey = "pi-web-expanded-worker-branches";
 const sessionIdUrlParam = "sessionId";
 const sessionIdHistoryStateKey = "piWebSessionId";
 const sessionScopedHistoryStateKeys = ["piWebArtifactView", "piWebWorkspaceView"] as const;
@@ -535,6 +537,19 @@ export function persistCollapsedSessionFolders(folders: Set<string>) {
   localStorage.setItem(collapsedFoldersStorageKey, JSON.stringify(Array.from(folders)));
 }
 
+function readExpandedWorkerBranches() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(expandedWorkerBranchesStorageKey) || "[]");
+    return Array.isArray(raw) ? raw.filter((value): value is string => typeof value === "string" && value.length > 0) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function persistExpandedWorkerBranches(sessionIds: Set<string>) {
+  localStorage.setItem(expandedWorkerBranchesStorageKey, JSON.stringify(Array.from(sessionIds)));
+}
+
 export function createAppState(): AppState {
   consumeUrlToken();
 
@@ -564,6 +579,7 @@ export function createAppState(): AppState {
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
+    expandedWorkerBranches: new Set(readExpandedWorkerBranches()),
     queueMode: "steer",
     attachedImages: [],
     editorExpanded: defaultPiWebSettings.composer.expanded,

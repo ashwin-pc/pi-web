@@ -191,7 +191,7 @@
   flex-direction: column;
   gap: 0;
   overflow: auto;
-  padding: 6px 0;
+  padding: 0 0 6px;
 }
 .sessionFolderGroup {
   display: flex;
@@ -516,7 +516,7 @@
   border: 0;
   border-radius: 0;
   background: transparent;
-  padding: 0 12px 0 0;
+  padding: 0;
   text-align: left;
   cursor: pointer;
 }
@@ -1068,48 +1068,121 @@ body.hasPinnedSessions .app {
   }
 }
 
-/* ── Derived "waiting on spawned sessions" chip + lineage indent ────────── */
+/* ── Spawned worker branches ────────────────────────────────────────────── */
 .sessionBarLineageGlyph {
   flex: 0 0 auto;
   margin-right: 3px;
   font-size: 10px;
   color: color-mix(in srgb, var(--muted) 80%, transparent);
 }
-.sessionItemChild {
-  margin-left: 18px;
-  width: calc(100% - 18px);
-  position: relative;
+.sessionWorkerBranchToggle,
+.sessionWorkerBranchSpacer {
+  flex: 0 0 20px;
+  width: 20px;
+  min-width: 20px;
+  height: 32px;
+  min-height: 32px;
 }
-.sessionItemChild::before {
+.sessionWorkerBranchToggle {
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 0;
+  font-size: 15px;
+  line-height: 1;
+}
+.sessionWorkerBranchChevron {
+  display: block;
+  width: 12px;
+  height: 12px;
+  transform: translateX(-3px) rotate(0deg);
+  transform-origin: center;
+  transition: transform 0.12s ease;
+}
+.sessionWorkerBranchToggle.expanded .sessionWorkerBranchChevron { transform: translateX(-3px) rotate(90deg); }
+.sessionWorkerBranchToggle:hover,
+.sessionWorkerBranchToggle:focus-visible { border: 0; background: var(--panel-2); color: var(--text); outline: none; }
+.sessionWorkerBranchToggle:disabled { background: transparent; color: color-mix(in srgb, var(--muted) 62%, transparent); opacity: 1; }
+.sessionWorkerSummary {
+  flex: 0 0 auto;
+  max-width: 118px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--muted) 30%, transparent);
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 3px 6px;
+  font-size: 9px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sessionWorkerSummary.running {
+  border-color: color-mix(in srgb, var(--accent) 42%, transparent);
+  color: color-mix(in srgb, var(--accent) 82%, var(--text));
+}
+.sessionItemWorker {
+  position: relative;
+  margin-left: var(--session-worker-indent);
+  width: calc(100% - var(--session-worker-indent));
+}
+.sessionItemWorker::before {
   content: "";
   position: absolute;
-  left: -10px;
+  left: -9px;
   top: 0;
   bottom: 50%;
-  width: 8px;
+  width: 7px;
   border-left: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
   border-bottom: 1px solid color-mix(in srgb, var(--muted) 35%, transparent);
-  border-bottom-left-radius: 6px;
+  border-bottom-left-radius: 5px;
 }
+.sessionItemContext:not(.current) .sessionItemTitle { color: var(--muted); }
+.sessionUnattachedWorkerGroup {
+  margin-top: 6px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+.sessionUnattachedWorkerGroup .sessionFolderToggle:disabled { opacity: 1; cursor: default; }
 /* Session lanes */
 .sessionLayersButton { flex:0 0 38px; align-self:flex-start; width:38px; height:28px; min-width:38px; min-height:28px; max-height:28px; padding:0; border:0; border-right:1px solid var(--border); border-radius:0; background:var(--bg); color:var(--muted); display:grid; place-items:center; cursor:pointer; position:sticky; left:0; z-index:4 }
 .sessionLayersButton svg,.sessionLaneFilter svg,.sessionLaneBadge svg { width:16px;height:16px;display:block }
 .sessionLayersButton:hover,.sessionLayersButton.cur { color:var(--accent,#d8a657); background:color-mix(in srgb,var(--accent,#d8a657) 8%,var(--bg)) }
 .sessionBarTab.away { opacity:.62; filter:saturate(.6) }.sessionBarTab.away.active { opacity:.9 }
-.sessionLaneFilters { display:flex;align-items:center;gap:5px;padding:8px 10px 5px;position:sticky;top:0;z-index:3;background:var(--bg) }
-.sessionLaneFilter { border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:999px;min-height:27px;padding:3px 9px;display:flex;align-items:center;gap:5px;cursor:pointer;font:inherit }
+.sessionLaneFilters { box-sizing:border-box;display:flex;flex:0 0 42px;min-height:42px;align-items:center;gap:4px;padding:7px 8px;position:sticky;top:0;z-index:3;overflow:visible;background:var(--bg) }
+.sessionLaneFilter { box-sizing:border-box;flex:0 0 28px;width:28px;min-width:28px;height:26px;min-height:26px;padding:0;border:1px solid var(--border);background:transparent;color:var(--muted);border-radius:999px;display:grid;place-items:center;cursor:pointer;font:inherit }
+.sessionLaneFilter-all { flex-basis:38px;width:38px;min-width:38px }
+.sessionUnreadFilterDot { width:8px;height:8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 18%,transparent) }
 .sessionLaneFilter.selected { color:var(--text);border-color:color-mix(in srgb,var(--text) 42%,transparent);background:var(--bg-hover) }
 .sessionLaneBadge { flex:0 0 20px;color:var(--muted);display:grid;place-items:center }
 .sessionLaneNote { display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px }
 .sessionStaleBadge { color:#f07b72;border:1px solid color-mix(in srgb,#f07b72 50%,transparent);border-radius:999px;padding:1px 5px;font-size:9px;text-transform:uppercase;letter-spacing:.04em }
 .sessionFolderMatchCount { color:var(--muted);font-size:10px;margin-left:6px }
-@media(max-width:640px){.sessionLayersButton{flex-basis:34px}.sessionLaneFilters{overflow-x:auto}}
+@media(max-width:640px){.sessionLayersButton{flex-basis:34px}.sessionLaneFilters{overflow:visible}}
 .sessionDrawerFilters .sessionDrawerSearch { flex:1; width:100% }
-.sessionBucketFilters { margin-left:auto;display:flex;align-items:center;gap:7px;padding-left:8px }
+.sessionWorkerCollapseAllButton {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  height: 28px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--muted);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.sessionWorkerCollapseAllButton[hidden] { display: none; }
+.sessionWorkerCollapseAllButton:hover,
+.sessionWorkerCollapseAllButton:focus-visible { border-color: var(--accent); color: var(--text); outline: none; }
+.sessionBucketFilters { margin-left:auto;display:flex;align-items:center;gap:6px;padding-left:2px }
 .sessionBucketFilterLabel { color:var(--muted);font-size:10px;margin-right:1px }
 .sessionBucketFilter { width:14px;height:14px;padding:0;border:2px solid transparent;border-radius:50%;background:var(--session-marker-color);cursor:pointer;opacity:.72;box-shadow:0 0 0 1px color-mix(in srgb,var(--text) 22%,transparent) }
 .sessionBucketFilter.selected { opacity:1;border-color:var(--bg);box-shadow:0 0 0 2px var(--text) }
-@media(max-width:420px){.sessionLaneFilters{gap:4px}.sessionLaneFilter{padding-inline:7px}.sessionBucketFilters{gap:5px}.sessionBucketFilter{width:10px;height:10px}}
+@media(max-width:420px){.sessionLaneFilters{gap:3px;padding-inline:6px}.sessionBucketFilters{gap:5px;padding-left:0}.sessionBucketFilter{width:10px;height:10px}}
 /* Drawer filters override the global mobile touch-target sizing: the rail itself is the target area. */
 .sessionLaneFilters .sessionLaneFilter { min-height:26px !important;max-height:26px }
 .sessionLaneFilters .sessionBucketFilter { box-sizing:border-box;min-width:12px !important;max-width:12px;min-height:12px !important;max-height:12px;padding:0 !important;aspect-ratio:1;border-radius:50% }

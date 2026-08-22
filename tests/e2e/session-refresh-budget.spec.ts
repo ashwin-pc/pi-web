@@ -1,13 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-// Issue #112 regression guard: the sessions drawer refetches `/api/sessions` on
-// every message_end while open. With the drawer open and one basic streaming
-// turn, the message_end-driven refetch is redundant — the drawer-open refresh
-// already fetched the list right before the prompt, so a TTL dedupe in
-// refreshSessions() absorbs it. This asserts the whole interaction makes at most
-// one `/api/sessions` request (counted from before the drawer opens).
-//
-// On today's HEAD (no dedupe) this fails: drawer-open (1) + message_end (1) = 2.
+// Session-list budget regression guard. Opening the drawer may fetch once, and a
+// completed run performs one terminal reconciliation. Intermediate message_end
+// events must not trigger additional list scans, so the whole interaction is
+// bounded at two requests rather than growing with the number of messages.
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -16,14 +12,14 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("session-list refetch budget", () => {
-  test("open drawer + one streaming turn makes at most one /api/sessions request", async ({ page }, testInfo) => {
+  test("open drawer + one streaming turn makes at most two /api/sessions requests", async ({ page }, testInfo) => {
     let sessionListRequests = 0;
     page.on("request", (req) => {
       if (new URL(req.url()).pathname === "/api/sessions") sessionListRequests += 1;
     });
 
     // Counter stays live from before the drawer click: drawer-open fetch (1) +
-    // message_end (absorbed by the 1s TTL) must total <= 1.
+    // terminal reconciliation (1) must total <= 2.
     await page.locator("#sessionButton").click();
     await expect(page.locator("#sessionDrawer")).toBeVisible();
 
@@ -42,9 +38,8 @@ test.describe("session-list refetch budget", () => {
     await expect(page.locator(".message.assistant", { hasText: "Mock response." }).last()).toBeVisible();
     await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
 
-    // Allow any late message_end-driven refetch to land before asserting the budget.
-    // 600ms leaves comfortable margin over the 250ms refresh debounce.
+    // Allow terminal reconciliation to land before asserting the budget.
     await page.waitForTimeout(600);
-    expect(sessionListRequests).toBeLessThanOrEqual(1);
+    expect(sessionListRequests).toBeLessThanOrEqual(2);
   });
 });

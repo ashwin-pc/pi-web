@@ -390,6 +390,34 @@ test.describe("visual regression", () => {
     });
   });
 
+  test("session drawer worker branches", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
+    if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 900 });
+
+    await page.request.patch("/api/session-ui-state", { data: {
+      sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
+      sessionMarkers: [{ sessionId: "mock-current", color: "yellow", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    } });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    const drawer = page.locator("#sessionDrawer");
+    await expect(drawer).toBeVisible();
+    await expect(drawer.locator(".sessionColorFilterButton")).toHaveCount(1);
+    await expect(drawer.locator(".sessionBucketFilter")).toHaveCount(5);
+    await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}" });
+
+    await expect(drawer).toHaveScreenshot(`session-workers-collapsed-${testInfo.project.name}.png`, {
+      animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
+    });
+    await drawer.locator('.sessionItem[data-session-id="mock-current"] .sessionWorkerBranchToggle').click();
+    await expect(drawer.locator('.sessionItem[data-session-id="mock-older"]')).toBeVisible();
+    await expect(drawer).toHaveScreenshot(`session-workers-expanded-${testInfo.project.name}.png`, {
+      animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
+    });
+  });
+
   test("session lanes", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1600, height: 1000 });

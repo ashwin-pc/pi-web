@@ -6,6 +6,7 @@ async function seedServerSessionUiState(page: import("@playwright/test").Page, s
   lanes?: Array<{ sessionId: string; lane: "pinned" | "parked" | "bookmarks"; cwd?: string; note?: string; since: string }>;
   sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
   sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string; updatedAt: string }>;
+  sessionOrigins?: Array<{ sessionId: string; originSessionId: string; kind: string; updatedAt: string }>;
 }) {
   await page.request.patch("/api/session-ui-state", { data: state });
 }
@@ -613,7 +614,8 @@ test.describe("session quick bar", () => {
   test("session drawer drops folders with no filter matches", async ({ page }) => {
     await seedServerSessionUiState(page, { sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }] });
     await page.goto("/"); await page.locator("#sessionButton").click();
-    await page.locator(".sessionBucketFilter.marker-green").click();
+    await page.locator(".sessionColorFilterButton").click();
+    await page.getByRole("menuitemcheckbox", { name: "Green" }).click();
     await expect(page.locator(".sessionFolderGroup")).toHaveCount(1);
     await expect(page.locator(".sessionItem")).toContainText("Older mock session");
   });
@@ -623,12 +625,13 @@ test.describe("session quick bar", () => {
     const older = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
     await older.locator(".sessionItemActionsBtn").click(); await page.locator(".sessionActionsMarkerButton.marker-red").click();
     await expect(older).toHaveClass(/marker-red/); await expect(older.locator(".sessionItemMarkerDot")).toHaveCount(1);
-    await page.locator(".sessionBucketFilter.marker-red").click(); await expect(page.locator(".sessionItem")).toHaveCount(1); await expect(page.locator(".sessionItem")).toContainText("Older mock session");
+    await page.locator(".sessionColorFilterButton").click(); await page.getByRole("menuitemcheckbox", { name: "Red" }).click();
+    await expect(page.locator(".sessionItem")).toHaveCount(1); await expect(page.locator(".sessionItem")).toContainText("Older mock session");
   });
 
   test("session drawer recolors rows from the row menu while bucket filters are active", async ({ page }) => {
     await seedServerSessionUiState(page, { sessionMarkers: [{ sessionId: "mock-older", color: "red", updatedAt: "2026-01-01T00:00:00.000Z" }] });
-    await page.goto("/"); await page.locator("#sessionButton").click(); await page.locator(".sessionBucketFilter.marker-red").click();
+    await page.goto("/"); await page.locator("#sessionButton").click(); await page.locator(".sessionColorFilterButton").click(); await page.getByRole("menuitemcheckbox", { name: "Red" }).click();
     const older = page.locator(".sessionItem").filter({ hasText: "Older mock session" }); await older.locator(".sessionItemActionsBtn").click(); await page.locator(".sessionActionsMarkerButton.marker-blue").click();
     await expect(page.locator(".sessionItem")).toHaveCount(0); const uiState = await (await page.request.get("/api/session-ui-state")).json(); expect(uiState.sessionUiState.sessionMarkers).toEqual(expect.arrayContaining([expect.objectContaining({ sessionId: "mock-older", color: "blue" })]));
   });
@@ -643,6 +646,181 @@ test.describe("session quick bar", () => {
     await page.goto("/"); await page.locator("#sessionButton").click(); const older = page.locator(".sessionItem").filter({ hasText: "Older mock session" });
     await older.locator(".sessionItemActionsBtn").click(); await page.locator(".sessionActionsMarkerButton.marker-green").click(); await expect(older.locator(".sessionItemMarkerDot")).toHaveCount(1);
     await older.locator(".sessionItemMarkerBtn").click(); await expect(older).toHaveClass(/pinned/); await expect(older.locator(".sessionItemMarkerDot")).toHaveCount(1);
+  });
+
+  test("uses one filter menu, keeps quick buckets visible, and preserves row geometry", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
+      sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const filters = page.locator(".sessionLaneFilters");
+    await expect(filters.locator(".sessionColorFilterButton")).toHaveCount(1);
+    await expect(filters.locator(".sessionBucketFilter")).toHaveCount(5);
+    await expect(filters).toHaveCSS("overflow", "visible");
+    const filterBox = await filters.boundingBox();
+    const listBox = await page.locator("#sessionList").boundingBox();
+    expect(Math.abs(filterBox!.y - listBox!.y)).toBeLessThanOrEqual(1);
+    expect(filterBox!.height).toBeGreaterThanOrEqual(42);
+    const filterButtonBox = await filters.locator(".sessionColorFilterButton").boundingBox();
+    for (const bucket of await filters.locator(".sessionBucketFilter").all()) {
+      const box = await bucket.boundingBox();
+      expect(box).not.toBeNull();
+      expect(box!.y).toBeGreaterThanOrEqual(filterBox!.y);
+      expect(box!.y + box!.height).toBeLessThanOrEqual(filterBox!.y + filterBox!.height);
+    }
+    expect(filterButtonBox!.y).toBeGreaterThanOrEqual(filterBox!.y);
+    expect(filterButtonBox!.y + filterButtonBox!.height).toBeLessThanOrEqual(filterBox!.y + filterBox!.height);
+
+    await filters.locator(".sessionColorFilterButton").click();
+    await page.getByRole("menuitemradio", { name: "Pinned" }).click();
+    await expect(page.locator(".sessionItem")).toHaveCount(0);
+    await filters.locator(".sessionColorFilterButton").click();
+    await page.getByRole("menuitemradio", { name: "All lanes" }).click();
+
+    const parent = page.locator('.sessionItem[data-session-id="mock-current"]');
+    const markerIcon = parent.locator(".sessionItemMarkerBtn svg");
+    const chevron = parent.locator(".sessionWorkerBranchChevron");
+    const nav = parent.locator(".sessionItemNavBtn");
+    const markerBox = await markerIcon.boundingBox();
+    const chevronBox = await chevron.boundingBox();
+    const navBox = await nav.boundingBox();
+    const leftGap = chevronBox!.x - (markerBox!.x + markerBox!.width);
+    const rightGap = navBox!.x - (chevronBox!.x + chevronBox!.width);
+    expect(Math.abs(leftGap - rightGap)).toBeLessThanOrEqual(1);
+
+    await parent.locator(".sessionWorkerBranchToggle").click();
+    const worker = page.locator('.sessionItem[data-session-id="mock-older"]');
+    await expect(worker.locator(".sessionWorkerBranchSpacer")).toHaveCount(0);
+
+    const quickBlue = filters.locator(".sessionBucketFilter.marker-blue");
+    await quickBlue.click();
+    await expect(quickBlue).toHaveAttribute("aria-pressed", "true");
+    await parent.locator(".sessionItemMarkerBtn").click();
+    await worker.locator(".sessionItemMarkerBtn").click();
+    await expect(parent).toHaveClass(/marker-blue/);
+    await expect(worker).toHaveClass(/marker-blue/);
+    await expect(page.locator(".sessionItem")).toHaveCount(2);
+    await quickBlue.click();
+    await expect(parent.locator(".sessionItemMarkerBtn")).toHaveClass(/toolPin/);
+  });
+
+  test("collapses spawned workers under their parent and reveals filtered matches", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const parent = page.locator('.sessionItem[data-session-id="mock-current"]');
+    const worker = page.locator('.sessionItem[data-session-id="mock-older"]');
+    await expect(parent).toContainText("1 worker");
+    await expect(parent.locator(".sessionWorkerBranchToggle")).toHaveAttribute("aria-expanded", "false");
+    await expect(worker).toHaveCount(0);
+
+    await parent.locator(".sessionWorkerBranchToggle").click();
+    await expect(worker).toBeVisible();
+    await expect(worker).toHaveClass(/sessionItemWorker/);
+    await expect(page.locator(".sessionWorkerCollapseAllButton")).toBeVisible();
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-expanded-worker-branches"))).toContain("mock-current");
+    await page.reload();
+    await expect(worker).toBeVisible();
+
+    await page.locator(".sessionWorkerCollapseAllButton").click();
+    await expect(worker).toHaveCount(0);
+    await page.locator(".sessionDrawerSearch").fill("Older mock session");
+    await expect(parent).toBeVisible();
+    await expect(parent).toHaveClass(/sessionItemContext/);
+    await expect(worker).toBeVisible();
+  });
+
+  test("groups workers whose parent is unavailable under Unattached workers", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      sessionOrigins: [{ sessionId: "mock-older", originSessionId: "missing-parent", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+
+    const group = page.locator(".sessionUnattachedWorkerGroup");
+    const worker = page.locator('.sessionItem[data-session-id="mock-older"]');
+    await expect(group).toContainText("Unattached workers");
+    await expect(worker).toHaveCount(0);
+    await group.locator(".sessionFolderToggle").click();
+    await expect(worker).toBeVisible();
+  });
+
+  test("worker branches do not consume folder preview slots", async ({ page }) => {
+    const cwd = "/Users/ashwin/projects/pi-web";
+    const now = "2026-01-01T00:00:00.000Z";
+    await seedServerSessionUiState(page, {
+      sessionOrigins: [
+        { sessionId: "worker-a", originSessionId: "parent-0", kind: "spawn", updatedAt: now },
+        { sessionId: "worker-b", originSessionId: "parent-0", kind: "spawn", updatedAt: now },
+      ],
+    });
+    await page.route(/\/api\/sessions(?:\?.*)?$/, (route) => route.fulfill({ json: {
+      ok: true,
+      sessions: [
+        ...Array.from({ length: 10 }, (_, index) => ({ id: `parent-${index}`, name: `Parent ${index}`, created: now, modified: now, messageCount: 1, cwd, isCurrent: false, unread: false })),
+        { id: "worker-a", name: "Worker A", created: now, modified: now, messageCount: 1, cwd, isCurrent: false, unread: false },
+        { id: "worker-b", name: "Worker B", created: now, modified: now, messageCount: 1, cwd, isCurrent: false, unread: false },
+      ],
+    } }));
+
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator(".sessionItem")).toHaveCount(8);
+    await expect(page.locator('.sessionItem[data-session-id="parent-0"]')).toContainText("2 workers");
+    await expect(page.locator(".sessionFolderMoreButton")).toHaveText("Show all 10 sessions");
+  });
+
+  test("runtime changes patch one drawer branch instead of rebuilding unrelated rows", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-older" });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    const unaffected = page.locator('.sessionItem[data-session-id="mock-current"]');
+    await unaffected.evaluate((row) => { row.dataset.renderToken = "preserved"; });
+
+    await page.request.post("/api/mock/event", { data: {
+      type: "session_runtime_changed",
+      sessionId: "mock-older",
+      runtime: { loaded: true, isRunning: true, isStreaming: true, isRetrying: false, isCompacting: false, pendingMessageCount: 0 },
+    } });
+
+    await expect(page.locator('.sessionItem[data-session-id="mock-older"] .sessionSpinner')).toBeVisible();
+    await expect(unaffected).toHaveAttribute("data-render-token", "preserved");
+  });
+
+  test("an open drawer refreshes the session index once after a pinned run settles", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-older" });
+    let sessionListRequests = 0;
+    await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+      sessionListRequests += 1;
+      await route.continue();
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    await expect(page.locator(".sessionItem")).toHaveCount(2);
+    sessionListRequests = 0;
+
+    for (let index = 0; index < 5; index += 1) {
+      await page.request.post("/api/mock/event", { data: {
+        type: "agent_event",
+        sessionId: "mock-older",
+        event: { type: "message_end", message: { role: "assistant", content: `round ${index}` } },
+      } });
+    }
+    await page.waitForTimeout(400);
+    expect(sessionListRequests).toBe(0);
+
+    await page.request.post("/api/mock/event", { data: {
+      type: "agent_event",
+      sessionId: "mock-older",
+      event: { type: "agent_settled" },
+    } });
+    await expect.poll(() => sessionListRequests).toBe(1);
   });
 
   test("session actions menu can pin and unpin a session", async ({ page }) => {

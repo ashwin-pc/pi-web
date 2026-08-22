@@ -3,9 +3,11 @@ import { describe, expect, it } from "vitest";
 import { shouldRefreshSessionsForPiEvent } from "../src/realtime/realtime.js";
 
 describe("session refresh fanout contract", () => {
-  it("refreshes only for persisted messages, not terminal or metadata events", () => {
-    expect(shouldRefreshSessionsForPiEvent({ type: "message_end" } as any)).toBe(true);
-    for (const type of ["agent_end", "compaction_end", "session_info_changed"]) {
+  it("refreshes once at terminal reconciliation points, not for every persisted message", () => {
+    expect(shouldRefreshSessionsForPiEvent({ type: "agent_settled" } as any)).toBe(true);
+    expect(shouldRefreshSessionsForPiEvent({ type: "compaction_end", willRetry: false } as any)).toBe(true);
+    expect(shouldRefreshSessionsForPiEvent({ type: "compaction_end", willRetry: true } as any)).toBe(false);
+    for (const type of ["message_end", "agent_end", "session_info_changed"]) {
       expect(shouldRefreshSessionsForPiEvent({ type } as any)).toBe(false);
     }
   });

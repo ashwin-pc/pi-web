@@ -1,4 +1,4 @@
-import { ArrowLeft, Bell, Bookmark, Brain, Check, Copy, CornerDownRight, createElement, Flag, FolderTree, Funnel, GitBranch, GitFork, Hourglass, Info, KeyRound, Maximize2, Minimize2, Menu, MoreVertical, NotebookPen, Paperclip, Pin, RotateCcw, Route, ScrollText, SendHorizontal, Settings, Square, SquarePen, Star, Trash2, X } from "lucide";
+import { ArrowLeft, Bell, Bookmark, Brain, Check, ChevronRight, Copy, CornerDownRight, createElement, Flag, FolderTree, Funnel, GitBranch, GitFork, Hourglass, Info, KeyRound, Maximize2, Minimize2, Menu, MoreVertical, NotebookPen, Paperclip, Pin, RotateCcw, Route, ScrollText, SendHorizontal, Settings, Square, SquarePen, Star, Trash2, X } from "lucide";
 
 const iconNodes = {
   "arrow-left": ArrowLeft,
@@ -6,6 +6,7 @@ const iconNodes = {
   bookmark: Bookmark,
   brain: Brain,
   check: Check,
+  "chevron-right": ChevronRight,
   copy: Copy,
   "corner-down-right": CornerDownRight,
   flag: Flag,
