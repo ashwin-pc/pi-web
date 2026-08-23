@@ -151,7 +151,7 @@ test.describe("keyboard shortcuts", () => {
   test("ctrl/cmd+shift+k parks and ctrl/cmd+shift+b bookmarks the current session", async ({ page }) => {
     await page.locator("#prompt").focus();
     await page.keyboard.press("Control+Shift+K");
-    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toBeVisible();
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toBeVisible();
     await page.keyboard.press("Escape");
     await expect.poll(async () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();

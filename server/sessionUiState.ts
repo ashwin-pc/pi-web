@@ -4,7 +4,13 @@ import { dirname } from "node:path";
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green" | "orange" | "cyan" | "pink";
 
 export type SessionLaneId = "pinned" | "parked" | "bookmarks";
-export type SessionLaneEntry = { sessionId: string; lane: SessionLaneId; cwd?: string; note?: string; since: string };
+export type SessionLaneEntry = { sessionId: string; lane: SessionLaneId; cwd?: string; since: string };
+
+export type SessionNote = {
+  sessionId: string;
+  note: string;
+  updatedAt: string;
+};
 
 export type SessionMarker = {
   sessionId: string;
@@ -31,9 +37,10 @@ export type SessionOrigin = {
 };
 
 export type SessionUiState = {
-  version: 2;
+  version: 3;
   revision: number;
   lanes: SessionLaneEntry[];
+  sessionNotes: SessionNote[];
   pinnedFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
@@ -46,6 +53,7 @@ export type SessionUiState = {
 export type SessionUiStatePatch = Partial<{
   lanes: unknown;
   pinnedSessions: unknown; // legacy v1 patch alias
+  sessionNotes: unknown;
   pinnedFolders: unknown;
   sessionMarkers: unknown;
   sessionUnreadStates: unknown;
@@ -65,9 +73,10 @@ const legacyBucketToColor: Record<string, SessionMarkerColorId> = {
 };
 
 export const defaultSessionUiState: SessionUiState = {
-  version: 2,
+  version: 3,
   revision: 0,
   lanes: [],
+  sessionNotes: [],
   pinnedFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
@@ -121,10 +130,9 @@ function normalizeLaneEntry(value: unknown): SessionLaneEntry | undefined {
   const lane = value.lane;
   if (!sessionId || (lane !== "pinned" && lane !== "parked" && lane !== "bookmarks")) return undefined;
   const cwd = typeof value.cwd === "string" && value.cwd.trim() ? value.cwd.trim() : undefined;
-  const note = typeof value.note === "string" && value.note.trim() ? value.note.trim() : undefined;
   const parsedSince = typeof value.since === "string" ? new Date(value.since) : new Date(NaN);
   const since = Number.isNaN(parsedSince.getTime()) ? new Date().toISOString() : parsedSince.toISOString();
-  return { sessionId, lane, ...(cwd ? { cwd } : {}), ...(note ? { note } : {}), since };
+  return { sessionId, lane, ...(cwd ? { cwd } : {}), since };
 }
 
 export function migrateSessionUiState(raw: unknown): unknown {
@@ -136,12 +144,41 @@ export function migrateSessionUiState(raw: unknown): unknown {
     delete value.pinnedSessions;
     version = 2;
   }
+  while (version === 2) {
+    const lanes = Array.isArray(value.lanes) ? value.lanes : [];
+    const migratedAt = new Date().toISOString();
+    value = {
+      ...value,
+      version: 3,
+      lanes: lanes.map((item) => {
+        if (!isRecord(item)) return item;
+        const { note: _note, ...lane } = item;
+        return lane;
+      }),
+      sessionNotes: lanes.flatMap((item) => {
+        if (!isRecord(item)) return [];
+        const sessionId = typeof item.sessionId === "string" ? item.sessionId.trim() : "";
+        const note = typeof item.note === "string" ? item.note.trim() : "";
+        return sessionId && note ? [{ sessionId, note, updatedAt: migratedAt }] : [];
+      }),
+    };
+    version = 3;
+  }
   return value;
 }
 
 function normalizePinnedFolder(value: unknown): string | undefined {
   const cwd = typeof value === "string" ? value.trim() : "";
   return cwd || undefined;
+}
+
+function normalizeSessionNote(value: unknown): SessionNote | undefined {
+  if (!isRecord(value)) return undefined;
+  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  const note = typeof value.note === "string" ? value.note.trim() : "";
+  if (!sessionId || !note) return undefined;
+  const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
+  return { sessionId, note, updatedAt };
 }
 
 function normalizeSessionMarker(value: unknown): SessionMarker | undefined {
@@ -192,6 +229,10 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
 
   if (Array.isArray(value.lanes)) state.lanes = uniqueBy(value.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
 
+  const notes = Array.isArray(value.sessionNotes) ? value.sessionNotes.map(normalizeSessionNote).filter(Boolean) as SessionNote[] : [];
+  const migratedLaneNotes = Array.isArray(value.lanes) ? value.lanes.map(normalizeSessionNote).filter(Boolean) as SessionNote[] : [];
+  state.sessionNotes = uniqueBy([...notes, ...migratedLaneNotes], (item) => item.sessionId);
+
   if (Array.isArray(value.pinnedFolders)) {
     state.pinnedFolders = uniqueBy(value.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
   }
@@ -223,6 +264,10 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
     const existingPinned = new Map(next.lanes.filter((item) => item.lane === "pinned").map((item) => [item.sessionId, item]));
     const pinned = patch.pinnedSessions.map((item) => isRecord(item) ? normalizeLaneEntry({ sessionId: item.id, lane: "pinned", cwd: item.cwd, since: existingPinned.get(typeof item.id === "string" ? item.id.trim() : "")?.since || new Date().toISOString() }) : undefined).filter(Boolean) as SessionLaneEntry[];
     next.lanes = [...uniqueBy(pinned, (item) => item.sessionId), ...next.lanes.filter((item) => item.lane !== "pinned")];
+  }
+
+  if ("sessionNotes" in patch && Array.isArray(patch.sessionNotes)) {
+    next.sessionNotes = uniqueBy(patch.sessionNotes.map(normalizeSessionNote).filter(Boolean) as SessionNote[], (item) => item.sessionId);
   }
 
   if ("pinnedFolders" in patch && Array.isArray(patch.pinnedFolders)) {
@@ -269,7 +314,7 @@ export function createSessionUiStateStore(file: string) {
     if (cached) return cloneState(cached);
     try {
       const raw = JSON.parse(await readFile(file, "utf-8"));
-      if (isRecord(raw) && typeof raw.version === "number" && raw.version > 2) {
+      if (isRecord(raw) && typeof raw.version === "number" && raw.version > 3) {
         futureVersion = raw.version;
         console.warn(`Refusing to read future session UI state version ${raw.version} at ${file}`);
         cached = cloneState(defaultSessionUiState);
@@ -340,6 +385,7 @@ export function createSessionUiStateStore(file: string) {
       return writeState({
         ...current,
         lanes: current.lanes.filter((item) => item.sessionId !== sessionId),
+        sessionNotes: current.sessionNotes.filter((item) => item.sessionId !== sessionId),
         sessionMarkers: current.sessionMarkers.filter((item) => item.sessionId !== sessionId),
         sessionUnreadStates: current.sessionUnreadStates.filter((item) => item.sessionId !== sessionId),
         sessionOrigins: current.sessionOrigins.filter((item) => item.sessionId !== sessionId && item.originSessionId !== sessionId),

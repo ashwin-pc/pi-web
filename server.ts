@@ -346,9 +346,10 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return sessionUiStateStore.read();
   const current = await sessionUiStateStore.read();
   const oldLaneIndex = current.lanes.findIndex((item) => item.sessionId === oldSessionId);
+  const oldNote = current.sessionNotes.find((item) => item.sessionId === oldSessionId);
   const oldMarker = current.sessionMarkers.find((item) => item.sessionId === oldSessionId);
   const hasUnreadState = current.sessionUnreadStates.some((item) => item.sessionId === oldSessionId || item.sessionId === newSessionId);
-  if (oldLaneIndex === -1 && !oldMarker && !hasUnreadState) return current;
+  if (oldLaneIndex === -1 && !oldNote && !oldMarker && !hasUnreadState) return current;
 
   const lanes = current.lanes.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
   if (oldLaneIndex !== -1) {
@@ -356,13 +357,17 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
     lanes.splice(Math.min(oldLaneIndex, lanes.length), 0, { ...oldLane, sessionId: newSessionId, cwd });
   }
 
+  const sessionNotes = current.sessionNotes.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
+  if (oldNote) {
+    sessionNotes.unshift({ sessionId: newSessionId, note: oldNote.note, updatedAt: new Date().toISOString() });
+  }
   const sessionMarkers = current.sessionMarkers.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
   if (oldMarker) {
     sessionMarkers.unshift({ sessionId: newSessionId, color: oldMarker.color, updatedAt: new Date().toISOString() });
   }
   const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
 
-  const next = await sessionUiStateStore.write({ ...current, lanes, sessionMarkers, sessionUnreadStates });
+  const next = await sessionUiStateStore.write({ ...current, lanes, sessionNotes, sessionMarkers, sessionUnreadStates });
   broadcast({ type: "session_ui_state_changed", sessionUiState: next });
   return next;
 }

@@ -16,7 +16,7 @@ type InspectorOptions = {
   item: (sessionId: string) => SessionInspectorItem;
   moveToLane: (sessionId: string, lane: SessionLaneId) => void;
   setBucket: (sessionId: string, color: SessionMarkerColorId) => void;
-  setNote: (sessionId: string, note: string) => void;
+  editNote: (sessionId: string) => void;
   removeFromLanes: (sessionId: string) => void;
   openSession: (sessionId: string) => void;
   setUnread: (sessionId: string, unread: boolean) => void;
@@ -48,19 +48,16 @@ export function buildSessionInspector(options: InspectorOptions) {
     for (const color of colors) { const button = document.createElement("button"); button.type = "button"; button.className = `marker-${color}${item.bucket === color ? " selected" : ""}`; button.title = `${color} bucket`; button.setAttribute("aria-label", button.title); button.addEventListener("click", () => { options.setBucket(item.sessionId, color); close(); }); buckets.append(button); }
     bucketRow.append(buckets); card.append(bucketRow);
 
-    const note = document.createElement("input"); note.type = "text"; note.className = "sessionInspectorNote"; note.placeholder = item.lane ? "Add a one-line note" : "Move to a lane to add a note"; note.value = item.note || ""; note.disabled = !item.lane; note.setAttribute("aria-label", "Session note");
-    const saveNote = () => { if (note.value.trim() !== (item.note || "")) options.setNote(item.sessionId, note.value.trim()); };
-    note.addEventListener("change", saveNote);
-    const keepNoteVisible = () => {
-      const viewport = window.visualViewport;
-      const visibleTop = viewport?.offsetTop || 0;
-      const visibleBottom = visibleTop + (viewport?.height || window.innerHeight);
-      const rect = card.getBoundingClientRect();
-      if (rect.bottom > visibleBottom - 8) card.style.top = `${Math.max(visibleTop + 8, visibleBottom - rect.height - 8)}px`;
-    };
-    note.addEventListener("focus", () => { card.classList.add("editing-note"); requestAnimationFrame(keepNoteVisible); window.visualViewport?.addEventListener("resize", keepNoteVisible); });
-    note.addEventListener("blur", () => { card.classList.remove("editing-note"); window.visualViewport?.removeEventListener("resize", keepNoteVisible); });
-    note.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); saveNote(); close(); } }); card.append(note);
+    const noteSection = document.createElement("div"); noteSection.className = "sessionInspectorNoteSection";
+    const noteLabel = document.createElement("span"); noteLabel.className = "sessionInspectorNoteLabel"; noteLabel.textContent = "Note";
+    const note = document.createElement("button"); note.type = "button"; note.className = `sessionInspectorNote${item.note ? " has-note" : " empty"}`;
+    const noteText = document.createElement("span"); noteText.className = "sessionInspectorNoteText"; noteText.textContent = item.note || "Add a note…";
+    const editHint = document.createElement("span"); editHint.className = "sessionInspectorNoteEdit"; editHint.textContent = item.note ? "Edit" : "Add";
+    note.title = item.note ? `Edit note: ${item.note}` : "Add session note";
+    note.setAttribute("aria-label", note.title);
+    note.append(noteText, editHint);
+    note.addEventListener("click", () => { close(); options.editNote(item.sessionId); });
+    noteSection.append(noteLabel, note); card.append(noteSection);
 
     const actions = document.createElement("footer");
     const unread = document.createElement("button"); unread.type = "button"; unread.textContent = item.unread ? "Mark as read" : "Mark as unread"; unread.addEventListener("click", () => { options.setUnread(item.sessionId, !item.unread); close(); });

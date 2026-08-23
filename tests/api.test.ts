@@ -106,8 +106,17 @@ describe("pi-web mock API", () => {
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
-  it("deletes a requested session", async () => {
+  it("deletes a requested session and its independent note", async () => {
     try {
+      const seedUiState = await fetch(`${baseUrl}/api/session-ui-state`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionNotes: [{ sessionId: "mock-older", note: "Delete with session", updatedAt: "2026-01-01T00:00:00.000Z" }],
+        }),
+      });
+      expect(seedUiState.status).toBe(200);
+
       const deleteRes = await fetch(`${baseUrl}/api/sessions/delete`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -119,6 +128,9 @@ describe("pi-web mock API", () => {
 
       const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
       expect(sessions.sessions.map((item: any) => item.id)).toEqual(["mock-current"]);
+
+      const uiState = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
+      expect(uiState.sessionUiState.sessionNotes).toEqual([]);
     } finally {
       await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     }
@@ -339,6 +351,7 @@ describe("pi-web mock API", () => {
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(initial.sessionUiState.revision).toEqual(expect.any(Number));
     expect(initial.sessionUiState.lanes).toEqual([]);
+    expect(initial.sessionUiState.sessionNotes).toEqual([]);
     expect(initial.sessionUiState.pinnedFolders).toEqual([]);
     expect(initial.sessionUiState.sessionUnreadStates).toEqual([]);
     expect(initial.sessionUiState.selectedMarkerColor).toBe("blue");
@@ -349,6 +362,7 @@ describe("pi-web mock API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         pinnedSessions: [{ id: "mock-current", cwd: "." }],
+        sessionNotes: [{ sessionId: "mock-current", note: "  Keep after unpin  ", updatedAt: "2026-01-01T00:00:00.000Z" }],
         pinnedFolders: ["/tmp/pi-web", "/tmp/pi-web", ""],
         sessionMarkers: [{ sessionId: "mock-older", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
         sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
@@ -361,6 +375,7 @@ describe("pi-web mock API", () => {
     expect(patched.sessionUiState.revision).toBeGreaterThan(initial.sessionUiState.revision);
     expect(patched.sessionUiState).toMatchObject({
       lanes: [{ sessionId: "mock-current", lane: "pinned", cwd: ".", since: expect.any(String) }],
+      sessionNotes: [{ sessionId: "mock-current", note: "Keep after unpin", updatedAt: "2026-01-01T00:00:00.000Z" }],
       pinnedFolders: ["/tmp/pi-web"],
       sessionMarkers: [{ sessionId: "mock-older", color: "green" }],
       sessionUnreadStates: [{ sessionId: "mock-older", unreadAt: "2026-01-01T00:00:00.000Z" }],
@@ -393,6 +408,9 @@ describe("pi-web mock API", () => {
     const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
     expect(current.sessionUiState.selectedMarkerColor).toBe("green");
     expect(current.sessionUiState.allowedMarkerColors).toEqual(["green", "yellow"]);
+    expect(current.sessionUiState.sessionNotes).toEqual([
+      expect.objectContaining({ sessionId: "mock-current", note: "Keep after unpin" }),
+    ]);
     expect(current.sessionUiState.sessionUnreadStates).toEqual([
       expect.objectContaining({ sessionId: "mock-older", unreadAt: expect.any(String) }),
     ]);

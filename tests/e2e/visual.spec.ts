@@ -32,10 +32,15 @@ async function startEmptySession(page: import("@playwright/test").Page) {
 async function seedSessionShowcaseState(page: import("@playwright/test").Page, currentSessionId = "mock-current", currentLabel = "Current mock session") {
   await page.request.patch("/api/session-ui-state", { data: {
     lanes: [
-      { sessionId: currentSessionId, lane: "pinned", note: "Active implementation work", since: "2026-01-04T00:00:00.000Z" },
+      { sessionId: currentSessionId, lane: "pinned", since: "2026-01-04T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "pinned", since: "2026-01-03T00:00:00.000Z" },
-      { sessionId: "mock-release", lane: "parked", note: "Resume after the next release", since: "2026-01-02T00:00:00.000Z" },
-      { sessionId: "mock-git", lane: "bookmarks", note: "Reference implementation", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-release", lane: "parked", since: "2026-01-02T00:00:00.000Z" },
+      { sessionId: "mock-git", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
+    ],
+    sessionNotes: [
+      { sessionId: currentSessionId, note: "Active implementation work", updatedAt: "2026-01-04T00:00:00.000Z" },
+      { sessionId: "mock-release", note: "Resume after the next release", updatedAt: "2026-01-02T00:00:00.000Z" },
+      { sessionId: "mock-git", note: "Reference implementation", updatedAt: "2026-01-01T00:00:00.000Z" },
     ],
     sessionMarkers: [
       { sessionId: currentSessionId, color: "blue", updatedAt: "2026-01-01T00:00:00.000Z" },
@@ -78,8 +83,12 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   await page.request.post("/api/session/name", { data: { sessionId: "mock-older", name: "Customer evidence library" } });
   await page.request.patch("/api/session-ui-state", { data: {
     lanes: [
-      { sessionId, lane: "pinned", note: "Final brief ready for review", since: "2026-05-07T08:00:00.000Z" },
-      { sessionId: "mock-older", lane: "pinned", note: "Interview excerpts and source notes", since: "2026-05-06T08:00:00.000Z" },
+      { sessionId, lane: "pinned", since: "2026-05-07T08:00:00.000Z" },
+      { sessionId: "mock-older", lane: "pinned", since: "2026-05-06T08:00:00.000Z" },
+    ],
+    sessionNotes: [
+      { sessionId, note: "Final brief ready for review", updatedAt: "2026-05-07T08:00:00.000Z" },
+      { sessionId: "mock-older", note: "Interview excerpts and source notes", updatedAt: "2026-05-06T08:00:00.000Z" },
     ],
     sessionMarkers: [
       { sessionId, color: "blue", updatedAt: "2026-05-07T08:00:00.000Z" },

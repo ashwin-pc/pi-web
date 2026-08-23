@@ -3,7 +3,8 @@ import { openLauncherAction } from "./helpers/actionLauncher.js";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; cwd?: string }>;
-  lanes?: Array<{ sessionId: string; lane: "pinned" | "parked" | "bookmarks"; cwd?: string; note?: string; since: string }>;
+  lanes?: Array<{ sessionId: string; lane: "pinned" | "parked" | "bookmarks"; cwd?: string; since: string }>;
+  sessionNotes?: Array<{ sessionId: string; note: string; updatedAt: string }>;
   sessionMarkers?: Array<{ sessionId: string; color: string; updatedAt: string }>;
   sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string; updatedAt: string }>;
   sessionOrigins?: Array<{ sessionId: string; originSessionId: string; kind: string; updatedAt: string }>;
@@ -371,6 +372,7 @@ test.describe("session quick bar", () => {
         { id: "mock-older" },
         { id: "mock-current" },
       ],
+      sessionNotes: [{ sessionId: "mock-current", note: "Carry this forward", updatedAt: "2026-01-01T00:00:00.000Z" }],
       sessionMarkers: [{ sessionId: "mock-current", color: "green", updatedAt: "2026-01-01T00:00:00.000Z" }],
     });
 
@@ -389,6 +391,7 @@ test.describe("session quick bar", () => {
     await expect(activeAfter).toContainText("New session");
     await expect(activeAfter).toHaveClass(/\bpinned\b/);
     await expect(activeAfter).toHaveClass(/marker-green/);
+    await expect(activeAfter.locator(".sessionBarNoteIndicator")).toHaveAttribute("title", "Carry this forward");
     await expect(page.locator(".sessionBarTab").filter({ hasText: "Current mock session" })).toHaveCount(0);
 
     const uiState = await (await page.request.get("/api/session-ui-state")).json();
@@ -401,13 +404,23 @@ test.describe("session quick bar", () => {
     expect(uiState.sessionUiState.sessionMarkers).toEqual([
       expect.objectContaining({ sessionId: pinnedLanes[1].sessionId, color: "green" }),
     ]);
+    expect(uiState.sessionUiState.sessionNotes).toEqual([
+      expect.objectContaining({ sessionId: pinnedLanes[1].sessionId, note: "Carry this forward" }),
+    ]);
   });
 
-  test("pinned tab inspector sets a session bucket", async ({ page }) => {
-    await seedServerPinned(page, { id: "mock-current" }); await page.goto("/");
+  test("pinned tab inspector sets a session bucket and color-codes its note fold", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      lanes: [{ sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" }],
+      sessionNotes: [{ sessionId: "mock-current", note: "Follow up", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+    await page.goto("/");
     const tab = page.locator(".sessionBarTab.pinned").filter({ hasText: "Current mock session" });
+    const noteIndicator = tab.locator(".sessionBarNoteIndicator");
+    await expect(noteIndicator).toBeVisible();
     await tab.click({ button: "right" }); await expect(page.locator(".sessionInspector")).toBeVisible();
     await page.locator(".sessionInspectorBuckets .marker-green").click(); await expect(tab).toHaveClass(/marker-green/);
+    await expect.poll(() => noteIndicator.evaluate((element) => getComputedStyle(element.closest(".sessionBarTab")!).getPropertyValue("--session-tab-accent").trim())).toBe("#4ade80");
     const uiState = await (await page.request.get("/api/session-ui-state")).json();
     expect(uiState.sessionUiState.sessionMarkers).toEqual([expect.objectContaining({ sessionId: "mock-current", color: "green" })]);
   });
@@ -447,66 +460,96 @@ test.describe("session quick bar", () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "mock-current");
     }).toMatchObject({ lane: "parked" });
-    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toBeVisible();
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toHaveCount(0);
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toHaveCount(0);
     const value = await (await page.request.get("/api/session-ui-state")).json();
-    expect(value.sessionUiState.lanes.find((entry: { sessionId: string }) => entry.sessionId === "mock-current")).toEqual(expect.not.objectContaining({ note: expect.anything() }));
+    expect(value.sessionUiState.sessionNotes).toEqual([]);
   });
 
-  test("session notes can be edited in every lane and survive moves and reloads", async ({ page }) => {
+  test("session notes use one read-only menu and shared editor, surviving unpin and lane moves", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" });
     await page.goto("/");
 
+    const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
     const openTabInspector = async () => {
-      await page.locator('.sessionBarTab[data-session-id="mock-current"]').click({ button: "right" });
+      await tab.click({ button: "right" });
       await expect(page.locator(".sessionInspector")).toBeVisible();
     };
-    const expectStoredLane = async (lane: string, note: string) => {
+    const expectStoredLane = async (lane?: string) => {
       await expect.poll(async () => {
         const value = await (await page.request.get("/api/session-ui-state")).json();
-        const entry = value.sessionUiState.lanes.find((item: { sessionId: string }) => item.sessionId === "mock-current");
-        return entry ? { lane: entry.lane, note: entry.note } : undefined;
-      }).toEqual({ lane, note });
+        return value.sessionUiState.lanes.find((item: { sessionId: string }) => item.sessionId === "mock-current")?.lane;
+      }).toBe(lane);
+    };
+    const expectStoredNote = async (note?: string) => {
+      await expect.poll(async () => {
+        const value = await (await page.request.get("/api/session-ui-state")).json();
+        return value.sessionUiState.sessionNotes.find((item: { sessionId: string }) => item.sessionId === "mock-current")?.note;
+      }).toBe(note);
+    };
+    const saveOpenEditor = async (note: string) => {
+      const editor = page.locator(".sessionNoteEditor");
+      await expect(editor).toBeVisible();
+      await editor.locator(".sessionNoteEditorInput").fill(note);
+      await editor.getByRole("button", { name: "Save" }).click();
     };
 
     await openTabInspector();
-    await page.locator(".sessionInspectorNote").fill("Pinned note");
-    await page.locator(".sessionInspectorNote").press("Enter");
-    await expectStoredLane("pinned", "Pinned note");
+    const inspectorNote = page.locator(".sessionInspectorNote");
+    await expect(inspectorNote).toHaveJSProperty("tagName", "BUTTON");
+    await expect(inspectorNote).toContainText("Add a note");
+    await inspectorNote.click();
+    await saveOpenEditor("Pinned note\nwith more detail");
+    await expectStoredNote("Pinned note\nwith more detail");
+    await expectStoredLane("pinned");
+
+    const tabNoteIndicator = tab.locator(".sessionBarNoteIndicator");
+    await expect(tabNoteIndicator).toBeVisible();
+    await expect(tabNoteIndicator).toHaveAttribute("title", "Pinned note\nwith more detail");
+    await expect(tab.locator(".sessionBarTabOpen > .sessionBarNoteIndicator")).toHaveCount(1);
+    await expect(tabNoteIndicator).toHaveCSS("pointer-events", "auto");
+
+    // Unpinning removes only lane membership; the independent note and folded
+    // corner remain on the active temporary tab.
+    await tab.locator(".sessionBarTabAction").click();
+    await expectStoredLane(undefined);
+    await expectStoredNote("Pinned note\nwith more detail");
+    await expect(tab).toHaveClass(/temporary/);
+    await expect(tabNoteIndicator).toBeVisible();
 
     await openTabInspector();
-    await expect(page.locator(".sessionInspectorNote")).toHaveValue("Pinned note");
+    await expect(inspectorNote).toContainText("Pinned note\nwith more detail");
+    await inspectorNote.click();
+    await expect(page.locator(".sessionNoteEditorInput")).toHaveValue("Pinned note\nwith more detail");
+    await saveOpenEditor("Parked note");
+    await expectStoredNote("Parked note");
+
+    await openTabInspector();
     await page.getByRole("button", { name: "Move to Parked" }).click();
-    // The move commits immediately; the follow-up prompt is optional and may be dismissed.
-    await expectStoredLane("parked", "Pinned note");
-    await expect(page.locator(".sessionLaneNotePromptBackdrop")).toHaveCount(0);
+    await expectStoredLane("parked");
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toHaveCount(0);
 
-    await openTabInspector();
-    await page.locator(".sessionInspectorNote").fill("Parked note");
-    await page.locator(".sessionInspectorNote").press("Enter");
-    await expectStoredLane("parked", "Parked note");
-
-    await openTabInspector();
-    await page.getByRole("button", { name: "Move to Bookmarks" }).click();
-    await expectStoredLane("bookmarks", "Parked note");
-    await openTabInspector();
-    await page.locator(".sessionInspectorNote").fill("Bookmark note");
-    await page.locator(".sessionInspectorNote").press("Enter");
-    await expectStoredLane("bookmarks", "Bookmark note");
+    // The lane-card menu is the same shared Inspector and launches the same editor.
+    await page.locator(".sessionLayersButton").click();
+    let row = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    await row.locator(".sessionLaneDrawerActions").click();
+    await expect(page.locator(".sessionInspectorNote")).toContainText("Parked note");
+    await page.locator(".sessionInspectorNote").click();
+    await expect(page.locator(".sessionNoteEditorInput")).toHaveValue("Parked note");
+    await saveOpenEditor("Bookmark note");
+    await expectStoredNote("Bookmark note");
 
     await page.reload();
     await page.locator(".sessionLayersButton").click();
-    const row = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    row = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
     await expect(row.locator(".sessionLaneDrawerItemNote")).toHaveText("Bookmark note");
     await row.locator(".sessionLaneDrawerActions").click();
-    await expect(page.locator(".sessionInspectorNote")).toHaveValue("Bookmark note");
-    await page.locator(".sessionInspectorNote").fill("");
-    await page.locator(".sessionInspectorNote").press("Enter");
-    await expect.poll(async () => {
-      const value = await (await page.request.get("/api/session-ui-state")).json();
-      return value.sessionUiState.lanes.find((item: { sessionId: string }) => item.sessionId === "mock-current")?.note ?? null;
-    }).toBeNull();
+    await expect(page.locator(".sessionInspectorNote")).toContainText("Bookmark note");
+    await page.locator(".sessionInspectorNote").click();
+    await saveOpenEditor("");
+    await expectStoredNote(undefined);
+    await expect(page.locator('.sessionBarTab[data-session-id="mock-current"] .sessionBarNoteIndicator')).toHaveCount(0);
   });
 
   test("lane drawer filters all lanes by custom bucket names", async ({ page }) => {
@@ -995,6 +1038,35 @@ test.describe("session quick bar", () => {
     resolveOpen();
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
     await expect(page.locator("#messages")).toContainText("Review the mobile composer layout");
+  });
+
+  test("note fold stays hoverable and anchored bottom-left with running tab styles", async ({ page }) => {
+    await seedServerSessionUiState(page, {
+      pinnedSessions: [{ id: "mock-current" }],
+      sessionNotes: [{ sessionId: "mock-current", note: "Keep the fold in place", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+
+    await page.goto("/");
+    const tab = page.locator(".sessionBarTab").filter({ hasText: "Current mock session" });
+    await tab.evaluate((element) => element.classList.add("running"));
+
+    const layout = await tab.evaluate((element) => {
+      const note = element.querySelector<HTMLElement>(".sessionBarTabOpen > .sessionBarNoteIndicator")!;
+      const style = getComputedStyle(note);
+      const tabRect = element.getBoundingClientRect();
+      const noteRect = note.getBoundingClientRect();
+      return {
+        position: style.position,
+        left: style.left,
+        bottom: style.bottom,
+        zIndex: style.zIndex,
+        pointerEvents: style.pointerEvents,
+        alignedLeft: Math.abs(tabRect.left - noteRect.left) < 0.5,
+        bottomDelta: Math.round((tabRect.bottom - noteRect.bottom) * 100) / 100,
+      };
+    });
+    expect(layout).toEqual({ position: "absolute", left: "0px", bottom: "0px", zIndex: "3", pointerEvents: "auto", alignedLeft: true, bottomDelta: 0 });
+    await expect(tab.locator(".sessionBarNoteIndicator")).toHaveAttribute("title", "Keep the fold in place");
   });
 
   test("running session tab gets the running class and loses it after the session ends", async ({ page }) => {

@@ -836,12 +836,30 @@
 }
 
 .sessionBarTabLabel {
+  min-width: 0;
   max-width: 100%;
   overflow: hidden;
   font-size: 12px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.sessionBarNoteIndicator {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  z-index: 3;
+  width: 9px;
+  height: 9px;
+  pointer-events: auto;
+  cursor: help;
+  background: linear-gradient(
+    225deg,
+    transparent 0 45%,
+    color-mix(in srgb, var(--session-tab-accent) 58%, black) 46% 55%,
+    color-mix(in srgb, var(--session-tab-accent) 86%, white) 56% 100%
+  );
+  filter: drop-shadow(1px -1px 1px rgba(0, 0, 0, .28));
 }
 /* Running session tab loading animations */
 @keyframes sessionBarRunFireworkHalo {
@@ -913,8 +931,8 @@
     background-position: 48% 97%, 29% 105%, 66% 90%, 50% 112%;
   }
 }
-.sessionBarTab.running > :not(.sessionBarTabSpark) {
-  position: relative;
+.sessionBarTab.running > .sessionBarTabOpen,
+.sessionBarTab.running > .sessionBarTabAction {
   z-index: 2;
 }
 .sessionBarTab.running::before,
@@ -1159,7 +1177,7 @@ body.hasPinnedSessions .app {
 .sessionUnreadFilterDot { width:8px;height:8px;border-radius:50%;background:currentColor;box-shadow:0 0 0 2px color-mix(in srgb,currentColor 18%,transparent) }
 .sessionLaneFilter.selected { color:var(--text);border-color:color-mix(in srgb,var(--text) 42%,transparent);background:var(--bg-hover) }
 .sessionLaneBadge { flex:0 0 20px;color:var(--muted);display:grid;place-items:center }
-.sessionLaneNote { display:block;color:var(--muted);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px }
+.sessionLaneNote { display:block;width:fit-content;max-width:100%;margin-top:4px;padding:2px 6px;border-left:2px solid var(--accent,#d8a657);border-radius:3px;background:color-mix(in srgb,var(--accent,#d8a657) 10%,transparent);color:color-mix(in srgb,var(--text) 88%,var(--accent,#d8a657));font-size:11px;font-weight:550;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis }
 .sessionStaleBadge { color:#f07b72;border:1px solid color-mix(in srgb,#f07b72 50%,transparent);border-radius:999px;padding:1px 5px;font-size:9px;text-transform:uppercase;letter-spacing:.04em }
 .sessionFolderMatchCount { color:var(--muted);font-size:10px;margin-left:6px }
 @media(max-width:640px){.sessionLayersButton{flex-basis:34px}.sessionLaneFilters{overflow:visible}}
@@ -1204,7 +1222,7 @@ body.hasPinnedSessions .app {
 .sessionLaneDrawerItem { box-sizing:border-box;width:100%;min-height:44px!important;padding:7px 9px;border:0;border-radius:9px;background:transparent;color:var(--text);display:flex;align-items:center;gap:9px;text-align:left }
 .sessionLaneDrawerItem:hover,.sessionLaneDrawerItem:focus-visible { background:var(--bg-hover) }.sessionLaneDrawerItem.current { background:color-mix(in srgb,var(--accent,#d8a657) 10%,transparent);color:var(--accent,#d8a657) }
 .sessionLaneDrawerBucket { flex:0 0 8px;width:8px;height:8px;border-radius:50%;background:var(--session-marker-color) }
-.sessionLaneDrawerItemCopy { min-width:0;display:flex;flex-direction:column;gap:2px }.sessionLaneDrawerItemTitle,.sessionLaneDrawerItemNote { overflow:hidden;text-overflow:ellipsis;white-space:nowrap }.sessionLaneDrawerItemTitle { font-size:13px;font-weight:570 }.sessionLaneDrawerItemNote { color:var(--muted);font-size:11px }
+.sessionLaneDrawerItemCopy { min-width:0;display:flex;flex-direction:column;gap:2px }.sessionLaneDrawerItemTitle,.sessionLaneDrawerItemNote { overflow:hidden;text-overflow:ellipsis;white-space:nowrap }.sessionLaneDrawerItemTitle { font-size:13px;font-weight:570 }.sessionLaneDrawerItemNote { width:fit-content;max-width:100%;padding:2px 6px;border-left:2px solid var(--accent,#d8a657);border-radius:3px;background:color-mix(in srgb,var(--accent,#d8a657) 10%,transparent);color:color-mix(in srgb,var(--text) 88%,var(--accent,#d8a657));font-size:11px;font-weight:550 }
 .sessionLaneDrawerEmpty { margin:2px 7px 5px;color:var(--muted);font-size:11px }
 /* Mobile lane board — stacked-sheet mock */
 .sessionLaneDrawer { background:var(--panel,#111);padding-bottom:env(safe-area-inset-bottom) }
@@ -1234,15 +1252,15 @@ body.hasPinnedSessions .app {
 .sessionLaneDrawerItemTitle,.sessionLaneDrawerItemNote { white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;line-height:1.3 }
 .sessionLaneDrawerItemMeta { overflow:visible;white-space:normal;flex-wrap:wrap }
 .sessionLaneDrawerBackdrop~.sessionActionsMenu { z-index:1301 }
-.sessionLaneNotePromptBackdrop{position:fixed;inset:0;z-index:1700;display:grid;place-items:center;padding:16px;background:rgba(0,0,0,.64)}
-@media(max-width:640px){.sessionLaneNotePromptBackdrop{align-items:start;padding-top:max(16px,8dvh)}.sessionLaneNotePrompt{max-height:calc(100dvh - 32px);overflow:auto}}
-.sessionLaneNotePrompt{box-sizing:border-box;width:min(360px,100%);padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--panel);box-shadow:0 18px 50px rgba(0,0,0,.5)}.sessionLaneNotePrompt label{display:flex;flex-direction:column;gap:9px;color:var(--text);font-size:13px;font-weight:650}.sessionLaneNotePrompt input{box-sizing:border-box;width:100%;height:38px;padding:0 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}.sessionLaneNotePrompt>div{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.sessionLaneNotePrompt button{min-height:32px!important;height:32px!important;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)}.sessionLaneNotePrompt button[type=submit]{border-color:color-mix(in srgb,var(--accent,#d8a657) 55%,var(--border));color:var(--accent,#d8a657)}
+.sessionNoteEditorBackdrop{position:fixed;inset:0;z-index:1700;display:grid;place-items:center;padding:16px;background:rgba(0,0,0,.64)}
+@media(max-width:640px){.sessionNoteEditorBackdrop{align-items:start;padding-top:max(16px,8dvh)}.sessionNoteEditor{max-height:calc(100dvh - 32px);overflow:auto}}
+.sessionNoteEditor{box-sizing:border-box;width:min(520px,100%);padding:14px;border:1px solid var(--border);border-radius:12px;background:var(--panel);box-shadow:0 18px 50px rgba(0,0,0,.5)}.sessionNoteEditor label{display:flex;flex-direction:column;gap:9px;color:var(--text);font-size:13px;font-weight:650}.sessionNoteEditorInput{box-sizing:border-box;width:100%;min-height:120px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--text);font:inherit;line-height:1.45;resize:vertical}.sessionNoteEditor>div{display:flex;justify-content:flex-end;gap:8px;margin-top:12px}.sessionNoteEditor button{min-height:32px!important;height:32px!important;padding:0 12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-hover);color:var(--text)}.sessionNoteEditor button[type=submit]{border-color:color-mix(in srgb,var(--accent,#d8a657) 55%,var(--border));color:var(--accent,#d8a657)}
 /* Compact session inspector */
 .sessionInspectorBackdrop{position:fixed;inset:0;z-index:1500;background:rgba(0,0,0,.22);opacity:0;transition:opacity .12s}.sessionInspectorBackdrop.open{opacity:1}
 .sessionInspector{position:fixed;box-sizing:border-box;width:min(300px,calc(100vw - 16px));border:1px solid #353735;border-radius:13px;background:color-mix(in srgb,var(--panel) 98%,black);box-shadow:0 18px 45px rgba(0,0,0,.6);overflow:hidden;color:var(--text)}
 .sessionInspector>header{height:36px;display:flex;align-items:center;padding:0 11px;border-bottom:1px solid var(--border)}.sessionInspector>header strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:650}
 .sessionInspectorRow{display:flex;align-items:center;gap:7px;padding:7px 9px}.sessionInspectorRow>span{flex:0 0 43px;color:var(--muted);font-size:10px}.sessionInspectorLanes{flex:1;display:grid;grid-template-columns:repeat(4,1fr);gap:3px}.sessionInspectorLanes button{height:29px!important;min-height:29px!important;padding:0!important;border:1px solid transparent;border-radius:7px;background:transparent;color:var(--muted);display:grid;place-items:center}.sessionInspectorLanes button:hover{background:var(--bg-hover);color:var(--text)}.sessionInspectorLanes button.selected{border-color:#575a56;background:rgba(255,255,255,.05);color:var(--text)}.sessionInspectorLanes svg{width:14px;height:14px;fill:currentColor}
 .sessionInspectorBuckets{display:flex;align-items:center;gap:10px}.sessionInspectorBuckets button{box-sizing:border-box;width:15px!important;height:15px!important;min-width:15px!important;min-height:15px!important;padding:0!important;border:2px solid color-mix(in srgb,var(--panel) 94%,black);border-radius:50%;background:var(--session-marker-color);box-shadow:0 0 0 1px color-mix(in srgb,var(--text) 26%,transparent)}.sessionInspectorBuckets button.selected{box-shadow:0 0 0 2px white}
-.sessionInspectorNote{box-sizing:border-box;width:calc(100% - 18px);height:31px;margin:0 9px 8px;padding:0 9px;border:1px solid var(--border);border-radius:7px;background:var(--bg);color:var(--text);font:11px inherit}.sessionInspectorNote:disabled{opacity:.5}
+.sessionInspectorNoteSection{padding:2px 9px 9px}.sessionInspectorNoteLabel{display:block;margin:0 2px 5px;color:var(--muted);font-size:10px}.sessionInspectorNote{box-sizing:border-box;width:100%;height:auto!important;min-height:42px!important;padding:7px 8px;border:1px solid color-mix(in srgb,var(--border) 78%,transparent);border-radius:7px;background:color-mix(in srgb,var(--bg) 76%,transparent);color:var(--text);display:flex;align-items:flex-start;gap:8px;text-align:left;font:11px inherit;line-height:1.4}.sessionInspectorNote:hover,.sessionInspectorNote:focus-visible{border-color:color-mix(in srgb,var(--accent,#d8a657) 45%,var(--border));background:var(--bg-hover)}.sessionInspectorNote.empty{min-height:36px!important;color:var(--muted)}.sessionInspectorNoteText{flex:1;min-width:0;max-height:72px;overflow:hidden;white-space:pre-wrap;overflow-wrap:anywhere}.sessionInspectorNoteEdit{flex:0 0 auto;color:var(--accent,#d8a657);font-size:10px;font-weight:650}
 .sessionInspector>footer{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border-top:1px solid var(--border)}.sessionInspector>footer[data-action-count="3"]{grid-template-columns:repeat(3,minmax(0,1fr))}.sessionInspector>footer button{box-sizing:border-box;min-width:0;height:34px!important;min-height:34px!important;padding:0 5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;border:0;border-right:1px solid var(--border);background:transparent;color:var(--muted);font:inherit}.sessionInspector>footer button:last-child{border:0}.sessionInspector>footer button:hover:not(:disabled){background:var(--bg-hover);color:var(--text)}.sessionInspector>footer button.danger{color:var(--danger)}.sessionInspector>footer button:disabled{opacity:.35}
 .sessionInspectorPressing{filter:brightness(1.14)}
