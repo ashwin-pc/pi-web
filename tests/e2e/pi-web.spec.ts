@@ -1723,6 +1723,7 @@ test.describe("image rendering", () => {
 
   test("keeps top-level artifact cards flush on phones", async ({ page }) => {
     test.skip((page.viewportSize()?.width || 0) > 700, "Phone-only geometry");
+    await page.locator("html").evaluate((root) => root.setAttribute("data-density", "compact"));
     await page.locator("#prompt").fill("show markdown artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
@@ -1731,10 +1732,19 @@ test.describe("image rendering", () => {
     const geometry = await preview.evaluate((card) => {
       const cardRect = card.getBoundingClientRect();
       const messageRect = card.closest(".message.assistant")!.getBoundingClientRect();
-      return { cardLeft: cardRect.left, cardRight: cardRect.right, messageLeft: messageRect.left, messageRight: messageRect.right };
+      const transcript = card.closest(".messages") as HTMLElement;
+      return {
+        cardLeft: cardRect.left,
+        cardRight: cardRect.right,
+        messageLeft: messageRect.left,
+        messageRight: messageRect.right,
+        transcriptClientWidth: transcript.clientWidth,
+        transcriptScrollWidth: transcript.scrollWidth,
+      };
     });
     expect(Math.abs(geometry.cardLeft - geometry.messageLeft)).toBeLessThanOrEqual(1);
     expect(Math.abs(geometry.cardRight - geometry.messageRight)).toBeLessThanOrEqual(1);
+    expect(geometry.transcriptScrollWidth).toBe(geometry.transcriptClientWidth);
   });
 
   test("opens markdown artifacts in a rendered preview page", async ({ page }) => {

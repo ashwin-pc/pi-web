@@ -730,7 +730,9 @@
 .tokenShareFullscreenClose:hover { border-color: rgba(0, 0, 0, .42); }
 
 :root[data-density="compact"] .message {
-  padding: 8px 10px;
+  --message-inline-padding: 10px;
+  padding-top: 8px;
+  padding-bottom: 8px;
 }
 :root[data-density="compact"] .message.user {
   margin: 6px 12px 6px 0;
