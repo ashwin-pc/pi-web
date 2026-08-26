@@ -13,13 +13,36 @@ type WebPanelView = {
   html?: string;
 };
 
+export type WebPanelEvent = { action?: string; payload?: unknown; fields?: Record<string, string | string[]> };
+
 export type WebPanelsController = {
   setPanels(value: unknown, sessionId: string): void;
   entries(): WebPanelEntry[];
-  open(key: string): void;
+  open(key: string, initialEvent?: WebPanelEvent): void;
   update(key: string): void;
   isOpen(): boolean;
 };
+
+export function parsePanelDeepLink(href: string): { key: string; payload: Record<string, string> } | undefined {
+  if (!href.startsWith("#panel:")) return undefined;
+  const separator = href.indexOf(":", 7);
+  if (separator <= 7 || separator === href.length - 1) return undefined;
+  const key = href.slice(7, separator);
+  const query = href.slice(separator + 1);
+  const parts = query.split("&");
+  if (parts.some((part) => !part || part.indexOf("=") <= 0)) return undefined;
+  try {
+    for (const part of parts) decodeURIComponent(part.replace(/\+/g, " "));
+    return { key, payload: Object.fromEntries(new URLSearchParams(query)) };
+  } catch { return undefined; }
+}
+
+export function openPanelDeepLink(href: string, open: (key: string, event: WebPanelEvent) => void) {
+  const link = parsePanelDeepLink(href);
+  if (!link) return false;
+  open(link.key, { action: "deep-link", payload: link.payload });
+  return true;
+}
 
 function normalizePanels(value: unknown): WebPanelEntry[] {
   if (!Array.isArray(value)) return [];
@@ -120,7 +143,7 @@ export function createWebPanels(options: {
     body.append(message);
   }
 
-  async function invoke(event?: { action?: string; payload?: unknown; fields?: Record<string, string | string[]> }) {
+  async function invoke(event?: WebPanelEvent) {
     const entry = activePanel();
     if (!entry) return;
     const generation = ++requestGeneration;
@@ -140,6 +163,11 @@ export function createWebPanels(options: {
       body.innerHTML = data.html;
       const autofocus = body.querySelector<HTMLElement>("[autofocus]");
       autofocus?.focus({ preventScroll: true });
+      const highlight = body.querySelector<HTMLElement>("[data-web-panel-highlight]");
+      if (highlight) {
+        highlight.classList.add("webPanelDeepLinkHighlight");
+        highlight.scrollIntoView({ block: "center", behavior: "smooth" });
+      }
     } catch (error) {
       if (generation === requestGeneration && activeKey === entry.key) renderError(error);
     } finally {
@@ -147,13 +175,13 @@ export function createWebPanels(options: {
     }
   }
 
-  function open(key: string) {
+  function open(key: string, initialEvent?: WebPanelEvent) {
     const entry = panels.find((candidate) => candidate.key === key);
     if (!entry) return;
     activeKey = key;
     renderHeading(entry);
     panelHandle.open();
-    void invoke();
+    void invoke(initialEvent);
   }
 
   function actionTarget(event: Event) {
@@ -205,6 +233,17 @@ export function createWebPanels(options: {
     focusOnOpen: close,
     onClose: () => { requestGeneration += 1; updatePending = false; },
   });
+
+  // Capture at document scope so deep links work from rendered messages, tool
+  // cards, extension content, and synthetic in-app anchors. Stop propagation to
+  // avoid the older messages-only delegate in main.ts dispatching a second open.
+  document.addEventListener("click", (event) => {
+    if (!(event instanceof MouseEvent) || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href^="#panel:"]') : null;
+    if (!anchor || !openPanelDeepLink(anchor.getAttribute("href") || "", open)) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, true);
 
   return {
     setPanels(value, nextSessionId) {
