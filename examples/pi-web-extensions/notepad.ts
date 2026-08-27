@@ -749,35 +749,155 @@ const toolParameters = Type.Object({
   type: Type.Optional(StringEnum(["blocks", "relates", "spawned"] as const)),
 });
 
-// Minimal safe Markdown rendering. Body checkbox syntax is deliberately disabled.
+// Small, intentionally conservative Markdown renderer. User text is escaped
+// before any generated HTML is introduced; raw HTML is always displayed as text.
 function escapeHtml(value: string) { return value.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!)); }
 function renderInline(value: string) {
-  const protectedLinks: string[] = [];
-  const protect = (html: string) => `\u0000${protectedLinks.push(html) - 1}\u0000`;
-  return escapeHtml(value).replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_all, label: string, href: string) => protect(/^(https?:|mailto:|\/|#)/i.test(href.trim()) ? `<a href="${escapeHtml(href.trim())}" target="_blank" rel="noreferrer">${label}</a>` : label))
-    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>").replace(/\*([^*]+)\*/g, "<em>$1</em>")
-    .replace(/\u0000(\d+)\u0000/g, (_all, index: string) => protectedLinks[Number(index)] || "");
+  const protectedHtml: string[] = [];
+  const protect = (html: string) => `\uE000${protectedHtml.push(html) - 1}\uE001`;
+  // Make the private placeholder characters inert if they occur in note text.
+  let rendered = escapeHtml(value).replace(/\uE000/g, "&#57344;").replace(/\uE001/g, "&#57345;");
+  rendered = rendered.replace(/(`+)(.+?)\1/g, (_all, _ticks: string, code: string) => protect(`<code>${code}</code>`));
+  rendered = rendered.replace(/\[([^\]]+)\]\(((?:[^()]|\([^()]*\))+?)\)/g, (_all, label: string, rawHref: string) => {
+    const href = rawHref.trim();
+    return protect(/^(https?:|mailto:|\/|#)/i.test(href) ? `<a href="${href}" target="_blank" rel="noreferrer">${label}</a>` : label);
+  });
+  return rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>").replace(/_([^_]+)_/g, "<em>$1</em>")
+    .replace(/~~([^~]+)~~/g, "<del>$1</del>")
+    .replace(/\uE000(\d+)\uE001/g, (_all, index: string) => protectedHtml[Number(index)] || "");
 }
 function headingSlug(value: string) { return slugify(value.replace(/[`*_~]/g, "")); }
-function markdownHtml(body: string, highlightedHeading?: string) {
-  const out: string[] = []; let list = false; let markedHeading = false;
-  const close = () => { if (list) { out.push("</ul>"); list = false; } };
-  for (const line of body.split("\n")) {
-    const heading = line.match(/^(#{1,6})\s+(.+)$/);
-    if (heading) {
-      close();
-      const mark = !markedHeading && highlightedHeading === headingSlug(heading[2]);
-      if (mark) markedHeading = true;
-      out.push(`<h${heading[1].length}${mark ? " data-web-panel-highlight" : ""}>${renderInline(heading[2])}</h${heading[1].length}>`);
+type MarkdownList = { type: "ul" | "ol"; indent: number; itemOpen: boolean };
+type MarkdownHighlight = { heading?: string; marked: boolean };
+function markdownIndent(value: string) { return [...value].reduce((width, character) => width + (character === "\t" ? 4 : 1), 0); }
+function splitTableRow(line: string) {
+  let value = line.trim();
+  if (value.startsWith("|")) value = value.slice(1);
+  if (value.endsWith("|") && !value.endsWith("\\|")) value = value.slice(0, -1);
+  const cells: string[] = []; let cell = ""; let escaped = false; let ticks = 0;
+  for (const character of value) {
+    if (escaped) { cell += character; escaped = false; continue; }
+    if (character === "\\") { cell += character; escaped = true; continue; }
+    if (character === "`") { ticks = ticks ? 0 : 1; cell += character; continue; }
+    if (character === "|" && !ticks) { cells.push(cell.trim()); cell = ""; }
+    else cell += character;
+  }
+  cells.push(cell.trim());
+  return cells;
+}
+function hasTableCells(line: string) { return splitTableRow(line).length > 1; }
+function isFramedPipeRow(line: string) {
+  const trimmed = line.trim();
+  return trimmed.startsWith("|") && trimmed.endsWith("|") && hasTableCells(line);
+}
+function tableDelimiter(line: string) {
+  if (!hasTableCells(line)) return undefined;
+  const cells = splitTableRow(line);
+  if (!cells.length || cells.some((cell) => !/^:?-{3,}:?$/.test(cell))) return undefined;
+  return cells.map((cell) => cell.startsWith(":") && cell.endsWith(":") ? "center" : cell.endsWith(":") ? "right" : cell.startsWith(":") ? "left" : "default");
+}
+function markdownBlocks(lines: string[], highlight: MarkdownHighlight): string {
+  const out: string[] = []; const paragraph: Array<{ text: string; hardBreak: boolean }> = []; const lists: MarkdownList[] = [];
+  const closeLists = (through = -1) => {
+    while (lists.length > through + 1) {
+      const list = lists.pop()!;
+      if (list.itemOpen) out.push("</li>");
+      out.push(`</${list.type}>`);
+    }
+  };
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    const content = paragraph.map((line, index) => `${renderInline(line.text)}${line.hardBreak ? "<br>\n" : index < paragraph.length - 1 ? " " : ""}`).join("");
+    out.push(`<p>${content}</p>`); paragraph.length = 0;
+  };
+  const finishBlocks = () => { flushParagraph(); closeLists(); };
+  const pipeFallback = (pipeLines: string[]) => `<pre class="gnpPipeBlock"><code>${escapeHtml(pipeLines.join("\n"))}</code></pre>`;
+
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})(?:[ \t]*(.*?))?[ \t]*$/);
+    if (fence) {
+      finishBlocks();
+      const marker = fence[1][0]; const minimum = fence[1].length; const code: string[] = []; index += 1;
+      while (index < lines.length && !new RegExp(`^ {0,3}${marker}{${minimum},}[ \\t]*$`).test(lines[index])) code.push(lines[index++]);
+      if (index < lines.length) index += 1;
+      const languageToken = (fence[2] || "").trim().split(/\s+/)[0] || "";
+      const language = /^[A-Za-z0-9_+#.-]{1,40}$/.test(languageToken) ? ` class="language-${escapeHtml(languageToken)}"` : "";
+      out.push(`<pre><code${language}>${escapeHtml(code.join("\n"))}${code.length ? "\n" : ""}</code></pre>`);
       continue;
     }
-    const checkbox = line.match(/^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/);
-    const bullet = line.match(/^\s*[-*+]\s+(.*)$/);
-    if (checkbox || bullet) { if (!list) { out.push("<ul>"); list = true; } out.push(`<li>${checkbox ? `<input type="checkbox" ${checkbox[1].toLowerCase() === "x" ? "checked" : ""} disabled> ${renderInline(checkbox[2])}` : renderInline(bullet![1])}</li>`); continue; }
-    close(); if (line.trim()) out.push(`<p>${renderInline(line.trim())}</p>`);
+
+    const quote = line.match(/^ {0,3}>[ \t]?(.*)$/);
+    if (quote) {
+      finishBlocks(); const quoted: string[] = [];
+      while (index < lines.length) {
+        const next = lines[index].match(/^ {0,3}>[ \t]?(.*)$/);
+        if (!next) break;
+        quoted.push(next[1]); index += 1;
+      }
+      out.push(`<blockquote>\n${markdownBlocks(quoted, highlight)}\n</blockquote>`);
+      continue;
+    }
+
+    const heading = line.match(/^ {0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*|[ \t]*)$/);
+    if (heading) {
+      finishBlocks();
+      const headingText = (heading[2] || "").replace(/[ \t]+#+[ \t]*$/, "");
+      const mark = !highlight.marked && highlight.heading === headingSlug(headingText);
+      if (mark) highlight.marked = true;
+      const level = heading[1].length;
+      out.push(`<h${level}${mark ? " data-web-panel-highlight" : ""}>${renderInline(headingText)}</h${level}>`); index += 1; continue;
+    }
+
+    if (/^ {0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)) {
+      finishBlocks(); out.push("<hr>"); index += 1; continue;
+    }
+
+    if (isFramedPipeRow(line) || index + 1 < lines.length && Boolean(tableDelimiter(lines[index + 1]))) {
+      finishBlocks(); const candidate: string[] = [];
+      while (index < lines.length && hasTableCells(lines[index])) candidate.push(lines[index++]);
+      const delimiter = candidate.length > 1 ? tableDelimiter(candidate[1]) : undefined;
+      const rows = candidate.map(splitTableRow);
+      const valid = delimiter && rows[0].length === delimiter.length && rows.slice(2).every((row) => row.length === delimiter.length);
+      if (!valid) { out.push(pipeFallback(candidate)); continue; }
+      const alignment = (position: number) => delimiter[position] === "default" ? "" : ` class="gnpAlign-${delimiter[position]}"`;
+      const header = rows[0].map((cell, position) => `<th${alignment(position)}>${renderInline(cell)}</th>`).join("");
+      const body = rows.slice(2).map((row) => `<tr>${row.map((cell, position) => `<td${alignment(position)}>${renderInline(cell)}</td>`).join("")}</tr>`).join("\n");
+      out.push(`<div class="gnpTableWrap"><table><thead><tr>${header}</tr></thead>${body ? `<tbody>${body}</tbody>` : ""}</table></div>`);
+      continue;
+    }
+
+    const item = line.match(/^([ \t]*)([-+*]|\d+[.)])[ \t]+(.*)$/);
+    if (item) {
+      flushParagraph();
+      const indent = markdownIndent(item[1]); const type: "ul" | "ol" = /^\d/.test(item[2]) ? "ol" : "ul";
+      while (lists.length && indent < lists.at(-1)!.indent) closeLists(lists.length - 2);
+      let current = lists.at(-1);
+      if (!current || indent > current.indent) {
+        const start = type === "ol" ? Number.parseInt(item[2], 10) : 1;
+        out.push(type === "ol" && start !== 1 ? `<ol start="${escapeHtml(String(start))}">` : `<${type}>`);
+        current = { type, indent, itemOpen: false }; lists.push(current);
+      } else if (current.type !== type) {
+        if (current.itemOpen) out.push("</li>");
+        out.push(`</${current.type}>`); lists.pop();
+        out.push(`<${type}>`); current = { type, indent, itemOpen: false }; lists.push(current);
+      } else if (current.itemOpen) out.push("</li>");
+      const checkbox = type === "ul" ? item[3].match(/^\[([ xX])\][ \t]+(.*)$/) : undefined;
+      out.push(`<li>${checkbox ? `<input type="checkbox" ${checkbox[1].toLowerCase() === "x" ? "checked" : ""} disabled> ${renderInline(checkbox[2])}` : renderInline(item[3])}`);
+      current.itemOpen = true; index += 1; continue;
+    }
+
+    if (!line.trim()) { finishBlocks(); index += 1; continue; }
+    closeLists();
+    const hardBreak = / {2,}$/.test(line);
+    paragraph.push({ text: line.replace(/ {2,}$/, "").trim(), hardBreak }); index += 1;
   }
-  close(); return out.join("\n");
+  finishBlocks(); return out.join("\n");
+}
+function markdownHtml(body: string, highlightedHeading?: string) {
+  return markdownBlocks(body.replace(/\r\n?/g, "\n").split("\n"), { heading: highlightedHeading, marked: false });
 }
 function payload(value: unknown) { return escapeHtml(JSON.stringify(value)); }
 function eventPayload(event?: PiWebPanelEvent) { return event?.payload && typeof event.payload === "object" ? event.payload as Record<string, any> : {}; }
@@ -849,10 +969,10 @@ const panelStyles = `<style>
 .gnpTree{gap:6px}.gnpToolbar{display:flex;align-items:center;gap:5px;min-width:0}.gnpFilter{display:flex;align-items:center;min-width:0;flex:1;height:32px;border:1px solid var(--border);border-radius:7px;background:var(--panel-2)}.gnpFilter input{min-width:0;width:100%;height:32px;min-height:32px;padding:5px 7px;border:0;outline:0;background:transparent;color:var(--text);font:inherit;font-size:12px}.gnpFilter:focus-within{border-color:var(--accent)}.gnpResult{flex:0 0 auto;padding:0 7px 0 4px;color:var(--gnp-muted,var(--muted));font-size:11px;white-space:nowrap}.gnpToolbar .webPanelButton{height:32px;min-height:32px;padding:4px 8px;font-size:11.5px}.gnpArchiveActive{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 22%,var(--panel-2))}.gnpCreate{position:relative;flex:0 0 auto}.gnpCreate>summary{display:grid;width:32px;height:32px;min-height:32px;place-items:center;list-style:none;border:1px solid color-mix(in srgb,var(--accent) 50%,var(--border));border-radius:7px;background:color-mix(in srgb,var(--accent) 14%,var(--panel-2));color:var(--accent);cursor:pointer}.gnpCreate>summary::-webkit-details-marker{display:none}.gnpCreate[open]>summary{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 25%,var(--panel-2))}.gnpCreateForm{position:absolute;z-index:3;top:37px;right:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,.75fr) auto;gap:6px;width:min(420px,calc(100vw - 48px));padding:8px;border:1px solid var(--border);border-radius:9px;background:var(--panel);box-shadow:0 10px 26px color-mix(in srgb,black 28%,transparent)}.gnpCreateForm input{min-width:0;width:100%;padding:7px 8px;border:1px solid var(--border);border-radius:7px;background:var(--panel-2);color:var(--text);font:inherit;font-size:12px}
 .gnpSection{display:grid;gap:1px}.gnpExplorer{display:grid;gap:0;min-width:0}.gnpRow{min-width:0;border:0;border-radius:5px;background:transparent}.gnpRow:hover,.gnpRow:focus-within{background:color-mix(in srgb,var(--accent) 9%,var(--panel-2))}.gnpOpen{display:flex;align-items:center;gap:5px;width:100%;min-width:0;height:28px;min-height:28px;padding:3px 6px 3px calc(5px + var(--gnp-indent,0px));border:0;border-radius:5px;background:transparent;color:var(--text);font:inherit;text-align:left;cursor:pointer}.gnpOpen:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}.gnpTreeIcon{display:grid;flex:0 0 15px;width:15px;place-items:center;color:var(--gnp-muted,var(--muted))}.gnpRow-pinned .gnpTreeIcon,.gnpRow-isPinned .gnpTreeIcon{color:var(--accent)}.gnpRow-session .gnpTreeIcon{color:color-mix(in srgb,var(--accent) 72%,var(--text))}.gnpRowName{display:flex;align-items:baseline;gap:6px;min-width:0;flex:1;white-space:nowrap}.gnpRowName strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;font-weight:560;white-space:nowrap}.gnpRowPath{max-width:42%;overflow:hidden;text-overflow:ellipsis;color:var(--gnp-muted,var(--muted));font-size:11px;white-space:nowrap}.gnpRowCount{flex:0 0 auto;margin-left:auto;color:var(--gnp-muted,var(--muted));font-size:11px;font-weight:450;white-space:nowrap}.gnpFolder{display:flex;align-items:center;gap:5px;min-width:0;min-height:26px;padding:3px 6px 3px calc(5px + var(--gnp-indent,0px));color:var(--text)}.gnpFolder strong{min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:12px;font-weight:680;white-space:nowrap}.gnpMeta,.gnpActivity{color:var(--gnp-muted,var(--muted));font-size:11.5px}
 .gnpTask{display:grid;grid-template-columns:40px minmax(0,1fr) auto;gap:6px;align-items:start;padding:7px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent)}.gnpTask:last-child{border-bottom:0}.gnpCheckTarget{display:grid;width:40px;height:40px;place-items:center;cursor:pointer}.gnpCheckTarget input{width:19px;height:19px;margin:0;accent-color:var(--accent);cursor:pointer}.gnpCheckTarget:has(input:disabled){cursor:default}.gnpTaskText{padding-top:3px;font-size:13.5px;line-height:1.4}.gnpDone .gnpTaskText{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;text-decoration:line-through;color:var(--gnp-muted,var(--muted))}.gnpChips{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}.gnpChips:not(:has(>:not(.gnpTaskId))){margin-top:0}.gnpChip{display:inline-block;padding:2px 6px;border-radius:9px;background:var(--panel-2);color:var(--gnp-muted,var(--muted));font-size:11px}.gnpTaskId{display:none}.gnpTask:hover .gnpTaskId,.gnpTask:focus-within .gnpTaskId{display:inline-block}.gnpDueOverdue{background:color-mix(in srgb,var(--danger) 14%,var(--panel-2));color:var(--danger);font-weight:650}.gnpRelations{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}.gnpRelation{display:block;height:auto;min-height:40px;max-width:100%;overflow:hidden;padding:6px 8px;border:1px solid color-mix(in srgb,var(--accent) 32%,var(--border));border-radius:9px;background:transparent;color:var(--accent);font:inherit;font-size:11.5px;text-align:left;cursor:pointer}.gnpRelationLabel{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;line-height:1.35}.gnpIconButton{display:grid;width:40px;height:40px;place-items:center;padding:0;border:1px solid color-mix(in srgb,var(--border) 78%,transparent);border-radius:9px;background:color-mix(in srgb,var(--panel-2) 72%,transparent);color:var(--gnp-muted,var(--muted));font:inherit;cursor:pointer}.gnpIconButton:hover,.gnpIconButton:focus-visible{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,var(--panel-2));color:var(--text)}
-.gnpNoteNav{display:flex;align-items:center;gap:7px;min-width:0}.gnpNoteNav .webPanelButton{min-height:32px;padding:4px 9px;font-size:12px}.gnpBackButton{font-weight:680}.gnpBreadcrumb{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;color:var(--gnp-muted,var(--muted));font-size:11.5px;white-space:nowrap}.gnpNoteNavActions{display:flex;gap:5px;flex:0 0 auto}
-.gnpDoc{line-height:1.55;overflow-wrap:anywhere}.gnpDoc:empty{display:none}.gnpDoc h1,.gnpDoc h2,.gnpDoc h3,.gnpDoc h4,.gnpDoc h5,.gnpDoc h6{margin:1.15em 0 .4em;color:var(--text);font-weight:680;line-height:1.25;letter-spacing:normal;text-transform:none}.gnpDoc h1{font-size:18px}.gnpDoc h2{font-size:15.5px}.gnpDoc h3{font-size:14px}.gnpDoc h4{font-size:13px}.gnpDoc h5,.gnpDoc h6{font-size:12px}.gnpDoc p{margin:.55em 0}.gnpDoc ul{margin:.55em 0;padding-left:20px}.gnpDoc>:first-child{margin-top:0}.gnpActivityList{display:grid;gap:5px}.gnpActivity{border-left:2px solid var(--border);padding:5px 0 5px 8px;line-height:1.45}.gnpActivityActor{color:var(--text)}.gnpActivityTask{color:var(--text)}.gnpStatus{display:flex;min-height:36px;align-items:center;gap:6px;padding:4px 8px;border-radius:7px;background:var(--panel-2);color:var(--gnp-muted,var(--muted))}
+.gnpNote{gap:8px}.gnpNoteNav{display:flex;align-items:center;gap:7px;min-width:0;padding-bottom:2px}.gnpNoteNav .webPanelButton{min-height:32px;padding:4px 9px;font-size:12px}.gnpBackButton{font-weight:680}.gnpBreadcrumb{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;color:var(--gnp-muted,var(--muted));font-size:11.5px;white-space:nowrap}.gnpNoteNavActions{display:flex;gap:5px;flex:0 0 auto}
+.gnpDoc{width:100%;max-width:74ch;margin:3px auto 7px;padding:5px 4px 16px;color:var(--text);font-size:14.75px;line-height:1.64;overflow-wrap:anywhere}.gnpDoc:empty{display:none}.gnpDoc h1,.gnpDoc h2,.gnpDoc h3,.gnpDoc h4,.gnpDoc h5,.gnpDoc h6{margin:1.65em 0 .48em;color:var(--text);font-weight:690;line-height:1.22;letter-spacing:-.012em;text-transform:none;text-wrap:balance}.gnpDoc h1{padding-bottom:.28em;border-bottom:1px solid color-mix(in srgb,var(--border) 78%,transparent);font-size:1.65em;font-weight:730}.gnpDoc h2{font-size:1.34em}.gnpDoc h3{font-size:1.14em}.gnpDoc h4{font-size:1em}.gnpDoc h5{font-size:.94em}.gnpDoc h6{font-size:.88em;color:var(--gnp-muted,var(--muted))}.gnpDoc p{margin:.82em 0}.gnpDoc strong{font-weight:700}.gnpDoc a{color:var(--accent);text-decoration-color:transparent;text-underline-offset:.16em}.gnpDoc a:hover,.gnpDoc a:focus-visible{text-decoration-color:currentColor}.gnpDoc code{padding:.12em .34em;border:1px solid color-mix(in srgb,var(--border) 62%,transparent);border-radius:4px;background:color-mix(in srgb,var(--panel-2) 88%,transparent);font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:.88em;overflow-wrap:anywhere}.gnpDoc pre{max-width:100%;margin:1em 0;padding:12px 14px;overflow-x:auto;border:1px solid color-mix(in srgb,var(--border) 74%,transparent);border-radius:9px;background:color-mix(in srgb,var(--panel-2) 88%,black 4%);color:var(--text);font:12.75px/1.55 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;white-space:pre;overflow-wrap:normal;-webkit-overflow-scrolling:touch}.gnpDoc pre code{padding:0;border:0;border-radius:0;background:none;color:inherit;font:inherit;white-space:pre;overflow-wrap:normal}.gnpDoc blockquote{margin:1em 0;padding:.1em 0 .1em 1em;border-left:3px solid color-mix(in srgb,var(--accent) 48%,var(--border));color:color-mix(in srgb,var(--text) 82%,var(--muted));font-size:1em}.gnpDoc blockquote>:first-child{margin-top:.3em}.gnpDoc blockquote>:last-child{margin-bottom:.3em}.gnpDoc ul,.gnpDoc ol{margin:.72em 0;padding-left:1.55em}.gnpDoc li{margin:.24em 0;padding-left:.12em}.gnpDoc li::marker{color:color-mix(in srgb,var(--muted) 84%,var(--text))}.gnpDoc li>ul,.gnpDoc li>ol{margin:.28em 0}.gnpDoc li input[type=checkbox]{margin:0 .42em 0 0;accent-color:var(--accent);vertical-align:-.1em}.gnpDoc hr{height:1px;margin:1.65em 0;border:0;background:color-mix(in srgb,var(--border) 80%,transparent)}.gnpTableWrap{max-width:100%;margin:1em 0;overflow-x:auto;border:1px solid color-mix(in srgb,var(--border) 76%,transparent);border-radius:8px;-webkit-overflow-scrolling:touch}.gnpDoc table{width:100%;border-collapse:collapse;font-size:.92em;line-height:1.45}.gnpDoc th,.gnpDoc td{padding:7px 9px;border-right:1px solid color-mix(in srgb,var(--border) 62%,transparent);border-bottom:1px solid color-mix(in srgb,var(--border) 62%,transparent);text-align:left;vertical-align:top}.gnpDoc th:last-child,.gnpDoc td:last-child{border-right:0}.gnpDoc tbody tr:last-child td{border-bottom:0}.gnpDoc th{background:color-mix(in srgb,var(--panel-2) 78%,transparent);font-weight:690}.gnpDoc .gnpAlign-center{text-align:center}.gnpDoc .gnpAlign-right{text-align:right}.gnpDoc>:first-child{margin-top:0}.gnpDoc>:last-child{margin-bottom:0}.gnpManagedSection,.gnpQuickAdd{width:100%;max-width:74ch;margin-inline:auto;padding-inline:4px}.gnpDoc:not(:empty)+.gnpManagedSection{padding-top:13px;border-top:1px solid color-mix(in srgb,var(--border) 68%,transparent)}.gnpActivitySection{margin-top:7px;padding-top:12px;border-top:1px solid color-mix(in srgb,var(--border) 54%,transparent)}.gnpActivityList{display:grid;gap:5px}.gnpActivity{border-left:2px solid var(--border);padding:5px 0 5px 8px;line-height:1.45}.gnpActivityActor{color:var(--text)}.gnpActivityTask{color:var(--text)}.gnpStatus{display:flex;min-height:36px;align-items:center;gap:6px;padding:4px 8px;border-radius:7px;background:var(--panel-2);color:var(--gnp-muted,var(--muted))}
 .gnpEditGrid{display:grid;gap:10px}.gnpEditGrid label{display:grid;gap:4px;color:var(--gnp-muted,var(--muted));font-size:11.5px}.gnpEditGrid input{width:100%;min-width:0}.gnpEditActions{display:flex;justify-content:flex-end;gap:8px}
-@media(max-width:640px){.gnp{gap:10px}.gnpToolbar{gap:4px}.gnpFilter{height:44px}.gnpFilter input{height:44px;min-height:44px}.gnpToolbar .webPanelButton{height:44px;min-height:44px}.gnpCreate>summary{width:44px;height:44px;min-height:44px}.gnpCreateForm{top:49px;grid-template-columns:1fr;width:min(320px,calc(100vw - 40px))}.gnpOpen{height:44px;min-height:44px}.gnpRowPath{max-width:34%}.gnpBar{align-items:stretch}.gnpBar>input{flex-basis:100%}.gnpBar input,.gnpEditGrid input,.gnpCreateForm input{min-height:44px}.gnpTask{grid-template-columns:44px minmax(0,1fr) 44px}.gnpCheckTarget,.gnpIconButton{width:44px;height:44px}.gnpRelation{flex:1 1 100%;min-height:44px}.gnp .webPanelButton,.gnp .gnpTextButton{min-height:44px;padding-inline:11px}.gnpNoteNav{flex-wrap:wrap}.gnpBreadcrumb{order:3;flex-basis:100%;padding-left:2px}}
+@media(max-width:640px){.gnp{gap:10px}.gnpToolbar{gap:4px}.gnpFilter{height:44px}.gnpFilter input{height:44px;min-height:44px}.gnpToolbar .webPanelButton{height:44px;min-height:44px}.gnpCreate>summary{width:44px;height:44px;min-height:44px}.gnpCreateForm{top:49px;grid-template-columns:1fr;width:min(320px,calc(100vw - 40px))}.gnpOpen{height:44px;min-height:44px}.gnpRowPath{max-width:34%}.gnpBar{align-items:stretch}.gnpBar>input{flex-basis:100%}.gnpBar input,.gnpEditGrid input,.gnpCreateForm input{min-height:44px}.gnpTask{grid-template-columns:44px minmax(0,1fr) 44px}.gnpCheckTarget,.gnpIconButton{width:44px;height:44px}.gnpRelation{flex:1 1 100%;min-height:44px}.gnp .webPanelButton,.gnp .gnpTextButton{min-height:44px;padding-inline:11px}.gnpNoteNav{flex-wrap:wrap}.gnpBreadcrumb{order:3;flex-basis:100%;padding-left:2px}.gnpNote{gap:8px}.gnpDoc{max-width:100%;margin-top:2px;padding:4px 2px 15px;font-size:16px;line-height:1.62}.gnpDoc h1{font-size:1.55em}.gnpDoc h2{font-size:1.28em}.gnpDoc h3{font-size:1.12em}.gnpDoc blockquote{margin-inline:0;padding-left:.8em}.gnpDoc ul,.gnpDoc ol{padding-left:1.4em}.gnpDoc pre{padding:11px 12px;font-size:12.75px}.gnpDoc table{min-width:30rem}.gnpManagedSection,.gnpQuickAdd{max-width:100%;padding-inline:2px}}
 
 @media(prefers-reduced-motion:reduce){.gnpRow{transition:none}.gnpRow:hover,.gnpRow:focus-within{transform:none}}
 </style>`;
@@ -975,7 +1095,7 @@ function renderNote(store: Store, note: NoteRecord, status = "", highlight: Note
   }).join("");
   const folder = note.id.split("/").slice(0, -1);
   const breadcrumb = folder.length ? folder.join(" / ") : "Root";
-  return { title: truncate(note.title, 96), html: `${panelStyles}<div class="gnp"><div class="gnpNoteNav"><button class="webPanelButton gnpBackButton" type="button" data-web-panel-action="back-tree">Back to notes</button><div class="gnpBreadcrumb" title="${escapeHtml(`Location: ${breadcrumb}`)}">${escapeHtml(breadcrumb)} /</div>${note.archived ? "" : `<div class="gnpNoteNavActions"><button class="webPanelButton" type="button" data-web-panel-action="${note.pinned ? "unpin-note" : "pin-note"}" data-web-panel-payload='${payload({ note: note.id, reopen: true })}'>${note.pinned ? "Unpin" : "Pin"}</button><button class="webPanelButton" type="button" data-web-panel-action="archive-note" data-web-panel-payload='${payload({ note: note.id })}'>Archive</button></div>`}</div>${statusHtml(status)}<article class="gnpDoc"${highlight.top ? " data-web-panel-highlight" : ""}>${markdownHtml(note.body, highlight.heading)}</article><section><h3 class="gnpSectionTitle">Tasks</h3>${tasks || '<div class="gnpMeta">No tasks.</div>'}</section>${note.archived ? "" : `<form class="gnpBar" data-web-panel-action="quick-add" data-web-panel-payload='${payload({ note: note.id })}'><input name="text" maxlength="${MAX_TASK_TEXT}" placeholder="Add a task…" required><button class="webPanelButton" type="submit">Add</button></form>`}<section><h3 class="gnpSectionTitle">Activity</h3><div class="gnpActivityList">${activity || '<div class="gnpMeta">No activity yet.</div>'}</div></section></div>` };
+  return { title: truncate(note.title, 96), html: `${panelStyles}<div class="gnp gnpNote"><div class="gnpNoteNav"><button class="webPanelButton gnpBackButton" type="button" data-web-panel-action="back-tree">Back to notes</button><div class="gnpBreadcrumb" title="${escapeHtml(`Location: ${breadcrumb}`)}">${escapeHtml(breadcrumb)} /</div>${note.archived ? "" : `<div class="gnpNoteNavActions"><button class="webPanelButton" type="button" data-web-panel-action="${note.pinned ? "unpin-note" : "pin-note"}" data-web-panel-payload='${payload({ note: note.id, reopen: true })}'>${note.pinned ? "Unpin" : "Pin"}</button><button class="webPanelButton" type="button" data-web-panel-action="archive-note" data-web-panel-payload='${payload({ note: note.id })}'>Archive</button></div>`}</div>${statusHtml(status)}<article class="gnpDoc"${highlight.top ? " data-web-panel-highlight" : ""}>${markdownHtml(note.body, highlight.heading)}</article><section class="gnpManagedSection gnpTasksSection"><h3 class="gnpSectionTitle">Tasks</h3>${tasks || '<div class="gnpMeta">No tasks.</div>'}</section>${note.archived ? "" : `<form class="gnpBar gnpQuickAdd" data-web-panel-action="quick-add" data-web-panel-payload='${payload({ note: note.id })}'><input name="text" maxlength="${MAX_TASK_TEXT}" placeholder="Add a task…" required><button class="webPanelButton" type="submit">Add</button></form>`}<section class="gnpManagedSection gnpActivitySection"><h3 class="gnpSectionTitle">Activity</h3><div class="gnpActivityList">${activity || '<div class="gnpMeta">No activity yet.</div>'}</div></section></div>` };
 }
 function renderPanelState(store: Store, state: PanelViewState, session: PanelSessionContext = {}): PiWebPanelView {
   if (state.kind === "tree") return renderTree(visibleNotes(store, state.archived ? ARCHIVE : undefined, state.query), state.archived, state.status || "", state.query, state.undoNote, session);

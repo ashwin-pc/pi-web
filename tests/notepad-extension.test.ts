@@ -358,6 +358,90 @@ describe.sequential("global notepad Markdown vault", () => {
     expect(read).toContain(taskLink);
   });
 
+  it("renders rich Markdown as a readable, inert document on desktop and mobile", async () => {
+    const body = [
+      "# Reading <script>alert(1)</script>",
+      "",
+      "Joined line",
+      "continues here  ",
+      "then breaks with [unsafe](javascript:alert(1)).",
+      "",
+      "1. Ordered one",
+      "  - Nested <img src=x onerror=\"alert(1)\">",
+      "    1. Nested ordered",
+      "2. Ordered two",
+      "",
+      "> A useful quote",
+      "> stays together.",
+      "> > A nested quote.",
+      "",
+      "| Name | State |",
+      "| :--- | ---: |",
+      "| API | **Ready** |",
+      "",
+      "Key | Value",
+      "--- | ---",
+      "one | two",
+      "",
+      "| malformed | pipe block |",
+      "",
+      "owner: ---",
+      "",
+      "---",
+      "",
+      "***",
+      "",
+      "```html",
+      "<script>fenced()</script>",
+      "**literal Markdown**",
+      "<img src=x onerror=\"fenced()\">",
+      "```",
+      "",
+      "<button onclick=\"alert(1)\">not HTML</button>",
+    ].join("\n");
+    await call({ action: "create", title: "Markdown reading", text: body });
+    await call({ action: "add", note: "markdown-reading", text: "Task <script>alert(1)</script> <img src=x onerror=alert(1)>", group: "Group <script>group()</script>" });
+
+    const contributions = new Map<string, any>();
+    const context = { sessionManager: { getSessionId: () => "markdown-session" }, ui: { notify() {}, web: {
+      capabilities: { apiVersion: 1, slots: ["panel", "fab"], kinds: ["rendered", "static"] },
+      contribute: (key: string, value: any) => contributions.set(key, value), update() {}, registerSettings: async () => undefined,
+    } } };
+    await handlers.get("session_start")?.({}, context);
+    const view = await contributions.get("global-notepad").render({ action: "open-note", payload: { note: "markdown-reading" } });
+    await handlers.get("session_shutdown")?.({}, context);
+    const html = view.html;
+
+    expect(html).toContain('<h1>Reading &lt;script&gt;alert(1)&lt;/script&gt;</h1>');
+    expect(html).toContain("<p>Joined line continues here<br>\nthen breaks with unsafe.</p>");
+    expect(html).toMatch(/<ol>\s*<li>Ordered one\s*<ul>/);
+    expect(html).toContain('Nested &lt;img src=x onerror=&quot;alert(1)&quot;&gt;\n<ol>\n<li>Nested ordered');
+    expect(html).toMatch(/<\/ul>\s*<\/li>\s*<li>Ordered two/);
+    expect(html).toContain("<blockquote>\n<p>A useful quote stays together.</p>\n<blockquote>");
+    expect(html).toContain('<div class="gnpTableWrap"><table><thead><tr><th class="gnpAlign-left">Name</th><th class="gnpAlign-right">State</th></tr></thead><tbody><tr><td class="gnpAlign-left">API</td><td class="gnpAlign-right"><strong>Ready</strong></td></tr></tbody></table></div>');
+    expect(html).toContain("<th>Key</th><th>Value</th></tr></thead><tbody><tr><td>one</td><td>two</td>");
+    expect(html).toContain('<pre class="gnpPipeBlock"><code>| malformed | pipe block |</code></pre>');
+    expect(html).toContain("<p>owner: ---</p>");
+    expect(html.match(/<hr>/g)).toHaveLength(2);
+    expect(html).toContain('<pre><code class="language-html">&lt;script&gt;fenced()&lt;/script&gt;\n**literal Markdown**\n&lt;img src=x onerror=&quot;fenced()&quot;&gt;\n</code></pre>');
+
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("<img");
+    expect(html).not.toContain('href="javascript:');
+    expect(html).not.toMatch(/<(?:a|button|img|script)[^>]*\s(?:onclick|onerror)\s*=/i);
+    expect(html).toContain("&lt;button onclick=&quot;alert(1)&quot;&gt;not HTML&lt;/button&gt;");
+    expect(html).toContain("Task &lt;script&gt;alert(1)&lt;/script&gt; &lt;img src=x onerror=alert(1)&gt;");
+    expect(html).toContain("Group &lt;script&gt;group()&lt;/script&gt;");
+    expect(html).not.toContain("pi-web-notepad: managed sections");
+
+    expect(html).toContain("font-size:14.75px;line-height:1.64");
+    expect(html).toContain("max-width:74ch");
+    expect(html).toContain("font-size:16px;line-height:1.62");
+    expect(html).toContain("overflow-x:auto");
+    expect(html).toContain(".gnpDoc table{min-width:30rem}");
+    expect(html).toContain(".gnpCheckTarget,.gnpIconButton{width:44px;height:44px}");
+  });
+
   it("renders the virtual tree, resolves deep links with closest-anchor fallbacks, and exposes settings and FAB", async () => {
     await call({ action: "create", title: "Panel", folder: "team", text: "## Handover\nFacts\n\n- [ ] informational only" });
     await call({ action: "create", title: "Target" });
@@ -481,7 +565,7 @@ describe.sequential("global notepad Markdown vault", () => {
     expect(opened.html.match(/<h4 class="gnpTaskGroup">Launch<\/h4>/g)).toHaveLength(1);
     expect(opened.html).not.toContain(">Tasks</h4>");
     expect(opened.html).toContain("Activity");
-    expect(opened.html).toContain(".gnpDoc h1{font-size:18px}");
+    expect(opened.html).toContain(".gnpDoc h1{padding-bottom:.28em");
     expect(opened.html).not.toContain(".gnp h3{");
     expect(opened.html).toContain("-webkit-line-clamp:2");
     expect(opened.html).toContain(".gnpRelation{display:block;height:auto;min-height:40px;max-width:100%;overflow:hidden");
