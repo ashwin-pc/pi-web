@@ -431,6 +431,7 @@ const webCapabilities = Object.freeze({
   slots: Object.freeze(Object.keys(contributionPolicies)),
   kinds: Object.freeze([...new Set(Object.values(contributionPolicies).flatMap((policy) => [...policy.allowedKinds]))]),
   effects: Object.freeze([...new Set(Object.values(contributionPolicies).flatMap((policy) => "effects" in policy ? [...policy.effects] : []))]),
+  components: Object.freeze(["tree"]),
 });
 
 function webContributionEntries(value: any) {

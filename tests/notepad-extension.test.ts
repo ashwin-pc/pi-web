@@ -442,7 +442,34 @@ describe.sequential("global notepad Markdown vault", () => {
     expect(html).toContain(".gnpCheckTarget,.gnpIconButton{width:44px;height:44px}");
   });
 
-  it("renders the virtual tree, resolves deep links with closest-anchor fallbacks, and exposes settings and FAB", async () => {
+  it("emits host tree placeholders when supported while retaining host-owned row metrics", async () => {
+    await call({ action: "create", title: "Session note", folder: "team" });
+    await call({ action: "add", note: "session-note", text: "Tree task", session: "test session" });
+    await call({ action: "create", title: "Pinned note", folder: "ops" });
+    await call({ action: "pin", note: "pinned-note" });
+    const contributions = new Map<string, any>();
+    const context = { sessionManager: { getSessionId: () => "tree-component-session" }, ui: { notify() {}, web: {
+      capabilities: { apiVersion: 1, slots: ["panel", "fab"], kinds: ["rendered", "static"], components: ["tree"] },
+      contribute: (key: string, value: any) => contributions.set(key, value), update() {}, registerSettings: async () => undefined,
+    } } };
+    await handlers.get("session_start")?.({}, context);
+    const view = await contributions.get("global-notepad").render({ action: undefined, payload: undefined, fields: undefined });
+    const decode = (value: string) => value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+    const trees = [...view.html.matchAll(/data-web-panel-tree='([^']*)'/g)].map((match) => JSON.parse(decode(match[1])));
+
+    expect(trees).toHaveLength(3);
+    expect(trees[0]).toEqual([expect.objectContaining({ id: "session:team/session-note", icon: "note", meta: "1 open", action: "open-note", payload: { note: "team/session-note" } })]);
+    expect(trees[1]).toEqual([expect.objectContaining({ id: "pinned:ops/pinned-note", icon: "pin", meta: "0 open", action: "open-note" })]);
+    expect(trees[2]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "folder:team", icon: "folder", open: true, children: [expect.objectContaining({ id: "note:team/session-note", icon: "note", action: "open-note" })] }),
+      expect.objectContaining({ id: "folder:ops", icon: "folder", open: true, children: [expect.objectContaining({ id: "note:ops/pinned-note", icon: "note", action: "open-note" })] }),
+    ]));
+    expect(view.html).not.toContain('class="gnpRow');
+    expect(view.html).not.toContain(".gnpOpen{");
+    await handlers.get("session_shutdown")?.({}, context);
+  });
+
+  it("renders the legacy virtual-tree fallback, resolves deep links with closest-anchor fallbacks, and exposes settings and FAB", async () => {
     await call({ action: "create", title: "Panel", folder: "team", text: "## Handover\nFacts\n\n- [ ] informational only" });
     await call({ action: "create", title: "Target" });
     await call({ action: "create", title: "Pinned runbook", folder: "ops" });

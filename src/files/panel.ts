@@ -200,7 +200,7 @@ export function initFilesPanel(options: {
   }
   function treeIcon(kind: "folder" | "file", type = "file") {
     const icon = document.createElement("span");
-    icon.className = `fileTreeIcon fileTreeIcon--${kind} fileTreeIcon--${type}`;
+    icon.className = `fileTreeIcon fileTreeIcon--${kind} fileTreeIcon--${type} webPanelTreeIcon`;
     icon.setAttribute("aria-hidden", "true");
     icon.innerHTML = kind === "folder"
       ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M3 6h6l2 2h10v10H3z"/></svg>'
@@ -239,10 +239,10 @@ export function initFilesPanel(options: {
       const entries = data.entries as FileEntry[];
       for (const entry of entries) {
         if (entry.kind === "directory") {
-          const details = document.createElement("details"); details.className = "fileTreeDirectory";
-          const summary = document.createElement("summary");
+          const details = document.createElement("details"); details.className = "fileTreeDirectory webPanelTreeDir";
+          const summary = document.createElement("summary"); summary.className = "webPanelTreeDirLabel";
           summary.append(treeIcon("folder"), document.createTextNode(entry.name)); details.append(summary);
-          const children = document.createElement("div"); children.className = "fileTreeChildren"; details.append(children);
+          const children = document.createElement("div"); children.className = "fileTreeChildren webPanelTreeChildren"; details.append(children);
           details.addEventListener("toggle", () => {
             if (details.open && !children.dataset.loaded) {
               children.dataset.loaded = "1";
@@ -251,7 +251,7 @@ export function initFilesPanel(options: {
           });
           container.append(details);
         } else {
-          const item = document.createElement("button"); item.type = "button"; item.className = "fileTreeFile"; item.append(treeIcon("file", fileTypeClass(entry.path)), document.createTextNode(entry.name)); item.title = entry.path;
+          const item = document.createElement("button"); item.type = "button"; item.className = "fileTreeFile webPanelTreeItem"; item.append(treeIcon("file", fileTypeClass(entry.path)), document.createTextNode(entry.name)); item.title = entry.path;
           item.addEventListener("click", () => void openFile(entry.path)); container.append(item);
         }
       }
@@ -338,7 +338,7 @@ export function initFilesPanel(options: {
     scopeLoaded = { workspace: false, artifacts: false };
     scopeScrollPositions.workspace = 0; scopeScrollPositions.artifacts = 0;
     ++treeLoadGeneration;
-    tree.className = "filesTree"; tree.textContent = ""; tree.removeAttribute("aria-busy");
+    tree.className = "filesTree webPanelTree"; tree.textContent = ""; tree.removeAttribute("aria-busy");
     artifactBrowser.reset();
     for (const doc of documents.values()) { if (doc.kind === "text") doc.view.destroy(); else URL.revokeObjectURL(doc.objectUrl); doc.host.remove(); } documents.clear(); renderEditorEmpty(); activePath = ""; renderTabs(); panel.classList.remove("filesPanel--imageActive"); setWorkspaceMobileView("tree");
     if (!panel.hidden) loadActiveScope();

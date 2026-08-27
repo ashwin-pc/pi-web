@@ -80,7 +80,7 @@ ctx.ui.web.contribute("worker-status", {
 
 Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `git-tab`, and `panel`.
 
-Independently distributed extensions should inspect `ctx.ui.web.capabilities` before using newer facilities. It reports the additive runtime contract: `apiVersion`, `slots`, `kinds`, and `effects`.
+Independently distributed extensions should inspect `ctx.ui.web.capabilities` before using newer facilities. It reports the additive runtime contract: `apiVersion`, `slots`, `kinds`, `effects`, and optional host `components`.
 
 When backing data changes without a browser interaction, call `ctx.ui.web.update(key)`. pi-web emits a lightweight invalidation and an active panel or Git tab pulls a fresh render. Updates for hidden surfaces do no work; they render when next opened.
 
@@ -208,6 +208,77 @@ ctx.ui.web.setHeaderAction("open-notes", {
 });
 ```
 
+## Tree component
+
+Panels can ask the host to render a tree by returning an empty
+`div[data-web-panel-tree]`. The attribute is JSON containing either one node or
+an array of root nodes. Because this is an HTML attribute, escape the serialized
+JSON for HTML (including quotes and ampersands):
+
+```ts
+const escapeHtml = (value: string) => value.replace(/[&<>"']/g, (character) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!,
+);
+const nodes = [{
+  id: "runbooks",
+  label: "Runbooks",
+  icon: "folder",
+  open: true,
+  meta: "5 open",
+  children: [{
+    id: "runbooks/deploy",
+    label: "Deploy",
+    icon: "note",
+    action: "open-note",
+    payload: { note: "runbooks/deploy" },
+    selected: true,
+  }],
+}];
+
+return {
+  html: `<div data-web-panel-tree='${escapeHtml(JSON.stringify(nodes))}'
+    aria-label="Runbooks"></div>`,
+};
+```
+
+Each node has this additive schema:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | `string` | Stable identity used to preserve expansion state. |
+| `label` | `string` | Visible node label. The host inserts it with `textContent`. |
+| `meta` | `string?` | Muted, right-aligned text such as `"5 open"`. |
+| `icon` | `"folder" \| "file" \| "note" \| "pin" \| "link"` | Host-drawn icon. Missing or unknown values use `file`. |
+| `children` | `Node[]?` | Presence makes the node a collapsible directory, including an empty array. |
+| `open` | `boolean?` | Initial directory state, used until the user expands or collapses it. |
+| `action` | `string?` | Panel action sent when a leaf, or an actionable folder label, is activated. |
+| `payload` | `unknown?` | JSON payload sent with `action`. |
+| `selected` | `boolean?` | Marks the row with `aria-selected` and the shared selected style. |
+
+The host parses the attribute and constructs all tree nodes, labels, metadata,
+and SVG icons with DOM APIs rather than `innerHTML`; malformed tree JSON stays
+empty and does not interrupt the rest of the panel. Actions use the same
+`{ action, payload, fields }` panel event envelope as hand-written panel buttons.
+User expansion state is kept client-side by panel key plus node `id` and wins
+against `open` after subsequent renders.
+
+The container uses `role="tree"`, nested children use `role="group"`, and rows
+use `role="treeitem"`; directory rows also expose `aria-expanded`. Up/Down moves
+among visible rows, Right expands (or enters) a directory, Left collapses (or
+moves to its parent), and Enter activates a leaf/actionable label or toggles a
+plain directory. The shared rows are 26px on desktop and at least 44px on mobile.
+
+Feature-detect before emitting placeholders and retain a fallback for older
+hosts:
+
+```ts
+const hasTree = ctx.ui.web.capabilities.components?.includes("tree") === true;
+return hasTree ? renderTreePlaceholder() : renderExtensionOwnedTree();
+```
+
+`capabilities.components` is additive. Its absence means the extension must
+render its own fallback; extensions should not infer support from
+`apiVersion` alone.
 
 ## Artifact preview action API
 

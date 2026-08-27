@@ -1,0 +1,188 @@
+/* Shared host-owned tree primitive for built-in and extension panels. */
+.webPanelTree {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.webPanelTreeDir,
+.webPanelTreeChildren > .webPanelTreeItem {
+  position: relative;
+}
+
+.webPanelTreeChildren {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 15px;
+  margin-left: 12px;
+}
+
+.webPanelTreeChildren > .webPanelTreeDir::before,
+.webPanelTreeChildren > .webPanelTreeItem::before {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: -11px;
+  top: 0;
+  width: 11px;
+  height: 13px;
+  border-left: 1px solid color-mix(in srgb, var(--muted) 58%, var(--border));
+  border-bottom: 1px solid color-mix(in srgb, var(--muted) 58%, var(--border));
+  pointer-events: none;
+}
+
+.webPanelTreeChildren > .webPanelTreeDir:not(:last-child)::after,
+.webPanelTreeChildren > .webPanelTreeItem:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  left: -11px;
+  top: 13px;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in srgb, var(--muted) 58%, var(--border));
+  pointer-events: none;
+}
+
+.webPanelTreeDirLabel,
+.webPanelTreeItem {
+  box-sizing: border-box;
+  height: 26px;
+  min-height: 26px;
+  margin: 0;
+  padding: 3px 5px;
+  border: 0;
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--text) 90%, var(--muted));
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  line-height: 20px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.webPanelTreeDirLabel:hover,
+.webPanelTreeItem:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.webPanelTreeDirLabel:focus-visible,
+.webPanelTreeItem:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, white);
+  outline-offset: -2px;
+}
+
+.webPanelTreeDirLabel {
+  display: flex;
+  align-items: center;
+  list-style: none;
+}
+
+.webPanelTreeDirLabel::-webkit-details-marker { display: none; }
+
+.webPanelTreeDirLabel::before {
+  content: "";
+  display: block;
+  box-sizing: border-box;
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  margin: 0 10px 0 4px;
+  border-right: 1.5px solid color-mix(in srgb, var(--accent) 82%, white);
+  border-bottom: 1.5px solid color-mix(in srgb, var(--accent) 82%, white);
+  transform: rotate(-45deg);
+  transform-origin: center;
+  transition: transform .12s ease;
+}
+
+.webPanelTreeDir[open] > .webPanelTreeDirLabel::before { transform: rotate(45deg); }
+
+.webPanelTreeDirLabel > .webPanelTreeIcon {
+  margin-right: 6px;
+  color: color-mix(in srgb, var(--accent) 55%, var(--muted));
+}
+
+.webPanelTreeItem {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  gap: 6px;
+  padding-left: 5px;
+}
+
+.webPanelTreeItem[aria-selected="true"],
+.webPanelTreeDirLabel[aria-selected="true"] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.webPanelTreeIcon {
+  display: inline-flex;
+  flex: 0 0 15px;
+  width: 15px;
+  height: 15px;
+  color: var(--muted);
+}
+
+.webPanelTreeIcon svg {
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.webPanelTreeLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webPanelTreeDirLabel > .webPanelTreeLabel,
+.webPanelTreeItem > .webPanelTreeLabel { flex: 1 1 auto; }
+
+.webPanelTreeMeta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 8px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 450;
+  white-space: nowrap;
+}
+
+.webPanelTreePin {
+  flex-basis: 13px;
+  width: 13px;
+  height: 13px;
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .webPanelTreeDirLabel,
+  .webPanelTreeItem {
+    height: 44px;
+    min-height: 44px;
+    padding-top: 7px;
+    padding-bottom: 7px;
+    font-size: 13px;
+  }
+
+  .webPanelTreeChildren > .webPanelTreeDir::before,
+  .webPanelTreeChildren > .webPanelTreeItem::before { height: 22px; }
+
+  .webPanelTreeChildren > .webPanelTreeDir:not(:last-child)::after,
+  .webPanelTreeChildren > .webPanelTreeItem:not(:last-child)::after { top: 22px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .webPanelTreeDirLabel::before { transition: none; }
+}

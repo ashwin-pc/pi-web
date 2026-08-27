@@ -42,7 +42,7 @@
 .fileExplorerScopeIcon svg { width: 13px; height: 13px; stroke-width: 1.8; }
 .fileExplorerScopeButton[aria-pressed="true"] .fileExplorerScopeIcon { color: color-mix(in srgb, var(--accent) 92%, white); filter: drop-shadow(0 0 5px color-mix(in srgb, var(--accent) 22%, transparent)); }
 .fileExplorerScopeButton--artifacts[aria-pressed="true"] { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 9%, var(--panel)), color-mix(in srgb, var(--accent) 3%, var(--panel))); }
-.filesTree, .fileTreeChildren { display: flex; flex-direction: column; min-width: max-content; }
+.filesTree.webPanelTree, .filesTree .webPanelTreeChildren { min-width: max-content; }
 .filesPanel[data-files-scope="workspace"] #artifactsTree { display: none; }
 .filesPanel[data-files-scope="artifacts"] #filesTree { display: none; }
 .filesTree.fileTreeContainer--state { min-width: 0; }
@@ -58,20 +58,6 @@
 .fileTreeStateCopy > span { max-width: 150px; color: color-mix(in srgb, var(--muted) 88%, transparent); overflow-wrap: anywhere; }
 .fileTreeStateSpinner { width: 12px !important; height: 12px !important; margin-left: 1px; border: 1.5px solid color-mix(in srgb, var(--muted) 28%, transparent) !important; border-top-color: color-mix(in srgb, var(--accent) 82%, white) !important; border-radius: 50% !important; animation: fileTreeSpin .7s linear infinite; }
 @keyframes fileTreeSpin { to { transform: rotate(360deg); } }
-.fileTreeChildren { padding-left: 15px; margin-left: 12px; }
-.fileTreeChildren > .fileTreeDirectory, .fileTreeChildren > .fileTreeFile { position: relative; }
-.fileTreeChildren > .fileTreeDirectory::before, .fileTreeChildren > .fileTreeFile::before { content: ""; position: absolute; z-index: 1; left: -11px; top: 0; width: 11px; height: 13px; border-left: 1px solid color-mix(in srgb, var(--muted) 58%, var(--border)); border-bottom: 1px solid color-mix(in srgb, var(--muted) 58%, var(--border)); pointer-events: none; }
-.fileTreeChildren > .fileTreeDirectory:not(:last-child)::after, .fileTreeChildren > .fileTreeFile:not(:last-child)::after { content: ""; position: absolute; z-index: 1; left: -11px; top: 13px; bottom: 0; width: 1px; background: color-mix(in srgb, var(--muted) 58%, var(--border)); pointer-events: none; }
-.fileTreeDirectory > summary, .fileTreeFile { box-sizing: border-box; height: 26px; min-height: 26px; margin: 0; padding: 3px 5px; border: 0; border-radius: 5px; color: color-mix(in srgb, var(--text) 90%, var(--muted)); background: none; font: inherit; font-size: 12px; line-height: 20px; text-align: left; white-space: nowrap; cursor: pointer; }
-.fileTreeDirectory > summary:hover, .fileTreeFile:hover { color: var(--text); background: color-mix(in srgb, var(--text) 7%, transparent); }
-.fileTreeDirectory > summary { display: flex; align-items: center; list-style: none; }
-.fileTreeDirectory > summary::-webkit-details-marker { display: none; }
-.fileTreeDirectory > summary::before { content: ""; display: block; box-sizing: border-box; flex: 0 0 7px; width: 7px; height: 7px; margin: 0 10px 0 4px; border-right: 1.5px solid color-mix(in srgb, var(--accent) 82%, white); border-bottom: 1.5px solid color-mix(in srgb, var(--accent) 82%, white); transform: rotate(-45deg); transform-origin: center; transition: transform .12s ease; }
-.fileTreeDirectory[open] > summary::before { transform: rotate(45deg); }
-.fileTreeDirectory > summary .fileTreeIcon { margin-right: 6px; color: color-mix(in srgb, var(--accent) 55%, var(--muted)); }
-.fileTreeFile { display: flex; align-items: center; width: 100%; gap: 6px; padding-left: 5px; }
-.fileTreeIcon { display: inline-flex; flex: 0 0 15px; width: 15px; height: 15px; color: var(--muted); }
-.fileTreeIcon svg { width: 15px; height: 15px; stroke-width: 1.8; }
 .fileTreeIcon--code { color: #7dd3fc; }
 .fileTreeIcon--data { color: #e2b15f; }
 .fileTreeIcon--text { color: #b8b5ad; }
@@ -134,7 +120,4 @@
   .fileEditorStatusBar { min-height: 30px; gap: 10px; padding: 0 7px; }
   .fileFontControl input[type="range"] { width: min(112px, 32vw); }
   .fileEditorHost .cm-editor { font-size: var(--file-editor-font-size, 14px); }
-  .fileTreeDirectory > summary, .fileTreeFile { height: 29px; min-height: 29px; padding-top: 4px; padding-bottom: 4px; font-size: 13px; }
-  .fileTreeChildren > .fileTreeDirectory::before, .fileTreeChildren > .fileTreeFile::before { height: 15px; }
-  .fileTreeChildren > .fileTreeDirectory:not(:last-child)::after, .fileTreeChildren > .fileTreeFile:not(:last-child)::after { top: 15px; }
 }

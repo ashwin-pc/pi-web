@@ -963,6 +963,60 @@ function folderTreeRows(notes: NoteRecord[]) {
   return `${rootNotes}${folders}`;
 }
 
+type HostTreeNode = {
+  id: string;
+  label: string;
+  meta?: string;
+  icon: "folder" | "note" | "pin";
+  children?: HostTreeNode[];
+  open?: boolean;
+  action?: string;
+  payload?: unknown;
+};
+function hostNoteNode(note: NoteRecord, namespace: string, icon: "note" | "pin", showPath = false): HostTreeNode {
+  const folder = note.id.split("/").slice(0, -1).join("/");
+  return {
+    id: `${namespace}:${note.id}`,
+    label: `${note.title}${showPath && folder ? ` — ${folder}/` : ""}`,
+    meta: `${counts(note).open} open`,
+    icon,
+    action: "open-note",
+    payload: { note: note.id },
+  };
+}
+function hostFolderTree(notes: NoteRecord[]) {
+  const root: FolderTreeNode = { name: "", path: "", open: 0, folders: new Map(), notes: [] };
+  for (const note of notes) {
+    const open = counts(note).open;
+    let node = root; node.open += open;
+    for (const name of note.id.split("/").slice(0, -1)) {
+      const path = node.path ? `${node.path}/${name}` : name;
+      let child = node.folders.get(name);
+      if (!child) { child = { name, path, open: 0, folders: new Map(), notes: [] }; node.folders.set(name, child); }
+      child.open += open; node = child;
+    }
+    node.notes.push(note);
+  }
+  const folderNode = (folder: FolderTreeNode): HostTreeNode => ({
+    id: `folder:${folder.path}`,
+    label: folder.name,
+    meta: `${folder.open} open`,
+    icon: "folder",
+    open: true,
+    children: [
+      ...[...folder.folders.values()].sort((a, b) => a.name.localeCompare(b.name)).map(folderNode),
+      ...folder.notes.sort((a, b) => a.title.localeCompare(b.title)).map((note) => hostNoteNode(note, "note", "note")),
+    ],
+  });
+  return [
+    ...root.notes.sort((a, b) => a.title.localeCompare(b.title)).map((note) => hostNoteNode(note, "note", "note")),
+    ...[...root.folders.values()].sort((a, b) => a.name.localeCompare(b.name)).map(folderNode),
+  ];
+}
+function hostTreePlaceholder(nodes: HostTreeNode[], label: string) {
+  return `<div data-web-panel-tree='${payload(nodes)}' aria-label="${escapeHtml(label)}"></div>`;
+}
+
 const panelStyles = `<style>
 .gnp{--gnp-muted:color-mix(in srgb,var(--muted) 78%,var(--text));display:grid;gap:10px;min-width:0;font-size:13px;overflow-wrap:anywhere}.gnp *{box-sizing:border-box}.gnp section,.gnp article,.gnpTaskMain{min-width:0}.gnpSectionTitle{display:flex;align-items:center;gap:5px;min-height:18px;margin:2px 4px 3px;font-size:11.5px;letter-spacing:.055em;text-transform:uppercase;color:var(--gnp-muted,var(--muted))}.gnpTaskGroup{margin:14px 0 3px;font-size:12px;color:var(--gnp-muted,var(--muted))}.gnpInlineIcon{width:14px;height:14px;flex:0 0 auto;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
 .gnpBar{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.gnpBar input,.gnpEditGrid input{flex:1;min-width:150px;padding:9px 10px;border:1px solid var(--border);border-radius:8px;background:var(--panel-2);color:var(--text);font:inherit}.gnp .webPanelButton,.gnpTextButton{min-height:40px}.gnpTextButton{padding:6px 9px;border:0;background:none;color:var(--accent);font:inherit;font-weight:650;cursor:pointer}
@@ -976,6 +1030,13 @@ const panelStyles = `<style>
 
 @media(prefers-reduced-motion:reduce){.gnpRow{transition:none}.gnpRow:hover,.gnpRow:focus-within{transform:none}}
 </style>`;
+
+// The host tree owns row metrics and interaction styles. Keep the legacy rules
+// only for older hosts that do not advertise the additive tree component.
+const hostTreePanelStyles = panelStyles
+  .replace(/\.gnpExplorer\{[\s\S]*?(?=\.gnpMeta,\.gnpActivity)/, "")
+  .replace(".gnpOpen{height:44px;min-height:44px}.gnpRowPath{max-width:34%}", "")
+  .replace("@media(prefers-reduced-motion:reduce){.gnpRow{transition:none}.gnpRow:hover,.gnpRow:focus-within{transform:none}}", "");
 
 const pinSvg = `<svg class="gnpInlineIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5M5 17h14M7 3h10l-1 8 3 3H5l3-3-1-8Z"/></svg>`;
 const plusSvg = `<svg class="gnpInlineIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`;
@@ -991,18 +1052,23 @@ function connectedToSession(note: NoteRecord, session: PanelSessionContext) {
   return Boolean(id && note.activity.some((entry) => entry.sessionId === id)
     || name && note.tasks.some((task) => task.session?.trim().toLowerCase() === name));
 }
-function renderTree(notes: NoteRecord[], archived = false, status = "", query = "", undoNote?: string, session: PanelSessionContext = {}): PiWebPanelView {
+function renderTree(notes: NoteRecord[], archived = false, status = "", query = "", undoNote?: string, session: PanelSessionContext = {}, useHostTree = false): PiWebPanelView {
   const connected = archived ? [] : notes.filter((note) => connectedToSession(note, session));
   const connectedIds = new Set(connected.map((note) => note.id));
   const pinned = archived ? [] : notes.filter((note) => note.pinned && !connectedIds.has(note.id));
   const regular = notes;
-  const sections = [
+  const sections = useHostTree ? [
+    connected.length ? `<section class="gnpSection"><h3 class="gnpSectionTitle">${sessionSvg}<span>This session</span></h3>${hostTreePlaceholder(connected.map((note) => hostNoteNode(note, "session", note.pinned ? "pin" : "note", true)), "This session")}</section>` : "",
+    pinned.length ? `<section class="gnpSection"><h3 class="gnpSectionTitle"><span>Pinned</span></h3>${hostTreePlaceholder(pinned.map((note) => hostNoteNode(note, "pinned", "pin", true)), "Pinned notes")}</section>` : "",
+    regular.length ? `<section class="gnpSection"><h3 class="gnpSectionTitle"><span>${archived ? "Archive" : "Notes"}</span></h3>${hostTreePlaceholder(hostFolderTree(regular), archived ? "Archived notes" : "Notes")}</section>` : "",
+  ].join("") : [
     connected.length ? `<section class="gnpSection"><h3 class="gnpSectionTitle">${sessionSvg}<span>This session</span></h3><div class="gnpExplorer" role="list">${shortcutRows(connected, "session")}</div></section>` : "",
     pinned.length ? `<section class="gnpSection"><h3 class="gnpSectionTitle"><span>Pinned</span></h3><div class="gnpExplorer" role="list">${shortcutRows(pinned, "pinned")}</div></section>` : "",
     regular.length ? `<section class="gnpSection"><h3 class="gnpSectionTitle"><span>${archived ? "Archive" : "Notes"}</span></h3><div class="gnpExplorer" role="list">${folderTreeRows(regular)}</div></section>` : "",
   ].join("");
   const archiveAction = archived ? "view" : "show-archive";
-  return { title: archived ? "Global notepad — archive" : "Global notepad", html: `${panelStyles}<div class="gnp gnpTree">
+  const styles = useHostTree ? hostTreePanelStyles : panelStyles;
+  return { title: archived ? "Global notepad — archive" : "Global notepad", html: `${styles}<div class="gnp gnpTree">
     <div class="gnpToolbar"><form class="gnpFilter" data-web-panel-action="filter-tree" data-web-panel-payload='${payload({ archived })}'><input name="query" value="${escapeHtml(query)}" placeholder="Filter notes and tasks…" aria-label="Filter notes and tasks"><span class="gnpResult" aria-label="${notes.length} matching notes">${notes.length} ${notes.length === 1 ? "note" : "notes"}</span></form><button class="webPanelButton gnpToolbarButton ${archived ? "gnpArchiveActive" : ""}" type="button" data-web-panel-action="${archiveAction}" aria-pressed="${archived}"${archived ? ' aria-current="page"' : ""}>Archive</button>${archived ? "" : `<details class="gnpCreate"><summary aria-label="New note" title="New note">${plusSvg}</summary><form class="gnpCreateForm" data-web-panel-action="create-note"><input name="title" maxlength="${MAX_TASK_TEXT}" placeholder="Note title" aria-label="Note title" required><input name="folder" maxlength="500" placeholder="Folder (optional)" aria-label="Folder (optional)"><button class="webPanelButton" type="submit">Create</button></form></details>`}</div>
     ${statusHtml(status, undoNote)}${sections || `<div class="gnpMeta">${query ? "No matching notes." : archived ? "The archive is empty." : "No notes yet. Create one above."}</div>`}
   </div>` };
@@ -1097,11 +1163,11 @@ function renderNote(store: Store, note: NoteRecord, status = "", highlight: Note
   const breadcrumb = folder.length ? folder.join(" / ") : "Root";
   return { title: truncate(note.title, 96), html: `${panelStyles}<div class="gnp gnpNote"><div class="gnpNoteNav"><button class="webPanelButton gnpBackButton" type="button" data-web-panel-action="back-tree">Back to notes</button><div class="gnpBreadcrumb" title="${escapeHtml(`Location: ${breadcrumb}`)}">${escapeHtml(breadcrumb)} /</div>${note.archived ? "" : `<div class="gnpNoteNavActions"><button class="webPanelButton" type="button" data-web-panel-action="${note.pinned ? "unpin-note" : "pin-note"}" data-web-panel-payload='${payload({ note: note.id, reopen: true })}'>${note.pinned ? "Unpin" : "Pin"}</button><button class="webPanelButton" type="button" data-web-panel-action="archive-note" data-web-panel-payload='${payload({ note: note.id })}'>Archive</button></div>`}</div>${statusHtml(status)}<article class="gnpDoc"${highlight.top ? " data-web-panel-highlight" : ""}>${markdownHtml(note.body, highlight.heading)}</article><section class="gnpManagedSection gnpTasksSection"><h3 class="gnpSectionTitle">Tasks</h3>${tasks || '<div class="gnpMeta">No tasks.</div>'}</section>${note.archived ? "" : `<form class="gnpBar gnpQuickAdd" data-web-panel-action="quick-add" data-web-panel-payload='${payload({ note: note.id })}'><input name="text" maxlength="${MAX_TASK_TEXT}" placeholder="Add a task…" required><button class="webPanelButton" type="submit">Add</button></form>`}<section class="gnpManagedSection gnpActivitySection"><h3 class="gnpSectionTitle">Activity</h3><div class="gnpActivityList">${activity || '<div class="gnpMeta">No activity yet.</div>'}</div></section></div>` };
 }
-function renderPanelState(store: Store, state: PanelViewState, session: PanelSessionContext = {}): PiWebPanelView {
-  if (state.kind === "tree") return renderTree(visibleNotes(store, state.archived ? ARCHIVE : undefined, state.query), state.archived, state.status || "", state.query, state.undoNote, session);
+function renderPanelState(store: Store, state: PanelViewState, session: PanelSessionContext = {}, useHostTree = false): PiWebPanelView {
+  if (state.kind === "tree") return renderTree(visibleNotes(store, state.archived ? ARCHIVE : undefined, state.query), state.archived, state.status || "", state.query, state.undoNote, session, useHostTree);
   const noteState = state.kind === "edit" ? state.note : state;
   const note = store.notes.find((candidate) => candidate.id === noteState.noteId);
-  if (!note) return renderTree(visibleNotes(store), false, `Note no longer exists: ${noteState.noteId}.`, "", undefined, session);
+  if (!note) return renderTree(visibleNotes(store), false, `Note no longer exists: ${noteState.noteId}.`, "", undefined, session, useHostTree);
   if (state.kind === "edit") {
     const task = note.tasks.find((candidate) => candidate.id === state.taskId);
     if (!task || note.archived) return renderNote(store, note, task ? "Archived notes are read-only." : "Task no longer exists.");
@@ -1256,6 +1322,7 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
     const currentSessionId = String(ctx.sessionManager?.getSessionId?.() || "") || undefined;
     const panelSessionId = currentSessionId || `anonymous-${randomBytes(8).toString("hex")}`;
     const compatible = capabilities?.apiVersion === 1 && capabilities.slots.includes("panel") && capabilities.slots.includes("fab") && capabilities.kinds.includes("rendered") && capabilities.kinds.includes("static") && typeof web?.contribute === "function" && typeof web?.update === "function";
+    const useHostTree = capabilities?.components?.includes("tree") === true;
     if (!compatible) { ctx.ui.notify("Global notepad UI requires a newer pi-web contribution API. The notepad tool remains available.", "warning"); return; }
     // Initialize before publishing the launcher. Otherwise a first-open render can
     // initialize the store, emit its own invalidation, and race the in-flight view.
@@ -1270,7 +1337,7 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
         const previous = panelStateBySession.get(panelSessionId) || defaultTreeState();
         const back = previous.kind === "tree" ? previous : previous.kind === "note" ? previous.back : previous.note.back;
         const currentSession: PanelSessionContext = { id: currentSessionId, name: (typeof (pi as any).getSessionName === "function" ? (pi as any).getSessionName() : undefined) || undefined };
-        const renderState = (state: PanelViewState) => renderPanelState(store, state, currentSession);
+        const renderState = (state: PanelViewState) => renderPanelState(store, state, currentSession, useHostTree);
         const remember = (state: PanelViewState) => rememberPanelState(panelSessionId, withoutTransientHighlight(state));
         const show = (state: PanelViewState) => { remember(state); return renderState(state); };
         // The server bridge normalizes a missing browser event to a truthy

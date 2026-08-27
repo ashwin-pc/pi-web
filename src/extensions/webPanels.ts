@@ -78,6 +78,230 @@ function formFields(form: HTMLFormElement | null) {
   return fields;
 }
 
+type WebPanelTreeIcon = "folder" | "file" | "note" | "pin" | "link";
+export type WebPanelTreeNode = {
+  id: string;
+  label: string;
+  meta?: string;
+  icon?: WebPanelTreeIcon;
+  children?: WebPanelTreeNode[];
+  open?: boolean;
+  action?: string;
+  payload?: unknown;
+  selected?: boolean;
+};
+
+const webPanelTreeIcons = new Set<WebPanelTreeIcon>(["folder", "file", "note", "pin", "link"]);
+
+function normalizeWebPanelTreeNode(value: unknown): WebPanelTreeNode | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (typeof raw.id !== "string" || typeof raw.label !== "string") return undefined;
+  if (raw.meta !== undefined && typeof raw.meta !== "string") return undefined;
+  if (raw.children !== undefined && !Array.isArray(raw.children)) return undefined;
+  if (raw.open !== undefined && typeof raw.open !== "boolean") return undefined;
+  if (raw.action !== undefined && typeof raw.action !== "string") return undefined;
+  if (raw.selected !== undefined && typeof raw.selected !== "boolean") return undefined;
+  let children: WebPanelTreeNode[] | undefined;
+  if (Array.isArray(raw.children)) {
+    children = [];
+    for (const child of raw.children) {
+      const normalized = normalizeWebPanelTreeNode(child);
+      if (!normalized) return undefined;
+      children.push(normalized);
+    }
+  }
+  const icon = typeof raw.icon === "string" && webPanelTreeIcons.has(raw.icon as WebPanelTreeIcon)
+    ? raw.icon as WebPanelTreeIcon : "file";
+  return {
+    id: raw.id,
+    label: raw.label,
+    ...(raw.meta !== undefined ? { meta: raw.meta as string } : {}),
+    icon,
+    ...(children ? { children } : {}),
+    ...(raw.open !== undefined ? { open: raw.open as boolean } : {}),
+    ...(raw.action !== undefined ? { action: raw.action as string } : {}),
+    ...("payload" in raw ? { payload: raw.payload } : {}),
+    ...(raw.selected !== undefined ? { selected: raw.selected as boolean } : {}),
+  };
+}
+
+export function parseWebPanelTree(value: string): WebPanelTreeNode[] | undefined {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    const values = Array.isArray(parsed) ? parsed : [parsed];
+    const nodes: WebPanelTreeNode[] = [];
+    for (const value of values) {
+      const node = normalizeWebPanelTreeNode(value);
+      if (!node) return undefined;
+      nodes.push(node);
+    }
+    return nodes;
+  } catch { return undefined; }
+}
+
+function treeStateKey(panelKey: string, nodeId: string) { return `${panelKey}\u0000${nodeId}`; }
+
+function webPanelTreeIcon(document: Document, name: WebPanelTreeIcon) {
+  const host = document.createElement("span");
+  host.className = `webPanelTreeIcon${name === "pin" ? " webPanelTreePin" : ""}`;
+  host.setAttribute("aria-hidden", "true");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  const paths: Record<WebPanelTreeIcon, string[]> = {
+    folder: ["M3 6h6l2 2h10v10H3z"],
+    file: ["M6 2h8l4 4v16H6z", "M14 2v5h5"],
+    note: ["M6 3h9l3 3v15H6z", "M9 11h6", "M9 15h6", "M14 3v4h4"],
+    pin: ["M12 17v5", "M5 17h14", "M7 3h10l-1 8 3 3H5l3-3-1-8Z"],
+    link: ["M10 13a4 4 0 0 0 5.7.1l2-2A4 4 0 0 0 12 5.4l-1.1 1.1", "M14 11a4 4 0 0 0-5.7-.1l-2 2a4 4 0 0 0 5.7 5.7l1.1-1.1"],
+  };
+  for (const data of paths[name]) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", data);
+    svg.append(path);
+  }
+  host.append(svg);
+  return host;
+}
+
+function setTreeAction(element: HTMLElement, node: WebPanelTreeNode) {
+  if (!node.action) return;
+  element.dataset.webAction = node.action;
+  if (node.payload !== undefined) element.dataset.webPayload = JSON.stringify(node.payload);
+}
+
+function visibleTreeRows(tree: HTMLElement) {
+  return [...tree.querySelectorAll<HTMLElement>(".webPanelTreeDirLabel, .webPanelTreeItem")].filter((row) => {
+    for (let ancestor = row.parentElement; ancestor && ancestor !== tree; ancestor = ancestor.parentElement) {
+      if (ancestor.tagName === "DETAILS" && !(ancestor as HTMLDetailsElement).open
+        && ancestor.firstElementChild !== row && !ancestor.firstElementChild?.contains(row)) return false;
+    }
+    return true;
+  });
+}
+
+function installTreeKeyboard(tree: HTMLElement, expansionState: Map<string, boolean>, panelKey: string) {
+  const rows = [...tree.querySelectorAll<HTMLElement>(".webPanelTreeDirLabel, .webPanelTreeItem")];
+  for (const row of rows) row.tabIndex = -1;
+  if (rows[0]) rows[0].tabIndex = 0;
+  const focus = (row: HTMLElement) => {
+    for (const candidate of rows) candidate.tabIndex = candidate === row ? 0 : -1;
+    row.focus();
+  };
+  const setOpen = (summary: HTMLElement, open: boolean) => {
+    const details = summary.parentElement as HTMLDetailsElement | null;
+    if (!details || details.tagName !== "DETAILS") return;
+    details.open = open;
+    summary.setAttribute("aria-expanded", String(open));
+    expansionState.set(treeStateKey(panelKey, details.dataset.webTreeNodeId || ""), open);
+  };
+  tree.addEventListener("focusin", (event) => {
+    const row = event.target instanceof Element ? event.target.closest<HTMLElement>(".webPanelTreeDirLabel, .webPanelTreeItem") : null;
+    if (row && tree.contains(row)) for (const candidate of rows) candidate.tabIndex = candidate === row ? 0 : -1;
+  });
+  tree.addEventListener("keydown", (event) => {
+    const row = event.target instanceof Element ? event.target.closest<HTMLElement>(".webPanelTreeDirLabel, .webPanelTreeItem") : null;
+    if (!row || !tree.contains(row)) return;
+    const visible = visibleTreeRows(tree);
+    const index = visible.indexOf(row);
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      const next = visible[index + (event.key === "ArrowDown" ? 1 : -1)];
+      if (next) focus(next);
+      event.preventDefault();
+      return;
+    }
+    const summary = row.classList.contains("webPanelTreeDirLabel") ? row : null;
+    if (event.key === "ArrowRight" && summary) {
+      const details = summary.parentElement as HTMLDetailsElement;
+      if (!details.open) setOpen(summary, true);
+      else if (visible[index + 1]) focus(visible[index + 1]);
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "ArrowLeft") {
+      if (summary && (summary.parentElement as HTMLDetailsElement).open) setOpen(summary, false);
+      else {
+        const group = row.parentElement?.closest<HTMLElement>(".webPanelTreeChildren");
+        const parentSummary = group?.parentElement?.querySelector<HTMLElement>(":scope > .webPanelTreeDirLabel");
+        if (parentSummary) focus(parentSummary);
+      }
+      event.preventDefault();
+      return;
+    }
+    if (event.key === "Enter" && summary) {
+      const action = summary.querySelector<HTMLElement>("[data-web-action]");
+      if (action) action.click();
+      else setOpen(summary, !(summary.parentElement as HTMLDetailsElement).open);
+      event.preventDefault();
+    }
+  });
+}
+
+/** Expand host-owned tree placeholders after trusted extension HTML is inserted. */
+export function expandWebPanelTrees(root: ParentNode, panelKey: string, expansionState: Map<string, boolean>) {
+  for (const placeholder of root.querySelectorAll<HTMLElement>("div[data-web-panel-tree]")) {
+    placeholder.textContent = "";
+    const nodes = parseWebPanelTree(placeholder.dataset.webPanelTree || "");
+    if (!nodes) {
+      console.warn("pi-web ignored a malformed data-web-panel-tree placeholder");
+      continue;
+    }
+    const document = placeholder.ownerDocument;
+    const tree = document.createElement("div");
+    tree.className = "webPanelTree";
+    tree.setAttribute("role", "tree");
+    const accessibleName = placeholder.getAttribute("aria-label");
+    if (accessibleName) tree.setAttribute("aria-label", accessibleName);
+    const appendNode = (parent: HTMLElement, node: WebPanelTreeNode) => {
+      const label = document.createElement("span");
+      label.className = "webPanelTreeLabel";
+      label.textContent = node.label;
+      const meta = node.meta === undefined ? undefined : document.createElement("span");
+      if (meta) { meta.className = "webPanelTreeMeta"; meta.textContent = node.meta!; }
+      if (node.children) {
+        const details = document.createElement("details");
+        details.className = "webPanelTreeDir";
+        details.dataset.webTreeNodeId = node.id;
+        const persisted = expansionState.get(treeStateKey(panelKey, node.id));
+        details.open = persisted ?? node.open === true;
+        const summary = document.createElement("summary");
+        summary.className = "webPanelTreeDirLabel";
+        summary.setAttribute("role", "treeitem");
+        summary.setAttribute("aria-expanded", String(details.open));
+        if (node.selected) summary.setAttribute("aria-selected", "true");
+        summary.append(webPanelTreeIcon(document, node.icon || "file"));
+        if (node.action) setTreeAction(label, node);
+        summary.append(label);
+        if (meta) summary.append(meta);
+        const group = document.createElement("div");
+        group.className = "webPanelTreeChildren";
+        group.setAttribute("role", "group");
+        for (const child of node.children) appendNode(group, child);
+        details.append(summary, group);
+        details.addEventListener("toggle", () => {
+          summary.setAttribute("aria-expanded", String(details.open));
+          expansionState.set(treeStateKey(panelKey, node.id), details.open);
+        });
+        parent.append(details);
+        return;
+      }
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "webPanelTreeItem";
+      item.setAttribute("role", "treeitem");
+      item.dataset.webTreeNodeId = node.id;
+      if (node.selected) item.setAttribute("aria-selected", "true");
+      setTreeAction(item, node);
+      item.append(webPanelTreeIcon(document, node.icon || "file"), label);
+      if (meta) item.append(meta);
+      parent.append(item);
+    };
+    for (const node of nodes) appendNode(tree, node);
+    installTreeKeyboard(tree, expansionState, panelKey);
+    placeholder.replaceWith(tree);
+  }
+}
+
 export function createWebPanels(options: {
   rightPanels: RightPanelManager;
   apiHeaders: () => HeadersInit;
@@ -117,6 +341,7 @@ export function createWebPanels(options: {
   let requestGeneration = 0;
   let updatePending = false;
   let panelHandle: RightPanelHandle;
+  const treeExpansionState = new Map<string, boolean>();
 
   function formControlIsFocused() {
     const active = document.activeElement;
@@ -161,6 +386,7 @@ export function createWebPanels(options: {
       if (typeof data.html !== "string") throw new Error("Panel returned no content");
       renderHeading(entry, data.title);
       body.innerHTML = data.html;
+      expandWebPanelTrees(body, entry.key, treeExpansionState);
       const autofocus = body.querySelector<HTMLElement>("[autofocus]");
       autofocus?.focus({ preventScroll: true });
       const highlight = body.querySelector<HTMLElement>("[data-web-panel-highlight]");
