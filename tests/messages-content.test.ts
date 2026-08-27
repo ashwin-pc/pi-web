@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assistantErrorBody, assistantErrorStatusCode, cleanThinkingText, formatThinkingText, isRetryableAssistantError, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
+import { assistantErrorBody, assistantErrorStatusCode, cleanThinkingText, formatThinkingText, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
 
 describe("message content helpers", () => {
   it("keeps thinking out of text bubbles and extracts it for thinking cards", () => {
@@ -57,5 +57,37 @@ describe("message content helpers", () => {
     expect(assistantErrorStatusCode("Service unavailable: 503: {\"socket\":true}")).toBe("503");
     expect(isRetryableAssistantError("Throttling error: 429: {}")).toBe(true);
     expect(isRetryableAssistantError("usage_limit_reached")).toBe(false);
+  });
+});
+
+describe("shouldCollapseMessage", () => {
+  it("collapses long prose", () => {
+    expect(shouldCollapseMessage("x".repeat(1900))).toBe(true);
+    expect(shouldCollapseMessage(Array(40).fill("line").join("\n"))).toBe(true);
+  });
+
+  it("keeps short prose expanded", () => {
+    expect(shouldCollapseMessage("short answer")).toBe(false);
+  });
+
+  it("ignores fenced code content, so inline previews are not clipped", () => {
+    const preview = "Lead sentence.\n\n```html-preview\n" + "<div>box</div>\n".repeat(200) + "```\n\nOne closing line.";
+    expect(preview.length).toBeGreaterThan(1800);
+    expect(shouldCollapseMessage(preview)).toBe(false);
+  });
+
+  it("ignores tilde fences (attachment blocks) too", () => {
+    const text = "See attachment.\n~~~json\n" + "{\"k\": 1}\n".repeat(120) + "~~~";
+    expect(shouldCollapseMessage(text)).toBe(false);
+  });
+
+  it("still collapses when the prose around a fence is itself a wall", () => {
+    const text = "p".repeat(1900) + "\n```js\ncode\n```";
+    expect(shouldCollapseMessage(text)).toBe(true);
+  });
+
+  it("treats an unclosed fence as consuming the rest of the message", () => {
+    const text = "intro\n```\n" + "inside\n".repeat(500);
+    expect(shouldCollapseMessage(text)).toBe(false);
   });
 });

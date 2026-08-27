@@ -1,7 +1,30 @@
 import type { AttachedImage } from "../app/types.js";
 
 export function shouldCollapseMessage(text: string) {
-  return text.length > 1800 || text.split("\n").length > 28;
+  // Collapse is a prose-wall heuristic. Fenced code blocks (including
+  // html-preview sources, which can be large) render in their own
+  // scrollable/preview containers, so their contents shouldn't count —
+  // otherwise any message carrying an inline preview collapses and the
+  // preview gets clipped by the 18rem body clamp.
+  let length = 0;
+  let lines = 0;
+  let fence: string | null = null;
+  for (const line of text.split("\n")) {
+    const marker = line.match(/^\s*(`{3,}|~{3,})/)?.[1] ?? null;
+    if (fence) {
+      // CommonMark: a closing fence uses the same character and is at
+      // least as long as the opener.
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+      continue;
+    }
+    if (marker) {
+      fence = marker;
+      continue;
+    }
+    length += line.length + 1;
+    lines += 1;
+  }
+  return length > 1800 || lines > 28;
 }
 
 export function imagesFromRawContent(content: unknown): AttachedImage[] {
