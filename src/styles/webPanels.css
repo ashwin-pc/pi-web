@@ -1,5 +1,6 @@
 .webPanel {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr);
   color: var(--text);
 }
@@ -44,8 +45,8 @@
   display: grid;
   flex: 0 0 auto;
   place-items: center;
-  width: 36px;
-  height: 36px;
+  width: 40px;
+  height: 40px;
   padding: 0;
   border: 1px solid transparent;
   border-radius: 10px;
@@ -69,6 +70,20 @@
 }
 
 .webPanel[aria-busy="true"] .webPanelBody { color: var(--muted); }
+
+.webPanelDeepLinkHighlight {
+  border-left: 3px solid color-mix(in srgb, var(--accent) 72%, var(--border));
+  animation: web-panel-deep-link-pulse 900ms ease-out;
+}
+
+@keyframes web-panel-deep-link-pulse {
+  from { background: color-mix(in srgb, var(--accent) 24%, transparent); box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 15%, transparent); }
+  to { background: transparent; box-shadow: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .webPanelDeepLinkHighlight { animation: none; }
+}
 
 .webPanelError {
   padding: 12px;

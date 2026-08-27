@@ -223,9 +223,11 @@ describe("bundled extension path discovery", () => {
       slots: ["footer", "header-action", "artifact-action", "git-tab", "panel", "fab"],
       kinds: ["static", "rendered"],
       effects: ["open-panel"],
+      components: ["tree"],
     });
     expect(Object.isFrozen(ui.web.capabilities)).toBe(true);
     expect(Object.isFrozen(ui.web.capabilities.slots)).toBe(true);
+    expect(Object.isFrozen(ui.web.capabilities.components)).toBe(true);
 
     bindOptions.onError({ extensionPath: "/tmp/broken.ts", eventName: "session_start", error: new Error("registration failed") });
     expect(bridge.runtimeErrors(session)).toEqual([

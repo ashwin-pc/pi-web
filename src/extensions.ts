@@ -246,6 +246,8 @@ export type PiWebCapabilities = Readonly<{
   slots: readonly string[];
   kinds: readonly string[];
   effects: readonly string[];
+  /** Additive host-owned UI primitives. Older hosts may omit this field. */
+  components?: readonly string[];
 }>;
 
 export type PiWebUi = {
