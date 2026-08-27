@@ -87,7 +87,7 @@ function rememberPanelState(sessionId: string, state: PanelViewState) {
   panelStateBySession.set(sessionId, state);
   while (panelStateBySession.size > MAX_PANEL_VIEW_STATES) panelStateBySession.delete(panelStateBySession.keys().next().value!);
 }
-function invalidatePanels() { for (const invalidate of storeInvalidators) invalidate(); }
+function invalidatePanels(excludeInvalidator?: () => void) { for (const invalidate of storeInvalidators) if (invalidate !== excludeInvalidator) invalidate(); }
 
 async function exists(path: string) {
   try { await lstat(path); return true; }
@@ -181,10 +181,10 @@ function pruneDangling(store: Store, note: NoteRecord) {
   for (const task of note.tasks) task.relations = task.relations.filter((relation) => Boolean(findReference(store, relation.to)));
 }
 
-export async function saveStore(store: Store) {
+export async function saveStore(store: Store, excludeInvalidator?: () => void) {
   if (forceJsonStorage()) await atomicWrite(dbPath(), `${JSON.stringify(store, null, 2)}\n`);
   else await saveVaultStore(store);
-  invalidatePanels();
+  invalidatePanels(excludeInvalidator);
 }
 
 function emptyTask(text: string, fields: Partial<TaskRecord> = {}): TaskRecord {
@@ -731,7 +731,7 @@ function mutate(store: Store, note: NoteRecord, actor: Actor, summary: string, i
 }
 
 const toolParameters = Type.Object({
-  action: StringEnum(["create", "list", "read", "tasks", "add", "check", "uncheck", "update", "write", "link", "unlink", "log", "pin", "unpin", "archive", "move"] as const),
+  action: StringEnum(["create", "list", "read", "tasks", "add", "check", "uncheck", "update", "write", "link", "unlink", "log", "pin", "unpin", "archive", "unarchive", "move"] as const),
   title: Type.Optional(Type.String({ description: "create: note title; move: optional new title" })),
   folder: Type.Optional(Type.String({ description: "Virtual folder; list .archive to see archived notes" })),
   text: Type.Optional(Type.String({ description: "create body, task text, update text, or log text" })),
@@ -1027,16 +1027,13 @@ const panelStyles = `<style>
 .gnpDoc{width:100%;max-width:74ch;margin:3px auto 7px;padding:5px 4px 16px;color:var(--text);font-size:14.75px;line-height:1.64;overflow-wrap:anywhere}.gnpDoc:empty{display:none}.gnpDoc h1,.gnpDoc h2,.gnpDoc h3,.gnpDoc h4,.gnpDoc h5,.gnpDoc h6{margin:1.65em 0 .48em;color:var(--text);font-weight:690;line-height:1.22;letter-spacing:-.012em;text-transform:none;text-wrap:balance}.gnpDoc h1{padding-bottom:.28em;border-bottom:1px solid color-mix(in srgb,var(--border) 78%,transparent);font-size:1.65em;font-weight:730}.gnpDoc h2{font-size:1.34em}.gnpDoc h3{font-size:1.14em}.gnpDoc h4{font-size:1em}.gnpDoc h5{font-size:.94em}.gnpDoc h6{font-size:.88em;color:var(--gnp-muted,var(--muted))}.gnpDoc p{margin:.82em 0}.gnpDoc strong{font-weight:700}.gnpDoc a{color:var(--accent);text-decoration-color:transparent;text-underline-offset:.16em}.gnpDoc a:hover,.gnpDoc a:focus-visible{text-decoration-color:currentColor}.gnpDoc code{padding:.12em .34em;border:1px solid color-mix(in srgb,var(--border) 62%,transparent);border-radius:4px;background:color-mix(in srgb,var(--panel-2) 88%,transparent);font-family:ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;font-size:.88em;overflow-wrap:anywhere}.gnpDoc pre{max-width:100%;margin:1em 0;padding:12px 14px;overflow-x:auto;border:1px solid color-mix(in srgb,var(--border) 74%,transparent);border-radius:9px;background:color-mix(in srgb,var(--panel-2) 88%,black 4%);color:var(--text);font:12.75px/1.55 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace;white-space:pre;overflow-wrap:normal;-webkit-overflow-scrolling:touch}.gnpDoc pre code{padding:0;border:0;border-radius:0;background:none;color:inherit;font:inherit;white-space:pre;overflow-wrap:normal}.gnpDoc blockquote{margin:1em 0;padding:.1em 0 .1em 1em;border-left:3px solid color-mix(in srgb,var(--accent) 48%,var(--border));color:color-mix(in srgb,var(--text) 82%,var(--muted));font-size:1em}.gnpDoc blockquote>:first-child{margin-top:.3em}.gnpDoc blockquote>:last-child{margin-bottom:.3em}.gnpDoc ul,.gnpDoc ol{margin:.72em 0;padding-left:1.55em}.gnpDoc li{margin:.24em 0;padding-left:.12em}.gnpDoc li::marker{color:color-mix(in srgb,var(--muted) 84%,var(--text))}.gnpDoc li>ul,.gnpDoc li>ol{margin:.28em 0}.gnpDoc li input[type=checkbox]{margin:0 .42em 0 0;accent-color:var(--accent);vertical-align:-.1em}.gnpDoc hr{height:1px;margin:1.65em 0;border:0;background:color-mix(in srgb,var(--border) 80%,transparent)}.gnpTableWrap{max-width:100%;margin:1em 0;overflow-x:auto;border:1px solid color-mix(in srgb,var(--border) 76%,transparent);border-radius:8px;-webkit-overflow-scrolling:touch}.gnpDoc table{width:100%;border-collapse:collapse;font-size:.92em;line-height:1.45}.gnpDoc th,.gnpDoc td{padding:7px 9px;border-right:1px solid color-mix(in srgb,var(--border) 62%,transparent);border-bottom:1px solid color-mix(in srgb,var(--border) 62%,transparent);text-align:left;vertical-align:top}.gnpDoc th:last-child,.gnpDoc td:last-child{border-right:0}.gnpDoc tbody tr:last-child td{border-bottom:0}.gnpDoc th{background:color-mix(in srgb,var(--panel-2) 78%,transparent);font-weight:690}.gnpDoc .gnpAlign-center{text-align:center}.gnpDoc .gnpAlign-right{text-align:right}.gnpDoc>:first-child{margin-top:0}.gnpDoc>:last-child{margin-bottom:0}.gnpManagedSection,.gnpQuickAdd{width:100%;max-width:74ch;margin-inline:auto;padding-inline:4px}.gnpDoc:not(:empty)+.gnpManagedSection{padding-top:13px;border-top:1px solid color-mix(in srgb,var(--border) 68%,transparent)}.gnpActivitySection{margin-top:7px;padding-top:12px;border-top:1px solid color-mix(in srgb,var(--border) 54%,transparent)}.gnpActivityList{display:grid;gap:5px}.gnpActivity{border-left:2px solid var(--border);padding:5px 0 5px 8px;line-height:1.45}.gnpActivityActor{color:var(--text)}.gnpActivityTask{color:var(--text)}.gnpStatus{display:flex;min-height:36px;align-items:center;gap:6px;padding:4px 8px;border-radius:7px;background:var(--panel-2);color:var(--gnp-muted,var(--muted))}
 .gnpEditGrid{display:grid;gap:10px}.gnpEditGrid label{display:grid;gap:4px;color:var(--gnp-muted,var(--muted));font-size:11.5px}.gnpEditGrid input{width:100%;min-width:0}.gnpEditActions{display:flex;justify-content:flex-end;gap:8px}
 @media(max-width:640px){.gnp{gap:10px}.gnpToolbar{gap:4px}.gnpFilter{height:44px}.gnpFilter input{height:44px;min-height:44px}.gnpToolbar .webPanelButton{height:44px;min-height:44px}.gnpCreate>summary{width:44px;height:44px;min-height:44px}.gnpCreateForm{top:49px;grid-template-columns:1fr;width:min(320px,calc(100vw - 40px))}.gnpOpen{height:44px;min-height:44px}.gnpRowPath{max-width:34%}.gnpBar{align-items:stretch}.gnpBar>input{flex-basis:100%}.gnpBar input,.gnpEditGrid input,.gnpCreateForm input{min-height:44px}.gnpTask{grid-template-columns:44px minmax(0,1fr) 44px}.gnpCheckTarget,.gnpIconButton{width:44px;height:44px}.gnpRelation{flex:1 1 100%;min-height:44px}.gnp .webPanelButton,.gnp .gnpTextButton{min-height:44px;padding-inline:11px}.gnpNoteNav{flex-wrap:wrap}.gnpBreadcrumb{order:3;flex-basis:100%;padding-left:2px}.gnpNote{gap:8px}.gnpDoc{max-width:100%;margin-top:2px;padding:4px 2px 15px;font-size:16px;line-height:1.62}.gnpDoc h1{font-size:1.55em}.gnpDoc h2{font-size:1.28em}.gnpDoc h3{font-size:1.12em}.gnpDoc blockquote{margin-inline:0;padding-left:.8em}.gnpDoc ul,.gnpDoc ol{padding-left:1.4em}.gnpDoc pre{padding:11px 12px;font-size:12.75px}.gnpDoc table{min-width:30rem}.gnpManagedSection,.gnpQuickAdd{max-width:100%;padding-inline:2px}}
-
-@media(prefers-reduced-motion:reduce){.gnpRow{transition:none}.gnpRow:hover,.gnpRow:focus-within{transform:none}}
 </style>`;
 
 // The host tree owns row metrics and interaction styles. Keep the legacy rules
 // only for older hosts that do not advertise the additive tree component.
 const hostTreePanelStyles = panelStyles
   .replace(/\.gnpExplorer\{[\s\S]*?(?=\.gnpMeta,\.gnpActivity)/, "")
-  .replace(".gnpOpen{height:44px;min-height:44px}.gnpRowPath{max-width:34%}", "")
-  .replace("@media(prefers-reduced-motion:reduce){.gnpRow{transition:none}.gnpRow:hover,.gnpRow:focus-within{transform:none}}", "");
+  .replace(".gnpOpen{height:44px;min-height:44px}.gnpRowPath{max-width:34%}", "");
 
 const pinSvg = `<svg class="gnpInlineIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 17v5M5 17h14M7 3h10l-1 8 3 3H5l3-3-1-8Z"/></svg>`;
 const plusSvg = `<svg class="gnpInlineIcon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>`;
@@ -1054,8 +1051,7 @@ function connectedToSession(note: NoteRecord, session: PanelSessionContext) {
 }
 function renderTree(notes: NoteRecord[], archived = false, status = "", query = "", undoNote?: string, session: PanelSessionContext = {}, useHostTree = false): PiWebPanelView {
   const connected = archived ? [] : notes.filter((note) => connectedToSession(note, session));
-  const connectedIds = new Set(connected.map((note) => note.id));
-  const pinned = archived ? [] : notes.filter((note) => note.pinned && !connectedIds.has(note.id));
+  const pinned = archived ? [] : notes.filter((note) => note.pinned);
   const regular = notes;
   const sections = useHostTree ? [
     connected.length ? `<section class="gnpSection"><h3 class="gnpSectionTitle">${sessionSvg}<span>This session</span></h3>${hostTreePlaceholder(connected.map((note) => hostNoteNode(note, "session", note.pinned ? "pin" : "note", true)), "This session")}</section>` : "",
@@ -1161,7 +1157,7 @@ function renderNote(store: Store, note: NoteRecord, status = "", highlight: Note
   }).join("");
   const folder = note.id.split("/").slice(0, -1);
   const breadcrumb = folder.length ? folder.join(" / ") : "Root";
-  return { title: truncate(note.title, 96), html: `${panelStyles}<div class="gnp gnpNote"><div class="gnpNoteNav"><button class="webPanelButton gnpBackButton" type="button" data-web-panel-action="back-tree">Back to notes</button><div class="gnpBreadcrumb" title="${escapeHtml(`Location: ${breadcrumb}`)}">${escapeHtml(breadcrumb)} /</div>${note.archived ? "" : `<div class="gnpNoteNavActions"><button class="webPanelButton" type="button" data-web-panel-action="${note.pinned ? "unpin-note" : "pin-note"}" data-web-panel-payload='${payload({ note: note.id, reopen: true })}'>${note.pinned ? "Unpin" : "Pin"}</button><button class="webPanelButton" type="button" data-web-panel-action="archive-note" data-web-panel-payload='${payload({ note: note.id })}'>Archive</button></div>`}</div>${statusHtml(status)}<article class="gnpDoc"${highlight.top ? " data-web-panel-highlight" : ""}>${markdownHtml(note.body, highlight.heading)}</article><section class="gnpManagedSection gnpTasksSection"><h3 class="gnpSectionTitle">Tasks</h3>${tasks || '<div class="gnpMeta">No tasks.</div>'}</section>${note.archived ? "" : `<form class="gnpBar gnpQuickAdd" data-web-panel-action="quick-add" data-web-panel-payload='${payload({ note: note.id })}'><input name="text" maxlength="${MAX_TASK_TEXT}" placeholder="Add a task…" required><button class="webPanelButton" type="submit">Add</button></form>`}<section class="gnpManagedSection gnpActivitySection"><h3 class="gnpSectionTitle">Activity</h3><div class="gnpActivityList">${activity || '<div class="gnpMeta">No activity yet.</div>'}</div></section></div>` };
+  return { title: truncate(note.title, 96), html: `${panelStyles}<div class="gnp gnpNote"><div class="gnpNoteNav"><button class="webPanelButton gnpBackButton" type="button" data-web-panel-action="back-tree">Back to notes</button><div class="gnpBreadcrumb" title="${escapeHtml(`Location: ${breadcrumb}`)}">${escapeHtml(breadcrumb)} /</div><div class="gnpNoteNavActions">${note.archived ? `<button class="webPanelButton" type="button" data-web-panel-action="unarchive-note" data-web-panel-payload='${payload({ note: note.id })}'>Unarchive</button>` : `<button class="webPanelButton" type="button" data-web-panel-action="${note.pinned ? "unpin-note" : "pin-note"}" data-web-panel-payload='${payload({ note: note.id, reopen: true })}'>${note.pinned ? "Unpin" : "Pin"}</button><button class="webPanelButton" type="button" data-web-panel-action="archive-note" data-web-panel-payload='${payload({ note: note.id })}'>Archive</button>`}</div></div>${statusHtml(status)}<article class="gnpDoc"${highlight.top ? " data-web-panel-highlight" : ""}>${markdownHtml(note.body, highlight.heading)}</article><section class="gnpManagedSection gnpTasksSection"><h3 class="gnpSectionTitle">Tasks</h3>${tasks || '<div class="gnpMeta">No tasks.</div>'}</section>${note.archived ? "" : `<form class="gnpBar gnpQuickAdd" data-web-panel-action="quick-add" data-web-panel-payload='${payload({ note: note.id })}'><input name="text" maxlength="${MAX_TASK_TEXT}" placeholder="Add a task…" required><button class="webPanelButton" type="submit">Add</button></form>`}<section class="gnpManagedSection gnpActivitySection"><h3 class="gnpSectionTitle">Activity</h3><div class="gnpActivityList">${activity || '<div class="gnpMeta">No activity yet.</div>'}</div></section></div>` };
 }
 function renderPanelState(store: Store, state: PanelViewState, session: PanelSessionContext = {}, useHostTree = false): PiWebPanelView {
   if (state.kind === "tree") return renderTree(visibleNotes(store, state.archived ? ARCHIVE : undefined, state.query), state.archived, state.status || "", state.query, state.undoNote, session, useHostTree);
@@ -1184,10 +1180,10 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
     description: [
       "Global Markdown-vault notepad shared across conversations. Each note has an informational Markdown body, structured task job records with stable t-… ids and typed relations, and an immutable-style activity audit tail.",
       "Body checkbox syntax is inert and never creates jobs. Use add for tasks. Relations live on the source: blocks, relates, or spawned; read computes blocked-by/spawned-from/inverse views. A task is blocked when waiting is set or an open blocker points to it.",
-      "Actions: create(title, folder?, text? body); list(folder?, query?) (.archive lists archived); read(note); tasks(folder?, note?, status?, session?, query?); add(note, text, group?, due?, session?, waiting?); check/uncheck(note, task); update(note, task, text?, group?, due?, session?, waiting?); write(note, body, revision); link/unlink(note, task, to, type); log(note, text, task?); pin/unpin; archive; move(note, folder?, title?). Note is id/path or unique slug fragment; task is stable id or unique case-insensitive text substring; to is note-id#task-id. write requires the revision from read and rejects stale edits. Every action re-reads external vault edits; editors that want write-staleness detection should also bump the revision frontmatter field.",
+      "Actions: create(title, folder?, text? body); list(folder?, query?) (.archive lists archived); read(note); tasks(folder?, note?, status?, session?, query?); add(note, text, group?, due?, session?, waiting?); check/uncheck(note, task); update(note, task, text?, group?, due?, session?, waiting?); write(note, body, revision); link/unlink(note, task, to, type); log(note, text, task?); pin/unpin; archive/unarchive; move(note, folder?, title?). Note is id/path or unique slug fragment; task is stable id or unique case-insensitive text substring; to is note-id#task-id. write requires the revision from read and rejects stale edits. Every action re-reads external vault edits; editors that want write-staleness detection should also bump the revision frontmatter field.",
     ].join(" "),
     promptSnippet: "Manage global Markdown-vault notes: body=information, tasks=job records with typed relations, activity=audit",
-    promptGuidelines: ["Use notepad for cross-conversation information and jobs. Put prose in body, create work only with add, use stable task ids for mutations/relations, and re-read before revision-guarded write. Use log only for freeform communication; every mutation is already audited."],
+    promptGuidelines: ["Use notepad for cross-conversation information and jobs. Put prose in body, create work only with add, use stable task ids for mutations/relations, and re-read before revision-guarded write. Use log only for freeform communication; every mutation is already audited. Archive and unarchive are symmetric; archived notes are otherwise read-only."],
     parameters: toolParameters,
     async execute(_id, params, _signal, _onUpdate, ctx) {
       return withNoteQueue(async () => {
@@ -1291,10 +1287,12 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
           note.pinned = params.action === "pin"; mutate(store, note, actor, `${note.pinned ? "pinned" : "unpinned"} note "${note.title}"`); await saveStore(store);
           return result(`${note.pinned ? "Pinned" : "Unpinned"} ${note.id}`, { note: note.id, revision: note.revision });
         }
-        if (params.action === "archive") {
-          if (note.archived) throw new Error(`Note "${note.id}" is already archived`);
-          note.archived = true; note.pinned = false; mutate(store, note, actor, `archived note "${note.title}"`); await saveStore(store);
-          return result(`Archived ${note.id}`, { note: note.id, revision: note.revision });
+        if (params.action === "archive" || params.action === "unarchive") {
+          const archiving = params.action === "archive";
+          if (note.archived === archiving) throw new Error(`Note "${note.id}" is ${archiving ? "already archived" : "not archived"}`);
+          note.archived = archiving; if (archiving) note.pinned = false;
+          mutate(store, note, actor, `${archiving ? "archived" : "unarchived"} note "${note.title}"`); await saveStore(store);
+          return result(`${archiving ? "Archived" : "Unarchived"} ${note.id}`, { note: note.id, revision: note.revision });
         }
         if (params.action === "move") {
           if (note.archived) throw new Error("Archived notes cannot be moved");
@@ -1371,7 +1369,7 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
             const stamp = now(); const note: NoteRecord = { id, title, body: "", pinned: false, archived: false, revision: 1, tasks: [], activity: [], created: stamp, updated: stamp };
             appendActivity(note, actor, `created note "${title}"`); store.notes.push(note);
             const next: NoteViewState = { kind: "note", noteId: note.id, back, status: "Note created." }; rememberPanelState(panelSessionId, next);
-            await saveStore(store); return renderState(next);
+            await saveStore(store, invalidate); return renderState(next);
           }
           if (action === "open-note") { const note = resolveNote(store, data.note); return show({ kind: "note", noteId: note.id, back }); }
           if (action === "jump-task") { const target = findReference(store, String(data.to)); if (!target) throw new Error(`Broken relation target ${data.to}`); return show({ kind: "note", noteId: target.note.id, back, highlight: { task: target.task.id } }); }
@@ -1379,13 +1377,13 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
             const note = resolveNote(store, data.note); if (note.archived) throw new Error("Archived notes are read-only"); if (note.tasks.length >= MAX_TASKS) throw new Error(`A note is limited to ${MAX_TASKS} tasks`);
             const task = emptyTask(shortText(firstField(event, "text"), "text")); note.tasks.push(task); mutate(store, note, actor, `added task "${task.text}"`, task.id);
             const next: NoteViewState = { kind: "note", noteId: note.id, back, status: "Task added.", highlight: { task: task.id } }; remember(next);
-            await saveStore(store); return renderState(next);
+            await saveStore(store, invalidate); return renderState(next);
           }
           if (action === "toggle-task") {
             const note = resolveNote(store, data.note); if (note.archived) throw new Error("Archived notes are read-only"); const task = resolveTask(note, data.task);
             task.done = !task.done; task.completed = task.done ? now() : null; mutate(store, note, actor, `${task.done ? "checked" : "unchecked"} "${task.text}"`, task.id);
             const next: NoteViewState = { kind: "note", noteId: note.id, back, status: task.done ? "Task completed." : "Task reopened.", highlight: { task: task.id } }; remember(next);
-            await saveStore(store); return renderState(next);
+            await saveStore(store, invalidate); return renderState(next);
           }
           if (action === "edit-task") {
             const note = resolveNote(store, data.note); if (note.archived) throw new Error("Archived notes are read-only"); const task = resolveTask(note, data.task);
@@ -1396,24 +1394,24 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
             task.text = shortText(firstField(event, "text"), "text"); task.group = groupValue(firstField(event, "group")); task.due = dueValue(firstField(event, "due")) ?? null; task.session = optionalText(firstField(event, "session"), "session") ?? null; task.waiting = optionalText(firstField(event, "waiting"), "waiting") ?? null;
             mutate(store, note, actor, `updated task "${task.text}"`, task.id);
             const next: NoteViewState = { kind: "note", noteId: note.id, back, status: "Task saved.", highlight: { task: task.id } }; remember(next);
-            await saveStore(store); return renderState(next);
+            await saveStore(store, invalidate); return renderState(next);
           }
           if (action === "pin-note" || action === "unpin-note") {
             const note = resolveNote(store, data.note); if (note.archived) throw new Error("Archived notes cannot be pinned"); note.pinned = action === "pin-note"; mutate(store, note, actor, `${note.pinned ? "pinned" : "unpinned"} note "${note.title}"`);
             const status = note.pinned ? "Pinned." : "Unpinned.";
             const next: PanelViewState = data.reopen ? { kind: "note", noteId: note.id, back, status } : { ...back, status };
-            rememberPanelState(panelSessionId, next); await saveStore(store); return renderState(next);
+            rememberPanelState(panelSessionId, next); await saveStore(store, invalidate); return renderState(next);
           }
           if (action === "archive-note") {
             const note = resolveNote(store, data.note); if (note.archived) throw new Error(`Note "${note.id}" is already archived`); note.archived = true; note.pinned = false; mutate(store, note, actor, `archived note "${note.title}"`);
             const next: TreeViewState = { ...back, archived: false, status: `Archived ${note.title}.`, undoNote: note.id }; rememberPanelState(panelSessionId, next);
-            await saveStore(store); return renderState(next);
+            await saveStore(store, invalidate); return renderState(next);
           }
           if (action === "unarchive-note") {
             const note = resolveNote(store, data.note); if (!note.archived) throw new Error(`Note "${note.id}" is not archived`); note.archived = false; mutate(store, note, actor, `unarchived note "${note.title}"`);
-            const cleanBack: TreeViewState = { ...back, status: undefined, undoNote: undefined };
+            const cleanBack: TreeViewState = { ...back, archived: false, status: undefined, undoNote: undefined };
             const next: NoteViewState = { kind: "note", noteId: note.id, back: cleanBack, status: "Archive undone." }; rememberPanelState(panelSessionId, next);
-            await saveStore(store); return renderState(next);
+            await saveStore(store, invalidate); return renderState(next);
           }
           return show(defaultTreeState());
         } catch (error) {

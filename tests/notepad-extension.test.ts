@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -128,22 +128,24 @@ describe.sequential("global notepad Markdown vault", () => {
     expect(await readFile(vaultFile("history/done", true), "utf8")).toContain('title: "Archived"');
   });
 
-  it("migrates a realistic v3 JSON database once, backs it up, and continues in the vault", async () => {
-    const realSource = "/home/ashwinpc/.pi/agent/notepad-db.json";
-    const realBefore = await readFile(realSource, "utf8");
-    await copyFile(realSource, process.env.PI_WEB_NOTEPAD_DB!);
-    const seeded = JSON.parse(realBefore);
+  it("migrates a v3 JSON database once, backs it up, and continues in the vault", async () => {
+    const stamp = "2026-08-25T12:34:56.789Z";
+    const seeded = { version: 3, notes: [{
+      id: "migration/source", title: "Migration source", body: "Preserve me", pinned: true, archived: false, revision: 2,
+      tasks: [], activity: [], created: stamp, updated: stamp,
+    }] };
+    const source = `${JSON.stringify(seeded, null, 2)}\n`;
+    await writeFile(process.env.PI_WEB_NOTEPAD_DB!, source);
 
     await call({ action: "list" });
     expect(await loadStore()).toEqual(expect.objectContaining({ version: 3 }));
     const loaded = await loadStore();
     const noteDigests = (notes: any[]) => notes.map((note) => ({ id: note.id, digest: digest(note) })).sort((a, b) => a.id.localeCompare(b.id));
     expect(noteDigests(loaded.notes)).toEqual(noteDigests(seeded.notes));
-    expect(await readFile(realSource, "utf8")).toBe(realBefore);
     await expect(stat(process.env.PI_WEB_NOTEPAD_DB!)).rejects.toMatchObject({ code: "ENOENT" });
     const backups = (await readdir(root)).filter((name) => /^notepad-db\.json\.migrated-\d{8}-\d{6}(?:-\d+)?$/.test(name));
     expect(backups).toHaveLength(1);
-    expect(await readFile(join(root, backups[0]), "utf8")).toBe(realBefore);
+    expect(await readFile(join(root, backups[0]), "utf8")).toBe(source);
 
     const created = await call({ action: "create", title: "Vault migration smoke" });
     expect(created.details.note).toBe("vault-migration-smoke");
@@ -263,7 +265,7 @@ describe.sequential("global notepad Markdown vault", () => {
     await expect(call({ action: "check", note: "jobs", task: "missing" })).rejects.toThrow(/Candidates: \(none\)/);
   });
 
-  it("rolls up open, done, overdue, blocked, session, query, folder, and archived filters", async () => {
+  it("rolls up open, done, overdue, blocked, session, query, and folder filters and restores archived notes", async () => {
     await call({ action: "create", title: "Operations", folder: "team" });
     await call({ action: "add", note: "operations", text: "Old job", due: "2000-01-01", session: "alpha" });
     await call({ action: "add", note: "operations", text: "Waiting job", waiting: "TICKET-7", session: "alpha" });
@@ -283,6 +285,12 @@ describe.sequential("global notepad Markdown vault", () => {
     expect(output(await call({ action: "list" }))).not.toContain("operations");
     expect(output(await call({ action: "list", folder: ".archive" }))).toContain("[team/operations](#panel:global-notepad:note=team%2Foperations) — 3/4 open");
     expect(output(await call({ action: "tasks", query: "future" }))).toBe("No tasks match those filters.");
+
+    expect(output(await call({ action: "unarchive", note: "operations" }))).toBe("Unarchived team/operations");
+    expect((await stat(vaultFile("team/operations"))).isFile()).toBe(true);
+    await expect(stat(vaultFile("team/operations", true))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(record(await db(), "team/operations").activity.at(-1)).toMatchObject({ text: 'unarchived note "Operations"' });
+    await expect(call({ action: "unarchive", note: "operations" })).rejects.toThrow('Note "team/operations" is not archived');
   });
 
   it("auto-audits every mutating tool verb with provenance and taskId, and trims activity to 100", async () => {
@@ -445,6 +453,7 @@ describe.sequential("global notepad Markdown vault", () => {
   it("emits host tree placeholders when supported while retaining host-owned row metrics", async () => {
     await call({ action: "create", title: "Session note", folder: "team" });
     await call({ action: "add", note: "session-note", text: "Tree task", session: "test session" });
+    await call({ action: "pin", note: "session-note" });
     await call({ action: "create", title: "Pinned note", folder: "ops" });
     await call({ action: "pin", note: "pinned-note" });
     const contributions = new Map<string, any>();
@@ -458,8 +467,11 @@ describe.sequential("global notepad Markdown vault", () => {
     const trees = [...view.html.matchAll(/data-web-panel-tree='([^']*)'/g)].map((match) => JSON.parse(decode(match[1])));
 
     expect(trees).toHaveLength(3);
-    expect(trees[0]).toEqual([expect.objectContaining({ id: "session:team/session-note", icon: "note", meta: "1 open", action: "open-note", payload: { note: "team/session-note" } })]);
-    expect(trees[1]).toEqual([expect.objectContaining({ id: "pinned:ops/pinned-note", icon: "pin", meta: "0 open", action: "open-note" })]);
+    expect(trees[0]).toEqual([expect.objectContaining({ id: "session:team/session-note", icon: "pin", meta: "1 open", action: "open-note", payload: { note: "team/session-note" } })]);
+    expect(trees[1]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "pinned:ops/pinned-note", icon: "pin", meta: "0 open", action: "open-note" }),
+      expect.objectContaining({ id: "pinned:team/session-note", icon: "pin", meta: "1 open", action: "open-note" }),
+    ]));
     expect(trees[2]).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "folder:team", icon: "folder", open: true, children: [expect.objectContaining({ id: "note:team/session-note", icon: "note", action: "open-note" })] }),
       expect.objectContaining({ id: "folder:ops", icon: "folder", open: true, children: [expect.objectContaining({ id: "note:ops/pinned-note", icon: "note", action: "open-note" })] }),
@@ -492,17 +504,17 @@ describe.sequential("global notepad Markdown vault", () => {
     const seeded = await db();
     record(seeded, "team/panel").activity.push({ at: new Date().toISOString(), by: "agent", sessionId: "panel-session", sessionName: "current panel", text: "viewed from current session" });
     await saveDb(seeded);
-    const liveContexts: Array<{ context: any; contributions: Map<string, any> }> = [];
+    const liveContexts: Array<{ context: any; contributions: Map<string, any>; updates: string[] }> = [];
     const freshPanel = async () => {
-      const contributions = new Map<string, any>();
+      const contributions = new Map<string, any>(); const updates: string[] = [];
       // The live bridge may provide a fresh context/web proxy while the logical
       // session id remains stable. Never rely on object identity for view state.
       const context = { sessionManager: { getSessionId: () => "panel-session" }, ui: { notify() {}, web: {
         capabilities: { apiVersion: 1, slots: ["panel", "fab"], kinds: ["rendered", "static"] },
-        contribute: (key: string, value: any) => contributions.set(key, value), update() {}, registerSettings: async () => undefined,
+        contribute: (key: string, value: any) => contributions.set(key, value), update: (key: string) => updates.push(key), registerSettings: async () => undefined,
       } } };
       await handlers.get("session_start")?.({}, context);
-      liveContexts.push({ context, contributions });
+      liveContexts.push({ context, contributions, updates });
       return contributions.get("global-notepad");
     };
     const panel = await freshPanel();
@@ -529,7 +541,7 @@ describe.sequential("global notepad Markdown vault", () => {
     const pinnedSection = tree.html.slice(pinnedStart, notesStart);
     expect(pinnedSection).toContain('<strong>Pinned runbook</strong><span class="gnpRowPath" title="ops">ops/</span>');
     expect(pinnedSection).toContain('class="gnpRow gnpRow-pinned gnpRow-isPinned"');
-    expect(pinnedSection).not.toContain("<strong>Target</strong>");
+    expect(pinnedSection).toContain("<strong>Target</strong>");
     expect(tree.html).toContain('class="gnpFolder" role="listitem" aria-label="Folder team, 4 open tasks" style="--gnp-indent:0px"');
     expect(tree.html).toContain('class="gnpRow gnpRow-note" role="listitem" style="--gnp-indent:14px"><button class="gnpOpen" type="button" aria-label="Open Panel in team; 4 open tasks"');
     expect(tree.html.slice(notesStart)).toContain("<strong>Target</strong>");
@@ -636,7 +648,11 @@ describe.sequential("global notepad Markdown vault", () => {
     expect(edited).toMatchObject({ text: "Edited live job", group: "Delivery", due: "2031-02-03", session: "beta", waiting: "review" });
     expect(record(await db(), "team/panel").activity.at(-1)).toMatchObject({ by: "user", taskId: source, text: 'updated task "Edited live job"' });
 
+    const originUpdatesBeforeToggle = liveContexts[0].updates.length;
+    const peerUpdatesBeforeToggle = liveContexts.slice(1).reduce((total, live) => total + live.updates.length, 0);
     const toggled = await panel.render({ action: "toggle-task", payload: { note: "team/panel", task: source } });
+    expect(liveContexts[0].updates).toHaveLength(originUpdatesBeforeToggle);
+    expect(liveContexts.slice(1).reduce((total, live) => total + live.updates.length, 0)).toBeGreaterThan(peerUpdatesBeforeToggle);
     expect(toggled.title).toBe("Panel");
     expect(toggled.html).toContain("Task completed.");
     expect(toggled.html).toContain(`id="task-${source}" data-web-panel-highlight`);
@@ -647,7 +663,11 @@ describe.sequential("global notepad Markdown vault", () => {
     expect(toggledAfterInvalidation.html).not.toContain("data-web-panel-highlight");
     expect(toggledAfterInvalidation.html).toMatch(new RegExp(`id="task-${source}"[\\s\\S]{0,240}<input type="checkbox" checked`));
 
+    const originUpdatesBeforeAdd = liveContexts[0].updates.length;
+    const peerUpdatesBeforeAdd = liveContexts.slice(1).reduce((total, live) => total + live.updates.length, 0);
     const added = await panel.render({ action: "quick-add", payload: { note: "team/panel" }, fields: { text: "Panel-added task" } });
+    expect(liveContexts[0].updates).toHaveLength(originUpdatesBeforeAdd);
+    expect(liveContexts.slice(1).reduce((total, live) => total + live.updates.length, 0)).toBeGreaterThan(peerUpdatesBeforeAdd);
     expect(added.title).toBe("Panel");
     expect(added.html).toContain("Task added.");
     expect(added.html).toMatch(/data-web-panel-highlight[\s\S]*Panel-added task/);
@@ -669,9 +689,19 @@ describe.sequential("global notepad Markdown vault", () => {
     const archivedAfterInvalidation = await bareRender();
     expect(archivedAfterInvalidation.html).toContain("Archived Browser draft.");
     expect(archivedAfterInvalidation.html).toContain('data-web-panel-action="unarchive-note"');
+    await panel.render({ action: "show-archive" });
+    const archivedNote = await panel.render({ action: "open-note", payload: { note: "scratch/browser-draft" } });
+    expect(archivedNote.title).toBe("Browser draft");
+    expect(archivedNote.html).toContain('data-web-panel-action="unarchive-note"');
+    expect(archivedNote.html).toContain(">Unarchive</button>");
     const unarchived = await panel.render({ action: "unarchive-note", payload: { note: "scratch/browser-draft" } });
     expect(unarchived.title).toBe("Browser draft");
     expect(unarchived.html).toContain("Archive undone.");
+    const backAfterUnarchive = await panel.render({ action: "back-tree" });
+    expect(backAfterUnarchive.title).toBe("Global notepad");
+    expect(backAfterUnarchive.html).toContain('aria-pressed="false"');
+    expect(backAfterUnarchive.html).toContain("Browser draft");
+    await panel.render({ action: "open-note", payload: { note: "scratch/browser-draft" } });
     expect((await bareRender()).title).toBe("Browser draft");
     expect(record(await db(), "scratch/browser-draft")).toMatchObject({ archived: false });
     expect(record(await db(), "scratch/browser-draft").activity.at(-1)).toMatchObject({ by: "user", text: 'unarchived note "Browser draft"' });
@@ -688,6 +718,10 @@ describe.sequential("global notepad Markdown vault", () => {
     const unknown = await panel.render({ action: "deep-link", payload: { note: "gone" } });
     expect(unknown.title).toBe("Global notepad");
     expect(unknown.html).toContain("Deep link target not found: gone.");
+
+    const updatesBeforeToolMutation = liveContexts.map((live) => live.updates.length);
+    await call({ action: "log", note: "team/panel", text: "Agent-side panel refresh" });
+    expect(liveContexts.map((live) => live.updates.length)).toEqual(updatesBeforeToolMutation.map((count) => count + 1));
 
     for (const live of liveContexts) await handlers.get("session_shutdown")?.({}, live.context);
     expect(liveContexts[0].contributions.get("global-notepad")).toBeUndefined();
