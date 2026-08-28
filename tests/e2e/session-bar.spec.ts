@@ -732,11 +732,16 @@ test.describe("session quick bar", () => {
   });
 
   test("a real downward touch swipe cycles focused lanes", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.setViewportSize({ width: 390, height: 844 });
     await seedServerSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
     ] });
+    await page.route("**/api/sessions/open", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await route.continue();
+    });
     await page.goto("/");
     const tabBox = await page.locator('.sessionBarTab.laned[data-session-id="mock-current"]').boundingBox();
     expect(tabBox).not.toBeNull();
@@ -756,6 +761,9 @@ test.describe("session quick bar", () => {
     await page.waitForTimeout(32);
     await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 
+    await expect(page.locator("#sessionBar")).toHaveClass(/\blane-swipe-exit\b/);
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-older"]')).toBeVisible();
+    await expect(page.locator("#sessionBar")).toHaveClass(/\blane-swipe-enter\b/);
     await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
   });
 

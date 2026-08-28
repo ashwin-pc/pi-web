@@ -696,6 +696,22 @@
   display: none;
 }
 .sessionBar[hidden] { display: none; }
+.sessionBar.lane-swipe-exit > * {
+  animation: session-lane-exit-down 120ms cubic-bezier(.4, 0, 1, 1) both;
+}
+.sessionBar.lane-swipe-enter > * {
+  animation: session-lane-enter-above 160ms cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes session-lane-exit-down {
+  to { transform: translateY(100%); opacity: 0; }
+}
+@keyframes session-lane-enter-above {
+  from { transform: translateY(-100%); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sessionBar.lane-swipe-exit > *,
+  .sessionBar.lane-swipe-enter > * { animation: none; }
+}
 
 .sessionBarTab {
   --session-tab-accent: var(--accent);

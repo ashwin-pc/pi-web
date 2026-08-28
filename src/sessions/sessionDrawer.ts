@@ -1394,6 +1394,34 @@ export function createSessions(options: {
     else await openSessionTab(target.sessionId, cachedSessions.find((item) => item.id === target.sessionId)?.cwd || target.cwd || state.currentCwd || "");
   }
 
+  let laneSwipeTransitionInFlight = false;
+  async function switchFocusedLaneFromSwipe(lane: SessionLaneId) {
+    if (laneSwipeTransitionInFlight) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      await switchFocusedLane(lane);
+      return;
+    }
+    laneSwipeTransitionInFlight = true;
+    const bar = elements.sessionBarEl;
+    const animate = (className: string, duration: number) => new Promise<void>((resolve) => {
+      bar.classList.add(className);
+      window.setTimeout(() => { bar.classList.remove(className); resolve(); }, duration);
+    });
+    try {
+      await animate("lane-swipe-exit", 120);
+      // Lane selection and active-session state change synchronously before the
+      // session-open request resolves. Render that state now so network latency
+      // cannot make the outgoing strip snap back while we wait.
+      const switching = switchFocusedLane(lane);
+      renderSessionBar();
+      await animate("lane-swipe-enter", 160);
+      await switching;
+    } finally {
+      bar.classList.remove("lane-swipe-exit", "lane-swipe-enter");
+      laneSwipeTransitionInFlight = false;
+    }
+  }
+
   async function openAdjacentPinnedSession(direction: -1 | 1) {
     const pinned = sessionsInLane(focusedLane).map((entry) => ({ id: entry.sessionId, cwd: entry.cwd }));
     if (pinned.length < 2) return;
@@ -1891,7 +1919,7 @@ export function createSessions(options: {
       laneSwipe = undefined;
       suppressTabClickUntil = performance.now() + 400;
       const next = sessionLaneOrder[(sessionLaneOrder.indexOf(focusedLane) + 1) % sessionLaneOrder.length];
-      void switchFocusedLane(next);
+      void switchFocusedLaneFromSwipe(next);
     };
     bar.onpointermove = continueLaneSwipe;
     bar.onpointerup = (event) => { continueLaneSwipe(event); laneSwipe = undefined; };
