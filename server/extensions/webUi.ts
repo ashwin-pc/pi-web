@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
-import type { PiWebArtifactAction, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
+import type { PiWebArtifactAction, PiWebArtifactPreview, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
@@ -43,6 +43,7 @@ type WebContribution =
   | { version: 1; key: string; slot: "footer"; kind: "static"; view: PiWebFooter }
   | { version: 1; key: string; slot: "header-action"; kind: "rendered"; source: PiWebHeaderAction }
   | { version: 1; key: string; slot: "artifact-action"; kind: "rendered"; source: PiWebArtifactAction }
+  | { version: 1; key: string; slot: "artifact-preview"; kind: "rendered"; source: PiWebArtifactPreview }
   | { version: 1; key: string; slot: "git-tab"; kind: "rendered"; source: PiWebGitTab }
   | { version: 1; key: string; slot: "panel"; kind: "rendered"; source: PiWebPanel }
   | { version: 1; key: string; slot: "fab"; kind: "static"; source: PiWebFabAction };
@@ -390,6 +391,10 @@ const cleanArtifactExtensions = (value: unknown) => Array.isArray(value) ? value
   const cleaned = cleanHeaderActionText(extension, 30)?.toLowerCase();
   return cleaned && /^\.[a-z0-9]+$/.test(cleaned) ? [cleaned] : [];
 }).slice(0, 20) : undefined;
+const artifactKinds = ["image", "markdown", "html", "video", "audio", "pdf", "file"] as const;
+const cleanArtifactKinds = (value: unknown) => Array.isArray(value)
+  ? value.filter((kind): kind is typeof artifactKinds[number] => artifactKinds.includes(kind as typeof artifactKinds[number])).slice(0, artifactKinds.length)
+  : undefined;
 
 // `allowedKinds`, budgets, and field limits are executable guards. `viewFields`
 // and `effects` document each slot's output contract; the slot-specific
@@ -406,7 +411,14 @@ const contributionPolicies = {
   "artifact-action": {
     allowedKinds: ["rendered"], viewFields: ["markdown", "message", "download"], viewBudget: 200_000,
     descriptor: (entry: Extract<WebContribution, { slot: "artifact-action" }>) => ({ match: {
-      kinds: Array.isArray(entry.source.kinds) ? entry.source.kinds.filter((kind) => kind === "markdown" || kind === "html" || kind === "video") : undefined,
+      kinds: cleanArtifactKinds(entry.source.kinds),
+      extensions: cleanArtifactExtensions(entry.source.extensions),
+    } }),
+  },
+  "artifact-preview": {
+    allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 1_000_000,
+    descriptor: (entry: Extract<WebContribution, { slot: "artifact-preview" }>) => ({ match: {
+      kinds: cleanArtifactKinds(entry.source.kinds),
       extensions: cleanArtifactExtensions(entry.source.extensions),
     } }),
   },
@@ -493,7 +505,7 @@ function normalizedPublicContribution(key: string, spec: PiWebContribution): Web
     if (!cleanContributionKey(spec.opens)) throw new TypeError("FAB contribution requires a valid panel key in opens");
     return { version: 1, key, slot: "fab", kind: "static", source: spec };
   }
-  if ((spec.slot === "header-action" || spec.slot === "artifact-action" || spec.slot === "git-tab" || spec.slot === "panel")
+  if ((spec.slot === "header-action" || spec.slot === "artifact-action" || spec.slot === "artifact-preview" || spec.slot === "git-tab" || spec.slot === "panel")
     && spec.kind === "rendered" && typeof spec.render === "function") {
     if (spec.slot === "header-action") return {
       version: 1, key, slot: spec.slot, kind: "rendered",
@@ -502,6 +514,10 @@ function normalizedPublicContribution(key: string, spec: PiWebContribution): Web
     if (spec.slot === "artifact-action") return {
       version: 1, key, slot: spec.slot, kind: "rendered",
       source: { ...spec, kinds: spec.match?.kinds, extensions: spec.match?.extensions, invoke: (artifact) => spec.render({ context: artifact }) },
+    };
+    if (spec.slot === "artifact-preview") return {
+      version: 1, key, slot: spec.slot, kind: "rendered",
+      source: { ...spec, kinds: spec.match?.kinds, extensions: spec.match?.extensions, render: (artifact) => spec.render({ context: artifact }) },
     };
     if (spec.slot === "git-tab") return {
       version: 1, key, slot: spec.slot, kind: "rendered",
@@ -542,6 +558,7 @@ function createPiWebUi(value: any): PiWebUi {
     setFooter: (key, footer) => contributeForSlot(key, "footer", footer === undefined ? undefined : { slot: "footer", kind: "static", view: footer }),
     setHeaderAction: (key, action) => contributeForSlot(key, "header-action", action === undefined ? undefined : { slot: "header-action", kind: "rendered", ...action, render: () => action.invoke() }),
     setArtifactAction: (key, action) => contributeForSlot(key, "artifact-action", action === undefined ? undefined : { slot: "artifact-action", kind: "rendered", title: action.title, label: action.label, match: { kinds: action.kinds, extensions: action.extensions }, render: (event) => action.invoke(event?.context as any) }),
+    setArtifactPreview: (key, preview) => contributeForSlot(key, "artifact-preview", preview === undefined ? undefined : { slot: "artifact-preview", kind: "rendered", title: preview.title, label: preview.label, match: { kinds: preview.kinds, extensions: preview.extensions }, render: (event) => preview.render(event?.context as any) }),
     setGitTab: (key, tab) => contributeForSlot(key, "git-tab", tab === undefined ? undefined : { slot: "git-tab", kind: "rendered", title: tab.title, label: tab.label, render: (event) => tab.render({ action: event?.action, payload: event?.payload, repo: event?.context }) }),
     setPanel: (key, panel) => contributeForSlot(key, "panel", panel === undefined ? undefined : { slot: "panel", kind: "rendered", ...panel }),
     setFabAction: (key, action) => contributeForSlot(key, "fab", action === undefined ? undefined : { slot: "fab", kind: "static", ...action }),
@@ -727,7 +744,7 @@ async function bindWebExtensions(value: any) {
 }
 
 
-  function renderedContribution<S extends "header-action" | "artifact-action" | "git-tab" | "panel">(value: any, slot: S, keyValue: unknown) {
+  function renderedContribution<S extends "header-action" | "artifact-action" | "artifact-preview" | "git-tab" | "panel">(value: any, slot: S, keyValue: unknown) {
     const key = cleanContributionKey(keyValue);
     if (!key) throw new Error("key is required");
     const contribution = contributionState(value).get(contributionId(slot, key));
@@ -753,24 +770,41 @@ async function bindWebExtensions(value: any) {
     };
   }
 
+  function cleanArtifactContext(input: { name?: unknown; path?: unknown; kind?: unknown }) {
+    const name = cleanHeaderActionText(input.name, 500);
+    const path = cleanHeaderActionText(input.path, 2_000);
+    const kind = artifactKinds.includes(input.kind as typeof artifactKinds[number])
+      ? input.kind as typeof artifactKinds[number]
+      : undefined;
+    let pathName: string | undefined;
+    try {
+      const artifactPath = path?.startsWith("/api/artifacts/")
+        ? path.slice("/api/artifacts/".length)
+        : path?.startsWith("/api/session-artifacts/")
+          ? path.split("/").slice(4).join("/")
+          : undefined;
+      if (artifactPath) pathName = decodeURIComponent(artifactPath).split("/").at(-1);
+    } catch { /* invalid encoded artifact path */ }
+    if (!name || !path || !kind || pathName !== name) throw new Error("Invalid artifact context");
+    return { name, path, kind };
+  }
+
+  function artifactMatches(source: { kinds?: readonly string[]; extensions?: readonly string[] }, artifact: { name: string; kind: string }) {
+    if (Array.isArray(source.kinds) && source.kinds.length && !source.kinds.includes(artifact.kind)) return false;
+    return !(Array.isArray(source.extensions) && source.extensions.length)
+      || source.extensions.some((extension) => typeof extension === "string" && artifact.name.toLowerCase().endsWith(extension.toLowerCase()));
+  }
+
   async function invokeArtifactAction(value: any, input: { key?: unknown; name?: unknown; path?: unknown; kind?: unknown }) {
     const { key, contribution } = renderedContribution(value, "artifact-action", input.key);
     if (!contribution) throw new Error("Artifact action not found");
     const action = contribution.source;
-    const name = cleanHeaderActionText(input.name, 500);
-    const path = cleanHeaderActionText(input.path, 2_000);
-    const kind = input.kind === "markdown" || input.kind === "html" || input.kind === "video" ? input.kind : undefined;
-    let pathName: string | undefined;
-    try {
-      if (path && path.startsWith("/api/artifacts/")) pathName = decodeURIComponent(path.slice("/api/artifacts/".length)).split("/").at(-1);
-    } catch { /* invalid encoded artifact path */ }
-    if (!name || !path || !kind || pathName !== name) throw new Error("Invalid artifact context");
-    if (Array.isArray(action.kinds) && action.kinds.length && !action.kinds.includes(kind)) throw new Error("Artifact action does not match this artifact");
-    if (Array.isArray(action.extensions) && action.extensions.length && !action.extensions.some((extension) => typeof extension === "string" && name.toLowerCase().endsWith(extension.toLowerCase()))) throw new Error("Artifact action does not match this artifact");
-    const result = await action.invoke({ name, path, kind });
+    const artifact = cleanArtifactContext(input);
+    if (!artifactMatches(action, artifact)) throw new Error("Artifact action does not match this artifact");
+    const result = await action.invoke(artifact);
     const markdown = cleanFooterText(result?.markdown, contributionPolicies["artifact-action"].viewBudget);
     const message = cleanHeaderActionText(result?.message, 2_000);
-    const download = result?.download && typeof result.download === "object" ? { path, filename: cleanHeaderActionText(result.download.filename, 500) || name } : undefined;
+    const download = result?.download && typeof result.download === "object" ? { path: artifact.path, filename: cleanHeaderActionText(result.download.filename, 500) || artifact.name } : undefined;
     if (!markdown && !message && !download) throw new Error("Artifact action returned no result");
     return {
       label: cleanHeaderActionText(action.label) || cleanHeaderActionText(action.title) || key,
@@ -778,6 +812,18 @@ async function bindWebExtensions(value: any) {
       ...(message ? { message } : {}),
       ...(download ? { download } : {}),
     };
+  }
+
+  async function invokeArtifactPreview(value: any, input: { key?: unknown; name?: unknown; path?: unknown; kind?: unknown }) {
+    const { key, contribution } = renderedContribution(value, "artifact-preview", input.key);
+    if (!contribution) throw new Error("Artifact preview not found");
+    const preview = contribution.source;
+    const artifact = cleanArtifactContext(input);
+    if (!artifactMatches(preview, artifact)) throw new Error("Artifact preview does not match this artifact");
+    const result = await preview.render(artifact);
+    const html = cleanFooterText(result?.html, contributionPolicies["artifact-preview"].viewBudget);
+    if (!html) throw new Error("Artifact preview returned no HTML");
+    return { label: cleanHeaderActionText(preview.label) || cleanHeaderActionText(preview.title) || key, html };
   }
 
   async function invokeGitTab(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; repo?: unknown }) {
@@ -853,9 +899,11 @@ async function bindWebExtensions(value: any) {
     const slot = input.slot;
     const event = input.event && typeof input.event === "object" ? input.event as Record<string, unknown> : {};
     if (slot === "header-action") return invokeHeaderAction(value, input.key);
-    if (slot === "artifact-action") {
+    if (slot === "artifact-action" || slot === "artifact-preview") {
       const context = event.context && typeof event.context === "object" ? event.context as Record<string, unknown> : {};
-      return invokeArtifactAction(value, { ...context, key: input.key });
+      return slot === "artifact-action"
+        ? invokeArtifactAction(value, { ...context, key: input.key })
+        : invokeArtifactPreview(value, { ...context, key: input.key });
     }
     if (slot === "git-tab") {
       return invokeGitTab(value, { key: input.key, action: event.action, payload: event.payload, repo: event.context });

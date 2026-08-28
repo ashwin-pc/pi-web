@@ -1,6 +1,7 @@
 import { renderStandaloneMarkdown } from "../markdown/render.js";
+import { mountArtifactPreview } from "../extensions/artifactPreviews.js";
 
-type ArtifactEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number };
+type ArtifactEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number; url?: string };
 type ArtifactKind = "image" | "html" | "markdown" | "video" | "pdf" | "file";
 
 export const artifactRootPath = ".pi/web/artifacts";
@@ -67,6 +68,7 @@ function parentArtifactPath(path: string) {
 export type ArtifactBrowserController = {
   refresh(): void;
   reset(): void;
+  openArtifact(url: string): boolean;
 };
 
 export function initArtifactBrowser(options: {
@@ -105,7 +107,8 @@ export function initArtifactBrowser(options: {
     if (record.view === "gallery") return { view: "gallery" };
     const entry = record.entry as Partial<ArtifactEntry> | undefined;
     if (record.view !== "preview" || !entry || typeof entry.name !== "string" || typeof entry.path !== "string" || !entry.path.startsWith(`${artifactRootPath}/`) || !["file", "symlink"].includes(entry.kind || "")) return undefined;
-    return { view: "preview", entry: { name: entry.name, path: entry.path, kind: entry.kind as ArtifactEntry["kind"], size: typeof entry.size === "number" ? entry.size : undefined } };
+    const url = typeof entry.url === "string" && /^\/api\/(?:artifacts|session-artifacts)\//.test(entry.url) ? entry.url : undefined;
+    return { view: "preview", entry: { name: entry.name, path: entry.path, kind: entry.kind as ArtifactEntry["kind"], size: typeof entry.size === "number" ? entry.size : undefined, url } };
   }
 
   function replaceArtifactHistory(state: ArtifactHistoryState) {
@@ -129,7 +132,8 @@ export function initArtifactBrowser(options: {
     return data;
   }
 
-  function artifactUrl(path: string) {
+  function artifactUrl(path: string, sourceUrl?: string) {
+    if (sourceUrl) return sourceUrl;
     const relative = artifactRelativePath(path);
     const encoded = relative.split("/").filter(Boolean).map(encodeURIComponent).join("/");
     const sessionId = getSessionId();
@@ -326,7 +330,7 @@ export function initArtifactBrowser(options: {
   function renderPreview(entry: ArtifactEntry) {
     const generation = ++previewGeneration;
     const kind = artifactKind(entry.path);
-    const url = artifactUrl(entry.path);
+    const url = artifactUrl(entry.path, entry.url);
     preview.dataset.artifactKind = kind;
     previewTitle.textContent = entry.name;
     previewOpen.href = url;
@@ -352,6 +356,19 @@ export function initArtifactBrowser(options: {
       previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--pdf"; previewBody.textContent = "";
       const frame = document.createElement("iframe"); frame.src = url; frame.title = `Preview of ${entry.name}`; previewBody.append(frame); return;
     }
+    if (kind === "file") {
+      const isCurrent = () => generation === previewGeneration && activeEntry?.path === entry.path;
+      void mountArtifactPreview(previewBody, { name: entry.name, path: url, kind }, {
+        title: `Interactive preview of ${entry.name}`,
+        isCurrent,
+      }).then((mounted) => {
+        if (!mounted) return renderTextPreview(entry, kind, generation);
+        if (isCurrent()) previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--html";
+      }).catch((error) => {
+        if (isCurrent()) renderPreviewError(error instanceof Error ? error.message : String(error));
+      });
+      return;
+    }
     void renderTextPreview(entry, kind, generation);
   }
 
@@ -375,6 +392,31 @@ export function initArtifactBrowser(options: {
         if (card.dataset.artifactPath === previousPath) { card.querySelector<HTMLButtonElement>(".artifactGalleryCardOpen")?.focus(); break; }
       }
     });
+  }
+
+  function openArtifact(value: string) {
+    let pathname: string;
+    try { pathname = new URL(value, window.location.origin).pathname; } catch { return false; }
+    let encoded = "";
+    if (pathname.startsWith("/api/artifacts/")) encoded = pathname.slice(15);
+    else if (pathname.startsWith("/api/session-artifacts/")) {
+      const rest = pathname.slice(23);
+      const slash = rest.indexOf("/");
+      if (slash >= 0) encoded = rest.slice(slash + 1);
+    }
+    if (!encoded) return false;
+    let segments: string[];
+    try { segments = encoded.split("/").filter(Boolean).map(decodeURIComponent); } catch { return false; }
+    if (!segments.length || segments.some(segment => segment === "." || segment === ".." || segment.includes("/") || segment.includes("\\") || segment.includes("\0"))) return false;
+    const entry: ArtifactEntry = {
+      name: segments[segments.length - 1],
+      path: `${artifactRootPath}/${segments.join("/")}`,
+      kind: "file",
+      url: pathname,
+    };
+    currentDirectory = parentArtifactPath(entry.path);
+    showPreview(entry);
+    return true;
   }
 
   function refresh() {
@@ -405,5 +447,5 @@ export function initArtifactBrowser(options: {
   });
   panel.dataset.artifactView = "gallery";
   renderBreadcrumb();
-  return { refresh, reset };
+  return { refresh, reset, openArtifact };
 }

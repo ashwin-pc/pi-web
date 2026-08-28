@@ -819,7 +819,7 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#sessionDrawer")).toBeHidden();
   });
 
-  test("new session preserves the drawer state on wide viewports and closes on mobile", async ({ page }) => {
+  test("new session preserves the drawer state in pane mode and closes in overlay mode", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#sessionDrawer")).toBeHidden();
 
@@ -829,7 +829,7 @@ test.describe("session quick bar", () => {
     await expect(page.locator("#sessionDrawer")).toBeHidden();
 
     const width = page.viewportSize()?.width || 0;
-    if (width > 700) {
+    if (width >= 1025) {
       await page.locator("#sessionButton").click();
       await expect(page.locator("#sessionDrawer")).toBeVisible();
       await openLauncherAction(page, "New session");

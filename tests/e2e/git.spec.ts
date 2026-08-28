@@ -116,7 +116,7 @@ test("Git-tab invalidation ignores an older in-flight response", async ({ page }
   await expect(page.locator(".gitRevision")).toHaveText("fresh");
 });
 
-test("extension tabs remain available in split view with a reduced viewport height", async ({ page }) => {
+test("extension tabs remain available in the full-screen panel with a reduced viewport height", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 500 });
   await page.request.post("/api/mock/state", { data: {
     webContributions: [{ version: 1, key: "github", slot: "git-tab", kind: "rendered", title: "GitHub issues", label: "GitHub" }],
@@ -136,9 +136,7 @@ test("extension tabs remain available in split view with a reduced viewport heig
   await expect(page.locator(".testGitHubExtension")).toBeVisible();
 
   const panelWidth = (await page.locator("#gitPanel").boundingBox())?.width || 0;
-  const appWidth = (await page.locator(".app").boundingBox())?.width || 0;
-  expect(panelWidth).toBeLessThan(900);
-  expect(appWidth).toBeGreaterThanOrEqual(360);
+  expect(panelWidth).toBe(900);
   await page.unrouteAll({ behavior: "wait" });
 });
 
@@ -335,20 +333,17 @@ test("git panel switches to a single visible pane when its container is narrow",
   await expect(back).toHaveText("");
 });
 
-test("git panel remains split when the software keyboard reduces viewport height", async ({ page }) => {
+test("git panel remains single-pane when the software keyboard reduces viewport height", async ({ page }) => {
   await page.setViewportSize({ width: 900, height: 500 });
   await page.goto("/");
   await openSessionDetails(page);
   await page.locator("#sessionInfoGit").click();
 
   const panel = page.locator("#gitPanel");
-  const app = page.locator(".app");
   await expect(panel).toBeVisible();
-  await expect.poll(async () => {
-    const panelWidth = (await panel.boundingBox())?.width || 0;
-    const appWidth = (await app.boundingBox())?.width || 0;
-    return panelWidth < 900 && appWidth >= 360;
-  }).toBe(true);
+  await expect.poll(async () => (await panel.boundingBox())?.width || 0).toBe(900);
+  await expect(page.locator("#gitPrimaryPane")).toBeVisible();
+  await expect(page.locator("#gitDetailPane")).toBeHidden();
 });
 
 test("git commit detail shows changed files, diff, and layout toggle", async ({ page }) => {

@@ -78,7 +78,7 @@ ctx.ui.web.contribute("worker-status", {
 });
 ```
 
-Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `git-tab`, and `panel`.
+Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `artifact-preview`, `git-tab`, and `panel`.
 
 Independently distributed extensions should inspect `ctx.ui.web.capabilities` before using newer facilities. It reports the additive runtime contract: `apiVersion`, `slots`, `kinds`, and `effects`.
 
@@ -208,6 +208,41 @@ ctx.ui.web.setHeaderAction("open-notes", {
 });
 ```
 
+
+## Artifact preview renderer API
+
+`artifact-preview` contributions render otherwise-generic artifact formats inside a sandboxed, opaque-origin iframe. Built-in image, Markdown, HTML, media, and PDF previews retain precedence; extension renderers are selected in deterministic registration order for matching generic files.
+
+```ts
+ctx.ui.web.contribute("gcode.viewer", {
+  slot: "artifact-preview",
+  kind: "rendered",
+  title: "G-code viewer",
+  match: { kinds: ["file"], extensions: [".gcode"] },
+  render: async (event) => {
+    const artifact = event?.context;
+    // Read and parse the artifact server-side, then return a complete document.
+    return { html: `<!doctype html><title>${artifact?.name}</title>` };
+  },
+});
+```
+
+The context is `{ name, path, kind }`. The only accepted result field is `html`, capped at 1 MB. The browser loads it through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. Extensions should parse large source files server-side and return compact visualization data rather than embedding the entire source.
+
+The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. Clear either form with `undefined` under the same key.
+
+### Example: 3D modeling workflow
+
+[`examples/pi-web-extensions/3d-modeling/`](../examples/pi-web-extensions/3d-modeling/) is a complete Fusion 360 → STL → PrusaSlicer → G-code example. It contributes sandboxed interactive STL and G-code previews, Fusion MCP status/screenshot/script tools, a typed PrusaSlicer tool, and a **Slice** action for STL artifacts. Its README documents local dependencies, profile overrides, artifact-path protections, size limits, and the fact that Fusion Python executes unsandboxed with the user's permissions.
+
+Install it globally from a checkout with a symlink so edits remain canonical in the example directory:
+
+```sh
+mkdir -p ~/.pi/web/extensions
+ln -sfn "$PWD/examples/pi-web-extensions/3d-modeling" ~/.pi/web/extensions/3d-modeling
+```
+
+Run `/reload` or restart pi-web after installing it.
 
 ## Artifact preview action API
 

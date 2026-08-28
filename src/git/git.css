@@ -156,7 +156,9 @@
 .gitCommitFileStatus { color: var(--accent); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .gitCommitFilePath { min-width: 0; overflow-wrap: anywhere; }
 .gitCommitFileStats { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-@media (max-width: 760px) {
+/* Full-screen panels use one pane throughout the overlay layout. Keep the
+   container query below for resized desktop side panels that become narrow. */
+@media (max-width: 1024px) {
   .gitPanel { inset: 0; width: auto; border: 0; border-radius: 0; z-index: 100; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
   .gitPanelHeader { padding: max(6px, env(safe-area-inset-top)) 8px 6px; gap: 6px; }
   .gitPanelHeader h2 { font-size: 13px; }

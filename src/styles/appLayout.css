@@ -64,7 +64,7 @@
   grid-template-rows: auto minmax(0, 1fr);
 }
 
-@media (min-width: 641px) {
+@media (min-width: 1025px) {
   body.appLeftPanelOpen {
     --app-layout-left-width: min(var(--app-side-left-active-width), calc(100vw - var(--app-chat-min-width)));
   }
@@ -228,7 +228,7 @@
   }
 }
 
-@media (min-width: 641px) and (max-width: 1179px) {
+@media (min-width: 1025px) and (max-width: 1179px) {
   body.appRightPanelOpen[data-right-panel="settings"],
   body.appRightPanelOpen[data-right-panel="system-info"] {
     --app-layout-right-width: 100vw;
@@ -255,7 +255,7 @@
   }
 }
 
-@media (max-width: 640px) {
+@media (max-width: 1024px) {
   .appSidePanel {
     padding-top: max(0px, env(safe-area-inset-top));
     padding-bottom: max(0px, env(safe-area-inset-bottom));

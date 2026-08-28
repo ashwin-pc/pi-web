@@ -1,4 +1,5 @@
 import { blurActiveEditableOnMobile } from "../app/focus.js";
+import { panelPaneModeQuery } from "./responsive.js";
 
 export type AppPanelSide = "left" | "right";
 
@@ -55,7 +56,6 @@ type RegisteredPanel = AppPanelRegistration & {
 
 // Width determines whether panels share the screen. The visual viewport height
 // shrinks when a software keyboard opens and must not turn a split pane into an overlay.
-const paneModeQuery = "(min-width: 641px)";
 const multiSideQuery = "(min-width: 1280px)";
 const defaultMinWidth = 280;
 const defaultMaxWidth = 980;
@@ -125,7 +125,7 @@ export function createAppPanelManager(): AppPanelManager {
   const active: Partial<Record<AppPanelSide, RegisteredPanel>> = {};
   let lastOpenedSide: AppPanelSide | undefined;
 
-  const paneMode = window.matchMedia(paneModeQuery);
+  const paneMode = window.matchMedia(panelPaneModeQuery);
   const multiSideMode = window.matchMedia(multiSideQuery);
 
   function setBodyPanelState(side: AppPanelSide, registration?: RegisteredPanel) {

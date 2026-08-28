@@ -1,8 +1,9 @@
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, Copy, createElement, Download, ExternalLink } from "lucide";
+import { Check, Copy, createElement, Download, PanelRightOpen } from "lucide";
 import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
+import { matchingArtifactPreview, mountArtifactPreview } from "../extensions/artifactPreviews.js";
 
 marked.setOptions({
   async: false,
@@ -30,6 +31,7 @@ type ArtifactPreviewAction = { key?: unknown; title?: unknown; label?: unknown; 
 let artifactPreviewActions: ArtifactPreviewAction[] = [];
 let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type": "application/json" });
 let artifactActionSessionId = () => "";
+let openArtifactInPanel: (url: string) => void = () => {};
 let artifactPreviewId = 0;
 const interactiveArtifactCards = new Set<HTMLElement>();
 let artifactInteractionListenerAttached = false;
@@ -37,6 +39,10 @@ let artifactInteractionListenerAttached = false;
 export function configureArtifactPreviewActions(options: { headers: () => Record<string, string>; getSessionId: () => string }) {
   artifactActionHeaders = options.headers;
   artifactActionSessionId = options.getSessionId;
+}
+
+export function configureArtifactPanelOpener(open: (url: string) => void) {
+  openArtifactInPanel = open;
 }
 
 export function setArtifactPreviewActions(value: unknown) {
@@ -432,11 +438,6 @@ function mediaMimeType(pathname: string) {
   return "application/octet-stream";
 }
 
-function isStandalonePwa() {
-  return window.matchMedia("(display-mode: standalone)").matches ||
-    (navigator as Navigator & { standalone?: boolean }).standalone === true;
-}
-
 function matchingArtifactActions(name: string, kind: string) {
   return artifactPreviewActions.flatMap((raw) => {
     if (typeof raw.key !== "string" || !raw.key) return [];
@@ -602,14 +603,19 @@ function attachArtifactOverflowControl(card: HTMLElement, content: HTMLElement) 
 }
 
 function enhanceArtifactLinks(root: ParentNode) {
-  for (const link of Array.from(root.querySelectorAll<HTMLAnchorElement>('a[href^="/api/artifacts/"]'))) {
-    if (link.dataset.artifactPreviewEnhanced) continue;
+  const links = root.querySelectorAll<HTMLAnchorElement>(
+    'a[href^="/api/artifacts/"], a[href^="/api/session-artifacts/"]',
+  );
+  for (const link of Array.from(links)) {
+    if (link.closest(".artifactPreview") || link.dataset.artifactPreviewEnhanced) continue;
     const url = new URL(link.href, window.location.origin);
-    const kind = artifactKind(url.pathname);
-    if (!kind) continue;
+    const builtInKind = artifactKind(url.pathname);
+    const fileName = artifactName(url.pathname);
+    const customPreview = builtInKind ? undefined : matchingArtifactPreview(fileName, "file");
+    if (!builtInKind && !customPreview) continue;
+    const kind = builtInKind || "file";
     link.dataset.artifactPreviewEnhanced = "true";
 
-    const fileName = artifactName(url.pathname);
     const displayName = link.textContent?.trim() || fileName;
     const card = document.createElement("div");
     card.className = `artifactPreview artifactPreview--${kind}`;
@@ -618,20 +624,13 @@ function enhanceArtifactLinks(root: ParentNode) {
     const title = document.createElement("span");
     title.className = "artifactPreviewTitle";
     title.textContent = displayName;
-    const open = document.createElement("a");
-    open.href = kind === "markdown"
-      ? `/artifact-preview.html?src=${encodeURIComponent(url.pathname)}&name=${encodeURIComponent(displayName)}`
-      : url.pathname;
-    if (isStandalonePwa()) {
-      open.target = "_top";
-    } else {
-      open.target = "_blank";
-      open.rel = "noopener noreferrer";
-    }
+    const open = document.createElement("button");
+    open.type = "button";
     open.className = "artifactPreviewAction artifactPreviewAction--icon";
-    open.title = "Open artifact";
+    open.title = "Open in Artifacts panel";
     open.setAttribute("aria-label", open.title);
-    open.append(createElement(ExternalLink, { "aria-hidden": "true" }));
+    open.append(createElement(PanelRightOpen, { "aria-hidden": "true" }));
+    open.addEventListener("click", () => openArtifactInPanel(url.pathname));
     const download = document.createElement("button");
     download.type = "button";
     download.className = "artifactPreviewAction artifactPreviewAction--icon";
@@ -671,6 +670,43 @@ function enhanceArtifactLinks(root: ParentNode) {
 
     const container = link.closest("p") || link;
     container.insertAdjacentElement("afterend", card);
+
+    if (customPreview) {
+      // Custom previews are sandboxed HTML too. Give their content the same
+      // positioning context as built-in HTML so the interaction shield covers
+      // only the iframe instead of resolving against the larger artifact card.
+      card.classList.add("artifactPreview--html");
+      void mountArtifactPreview(content, { name: fileName, path: url.pathname, kind: "file" }, {
+        title: `Interactive preview of ${title.textContent}`,
+        className: "artifactPreviewFrame",
+        isCurrent: () => card.isConnected,
+      }).then((mounted) => {
+        if (!mounted || !card.isConnected) return;
+        const iframe = content.querySelector<HTMLIFrameElement>("iframe");
+        if (!iframe) return;
+        const shield = document.createElement("button");
+        shield.type = "button";
+        shield.className = "artifactPreviewShield";
+        shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
+        const shieldHint = document.createElement("span");
+        shieldHint.textContent = "Click to interact";
+        shield.append(shieldHint);
+        shield.addEventListener("click", () => {
+          setArtifactFrameInteraction(card, true);
+          iframe.focus();
+        });
+        card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
+        content.append(shield);
+        ensureArtifactInteractionListener();
+        refreshOverflow();
+      }).catch((error) => {
+        if (!card.isConnected) return;
+        content.textContent = error instanceof Error ? error.message : String(error);
+        card.classList.add("artifactPreview--error");
+        refreshOverflow();
+      });
+      continue;
+    }
 
     if (kind === "html") {
       content.textContent = "";
@@ -727,7 +763,6 @@ function enhanceArtifactLinks(root: ParentNode) {
         enhanceMermaid(content);
         enhanceCodeBlocks(content);
         enhanceImages(content);
-        enhanceArtifactLinks(content);
         refreshOverflow();
       })
       .catch((error) => {
@@ -738,18 +773,22 @@ function enhanceArtifactLinks(root: ParentNode) {
   }
 }
 
-export function renderStandaloneMarkdown(body: HTMLElement, text: string) {
+export function renderStandaloneMarkdown(
+  body: HTMLElement,
+  text: string,
+  options: { artifactLinks?: boolean } = {},
+) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
   enhanceMermaid(body);
   enhanceInlineHtmlPreviews(body);
   enhanceCodeBlocks(body);
   enhanceImages(body);
-  enhanceArtifactLinks(body);
+  if (options.artifactLinks) enhanceArtifactLinks(body);
 }
 
 function renderAssistantMarkdown(body: HTMLElement, text: string) {
-  renderStandaloneMarkdown(body, text);
+  renderStandaloneMarkdown(body, text, { artifactLinks: true });
   body.dataset.markdownRendered = "true";
   delete body.dataset.markdownText;
 }

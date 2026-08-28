@@ -37,9 +37,10 @@ import { createContextMeter, type ContextMeterController } from "./composer/cont
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
+import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/artifactPreviews.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
-import { configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
+import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
@@ -61,6 +62,7 @@ initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
 configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
+configureArtifactPreviews({ headers: api.headers, getSessionId: () => state.currentSessionId });
 
 let messages: MessageList;
 let composer: ComposerController;
@@ -231,6 +233,7 @@ function renderActiveSessionMetadata() {
   renderWebFooters(elements.extensionFooterEl, inSlot("footer").map(({ key, view: footer }) => ({ key, footer })));
   webHeaderActions.render(inSlot("header-action"));
   setArtifactPreviewActions(inSlot("artifact-action").map((entry) => ({ ...entry, ...entry.match })));
+  setArtifactPreviews(inSlot("artifact-preview"));
   gitPanel?.setExtensionTabs(inSlot("git-tab"));
   webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
   actionLauncher?.setExtensionActions(inSlot("fab"));
@@ -672,6 +675,7 @@ filesPanel = initFilesPanel({
   getSessionId: () => state.currentSessionId,
   onError: showSystemError,
 });
+configureArtifactPanelOpener((url) => filesPanel.openArtifact(url));
 gitPanel = initGitPanel({
   button: elements.gitButton,
   panel: elements.gitPanel,

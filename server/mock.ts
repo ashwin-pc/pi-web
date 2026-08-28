@@ -742,6 +742,8 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: "Here is a video artifact:\n\n[e2e-video-artifact.webm](/api/artifacts/e2e-video-artifact.webm)", timestamp: new Date().toISOString() });
         } else if (/audio artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is an audio artifact:\n\n[e2e-audio-artifact.mp3](/api/artifacts/e2e-audio-artifact.mp3)", timestamp: new Date().toISOString() });
+        } else if (/gcode artifact/i.test(message)) {
+          appendMockMessage({ role: "assistant", content: "Here is a G-code artifact:\n\n[e2e-toolpath.gcode](/api/artifacts/e2e-toolpath.gcode)", timestamp: new Date().toISOString() });
         } else if (/artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a screenshot:\n\n![e2e-test](/api/artifacts/e2e-test.png)", timestamp: new Date().toISOString() });
         } else if (/stable html preview/i.test(message)) {

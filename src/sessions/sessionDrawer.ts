@@ -3,6 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
+import { panelOverlayModeQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
@@ -97,7 +98,7 @@ function folderDisplayNames(cwds: string[]) {
 }
 
 function shouldCloseDrawerAfterSessionSwitch() {
-  return window.matchMedia("(max-width: 640px), (max-height: 520px)").matches;
+  return window.matchMedia(`${panelOverlayModeQuery}, (max-height: 520px)`).matches;
 }
 
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
