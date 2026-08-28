@@ -351,6 +351,13 @@ async function refreshState() {
   const query = requestedSessionId ? `?sessionId=${encodeURIComponent(requestedSessionId)}` : "";
   const res = await fetch(`/api/state${query}`, { headers: api.headers() });
   if (res.status === 401) {
+    try {
+      const challenge = await fetch("/api/auth/challenge");
+      if (challenge.ok) {
+        const value = await challenge.json() as { mode?: string; url?: string };
+        if (value.mode === "redirect" && value.url) { location.assign(value.url); return; }
+      }
+    } catch { /* legacy servers have no challenge endpoint */ }
     elements.tokenOverlay.hidden = false;
     elements.tokenInput.focus();
     return;

@@ -25,6 +25,8 @@ import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
+import { AuthKernel, AuthStore, type AuthMode } from "./server/auth/kernel.js";
+import { handlePasskeyRoute } from "./server/auth/passkey.js";
 
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -36,6 +38,13 @@ const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "develo
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
+const authMode = (process.env.PI_WEB_AUTH_MODE || "legacy") as AuthMode;
+if (!["none", "legacy", "passkey", "external"].includes(authMode)) throw new Error(`Invalid PI_WEB_AUTH_MODE: ${authMode}`);
+const authOrigin = process.env.PI_WEB_AUTH_ORIGIN || `http://${host}:${port}`;
+const authUrl = new URL(authOrigin);
+const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
+const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:");
+const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
 
@@ -94,17 +103,6 @@ function pipeReadStream(res: ServerResponse, file: string, range?: { start: numb
 
 function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
-}
-
-function requestToken(req: IncomingMessage): string {
-  const auth = req.headers.authorization || "";
-  if (auth.startsWith("Bearer ")) return auth.slice("Bearer ".length);
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  return url.searchParams.get("token") || "";
-}
-
-function isAuthorized(req: IncomingMessage): boolean {
-  return !token || requestToken(req) === token;
 }
 
 async function readBytes(req: IncomingMessage, maxBytes = 30_000_000): Promise<Buffer> {
@@ -495,14 +493,19 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   try {
 
     if (url.pathname.startsWith("/api/")) {
+      if (authMode === "passkey" && await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      if (!(await authKernel.gate(req)).ok) return unauthorized(res);
+      if (authMode === "passkey" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+        const origin = req.headers.origin;
+        if ((origin && origin !== authOrigin) || (!req.headers.authorization && !req.headers["x-pi-web-client-id"])) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
+      }
+
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);
       }
       if (method === "GET" && url.pathname.startsWith("/api/artifacts/")) {
         return await serveArtifact(req, res);
       }
-
-      if (!isAuthorized(req)) return unauthorized(res);
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
         const body = await readBody(req) as { websiteWorkflowExtension?: unknown };
@@ -1156,13 +1159,15 @@ server.on("upgrade", (req, socket, head) => {
   }
   if (url.pathname !== "/ws") return;
 
-  if (!isAuthorized(req)) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
+  void (async () => {
+    if (!(await authKernel.gate(req)).ok) {
+      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return;
+    }
+    if (authMode === "passkey" && req.headers.origin !== authOrigin) {
+      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
+  })().catch(() => socket.destroy());
 });
 
 wss.on("connection", async (ws, req, urlParam?: URL) => {
@@ -1211,5 +1216,6 @@ server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
   console.log(isDev ? "Mode: development (Vite HMR enabled)" : "Mode: production");
-  console.log(token ? "Auth: bearer token required" : "Auth: disabled (set PI_WEB_TOKEN to enable)");
+  console.log(`Auth: ${authMode}${authMode === "legacy" && token ? " (bearer token required)" : ""}`);
+  if (authMode === "passkey") console.log(`Passkey origin: ${authOrigin}`);
 });
