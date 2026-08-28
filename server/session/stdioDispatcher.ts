@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
 import type { SessionService } from "./dto.js";
-import { SESSION_PROTOCOL_VERSION, serializeError, type SessionRequest, type SessionResponse } from "./protocol.js";
+import { SESSION_API_METHODS, SESSION_PROTOCOL_VERSION, serializeError, type SessionRequest, type SessionResponse } from "./protocol.js";
 
 export type DispatcherOptions = { input: Readable; output: Writable; service: SessionService; build: string };
 
@@ -17,6 +17,7 @@ export function dispatchSessionService({ input, output, service, build }: Dispat
     try {
       request = JSON.parse(line) as SessionRequest;
       if (!request || typeof request !== "object" || typeof request.id !== "string" || !["health", "request"].includes(request.type)) throw new Error("invalid request envelope");
+      if (request.type === "request" && (!Array.isArray(request.args) || !SESSION_API_METHODS.has(request.method))) throw new Error("invalid request method or arguments");
     } catch (error) {
       stopped = true; unsubscribe(); lines.close(); input.destroy(new Error(`Invalid NDJSON: ${serializeError(error).message}`)); return;
     }

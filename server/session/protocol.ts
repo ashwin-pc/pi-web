@@ -1,7 +1,10 @@
 import type { SessionService, SessionServiceEvent } from "./dto.js";
 
 export const SESSION_PROTOCOL_VERSION = 1;
-export type SessionApiMethod = Exclude<keyof SessionService, "subscribe">;
+export type SessionApiMethod = Exclude<keyof SessionService, "subscribe" | "respondInteraction" | "cancelInteractions">;
+export const SESSION_API_METHODS: ReadonlySet<string> = new Set([
+  "state", "context", "stats", "tree", "messages", "commands", "models", "setModel", "executeShell", "executeCommand", "prompt", "retry", "abort", "abortCompaction", "abortBranchSummary", "rename", "navigate", "invokeContribution", "invokeHeaderAction", "invokeArtifactAction", "invokeGitTab", "invokePanel", "list", "create", "open", "delete", "switchCwd",
+] satisfies SessionApiMethod[]);
 export type SessionRequest = { type: "health"; id: string; protocolVersion: number; build: string } | { type: "request"; id: string; method: SessionApiMethod; args: unknown[] };
 export type SerializedError = { name: string; message: string; stack?: string; status?: number; code?: string };
 export type SessionResponse =
