@@ -496,7 +496,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (authMode === "passkey" && await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
       const auth = await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
-      if (auth.via === "legacy" && req.headers["x-pi-web-client-id"]) await authKernel.establishSession(res, auth.identity);
+      if (auth.via === "legacy" && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
+        await authKernel.establishSession(res, auth.identity);
+      }
       if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
         const validOrigin = authMode !== "passkey" || req.headers.origin === authOrigin;
         if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
