@@ -102,6 +102,24 @@ function shouldCloseDrawerAfterSessionSwitch() {
 
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
 const sessionDrawerOpenStorageKey = "pi-web-session-drawer-open";
+const sessionLaneFocusStorageKey = "pi-web-session-lane-focus";
+const sessionLaneOrder: SessionLaneId[] = ["pinned", "parked", "bookmarks"];
+
+type PersistedLaneFocus = { lane: SessionLaneId; sessions: Partial<Record<SessionLaneId, string>> };
+
+function readPersistedLaneFocus(): PersistedLaneFocus {
+  try {
+    const value = JSON.parse(localStorage.getItem(sessionLaneFocusStorageKey) || "null") as Partial<PersistedLaneFocus> | null;
+    const lane = sessionLaneOrder.includes(value?.lane as SessionLaneId) ? value!.lane! : "pinned";
+    const sessions: Partial<Record<SessionLaneId, string>> = {};
+    for (const id of sessionLaneOrder) if (typeof value?.sessions?.[id] === "string") sessions[id] = value.sessions[id];
+    return { lane, sessions };
+  } catch { return { lane: "pinned", sessions: {} }; }
+}
+
+function persistLaneFocus(value: PersistedLaneFocus) {
+  try { localStorage.setItem(sessionLaneFocusStorageKey, JSON.stringify(value)); } catch { /* Storage is optional. */ }
+}
 
 function readPersistedSessionDrawerOpen() {
   try {
@@ -199,7 +217,10 @@ export function createSessions(options: {
   let lastSessionBarRenderKey = "";
   let suppressTabClickUntil = 0;
   let laneFilter: SessionLaneId | "all" = "all";
-  let focusedLane: SessionLaneId = "pinned";
+  const persistedLaneFocus = readPersistedLaneFocus();
+  let focusedLane: SessionLaneId = persistedLaneFocus.lane;
+  const focusedSessionByLane = persistedLaneFocus.sessions;
+  function saveLaneFocus() { persistLaneFocus({ lane: focusedLane, sessions: focusedSessionByLane }); }
   function laneEntry(sessionId: string) { return state.lanes.find((entry) => entry.sessionId === sessionId); }
   function laneOf(sessionId: string) { return laneEntry(sessionId)?.lane; }
   function noteForSession(sessionId: string) { return state.sessionNotes.find((entry) => entry.sessionId === sessionId)?.note; }
@@ -243,8 +264,11 @@ export function createSessions(options: {
     const previous = laneEntry(sessionId);
     const entry: SessionLaneEntry = { sessionId, lane, ...(opts.cwd || previous?.cwd ? { cwd: opts.cwd || previous?.cwd } : {}), since: previous?.lane === lane ? previous.since : new Date().toISOString() };
     const promptForNote = lane === "parked" && previous?.lane !== "parked" && !noteForSession(sessionId);
-    if (previous?.lane === focusedLane && previous.lane !== lane) focusedLane = lane;
-    state.lanes = [...state.lanes.filter((item) => item.sessionId !== sessionId), entry]; commitLanes();
+    const isActive = sessionId === state.currentSessionId;
+    if (isActive) { focusedLane = lane; focusedSessionByLane[lane] = sessionId; }
+    state.lanes = [...state.lanes.filter((item) => item.sessionId !== sessionId), entry];
+    if (previous && previous.lane !== lane && focusedSessionByLane[previous.lane] === sessionId) delete focusedSessionByLane[previous.lane];
+    saveLaneFocus(); commitLanes();
     if (promptForNote) requestAnimationFrame(() => promptForParkedNote(sessionId));
   }
   function promptForParkedNote(sessionId: string) {
@@ -254,7 +278,7 @@ export function createSessions(options: {
       setSessionNote(sessionId, note);
     });
   }
-  function removeFromLanes(sessionId: string) { const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; state.lanes = next; commitLanes(); }
+  function removeFromLanes(sessionId: string) { const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; const lane = laneOf(sessionId); state.lanes = next; if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane]; saveLaneFocus(); commitLanes(); }
   function isStale(entry: SessionLaneEntry) { return entry.lane === "parked" && Date.now() - new Date(entry.since).getTime() > 14 * 864e5; }
   const sessionInspector = buildSessionInspector({
     item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: noteForSession(sessionId), unread: Boolean(unreadStateForSession(sessionId)) }; },
@@ -621,6 +645,7 @@ export function createSessions(options: {
   let sessionUiWriteSequence = 0;
   let latestSessionUiRevision = 0;
   let sessionUiStateInitialized = false;
+  let restoredPersistedLaneFocus = false;
   let sessionUiWriteQueue = Promise.resolve();
   function applySessionUiStateValue(value: unknown) {
     const next = normalizeSessionUiState(value);
@@ -646,6 +671,10 @@ export function createSessions(options: {
     updateCurrentSessionPinButton();
     renderCurrentSessionBucketButton();
     if (state.pinnedSessions.length > 0 && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
+    if (!restoredPersistedLaneFocus) {
+      restoredPersistedLaneFocus = true;
+      window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
+    }
   }
 
   function hasAnySessionUiState(value: SessionUiState) {
@@ -1330,6 +1359,7 @@ export function createSessions(options: {
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
+      if (targetLane) { focusedSessionByLane[targetLane] = sessionId; saveLaneFocus(); }
       markSessionReadBestEffort(sessionId);
     } catch (error) {
       if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
@@ -1348,6 +1378,20 @@ export function createSessions(options: {
     if (!sessionId) return;
     const cached = cachedSessions.find((item) => item.id === sessionId);
     await openSessionTab(sessionId, cached?.cwd || laneEntry(sessionId)?.cwd || state.currentCwd || "");
+  }
+
+  async function switchFocusedLane(lane: SessionLaneId) {
+    const currentLane = state.currentSessionId ? laneOf(state.currentSessionId) : undefined;
+    if (currentLane === focusedLane && state.currentSessionId) focusedSessionByLane[focusedLane] = state.currentSessionId;
+    focusedLane = lane;
+    const entries = sessionsInLane(lane);
+    const remembered = focusedSessionByLane[lane];
+    const target = entries.find((entry) => entry.sessionId === remembered) || entries[0];
+    if (!target) { delete focusedSessionByLane[lane]; saveLaneFocus(); renderSessionBar(); return; }
+    focusedSessionByLane[lane] = target.sessionId;
+    saveLaneFocus();
+    if (state.currentSessionId === target.sessionId) renderSessionBar();
+    else await openSessionTab(target.sessionId, cachedSessions.find((item) => item.id === target.sessionId)?.cwd || target.cwd || state.currentCwd || "");
   }
 
   async function openAdjacentPinnedSession(direction: -1 | 1) {
@@ -1693,7 +1737,10 @@ export function createSessions(options: {
     for (const lane of ["pinned", "parked", "bookmarks"] as SessionLaneId[]) {
       const entries = sessionsInLane(lane).filter((entry) => !laneDrawerBucketFilter || markerForSession(entry.sessionId)?.color === laneDrawerBucketFilter);
       const section = document.createElement("section"); section.className = `sessionLaneDrawerSection lane-${lane}`; section.dataset.lane = lane;
-      const laneHeading = document.createElement("div"); laneHeading.className = "sessionLaneDrawerHeading"; laneHeading.append(sessionLaneIcon(lane));
+      const laneHeading = document.createElement("div"); laneHeading.className = "sessionLaneDrawerHeading"; laneHeading.setAttribute("role", "button"); laneHeading.tabIndex = 0; laneHeading.title = `Switch to ${sessionLaneMeta[lane].label}`; laneHeading.append(sessionLaneIcon(lane));
+      const activateLane = () => { closeLaneDrawer?.(); void switchFocusedLane(lane); };
+      laneHeading.addEventListener("click", activateLane);
+      laneHeading.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); activateLane(); } });
       const laneLabel = document.createElement("strong"); laneLabel.textContent = sessionLaneMeta[lane].label;
       const count = document.createElement("span"); count.className = "sessionLaneDrawerCount"; count.textContent = String(entries.length); laneHeading.append(laneLabel, count);
       if (lane === "pinned") { const more = document.createElement("span"); more.className = "sessionLaneDrawerMore"; more.textContent = "in tab bar"; laneHeading.append(more); }
@@ -1730,7 +1777,14 @@ export function createSessions(options: {
               return { ...item, lane: nextLane, since: item.lane === nextLane ? item.since : new Date().toISOString() };
             });
             const moved = nextLanes.find((item) => item.sessionId === entry.sessionId);
-            if (entry.lane === focusedLane && moved && moved.lane !== entry.lane) focusedLane = moved.lane;
+            if (moved && moved.lane !== entry.lane) {
+              if (focusedSessionByLane[entry.lane] === entry.sessionId) delete focusedSessionByLane[entry.lane];
+              if (entry.sessionId === state.currentSessionId) {
+                focusedLane = moved.lane;
+                focusedSessionByLane[moved.lane] = entry.sessionId;
+              }
+              saveLaneFocus();
+            }
             state.lanes = nextLanes; commitLanes();
             if (moved?.lane === "parked" && entry.lane !== "parked" && !noteForSession(entry.sessionId)) requestAnimationFrame(() => promptForParkedNote(entry.sessionId));
           }
@@ -1825,6 +1879,23 @@ export function createSessions(options: {
     bar.hidden = false;
     document.body.classList.add("hasPinnedSessions");
     bar.textContent = "";
+    let laneSwipe: { id: number; x: number; y: number } | undefined;
+    bar.onpointerdown = (event) => { if (event.pointerType !== "mouse") laneSwipe = { id: event.pointerId, x: event.clientX, y: event.clientY }; };
+    const continueLaneSwipe = (event: PointerEvent) => {
+      if (!laneSwipe || laneSwipe.id !== event.pointerId) return;
+      const dx = Math.abs(event.clientX - laneSwipe.x); const dy = event.clientY - laneSwipe.y;
+      // The bar sits at the viewport edge, so recognize a short, strongly
+      // vertical flick as soon as it crosses the threshold. Waiting for
+      // pointerup loses the gesture when tab-drag cleanup rerenders the bar.
+      if (dy < 16 || dx > 12 || dx > dy * 0.55) return;
+      laneSwipe = undefined;
+      suppressTabClickUntil = performance.now() + 400;
+      const next = sessionLaneOrder[(sessionLaneOrder.indexOf(focusedLane) + 1) % sessionLaneOrder.length];
+      void switchFocusedLane(next);
+    };
+    bar.onpointermove = continueLaneSwipe;
+    bar.onpointerup = (event) => { continueLaneSwipe(event); laneSwipe = undefined; };
+    bar.onpointercancel = () => { laneSwipe = undefined; };
     const layers = document.createElement("button"); layers.type = "button"; layers.className = `sessionLayersButton${focusedLane !== "pinned" ? " away cur" : ""}`; layers.title = "Session lanes"; layers.append(focusedLane === "pinned" ? (() => { const svg = sessionLaneIcon("pinned"); svg.querySelector("path")?.setAttribute("d", "M8 1.6 14.6 5.3 8 9 1.4 5.3zM3.1 7.8 8 10.5l4.9-2.7 1.7 1L8 12.6 1.4 8.8zM3.1 10.4 8 13.1l4.9-2.7 1.7 1L8 15.2 1.4 11.4z"); return svg; })() : sessionLaneIcon(focusedLane)); layers.addEventListener("click", () => openLaneDrawer()); bar.append(layers);
 
     updateCurrentSessionPinButton();

@@ -711,9 +711,9 @@
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, transform 0.2s cubic-bezier(0.2, 0, 0, 1);
 }
 .sessionBarTab.laned {
-  /* Keep vertical page scrolling native; horizontal swipes and held drags are
-     distinguished in the pointer gesture handler. */
-  touch-action: pan-y;
+  /* The bar arbitrates vertical lane swipes, horizontal scrolling, and held
+     reorders itself; pan-y lets the browser cancel downward pointer gestures. */
+  touch-action: none;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;

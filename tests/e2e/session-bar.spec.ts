@@ -627,6 +627,28 @@ test.describe("session quick bar", () => {
     }).toBe("bookmarks");
   });
 
+  test("dragging a background session clears stale source focus without replacing destination focus", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.goto("/");
+    await page.evaluate(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
+    await page.reload();
+    await page.locator(".sessionLayersButton").click();
+    const handle = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"] .sessionLaneDragHandle');
+    const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
+    const handleBox = await handle.boundingBox(); const destinationBox = await destination.boundingBox();
+    expect(handleBox).not.toBeNull(); expect(destinationBox).not.toBeNull();
+    const pointer = { pointerId: 29, pointerType: "touch", isPrimary: true, button: 0 };
+    await handle.dispatchEvent("pointerdown", { ...pointer, clientX: handleBox!.x + 5, clientY: handleBox!.y + 5 });
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
+    await page.locator("body").dispatchEvent("pointerup", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
+
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", bookmarks: "destination-focus" });
+  });
+
   test("removing the active lane entry keeps it visible as a temporary tab", async ({ page }) => {
     await seedServerSessionUiState(page, { lanes: [{ sessionId: "mock-current", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" }] });
     await page.goto("/");
@@ -660,7 +682,7 @@ test.describe("session quick bar", () => {
     await expect.poll(() => openedCwd).toBe("/saved/workspace");
   });
 
-  test("clicking a lane drawer header does not change the active tab lane", async ({ page }) => {
+  test("lane focus persists across reload and switching restores each lane's session", async ({ page }) => {
     await seedServerSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
@@ -668,10 +690,73 @@ test.describe("session quick bar", () => {
     await page.goto("/");
     await page.locator(".sessionLayersButton").click();
     await page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerHeading').click();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
 
-    await expect(page.locator(".sessionLaneDrawer")).toBeVisible();
-    await expect(page.locator('.sessionBarTab.pinned[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
-    await expect(page.locator('.sessionBarTab[data-session-id="mock-older"]')).toHaveCount(0);
+    await page.locator(".sessionLayersButton").click();
+    await page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerHeading').click();
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.reload();
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
+
+    await page.locator(".sessionLayersButton").click();
+    await page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerHeading').click();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+  });
+
+  test("moving the active session follows it, while a background move preserves lane and destination focus", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+    let current = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    await current.locator(".sessionLaneDrawerActions").click();
+    await page.getByRole("button", { name: "Move to Parked" }).click();
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sessionNoteEditorBackdrop")).toHaveCount(0);
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
+    await expect(page.locator(".sessionLayersButton")).toHaveClass(/\baway\b/);
+
+    await page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerHeading').click();
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await page.locator(".sessionLayersButton").click();
+    current = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    await current.locator(".sessionLaneDrawerActions").click();
+    await page.getByRole("button", { name: "Move to Bookmarks" }).click();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-older"]')).toHaveClass(/\bactive\b/);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toMatchObject({ bookmarks: "mock-older" });
+  });
+
+  test("a real downward touch swipe cycles focused lanes", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.goto("/");
+    const tabBox = await page.locator('.sessionBarTab.laned[data-session-id="mock-current"]').boundingBox();
+    expect(tabBox).not.toBeNull();
+    const x = tabBox!.x + tabBox!.width / 2;
+    const viewportHeight = page.viewportSize()?.height;
+    expect(viewportHeight).toBeDefined();
+    const y = Math.max(tabBox!.y + 1, viewportHeight! - 27);
+    const endY = y + 24;
+    expect(endY).toBeLessThan(viewportHeight!);
+    expect(endY).toBeLessThanOrEqual(tabBox!.y + tabBox!.height);
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+    await page.waitForTimeout(32);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: y + 12, id: 1 }] });
+    await page.waitForTimeout(32);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: endY, id: 1 }] });
+    await page.waitForTimeout(32);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
   });
 
   test("opening a session from the lane drawer focuses that session's lane tabs", async ({ page }) => {
