@@ -1,5 +1,5 @@
 import type { PiWebSession } from "../types.js";
-import { sessionIsRetrying, simplifyModel } from "./projection.js";
+import { sessionIsRetrying, simplifyModel } from "./pi/projection.js";
 
 export interface EnrichedSessionEvent {
   event: any;

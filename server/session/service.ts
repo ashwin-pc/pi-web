@@ -42,15 +42,14 @@ import {
   conversationTreeForSession,
   getSessionSlashCommands,
   isAssistantAbortedMessage,
-  isAssistantFailureMessage,
-  isIncompleteToolResultMessage,
   projectCommittedMessage,
   projectMessages,
   projectSessionState,
   sessionDisplayName,
   sessionStats,
   simplifyModel,
-} from "./projection.js";
+} from "./pi/projection.js";
+import { canRetryPiSession, retryPiSession } from "./pi/retry.js";
 
 export class SessionServiceError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
@@ -115,11 +114,6 @@ type ViewerLease = {
   sockets: Set<symbol>;
   releaseTimer?: ReturnType<typeof setTimeout>;
 };
-
-type RetrySessionTarget =
-  | { kind: "failure"; messages: any[]; index: number; message: any }
-  | { kind: "aborted"; messages: any[]; index: number; message: any }
-  | { kind: "toolResult"; messages: any[]; index: number; message: any };
 
 type PendingPromptCorrelation = {
   clientMessageId: string;
@@ -1323,73 +1317,18 @@ export class LocalSessionService implements SessionService {
     });
   }
 
-  private trailingRetryTarget(value: PiWebSession): RetrySessionTarget | undefined {
-    const messages = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages as any[] : [];
-    const index = messages.length - 1;
-    const message = messages[index];
-    if (isAssistantFailureMessage(message)) return { kind: "failure", messages, index, message };
-    if (isAssistantAbortedMessage(message)) return { kind: "aborted", messages, index, message };
-    if (isIncompleteToolResultMessage(message)) return { kind: "toolResult", messages, index, message };
-    return undefined;
-  }
-
-  private branchBeforeTrailingMessages(value: PiWebSession, shouldBranchBefore: (message: any) => boolean) {
-    const manager = value.sessionManager;
-    if (!manager.getBranch) return false;
-    let branch: any[];
-    try { branch = manager.getBranch(); } catch { return false; }
-    if (!Array.isArray(branch)) return false;
-    let last = -1;
-    for (let index = branch.length - 1; index >= 0; index--) if (branch[index]?.type === "message") { last = index; break; }
-    if (last < 0 || !shouldBranchBefore(branch[last]?.message)) return false;
-    let first = last;
-    while (first > 0 && branch[first - 1]?.type === "message" && shouldBranchBefore(branch[first - 1].message)) first--;
-    const parentId = typeof branch[first]?.parentId === "string" ? branch[first].parentId : null;
-    if (parentId && manager.branch) manager.branch(parentId);
-    else if (!parentId && manager.resetLeaf) manager.resetLeaf();
-    else return false;
-    return true;
-  }
-
-  private syncAgentMessages(value: PiWebSession) {
-    if (!value.sessionManager.buildSessionContext) return false;
-    value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
-    return true;
-  }
-
-  private assertCanRetry(value: PiWebSession) {
-    if (this.hasActiveWorkForPath(value.sessionFile)) throw new Error("Wait for the current response to finish before retrying.");
-    if (value.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
-    if (value.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
-    if (!this.trailingRetryTarget(value)) throw new Error("There is no failed or incomplete response to retry.");
-  }
-
-  private async retryFromFailure(value: PiWebSession) {
-    if (value.retryFromFailure) return value.retryFromFailure();
-    const target = this.trailingRetryTarget(value);
-    if (!target) throw new Error("There is no failed or incomplete response to retry.");
-    const internal = value as any;
-    if (!internal.agent || typeof internal.agent.continue !== "function") throw new Error("Continuing is not available in this session.");
-    if (target.kind === "failure") {
-      if (!this.branchBeforeTrailingMessages(value, isAssistantFailureMessage) || !this.syncAgentMessages(value)) while (target.messages.length && isAssistantFailureMessage(target.messages.at(-1))) target.messages.pop();
-    } else if (target.kind === "aborted") {
-      if (!this.branchBeforeTrailingMessages(value, isAssistantAbortedMessage) || !this.syncAgentMessages(value)) if (isAssistantAbortedMessage(target.messages.at(-1))) target.messages.pop();
-    }
-    try {
-      await internal.agent.continue();
-      while (typeof internal._handlePostAgentRun === "function" && await internal._handlePostAgentRun()) await internal.agent.continue();
-    } finally {
-      internal._systemPromptOverride = undefined;
-      internal._flushPendingBashMessages?.();
-    }
-  }
-
   private async startSessionRetry(value: PiWebSession) {
-    try { this.assertCanRetry(value); } catch (error) { throw new SessionServiceError(errorMessage(error), 409); }
+    try {
+      if (this.hasActiveWorkForPath(value.sessionFile) || value.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
+      if (value.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
+      if (!canRetryPiSession(value)) throw new Error("There is no failed or incomplete response to retry.");
+    } catch (error) { throw new SessionServiceError(errorMessage(error), 409); }
     this.emitRuntime(value, "ensure");
     const retrySessionFile = value.sessionFile;
-    const usesCompatibilityFallback = !value.retryFromFailure;
-    void this.withWorkLease(value, "retry", "retry", () => this.retryFromFailure(value)).catch((error) => {
+    let usesCompatibilityFallback = false;
+    void this.withWorkLease(value, "retry", "retry", async () => {
+      usesCompatibilityFallback = (await retryPiSession(value)).usedCompatibilityFallback;
+    }).catch((error) => {
       this.emitRuntime(value, "clear", retrySessionFile);
       this.emitError(value, error);
     }).finally(() => {

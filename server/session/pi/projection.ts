@@ -1,6 +1,6 @@
-import { parseAttachmentMarkup } from "../shared/attachments.js";
-import type { PiWebSession } from "../types.js";
-import { jsonRoundTrip, type BaseSessionStateDto, type ConversationTreeDto, type MessageDto, type ModelDto, type SessionStatsDto, type SlashCommandDto } from "./dto.js";
+import { parseAttachmentMarkup } from "../../shared/attachments.js";
+import type { PiWebSession } from "../../types.js";
+import { jsonRoundTrip, type BaseSessionStateDto, type ConversationTreeDto, type MessageDto, type ModelDto, type SessionStatsDto, type SlashCommandDto } from "../dto.js";
 
 export type ContentDecorator = (content: unknown) => unknown;
 
