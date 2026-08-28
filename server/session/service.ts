@@ -298,6 +298,35 @@ export class LocalSessionService implements SessionService {
   }
 
   sessionForPath(path: string) { return this.liveSessions.get(path)?.session; }
+  activityView(value: PiWebSession) {
+    return {
+      sessionId: value.sessionId,
+      sessionFile: value.sessionFile,
+      isStreaming: Boolean(value.isStreaming),
+      isRetrying: Boolean(value.isRetrying),
+      isCompacting: Boolean(value.isCompacting),
+      pendingMessageCount: Number(value.pendingMessageCount || 0),
+      model: simplifyModel(value.model),
+      ...(typeof (value as any).runtimeStartedAt === "string" ? { runtimeStartedAt: (value as any).runtimeStartedAt } : {}),
+      ...(typeof (value as any).runtimeLastActivityAt === "string" ? { runtimeLastActivityAt: (value as any).runtimeLastActivityAt } : {}),
+    };
+  }
+  activityViewForPath(path: string) {
+    const value = this.sessionForPath(path);
+    return value ? this.activityView(value) : undefined;
+  }
+  activityViewForId(id: string) {
+    const value = this.sessionForId(id);
+    return value ? this.activityView(value) : undefined;
+  }
+  projectStateForId(id: string) {
+    const value = this.sessionForId(id);
+    return value ? this.projectState(value) : undefined;
+  }
+  webUiEntriesForId(id: string) {
+    const value = this.sessionForId(id);
+    return value ? this.webUiEntries(value) : undefined;
+  }
   hasActiveWorkForPath(path: string) { return (this.liveSessions.get(path)?.workLeases.size || 0) > 0; }
   hasActiveRetryForPath(path: string) { return Array.from(this.liveSessions.get(path)?.workLeases.values() || []).some((lease) => lease.kind === "retry"); }
   sessionForId(id: string) { return this.liveById.get(id); }

@@ -232,7 +232,7 @@ function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessio
 }
 
 function decorateState(baseState: BaseSessionStateDto, targetSession: PiWebSession, includeThinkingLevels = false): WireSessionState {
-  const state = decorateHostSessionState(baseState, targetSession, sessionActivity, (value) => sessionService.webUiEntries(value), includeThinkingLevels);
+  const state = decorateHostSessionState(baseState, sessionService.activityView(targetSession), sessionActivity, sessionService.webUiEntries(targetSession), includeThinkingLevels);
   return (mockMode ? { ...state, ...mockStateOverrides } : state) as WireSessionState;
 }
 
@@ -268,7 +268,7 @@ const pushNotifications = createPushNotificationService(
 );
 let sessionService: LocalSessionService;
 const sessionActivity = new SessionActivity(
-  (path) => sessionService?.sessionForPath(path),
+  (path) => sessionService?.activityViewForPath(path),
   (path) => sessionService?.hasActiveWorkForPath(path) ?? false,
   (path) => sessionService?.hasActiveRetryForPath(path) ?? false,
 );
@@ -386,9 +386,9 @@ async function applyDefaultSessionBucket(sessionId: string) {
 }
 
 const handleSessionServiceEvent = createHostSessionEventHandler({
-  sessionForId: (id) => sessionService.sessionForId(id),
-  projectState: (value) => sessionService.projectState(value),
-  webUiEntries: (value) => sessionService.webUiEntries(value),
+  sessionViewForId: (id) => sessionService.activityViewForId(id),
+  projectStateForId: (id) => sessionService.projectStateForId(id),
+  webUiEntriesForId: (id) => sessionService.webUiEntriesForId(id),
   sessionActivity,
   broadcast,
   markSessionUnreadCompleted,
