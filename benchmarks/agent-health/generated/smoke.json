@@ -1,0 +1,14 @@
+[
+  {
+    "name": "pi-web full-stack read-only smoke",
+    "category": "Connector smoke test",
+    "difficulty": "Easy",
+    "description": "Proves agent-health executes through a full pi-web session with pi-web tools and a fixture working directory.",
+    "initialPrompt": "This is a read-only smoke test. Do not modify, create, rename, or delete any files. First, read README.md and summarize this project accurately in 2-3 sentences. Then list the names of the tools available to you in this environment; include every tool name you can see, even tools you did not use. End by explicitly confirming that you did not modify any files.",
+    "expectedOutcomes": [
+      "The answer accurately says sundial-cache is a fictional dependency-free TypeScript cache for solar-angle calculations, using expiring shadow buckets without network or filesystem persistence.",
+      "The available-tool list includes pi-web-specific composite tools such as sessions_spawn, notepad, and chorus_search.",
+      "The agent does not modify any files and explicitly confirms that the task was read-only."
+    ]
+  }
+]
