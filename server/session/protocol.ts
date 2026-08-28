@@ -2,9 +2,39 @@ import type { SessionService, SessionServiceEvent } from "./dto.js";
 
 export const SESSION_PROTOCOL_VERSION = 1;
 export type SessionApiMethod = Exclude<keyof SessionService, "subscribe">;
-export const SESSION_API_METHODS: ReadonlySet<string> = new Set([
-  "state", "context", "stats", "tree", "messages", "commands", "models", "setModel", "executeShell", "executeCommand", "prompt", "retry", "abort", "abortCompaction", "abortBranchSummary", "rename", "navigate", "respondInteraction", "cancelInteractions", "invokeContribution", "invokeHeaderAction", "invokeArtifactAction", "invokeGitTab", "invokePanel", "list", "create", "open", "delete", "switchCwd",
-] satisfies SessionApiMethod[]);
+const sessionApiMethods = {
+  state: true,
+  context: true,
+  stats: true,
+  tree: true,
+  messages: true,
+  commands: true,
+  models: true,
+  setModel: true,
+  executeShell: true,
+  executeCommand: true,
+  prompt: true,
+  retry: true,
+  abort: true,
+  abortCompaction: true,
+  abortBranchSummary: true,
+  rename: true,
+  navigate: true,
+  respondInteraction: true,
+  cancelInteractions: true,
+  invokeContribution: true,
+  invokeHeaderAction: true,
+  invokeArtifactAction: true,
+  invokeGitTab: true,
+  invokePanel: true,
+  list: true,
+  create: true,
+  open: true,
+  delete: true,
+  switchCwd: true,
+} satisfies Record<SessionApiMethod, true>;
+/** Exhaustive by type: adding a SessionService method fails until it is exposed or explicitly excluded. */
+export const SESSION_API_METHODS: ReadonlySet<string> = new Set(Object.keys(sessionApiMethods));
 export type SessionRequest = { type: "health"; id: string; protocolVersion: number; build: string } | { type: "request"; id: string; method: SessionApiMethod; args: unknown[] };
 export type SerializedError = { name: string; message: string; stack?: string; status?: number; code?: string };
 export type SessionResponse =
