@@ -22,5 +22,4 @@ describeSessionService("SessionService contract over spawned NDJSON runner", rem
 describe("spawned session runner transport", () => {
   it("fails closed on build mismatch", async () => { const child = childProcess(await cwd(), "runner-build"); await expect(RemoteSessionService.connect(child, "host-build")).rejects.toThrow(/Incompatible session runner/); });
   it("rejects pending work when the child exits", async () => { const h = await remoteHarness(); const pending = h.service.state("initial"); h.child.kill("SIGKILL"); await expect(pending).rejects.toThrow(/closed|exited/); });
-  it("rejects synchronous interaction methods rather than claiming remote delivery", async () => { const h = await remoteHarness(); expect(() => h.service.respondInteraction({ id: "x" })).toThrow(/asynchronous serving adapter/); expect(() => h.service.cancelInteractions()).toThrow(/asynchronous serving adapter/); await h.close(); });
 });

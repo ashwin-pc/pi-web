@@ -360,7 +360,7 @@ describe("LocalSessionService contract", () => {
     expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([
       expect.objectContaining({ label: "extension-interaction:confirm", kind: "general" }),
     ]);
-    expect(service.respondInteraction({ id: interaction.request.id, confirmed: true })).toBe(true);
+    await expect(service.respondInteraction({ id: interaction.request.id, confirmed: true })).resolves.toBe(true);
     await expect(answer).resolves.toBe(true);
     expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
   });
@@ -375,7 +375,7 @@ describe("LocalSessionService contract", () => {
 
     const disconnected = fixture.extensionOptions.uiContext.confirm("Disconnected", "Wait", { timeout: 1_000 });
     clients = 0;
-    service.cancelInteractions();
+    await service.cancelInteractions();
     await expect(disconnected).resolves.toBe(false);
   });
 

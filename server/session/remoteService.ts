@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { SessionService, SessionServiceEvent } from "./dto.js";
-import { RemoteSessionError, SESSION_PROTOCOL_VERSION, type SessionApiMethod, type SessionRequest, type SessionResponse } from "./protocol.js";
+import { isSessionResponse, RemoteSessionError, SESSION_PROTOCOL_VERSION, type SessionApiMethod, type SessionRequest, type SessionResponse } from "./protocol.js";
 
 export class RemoteSessionService implements SessionService {
   private sequence = 0;
@@ -13,7 +13,7 @@ export class RemoteSessionService implements SessionService {
     lines.on("line", (line) => {
       if (!line.trim()) return;
       let message: SessionResponse;
-      try { message = JSON.parse(line) as SessionResponse; } catch { this.fail(new Error("Runner emitted malformed NDJSON")); return; }
+      try { const value: unknown = JSON.parse(line); if (!isSessionResponse(value)) throw new Error("invalid response envelope"); message = value; } catch { this.fail(new Error("Runner emitted malformed or invalid NDJSON")); return; }
       if (message.type === "event") { for (const listener of this.listeners) { try { listener(message.event); } catch {} } return; }
       const pending = this.pending.get(message.id); if (!pending) return; this.pending.delete(message.id);
       if (message.type === "error") pending.reject(new RemoteSessionError(message.error)); else pending.resolve(message);
@@ -45,8 +45,7 @@ export class RemoteSessionService implements SessionService {
   state=(...a: Parameters<SessionService["state"]>)=>this.call<Awaited<ReturnType<SessionService["state"]>>>("state",a);
   context=(...a: Parameters<SessionService["context"]>)=>this.call<any>("context",a); stats=(...a: Parameters<SessionService["stats"]>)=>this.call<any>("stats",a); tree=(...a: Parameters<SessionService["tree"]>)=>this.call<any>("tree",a); messages=(...a: Parameters<SessionService["messages"]>)=>this.call<any>("messages",a); commands=(...a: Parameters<SessionService["commands"]>)=>this.call<any>("commands",a); models=(...a: Parameters<SessionService["models"]>)=>this.call<any>("models",a);
   setModel=(...a: Parameters<SessionService["setModel"]>)=>this.call<any>("setModel",a); executeShell=(...a: Parameters<SessionService["executeShell"]>)=>this.call<any>("executeShell",a); executeCommand=(...a: Parameters<SessionService["executeCommand"]>)=>this.call<any>("executeCommand",a); prompt=(...a: Parameters<SessionService["prompt"]>)=>this.call<any>("prompt",a); retry=(...a: Parameters<SessionService["retry"]>)=>this.call<any>("retry",a); abort=(...a: Parameters<SessionService["abort"]>)=>this.call<any>("abort",a); abortCompaction=(...a: Parameters<SessionService["abortCompaction"]>)=>this.call<any>("abortCompaction",a); abortBranchSummary=(...a: Parameters<SessionService["abortBranchSummary"]>)=>this.call<any>("abortBranchSummary",a); rename=(...a: Parameters<SessionService["rename"]>)=>this.call<any>("rename",a); navigate=(...a: Parameters<SessionService["navigate"]>)=>this.call<any>("navigate",a);
-  /** These synchronous methods cannot honestly cross an asynchronous child boundary. */
-  respondInteraction(_response: Parameters<SessionService["respondInteraction"]>[0]): boolean { throw new Error("respondInteraction requires an asynchronous serving adapter and is unavailable on RemoteSessionService"); }
-  cancelInteractions(): void { throw new Error("cancelInteractions requires an asynchronous serving adapter and is unavailable on RemoteSessionService"); }
+  respondInteraction=(...a: Parameters<SessionService["respondInteraction"]>)=>this.call<boolean>("respondInteraction",a);
+  cancelInteractions=(...a: Parameters<SessionService["cancelInteractions"]>)=>this.call<void>("cancelInteractions",a);
   invokeContribution=(...a: Parameters<SessionService["invokeContribution"]>)=>this.call<any>("invokeContribution",a); invokeHeaderAction=(...a: Parameters<SessionService["invokeHeaderAction"]>)=>this.call<any>("invokeHeaderAction",a); invokeArtifactAction=(...a: Parameters<SessionService["invokeArtifactAction"]>)=>this.call<any>("invokeArtifactAction",a); invokeGitTab=(...a: Parameters<SessionService["invokeGitTab"]>)=>this.call<any>("invokeGitTab",a); invokePanel=(...a: Parameters<SessionService["invokePanel"]>)=>this.call<any>("invokePanel",a); list=(...a: Parameters<SessionService["list"]>)=>this.call<any>("list",a); create=(...a: Parameters<SessionService["create"]>)=>this.call<any>("create",a); open=(...a: Parameters<SessionService["open"]>)=>this.call<any>("open",a); delete=(...a: Parameters<SessionService["delete"]>)=>this.call<any>("delete",a); switchCwd=(...a: Parameters<SessionService["switchCwd"]>)=>this.call<any>("switchCwd",a);
 }

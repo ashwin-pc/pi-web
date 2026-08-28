@@ -283,7 +283,7 @@ realtimeHub = new RealtimeHub(
   websocketMaxMissedHeartbeats,
   (value) => unreadTracker.handle(value),
   1000,
-  (count) => { if (count === 0) sessionService?.cancelInteractions(); },
+  (count) => { if (count === 0) void sessionService?.cancelInteractions(); },
 );
 
 const mockPromptCorrelations = new Map<string, Array<{ clientMessageId: string; sourceClientId: string }>>();
@@ -994,7 +994,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const id = String(body.id || "").trim();
         if (!id) return sendJson(res, 400, { ok: false, error: "id is required" });
         const response = { ...body, id } as InteractionResponseDto;
-        if (!sessionService.respondInteraction(response)) return sendJson(res, 404, { ok: false, error: "Interaction request not found" });
+        if (!await sessionService.respondInteraction(response)) return sendJson(res, 404, { ok: false, error: "Interaction request not found" });
         return sendJson(res, 200, { ok: true });
       }
 

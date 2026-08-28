@@ -580,8 +580,8 @@ export class LocalSessionService implements SessionService {
     return this.require(sessionId).then((value) => this.webUiBridge.invokePanel(value, input));
   }
 
-  respondInteraction(response: InteractionResponseDto) { return this.webUiBridge.respond(response.id, response); }
-  cancelInteractions() { this.webUiBridge.cancelPendingInteractions(); }
+  async respondInteraction(response: InteractionResponseDto) { return this.webUiBridge.respond(response.id, response); }
+  async cancelInteractions() { this.webUiBridge.cancelPendingInteractions(); }
 
   private extensionStatusFor(value: PiWebSession, loader: ResilientResourceLoader) {
     const status = loader.getStatus();

@@ -29,7 +29,7 @@ export function dispatchSessionService({ input, output, service, build }: Dispat
       const member = service[request.method] as unknown;
       if (typeof member !== "function") throw new Error(`Unknown SessionService method: ${String(request.method)}`);
       const result = await Reflect.apply(member, service, request.args);
-      write({ type: "response", id: request.id, result });
+      write({ type: "response", id: request.id, result: result === undefined ? null : result });
     } catch (error) { write({ type: "error", id: request.id, error: serializeError(error) }); }
   });
   const stop = () => { if (stopped) return; stopped = true; unsubscribe(); lines.close(); };

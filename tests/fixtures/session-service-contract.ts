@@ -24,6 +24,20 @@ export function describeSessionService(name: string, makeHarness: () => Promise<
         await expect(h.service.state("missing")).rejects.toMatchObject({ message: expect.stringContaining("Session not found") });
       } finally { await h.close(); }
     });
+    it("resolves and cancels interactions through the service contract", async () => {
+      const h = await makeHarness(); try {
+        const interactions: SessionServiceEvent[] = []; h.service.subscribe(event => { if (event.type === "interaction") interactions.push(event); });
+        await h.service.prompt(h.initialId, { message: "request-interaction", mode: "steer", attachments: [] });
+        await vi.waitFor(() => expect(interactions).toHaveLength(1));
+        const first = interactions[0]; if (!first || first.type !== "interaction") throw new Error("missing interaction");
+        await expect(h.service.respondInteraction({ id: first.request.id, confirmed: true })).resolves.toBe(true);
+        await h.service.prompt(h.initialId, { message: "request-interaction", mode: "steer", attachments: [] });
+        await vi.waitFor(() => expect(interactions).toHaveLength(2));
+        const second = interactions[1]; if (!second || second.type !== "interaction") throw new Error("missing interaction");
+        await h.service.cancelInteractions();
+        await expect(h.service.respondInteraction({ id: second.request.id, confirmed: true })).resolves.toBe(false);
+      } finally { await h.close(); }
+    });
     it("returns serving-side navigation data without a finish callback", async () => {
       const h = await makeHarness(); try { const value = await h.service.navigate(h.initialId, "missing", {}); expect(value).not.toHaveProperty("finish"); expect(jsonRoundTrip(value)).toStrictEqual(value); } finally { await h.close(); }
     });
