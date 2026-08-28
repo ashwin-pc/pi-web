@@ -26,6 +26,23 @@ describe("auth kernel", () => {
     expect(await readFile(s.path, "utf8")).not.toContain(raw);
   });
 
+  it("accepts legacy session cookies and ignores malformed cookies", async () => {
+    const s = await store(); const k = new AuthKernel("legacy", s, "secret", false), res = response();
+    await k.establishSession(res, { id: "legacy:token" });
+    const raw = /pi_web_session=([^;]+)/.exec(res.headers.get("set-cookie")!)![1];
+    expect(await k.gate(req({ cookie: `bad=%; pi_web_session=${raw}` }))).toMatchObject({ ok: true, via: "session" });
+  });
+
+  it("prunes expired and revoked sessions on update", async () => {
+    const s = await store(); const now = Date.now();
+    await s.update(x => x.sessions.push(
+      { hash: "expired", identity: { id: "x" }, createdAt: 1, lastSeenAt: 1, expiresAt: now - 1 },
+      { hash: "revoked", identity: { id: "x" }, createdAt: 1, lastSeenAt: 1, expiresAt: now + 1000, revokedAt: now },
+    ));
+    await s.update(() => undefined);
+    expect((await s.read()).sessions).toEqual([]);
+  });
+
   it("accepts only live named API tokens in passkey mode", async () => {
     const s = await store(); await s.update(x => x.apiTokens.push({ id: "1", name: "CI", hash: hashSecret("piw_secret"), createdAt: 1, expiresAt: Date.now() + 1000 }));
     const k = new AuthKernel("passkey", s);

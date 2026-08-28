@@ -11,8 +11,8 @@ if (command === "bootstrap" || command === "recover") {
   const token = randomSecret(), minutes = Math.max(1, Math.min(30, Number(value("--minutes", "10"))));
   await store.update(s => { s.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + minutes * 60_000 }; });
   const origin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${process.env.PORT || "8787"}`;
-  const url = new URL("/api/auth/bootstrap", origin); url.hostname = "localhost"; url.searchParams.set("token", token);
-  console.log(`${command === "recover" ? "Recovery" : "Enrollment"} URL (localhost-only, single-use, expires in ${minutes}m):\n${url}`);
+  const url = new URL("/api/auth/bootstrap", origin); url.searchParams.set("token", token);
+  console.log(`${command === "recover" ? "Recovery" : "Enrollment"} URL (single-use, expires in ${minutes}m):\n${url}`);
 } else if (command === "token-create") {
   const name = value("--name"); if (!name) throw new Error("--name is required");
   const days = Math.max(1, Math.min(365, Number(value("--days", "30")))), raw = `piw_${randomSecret()}`, id = randomUUID();
@@ -21,7 +21,7 @@ if (command === "bootstrap" || command === "recover") {
 } else if (command === "token-revoke") {
   const id = args[0]; await store.update(s => { const item = s.apiTokens.find(x => x.id === id); if (!item) throw new Error("Token not found"); item.revokedAt = Date.now(); }); console.log("Revoked.");
 } else if (command === "list") {
-  const s = await store.read(); console.log(JSON.stringify({ credentials: s.credentials.map(({ publicKey, ...x }) => x), sessions: s.sessions, apiTokens: s.apiTokens.map(({ hash, ...x }) => x) }, null, 2));
+  const s = await store.read(); console.log(JSON.stringify({ credentials: s.credentials.map(({ publicKey, ...x }) => x), sessions: s.sessions.map(({ hash, ...x }) => x), apiTokens: s.apiTokens.map(({ hash, ...x }) => x) }, null, 2));
 } else if (command === "credential-revoke") {
   const id = args[0]; await store.update(s => { const item = s.credentials.find(x => x.id === id); if (!item) throw new Error("Credential not found"); item.revokedAt = Date.now(); s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); }); }); console.log("Credential and all sessions revoked.");
 } else if (command === "sessions-revoke-all") {

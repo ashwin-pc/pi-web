@@ -51,6 +51,22 @@ test.describe("token overlay", () => {
     await expect(page.locator("#messages")).toBeVisible();
   });
 
+  test("mints a session cookie and renders a sandboxed HTML artifact through srcdoc", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
+    expect((await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
+
+    await expect(page.locator("#prompt")).toBeEnabled();
+    await page.waitForTimeout(500);
+    await page.locator("#prompt").fill("show html artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".artifactPreview--html iframe.artifactPreviewFrame").last();
+    await expect(frame).toHaveAttribute("srcdoc", /HTML artifact/);
+    await expect(frame.contentFrame().locator("#script-status")).toHaveText("script ran");
+  });
+
   test("token persisted in localStorage after login", async ({ page }) => {
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);

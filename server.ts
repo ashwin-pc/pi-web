@@ -40,8 +40,8 @@ const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
 const authMode = (process.env.PI_WEB_AUTH_MODE || "legacy") as AuthMode;
 if (!["none", "legacy", "passkey", "external"].includes(authMode)) throw new Error(`Invalid PI_WEB_AUTH_MODE: ${authMode}`);
-const authOrigin = process.env.PI_WEB_AUTH_ORIGIN || `http://${host}:${port}`;
-const authUrl = new URL(authOrigin);
+const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
+const authOrigin = authUrl.origin;
 const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
 const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:");
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
@@ -494,10 +494,12 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     if (url.pathname.startsWith("/api/")) {
       if (authMode === "passkey" && await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
-      if (!(await authKernel.gate(req)).ok) return unauthorized(res);
-      if (authMode === "passkey" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
-        const origin = req.headers.origin;
-        if ((origin && origin !== authOrigin) || (!req.headers.authorization && !req.headers["x-pi-web-client-id"])) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
+      const auth = await authKernel.gate(req);
+      if (!auth.ok) return unauthorized(res);
+      if (auth.via === "legacy" && req.headers["x-pi-web-client-id"]) await authKernel.establishSession(res, auth.identity);
+      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+        const validOrigin = authMode !== "passkey" || req.headers.origin === authOrigin;
+        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
       }
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
@@ -1160,10 +1162,11 @@ server.on("upgrade", (req, socket, head) => {
   if (url.pathname !== "/ws") return;
 
   void (async () => {
-    if (!(await authKernel.gate(req)).ok) {
+    const auth = await authKernel.gate(req);
+    if (!auth.ok) {
       socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return;
     }
-    if (authMode === "passkey" && req.headers.origin !== authOrigin) {
+    if (authMode === "passkey" && auth.via === "session" && req.headers.origin !== authOrigin) {
       socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return;
     }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
