@@ -114,6 +114,25 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   await page.evaluate(async () => { await document.fonts.ready; await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); });
 }
 
+async function prepareRecommendedAddons(page: import("@playwright/test").Page, projectName: string) {
+  await page.setViewportSize(projectName === "desktop" ? { width: 1440, height: 1000 } : { width: 390, height: 844 });
+  await page.request.post("/api/mock/reset", { data: { recommendedAddonsExtension: true } });
+  const model = { provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4", reasoning: true, contextWindow: 200000, maxTokens: 8192 };
+  await page.route("**/api/models**", (route) => route.fulfill({ json: {
+    ok: true, cwd: "/workspace/studio", current: model, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"], models: [model],
+  } }));
+  await page.goto("/");
+  await expect(page.locator("#prompt")).toBeVisible();
+  await startEmptySession(page);
+  await page.locator("#statusTitle").click();
+  await page.locator("#statusTitle input").fill("Studio launch planning");
+  await page.locator("#statusTitle input").press("Enter");
+  await expect(page.locator("#statusTitle")).toHaveText("Studio launch planning");
+  await expect(page.locator("#headerActions .webHeaderActionButton")).toHaveAttribute("title", "Session recap");
+  await expect(page.locator('.webFooterEntry[data-footer-key="local-git-footer"]')).toContainText("main");
+  await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.messageTimestamp{visibility:hidden!important}" });
+}
+
 async function mockConversationTreeApi(page: import("@playwright/test").Page) {
   const timestamp = "2026-05-07T10:00:00Z";
   const treeNode = (
@@ -335,6 +354,55 @@ test.describe("visual regression", () => {
     await page.evaluate(async () => { await document.fonts.ready; await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); });
 
     await expect(page).toHaveScreenshot(`website-extension-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
+    });
+  });
+
+  test("core everyday workspace", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use the maintained desktop and mobile projects");
+    await prepareWebsiteWorkStory(page, testInfo.project.name);
+    await page.locator("#prompt").fill("Add one final accessibility review before handoff.");
+    await page.locator(".actionLauncherToggle").click();
+    await expect(page.locator(".actionLauncher")).toHaveClass(/open/);
+
+    await expect(page).toHaveScreenshot(`core-everyday-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
+    });
+  });
+
+  test("recommended add-ons workspace", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use the maintained desktop and mobile projects");
+    await prepareRecommendedAddons(page, testInfo.project.name);
+    await openLauncherAction(page, "Notepad");
+    const panel = page.locator("#webExtensionPanel");
+    await expect(panel).toBeVisible();
+    await expect(panel.getByRole("heading", { name: "Global notepad" })).toBeVisible();
+    await expect(panel).toContainText("Review the launch checklist with the team");
+    await expect(panel).toContainText("Use the compact composer for phone layouts");
+
+    await expect(page).toHaveScreenshot(`recommended-addons-${testInfo.project.name}.png`, {
+      fullPage: true,
+      animations: "disabled",
+      scale: testInfo.project.name === "mobile" ? "device" : "css",
+    });
+  });
+
+  test("recommended GitHub add-on", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use the maintained desktop and mobile projects");
+    await mockGitApi(page);
+    await prepareRecommendedAddons(page, testInfo.project.name);
+    await openLauncherAction(page, "Session details");
+    await page.locator("#sessionInfoGit").click();
+    const githubTab = page.locator(".gitExtensionTab", { hasText: "GitHub" });
+    await expect(githubTab).toBeVisible();
+    await githubTab.click();
+    await expect(page.locator(".ghPanel")).toContainText("Clarify keyboard shortcuts in onboarding");
+
+    await expect(page).toHaveScreenshot(`recommended-github-${testInfo.project.name}.png`, {
       fullPage: true,
       animations: "disabled",
       scale: testInfo.project.name === "mobile" ? "device" : "css",

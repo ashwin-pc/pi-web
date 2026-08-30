@@ -243,6 +243,7 @@
   .template-grid a { color: var(--mint-dark); font-size: .72rem; font-weight: 800; text-decoration: none; }
   .extension-sequence-note { margin-top: 1rem; }
   .visual-index { display: grid; grid-template-columns: 1fr 1fr; gap: 3rem 1rem; }
+  .visual-index--addons { margin: 2rem 0; }
   .code-feature-card { display: grid; min-height: 320px; align-content: center; gap: .8rem; border: 1px solid #31443b; border-radius: var(--radius); color: #eef4f1; background: var(--night); padding: 2rem; text-decoration: none; }
   .code-feature-card .eyebrow { color: var(--mint); }
   .code-feature-card h2 { font-size: clamp(1.8rem, 3vw, 2.8rem); }

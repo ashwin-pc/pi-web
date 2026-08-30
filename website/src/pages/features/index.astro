@@ -29,7 +29,26 @@ const base = import.meta.env.BASE_URL;
     </div>
   </Section>
 
-  <Section tone="tinted" eyebrow="Visual index" title="See the included surfaces.">
+  <Section tone="tinted" eyebrow="Everyday workspace" title="The basics stay visible while you work." intro="Tool activity, rich output, model controls, attachments, and session actions share one responsive workspace.">
+    <ProductStory
+      desktop="core-everyday-desktop.png"
+      mobile="core-everyday-mobile.png"
+      width={1440}
+      height={1000}
+      mobileWidth={1073}
+      mobileHeight={2321}
+      mobileAspectWidth={390}
+      mobileAspectHeight={844}
+      alt="A real pi-web conversation showing described read and write tool activity, rich HTML output, composer controls, and session actions"
+      title="Follow the work and shape the next step"
+      caption="Described tool calls, a rich result, model and attachment controls, and everyday session actions."
+      href={`${base}features/stay-in-control/#run-controls`}
+      linkLabel="Explore run controls"
+      priority
+    />
+  </Section>
+
+  <Section eyebrow="Visual index" title="See the included surfaces.">
     <div class="visual-index">
       {outcomes.map((outcome) => outcome.screenshot ? (
         <ProductStory

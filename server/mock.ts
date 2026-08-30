@@ -4,6 +4,7 @@ import { simplifyMessage } from "./session/projection.js";
 import { mapPiEvent } from "./session/piEventMap.js";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import websiteWorkflowExtension from "./fixtures/websiteWorkflowExtension.js";
+import recommendedAddonsExtension from "./fixtures/recommendedAddonsExtension.js";
 
 interface MockSessionOptions {
   piCwd: string;
@@ -47,9 +48,14 @@ export function createMockHarness(options: MockSessionOptions) {
   const mockLifecycle = new Map<string, { shutdowns: number; disposes: number }>();
   let mockGeneration = 0;
   let websiteWorkflowExtensionEnabled = false;
+  let recommendedAddonsExtensionEnabled = false;
 
   function setWebsiteWorkflowExtensionEnabled(enabled: boolean) {
     websiteWorkflowExtensionEnabled = enabled;
+  }
+
+  function setRecommendedAddonsExtensionEnabled(enabled: boolean) {
+    recommendedAddonsExtensionEnabled = enabled;
   }
 
   function lifecycleFor(id: string) {
@@ -411,8 +417,12 @@ export function createMockHarness(options: MockSessionOptions) {
             handlers.push(handler);
             extensionHandlers.set(eventType, handlers);
           },
+          registerTool() {},
+          exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+          getSessionName: () => mockSessions.find((info) => info.path === mockSession.sessionFile)?.name,
         };
         if (websiteWorkflowExtensionEnabled) websiteWorkflowExtension(api as any);
+        if (recommendedAddonsExtensionEnabled) recommendedAddonsExtension(api as any, piCwd);
         extensionContext = { cwd: piCwd, ui: uiContext, sessionManager: mockSessionManager };
         for (const handler of extensionHandlers.get("session_start") || []) {
           await handler({ type: "session_start", reason: "resume" }, extensionContext);
@@ -794,5 +804,5 @@ export function createMockHarness(options: MockSessionOptions) {
     return mockSession;
   }
 
-  return { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled };
+  return { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled };
 }

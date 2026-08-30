@@ -4,6 +4,7 @@ import BottomCTA from '../../components/BottomCTA.astro';
 import ButtonLink from '../../components/ButtonLink.astro';
 import MarketingHero from '../../components/MarketingHero.astro';
 import ProductStory from '../../components/ProductStory.astro';
+import RecommendedAddonsStories from '../../components/RecommendedAddonsStories.astro';
 import Section from '../../components/Section.astro';
 import { recommendedExamples } from '../../data/extensionExamples';
 
@@ -38,6 +39,7 @@ const docs = `${repo}/blob/main/docs/pi-web-extensions.md`;
 
   <Section id="recommended" tone="tinted" eyebrow="Recommended add-ons" title="Useful enhancements, not required core.">
     <p class="boundary-copy">The GitHub repository panel, global notepad, recap action, artifact reference, and live Git footer are the recommended starting set for a richer-than-minimal setup. They remain optional trusted source: choose, inspect, copy, and adapt only what you need.</p>
+    <RecommendedAddonsStories />
     <div class="source-example-row">
       {recommendedExamples.map((example) => <a href={`${base}extensions/examples/#${example.id}`}><strong>{example.title}</strong><span>Review the add-on →</span></a>)}
     </div>
