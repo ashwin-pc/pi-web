@@ -9,23 +9,26 @@ const feature = getFeatureRoute('stay-in-control');
 const repo = 'https://github.com/ashwin-pc/pi-web';
 ---
 
-<FeaturePage feature={feature} description="Inspect and steer agent work with workspace files, diffs, and Git context." primary={{ label: 'Install pi-web', href: `${base}getting-started/` }} secondary={{ label: 'Read the principles', href: `${base}principles/` }} technicalLinks={[{ label: 'Diff review', href: `${repo}#diffs-and-tool-review` }, { label: 'Git views', href: `${repo}#git-status-graph-and-commit-diffs` }, { label: 'Workspace safety tests', href: `${repo}/blob/main/tests/workspace-files.test.ts` }]}>
-  <Section eyebrow="Review surfaces" title="Open the file. Verify the change.">
+<FeaturePage feature={feature} description="Inspect and steer agent work with workspace files, diffs, and Git context." primary={{ label: 'Install pi-web', href: `${base}getting-started/` }} secondary={{ label: 'Read the principles', href: `${base}principles/` }} onThisPage={[{ label: 'Tool activity', href: '#tool-activity' }, { label: 'Review surfaces', href: '#review-surfaces' }, { label: 'Models and context', href: '#run-controls' }, { label: 'Files and Git', href: '#files-and-git' }, { label: 'Access boundary', href: '#access-boundary' }]} technicalLinks={[{ label: 'Diff review', href: `${repo}#diffs-and-tool-review` }, { label: 'Git views', href: `${repo}#git-status-graph-and-commit-diffs` }, { label: 'Workspace safety tests', href: `${repo}/blob/main/tests/workspace-files.test.ts` }]}>
+  <Section id="tool-activity" narrow eyebrow="Default tool activity" title="See what the agent is doing.">
+    <p class="boundary-copy">Each tool call shows its name and description, arguments, running progress, and final result. Partial output can expand in place, and thinking, errors, stop, retry, and continuation controls stay attached to the turn.</p>
+  </Section>
+  <Section id="review-surfaces" eyebrow="Review surfaces" title="Open the file. Verify the change.">
     <div class="story-stack">
       <ProductStory desktop="workspace-explorer-desktop.png" mobile="workspace-explorer-mobile.png" width={1600} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Workspace Explorer with conversation, file tree, and editor" title="Workspace Explorer" caption="Browse and edit files beside the session." />
       <ProductStory desktop="git-diff-viewer-desktop.png" mobile="git-diff-viewer-mobile.png" width={1280} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Git view with commit metadata, changed files, and split diff" title="Git and diff inspection" caption="Review repository history and exact changes. pi-web does not commit or push." />
     </div>
   </Section>
-  <Section tone="tinted" narrow eyebrow="Run controls" title="Choose the model. Manage the context.">
+  <Section id="run-controls" tone="tinted" narrow eyebrow="Run controls" title="Choose the model. Manage the context.">
     <p class="boundary-copy">Choose from the models exposed by <code>pi</code> and set a reasoning level for the session. Watch context use, compact or cancel compaction, stop a turn, and retry or continue after a model or incomplete-turn failure.</p>
   </Section>
   <Section tone="tinted" narrow eyebrow="Direct actions" title="Use commands without leaving the thread.">
     <p class="boundary-copy">Discover web, extension, prompt, and skill slash commands in the composer. Run <code>!</code> shell commands in the session directory, in or outside agent context. Session and system details include IDs, working directory, versions, Git change stats, and durable diagnostics you can copy for support.</p>
   </Section>
-  <Section tone="tinted" narrow eyebrow="Safe files and Git" title="Sync deliberately. Save without surprises.">
+  <Section id="files-and-git" tone="tinted" narrow eyebrow="Safe files and Git" title="Sync deliberately. Save without surprises.">
     <p class="boundary-copy">Explorer saves are revision-aware and reject paths outside the session workspace, unsafe symlinks, and unsuitable files. Inspect status, history, and diffs, then fetch or rebase-pull with explicit progress and errors; pi-web never commits or pushes for you.</p>
   </Section>
-  <Section tone="dark" narrow eyebrow="Local-first boundary" title="Access remains your decision.">
+  <Section id="access-boundary" tone="dark" narrow eyebrow="Local-first boundary" title="Access remains your decision.">
     <p class="boundary-copy">Provider credentials stay server-side. If you expose pi-web, transport and network controls remain yours.</p>
   </Section>
 </FeaturePage>

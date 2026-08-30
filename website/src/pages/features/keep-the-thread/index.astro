@@ -9,17 +9,17 @@ const feature = getFeatureRoute('keep-the-thread');
 const repo = 'https://github.com/ashwin-pc/pi-web';
 ---
 
-<FeaturePage feature={feature} description="Organize parallel work in persistent pi-web sessions, lanes, and conversation branches." primary={{ label: 'Start a session', href: `${base}getting-started/` }} secondary={{ label: 'Orchestration example', href: `${base}extensions/examples/#session-orchestration` }} technicalLinks={[{ label: 'Sessions', href: `${repo}#mobile-first-sessions` }, { label: 'Conversation tree', href: `${repo}#conversation-tree` }, { label: 'Lane behavior', href: `${repo}/blob/main/tests/e2e/session-bar.spec.ts` }]}>
-  <Section eyebrow="Sessions and branches" title="Organize the work. Preserve the path.">
+<FeaturePage feature={feature} description="Organize parallel work in persistent pi-web sessions, lanes, and conversation branches." primary={{ label: 'Start a session', href: `${base}getting-started/` }} secondary={{ label: 'Experimental orchestration', href: `${base}extensions/examples/#experimental` }} onThisPage={[{ label: 'Sessions and branches', href: '#sessions-and-branches' }, { label: 'Reply and redirect', href: '#reply-redirect-continue' }, { label: 'Experimental orchestration', href: '#experimental-orchestration' }]} technicalLinks={[{ label: 'Sessions', href: `${repo}#mobile-first-sessions` }, { label: 'Conversation tree', href: `${repo}#conversation-tree` }, { label: 'Lane behavior', href: `${repo}/blob/main/tests/e2e/session-bar.spec.ts` }]}>
+  <Section id="sessions-and-branches" eyebrow="Sessions and branches" title="Organize the work. Preserve the path.">
     <div class="story-stack">
       <ProductStory desktop="session-lanes-desktop.png" mobile="session-lanes-mobile.png" width={1600} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Pinned, Parked, and Bookmarks session lanes" title="Parallel work at a glance" caption="Pinned, Parked, and Bookmarks." />
       <ProductStory desktop="conversation-tree-desktop.png" mobile="conversation-tree-mobile.png" width={1280} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Conversation tree showing branches and current path" title="Branch without erasing" caption="Search and return to any conversation path." />
     </div>
   </Section>
-  <Section tone="tinted" narrow eyebrow="Reply, redirect, continue" title="Keep the next message attached to the work.">
-    <p class="boundary-copy">Select an exact response to send a linked quote reply. While a turn is running, choose <strong>steer</strong> to redirect it or <strong>follow-up</strong> to queue what happens next; pending messages stay visible before delivery.</p>
+  <Section id="reply-redirect-continue" tone="tinted" narrow eyebrow="Reply, redirect, continue" title="Keep the next message attached to the work.">
+    <p class="boundary-copy">Select an exact response to send a linked quote reply, edit a message to continue from it, or create a preserved branch. While a turn is running, choose <strong>stop</strong>, <strong>steer</strong> to redirect it, or <strong>follow-up</strong> to queue what happens next; pending messages stay visible before delivery.</p>
   </Section>
-  <Section tone="tinted" narrow eyebrow="Experimental · opt-in" title="Visible worker sessions are an example, not core.">
+  <Section id="experimental-orchestration" tone="tinted" narrow eyebrow="Experimental · opt-in" title="Visible worker sessions are an add-on, not core.">
     <p class="boundary-copy">The session-orchestration extension can spawn and monitor ordinary sessions. <a href={`${base}extensions/examples/#session-orchestration`}>Inspect its source and setup →</a></p>
   </Section>
 </FeaturePage>

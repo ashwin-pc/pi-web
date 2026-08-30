@@ -5,15 +5,16 @@ import ButtonLink from '../../components/ButtonLink.astro';
 import MarketingHero from '../../components/MarketingHero.astro';
 import ProductStory from '../../components/ProductStory.astro';
 import Section from '../../components/Section.astro';
+import { recommendedExamples } from '../../data/extensionExamples';
 
 const base = import.meta.env.BASE_URL;
 const repo = 'https://github.com/ashwin-pc/pi-web';
 const docs = `${repo}/blob/main/docs/pi-web-extensions.md`;
 ---
 
-<BaseLayout title="Extensions" description="Ask your agent to add a project-local pi-web workflow as trusted TypeScript source.">
-  <MarketingHero eyebrow="Extensions" title="Describe the workflow. Ask your agent to add it." lede="A request becomes source you can inspect, reload, and refine.">
-    <ButtonLink href={`${base}extensions/examples/`}>Try an example</ButtonLink>
+<BaseLayout title="Extensions and add-ons" description="Enhance pi-web with recommended add-ons, adapt trusted TypeScript templates, or build a project-local workflow.">
+  <MarketingHero eyebrow="Optional trusted code" title="Describe the workflow. Ask your agent to add it." lede="Core pi-web works without extensions. For more, choose a recommended add-on, adapt a template, or write source you can inspect, reload, and refine.">
+    <ButtonLink href={`${base}extensions/examples/#recommended`}>Recommended add-ons</ButtonLink>
     <ButtonLink href={docs} external variant="secondary">Extension API</ButtonLink>
   </MarketingHero>
 
@@ -35,20 +36,23 @@ const docs = `${repo}/blob/main/docs/pi-web-extensions.md`;
     />
   </Section>
 
-  <Section tone="tinted" eyebrow="The workflow" title="Ask → write → reload.">
+  <Section id="recommended" tone="tinted" eyebrow="Recommended add-ons" title="Useful enhancements, not required core.">
+    <p class="boundary-copy">The GitHub repository panel, global notepad, recap action, artifact reference, and live Git footer are the recommended starting set for a richer-than-minimal setup. They remain optional trusted source: choose, inspect, copy, and adapt only what you need.</p>
+    <div class="source-example-row">
+      {recommendedExamples.map((example) => <a href={`${base}extensions/examples/#${example.id}`}><strong>{example.title}</strong><span>Review the add-on →</span></a>)}
+    </div>
+  </Section>
+
+  <Section id="build-your-own" eyebrow="Templates · build your own" title="Ask → write → reload.">
     <div class="agent-sequence">
       <div><span>Ask</span><blockquote>“Read <code>docs/pi-web-extensions.md</code>. Add a project-local panel for this workflow.”</blockquote></div>
       <div><span>Write</span><pre><code>.pi/web/extensions/my-workflow.ts</code></pre></div>
       <div><span>Use</span><pre><code>/reload</code></pre></div>
     </div>
-    <div class="source-example-row">
-      <a href={`${repo}/blob/main/examples/pi-web-extensions/notepad.ts`}><strong>Notepad panel</strong><span>Actual source ↗</span></a>
-      <a href={`${repo}/blob/main/examples/pi-web-extensions/github-repo-panel.ts`}><strong>GitHub tab</strong><span>Actual source ↗</span></a>
-      <a href={`${repo}/blob/main/examples/pi-web-extensions/artifact-reference.ts`}><strong>Artifact action</strong><span>Actual source ↗</span></a>
-    </div>
+    <p class="boundary-copy extension-sequence-note">Examples are templates, not an installer: start from a checkout, copy the closest file, inspect and edit it, then use <code>/reload</code>.</p>
   </Section>
 
-  <Section eyebrow="Choose the scope" title="Shared agent behavior or browser UI?">
+  <Section tone="tinted" eyebrow="Choose the scope" title="Shared agent behavior or browser UI?">
     <div class="scope-row">
       <article><code>.pi/extensions/*.ts</code><strong>Regular <code>pi</code> extension</strong><span>Tools, commands, prompts, events.</span></article>
       <article><code>.pi/web/extensions/*.ts</code><strong>pi-web extension</strong><span>Panels, actions, tabs, settings.</span></article>
@@ -65,5 +69,5 @@ const docs = `${repo}/blob/main/docs/pi-web-extensions.md`;
     <p class="boundary-copy">Harness-neutral add-ons are design direction, not something available extensions can target today.</p>
   </Section>
 
-  <BottomCTA eyebrow="Working source" title="Start from an example. Make it yours." primaryHref={`${base}extensions/examples/`} primaryLabel="Browse examples" secondaryHref={docs} secondaryLabel="Read the API" />
+  <BottomCTA eyebrow="Working source" title="Start from an add-on or template. Make it yours." primaryHref={`${base}extensions/examples/`} primaryLabel="Browse add-ons and templates" secondaryHref={docs} secondaryLabel="Read the API" />
 </BaseLayout>

@@ -9,20 +9,23 @@ const feature = getFeatureRoute('rich-results');
 const repo = 'https://github.com/ashwin-pc/pi-web';
 ---
 
-<FeaturePage feature={feature} description="Turn agent work into inspectable transcripts, tool activity, previews, and browsable artifacts." primary={{ label: 'Get started', href: `${base}getting-started/` }} secondary={{ label: 'Add an artifact workflow', href: `${base}extensions/` }} technicalLinks={[{ label: 'Rich response guidance', href: `${repo}/blob/main/contexts/web-ui.md#rich-visual-responses` }, { label: 'Artifact browser source', href: `${repo}/blob/main/src/files/artifactBrowser.ts` }, { label: 'Artifact tests', href: `${repo}/blob/main/tests/e2e/files.spec.ts` }]}>
-  <Section eyebrow="Gallery to preview" title="Find the handoff. Open the result.">
+<FeaturePage feature={feature} description="Turn agent work into inspectable transcripts, tool activity, previews, and browsable artifacts." primary={{ label: 'Get started', href: `${base}getting-started/` }} secondary={{ label: 'Recommended artifact add-on', href: `${base}extensions/examples/#artifact-reference` }} onThisPage={[{ label: 'Rich transcript', href: '#rich-transcript' }, { label: 'Artifacts', href: '#artifacts' }, { label: 'Attachments', href: '#attachments' }, { label: 'Rendering boundary', href: '#rendering-boundary' }]} technicalLinks={[{ label: 'Rich response guidance', href: `${repo}/blob/main/contexts/web-ui.md#rich-visual-responses` }, { label: 'Artifact browser source', href: `${repo}/blob/main/src/files/artifactBrowser.ts` }, { label: 'Artifact tests', href: `${repo}/blob/main/tests/e2e/files.spec.ts` }]}>
+  <Section id="rich-transcript" narrow eyebrow="Default transcript" title="Read the answer and the work behind it.">
+    <p class="boundary-copy">Markdown, syntax-highlighted code, links, and copy controls are included by default. Tool calls expose their name, description, arguments, live progress, and result; partial output stays expandable, while thinking, errors, retry, and continuation remain in the thread.</p>
+  </Section>
+  <Section id="artifacts" eyebrow="Gallery to preview" title="Find the handoff. Open the result.">
     <div class="story-stack">
       <ProductStory desktop="artifacts-explorer-desktop.png" mobile="artifacts-explorer-mobile.png" width={1600} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Artifacts gallery containing folders, image, HTML, Markdown, and video results" title="Browse deliverables" caption="Folders, HTML, images, Markdown, video, and more." />
       <ProductStory desktop="artifact-preview-desktop.png" mobile="artifact-preview-mobile.png" width={1600} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Interactive HTML artifact preview with open and download controls" title="Inspect the result" caption="A sandboxed interactive HTML artifact with open and download controls." />
     </div>
   </Section>
-  <Section tone="tinted" narrow eyebrow="From prompt to picture" title="Bring the source material with you.">
+  <Section id="attachments" tone="tinted" narrow eyebrow="From prompt to picture" title="Bring the source material with you.">
     <p class="boundary-copy">Drop or pick image and file attachments, send an attachment-only prompt, and return to restored drafts. Image and tool output can open full-screen or download when you need a closer look.</p>
   </Section>
   <Section tone="tinted" narrow eyebrow="Diagrams, not just code" title="Keep the structure readable.">
     <p class="boundary-copy">Mermaid diagrams render in the conversation and open in a dedicated full-screen viewer with zoom, reset, and source controls.</p>
   </Section>
-  <Section tone="dark" narrow eyebrow="Rendering boundary" title="Rich output, contained.">
+  <Section id="rendering-boundary" tone="dark" narrow eyebrow="Rendering boundary" title="Rich output, contained.">
     <p class="boundary-copy">Markdown is sanitized and agent-produced HTML is sandboxed. The current default and full-capability reference harness is <code>pi</code>.</p>
   </Section>
 </FeaturePage>

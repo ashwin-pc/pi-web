@@ -5,26 +5,44 @@ import ButtonLink from '../../../components/ButtonLink.astro';
 import ExampleCard from '../../../components/ExampleCard.astro';
 import MarketingHero from '../../../components/MarketingHero.astro';
 import Section from '../../../components/Section.astro';
-import { extensionExamples } from '../../../data/extensionExamples';
+import { experimentalExamples, recommendedExamples } from '../../../data/extensionExamples';
 
 const base = import.meta.env.BASE_URL;
 const docs = 'https://github.com/ashwin-pc/pi-web/blob/main/docs/pi-web-extensions.md';
 ---
 
-<BaseLayout title="Extension examples" description="Inspect, copy, and adapt six opt-in pi-web extension examples.">
-  <MarketingHero eyebrow="Extension examples" title="Start with a working extension. Make it yours." lede="Six small source examples. Inspect, copy, reload, adapt.">
-    <ButtonLink href="#examples">Choose an example</ButtonLink>
-    <ButtonLink href={`${base}extensions/#api`} variant="secondary">Build your own</ButtonLink>
+<BaseLayout title="Add-ons and extension source" description="Choose recommended pi-web add-ons, adapt a source template, or inspect experimental orchestration.">
+  <MarketingHero eyebrow="Extensions · optional trusted code" title="Start with a working extension. Make it yours." lede="Choose a recommended add-on for a richer setup, use the source as a template, or inspect experimental work separately.">
+    <ButtonLink href="#recommended">Recommended add-ons</ButtonLink>
+    <ButtonLink href="#templates" variant="secondary">Templates and build-your-own</ButtonLink>
   </MarketingHero>
 
-  <Section id="examples" eyebrow="Opt-in source" title="Pick the closest surface.">
-    <div class="example-grid">{extensionExamples.map((example) => <ExampleCard example={example} />)}</div>
+  <nav class="category-nav container" aria-label="Extension categories">
+    <a href="#recommended"><strong>Recommended add-ons</strong><span>Useful, optional enhancements</span></a>
+    <a href="#templates"><strong>Templates</strong><span>Copy, inspect, and adapt</span></a>
+    <a href="#experimental"><strong>Experimental</strong><span>Evaluate boundaries first</span></a>
+  </nav>
+
+  <Section id="recommended" eyebrow="Recommended add-ons" title="A richer-than-minimal setup." intro="These optional extensions cover broadly useful workflows. They are not core pi-web and are not installed automatically; inspect the source, copy the file from a checkout, then reload.">
+    <div class="example-grid">{recommendedExamples.map((example) => <ExampleCard example={example} />)}</div>
+  </Section>
+
+  <Section id="templates" tone="tinted" eyebrow="Templates · build your own" title="Use working source as a starting point.">
+    <div class="template-grid">
+      <article><h2>Copy the closest surface</h2><p>Choose a panel, action, tab, footer, or setting example. Copy it from a repository checkout and run <code>/reload</code>.</p><a href="#recommended">Compare source examples →</a></article>
+      <article><h2>Adapt deliberately</h2><p>Read the trusted TypeScript, change the workflow for your project, and keep only the permissions and surfaces it needs.</p><a href={`${base}extensions/#build-your-own`}>Build-your-own workflow →</a></article>
+      <article><h2>Use the API directly</h2><p>The extension documentation is the canonical reference when none of the templates is close enough.</p><a href={docs}>Read the extension API ↗</a></article>
+    </div>
+  </Section>
+
+  <Section id="experimental" eyebrow="Experimental · opt-in" title="Orchestration stays clearly separate." intro="This source has additional setup and a wider behavioral boundary. Treat it as something to evaluate, not a recommended default.">
+    <div class="example-grid">{experimentalExamples.map((example) => <ExampleCard example={example} />)}</div>
+    <p class="orchestration-skill-link">Session orchestration also needs its <a href="https://github.com/ashwin-pc/pi-web/blob/main/examples/pi-web-skills/session-orchestration/SKILL.md">companion skill ↗</a> and configured model categories.</p>
   </Section>
 
   <Section tone="dark" narrow eyebrow="Trusted code" title="Read before reload.">
     <p class="boundary-copy">Extensions run locally through <code>pi</code> and may access files, invoke commands, affect agent behavior, or render trusted HTML. Delete the copied file and run <code>/reload</code> to remove one.</p>
-    <p class="orchestration-skill-link"><strong>Experimental · opt-in:</strong> orchestration also needs its <a href="https://github.com/ashwin-pc/pi-web/blob/main/examples/pi-web-skills/session-orchestration/SKILL.md">companion skill ↗</a>.</p>
   </Section>
 
-  <BottomCTA eyebrow="Need a different workflow?" title="Use the source as a starting point." primaryHref={`${base}extensions/`} primaryLabel="Build your own" secondaryHref={docs} secondaryLabel="Extension docs" />
+  <BottomCTA eyebrow="Need a different workflow?" title="Use the source as a starting point." primaryHref={`${base}extensions/#build-your-own`} primaryLabel="Build your own" secondaryHref={docs} secondaryLabel="Extension docs" />
 </BaseLayout>
