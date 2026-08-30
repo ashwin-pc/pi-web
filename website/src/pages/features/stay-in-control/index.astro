@@ -16,6 +16,15 @@ const repo = 'https://github.com/ashwin-pc/pi-web';
       <ProductStory desktop="git-diff-viewer-desktop.png" mobile="git-diff-viewer-mobile.png" width={1280} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Git view with commit metadata, changed files, and split diff" title="Git and diff inspection" caption="Review repository history and exact changes. pi-web does not commit or push." />
     </div>
   </Section>
+  <Section tone="tinted" narrow eyebrow="Run controls" title="Choose the model. Manage the context.">
+    <p class="boundary-copy">Choose from the models exposed by <code>pi</code> and set a reasoning level for the session. Watch context use, compact or cancel compaction, stop a turn, and retry or continue after a model or incomplete-turn failure.</p>
+  </Section>
+  <Section tone="tinted" narrow eyebrow="Direct actions" title="Use commands without leaving the thread.">
+    <p class="boundary-copy">Discover web, extension, prompt, and skill slash commands in the composer. Run <code>!</code> shell commands in the session directory, in or outside agent context. Session and system details include IDs, working directory, versions, Git change stats, and durable diagnostics you can copy for support.</p>
+  </Section>
+  <Section tone="tinted" narrow eyebrow="Safe files and Git" title="Sync deliberately. Save without surprises.">
+    <p class="boundary-copy">Explorer saves are revision-aware and reject paths outside the session workspace, unsafe symlinks, and unsuitable files. Inspect status, history, and diffs, then fetch or rebase-pull with explicit progress and errors; pi-web never commits or pushes for you.</p>
+  </Section>
   <Section tone="dark" narrow eyebrow="Local-first boundary" title="Access remains your decision.">
     <p class="boundary-copy">Provider credentials stay server-side. If you expose pi-web, transport and network controls remain yours.</p>
   </Section>

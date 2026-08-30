@@ -56,6 +56,10 @@ const docs = `${repo}/blob/main/docs/pi-web-extensions.md`;
     <p class="boundary-copy">Both currently run through <code>pi</code>'s extension runtime. Project-local or global source is trusted local code: read it before reloading.</p>
   </Section>
 
+  <Section tone="tinted" narrow eyebrow="Settings and recovery" title="Keep the extension observable.">
+    <p class="boundary-copy">Extensions can contribute settings alongside panels and actions. pi-web surfaces extension, skill, and prompt diagnostics so local source problems are visible; use <code>/reload</code> to refresh pi resources, extensions, skills, prompts, and models after a change.</p>
+  </Section>
+
   <Section id="api" tone="dark" narrow eyebrow="Supported surfaces" title="Add only what the workflow needs.">
     <div class="surface-list"><span>Footer</span><span>Header action</span><span>Artifact action</span><span>Git tab</span><span>Right panel</span><span>FAB</span><span>Settings</span></div>
     <p class="boundary-copy">Harness-neutral add-ons are design direction, not something available extensions can target today.</p>
