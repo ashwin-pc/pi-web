@@ -22,4 +22,13 @@ describeSessionService("SessionService contract over spawned NDJSON runner", rem
 describe("spawned session runner transport", () => {
   it("fails closed on build mismatch", async () => { const child = childProcess(await cwd(), "runner-build"); await expect(RemoteSessionService.connect(child, "host-build")).rejects.toThrow(/Incompatible session runner/); });
   it("rejects pending work when the child exits", async () => { const h = await remoteHarness(); const pending = h.service.state("initial"); h.child.kill("SIGKILL"); await expect(pending).rejects.toThrow(/closed|exited/); });
+  it("omits an undefined optional thinking level rather than sending null", async () => {
+    const h = await remoteHarness();
+    try {
+      await h.service.setModel("initial", "fixture", "deterministic", undefined);
+      expect((await h.service.state("initial")).thinkingLevel).toBe("medium");
+    } finally {
+      await h.close();
+    }
+  });
 });

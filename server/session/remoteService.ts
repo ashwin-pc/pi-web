@@ -37,6 +37,9 @@ export class RemoteSessionService implements SessionService {
     return new Promise((resolve, reject) => { this.pending.set(request.id, { resolve, reject }); this.child.stdin.write(`${JSON.stringify(request)}\n`, (error) => { if (error) this.fail(error); }); });
   }
   private async call<T>(method: SessionApiMethod, args: unknown[]): Promise<T> {
+    // JSON turns array holes/trailing undefined into null. Omit optional arguments
+    // instead, preserving the same call semantics as an in-process service.
+    while (args.length > 0 && args.at(-1) === undefined) args.pop();
     const response = await this.send({ type: "request", id: this.id(), method, args });
     if (response.type !== "response") throw new Error(`Unexpected ${response.type} frame`); return response.result as T;
   }

@@ -1,4 +1,5 @@
 import type { SessionService, SessionServiceEvent } from "./dto.js";
+import { HttpStatusError, isRecognizedErrorStatus } from "../shared/httpStatus.js";
 
 export const SESSION_PROTOCOL_VERSION = 1;
 export type SessionApiMethod = Exclude<keyof SessionService, "subscribe">;
@@ -50,20 +51,24 @@ export function isSessionResponse(value: unknown): value is SessionResponse {
   if (typeof frame.id !== "string") return false;
   if (frame.type === "health") return typeof frame.protocolVersion === "number" && typeof frame.build === "string";
   if (frame.type === "response") return Object.hasOwn(frame, "result");
-  if (frame.type === "error") { const error = frame.error as Record<string, unknown> | undefined; return !!error && typeof error.name === "string" && typeof error.message === "string"; }
+  if (frame.type === "error") {
+    const error = frame.error as Record<string, unknown> | undefined;
+    return !!error && typeof error.name === "string" && typeof error.message === "string"
+      && (error.status === undefined || isRecognizedErrorStatus(error.status));
+  }
   return false;
 }
 
 export function serializeError(value: unknown): SerializedError {
   if (!(value instanceof Error)) return { name: "Error", message: String(value) };
   const extra = value as Error & { status?: number; code?: string };
-  return { name: value.name, message: value.message, ...(value.stack ? { stack: value.stack } : {}), ...(extra.status !== undefined ? { status: extra.status } : {}), ...(extra.code ? { code: extra.code } : {}) };
+  return { name: value.name, message: value.message, ...(value.stack ? { stack: value.stack } : {}), ...(isRecognizedErrorStatus(extra.status) ? { status: extra.status } : {}), ...(extra.code ? { code: extra.code } : {}) };
 }
 
-export class RemoteSessionError extends Error {
-  status?: number;
+export class RemoteSessionError extends HttpStatusError {
   code?: string;
   constructor(error: SerializedError) {
-    super(error.message); this.name = error.name; this.stack = error.stack; this.status = error.status; this.code = error.code;
+    super(error.message, error.status ?? 500);
+    this.name = error.name; this.stack = error.stack; this.code = error.code;
   }
 }

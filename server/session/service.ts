@@ -15,6 +15,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { serializeAttachmentMarkup } from "../shared/attachments.js";
 import { assertDirectory } from "../shared/fsList.js";
+import { HttpStatusError } from "../shared/httpStatus.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { createWebUiBridge } from "../extensions/webUi.js";
 import { ResilientResourceLoader } from "../extensions/resilientLoader.js";
@@ -52,9 +53,7 @@ import {
   simplifyModel,
 } from "./projection.js";
 
-export class SessionServiceError extends Error {
-  constructor(message: string, readonly status = 400) { super(message); }
-}
+export class SessionServiceError extends HttpStatusError {}
 
 export interface SessionDefaults {
   model?: { provider: string; id: string };
