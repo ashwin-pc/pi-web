@@ -41,6 +41,14 @@ PI_WEB_AUTH_TRUSTED_HEADER=Tailscale-User-Login
 
 When configured, requests missing the header are rejected and authenticated identities are reported as `external:<value>`. Only enable this when pi-web's listening port is reachable exclusively through a proxy that removes caller-supplied copies and sets the verified header itself. Direct callers, including loopback callers, can forge headers.
 
+## Security settings and adding devices
+
+The kernel-owned **Settings → Access & sharing** API exposes the current mode and identity, passkeys, browser devices/sessions, and API tokens. Passkeys and sessions can be revoked individually; passkey revocation signs out every browser session. Newly created API-token plaintext is returned exactly once.
+
+An authenticated browser session can create a two-minute, single-use add-device link/QR. Grants are stored separately from terminal bootstrap/recovery, record the minting session, and can be cancelled before use. In passkey mode redemption enrolls a credential; in legacy mode it creates a device-specific cookie without disclosing `PI_WEB_TOKEN`. Terminal `bootstrap` and `recover` remain first-credential and lockout-recovery tools, not routine sharing.
+
+Security endpoints are under `/api/auth/`: `info`, `security`, `passkeys`, `sessions`, `tokens`, and `device-grants`. Cookie-authenticated mutations use the normal CSRF checks.
+
 ## Machine clients
 
 Create named, expiring tokens. The plaintext is printed once and is accepted only in an `Authorization` header in passkey mode:

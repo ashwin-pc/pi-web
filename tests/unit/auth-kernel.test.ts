@@ -29,7 +29,7 @@ describe("auth kernel", () => {
     const s = await store(); const k = new AuthKernel("passkey", s, "", false), res = response();
     await k.establishSession(res, { id: "passkey:owner" });
     const cookie = res.headers.get("set-cookie")!; const raw = /pi_web_session=([^;]+)/.exec(cookie)![1];
-    expect((await k.gate(req({ cookie: `pi_web_session=${raw}` }))).ok).toBe(true);
+    expect(await k.gate(req({ cookie: `pi_web_session=${raw}` }))).toMatchObject({ ok: true, via: "session", sessionHash: hashSecret(raw) });
     expect(await readFile(s.path, "utf8")).not.toContain(raw);
   });
 

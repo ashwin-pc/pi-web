@@ -27,6 +27,7 @@ import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 import { AuthKernel, AuthStore, type AuthMode } from "./server/auth/kernel.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
+import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -493,6 +494,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   try {
 
     if (url.pathname.startsWith("/api/")) {
+      if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (authMode === "passkey" && await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
       const auth = await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
@@ -503,6 +505,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const validOrigin = authMode !== "passkey" || req.headers.origin === authOrigin;
         if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
       }
+      if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);

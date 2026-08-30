@@ -9,7 +9,8 @@ export type CredentialRecord = { id: string; publicKey: string; counter: number;
 export type SessionRecord = { hash: string; identity: Identity; createdAt: number; lastSeenAt: number; expiresAt: number; revokedAt?: number };
 export type ApiTokenRecord = { id: string; name: string; hash: string; createdAt: number; expiresAt: number; revokedAt?: number };
 export type BootstrapRecord = { hash: string; expiresAt: number; usedAt?: number };
-export type AuthState = { version: 1; credentials: CredentialRecord[]; sessions: SessionRecord[]; apiTokens: ApiTokenRecord[]; bootstrap?: BootstrapRecord };
+export type DeviceGrantRecord = { id: string; hash: string; createdAt: number; expiresAt: number; createdBy: Identity; createdBySessionHash: string; usedAt?: number; cancelledAt?: number };
+export type AuthState = { version: 1; credentials: CredentialRecord[]; sessions: SessionRecord[]; apiTokens: ApiTokenRecord[]; bootstrap?: BootstrapRecord; deviceGrants?: DeviceGrantRecord[] };
 
 const EMPTY: AuthState = { version: 1, credentials: [], sessions: [], apiTokens: [] };
 const DAY = 86_400_000;
@@ -49,7 +50,7 @@ function cookies(req: IncomingMessage) {
   return result;
 }
 export type AuthVia = "session" | "token" | "legacy" | "open";
-export type GateResult = { ok: true; identity: Identity; via: AuthVia } | { ok: false };
+export type GateResult = { ok: true; identity: Identity; via: AuthVia; sessionHash?: string } | { ok: false };
 
 export class AuthKernel {
   constructor(readonly mode: AuthMode, readonly store: AuthStore, readonly legacyToken = "", readonly secureCookie = true, readonly trustedHeader = "") {}
@@ -64,7 +65,7 @@ export class AuthKernel {
     const state = await this.store.read(); const now = Date.now(); const raw = cookies(req)[SESSION_COOKIE];
     if (raw) {
       const record = state.sessions.find(s => safeEqual(s.hash, hashSecret(raw)) && !s.revokedAt && s.expiresAt > now);
-      if (record) { if (now - record.lastSeenAt > 300_000) void this.store.update(s => { const found = s.sessions.find(x => x.hash === record.hash); if (found) found.lastSeenAt = now; }).catch(() => undefined); return { ok: true, identity: record.identity, via: "session" }; }
+      if (record) { if (now - record.lastSeenAt > 300_000) void this.store.update(s => { const found = s.sessions.find(x => x.hash === record.hash); if (found) found.lastSeenAt = now; }).catch(() => undefined); return { ok: true, identity: record.identity, via: "session", sessionHash: record.hash }; }
     }
     const auth = req.headers.authorization || "";
     if (this.mode === "legacy") {
