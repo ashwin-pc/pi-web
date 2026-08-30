@@ -58,6 +58,12 @@ describe("auth kernel", () => {
     expect((await k.gate(req({ authorization: "Bearer piw_secret" }))).ok).toBe(false);
   });
 
+  it("mints hashed single-use WebSocket tickets with identity propagation", async () => {
+    const k = new AuthKernel("none", await store()); const ticket = k.mintWsTicket({ id: "token:automation" });
+    expect(k.redeemWsTicket(ticket)).toEqual({ id: "token:automation" });
+    expect(k.redeemWsTicket(ticket)).toBeUndefined();
+  });
+
   it("serializes atomic updates", async () => {
     const s = await store(); await Promise.all(Array.from({ length: 20 }, (_, i) => s.update(async x => { await new Promise(r => setTimeout(r, i % 3)); x.apiTokens.push({ id: String(i), name: "x", hash: "h", createdAt: 0, expiresAt: 1 }); })));
     expect((await s.read()).apiTokens).toHaveLength(20);

@@ -709,8 +709,10 @@ export function createRealtime(options: {
     }
   }
 
-  function connect() {
-    const ws = new WebSocket(api.wsUrl());
+  async function connect() {
+    let ws: WebSocket;
+    try { ws = new WebSocket(await api.wsUrl()); }
+    catch { window.setTimeout(() => void connect(), 1000); return; }
     ws.addEventListener("open", () => {
       status.markWebSocketOpen();
       composer.updatePrimaryAction();

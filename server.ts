@@ -506,6 +506,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
       }
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
+      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity), expiresIn: 30 });
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);
@@ -1167,13 +1168,16 @@ server.on("upgrade", (req, socket, head) => {
   if (url.pathname !== "/ws") return;
 
   void (async () => {
-    const auth = await authKernel.gate(req);
-    if (!auth.ok) {
-      socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return;
+    const identity = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && !token ? { id: "mock" } : undefined);
+    if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    const origin = req.headers.origin;
+    if (origin) {
+      let originHost = ""; try { originHost = new URL(origin).host.toLowerCase(); } catch { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return; }
+      const forwarded = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim().toLowerCase();
+      const allowed = new Set([String(req.headers.host || "").toLowerCase(), forwarded, new URL(authOrigin).host.toLowerCase()].filter(Boolean));
+      if (!allowed.has(originHost)) { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return; }
     }
-    if (authMode === "passkey" && auth.via === "session" && req.headers.origin !== authOrigin) {
-      socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return;
-    }
+    (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
   })().catch(() => socket.destroy());
 });

@@ -53,7 +53,10 @@ export type AuthVia = "session" | "token" | "legacy" | "open";
 export type GateResult = { ok: true; identity: Identity; via: AuthVia; sessionHash?: string } | { ok: false };
 
 export class AuthKernel {
+  private wsTickets = new Map<string, { identity: Identity; expiresAt: number }>();
   constructor(readonly mode: AuthMode, readonly store: AuthStore, readonly legacyToken = "", readonly secureCookie = true, readonly trustedHeader = "") {}
+  mintWsTicket(identity: Identity) { const now = Date.now(); for (const [key, ticket] of this.wsTickets) if (ticket.expiresAt <= now) this.wsTickets.delete(key); while (this.wsTickets.size >= 256) this.wsTickets.delete(this.wsTickets.keys().next().value!); const secret = randomSecret(); this.wsTickets.set(hashSecret(secret), { identity, expiresAt: now + 30_000 }); return secret; }
+  redeemWsTicket(secret: string) { const key = hashSecret(secret), ticket = this.wsTickets.get(key); this.wsTickets.delete(key); return ticket && ticket.expiresAt > Date.now() ? ticket.identity : undefined; }
   async gate(req: IncomingMessage): Promise<GateResult> {
     if (this.mode === "none") return { ok: true, identity: { id: "none" }, via: "open" };
     if (this.mode === "external") {

@@ -62,16 +62,20 @@ pi-web auth sessions-revoke-all
 
 API tokens cannot enroll passkeys or become browser sessions. In legacy mode, the SPA's authenticated state request exchanges the configured token for an HttpOnly session cookie so browser-native artifact loads remain authenticated; curl and CI requests without the app client header do not mint sessions.
 
+## WebSocket tickets
+
+WebSocket upgrades never accept API credentials or legacy `?token=` URLs. The browser authenticates `POST /api/ws-ticket` through the canonical HTTP gate, then uses its single-use ticket in `/ws?ticket=…`. Tickets are hashed in memory, expire after 30 seconds, are deleted on redemption, and propagate the minter identity. Origin validation accepts the request Host, the proxy's first `X-Forwarded-Host`, or the configured origin host; malformed and unrelated origins fail closed.
+
 ## Explicit cutover
 
 1. Verify primary and backup passkeys, fresh-browser login, HTTP, WebSocket, artifacts, restart persistence, and recovery on a secondary instance.
 2. Set `PI_WEB_AUTH_MODE=passkey`, the stable origin, and RP ID; remove `PI_WEB_TOKEN`; restart through the supervisor.
 3. Delete `localStorage["pi-web-token"]` in each old browser.
 
-In passkey mode legacy Bearer and query tokens are rejected. HTTP APIs, artifacts/downloads, and WebSocket upgrades share the same kernel gate. WebSockets require the configured Origin. Cookie-authenticated mutations require the app client header and reject a mismatched Origin.
+In passkey mode legacy Bearer and query tokens are rejected. HTTP APIs, artifacts/downloads, and WebSocket ticket minting share the same kernel gate. Cookie-authenticated mutations require the app client header and reject a mismatched Origin.
 
 Other explicit modes are `none` (open) and `external` (trust an authenticated edge). Tailscale alone does not imply `external`; choose it deliberately.
 
 ## Milestone scope
 
-This first secure milestone includes the canonical HTTP/WS/artifact gate, WebAuthn registration and authentication, persistent revocable sessions/credentials, terminal bootstrap/recovery, named API tokens, CSRF/WS Origin checks, and explicit legacy-compatible migration. Deliberately deferred follow-up scope is: server-extension strategy loading and GitHub/OIDC strategies; a graphical Devices/settings panel (the terminal commands are the current management UI); non-loopback/no-auth startup interlock; session-cookie rotation beyond sliding last-seen tracking; auth rate limiting; and full browser E2E enrollment coverage using virtual authenticators. The passkey cryptography uses `@simplewebauthn/server`; kernel/storage behavior and the existing authenticated browser projects are automated, while real authenticator enrollment must be verified during cutover.
+This secure milestone includes the canonical HTTP/WS/artifact gate, WebAuthn registration and authentication, persistent revocable sessions/credentials, terminal bootstrap/recovery, security-management APIs, add-device grants, named API tokens, CSRF/WS Origin checks, and explicit legacy-compatible migration. Deliberately deferred follow-up scope is: server-extension strategy loading and GitHub/OIDC strategies; non-loopback/no-auth startup interlock; session-cookie rotation beyond sliding last-seen tracking; auth rate limiting; and full browser E2E enrollment coverage using virtual authenticators. The passkey cryptography uses `@simplewebauthn/server`; kernel/storage behavior and the existing authenticated browser projects are automated, while real authenticator enrollment must be verified during cutover.

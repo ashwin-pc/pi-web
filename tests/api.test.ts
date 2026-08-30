@@ -1197,9 +1197,12 @@ describe("WebSocket authentication", () => {
         })
       ).resolves.toBeUndefined();
 
-      // Attempt WS with correct token — expect hello message
+      // Mint a single-use ticket with the token, then expect a hello message.
+      const ticketResponse = await fetch(`http://127.0.0.1:${port}/api/ws-ticket`, { method: "POST", headers: { authorization: "Bearer secret" } });
+      expect(ticketResponse.status).toBe(201);
+      const { ticket } = await ticketResponse.json() as { ticket: string };
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=secret`);
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${encodeURIComponent(ticket)}`);
         ws.on("message", (data) => {
           const msg = JSON.parse(String(data));
           expect(msg.type).toBe("hello");
