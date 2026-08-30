@@ -30,6 +30,17 @@ pi-web auth credential-revoke <credential-id>
 
 The auth database defaults to `~/.pi/agent/web/auth.json` (override with `PI_WEB_AUTH_STORE`) and is written atomically with mode `0600`. Credentials, counters, revocations, sessions, and API tokens persist across restarts. Session and token secrets are SHA-256 hashed at rest.
 
+## External proxy identity
+
+In `external` mode, an identity-aware reverse proxy can provide attribution for HTTP and WebSocket requests:
+
+```sh
+PI_WEB_AUTH_MODE=external
+PI_WEB_AUTH_TRUSTED_HEADER=Tailscale-User-Login
+```
+
+When configured, requests missing the header are rejected and authenticated identities are reported as `external:<value>`. Only enable this when pi-web's listening port is reachable exclusively through a proxy that removes caller-supplied copies and sets the verified header itself. Direct callers, including loopback callers, can forge headers.
+
 ## Machine clients
 
 Create named, expiring tokens. The plaintext is printed once and is accepted only in an `Authorization` header in passkey mode:

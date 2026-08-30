@@ -18,6 +18,13 @@ describe("auth kernel", () => {
     expect((await new AuthKernel("passkey", s, "secret", false).gate(req({ authorization: "Bearer secret" }))).ok).toBe(false);
   });
 
+  it("attributes external requests using a configured trusted header and fails closed when absent", async () => {
+    const s = await store(); const k = new AuthKernel("external", s, "", false, "Tailscale-User-Login");
+    expect(await k.gate(req({ "tailscale-user-login": "alice@example.com" }))).toMatchObject({ ok: true, identity: { id: "external:alice@example.com", displayName: "alice@example.com" } });
+    expect((await k.gate(req())).ok).toBe(false);
+    expect((await new AuthKernel("external", s).gate(req())).ok).toBe(true);
+  });
+
   it("persists opaque hashed sessions and authenticates their cookie", async () => {
     const s = await store(); const k = new AuthKernel("passkey", s, "", false), res = response();
     await k.establishSession(res, { id: "passkey:owner" });

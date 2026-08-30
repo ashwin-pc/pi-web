@@ -43,7 +43,7 @@ if (!["none", "legacy", "passkey", "external"].includes(authMode)) throw new Err
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
 const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
-const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:");
+const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", process.env.PI_WEB_AUTH_TRUSTED_HEADER || "");
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);

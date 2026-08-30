@@ -52,9 +52,15 @@ export type AuthVia = "session" | "token" | "legacy" | "open";
 export type GateResult = { ok: true; identity: Identity; via: AuthVia } | { ok: false };
 
 export class AuthKernel {
-  constructor(readonly mode: AuthMode, readonly store: AuthStore, readonly legacyToken = "", readonly secureCookie = true) {}
+  constructor(readonly mode: AuthMode, readonly store: AuthStore, readonly legacyToken = "", readonly secureCookie = true, readonly trustedHeader = "") {}
   async gate(req: IncomingMessage): Promise<GateResult> {
-    if (this.mode === "none" || this.mode === "external") return { ok: true, identity: { id: this.mode }, via: "open" };
+    if (this.mode === "none") return { ok: true, identity: { id: "none" }, via: "open" };
+    if (this.mode === "external") {
+      if (!this.trustedHeader) return { ok: true, identity: { id: "external" }, via: "open" };
+      const value = req.headers[this.trustedHeader.toLowerCase()];
+      const user = (Array.isArray(value) ? value[0] : value)?.trim();
+      return user ? { ok: true, identity: { id: `external:${user}`, displayName: user }, via: "open" } : { ok: false };
+    }
     const state = await this.store.read(); const now = Date.now(); const raw = cookies(req)[SESSION_COOKIE];
     if (raw) {
       const record = state.sessions.find(s => safeEqual(s.hash, hashSecret(raw)) && !s.revokedAt && s.expiresAt > now);
