@@ -3,12 +3,11 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
 import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings, type WebSettingsSchema } from "../app/types.js";
-import { createQrSvg } from "../token/qr.js";
-import { createTokenShareUrl } from "../token/tokenShare.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import { createExtensionSettings, type ExtensionSettingsController } from "./extensionSettings.js";
 import { createRunNotifications } from "./runNotifications.js";
 import { createSettingsShell, type SettingsShellController } from "./settingsShell.js";
+import { createSecuritySettings, type AuthMode } from "./securitySettings.js";
 
 export type SettingsController = {
   init: () => void;
@@ -114,6 +113,7 @@ export function createSettings(options: {
   let settingsPanelHandle: RightPanelHandle | undefined;
   let extSettings: ExtensionSettingsController | undefined;
   let settingsShell: SettingsShellController | undefined;
+  let securitySettings: ReturnType<typeof createSecuritySettings> | undefined;
   const runNotifications = createRunNotifications({
     elements,
     api,
@@ -257,7 +257,7 @@ export function createSettings(options: {
     settingsShell?.setSummary("appearance", `${density} · ${accentName(accentColor)}`);
     settingsShell?.setSummary("composer", `${queueMode} · ${settings.composer.expanded ? "Expanded" : "Collapsed"}`);
     settingsShell?.setSummary("new-sessions", model ? `${model.provider}/${model.id}` : settings.defaults.sessionBucketColor ? "Bucket default set" : "No defaults set");
-    settingsShell?.setSummary("access", state.token.trim() ? "Connect another device" : "No browser token saved");
+    settingsShell?.setSummary("access", "Credentials and devices");
     updateExtensionSearchTerms();
     updateQueueToggle();
     updateExpandedComposer();
@@ -338,90 +338,6 @@ export function createSettings(options: {
       renderExtensionStatusError(error);
       setSettingsStatus(error instanceof Error ? error.message : String(error), true);
     }
-  }
-
-  function tokenShareUrl() {
-    const token = state.token.trim();
-    return token ? createTokenShareUrl(token) : "";
-  }
-
-  function renderQr(container: HTMLElement, shareUrl: string, label: string) {
-    container.replaceChildren();
-    try {
-      container.append(createQrSvg(shareUrl, label));
-    } catch (error) {
-      const message = document.createElement("p");
-      message.className = "settingsHint";
-      message.textContent = error instanceof Error ? error.message : String(error);
-      container.append(message);
-    }
-  }
-
-  function setTokenShareGenerated(generated: boolean) {
-    elements.tokenShareQr.hidden = !generated;
-    elements.tokenShareUrl.hidden = !generated;
-  }
-
-  function renderTokenShare() {
-    const shareUrl = tokenShareUrl();
-    if (!shareUrl) {
-      elements.tokenShareUnavailable.hidden = false;
-      elements.tokenShareSection.hidden = true;
-      elements.tokenShareQr.replaceChildren();
-      elements.tokenShareUrl.value = "";
-      setTokenShareGenerated(false);
-      return;
-    }
-    elements.tokenShareUnavailable.hidden = true;
-    elements.tokenShareSection.hidden = false;
-    elements.tokenShareUrl.value = shareUrl;
-    elements.tokenShareQr.replaceChildren();
-    renderQr(elements.tokenShareQr, shareUrl, "pi web token link QR code");
-    setTokenShareGenerated(true);
-  }
-
-  function openTokenShareFullscreen() {
-    const shareUrl = tokenShareUrl();
-    if (!shareUrl) return;
-
-    renderQr(elements.tokenShareFullscreenQr, shareUrl, "Full-screen pi web token link QR code");
-    elements.tokenShareFullscreen.hidden = false;
-    elements.tokenShareFullscreenCloseButton.focus();
-    elements.tokenShareFullscreen.requestFullscreen?.().catch(() => undefined);
-  }
-
-  function closeTokenShareFullscreen(focusButton = true) {
-    if (elements.tokenShareFullscreen.hidden) return;
-    const shouldExitNativeFullscreen = document.fullscreenElement === elements.tokenShareFullscreen;
-    elements.tokenShareFullscreen.hidden = true;
-    elements.tokenShareFullscreenQr.replaceChildren();
-    if (shouldExitNativeFullscreen) document.exitFullscreen().catch(() => undefined);
-    if (focusButton && !elements.settingsPanel.hidden) elements.tokenShareFullscreenButton.focus();
-  }
-
-  async function copyText(value: string) {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value);
-      return;
-    }
-    const input = document.createElement("input");
-    input.value = value;
-    input.readOnly = true;
-    input.setAttribute("aria-hidden", "true");
-    input.style.position = "fixed";
-    input.style.left = "-1000px";
-    input.style.top = "0";
-    document.body.append(input);
-    input.select();
-    document.execCommand("copy");
-    input.remove();
-  }
-
-  async function copyTokenShareUrl() {
-    const value = tokenShareUrl();
-    if (!value) return;
-    await copyText(value);
-    setSettingsStatus("Copied token link");
   }
 
   async function patchSettings(patch: unknown) {
@@ -509,19 +425,18 @@ export function createSettings(options: {
     elements.sessionDrawerSettingsButton.setAttribute("aria-expanded", "true");
     elements.sessionDrawerSettingsButton.classList.add("active");
     settingsShell?.prepareOpen();
-    const hasToken = !!state.token.trim();
-    elements.tokenShareUnavailable.hidden = hasToken;
-    elements.tokenShareSection.hidden = !hasToken;
-    elements.tokenShareQr.replaceChildren();
-    elements.tokenShareUrl.value = "";
-    setTokenShareGenerated(false);
     setSettingsStatus("");
     elements.extensionStatusBadge.className = "extensionStatusBadge loading";
     elements.extensionStatusBadge.textContent = "Checking…";
     elements.extensionStatusMessage.textContent = "Checking extension status…";
     elements.extensionStatusDetails.hidden = true;
     settingsShell?.setBadge("extensions", "…", "neutral");
-    settingsShell?.setSummary("access", hasToken ? "Connect another device" : "No browser token saved");
+    void fetch("/api/auth/info", { headers: api.headers(), credentials: "same-origin" }).then(async response => {
+      if (!response.ok) throw new Error(`Security info unavailable (${response.status})`);
+      const info = await response.json() as { mode: AuthMode; identity?: { displayName?: string; id: string } };
+      settingsShell?.setSummary("access", `${info.mode} · ${info.identity?.displayName || info.identity?.id || "authenticated"}`);
+    }).catch(error => settingsShell?.setSummary("access", error instanceof Error ? error.message : String(error)));
+    void securitySettings?.refresh().catch(error => setSettingsStatus(error instanceof Error ? error.message : String(error), true));
     void refreshExtensionStatus().catch(renderExtensionStatusError);
     void runNotifications.refresh().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   }
@@ -534,7 +449,6 @@ export function createSettings(options: {
     elements.sessionDrawerSettingsButton.setAttribute("aria-expanded", "false");
     elements.sessionDrawerSettingsButton.classList.remove("active");
     closeAccentPopover({ restorePreview: true, focusButton: false });
-    closeTokenShareFullscreen(false);
     settingsShell?.prepareClose();
   }
 
@@ -565,6 +479,7 @@ export function createSettings(options: {
     populateBucketColorSelect(elements.settingDefaultBucketColorSelect);
     settingsShell = createSettingsShell(elements.settingsPanel);
     settingsShell.init();
+    securitySettings = createSecuritySettings({ container: elements.securitySettings, api, setStatus: setSettingsStatus });
     extSettings = createExtensionSettings({
       container: elements.extensionSettingsContainer,
       api,
@@ -597,31 +512,12 @@ export function createSettings(options: {
       focusOnClose: elements.sessionButton,
     });
     if (!settingsPanelHandle) elements.settingsButton.addEventListener("click", openSettings);
-    elements.tokenShareFullscreenButton.addEventListener("click", () => {
-      renderTokenShare();
-      if (!elements.tokenShareUrl.value) return;
-      openTokenShareFullscreen();
-    });
-    elements.tokenShareFullscreenCloseButton.addEventListener("click", () => closeTokenShareFullscreen());
-    elements.tokenShareFullscreen.addEventListener("click", (event) => {
-      if (event.target === elements.tokenShareFullscreen) closeTokenShareFullscreen();
-    });
-    document.addEventListener("fullscreenchange", () => {
-      if (!document.fullscreenElement && !elements.tokenShareFullscreen.hidden) closeTokenShareFullscreen(false);
-    });
-    elements.tokenShareCopyButton.addEventListener("click", () => {
-      copyTokenShareUrl().catch((error) => setSettingsStatus(error instanceof Error ? error.message : String(error), true));
-    });
     if (!settingsPanelHandle) {
       elements.settingsCloseButton.addEventListener("click", closeSettings);
       elements.settingsBackdrop.addEventListener("click", closeSettings);
     }
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
-      if (!elements.tokenShareFullscreen.hidden) {
-        closeTokenShareFullscreen();
-        return;
-      }
       if (isAccentPopoverOpen()) {
         closeAccentPopover();
         return;

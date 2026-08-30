@@ -3,13 +3,6 @@ export type ScannedTokenPayload = {
   url?: URL;
 };
 
-export function createTokenShareUrl(token: string, href = defaultLocationHref()) {
-  const current = new URL(href);
-  const url = new URL(current.pathname || "/", current.origin);
-  url.searchParams.set("token", token);
-  return url.toString();
-}
-
 export function extractTokenFromScannedText(text: string): ScannedTokenPayload | undefined {
   const trimmed = text.trim();
   if (!trimmed) return undefined;
@@ -27,9 +20,6 @@ export function extractTokenFromScannedText(text: string): ScannedTokenPayload |
   return undefined;
 }
 
-function defaultLocationHref() {
-  return typeof location === "undefined" ? "http://localhost/" : location.href;
-}
 
 function parseAbsoluteUrl(value: string): URL | undefined {
   try {
