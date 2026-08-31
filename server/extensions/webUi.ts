@@ -564,6 +564,16 @@ function createPiWebUi(value: any): PiWebUi {
     setFabAction: (key, action) => contributeForSlot(key, "fab", action === undefined ? undefined : { slot: "fab", kind: "static", ...action }),
     async registerSettings(schema) { return registerSessionSettings(value, schema); },
     async getSettings(id) { return getExtensionSettings(id); },
+    reportSettlementDependencies(dependencies) {
+      const parentId = String(value?.sessionId || "").trim();
+      if (!parentId) return;
+      const childIds = Array.from(new Set(
+        (Array.isArray(dependencies?.sessionIds) ? dependencies.sessionIds : [])
+          .map((id) => typeof id === "string" ? id.trim() : "")
+          .filter((id) => id && id !== parentId),
+      ));
+      deps.emit({ type: "settlement_dependencies", sessionId: parentId, childIds });
+    },
   };
 }
 

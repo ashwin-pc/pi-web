@@ -20,6 +20,7 @@ import type { PiWebSession } from "./server/types.js";
 import type { BaseSessionStateDto, InteractionResponseDto, SessionInfoDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessionState, resolveWebSocketHelloSession, type DecoratedSessionState, type WireSessionState } from "./server/session/hostEvents.js";
+import { SessionSettlementTracker } from "./server/session/settlement.js";
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
@@ -274,6 +275,20 @@ const sessionActivity = new SessionActivity(
 );
 let session: PiWebSession;
 
+const settlementTracker = new SessionSettlementTracker(
+  async (sessionId) => {
+    const target = await sessionService?.find(sessionId);
+    if (!target) return undefined;
+    const runtime = sessionActivity.runtimeForPath(target.sessionFile);
+    return {
+      sessionId: target.sessionId,
+      isRunning: runtime.isRunning,
+      pendingMessageCount: runtime.pendingMessageCount,
+    };
+  },
+  (event) => broadcast(event),
+);
+
 const websocketHeartbeatMs = envMs("PI_WEB_WS_HEARTBEAT_MS", 30_000);
 const websocketMaxMissedHeartbeats = Math.max(1, Math.floor(envMs("PI_WEB_WS_MAX_MISSED_HEARTBEATS", 3)));
 let realtimeHub: RealtimeHub;
@@ -437,6 +452,17 @@ sessionService.subscribe((event) => {
     mockPromptCorrelations.delete(event.sessionId);
   }
   handleSessionServiceEvent(event);
+  if (event.type === "settlement_dependencies") {
+    settlementTracker.report(event.sessionId, event.childIds);
+  }
+  const settlementRelevant = event.type === "runtime" || event.type === "state"
+    || (event.type === "agent" && [
+      "agent_start", "agent_settled", "compaction_start", "compaction_end",
+      "auto_retry_start", "auto_retry_end", "queue_update",
+    ].includes(event.event?.type));
+  if (settlementRelevant && "sessionId" in event && typeof event.sessionId === "string") {
+    settlementTracker.noteRuntimeChanged(event.sessionId);
+  }
 });
 
 await ensurePiWebStorage();
@@ -706,6 +732,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, { ok: true, system: systemInfoSnapshot() });
       }
 
+      const sessionStatusMatch = method === "GET" ? url.pathname.match(/^\/api\/sessions\/([^/]+)\/status$/) : null;
+      if (sessionStatusMatch) {
+        const requestedSessionId = decodeURIComponent(sessionStatusMatch[1]);
+        await sessionService.require(requestedSessionId);
+        return sendJson(res, 200, { ok: true, ...await settlementTracker.status(requestedSessionId) });
+      }
+
       if (method === "GET" && url.pathname === "/api/state") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
         noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), url.searchParams.get("clientId"));
@@ -856,6 +889,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         try {
           const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
           const sessionUiState = await sessionUiStateStore.removeSession(result.id);
+          settlementTracker.clear(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, ...result });

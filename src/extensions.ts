@@ -270,6 +270,10 @@ export type PiWebCapabilities = Readonly<{
   effects: readonly string[];
 }>;
 
+export interface PiWebSettlementDependencies {
+  sessionIds: string[];
+}
+
 export type PiWebUi = {
   /** Runtime feature discovery for independently distributed extensions. */
   readonly capabilities: PiWebCapabilities;
@@ -323,6 +327,12 @@ export type PiWebUi = {
 
   /** Read this owner's persisted settings (defaults if unset). */
   getSettings(id: string): Promise<PiWebStoredSettings>;
+
+  /**
+   * Atomically replace this session's tracked settlement dependencies.
+   * Passing an empty list reports that no dependency wakeups remain owed.
+   */
+  reportSettlementDependencies(dependencies: PiWebSettlementDependencies): void;
 };
 
 export type PiWebExtensionUIContext = ExtensionUIContext & {

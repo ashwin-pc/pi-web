@@ -474,6 +474,13 @@ indented under their parent in the session drawer, a waiting indicator shows
 while a session's workers run, wakeups render as notification cards, and both the
 spawn tool card and wakeup card link to the worker session.
 
+The extension reports its durable worker obligations through
+`ctx.ui.web.reportSettlementDependencies(...)`. Automation can query
+`GET /api/sessions/:id/status`; `settled` means the session is idle, has no
+finished-worker wakeups pending, and every tracked worker is recursively
+settled. A `session-settled` event is emitted on the existing replayable
+WebSocket stream when that value transitions from false to true.
+
 Install the extension into a pi-web extension directory, and the companion skill
 into a pi skills directory:
 
