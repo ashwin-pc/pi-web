@@ -300,6 +300,22 @@
   .principles-grid p { color: var(--ink-soft); font-size: .78rem; }
   .direction-lede { max-width: 800px; margin-bottom: 1.2rem; color: #d8e3de; font: clamp(1.2rem, 2vw, 1.5rem)/1.45 Georgia, serif; }
   .direction-links { margin-top: 1.5rem; }
+  .capability-story { display: grid; grid-template-columns: minmax(250px, .72fr) minmax(0, 1.28fr); gap: clamp(1.5rem, 4vw, 4rem); align-items: center; padding-block: 2.5rem; scroll-margin-top: 90px; border-top: 1px solid var(--line); }
+  .capability-story:first-child { border-top: 0; padding-top: 0; }
+  .capability-story--reverse .capability-story__copy { order: 2; }
+  .capability-story__eyebrow { display: flex; align-items: center; gap: .55rem; margin-bottom: .65rem; color: var(--mint-dark); font-size: .68rem; font-weight: 750; letter-spacing: .1em; text-transform: uppercase; }
+  .capability-story__copy h2 { margin: 0 0 .8rem; font-size: clamp(1.65rem, 3vw, 2.6rem); }
+  .capability-story__copy p { color: var(--ink-soft); font-size: .86rem; line-height: 1.7; }
+  .capability-story__copy ul { display: grid; gap: .45rem; margin: 1rem 0; padding: 0; list-style: none; }
+  .capability-story__copy li { display: flex; gap: .5rem; font-size: .76rem; }
+  .capability-story__copy li::before { content: '✓'; color: var(--mint-dark); font-weight: 800; }
+  .capability-story__copy > a { color: var(--mint-dark); font-size: .75rem; font-weight: 700; }
+  .addon-story-list, .experimental-story { display: grid; gap: 2rem; }
+  .addon-story-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(250px, .34fr); gap: 1.25rem; align-items: start; padding-bottom: 2rem; border-bottom: 1px solid var(--line); }
+  .addon-story-pair .capability-story { padding-block: 0; border: 0; }
+  .addon-story-pair .example-card { position: sticky; top: 86px; }
+  .experimental-story { padding: clamp(1rem, 3vw, 2rem); border: 1px solid rgba(226, 177, 95, .38); border-radius: var(--radius); background: rgba(226, 177, 95, .05); }
+
 }
 
 @layer responsive {
@@ -312,6 +328,10 @@
     .outcome-nav a:last-child { grid-column: 1 / -1; }
     .extension-workflow { grid-template-columns: 1fr 1fr; }
     .visual-index, .example-grid { grid-template-columns: 1fr; }
+    .capability-story { grid-template-columns: 1fr; }
+    .capability-story--reverse .capability-story__copy { order: 0; }
+    .addon-story-pair { grid-template-columns: 1fr; }
+    .addon-story-pair .example-card { position: static; }
     .template-grid { grid-template-columns: 1fr; }
     .agent-sequence { grid-template-columns: 1fr; }
     .principles-grid { grid-template-columns: 1fr 1fr; }

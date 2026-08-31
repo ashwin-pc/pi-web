@@ -1,8 +1,10 @@
 ---
 import FeaturePage from '../../../components/FeaturePage.astro';
+import CapabilityStory from '../../../components/CapabilityStory.astro';
 import ProductStory from '../../../components/ProductStory.astro';
 import Section from '../../../components/Section.astro';
 import { getFeatureRoute } from '../../../data/features';
+import { visualStories } from '../../../data/visualStories';
 
 const base = import.meta.env.BASE_URL;
 const feature = getFeatureRoute('keep-the-thread');
@@ -16,8 +18,9 @@ const repo = 'https://github.com/ashwin-pc/pi-web';
       <ProductStory desktop="conversation-tree-desktop.png" mobile="conversation-tree-mobile.png" width={1280} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Conversation tree showing branches and current path" title="Branch without erasing" caption="Search and return to any conversation path." />
     </div>
   </Section>
-  <Section id="reply-redirect-continue" tone="tinted" narrow eyebrow="Reply, redirect, continue" title="Keep the next message attached to the work.">
-    <p class="boundary-copy">Select an exact response to send a linked quote reply, edit a message to continue from it, or create a preserved branch. While a turn is running, choose <strong>stop</strong>, <strong>steer</strong> to redirect it, or <strong>follow-up</strong> to queue what happens next; pending messages stay visible before delivery.</p>
+  <Section id="reply-redirect-continue" tone="tinted" eyebrow="Reply, redirect, continue" title="Keep the next message attached to the work.">
+    <CapabilityStory story={visualStories.queues} />
+    <CapabilityStory story={visualStories.branchActions} reverse />
   </Section>
   <Section id="experimental-orchestration" tone="tinted" narrow eyebrow="Experimental · opt-in" title="Visible worker sessions are an add-on, not core.">
     <p class="boundary-copy">The session-orchestration extension can spawn and monitor ordinary sessions. <a href={`${base}extensions/examples/#session-orchestration`}>Inspect its source and setup →</a></p>

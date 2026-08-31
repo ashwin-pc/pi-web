@@ -4,7 +4,6 @@ import artifactReference from "../../examples/pi-web-extensions/artifact-referen
 import { createGitFooterExtension } from "../../examples/pi-web-extensions/git-footer.js";
 import githubRepoPanel from "../../examples/pi-web-extensions/github-repo-panel.js";
 import globalNotepad from "../../examples/pi-web-extensions/notepad.js";
-import recap from "../../examples/pi-web-extensions/recap.js";
 
 const issues = [
   { number: 184, title: "Clarify keyboard shortcuts in onboarding", url: "https://github.com/example/studio/issues/184", author: { login: "sam" }, labels: [{ name: "documentation", color: "4fa7d1" }], assignees: [{ login: "lee" }], comments: [], createdAt: "2099-01-01T00:00:00Z", updatedAt: "2099-01-01T00:00:00Z" },
@@ -39,7 +38,14 @@ export default function recommendedAddonsExtension(pi: any, cwd: string) {
   };
 
   globalNotepad(pi);
-  recap(pi);
+  pi.on("session_start", (_event: unknown, ctx: any) => ctx.ui.web.contribute("website-recap-preview", {
+    slot: "header-action",
+    kind: "rendered",
+    icon: "scroll-text",
+    title: "Session recap preview",
+    label: "Recap",
+    render: async () => ({ markdown: "**Launch direction:** faster handoffs, grounded in customer evidence.\n\n**Now:** final accessibility review before sharing." }),
+  }));
   artifactReference(pi);
   githubRepoPanel(pi);
   createGitFooterExtension({

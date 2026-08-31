@@ -2,11 +2,12 @@
 import BaseLayout from '../../../layouts/BaseLayout.astro';
 import BottomCTA from '../../../components/BottomCTA.astro';
 import ButtonLink from '../../../components/ButtonLink.astro';
+import CapabilityStory from '../../../components/CapabilityStory.astro';
 import ExampleCard from '../../../components/ExampleCard.astro';
 import MarketingHero from '../../../components/MarketingHero.astro';
-import RecommendedAddonsStories from '../../../components/RecommendedAddonsStories.astro';
 import Section from '../../../components/Section.astro';
 import { experimentalExamples, recommendedExamples } from '../../../data/extensionExamples';
+import { addonVisualStories, orchestrationVisualStory } from '../../../data/visualStories';
 
 const base = import.meta.env.BASE_URL;
 const docs = 'https://github.com/ashwin-pc/pi-web/blob/main/docs/pi-web-extensions.md';
@@ -25,8 +26,14 @@ const docs = 'https://github.com/ashwin-pc/pi-web/blob/main/docs/pi-web-extensio
   </nav>
 
   <Section id="recommended" eyebrow="Recommended add-ons" title="A richer-than-minimal setup." intro="These optional extensions cover broadly useful workflows. They are not core pi-web and are not installed automatically; inspect the source, copy the file from a checkout, then reload.">
-    <RecommendedAddonsStories />
-    <div class="example-grid">{recommendedExamples.map((example) => <ExampleCard example={example} />)}</div>
+    <div class="addon-story-list">
+      {recommendedExamples.map((example, index) => (
+        <div class="addon-story-pair">
+          <CapabilityStory story={addonVisualStories[index]} reverse={index % 2 === 1} />
+          <ExampleCard example={example} />
+        </div>
+      ))}
+    </div>
   </Section>
 
   <Section id="templates" tone="tinted" eyebrow="Templates · build your own" title="Use working source as a starting point.">
@@ -38,7 +45,7 @@ const docs = 'https://github.com/ashwin-pc/pi-web/blob/main/docs/pi-web-extensio
   </Section>
 
   <Section id="experimental" eyebrow="Experimental · opt-in" title="Orchestration stays clearly separate." intro="This source has additional setup and a wider behavioral boundary. Treat it as something to evaluate, not a recommended default.">
-    <div class="example-grid">{experimentalExamples.map((example) => <ExampleCard example={example} />)}</div>
+    <div class="experimental-story"><CapabilityStory story={orchestrationVisualStory} />{experimentalExamples.map((example) => <ExampleCard example={example} />)}</div>
     <p class="orchestration-skill-link">Session orchestration also needs its <a href="https://github.com/ashwin-pc/pi-web/blob/main/examples/pi-web-skills/session-orchestration/SKILL.md">companion skill ↗</a> and configured model categories.</p>
   </Section>
 

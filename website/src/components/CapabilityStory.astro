@@ -1,0 +1,22 @@
+---
+import ProductStory from './ProductStory.astro';
+import StatusLabel from './StatusLabel.astro';
+import type { VisualStory } from '../data/visualStories';
+
+interface Props { story: VisualStory; reverse?: boolean; }
+const { story, reverse = false } = Astro.props;
+---
+
+<article class:list={['capability-story', { 'capability-story--reverse': reverse }]} id={story.id}>
+  <div class="capability-story__copy">
+    <div class="capability-story__eyebrow">
+      {story.status && <StatusLabel status={story.status} />}
+      <span>{story.eyebrow}</span>
+    </div>
+    <h2>{story.title}</h2>
+    <p>{story.description}</p>
+    <ul>{story.bullets.map((bullet) => <li>{bullet}</li>)}</ul>
+    {story.source && <a href={story.source}>{story.sourceLabel ?? 'View source'} ↗</a>}
+  </div>
+  <ProductStory desktop={story.desktop} mobile={story.mobile} width={story.width ?? 1440} height={story.height ?? 1000} mobileWidth={story.mobileWidth ?? 1073} mobileHeight={story.mobileHeight ?? 2321} mobileAspectWidth={390} mobileAspectHeight={844} alt={story.alt} caption={story.caption} size="card" />
+</article>

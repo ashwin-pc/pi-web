@@ -29,7 +29,10 @@ async function startEmptySession(page: import("@playwright/test").Page) {
   }
 }
 
-async function seedSessionShowcaseState(page: import("@playwright/test").Page, currentSessionId = "mock-current", currentLabel = "Current mock session") {
+async function seedSessionShowcaseState(page: import("@playwright/test").Page, currentSessionId = "mock-current", currentLabel = "Launch roadmap") {
+  for (const [sessionId, name] of [[currentSessionId, currentLabel], ["mock-older", "Customer evidence"], ["mock-release", "Release handoff"], ["mock-git", "Reference implementation"]] as const) {
+    await page.request.post("/api/session/name", { data: { sessionId, name } });
+  }
   await page.request.patch("/api/session-ui-state", { data: {
     lanes: [
       { sessionId: currentSessionId, lane: "pinned", since: "2026-01-04T00:00:00.000Z" },
@@ -61,7 +64,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   await page.route("**/api/models**", (route) => route.fulfill({ json: {
     ok: true, cwd: "/workspace/launch-plan", current: selectedModel, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"], models: [defaultModel, marketingModel],
   } }));
-  await page.route("**/api/model", (route) => {
+  await page.route(/\/api\/model(?:\?.*)?$/, (route) => {
     selectedModel = marketingModel;
     return route.fulfill({ json: {
       ok: true, sessionId: "website-launch", cwd: "/workspace/launch-plan", model: marketingModel, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"],
@@ -114,21 +117,57 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   await page.evaluate(async () => { await document.fonts.ready; await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); });
 }
 
-async function prepareRecommendedAddons(page: import("@playwright/test").Page, projectName: string) {
+async function prepareNeutralWorkspace(page: import("@playwright/test").Page, projectName: string, options: { addons?: boolean } = {}) {
   await page.setViewportSize(projectName === "desktop" ? { width: 1440, height: 1000 } : { width: 390, height: 844 });
-  await page.request.post("/api/mock/reset", { data: { recommendedAddonsExtension: true } });
+  await page.request.post("/api/mock/reset", { data: { recommendedAddonsExtension: Boolean(options.addons) } });
   const model = { provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4", reasoning: true, contextWindow: 200000, maxTokens: 8192 };
+  let activeSessionId = "mock-current";
   await page.route("**/api/models**", (route) => route.fulfill({ json: {
     ok: true, cwd: "/workspace/studio", current: model, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"], models: [model],
+  } }));
+  await page.route(/\/api\/model(?:\?.*)?$/,  (route) => route.fulfill({ json: {
+    ok: true, sessionId: activeSessionId, cwd: "/workspace/studio", model, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"],
   } }));
   await page.goto("/");
   await expect(page.locator("#prompt")).toBeVisible();
   await startEmptySession(page);
+  const state = await page.request.get("/api/state").then((response) => response.json());
+  activeSessionId = state.sessionId;
+  await page.locator("#statusTitle").click();
+  await page.locator("#statusTitle input").fill("Launch research workspace");
+  await page.locator("#statusTitle input").press("Enter");
+  await page.locator("#modelSettingsButton").click();
+  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.mouse.click(5, 5);
+  await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
+  await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.messageTimestamp{visibility:hidden!important}" });
+}
+
+async function prepareRecommendedAddons(page: import("@playwright/test").Page, projectName: string) {
+  await page.setViewportSize(projectName === "desktop" ? { width: 1440, height: 1000 } : { width: 390, height: 844 });
+  await page.request.post("/api/mock/reset", { data: { recommendedAddonsExtension: true } });
+  const model = { provider: "anthropic", id: "claude-sonnet-4", name: "Claude Sonnet 4", reasoning: true, contextWindow: 200000, maxTokens: 8192 };
+  let activeSessionId = "mock-current";
+  await page.route("**/api/models**", (route) => route.fulfill({ json: {
+    ok: true, cwd: "/workspace/studio", current: model, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"], models: [model],
+  } }));
+  await page.route(/\/api\/model(?:\?.*)?$/,  (route) => route.fulfill({ json: {
+    ok: true, sessionId: activeSessionId, cwd: "/workspace/studio", model, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"],
+  } }));
+  await page.goto("/");
+  await expect(page.locator("#prompt")).toBeVisible();
+  await startEmptySession(page);
+  const state = await page.request.get("/api/state").then((response) => response.json());
+  activeSessionId = state.sessionId;
   await page.locator("#statusTitle").click();
   await page.locator("#statusTitle input").fill("Studio launch planning");
   await page.locator("#statusTitle input").press("Enter");
   await expect(page.locator("#statusTitle")).toHaveText("Studio launch planning");
-  await expect(page.locator("#headerActions .webHeaderActionButton")).toHaveAttribute("title", "Session recap");
+  await page.locator("#modelSettingsButton").click();
+  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.mouse.click(5, 5);
+  await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
+  await expect(page.locator('#headerActions .webHeaderActionButton[title="Session recap preview"]')).toBeVisible();
   await expect(page.locator('.webFooterEntry[data-footer-key="local-git-footer"]')).toContainText("main");
   await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.messageTimestamp{visibility:hidden!important}" });
 }
@@ -330,6 +369,206 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("visual regression", () => {
+  test("focused tool activity", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await sendPrompt(page, "Inspect the research brief with the read tool.");
+    await expect(page.locator(".toolCard.toolCard--success")).toBeVisible();
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await sendPrompt(page, "Show progress while checking the final evidence file.");
+    await expect(page.locator(".toolCard", { hasText: "Waiting for more output" })).toBeVisible();
+    await expect(page).toHaveScreenshot(`capability-tool-activity-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused transcript and recovery", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await sendPrompt(page, "Return the launch checklist as markdown with a short code example.");
+    await expect(page.locator(".message.assistant .markdownBody pre").last()).toBeVisible();
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await sendPrompt(page, "Explain your reasoning with a thinking card before the recommendation.");
+    await expect(page.locator(".toolCard--thinking")).toBeVisible();
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await sendPrompt(page, "Retry the customer synthesis after the throttle failure.");
+    await expect(page.locator(".runtimeErrorCard", { hasText: "response failed" })).toBeVisible({ timeout: 8_000 });
+    await scrollMessagesToBottom(page);
+    await page.locator(".message.assistant .markdownBody pre").first().hover();
+    await expect(page).toHaveScreenshot(`capability-transcript-recovery-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused steer and follow-up queues", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await page.locator("#prompt").fill("Review the research notes slowly while I prepare a redirect.");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await page.locator("#prompt").fill("Steer toward the customer evidence first.");
+    await page.locator("#primaryButton").click();
+    await page.locator("#queueToggle").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator("#prompt").fill("Then summarize the unresolved questions.");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator(".pendingMessage")).toHaveCount(2);
+    await expect(page).toHaveScreenshot(`capability-queues-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused restored attachment draft", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await page.locator("#imageInput").setInputFiles([
+      { name: "research-board.png", mimeType: "image/png", buffer: Buffer.from("89504e470d0a1a0a", "hex") },
+      { name: "interview-notes.txt", mimeType: "text/plain", buffer: Buffer.from("Product-neutral interview notes") },
+    ]);
+    await expect(page.locator(".attachmentChip")).toHaveCount(2);
+    await page.reload();
+    await expect(page.locator(".attachmentChip")).toHaveCount(2);
+    await expect(page.locator("#prompt")).toHaveValue("");
+    await expect(page.locator("#primaryButton")).toBeEnabled();
+    await expect(page).toHaveScreenshot(`capability-attachments-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused models context and compaction", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await sendPrompt(page, "Summarize the launch decisions and supporting evidence.");
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await page.locator("#prompt").fill("/compact Preserve launch decisions and evidence");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator(".message.system.compaction")).toContainText("Context compacted");
+    await scrollMessagesToBottom(page);
+    await page.locator("#modelSettingsButton").click();
+    await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+    await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(page).toHaveScreenshot(`capability-models-context-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused quote and branch actions", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await sendPrompt(page, "Draft the decision note in markdown.");
+    const paragraph = page.locator(".message.assistant .body p", { hasText: "Here is" }).last();
+    await paragraph.evaluate((element: HTMLElement) => {
+      const text = element.firstChild as Text; const start = text.data.indexOf("Here is");
+      const range = document.createRange(); range.setStart(text, start); range.setEnd(text, start + 7);
+      const selection = getSelection()!; selection.removeAllRanges(); selection.addRange(range);
+      element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    });
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Which branch preserves the mobile draft?");
+    await page.getByRole("button", { name: "Confirm question" }).click();
+    await page.locator("#prompt").fill("Compare this with the alternate approach.");
+    await expect(page.locator(".quoteReplySummaryButton")).toContainText("1 linked reply");
+    await expect(page).toHaveScreenshot(`capability-branch-actions-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused Mermaid viewer", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await sendPrompt(page, "Map the launch handoff as a Mermaid diagram.");
+    await expect(page.locator(".mermaidDiagram > svg")).toBeVisible();
+    await page.getByRole("button", { name: "Open diagram viewer" }).click();
+    await expect(page.getByRole("dialog", { name: "Diagram viewer" })).toBeVisible();
+    await expect(page).toHaveScreenshot(`capability-mermaid-viewer-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused completion notifications", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await openSessionDrawerFooterAction(page, "Settings");
+    await page.locator("#settingsNavNotifications").click();
+    await expect(page.locator("#settingRunNotificationsCheckbox")).toBeVisible();
+    await expect(page).toHaveScreenshot(`capability-notifications-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused trusted device handoff", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await page.addInitScript(() => localStorage.setItem("pi-web-token", "trusted-device-token"));
+    await prepareNeutralWorkspace(page, testInfo.project.name);
+    await page.evaluate(() => {
+      const NativeURL = window.URL;
+      class StableShareURL extends NativeURL {
+        constructor(url: string | URL, base?: string | URL) {
+          super(String(url) === location.href && base === undefined ? "https://demo.pi-web.dev/" : url, base);
+        }
+      }
+      Object.defineProperty(window, "URL", { configurable: true, value: StableShareURL });
+    });
+    await openSessionDrawerFooterAction(page, "Settings");
+    await page.locator("#settingsNavAccess").click();
+    await page.locator("#tokenShareFullscreenButton").click();
+    await expect(page.locator("#tokenShareFullscreenQr svg")).toBeVisible();
+    await expect(page).toHaveScreenshot(`capability-device-handoff-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
+  test("focused recommended add-ons", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    const project = testInfo.project.name;
+    for (const scene of ["artifact-reference", "notepad", "github", "recap", "git-footer"] as const) {
+      await prepareRecommendedAddons(page, project);
+      if (scene === "notepad") await openLauncherAction(page, "Notepad");
+      if (scene === "github") {
+        await mockGitApi(page); await openLauncherAction(page, "Session details"); await page.locator("#sessionInfoGit").click(); await page.locator(".gitExtensionTab", { hasText: "GitHub" }).click();
+      }
+      if (scene === "recap") {
+        await sendPrompt(page, "Summarize the launch decision.");
+        await expect(page.locator("#stopButton")).toBeHidden();
+        await page.locator("#modelSettingsButton").click();
+        await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4", { force: true });
+        await page.mouse.click(5, 5);
+        await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
+        await page.locator('#headerActions .webHeaderActionButton[title="Session recap preview"]').click();
+        await expect(page.locator(".webHeaderActionPopoverBody")).toBeVisible({ timeout: 8_000 });
+        await expect(page.locator(".webHeaderActionPopoverBody")).toContainText("faster handoffs");
+      }
+      if (scene === "artifact-reference") {
+        await sendPrompt(page, "Create an HTML artifact for the launch brief.");
+        await expect(page.locator(".artifactPreview--html")).toBeVisible();
+        await expect(page.locator("#stopButton")).toBeHidden();
+        const reference = page.getByRole("button", { name: "Reference" });
+        await expect(reference).toHaveAttribute("title", "Copy an artifact reference");
+        await expect(reference.locator("xpath=ancestor::div[contains(concat(' ',normalize-space(@class),' '),' artifactPreview ')][1]")).toHaveAttribute("data-artifact-name", "preview.html");
+        await reference.click();
+        const result = page.locator(".artifactPreviewActionResult");
+        await expect.poll(async () => await result.count() || await page.getByRole("button", { name: "Failed" }).count()).toBeGreaterThan(0);
+        const failed = page.getByRole("button", { name: "Failed" });
+        if (await failed.count()) throw new Error(`Artifact reference failed: ${await failed.getAttribute("title")}`);
+        await expect(result).toContainText("Markdown link");
+      }
+      if (scene === "artifact-reference") {
+        await page.locator("#modelSettingsButton").click();
+        await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4", { force: true });
+        await page.mouse.click(5, 5);
+        await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
+      }
+      if (scene === "git-footer") await expect(page.locator('.webFooterEntry[data-footer-key="local-git-footer"]')).toContainText("dirty");
+      await expect(page).toHaveScreenshot(`addon-${scene}-${project}.png`, { fullPage: true, animations: "disabled", scale: project === "mobile" ? "device" : "css" });
+      await page.unrouteAll({ behavior: "ignoreErrors" });
+    }
+  });
+
+  test("focused experimental orchestration", async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
+    await page.setViewportSize(testInfo.project.name === "desktop" ? { width: 1440, height: 1000 } : { width: 390, height: 844 });
+    await page.request.post("/api/mock/reset");
+    await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }] } });
+    await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      const labels = new Map([["mock-current", "Launch research coordinator"], ["mock-older", "Evidence review worker"]]);
+      const sessions = Array.isArray(body.sessions) ? body.sessions.map((session: { id?: string; sessionId?: string; name?: string; title?: string }) => {
+        const label = labels.get(session.sessionId || session.id || "");
+        return label ? { ...session, name: label, title: label } : session;
+      }) : body.sessions;
+      await route.fulfill({ response, json: { ...body, sessions } });
+    });
+    await page.goto("/");
+    await page.locator("#sessionButton").click();
+    const drawer = page.locator("#sessionDrawer");
+    await drawer.locator('.sessionItem[data-session-id="mock-current"] .sessionWorkerBranchToggle').click();
+    await expect(drawer).toContainText("Evidence review worker");
+    await expect(page).toHaveScreenshot(`addon-session-orchestration-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
+  });
+
   test("website work story", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use the maintained desktop and mobile projects");
     await prepareWebsiteWorkStory(page, testInfo.project.name);

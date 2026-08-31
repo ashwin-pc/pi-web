@@ -1,8 +1,10 @@
 ---
 import FeaturePage from '../../../components/FeaturePage.astro';
+import CapabilityStory from '../../../components/CapabilityStory.astro';
 import ProductStory from '../../../components/ProductStory.astro';
 import Section from '../../../components/Section.astro';
 import { getFeatureRoute } from '../../../data/features';
+import { visualStories } from '../../../data/visualStories';
 
 const base = import.meta.env.BASE_URL;
 const feature = getFeatureRoute('work-from-anywhere');
@@ -16,11 +18,11 @@ const repo = 'https://github.com/ashwin-pc/pi-web';
       <ProductStory desktop="artifacts-explorer-desktop.png" mobile="artifacts-explorer-mobile.png" width={1600} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Artifacts gallery on desktop and mobile" title="The result travels too" caption="Artifacts remain browsable on a phone." />
     </div>
   </Section>
-  <Section id="completion-alerts" tone="tinted" narrow eyebrow="Return at the right time" title="Let the workspace call you back.">
-    <p class="boundary-copy">Optional completion alerts can use browser notifications, sound, and supported-device vibration; opening an alert returns to the completed session. Browser and HTTPS support still apply.</p>
+  <Section id="completion-alerts" tone="tinted" eyebrow="Return at the right time" title="Let the workspace call you back.">
+    <CapabilityStory story={visualStories.notifications} />
   </Section>
-  <Section id="device-handoff" tone="tinted" narrow eyebrow="Trusted-device handoff" title="Connect another screen on purpose.">
-    <p class="boundary-copy">Share a bearer token by pasting it or explicitly generating a Settings QR/link for a trusted device. Active-session URLs, drafts, attachments, quote replies, reconnecting, and reloads help return you to the same work.</p>
+  <Section id="device-handoff" tone="tinted" eyebrow="Trusted-device handoff" title="Connect another screen on purpose.">
+    <CapabilityStory story={visualStories.deviceHandoff} />
   </Section>
   <Section id="access-boundary" tone="dark" narrow eyebrow="Access boundary" title="You choose the network.">
     <p class="boundary-copy">pi-web starts on localhost. Use Tailscale or an HTTPS proxy you operate, with the optional bearer token as one layer. pi-web provides no hosted relay or identity service.</p>

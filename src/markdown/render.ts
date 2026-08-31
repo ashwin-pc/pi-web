@@ -663,10 +663,10 @@ function enhanceArtifactLinks(root: ParentNode) {
     card.append(header, content);
     attachArtifactDisclosure(card, header, content);
     const refreshOverflow = attachArtifactOverflowControl(card, content);
-    card.dataset.artifactName = title.textContent;
+    card.dataset.artifactName = fileName;
     card.dataset.artifactPath = url.pathname;
     card.dataset.artifactKind = kind;
-    renderArtifactActions(card, title.textContent, url.pathname, kind);
+    renderArtifactActions(card, fileName, url.pathname, kind);
 
     const container = link.closest("p") || link;
     container.insertAdjacentElement("afterend", card);
