@@ -1,4 +1,5 @@
 import { iconElement, isIconName } from "../app/icons.js";
+import type { PiWebPanelEvent } from "../extensions.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 
 type WebPanelEntry = {
@@ -16,7 +17,7 @@ type WebPanelView = {
 export type WebPanelsController = {
   setPanels(value: unknown, sessionId: string): void;
   entries(): WebPanelEntry[];
-  open(key: string): void;
+  open(key: string, initialEvent?: PiWebPanelEvent): void;
   update(key: string): void;
   isOpen(): boolean;
 };
@@ -120,7 +121,7 @@ export function createWebPanels(options: {
     body.append(message);
   }
 
-  async function invoke(event?: { action?: string; payload?: unknown; fields?: Record<string, string | string[]> }) {
+  async function invoke(event?: PiWebPanelEvent) {
     const entry = activePanel();
     if (!entry) return;
     const generation = ++requestGeneration;
@@ -139,7 +140,7 @@ export function createWebPanels(options: {
       renderHeading(entry, data.title);
       body.innerHTML = data.html;
       const autofocus = body.querySelector<HTMLElement>("[autofocus]");
-      autofocus?.focus({ preventScroll: true });
+      autofocus?.focus({ preventScroll: event?.action !== "deep-link" });
     } catch (error) {
       if (generation === requestGeneration && activeKey === entry.key) renderError(error);
     } finally {
@@ -147,13 +148,13 @@ export function createWebPanels(options: {
     }
   }
 
-  function open(key: string) {
+  function open(key: string, initialEvent?: PiWebPanelEvent) {
     const entry = panels.find((candidate) => candidate.key === key);
     if (!entry) return;
     activeKey = key;
     renderHeading(entry);
     panelHandle.open();
-    void invoke();
+    void invoke(initialEvent);
   }
 
   function actionTarget(event: Event) {

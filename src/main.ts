@@ -76,7 +76,7 @@ let statusBar: StatusBar;
 let conversationTree: ConversationTreeController;
 let gitPanel: GitPanelController;
 let filesPanel: FilesPanelController;
-let webPanels: WebPanelsController;
+const webPanels: WebPanelsController = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 let actionLauncher: ActionLauncherController;
 let realtime: RealtimeController;
 async function submitPromptFromMessageAction(message: string) {
@@ -159,7 +159,15 @@ const quoteReplies = createQuoteReplies({
   onChange: () => composer?.updatePrimaryAction(),
 });
 const markdown = createMarkdownRenderer(elements.messagesEl, quoteReplies.restoreSubmittedReferences);
-messages = createMessageList({ messagesEl: elements.messagesEl, markdown, apiHeaders: api.headers, quoteReplies, onMessageAction: handleMessageAction, openSession: (sessionId) => void sessions.openSessionById(sessionId) });
+messages = createMessageList({
+  messagesEl: elements.messagesEl,
+  markdown,
+  apiHeaders: api.headers,
+  quoteReplies,
+  onMessageAction: handleMessageAction,
+  openSession: (sessionId) => void sessions.openSessionById(sessionId),
+  openPanel: (key, initialEvent) => webPanels.open(key, initialEvent),
+});
 const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId));
 
 const webHeaderActions = createWebHeaderActions({
@@ -509,7 +517,6 @@ realtime = createRealtime({
 });
 
 initStaticIcons();
-webPanels = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 actionLauncher = initActionLauncher(elements, {
   onSessionDetails: () => sessionInfo.open(),
   onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey),

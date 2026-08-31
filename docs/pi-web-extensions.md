@@ -159,7 +159,7 @@ are explicit and may be anything that references the panel:
 
 - `ctx.ui.web.setFabAction(key, { title, icon, opens })` — a mascot-FAB launcher entry
 - a header action returning an `open-panel` effect from `invoke()`
-- future affordances (links from other extension views, etc.)
+- a chat Markdown link using `#panel:<key>:<query>`
 
 The panel can call back into the extension with `data-web-action`, optional JSON
 in `data-web-payload`, and ordinary HTML forms. Successful form controls are sent
@@ -184,6 +184,15 @@ ctx.ui.web.setPanel("notes", {
   },
 });
 ```
+
+Assistant and user messages can deep-link into a panel with Markdown such as
+`[Open task](#panel:global-notepad:note=oncall%2Fw34&task=t-3f2a)`. Clicking it
+opens the registered panel and calls `render()` with
+`{ action: "deep-link", payload: { note: "oncall/w34", task: "t-3f2a" } }`.
+Core treats the query as opaque strings; duplicate names use their final value.
+Links are limited to an 80-character key, 8 KiB query, and 64 parameters.
+The extension owns scrolling, highlighting, and fallback behavior; unknown or
+malformed panel links are a quiet no-op.
 
 Panel HTML is trusted and uses the same local extension trust model as custom
 footer and Git-tab HTML. Scripts inserted through `innerHTML` do not execute;

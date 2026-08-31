@@ -8,6 +8,7 @@ import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawCont
 import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
+import type { PiWebPanelEvent } from "../extensions.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
@@ -273,13 +274,15 @@ function transcriptRuntimeState(messages: any[], isStreaming?: boolean): Transcr
 export function createMessageList(options: {
   /** Switch to a referenced session in place instead of reloading the app. */
   openSession?: (sessionId: string) => void;
+  /** Open an extension panel from a transcript deep link. */
+  openPanel?: (key: string, initialEvent: PiWebPanelEvent) => void;
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
   apiHeaders?: ApiHeaders;
   quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession, apiHeaders, quoteReplies } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, openPanel, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
   let currentStreamingTextKey = "current";
@@ -418,6 +421,22 @@ export function createMessageList(options: {
     setJumpButtonVisible(true);
   }
 
+  messagesEl.addEventListener("click", (event) => {
+    const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+    if (!anchor || !messagesEl.contains(anchor)) return;
+    const href = anchor.getAttribute("href")?.trim() || "";
+    if (!href.startsWith("#panel:")) return;
+    event.preventDefault();
+    const target = href.slice("#panel:".length);
+    const separator = target.indexOf(":");
+    const key = (separator < 0 ? target : target.slice(0, separator)).trim();
+    const query = separator < 0 ? "" : target.slice(separator + 1);
+    if (!key || key.length > 80 || query.length > 8_192) return;
+    const params = new URLSearchParams(query);
+    if (Array.from(params).length > 64) return;
+    const payload = Object.fromEntries(params);
+    openPanel?.(key, { action: "deep-link", payload });
+  });
   messagesEl.addEventListener("wheel", pauseStreamFollow, { passive: true });
   messagesEl.addEventListener("touchstart", pauseStreamFollow, { passive: true });
   messagesEl.addEventListener("pointerdown", pauseStreamFollow);
@@ -664,6 +683,10 @@ export function createMessageList(options: {
 
     const renderedQuoteReplies = role === "user" && quoteReplies?.renderSubmittedMessage(body, text, images);
     const standardAttachments = images.filter((attachment) => attachment.type !== "quote-reply");
+    const renderUserText = (container: HTMLElement, value: string) => {
+      container.textContent = value;
+      if (/\]\(\s*#panel:/i.test(value)) markdown.renderAssistantMarkdown(container, value);
+    };
     if (renderedQuoteReplies) {
       // Structured quote prompts render as a compact linked-excerpt summary.
     } else if (role === "user" && images.length > 0) {
@@ -671,13 +694,15 @@ export function createMessageList(options: {
       if (cleanText) {
         const textNode = document.createElement("span");
         textNode.className = "messageText";
-        textNode.textContent = cleanText;
+        renderUserText(textNode, cleanText);
         body.append(textNode);
       }
     } else if (role === "assistant" && text) {
       body.textContent = text;
       if (collapsible) markdown.queueAssistantMarkdownRender(body, text);
       else markdown.renderAssistantMarkdown(body, text);
+    } else if (role === "user") {
+      renderUserText(body, text || "");
     } else {
       body.textContent = text || "";
     }

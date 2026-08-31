@@ -266,7 +266,7 @@ const toolParameters = Type.Object({
 function formatEntryLine(entry: NotepadEntry) {
   const marker = entry.status === "open" ? (entry.kind === "task" ? "☐" : "·") : entry.status === "done" ? "✓" : "✗";
   const pieces = [
-    `${entry.id} ${entry.pinned ? "📌 " : ""}${marker} [${entry.kind}] ${entry.text}`,
+    `[${entry.id}](#panel:${PANEL_KEY}:id=${encodeURIComponent(entry.id)}) ${entry.pinned ? "📌 " : ""}${marker} [${entry.kind}] ${entry.text}`,
     entry.due ? `(due ${entry.due})` : "",
     entry.tags.length ? entry.tags.map((tag) => `#${tag}`).join(" ") : "",
     `— ${entry.source.by}${entry.source.sessionName ? ` in "${entry.source.sessionName}"` : ""}, ${relativeTime(entry.updated)}`,
@@ -316,6 +316,7 @@ const panelStyles = `
 .gnp ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .gnp li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: color-mix(in srgb, var(--panel-2) 55%, transparent); }
 .gnp li.gnpPinned { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.gnp li.gnpDeepLinked { border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent); }
 .gnp li.gnpClosed .gnpText { color: var(--muted); text-decoration: line-through; }
 .gnp .gnpText { overflow-wrap: anywhere; }
 .gnp .gnpMeta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; font-size: 11.5px; color: var(--muted); }
@@ -334,7 +335,7 @@ const panelStyles = `
 .gnp .gnpStatus { min-height: 16px; font-size: 12px; color: var(--muted); }
 </style>`;
 
-function renderEntryRow(entry: NotepadEntry) {
+function renderEntryRow(entry: NotepadEntry, focusId?: string) {
   const isOpen = entry.status === "open";
   const dueClass = entry.due && entry.due < today() ? "gnpOverdue" : entry.due === today() ? "gnpDueSoon" : "";
   const payload = escapeHtml(JSON.stringify({ id: entry.id }));
@@ -342,7 +343,8 @@ function renderEntryRow(entry: NotepadEntry) {
   const sourceLink = entry.source.sessionId
     ? `<a href="/?sessionId=${encodeURIComponent(entry.source.sessionId)}" title="Open the conversation this entry came from">${escapeHtml(entry.source.sessionName || "source session")}</a>`
     : "";
-  return `<li class="${entry.pinned ? "gnpPinned" : ""} ${isOpen ? "" : "gnpClosed"}">
+  const focused = entry.id === focusId;
+  return `<li id="gnp-entry-${escapeHtml(entry.id)}" class="${entry.pinned ? "gnpPinned" : ""} ${isOpen ? "" : "gnpClosed"} ${focused ? "gnpDeepLinked" : ""}"${focused ? ` tabindex="-1" autofocus` : ""}>
     ${entry.kind === "task"
       ? `<input class="gnpCheck" type="checkbox" ${isOpen ? "" : "checked"} data-web-panel-action="${isOpen ? "done" : "reopen"}" data-web-panel-payload='${payload}' aria-label="${isOpen ? "Mark done" : "Reopen"}">`
       : `<span aria-hidden="true">${entry.kind === "decision" ? "⚖️" : "🗒"}</span>`}
@@ -362,12 +364,12 @@ function renderEntryRow(entry: NotepadEntry) {
   </li>`;
 }
 
-function renderSection(title: string, entries: NotepadEntry[]) {
+function renderSection(title: string, entries: NotepadEntry[], focusId?: string) {
   if (!entries.length) return "";
-  return `<h3>${escapeHtml(title)}</h3><ul>${entries.map(renderEntryRow).join("")}</ul>`;
+  return `<h3>${escapeHtml(title)}</h3><ul>${entries.map((entry) => renderEntryRow(entry, focusId)).join("")}</ul>`;
 }
 
-function renderPanel(store: NotepadStore, options: { status?: string; query?: string } = {}): PiWebPanelView {
+function renderPanel(store: NotepadStore, options: { status?: string; query?: string; focusId?: string } = {}): PiWebPanelView {
   const query = (options.query || "").trim().toLowerCase();
   const matches = (entry: NotepadEntry) => !query
     || entry.text.toLowerCase().includes(query)
@@ -397,10 +399,10 @@ function renderPanel(store: NotepadStore, options: { status?: string; query?: st
     </form>
     <div class="gnpStatus" role="status">${escapeHtml(options.status || "")}</div>
     ${active.length === 0 ? `<div class="gnpEmpty">${query ? "Nothing matches this filter." : "Nothing here yet. Notes added by you or by agents in any conversation show up in this one shared planner."}</div>` : ""}
-    ${renderSection("📌 Pinned", pinned)}
-    ${renderSection("☐ Tasks", tasks)}
-    ${renderSection("🗒 Notes & decisions", other)}
-    ${closed.length ? `<details><summary>Recently closed (${closed.length})</summary><ul>${closed.map(renderEntryRow).join("")}</ul></details>` : ""}
+    ${renderSection("📌 Pinned", pinned, options.focusId)}
+    ${renderSection("☐ Tasks", tasks, options.focusId)}
+    ${renderSection("🗒 Notes & decisions", other, options.focusId)}
+    ${closed.length ? `<details${closed.some((entry) => entry.id === options.focusId) ? " open" : ""}><summary>Recently closed (${closed.length})</summary><ul>${closed.map((entry) => renderEntryRow(entry, options.focusId)).join("")}</ul></details>` : ""}
   </div>`;
   return { title: "Global notepad", html };
 }
@@ -589,6 +591,15 @@ export default function globalNotepad(pi: PiWebExtensionAPI) {
             }
 
             if (action === "filter") return renderPanel(store, { query: firstField(event, "query") });
+
+            if (action === "deep-link") {
+              const payload = event?.payload && typeof event.payload === "object" ? event.payload as Record<string, unknown> : undefined;
+              const id = typeof payload?.id === "string" ? payload.id : "";
+              const target = store.entries.find((entry) => entry.id === id);
+              return renderPanel(store, target
+                ? { focusId: target.id, status: `Opened ${target.id}.` }
+                : { status: id ? `Entry ${id} no longer exists.` : "The link did not specify an entry." });
+            }
 
             if (["done", "reopen", "drop", "pin", "unpin"].includes(action)) {
               const entry = requireEntry(store, payloadId(event));
