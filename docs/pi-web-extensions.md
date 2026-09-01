@@ -78,7 +78,7 @@ ctx.ui.web.contribute("worker-status", {
 });
 ```
 
-Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `git-tab`, and `panel`.
+Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `artifact-preview`, `git-tab`, and `panel`.
 
 Independently distributed extensions should inspect `ctx.ui.web.capabilities` before using newer facilities. It reports the additive runtime contract: `apiVersion`, `slots`, `kinds`, and `effects`.
 
@@ -159,7 +159,7 @@ are explicit and may be anything that references the panel:
 
 - `ctx.ui.web.setFabAction(key, { title, icon, opens })` — a mascot-FAB launcher entry
 - a header action returning an `open-panel` effect from `invoke()`
-- future affordances (links from other extension views, etc.)
+- a chat Markdown link using `#panel:<key>:<query>`
 
 The panel can call back into the extension with `data-web-action`, optional JSON
 in `data-web-payload`, and ordinary HTML forms. Successful form controls are sent
@@ -185,6 +185,15 @@ ctx.ui.web.setPanel("notes", {
 });
 ```
 
+Assistant and user messages can deep-link into a panel with Markdown such as
+`[Open task](#panel:global-notepad:note=oncall%2Fw34&task=t-3f2a)`. Clicking it
+opens the registered panel and calls `render()` with
+`{ action: "deep-link", payload: { note: "oncall/w34", task: "t-3f2a" } }`.
+Core treats the query as opaque strings; duplicate names use their final value.
+Links are limited to an 80-character key, 8 KiB query, and 64 parameters.
+The extension owns scrolling, highlighting, and fallback behavior; unknown or
+malformed panel links are a quiet no-op.
+
 Panel HTML is trusted and uses the same local extension trust model as custom
 footer and Git-tab HTML. Scripts inserted through `innerHTML` do not execute;
 use action attributes for interaction. Clear the contribution with:
@@ -208,6 +217,41 @@ ctx.ui.web.setHeaderAction("open-notes", {
 });
 ```
 
+
+## Artifact preview renderer API
+
+`artifact-preview` contributions render otherwise-generic artifact formats inside a sandboxed, opaque-origin iframe. Built-in image, Markdown, HTML, media, and PDF previews retain precedence; extension renderers are selected in deterministic registration order for matching generic files.
+
+```ts
+ctx.ui.web.contribute("gcode.viewer", {
+  slot: "artifact-preview",
+  kind: "rendered",
+  title: "G-code viewer",
+  match: { kinds: ["file"], extensions: [".gcode"] },
+  render: async (event) => {
+    const artifact = event?.context;
+    // Read and parse the artifact server-side, then return a complete document.
+    return { html: `<!doctype html><title>${artifact?.name}</title>` };
+  },
+});
+```
+
+The context is `{ name, path, kind }`. The only accepted result field is `html`, capped at 1 MB. The browser loads it through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. Extensions should parse large source files server-side and return compact visualization data rather than embedding the entire source.
+
+The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. Clear either form with `undefined` under the same key.
+
+### Example: 3D modeling workflow
+
+[`examples/pi-web-extensions/3d-modeling/`](../examples/pi-web-extensions/3d-modeling/) is a complete Fusion 360 → STL → PrusaSlicer → G-code example. It contributes sandboxed interactive STL and G-code previews, Fusion MCP status/screenshot/script tools, a typed PrusaSlicer tool, and a **Slice** action for STL artifacts. Its README documents local dependencies, profile overrides, artifact-path protections, size limits, and the fact that Fusion Python executes unsandboxed with the user's permissions.
+
+Install it globally from a checkout with a symlink so edits remain canonical in the example directory:
+
+```sh
+mkdir -p ~/.pi/web/extensions
+ln -sfn "$PWD/examples/pi-web-extensions/3d-modeling" ~/.pi/web/extensions/3d-modeling
+```
+
+Run `/reload` or restart pi-web after installing it.
 
 ## Artifact preview action API
 
@@ -438,6 +482,13 @@ pi-web renders the orchestration state generically: spawned sessions are
 indented under their parent in the session drawer, a waiting indicator shows
 while a session's workers run, wakeups render as notification cards, and both the
 spawn tool card and wakeup card link to the worker session.
+
+The extension reports its durable worker obligations through
+`ctx.ui.web.reportSettlementDependencies(...)`. Automation can query
+`GET /api/sessions/:id/status`; `settled` means the session is idle, has no
+finished-worker wakeups pending, and every tracked worker is recursively
+settled. A `session-settled` event is emitted on the existing replayable
+WebSocket stream when that value transitions from false to true.
 
 Install the extension into a pi-web extension directory, and the companion skill
 into a pi skills directory:

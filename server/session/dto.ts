@@ -222,6 +222,7 @@ export interface DeleteSessionResultDto {
 export type SessionServiceEvent =
   | { type: "agent"; sessionId: string; sessionFile: string; event: HarnessEventDto; clientMessageId?: string; sourceClientId?: string }
   | { type: "interaction"; request: InteractionRequestDto }
+  | { type: "settlement_dependencies"; sessionId: string; childIds: string[] }
   | { type: "entry"; sessionId: string; sessionFile: string; entryId: string; parentId?: string; entryKind: string }
   | { type: "state"; state: BaseSessionStateDto; includeThinkingLevels?: boolean }
   | { type: "committed"; sessionId: string; sessionFile: string; message: MessageDto }

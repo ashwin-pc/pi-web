@@ -1,0 +1,40 @@
+---
+import ProductStory from './ProductStory.astro';
+
+const repo = 'https://github.com/ashwin-pc/pi-web/blob/main/examples/pi-web-extensions';
+---
+
+<div class="visual-index visual-index--addons">
+  <ProductStory
+    desktop="recommended-addons-desktop.png"
+    mobile="recommended-addons-mobile.png"
+    width={1440}
+    height={1000}
+    mobileWidth={1073}
+    mobileHeight={2321}
+    mobileAspectWidth={390}
+    mobileAspectHeight={844}
+    alt="The checked-in global notepad add-on open in pi-web, with the recap action and live Git footer also visible"
+    title="Plan across sessions"
+    caption="Global notepad, session recap, and live Git status running together."
+    href={`${repo}/notepad.ts`}
+    linkLabel="View notepad source"
+    size="card"
+  />
+  <ProductStory
+    desktop="recommended-github-desktop.png"
+    mobile="recommended-github-mobile.png"
+    width={1440}
+    height={1000}
+    mobileWidth={1073}
+    mobileHeight={2321}
+    mobileAspectWidth={390}
+    mobileAspectHeight={844}
+    alt="The checked-in GitHub repository add-on showing repository issues inside pi-web"
+    title="Bring repository work closer"
+    caption="GitHub issues and pull requests in the real contributed Git tab."
+    href={`${repo}/github-repo-panel.ts`}
+    linkLabel="View GitHub source"
+    size="card"
+  />
+</div>

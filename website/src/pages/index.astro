@@ -26,7 +26,8 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
       <InstallCommand label="Run after installing and signing in to pi" />
       <div class="hero__actions">
         <ButtonLink href={`${base}getting-started/`}>Get started</ButtonLink>
-        <a class="text-link" href="https://github.com/ashwin-pc/pi-web">GitHub ↗</a>
+        <ButtonLink href={`${base}features/`} variant="secondary">Explore everything included</ButtonLink>
+        <a class="text-link" href={`${base}extensions/examples/#recommended`}>Enhance with recommended add-ons →</a>
       </div>
       <small>Node.js 24+ · install and sign in to pi first · runs on your machine</small>
     </div>
@@ -73,7 +74,7 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
     </div>
   </Section>
 
-  <Section id="extensions" tone="dark" eyebrow="Make it yours" title="Ask → source → reload.">
+  <Section id="extensions" tone="dark" eyebrow="Optional add-ons" title="Start recommended, or build your own.">
     <div class="extension-showcase">
       <ProductStory
         desktop="website-extension-desktop.png"
@@ -93,7 +94,8 @@ const visualOutcomes = outcomes.filter((outcome) => outcome.screenshot);
         <blockquote>“Read <code>docs/pi-web-extensions.md</code>. Add the project workflow I described.”</blockquote>
         <code>.pi/web/extensions/my-workflow.ts</code>
         <code>/reload</code>
-        <ButtonLink href={`${base}extensions/`}>Build with extensions</ButtonLink>
+        <ButtonLink href={`${base}extensions/examples/#recommended`}>Recommended add-ons</ButtonLink>
+        <ButtonLink href={`${base}extensions/#build-your-own`} variant="secondary">Build your own</ButtonLink>
       </div>
     </div>
   </Section>

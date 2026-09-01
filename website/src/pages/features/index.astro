@@ -2,20 +2,40 @@
 import BaseLayout from '../../layouts/BaseLayout.astro';
 import BottomCTA from '../../components/BottomCTA.astro';
 import ButtonLink from '../../components/ButtonLink.astro';
+import CapabilityStory from '../../components/CapabilityStory.astro';
 import MarketingHero from '../../components/MarketingHero.astro';
 import ProductStory from '../../components/ProductStory.astro';
 import Section from '../../components/Section.astro';
 import { outcomes } from '../../data/outcomes';
+import { capabilityGroups } from '../../data/features';
+import { visualStories } from '../../data/visualStories';
 
 const base = import.meta.env.BASE_URL;
 ---
 
-<BaseLayout title="Features" description="A visual index of pi-web sessions, artifacts, responsive layouts, workspace files, Git, and extensions.">
-  <MarketingHero eyebrow="Features" title="More work done. Every thread visible." lede="Choose a product surface and see it in the real interface.">
-    <ButtonLink href={`${base}getting-started/`}>Install pi-web</ButtonLink>
+<BaseLayout title="Everything included" description="Explore pi-web's default agent activity, messages, controls, attachments, models, context, sessions, files, and responsive workspace.">
+  <MarketingHero eyebrow="Core · included by default" title="More work done. Every thread visible." lede="Start with the complete capability directory, then see each surface in the real interface.">
+    <ButtonLink href="#capability-directory">Explore everything included</ButtonLink>
+    <ButtonLink href={`${base}extensions/examples/#recommended`} variant="secondary">Enhance with recommended add-ons</ButtonLink>
   </MarketingHero>
 
-  <Section eyebrow="Visual index" title="What pi-web can do.">
+  <Section id="capability-directory" eyebrow="Capability directory" title="The essentials are already here." intro="These are core pi-web capabilities—not extensions. Choose a group for the detailed product surface and its boundaries.">
+    <div class="capability-directory">
+      {capabilityGroups.map((group) => (
+        <article id={group.id}>
+          <div><h2>{group.title}</h2><p>{group.description}</p></div>
+          <ul>{group.items.map((item) => <li>{item}</li>)}</ul>
+          <a href={`${base}features/${group.route}/#${group.anchor}`}>Explore this capability →</a>
+        </article>
+      ))}
+    </div>
+  </Section>
+
+  <Section tone="tinted" eyebrow="Everyday workspace" title="The basics stay visible while you work." intro="Tool activity, rich output, model controls, attachments, and session actions share one responsive workspace.">
+    <CapabilityStory story={visualStories.toolActivity} />
+  </Section>
+
+  <Section eyebrow="Visual index" title="See the included surfaces.">
     <div class="visual-index">
       {outcomes.map((outcome) => outcome.screenshot ? (
         <ProductStory

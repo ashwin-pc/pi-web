@@ -1,22 +1,30 @@
 ---
 import FeaturePage from '../../../components/FeaturePage.astro';
+import CapabilityStory from '../../../components/CapabilityStory.astro';
 import ProductStory from '../../../components/ProductStory.astro';
 import Section from '../../../components/Section.astro';
 import { getFeatureRoute } from '../../../data/features';
+import { visualStories } from '../../../data/visualStories';
 
 const base = import.meta.env.BASE_URL;
 const feature = getFeatureRoute('work-from-anywhere');
 const repo = 'https://github.com/ashwin-pc/pi-web';
 ---
 
-<FeaturePage feature={feature} description="Use pi-web's responsive agent workspace across devices with user-managed remote access." primary={{ label: 'Set up pi-web', href: `${base}getting-started/` }} secondary={{ label: 'Keep the thread', href: `${base}features/keep-the-thread/` }} technicalLinks={[{ label: 'Remote access', href: `${repo}#remote-access` }, { label: 'Security', href: `${repo}#security` }, { label: 'PWA configuration', href: `${repo}/blob/main/vite.config.ts` }]}>
-  <Section eyebrow="Responsive by design" title="Start here. Return from anywhere.">
+<FeaturePage feature={feature} description="Use pi-web's responsive agent workspace across devices with user-managed remote access." primary={{ label: 'Set up pi-web', href: `${base}getting-started/` }} secondary={{ label: 'Keep the thread', href: `${base}features/keep-the-thread/` }} onThisPage={[{ label: 'Responsive workspace', href: '#responsive-workspace' }, { label: 'Alerts', href: '#completion-alerts' }, { label: 'Device handoff', href: '#device-handoff' }, { label: 'Access boundary', href: '#access-boundary' }]} technicalLinks={[{ label: 'Remote access', href: `${repo}#remote-access` }, { label: 'Security', href: `${repo}#security` }, { label: 'PWA configuration', href: `${repo}/blob/main/vite.config.ts` }]}>
+  <Section id="responsive-workspace" eyebrow="Responsive by design" title="Start here. Return from anywhere.">
     <div class="story-stack">
       <ProductStory desktop="new-session-desktop.png" mobile="new-session-mobile.png" width={1280} height={800} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="New pi-web session on desktop and mobile" title="One workspace" caption="New session, adapted to each screen." />
       <ProductStory desktop="artifacts-explorer-desktop.png" mobile="artifacts-explorer-mobile.png" width={1600} height={1000} mobileWidth={1081} mobileHeight={1999} mobileAspectWidth={393} mobileAspectHeight={727} alt="Artifacts gallery on desktop and mobile" title="The result travels too" caption="Artifacts remain browsable on a phone." />
     </div>
   </Section>
-  <Section tone="dark" narrow eyebrow="Access boundary" title="You choose the network.">
+  <Section id="completion-alerts" tone="tinted" eyebrow="Return at the right time" title="Let the workspace call you back.">
+    <CapabilityStory story={visualStories.notifications} />
+  </Section>
+  <Section id="device-handoff" tone="tinted" eyebrow="Trusted-device handoff" title="Connect another screen on purpose.">
+    <CapabilityStory story={visualStories.deviceHandoff} />
+  </Section>
+  <Section id="access-boundary" tone="dark" narrow eyebrow="Access boundary" title="You choose the network.">
     <p class="boundary-copy">pi-web starts on localhost. Use Tailscale or an HTTPS proxy you operate, with the optional bearer token as one layer. pi-web provides no hosted relay or identity service.</p>
   </Section>
 </FeaturePage>

@@ -12,7 +12,7 @@ test.beforeEach(async ({ page }) => {
 });
 
 test.describe("session-list refetch budget", () => {
-  test("open drawer + one streaming turn makes at most two /api/sessions requests", async ({ page }, testInfo) => {
+  test("open drawer + one streaming turn makes at most two /api/sessions requests", async ({ page }) => {
     let sessionListRequests = 0;
     page.on("request", (req) => {
       if (new URL(req.url()).pathname === "/api/sessions") sessionListRequests += 1;
@@ -23,12 +23,12 @@ test.describe("session-list refetch budget", () => {
     await page.locator("#sessionButton").click();
     await expect(page.locator("#sessionDrawer")).toBeVisible();
 
-    const isMobile = testInfo.project.name === "mobile";
-    if (isMobile) {
-      // On mobile the drawer overlays the composer, so it must close before the
-      // prompt can be sent (realistic flow). The message_end refresh is then gated
+    const isOverlayMode = (page.viewportSize()?.width || 0) <= 1024;
+    if (isOverlayMode) {
+      // In overlay mode the drawer covers the composer, so close it before the
+      // prompt is sent (realistic flow). The message_end refresh is then gated
       // off by the hidden-drawer check, keeping the budget trivially low.
-      await page.locator("#sessionCloseButton").click({ force: true }).catch(() => undefined);
+      await page.locator("#sessionCloseButton").click();
       await expect(page.locator("#sessionDrawer")).toBeHidden();
     }
 

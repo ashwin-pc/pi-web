@@ -249,6 +249,12 @@ export class LocalSessionService implements SessionService {
         const request = interactionRequestFromWire(value);
         if (request) {
           this.emit({ type: "interaction", request });
+        } else if (value.type === "settlement_dependencies" && typeof value.sessionId === "string" && Array.isArray(value.childIds)) {
+          this.emit({
+            type: "settlement_dependencies",
+            sessionId: value.sessionId,
+            childIds: value.childIds.filter((id): id is string => typeof id === "string"),
+          });
         } else {
           this.emit({ type: "wire", value: value as JsonValue });
         }

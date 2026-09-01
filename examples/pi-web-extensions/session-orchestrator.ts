@@ -233,6 +233,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   let timer: ReturnType<typeof setInterval> | undefined;
   let pollInFlight = false;
   let selfSessionId = "";
+  let reportSettlementDependencies: ((dependencies: { sessionIds: string[] }) => void) | undefined;
   let disposed = false;
   let generation = 0;
 
@@ -246,6 +247,12 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   function captureSelf(ctx: PiWebExtensionContext) {
     const id = ownSessionId(ctx);
     if (id && id !== "unknown") selfSessionId = id;
+    const reporter = ctx?.ui?.web?.reportSettlementDependencies;
+    if (typeof reporter === "function") reportSettlementDependencies = reporter.bind(ctx.ui.web);
+  }
+
+  function reportWatchedDependencies() {
+    reportSettlementDependencies?.({ sessionIds: Array.from(watched.keys()) });
   }
 
   function isWorkerSession(ctx: PiWebExtensionContext): boolean {
@@ -304,12 +311,14 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   function watch(id: string, name: string, categoryName = "Unknown") {
     if (!isActive()) return;
     watched.set(id, { id, name, categoryName, sawRunning: false, idlePolls: 0, errorPolls: 0, aborted: false });
+    reportWatchedDependencies();
     ensureTimer();
   }
 
   function unwatch(id: string) {
     watched.delete(id);
     spawnedWorkers.delete(id);
+    reportWatchedDependencies();
     stopTimerIfIdle();
   }
 
@@ -731,9 +740,15 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration)) return;
     const outstanding = outstandingWatches(ctx);
     for (const id of watched.keys()) outstanding.delete(id);
-    if (outstanding.size === 0) return;
+    if (outstanding.size === 0) {
+      reportWatchedDependencies();
+      return;
+    }
     for (const [id, worker] of outstanding) {
       if (worker.spawned) spawnedWorkers.add(id);
+      // Report every durable obligation synchronously before the first status
+      // request so the host can never observe this parent as settled mid-rearm.
+      watch(id, worker.name, worker.categoryName);
     }
 
     const finished: { id: string; name: string; categoryName: string; summary: { text: string; isError: boolean } }[] = [];
@@ -743,10 +758,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         const state = await api("GET", `/api/state?sessionId=${encodeURIComponent(childId)}`);
         if (!isActive(expectedGeneration)) return;
         const running = Boolean(state?.runtime?.isRunning) || Number(state?.runtime?.pendingMessageCount || 0) > 0;
-        if (running) {
-          watch(childId, worker.name, worker.categoryName);
-          continue;
-        }
+        if (running) continue;
         let summary = { text: "", isError: false };
         try {
           const messages = await fetchMessages(childId);
@@ -761,23 +773,26 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         if (!isActive(expectedGeneration)) return;
         if (error instanceof ApiError && error.status === 404) {
           // A definitive not-found means the child is genuinely gone.
-          spawnedWorkers.delete(childId);
+          unwatch(childId);
           appendLedger(RESOLVED_ENTRY, childId);
         } else {
           // Timeouts, network failures, and 5xx responses are transient. Hand
           // the outstanding ledger entry to the normal paced poller, which
           // retries and eventually emits its existing "lost track" wakeup.
-          watch(childId, worker.name, worker.categoryName);
+          // It is already registered with the normal paced poller.
         }
       }
     }
     if (!isActive(expectedGeneration) || finished.length === 0) return;
 
+    const finishedIds = new Set(finished.map((worker) => worker.id));
     const details = {
       kind: "wakeup",
       catchUp: true,
       workers: finished.map((f) => ({ sessionId: f.id, name: f.name, status: f.summary.isError ? "error" : "idle" })),
-      stillRunning: Array.from(watched.values()).map((o) => ({ sessionId: o.id, name: o.name })),
+      stillRunning: Array.from(watched.values())
+        .filter((worker) => !finishedIds.has(worker.id))
+        .map((o) => ({ sessionId: o.id, name: o.name })),
     };
     const sections = finished.map((f) => [
       `Worker "${f.name}" (session ${f.id}) finished while this session was offline.`,
@@ -795,7 +810,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration)) return;
     if (ok) {
       for (const f of finished) {
-        spawnedWorkers.delete(f.id);
+        unwatch(f.id);
         appendLedger(RESOLVED_ENTRY, f.id);
         markChildRead(f.id);
       }

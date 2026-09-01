@@ -32,7 +32,12 @@ async function languageExtension(language: string) {
   }
 }
 
-export type FilesPanelController = { isOpen(): boolean; sessionChanged(): void; openFile(path: string): Promise<void> };
+export type FilesPanelController = {
+  isOpen(): boolean;
+  sessionChanged(): void;
+  openFile(path: string): Promise<void>;
+  openArtifact(url: string): void;
+};
 
 export function initFilesPanel(options: {
   button: HTMLButtonElement; panel: HTMLElement; rightPanels: RightPanelManager;
@@ -436,5 +441,10 @@ export function initFilesPanel(options: {
     else if (workspaceMobileView === "editor") setWorkspaceMobileView("tree");
   });
   window.addEventListener("beforeunload", (event) => { if ([...documents.values()].some(dirty)) event.preventDefault(); });
-  return { isOpen: handle.isOpen, sessionChanged, openFile };
+  function openArtifact(url: string) {
+    handle.open();
+    setTreeScope("artifacts");
+    artifactBrowser.openArtifact(url);
+  }
+  return { isOpen: handle.isOpen, sessionChanged, openFile, openArtifact };
 }

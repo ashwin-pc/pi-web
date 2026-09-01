@@ -97,6 +97,10 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
       case "interaction":
         deps.broadcast({ type: "interaction_request", ...serviceEvent.request });
         return;
+      case "settlement_dependencies":
+        // Consumed by the host's settlement tracker; this internal bridge event
+        // is not itself part of the browser wire protocol.
+        return;
       case "entry":
         deps.broadcast({
           type: "committed_message",

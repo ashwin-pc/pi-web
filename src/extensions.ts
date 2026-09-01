@@ -60,6 +60,14 @@ export type PiWebContribution =
   | { slot: "footer"; kind: "static"; view: PiWebFooter }
   | { slot: "fab"; kind: "static"; title: string; label?: string; icon?: string; opens: string }
   | {
+      slot: "artifact-preview";
+      kind: "rendered";
+      title: string;
+      label?: string;
+      match: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
+      render: (event?: PiWebContributionEvent) => PiWebArtifactPreviewView | Promise<PiWebArtifactPreviewView>;
+    }
+  | {
       slot: "header-action" | "artifact-action" | "git-tab" | "panel";
       kind: "rendered";
       title: string;
@@ -86,7 +94,21 @@ export type PiWebHeaderAction = {
 export type PiWebArtifactContext = {
   name: string;
   path: string;
-  kind: "markdown" | "html" | "video";
+  kind: "image" | "markdown" | "html" | "video" | "audio" | "pdf" | "file";
+};
+
+export type PiWebArtifactPreviewView = {
+  /** Complete document rendered in an opaque-origin iframe with scripts allowed. */
+  html: string;
+};
+
+export type PiWebArtifactPreview = {
+  title: string;
+  label?: string;
+  /** Built-in previews retain precedence; this matches otherwise generic artifacts. */
+  kinds?: PiWebArtifactContext["kind"][];
+  extensions?: string[];
+  render: (artifact: PiWebArtifactContext) => Promise<PiWebArtifactPreviewView> | PiWebArtifactPreviewView;
 };
 
 export type PiWebArtifactAction = {
@@ -248,6 +270,10 @@ export type PiWebCapabilities = Readonly<{
   effects: readonly string[];
 }>;
 
+export interface PiWebSettlementDependencies {
+  sessionIds: string[];
+}
+
 export type PiWebUi = {
   /** Runtime feature discovery for independently distributed extensions. */
   readonly capabilities: PiWebCapabilities;
@@ -275,6 +301,9 @@ export type PiWebUi = {
   /** Set or clear an action shown on matching inline artifact preview cards. */
   setArtifactAction(key: string, action: PiWebArtifactAction | undefined): void;
 
+  /** Set or clear a sandboxed renderer for matching generic artifacts. */
+  setArtifactPreview(key: string, preview: PiWebArtifactPreview | undefined): void;
+
   /** Set or clear a provider-specific tab in the built-in Git panel. */
   setGitTab(key: string, tab: PiWebGitTab | undefined): void;
 
@@ -298,6 +327,12 @@ export type PiWebUi = {
 
   /** Read this owner's persisted settings (defaults if unset). */
   getSettings(id: string): Promise<PiWebStoredSettings>;
+
+  /**
+   * Atomically replace this session's tracked settlement dependencies.
+   * Passing an empty list reports that no dependency wakeups remain owed.
+   */
+  reportSettlementDependencies(dependencies: PiWebSettlementDependencies): void;
 };
 
 export type PiWebExtensionUIContext = ExtensionUIContext & {

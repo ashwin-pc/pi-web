@@ -4,6 +4,7 @@ import { simplifyMessage } from "./session/projection.js";
 import { mapPiEvent } from "./session/piEventMap.js";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import websiteWorkflowExtension from "./fixtures/websiteWorkflowExtension.js";
+import recommendedAddonsExtension from "./fixtures/recommendedAddonsExtension.js";
 
 interface MockSessionOptions {
   piCwd: string;
@@ -47,9 +48,14 @@ export function createMockHarness(options: MockSessionOptions) {
   const mockLifecycle = new Map<string, { shutdowns: number; disposes: number }>();
   let mockGeneration = 0;
   let websiteWorkflowExtensionEnabled = false;
+  let recommendedAddonsExtensionEnabled = false;
 
   function setWebsiteWorkflowExtensionEnabled(enabled: boolean) {
     websiteWorkflowExtensionEnabled = enabled;
+  }
+
+  function setRecommendedAddonsExtensionEnabled(enabled: boolean) {
+    recommendedAddonsExtensionEnabled = enabled;
   }
 
   function lifecycleFor(id: string) {
@@ -264,7 +270,9 @@ export function createMockHarness(options: MockSessionOptions) {
       }
       const result = {
         tokensBefore: 12345,
-        summary: customInstructions ? `Mock compacted context summary. Instructions: ${customInstructions}` : "Mock compacted context summary.",
+        summary: customInstructions?.includes("launch decisions and evidence")
+          ? "Launch decisions and supporting evidence retained for the next phase."
+          : customInstructions ? `Mock compacted context summary. Instructions: ${customInstructions}` : "Mock compacted context summary.",
       };
       appendMockMessage({ role: "compactionSummary", content: result.summary, tokensBefore: result.tokensBefore, summary: result.summary, timestamp: new Date().toISOString() } as any);
       broadcastPiEvent({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false }, false);
@@ -411,8 +419,12 @@ export function createMockHarness(options: MockSessionOptions) {
             handlers.push(handler);
             extensionHandlers.set(eventType, handlers);
           },
+          registerTool() {},
+          exec: async () => ({ stdout: "", stderr: "", code: 1, killed: false }),
+          getSessionName: () => mockSessions.find((info) => info.path === mockSession.sessionFile)?.name,
         };
         if (websiteWorkflowExtensionEnabled) websiteWorkflowExtension(api as any);
+        if (recommendedAddonsExtensionEnabled) recommendedAddonsExtension(api as any, piCwd);
         extensionContext = { cwd: piCwd, ui: uiContext, sessionManager: mockSessionManager };
         for (const handler of extensionHandlers.get("session_start") || []) {
           await handler({ type: "session_start", reason: "resume" }, extensionContext);
@@ -533,12 +545,12 @@ export function createMockHarness(options: MockSessionOptions) {
         const withRetrySuccess = !withRetryFailure && /retry demo|retry success|throttle retry/i.test(message);
         const withInterruptedTool = /incomplete tool|interrupted tool|timed out tool|timeout after tool/i.test(message);
         const withAbortedAssistant = /aborted assistant|interrupted assistant/i.test(message);
-        const withThinking = /thinking card/i.test(message);
+        const withThinking = /thinking card|explain your reasoning/i.test(message);
         const withSummaryRetry = /summary retry/i.test(message);
         const withFlatEditTool = /flat edit/i.test(message);
         const withMalformedEditTool = /malformed edit/i.test(message);
         const withEditTool = !withShowcase && !withFlatEditTool && !withMalformedEditTool && /edit diff/i.test(message);
-        const withProgressDemo = /progress demo|stuck progress/i.test(message);
+        const withProgressDemo = /progress demo|stuck progress|show progress/i.test(message);
         const withQuietRuntime = /quiet runtime/i.test(message);
         const withLateToolTimestamp = /late tool timestamp/i.test(message);
         const withoutAgentEnd = /missing agent end|no agent end/i.test(message);
@@ -583,7 +595,7 @@ export function createMockHarness(options: MockSessionOptions) {
         }
         if (withQuietRuntime || withLiveMessageKinds) {
           if (!(await waitForMockRun(60_000))) return;
-        } else if (slow && !(await waitForMockRun(/queue demo/i.test(message) ? 2_500 : 750))) return;
+        } else if (slow && !(await waitForMockRun(/queue demo|prepare a redirect/i.test(message) ? 2_500 : 750))) return;
         if (withProviderError) {
           appendMockMessage({
             role: "assistant",
@@ -742,6 +754,8 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: "Here is a video artifact:\n\n[e2e-video-artifact.webm](/api/artifacts/e2e-video-artifact.webm)", timestamp: new Date().toISOString() });
         } else if (/audio artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is an audio artifact:\n\n[e2e-audio-artifact.mp3](/api/artifacts/e2e-audio-artifact.mp3)", timestamp: new Date().toISOString() });
+        } else if (/gcode artifact/i.test(message)) {
+          appendMockMessage({ role: "assistant", content: "Here is a G-code artifact:\n\n[e2e-toolpath.gcode](/api/artifacts/e2e-toolpath.gcode)", timestamp: new Date().toISOString() });
         } else if (/artifact/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a screenshot:\n\n![e2e-test](/api/artifacts/e2e-test.png)", timestamp: new Date().toISOString() });
         } else if (/stable html preview/i.test(message)) {
@@ -750,6 +764,8 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "assistant", content: "Interactive result:\n\n```html-preview\n<style>body{margin:8px}.widget{display:inline-block;width:240px;background:#eef;padding:8px}#more{height:180px}</style><div class=\"widget\"><button onclick=\"more.hidden=!more.hidden\">Toggle</button><span id=\"ran\">waiting</span><div id=\"more\" hidden></div></div><script>ran.textContent='script ran'</script>\n```", timestamp: new Date().toISOString() });
         } else if (/mermaid/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is a Mermaid diagram:\n\n```mermaid\ngraph TD\n  A[Default dark node] --> B[Pastel node]\n  style B fill:#dbeafe\n```", timestamp: new Date().toISOString() });
+        } else if (/summarize the launch decision/i.test(message)) {
+          appendMockMessage({ role: "assistant", content: "The launch direction prioritizes faster handoffs backed by customer evidence.", timestamp: new Date().toISOString() });
         } else if (/markdown/i.test(message)) {
           appendMockMessage({ role: "assistant", content: "Here is **bold** markdown.\n\n- one\n- two\n\n```ts\nconst answer = 42;\n```", timestamp: new Date().toISOString() });
         } else {
@@ -792,5 +808,5 @@ export function createMockHarness(options: MockSessionOptions) {
     return mockSession;
   }
 
-  return { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled };
+  return { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled };
 }

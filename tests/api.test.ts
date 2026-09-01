@@ -221,6 +221,13 @@ describe("pi-web mock API", () => {
       body: JSON.stringify({ sessionId: "mock-current", message: "thinking card", mode: "steer", attachments: [] }),
     });
     await waitForCondition(() => events.some((event) => event.type === "agent_event" && event.event?.type === "agent_settled"));
+    await waitForCondition(() => events.some((event) => event.type === "session-settled" && event.sessionId === "mock-current"));
+    expect(events.find((event) => event.type === "session-settled")?.status).toMatchObject({
+      sessionId: "mock-current",
+      state: "idle",
+      pendingWakeups: 0,
+      settled: true,
+    });
     const lifecycle = events.filter((event) => event.type === "agent_event" || event.type === "session_runtime_changed");
     for (let index = 0; index < lifecycle.length; index += 1) {
       if (lifecycle[index].type === "agent_event") expect(lifecycle[index + 1]?.type).toBe("session_runtime_changed");
@@ -622,10 +629,26 @@ describe("pi-web mock API", () => {
     expect(older.isCurrent).toBe(false);
   });
 
+  it("exposes the current session's derived settlement status", async () => {
+    const sessions = await (await fetch(`${baseUrl}/api/sessions`)).json();
+    const runtime = sessions.sessions.find((item: any) => item.id === "mock-current").runtime;
+    const response = await fetch(`${baseUrl}/api/sessions/mock-current/status`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      ok: true,
+      sessionId: "mock-current",
+      state: runtime.isRunning || runtime.pendingMessageCount > 0 ? "running" : "idle",
+      trackedWorkers: [],
+      pendingWakeups: 0,
+      settled: !runtime.isRunning && runtime.pendingMessageCount === 0,
+    });
+  });
+
   it("preserves missing-session status codes across session routes", async () => {
     const missing = "does-not-exist";
     const cases: Array<[string, RequestInit, number]> = [
       [`/api/state?sessionId=${missing}`, {}, 404],
+      [`/api/sessions/${missing}/status`, {}, 404],
       ["/api/state?sessionId=%20", {}, 404],
       [`/api/messages?sessionId=${missing}`, {}, 404],
       ["/api/sessions/open", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id: missing }) }, 404],

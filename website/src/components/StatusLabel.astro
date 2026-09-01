@@ -8,7 +8,8 @@ interface Props {
 const { status = 'available' } = Astro.props;
 const labels: Record<Availability, string> = {
   available: 'Available now',
-  'opt-in': 'Opt-in example',
+  recommended: 'Recommended add-on',
+  'opt-in': 'Opt-in source',
   experimental: 'Experimental · opt-in',
   foundation: 'In-progress foundation',
   direction: 'Direction',

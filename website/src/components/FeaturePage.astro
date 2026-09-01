@@ -13,9 +13,10 @@ interface Props {
   primary: Link;
   secondary: Link;
   technicalLinks: readonly Link[];
+  onThisPage: readonly Link[];
 }
 
-const { feature, description, primary, secondary, technicalLinks } = Astro.props;
+const { feature, description, primary, secondary, technicalLinks, onThisPage } = Astro.props;
 ---
 
 <BaseLayout title={feature.eyebrow} description={description}>
@@ -24,8 +25,14 @@ const { feature, description, primary, secondary, technicalLinks } = Astro.props
     <ButtonLink href={secondary.href} variant="secondary">{secondary.label}</ButtonLink>
   </MarketingHero>
 
-  <div class="capability-strip container" aria-label="Available capabilities">
-    {feature.capabilities.map((item) => <span>{item}</span>)}
+  <div class="feature-local-nav container">
+    <div class="capability-strip" aria-label="Available capabilities">
+      {feature.capabilities.map((item) => <span>{item}</span>)}
+    </div>
+    <nav class="on-this-page" aria-label="On this page">
+      <strong>On this page</strong>
+      {onThisPage.map((link) => <a href={link.href}>{link.label}</a>)}
+    </nav>
   </div>
 
   <slot />

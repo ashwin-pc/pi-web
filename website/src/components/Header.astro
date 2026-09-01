@@ -1,4 +1,6 @@
 ---
+import { featureRoutes } from '../data/features';
+
 interface Props { currentPath: string; }
 
 const { currentPath } = Astro.props;
@@ -13,11 +15,16 @@ const routes = {
 const isCurrent = (route: string, exact = false) => exact ? currentPath === route : currentPath.startsWith(route);
 const links = [
   { label: 'Home', href: routes.home, current: isCurrent(routes.home, true) },
-  { label: 'Features', href: routes.features, current: isCurrent(routes.features) },
   { label: 'Extensions', href: routes.extensions, current: isCurrent(routes.extensions) },
   { label: 'Principles', href: routes.principles, current: isCurrent(routes.principles) },
   { label: 'Getting started', href: routes.gettingStarted, current: isCurrent(routes.gettingStarted) },
 ];
+const featureLinks = featureRoutes.map((feature) => ({
+  label: feature.eyebrow,
+  description: feature.shortTitle,
+  href: `${routes.features}${feature.slug}/`,
+  current: currentPath.startsWith(`${routes.features}${feature.slug}/`),
+}));
 ---
 
 <header class="site-header">
@@ -25,14 +32,31 @@ const links = [
     <a class="brand" href={routes.home} aria-label="pi-web home"><span class="brand__mark" aria-hidden="true">π</span><span>pi-web</span></a>
 
     <nav class="desktop-nav" aria-label="Primary navigation">
-      {links.map((link) => <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>)}
+      <a href={routes.home} aria-current={isCurrent(routes.home, true) ? 'page' : undefined}>Home</a>
+      <details class="features-menu">
+        <summary aria-current={isCurrent(routes.features) ? 'page' : undefined}>Features <span aria-hidden="true">⌄</span></summary>
+        <div class="features-menu__panel">
+          <a class="features-menu__overview" href={routes.features} aria-current={currentPath === routes.features ? 'page' : undefined}><strong>All capabilities</strong><span>Explore everything included</span></a>
+          <div class="features-menu__grid">
+            {featureLinks.map((link) => <a href={link.href} aria-current={link.current ? 'page' : undefined}><strong>{link.label}</strong><span>{link.description}</span></a>)}
+          </div>
+          <a class="features-menu__addons" href={`${routes.extensions}examples/#recommended`}>Recommended add-ons <span>Optional ways to enrich pi-web →</span></a>
+        </div>
+      </details>
+      {links.slice(1).map((link) => <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>)}
       <a href="https://github.com/ashwin-pc/pi-web">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
 
     <details class="mobile-nav">
       <summary aria-label="Open navigation"><span></span><span></span><span></span></summary>
       <nav aria-label="Mobile navigation">
-        {links.map((link) => <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>)}
+        <a href={routes.home} aria-current={isCurrent(routes.home, true) ? 'page' : undefined}>Home</a>
+        <a href={routes.features} aria-current={currentPath === routes.features ? 'page' : undefined}>All features</a>
+        <div class="mobile-nav__features">
+          {featureLinks.map((link) => <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}<small>{link.description}</small></a>)}
+        </div>
+        <a href={`${routes.extensions}examples/#recommended`}>Recommended add-ons</a>
+        {links.slice(1).map((link) => <a href={link.href} aria-current={link.current ? 'page' : undefined}>{link.label}</a>)}
         <a href="https://github.com/ashwin-pc/pi-web">GitHub ↗</a>
       </nav>
     </details>

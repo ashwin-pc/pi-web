@@ -119,6 +119,7 @@ function makeCtx(options: {
             defaultCategory: options.defaultCategory ?? "",
           },
         })),
+        reportSettlementDependencies: vi.fn(),
       },
     },
     __parentModelId: options.parentModelId ?? "fast-1",
@@ -304,6 +305,7 @@ describe("sessions_spawn fail-closed resolution", () => {
     // Task dispatched only after the model was pinned.
     expect(calls.findIndex((c) => c.path === "/api/model")).toBeLessThan(calls.findIndex((c) => c.path === "/api/prompt"));
     expect(pathsFor("POST")).not.toContain("/api/sessions/delete");
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: ["worker-1"] });
   });
 
   it("returns only the category name after a successful spawn and keeps the model mapping private", async () => {

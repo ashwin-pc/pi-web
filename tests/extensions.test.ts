@@ -130,6 +130,36 @@ describe("bundled extension path discovery", () => {
       .resolves.toMatchObject({ message: "invoked" });
   });
 
+  it("serializes and invokes sandboxed artifact preview renderers", async () => {
+    let ui: any;
+    const bridge = createWebUiBridge({
+      emit: () => undefined, clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+    ui.web.setArtifactPreview("gcode", {
+      title: "G-code viewer", kinds: ["file"], extensions: [".gcode"],
+      render: ({ name }: { name: string }) => ({ html: `<!doctype html><title>${name}</title>` }),
+    });
+
+    expect(bridge.entries(session).webContributions).toEqual([{
+      version: 1, key: "gcode", slot: "artifact-preview", kind: "rendered", title: "G-code viewer", label: undefined,
+      match: { kinds: ["file"], extensions: [".gcode"] },
+    }]);
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-preview", key: "gcode",
+      event: { context: { name: "part.gcode", path: "/api/session-artifacts/session/prints/part.gcode", kind: "file" } },
+    })).resolves.toMatchObject({ html: "<!doctype html><title>part.gcode</title>" });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-preview", key: "gcode",
+      event: { context: { name: "part.stl", path: "/api/artifacts/part.stl", kind: "file" } },
+    })).rejects.toThrow("does not match this artifact");
+  });
+
   it("keeps legacy surfaces isolated over one contribution registry", async () => {
     let ui: any;
     const emitted: any[] = [];
@@ -220,7 +250,7 @@ describe("bundled extension path discovery", () => {
 
     expect(ui.web.capabilities).toEqual({
       apiVersion: 1,
-      slots: ["footer", "header-action", "artifact-action", "git-tab", "panel", "fab"],
+      slots: ["footer", "header-action", "artifact-action", "artifact-preview", "git-tab", "panel", "fab"],
       kinds: ["static", "rendered"],
       effects: ["open-panel"],
     });
