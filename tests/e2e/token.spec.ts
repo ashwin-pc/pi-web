@@ -67,6 +67,39 @@ test.describe("token overlay", () => {
     await expect(frame.contentFrame().locator("#script-status")).toHaveText("script ran");
   });
 
+  test("sensitive security management is session-only and missing deletes return 404", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
+
+    const created = await page.evaluate(async () => {
+      const headers = { "content-type": "application/json", "x-pi-web-client-id": "security-test" };
+      const response = await fetch("/api/auth/tokens", { method: "POST", headers, body: JSON.stringify({ name: "delegation check" }) });
+      return response.json() as Promise<{ id: string; secret: string }>;
+    });
+    const tokenContext = await page.context().browser()!.newContext({ baseURL: page.url() });
+    const bearerHeaders = { "content-type": "application/json", authorization: `Bearer ${created.secret}` };
+    const bearerResults = await Promise.all([
+      tokenContext.request.get("/api/auth/security", { headers: bearerHeaders }).then(r => r.status()),
+      tokenContext.request.post("/api/auth/tokens", { headers: bearerHeaders, data: {} }).then(r => r.status()),
+      tokenContext.request.delete("/api/auth/tokens/missing", { headers: bearerHeaders }).then(r => r.status()),
+    ]);
+    await tokenContext.close();
+    expect(bearerResults).toEqual([401, 401, 401]);
+
+    const missingResults = await page.evaluate(async () => {
+      const headers = { "content-type": "application/json", "x-pi-web-client-id": "security-test" };
+      return Promise.all([
+        fetch("/api/auth/tokens/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/sessions/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/passkeys/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/device-grants/missing", { method: "DELETE", headers }).then(r => r.status),
+      ]);
+    });
+    expect(missingResults).toEqual([404, 404, 404, 404]);
+  });
+
   test("token persisted in localStorage after login", async ({ page }) => {
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);

@@ -1168,7 +1168,7 @@ server.on("upgrade", (req, socket, head) => {
   if (url.pathname !== "/ws") return;
 
   void (async () => {
-    const identity = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && !token ? { id: "mock" } : undefined);
+    const identity = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authMode === "legacy" && !token ? { id: "mock" } : undefined);
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     const origin = req.headers.origin;
     if (origin) {

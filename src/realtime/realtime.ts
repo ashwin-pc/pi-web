@@ -709,11 +709,19 @@ export function createRealtime(options: {
     }
   }
 
+  let ticketRetryMs = 500;
   async function connect() {
     let ws: WebSocket;
     try { ws = new WebSocket(await api.wsUrl()); }
-    catch { window.setTimeout(() => void connect(), 1000); return; }
+    catch {
+      status.markWebSocketClosed();
+      const delay = ticketRetryMs;
+      ticketRetryMs = Math.min(ticketRetryMs * 2, 30_000);
+      window.setTimeout(() => void connect(), delay);
+      return;
+    }
     ws.addEventListener("open", () => {
+      ticketRetryMs = 500;
       status.markWebSocketOpen();
       composer.updatePrimaryAction();
     });

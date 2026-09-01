@@ -31,6 +31,7 @@ export class AuthStore {
       const state = await this.read();
       const now = Date.now();
       state.sessions = state.sessions.filter(session => !session.revokedAt && session.expiresAt > now);
+      state.deviceGrants = state.deviceGrants?.filter(grant => !grant.usedAt && !grant.cancelledAt && grant.expiresAt > now);
       await mutator(state); await mkdir(dirname(this.path), { recursive: true });
       const temp = `${this.path}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`;
       await writeFile(temp, JSON.stringify(state, null, 2), { mode: 0o600 }); await rename(temp, this.path); result = state;

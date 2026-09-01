@@ -10,17 +10,22 @@ export type ApiClient = {
 
 export function createApiClient(state: AppState): ApiClient {
   const clientId = crypto.randomUUID?.() || `client-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const headers = () => ({
+    "content-type": "application/json",
+    "x-pi-web-client-id": clientId,
+    ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
+  });
+  const mintTicket = () => fetch("/api/ws-ticket", { method: "POST", headers: headers(), credentials: "same-origin" });
+  // Start authentication alongside the other boot requests so realtime does not
+  // acquire an avoidable extra RTT. Every reconnect still mints a fresh ticket.
+  let bootTicket: Promise<Response> | undefined = mintTicket();
   return {
     clientId,
-    headers() {
-      return {
-        "content-type": "application/json",
-        "x-pi-web-client-id": clientId,
-        ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
-      };
-    },
+    headers,
     async wsUrl() {
-      const response = await fetch("/api/ws-ticket", { method: "POST", headers: this.headers(), credentials: "same-origin" });
+      const pending = bootTicket;
+      bootTicket = undefined;
+      const response = await (pending || mintTicket());
       if (!response.ok) throw new Error(`WebSocket ticket failed (${response.status})`);
       const { ticket } = await response.json() as { ticket: string };
       const url = new URL("/ws", location.href);
