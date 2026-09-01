@@ -67,7 +67,7 @@ test.describe("token overlay", () => {
     await expect(frame.contentFrame().locator("#script-status")).toHaveText("script ran");
   });
 
-  test("sensitive security management is session-only and missing deletes return 404", async ({ page }) => {
+  test("security inventory follows the normal gate while mutations are session-only", async ({ page }) => {
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
     await page.locator("#tokenForm button[type=submit]").click();

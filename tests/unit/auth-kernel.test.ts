@@ -4,9 +4,10 @@ import { join } from "node:path";
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
 import { AuthKernel, AuthStore, hashSecret } from "../../server/auth/kernel.js";
+import { handleSecurityRoute } from "../../server/auth/security.js";
 
 function req(headers: Record<string, string> = {}, url = "/") { return { headers, url } as any; }
-function response() { const headers = new Map<string, string>(); return { setHeader(k: string, v: string) { headers.set(k.toLowerCase(), v); }, headers } as any; }
+function response() { const headers = new Map<string, string>(); return { status: 0, body: "", setHeader(k: string, v: string) { headers.set(k.toLowerCase(), v); }, writeHead(status: number, values: Record<string, string> = {}) { this.status = status; for (const [key, value] of Object.entries(values)) headers.set(key.toLowerCase(), value); }, end(body = "") { this.body = body; }, headers } as any; }
 async function store() { return new AuthStore(join(await mkdtemp(join(tmpdir(), "pi-web-auth-")), "auth.json")); }
 
 describe("auth kernel", () => {
@@ -23,6 +24,40 @@ describe("auth kernel", () => {
     expect(await k.gate(req({ "tailscale-user-login": "alice@example.com" }))).toMatchObject({ ok: true, identity: { id: "external:alice@example.com", displayName: "alice@example.com" } });
     expect((await k.gate(req())).ok).toBe(false);
     expect((await new AuthKernel("external", s).gate(req())).ok).toBe(true);
+  });
+
+  it.each(["external", "none"] as const)("lets %s identities read security inventory but denies mutations", async mode => {
+    const s = await store(); const k = new AuthKernel(mode, s); const gated = await k.gate(req());
+    expect(gated.ok).toBe(true);
+    if (!gated.ok) return;
+
+    const readReq = req({}, "/api/auth/security"); readReq.method = "GET";
+    const readRes = response();
+    await handleSecurityRoute(readReq, readRes, new URL("http://localhost/api/auth/security"), gated, k, s, {} as any);
+    expect(readRes.status).toBe(200);
+    expect(JSON.parse(readRes.body)).toMatchObject({ mode, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] });
+
+    const mutationReq = req({}, "/api/auth/tokens"); mutationReq.method = "POST";
+    const mutationRes = response();
+    await handleSecurityRoute(mutationReq, mutationRes, new URL("http://localhost/api/auth/tokens"), gated, k, s, {} as any);
+    expect(mutationRes.status).toBe(403);
+  });
+
+  it("lets normally gated API tokens read security inventory but denies mutations", async () => {
+    const s = await store();
+    await s.update(state => state.apiTokens.push({ id: "reader", name: "Reader", hash: hashSecret("piw_reader"), createdAt: 1, expiresAt: Date.now() + 10_000 }));
+    const k = new AuthKernel("passkey", s); const gated = await k.gate(req({ authorization: "Bearer piw_reader" }));
+    expect(gated.ok).toBe(true);
+    if (!gated.ok) return;
+
+    const readReq = req({}, "/api/auth/security"); readReq.method = "GET"; const readRes = response();
+    await handleSecurityRoute(readReq, readRes, new URL("http://localhost/api/auth/security"), gated, k, s, {} as any);
+    expect(readRes.status).toBe(200);
+    expect(JSON.parse(readRes.body).apiTokens).toEqual([expect.objectContaining({ id: "reader", name: "Reader" })]);
+
+    const mutationReq = req({}, "/api/auth/tokens"); mutationReq.method = "POST"; const mutationRes = response();
+    await handleSecurityRoute(mutationReq, mutationRes, new URL("http://localhost/api/auth/tokens"), gated, k, s, {} as any);
+    expect(mutationRes.status).toBe(403);
   });
 
   it("persists opaque hashed sessions and authenticates their cookie", async () => {

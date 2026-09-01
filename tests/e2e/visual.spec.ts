@@ -482,21 +482,18 @@ test.describe("visual regression", () => {
 
   test("focused trusted device handoff", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
-    await page.addInitScript(() => localStorage.setItem("pi-web-token", "trusted-device-token"));
+    const securityState = { mode: "legacy", identity: { id: "legacy:token", displayName: "Owner" }, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] };
+    await page.route("**/api/auth/security", route => route.fulfill({ json: securityState }));
+    await page.route("**/api/auth/device-grants", route => route.fulfill({
+      status: 201,
+      json: { id: "visual-grant", secret: "single-use-visual-grant", expiresAt: Date.now() + 120_000, url: "https://demo.pi-web.dev/api/auth/device?grant=single-use-visual-grant" },
+    }));
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await page.evaluate(() => {
-      const NativeURL = window.URL;
-      class StableShareURL extends NativeURL {
-        constructor(url: string | URL, base?: string | URL) {
-          super(String(url) === location.href && base === undefined ? "https://demo.pi-web.dev/" : url, base);
-        }
-      }
-      Object.defineProperty(window, "URL", { configurable: true, value: StableShareURL });
-    });
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
-    await page.locator("#tokenShareFullscreenButton").click();
-    await expect(page.locator("#tokenShareFullscreenQr svg")).toBeVisible();
+    await page.getByRole("button", { name: "Create add-device link" }).click();
+    await expect(page.getByLabel("Add-device link")).toHaveValue(/single-use-visual-grant/);
+    await expect(page.getByRole("img", { name: "Add device QR code" })).toBeVisible();
     await expect(page).toHaveScreenshot(`capability-device-handoff-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
   });
 
