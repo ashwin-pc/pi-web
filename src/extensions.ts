@@ -68,7 +68,7 @@ export type PiWebContribution =
       render: (event?: PiWebContributionEvent) => PiWebArtifactPreviewView | Promise<PiWebArtifactPreviewView>;
     }
   | {
-      slot: "header-action" | "artifact-action" | "git-tab" | "panel";
+      slot: "header-action" | "artifact-action" | "git-tab" | "panel" | "system-info";
       kind: "rendered";
       title: string;
       label?: string;
@@ -189,6 +189,12 @@ export type PiWebPanel = {
   label?: string;
   /** lucide icon name; unsupported names fall back to square-pen. */
   icon?: string;
+  render: (event?: PiWebPanelEvent) => Promise<PiWebPanelView> | PiWebPanelView;
+};
+
+export type PiWebSystemInfo = {
+  title: string;
+  label?: string;
   render: (event?: PiWebPanelEvent) => Promise<PiWebPanelView> | PiWebPanelView;
 };
 
@@ -313,6 +319,9 @@ export type PiWebUi = {
    * from a header action via an `open-panel` effect, or any future affordance.
    */
   setPanel(key: string, panel: PiWebPanel | undefined): void;
+
+  /** Set or clear a rendered section contributed to the built-in system-info panel. */
+  setSystemInfo(key: string, panel: PiWebSystemInfo | undefined): void;
 
   /** Set or clear a mascot-FAB launcher entry that opens a registered panel. */
   setFabAction(key: string, action: PiWebFabAction | undefined): void;

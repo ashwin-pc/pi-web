@@ -46,6 +46,7 @@ type WebContribution =
   | { version: 1; key: string; slot: "artifact-preview"; kind: "rendered"; source: PiWebArtifactPreview }
   | { version: 1; key: string; slot: "git-tab"; kind: "rendered"; source: PiWebGitTab }
   | { version: 1; key: string; slot: "panel"; kind: "rendered"; source: PiWebPanel }
+  | { version: 1; key: string; slot: "system-info"; kind: "rendered"; source: PiWebPanel }
   | { version: 1; key: string; slot: "fab"; kind: "static"; source: PiWebFabAction };
 
 /** Canonical per-runtime registry. Legacy surfaces below are wire adapters over it. */
@@ -430,6 +431,10 @@ const contributionPolicies = {
     allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 500_000, maxFields: 128,
     descriptor: (_entry: Extract<WebContribution, { slot: "panel" }>) => ({}),
   },
+  "system-info": {
+    allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 500_000,
+    descriptor: (_entry: Extract<WebContribution, { slot: "system-info" }>) => ({}),
+  },
   fab: {
     allowedKinds: ["static"], viewFields: [], viewBudget: 0,
     descriptor: (entry: Extract<WebContribution, { slot: "fab" }>) => ({ opens: cleanContributionKey(entry.source.opens) }),
@@ -505,7 +510,7 @@ function normalizedPublicContribution(key: string, spec: PiWebContribution): Web
     if (!cleanContributionKey(spec.opens)) throw new TypeError("FAB contribution requires a valid panel key in opens");
     return { version: 1, key, slot: "fab", kind: "static", source: spec };
   }
-  if ((spec.slot === "header-action" || spec.slot === "artifact-action" || spec.slot === "artifact-preview" || spec.slot === "git-tab" || spec.slot === "panel")
+  if ((spec.slot === "header-action" || spec.slot === "artifact-action" || spec.slot === "artifact-preview" || spec.slot === "git-tab" || spec.slot === "panel" || spec.slot === "system-info")
     && spec.kind === "rendered" && typeof spec.render === "function") {
     if (spec.slot === "header-action") return {
       version: 1, key, slot: spec.slot, kind: "rendered",
@@ -522,6 +527,10 @@ function normalizedPublicContribution(key: string, spec: PiWebContribution): Web
     if (spec.slot === "git-tab") return {
       version: 1, key, slot: spec.slot, kind: "rendered",
       source: { ...spec, render: (event) => spec.render({ action: event?.action, payload: event?.payload, context: event?.repo }) },
+    };
+    if (spec.slot === "system-info") return {
+      version: 1, key, slot: spec.slot, kind: "rendered",
+      source: { ...spec, render: (event) => spec.render({ action: event?.action, payload: event?.payload, fields: event?.fields }) } as PiWebPanel,
     };
     return {
       version: 1, key, slot: spec.slot, kind: "rendered",
@@ -561,6 +570,7 @@ function createPiWebUi(value: any): PiWebUi {
     setArtifactPreview: (key, preview) => contributeForSlot(key, "artifact-preview", preview === undefined ? undefined : { slot: "artifact-preview", kind: "rendered", title: preview.title, label: preview.label, match: { kinds: preview.kinds, extensions: preview.extensions }, render: (event) => preview.render(event?.context as any) }),
     setGitTab: (key, tab) => contributeForSlot(key, "git-tab", tab === undefined ? undefined : { slot: "git-tab", kind: "rendered", title: tab.title, label: tab.label, render: (event) => tab.render({ action: event?.action, payload: event?.payload, repo: event?.context }) }),
     setPanel: (key, panel) => contributeForSlot(key, "panel", panel === undefined ? undefined : { slot: "panel", kind: "rendered", ...panel }),
+    setSystemInfo: (key, panel) => contributeForSlot(key, "system-info", panel === undefined ? undefined : { slot: "system-info", kind: "rendered", ...panel }),
     setFabAction: (key, action) => contributeForSlot(key, "fab", action === undefined ? undefined : { slot: "fab", kind: "static", ...action }),
     async registerSettings(schema) { return registerSessionSettings(value, schema); },
     async getSettings(id) { return getExtensionSettings(id); },
@@ -754,7 +764,7 @@ async function bindWebExtensions(value: any) {
 }
 
 
-  function renderedContribution<S extends "header-action" | "artifact-action" | "artifact-preview" | "git-tab" | "panel">(value: any, slot: S, keyValue: unknown) {
+  function renderedContribution<S extends "header-action" | "artifact-action" | "artifact-preview" | "git-tab" | "panel" | "system-info">(value: any, slot: S, keyValue: unknown) {
     const key = cleanContributionKey(keyValue);
     if (!key) throw new Error("key is required");
     const contribution = contributionState(value).get(contributionId(slot, key));
@@ -905,6 +915,32 @@ async function bindWebExtensions(value: any) {
     return { title: cleanHeaderActionText(result?.title), html };
   }
 
+  async function invokeSystemInfo(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; fields?: unknown }) {
+    const { key, contribution } = renderedContribution(value, "system-info", input.key);
+    if (!contribution) throw new Error("System-info contribution not found");
+    const rawFields = input.fields && typeof input.fields === "object" && !Array.isArray(input.fields)
+      ? input.fields as Record<string, unknown>
+      : undefined;
+    const cleanFieldValue = (field: string) => field
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
+      .slice(0, 100_000);
+    const fields = rawFields ? Object.entries(rawFields).slice(0, contributionPolicies.panel.maxFields).reduce<Record<string, string | string[]>>((cleaned, [name, field]) => {
+      const cleanName = cleanHeaderActionText(name, 200);
+      if (!cleanName) return cleaned;
+      if (typeof field === "string") cleaned[cleanName] = cleanFieldValue(field);
+      else if (Array.isArray(field)) cleaned[cleanName] = field.flatMap((item) => typeof item === "string" ? [cleanFieldValue(item)] : []).slice(0, 100);
+      return cleaned;
+    }, {}) : undefined;
+    const result = await contribution.source.render({
+      action: cleanHeaderActionText(input.action, 200),
+      payload: input.payload,
+      fields,
+    });
+    const html = cleanFooterText(result?.html, contributionPolicies["system-info"].viewBudget);
+    if (!html) throw new Error("System-info contribution returned no HTML");
+    return { title: cleanHeaderActionText(result?.title), html };
+  }
+
   async function invokeContribution(value: any, input: { slot?: unknown; key?: unknown; event?: unknown }) {
     const slot = input.slot;
     const event = input.event && typeof input.event === "object" ? input.event as Record<string, unknown> : {};
@@ -920,6 +956,9 @@ async function bindWebExtensions(value: any) {
     }
     if (slot === "panel") {
       return invokePanel(value, { key: input.key, action: event.action, payload: event.payload, fields: event.fields });
+    }
+    if (slot === "system-info") {
+      return invokeSystemInfo(value, { key: input.key, action: event.action, payload: event.payload, fields: event.fields });
     }
     throw new Error("Contribution is not invokable");
   }
@@ -943,6 +982,7 @@ async function bindWebExtensions(value: any) {
     invokeArtifactAction,
     invokeGitTab,
     invokePanel,
+    invokeSystemInfo,
     respond,
     cancelPendingInteractions,
     runtimeErrors: (value: object) => [...(extensionRuntimeErrors.get(value) || [])],

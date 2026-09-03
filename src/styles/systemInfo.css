@@ -213,6 +213,14 @@
   font-size: 12px;
 }
 
+.systemInfoExtensionBody {
+  padding: 4px 14px 14px;
+}
+
+.systemInfoExtensionBody > :first-child {
+  margin-top: 8px;
+}
+
 .systemInfoError {
   border: 1px solid color-mix(in srgb, var(--danger) 48%, var(--border));
   border-radius: 12px;

@@ -38,6 +38,45 @@ test("system information is available from the session drawer", async ({ page })
   await expect(panel.getByRole("button", { name: "Copy system report" })).toBeVisible();
 });
 
+test("renders an interactive system-info contribution and reports invocation failures", async ({ page }) => {
+  await page.request.post("/api/mock/state", { data: {
+    webContributions: [{ version: 1, key: "runtime-tools", slot: "system-info", kind: "rendered", title: "Runtime tools", label: "Tools" }],
+  } });
+  const invocations: any[] = [];
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    const input = route.request().postDataJSON();
+    invocations.push(input);
+    if (input.event?.action === "explode") {
+      await route.fulfill({ status: 500, json: { ok: false, error: "Probe failed" } });
+      return;
+    }
+    await route.fulfill({ json: {
+      ok: true,
+      title: "Runtime tools",
+      html: `<form><input name="query" value=""><input type="checkbox" name="scope" value="host" checked><input type="checkbox" name="scope" value="process" checked><button type="submit" data-web-action="run" data-web-payload='{"depth":2}'>Run probe</button></form><button data-web-action="explode">Fail probe</button>`,
+    } });
+  });
+
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "System info");
+  const panel = page.locator("#systemInfoPanel");
+  await expect(panel.getByRole("heading", { name: "Runtime tools" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "Run probe" })).toBeVisible();
+  expect(invocations[0]).toMatchObject({ sessionId: "mock-current", slot: "system-info", key: "runtime-tools" });
+
+  await panel.locator('input[name="query"]').fill("disk usage");
+  await panel.getByRole("button", { name: "Run probe" }).click();
+  await expect.poll(() => invocations.length).toBe(2);
+  expect(invocations[1]).toMatchObject({
+    sessionId: "mock-current", slot: "system-info", key: "runtime-tools",
+    event: { action: "run", payload: { depth: 2 }, fields: { query: "disk usage", scope: ["host", "process"] } },
+  });
+
+  await panel.getByRole("button", { name: "Fail probe" }).click();
+  await expect(panel.locator(".systemInfoError")).toHaveText("Probe failed");
+  await expect(panel.locator(".systemInfoExtensionBody")).not.toHaveAttribute("aria-busy", "true");
+});
+
 test("settings lives in the drawer and the FAB contains session actions only", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop");
   await page.goto("/");

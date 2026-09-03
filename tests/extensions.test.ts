@@ -250,7 +250,7 @@ describe("bundled extension path discovery", () => {
 
     expect(ui.web.capabilities).toEqual({
       apiVersion: 1,
-      slots: ["footer", "header-action", "artifact-action", "artifact-preview", "git-tab", "panel", "fab"],
+      slots: ["footer", "header-action", "artifact-action", "artifact-preview", "git-tab", "panel", "system-info", "fab"],
       kinds: ["static", "rendered"],
       effects: ["open-panel"],
     });
@@ -293,6 +293,50 @@ describe("bundled extension path discovery", () => {
     })).toThrow("conflicting or missing delivery fields");
     ui.web.contribute("status", undefined);
     expect(bridge.entries(session).webContributions).toEqual([]);
+  });
+
+  it("registers, invokes, sanitizes, and clears system-info contributions", async () => {
+    let ui: any;
+    const emitted: any[] = [];
+    const bridge = createWebUiBridge({
+      emit: (value) => emitted.push(value), clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+
+    let received: any;
+    ui.web.setSystemInfo(" acme status! ", {
+      title: "  Runtime\u0000 status  ", label: "  Status  ",
+      render: (event: any) => {
+        received = event;
+        return { title: " Updated\u0000 title ", html: "<p>Ready\u0000</p>" };
+      },
+    });
+    expect(bridge.entries(session).webContributions).toEqual([{
+      version: 1, key: "acme-status-", slot: "system-info", kind: "rendered", title: "Runtime status", label: "Status",
+    }]);
+    expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed", sessionId: "session" });
+
+    await expect(bridge.invokeContribution(session, {
+      slot: "system-info", key: "acme-status-", event: {
+        action: " save\u0000 ", payload: { revision: 2 },
+        fields: { " note\u0000 ": "ok\u0000", tags: ["one\u0000", 2], ignored: 3 },
+      },
+    })).resolves.toEqual({ title: "Updated title", html: "<p>Ready</p>" });
+    expect(received).toEqual({ action: "save", payload: { revision: 2 }, fields: { note: "ok", tags: ["one"] } });
+
+    ui.web.setSystemInfo("empty", { title: "Empty", render: () => ({ html: "" }) });
+    await expect(bridge.invokeContribution(session, { slot: "system-info", key: "empty" }))
+      .rejects.toThrow("System-info contribution returned no HTML");
+    await expect(bridge.invokeContribution(session, { slot: "system-info", key: "missing" }))
+      .rejects.toThrow("System-info contribution not found");
+
+    ui.web.setSystemInfo("acme status!", undefined);
+    expect(bridge.entries(session).webContributions.map((entry: any) => entry.key)).toEqual(["empty"]);
   });
 
   it("serializes and invokes FAB-backed web panels through the web bridge", async () => {

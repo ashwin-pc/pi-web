@@ -244,6 +244,7 @@ function renderActiveSessionMetadata() {
   setArtifactPreviews(inSlot("artifact-preview"));
   gitPanel?.setExtensionTabs(inSlot("git-tab"));
   webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
+  systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   actionLauncher?.setExtensionActions(inSlot("fab"));
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
@@ -434,6 +435,8 @@ systemInfo = createSystemInfo({
   rightPanels,
   trigger: elements.sessionDrawerInfoButton,
   focusOnClose: elements.sessionButton,
+  apiHeaders: api.headers,
+  getSessionId: () => state.currentSessionId,
   onError: (message) => messages.addMessage("system", message, "error"),
 });
 

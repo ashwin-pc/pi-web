@@ -75,6 +75,7 @@ async function copyText(value: string) {
 export type SystemInfoController = {
   init: () => void;
   refresh: () => Promise<void>;
+  setExtensionContributions: (value: unknown, sessionId: string) => void;
 };
 
 export function createSystemInfo(options: {
@@ -82,9 +83,11 @@ export function createSystemInfo(options: {
   rightPanels?: RightPanelManager;
   trigger: HTMLButtonElement;
   focusOnClose: HTMLElement;
+  apiHeaders: () => HeadersInit;
+  getSessionId: () => string;
   onError: (message: string) => void;
 }): SystemInfoController {
-  const { api, rightPanels, trigger, focusOnClose, onError } = options;
+  const { api, rightPanels, trigger, focusOnClose, apiHeaders, getSessionId, onError } = options;
   const backdrop = el("div", "systemInfoBackdrop");
   backdrop.hidden = true;
   const panel = el("aside", "systemInfoPanel");
@@ -120,6 +123,108 @@ export function createSystemInfo(options: {
   document.body.append(backdrop, panel);
 
   let panelHandle: RightPanelHandle | undefined;
+
+  let extensionEntries: Array<{ key: string; title: string; label: string }> = [];
+  let extensionSessionId = "";
+
+  function normalizeExtensionInfo(value: unknown): Array<{ key: string; title: string; label: string }> {
+    if (!Array.isArray(value)) return [];
+    const seen = new Set<string>();
+    return value.flatMap((raw): Array<{ key: string; title: string; label: string }> => {
+      if (!raw || typeof raw !== "object") return [];
+      const entry = raw as Record<string, unknown>;
+      const key = typeof entry.key === "string" ? entry.key.trim() : "";
+      if (!key || seen.has(key)) return [];
+      seen.add(key);
+      const title = typeof entry.title === "string" && entry.title.trim() ? entry.title.trim() : key;
+      const label = typeof entry.label === "string" && entry.label.trim() ? entry.label.trim() : title;
+      return [{ key, title, label }];
+    });
+  }
+
+  function parsePayload(value: string | undefined) {
+    if (!value) return undefined;
+    try { return JSON.parse(value); } catch { return value; }
+  }
+
+  function formFields(form: HTMLFormElement | null) {
+    if (!form) return undefined;
+    const fields: Record<string, string | string[]> = {};
+    for (const [key, value] of new FormData(form)) {
+      if (typeof value !== "string") continue;
+      const current = fields[key];
+      if (current === undefined) fields[key] = value;
+      else if (Array.isArray(current)) current.push(value);
+      else fields[key] = [current, value];
+    }
+    return fields;
+  }
+
+  async function invokeExtensionSection(entry: { key: string; title: string; label: string }, bodyEl: HTMLElement, section: HTMLElement, event?: { action?: string; payload?: unknown; fields?: Record<string, string | string[]> }) {
+    const sessionId = extensionSessionId;
+    if (!sessionId) return;
+    bodyEl.setAttribute("aria-busy", "true");
+    try {
+      const response = await fetch("/api/web-contributions/invoke", {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ sessionId, slot: "system-info", key: entry.key, event }),
+      });
+      const data = await response.json().catch(() => ({})) as { ok?: boolean; error?: string; title?: string; html?: string };
+      if (!response.ok || !data.ok) throw new Error(data.error || response.statusText || "System-info contribution failed");
+      if (typeof data.html !== "string") throw new Error("System-info contribution returned no content");
+      if (data.title?.trim()) section.firstElementChild?.replaceWith(el("h3", undefined, data.title.trim()));
+      bodyEl.innerHTML = data.html;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      bodyEl.replaceChildren(el("div", "systemInfoError", message));
+    } finally {
+      bodyEl.removeAttribute("aria-busy");
+    }
+  }
+
+  function wireExtensionSection(entry: { key: string; title: string; label: string }, bodyEl: HTMLElement, section: HTMLElement) {
+    bodyEl.addEventListener("click", (event) => {
+      const target = event.target instanceof Element
+        ? event.target.closest<HTMLElement>("[data-web-action]")
+        : null;
+      if (!target || !bodyEl.contains(target)) return;
+      if ((target instanceof HTMLButtonElement || target instanceof HTMLInputElement)
+        && target.type === "submit" && target.form) return;
+      event.preventDefault();
+      void invokeExtensionSection(entry, bodyEl, section, {
+        action: target.dataset.webAction || "",
+        payload: parsePayload(target.dataset.webPayload),
+        fields: formFields(target.closest("form")),
+      });
+    });
+    bodyEl.addEventListener("submit", (event) => {
+      if (!(event.target instanceof HTMLFormElement)) return;
+      event.preventDefault();
+      const submitter = event.submitter instanceof HTMLElement ? event.submitter : undefined;
+      void invokeExtensionSection(entry, bodyEl, section, {
+        action: submitter?.dataset.webAction || event.target.dataset.webAction || "",
+        payload: parsePayload(submitter?.dataset.webPayload || event.target.dataset.webPayload),
+        fields: formFields(event.target),
+      });
+    });
+  }
+
+  async function renderExtensionContributions() {
+    const sessionId = extensionSessionId;
+    const entries = extensionEntries;
+    if (!sessionId || entries.length === 0) return;
+    for (const entry of entries) {
+      const section = el("section", "systemInfoSection");
+      section.append(el("h3", undefined, entry.title));
+      const bodyEl = el("div", "systemInfoExtensionBody");
+      bodyEl.textContent = "Loading…";
+      section.append(bodyEl);
+      content.append(section);
+      wireExtensionSection(entry, bodyEl, section);
+      await invokeExtensionSection(entry, bodyEl, section);
+    }
+  }
 
   function detailSection(title: string, rows: Array<[string, string]>) {
     const section = el("section", "systemInfoSection");
@@ -194,6 +299,7 @@ export function createSystemInfo(options: {
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false || !data.system) throw new Error(data.error || `Unable to read system information (${response.status})`);
       render(data.system as SystemInfoSnapshot);
+      await renderExtensionContributions();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       content.replaceChildren(el("div", "systemInfoError", message));
@@ -236,5 +342,14 @@ export function createSystemInfo(options: {
     }
   }
 
-  return { init, refresh };
+  function setExtensionContributions(value: unknown, sessionId: string) {
+    extensionEntries = normalizeExtensionInfo(value);
+    extensionSessionId = sessionId;
+  }
+
+  return {
+    init,
+    refresh,
+    setExtensionContributions,
+  };
 }
