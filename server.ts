@@ -26,6 +26,9 @@ import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
+import { AuthKernel, AuthStore, type AuthMode } from "./server/auth/kernel.js";
+import { handlePasskeyRoute } from "./server/auth/passkey.js";
+import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
@@ -37,6 +40,13 @@ const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "develo
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
+const authMode = (process.env.PI_WEB_AUTH_MODE || "legacy") as AuthMode;
+if (!["none", "legacy", "passkey", "external"].includes(authMode)) throw new Error(`Invalid PI_WEB_AUTH_MODE: ${authMode}`);
+const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
+const authOrigin = authUrl.origin;
+const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
+const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", process.env.PI_WEB_AUTH_TRUSTED_HEADER || "");
+const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
 
@@ -95,17 +105,6 @@ function pipeReadStream(res: ServerResponse, file: string, range?: { start: numb
 
 function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
-}
-
-function requestToken(req: IncomingMessage): string {
-  const auth = req.headers.authorization || "";
-  if (auth.startsWith("Bearer ")) return auth.slice("Bearer ".length);
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  return url.searchParams.get("token") || "";
-}
-
-function isAuthorized(req: IncomingMessage): boolean {
-  return !token || requestToken(req) === token;
 }
 
 async function readBytes(req: IncomingMessage, maxBytes = 30_000_000): Promise<Buffer> {
@@ -521,14 +520,26 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   try {
 
     if (url.pathname.startsWith("/api/")) {
+      if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      if (authMode === "passkey" && await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      const auth = await authKernel.gate(req);
+      if (!auth.ok) return unauthorized(res);
+      if (auth.via === "legacy" && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
+        await authKernel.establishSession(res, auth.identity);
+      }
+      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+        const validOrigin = authMode !== "passkey" || req.headers.origin === authOrigin;
+        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
+      }
+      if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
+      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity), expiresIn: 30 });
+
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);
       }
       if (method === "GET" && url.pathname.startsWith("/api/artifacts/")) {
         return await serveArtifact(req, res);
       }
-
-      if (!isAuthorized(req)) return unauthorized(res);
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
         const body = await readBody(req) as { websiteWorkflowExtension?: unknown; recommendedAddonsExtension?: unknown };
@@ -1191,13 +1202,19 @@ server.on("upgrade", (req, socket, head) => {
   }
   if (url.pathname !== "/ws") return;
 
-  if (!isAuthorized(req)) {
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
-    socket.destroy();
-    return;
-  }
-
-  wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
+  void (async () => {
+    const identity = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authMode === "legacy" && !token ? { id: "mock" } : undefined);
+    if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    const origin = req.headers.origin;
+    if (origin) {
+      let originHost = ""; try { originHost = new URL(origin).host.toLowerCase(); } catch { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return; }
+      const forwarded = String(req.headers["x-forwarded-host"] || "").split(",")[0].trim().toLowerCase();
+      const allowed = new Set([String(req.headers.host || "").toLowerCase(), forwarded, new URL(authOrigin).host.toLowerCase()].filter(Boolean));
+      if (!allowed.has(originHost)) { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return; }
+    }
+    (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
+  })().catch(() => socket.destroy());
 });
 
 wss.on("connection", async (ws, req, urlParam?: URL) => {
@@ -1246,5 +1263,6 @@ server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
   console.log(isDev ? "Mode: development (Vite HMR enabled)" : "Mode: production");
-  console.log(token ? "Auth: bearer token required" : "Auth: disabled (set PI_WEB_TOKEN to enable)");
+  console.log(`Auth: ${authMode}${authMode === "legacy" && token ? " (bearer token required)" : ""}`);
+  if (authMode === "passkey") console.log(`Passkey origin: ${authOrigin}`);
 });

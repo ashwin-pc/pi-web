@@ -1786,7 +1786,8 @@ test.describe("image rendering", () => {
     const frame = preview.locator("iframe.artifactPreviewFrame");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
-    await expect(frame).toHaveAttribute("src", "/api/artifacts/preview.html");
+    await expect(frame).toHaveAttribute("srcdoc", /HTML artifact/);
+    await expect(frame).not.toHaveAttribute("src");
     await expect(frame).toHaveCSS("pointer-events", "none");
     const shield = preview.locator(".artifactPreviewShield");
     await expect(shield).toBeVisible();

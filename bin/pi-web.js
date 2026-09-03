@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 const appDir = fileURLToPath(new URL("..", import.meta.url));
 const env = { ...process.env };
 
+if (process.argv[2] === "auth") {
+  const child = spawn(process.execPath, ["--import", "tsx", join(appDir, "server", "auth", "cli.ts"), ...process.argv.slice(3)], { cwd: appDir, env, stdio: "inherit" });
+  const result = await waitForExit(child);
+  process.exit(result.code ?? 1);
+}
+
 const providerEnvVars = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_OAUTH_TOKEN",

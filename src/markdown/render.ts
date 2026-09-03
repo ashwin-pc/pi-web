@@ -712,8 +712,10 @@ function enhanceArtifactLinks(root: ParentNode) {
       content.textContent = "";
       const iframe = document.createElement("iframe");
       iframe.className = "artifactPreviewFrame";
-      iframe.src = url.pathname;
       iframe.title = `Preview of ${title.textContent}`;
+      void fetch(url.pathname, { headers: artifactActionHeaders(), credentials: "same-origin" })
+        .then(async response => { if (!response.ok) throw new Error(`Preview failed (${response.status})`); iframe.srcdoc = await response.text(); })
+        .catch(error => { content.textContent = error instanceof Error ? error.message : "Preview failed"; });
       // Allow artifact scripts (for diagrams and interactive previews) while omitting
       // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
       iframe.setAttribute("sandbox", "allow-scripts");

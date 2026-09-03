@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTokenShareUrl, extractTokenFromScannedText } from "../src/token/tokenShare.js";
-
-it("builds a token share URL without carrying existing query params", () => {
-  expect(createTokenShareUrl("secret token", "https://pi.example.test/app?sessionId=abc#frag")).toBe("https://pi.example.test/app?token=secret+token");
-});
+import { extractTokenFromScannedText } from "../src/token/tokenShare.js";
 
 describe("extractTokenFromScannedText", () => {
   it("extracts a token from a token link", () => {

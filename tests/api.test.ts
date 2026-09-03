@@ -831,25 +831,21 @@ describe("artifact serving", () => {
     expect(Buffer.from(body).toString()).toBe("LEGACY");
   });
 
-  it("serves artifacts even when a token is configured", async () => {
+  it("protects artifacts with the same gate when a token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
       env: { ...process.env, PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "secret", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
-      // wait for server using the artifact endpoint itself (no auth needed)
       const tokenBaseUrl = `http://127.0.0.1:${port}`;
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline) {
-        try {
-          const r = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`);
-          if (r.status === 200 || r.status === 404) break;
-        } catch { /* retry */ }
+        try { if ((await fetch(`${tokenBaseUrl}/api/state`)).status === 401) break; } catch { /* retry */ }
         await new Promise((resolve) => setTimeout(resolve, 100));
       }
-      // artifact accessible without token
-      const artifactRes = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`);
+      expect((await fetch(`${tokenBaseUrl}/api/artifacts/test.png`)).status).toBe(401);
+      const artifactRes = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`, { headers: { authorization: "Bearer secret" } });
       expect(artifactRes.status).toBe(200);
       // normal API routes, including diagnostics, still require the token
       const apiRes = await fetch(`${tokenBaseUrl}/api/state`);
@@ -1224,9 +1220,12 @@ describe("WebSocket authentication", () => {
         })
       ).resolves.toBeUndefined();
 
-      // Attempt WS with correct token — expect hello message
+      // Mint a single-use ticket with the token, then expect a hello message.
+      const ticketResponse = await fetch(`http://127.0.0.1:${port}/api/ws-ticket`, { method: "POST", headers: { authorization: "Bearer secret" } });
+      expect(ticketResponse.status).toBe(201);
+      const { ticket } = await ticketResponse.json() as { ticket: string };
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=secret`);
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${encodeURIComponent(ticket)}`);
         ws.on("message", (data) => {
           const msg = JSON.parse(String(data));
           expect(msg.type).toBe("hello");

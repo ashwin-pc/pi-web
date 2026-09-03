@@ -5,6 +5,40 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const visualArtifactRoot = ".pi/web/artifacts";
+const previewHtml = `<!doctype html><html><body>
+<h1>HTML artifact</h1>
+<p id="static">Rendered in a sandboxed iframe.</p>
+<p id="script-status">script did not run</p>
+<script>
+  const statuses = [];
+  document.getElementById("script-status").textContent = "script ran";
+  try {
+    parent.document.body.dataset.artifactAccess = "unexpected";
+    statuses.push("parent accessible");
+  } catch (error) {
+    statuses.push("parent blocked");
+  }
+  try {
+    localStorage.getItem("pi-web-token");
+    statuses.push("localStorage accessible");
+  } catch (error) {
+    statuses.push("localStorage blocked");
+  }
+  try {
+    statuses.push(document.cookie ? "cookies visible" : "cookies empty");
+  } catch (error) {
+    statuses.push("cookies blocked");
+  }
+  const list = document.createElement("ul");
+  list.id = "sandbox-status";
+  for (const status of statuses) {
+    const item = document.createElement("li");
+    item.textContent = status;
+    list.append(item);
+  }
+  document.body.append(list);
+</script>
+</body></html>`;
 
 async function sendPrompt(page: import("@playwright/test").Page, prompt: string) {
   await page.locator("#prompt").fill(prompt);
@@ -355,6 +389,7 @@ test.beforeEach(async ({ page }) => {
   const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
   await mkdir(artifactDir, { recursive: true });
   await writeFile(join(artifactDir, "e2e-test.jpg"), await readFile(join(process.cwd(), "tests", "fixtures", "showcase-artifact.jpg")));
+  await writeFile(join(artifactDir, "preview.html"), previewHtml);
   await page.addStyleTag({
     content: `
       *, *::before, *::after {
@@ -482,21 +517,18 @@ test.describe("visual regression", () => {
 
   test("focused trusted device handoff", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
-    await page.addInitScript(() => localStorage.setItem("pi-web-token", "trusted-device-token"));
+    const securityState = { mode: "legacy", identity: { id: "legacy:token", displayName: "Owner" }, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] };
+    await page.route("**/api/auth/security", route => route.fulfill({ json: securityState }));
+    await page.route("**/api/auth/device-grants", route => route.fulfill({
+      status: 201,
+      json: { id: "visual-grant", secret: "single-use-visual-grant", expiresAt: Date.now() + 120_000, url: "https://demo.pi-web.dev/api/auth/device?grant=single-use-visual-grant" },
+    }));
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await page.evaluate(() => {
-      const NativeURL = window.URL;
-      class StableShareURL extends NativeURL {
-        constructor(url: string | URL, base?: string | URL) {
-          super(String(url) === location.href && base === undefined ? "https://demo.pi-web.dev/" : url, base);
-        }
-      }
-      Object.defineProperty(window, "URL", { configurable: true, value: StableShareURL });
-    });
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
-    await page.locator("#tokenShareFullscreenButton").click();
-    await expect(page.locator("#tokenShareFullscreenQr svg")).toBeVisible();
+    await page.getByRole("button", { name: "Create add-device link" }).click();
+    await expect(page.getByLabel("Add-device link")).toHaveValue(/single-use-visual-grant/);
+    await expect(page.getByRole("img", { name: "Add device QR code" })).toBeVisible();
     await expect(page).toHaveScreenshot(`capability-device-handoff-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
   });
 

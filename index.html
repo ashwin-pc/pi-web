@@ -28,14 +28,6 @@
         </div>
       </form>
     </div>
-    <div id="tokenShareFullscreen" class="tokenShareFullscreen" role="dialog" aria-modal="true" aria-label="Token QR code" hidden>
-      <button id="tokenShareFullscreenCloseButton" class="tokenShareFullscreenClose" type="button" aria-label="Close full-screen QR">×</button>
-      <div class="tokenShareFullscreenContent">
-        <h2>Scan to connect to pi web</h2>
-        <div id="tokenShareFullscreenQr" class="tokenShareFullscreenQr"></div>
-        <p>Only share this QR code with trusted devices.</p>
-      </div>
-    </div>
     <main class="app">
       <div id="statusBar" class="statusBar">
         <button id="sessionButton" class="iconButton statusBarButton" type="button" aria-label="Sessions" title="Sessions">
@@ -245,9 +237,9 @@
                   <span class="settingsNavBadge" data-tone="neutral" hidden></span>
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
                 </button>
-                <button id="settingsNavAccess" class="settingsNavButton" type="button" data-settings-page-target="access" data-settings-search="access sharing token trusted device qr code copy link connect" aria-controls="settingsPageAccess">
+                <button id="settingsNavAccess" class="settingsNavButton" type="button" data-settings-page-target="access" data-settings-search="security authentication passkey sessions devices api token grant qr identity mode" aria-controls="settingsPageAccess">
                   <span class="settingsNavIcon" data-settings-icon="key-round" aria-hidden="true"></span>
-                  <span class="settingsNavCopy"><span class="settingsNavTitle">Access &amp; sharing</span><span class="settingsNavSummary">Connect another device</span></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Security</span><span class="settingsNavSummary">Credentials and devices</span></span>
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
                 </button>
                 <button id="settingsNavDiagnostics" class="settingsNavButton" type="button" data-settings-page-target="diagnostics" data-settings-search="diagnostics debug report troubleshooting lifecycle attachments mobile reload" aria-controls="settingsPageDiagnostics">
@@ -463,23 +455,10 @@
             <section id="settingsPageAccess" class="settingsPage" data-settings-page="access" aria-labelledby="settingsPageAccessTitle" hidden>
               <header class="settingsPageHeader">
                 <span>System</span>
-                <h3 id="settingsPageAccessTitle" class="settingsPageTitle" tabindex="-1">Access &amp; sharing</h3>
-                <p>Connect another trusted device to this pi-web server.</p>
+                <h3 id="settingsPageAccessTitle" class="settingsPageTitle" tabindex="-1">Security</h3>
+                <p>Manage authentication, trusted devices, passkeys, and automation credentials.</p>
               </header>
-              <section id="tokenShareUnavailable" class="settingsSection">
-                <h4>Token sharing</h4>
-                <p class="settingsHint">This server does not require a browser token, so there is no token link to share.</p>
-              </section>
-              <section id="tokenShareSection" class="settingsSection tokenShareSection" hidden>
-                <h4>Token sharing</h4>
-          <p class="settingsHint">Use Show QR or Copy link to open pi web on another trusted device with this browser’s saved token.</p>
-          <div id="tokenShareQr" class="tokenShareQr" aria-live="polite"></div>
-          <input id="tokenShareUrl" class="tokenShareUrl" type="text" readonly aria-label="Token share link" />
-          <div class="settingsActions">
-            <button id="tokenShareFullscreenButton" type="button">Show QR</button>
-            <button id="tokenShareCopyButton" type="button">Copy link</button>
-          </div>
-              </section>
+              <div id="securitySettings" aria-live="polite"><section class="settingsSection"><p class="settingsHint">Loading security settings…</p></section></div>
             </section>
           </div>
         </div>

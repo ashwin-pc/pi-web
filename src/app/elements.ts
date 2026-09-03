@@ -84,15 +84,7 @@ export type AppElements = {
   waitingSessionsEl: HTMLElement;
   settingsStatusEl: HTMLSpanElement;
   extensionSettingsContainer: HTMLElement;
-  tokenShareUnavailable: HTMLElement;
-  tokenShareSection: HTMLElement;
-  tokenShareQr: HTMLDivElement;
-  tokenShareUrl: HTMLInputElement;
-  tokenShareFullscreenButton: HTMLButtonElement;
-  tokenShareCopyButton: HTMLButtonElement;
-  tokenShareFullscreen: HTMLDivElement;
-  tokenShareFullscreenQr: HTMLDivElement;
-  tokenShareFullscreenCloseButton: HTMLButtonElement;
+  securitySettings: HTMLElement;
   gitPanel: HTMLElement;
   emptyCwdChooserEl: HTMLDivElement;
   emptyCwdPathEl: HTMLSpanElement;
@@ -192,15 +184,7 @@ export function getAppElements(): AppElements {
     waitingSessionsEl: requiredElement<HTMLElement>("#waitingSessions"),
     settingsStatusEl: requiredElement<HTMLSpanElement>("#settingsStatus"),
     extensionSettingsContainer: requiredElement<HTMLElement>("#extensionSettingsContainer"),
-    tokenShareUnavailable: requiredElement<HTMLElement>("#tokenShareUnavailable"),
-    tokenShareSection: requiredElement<HTMLElement>("#tokenShareSection"),
-    tokenShareQr: requiredElement<HTMLDivElement>("#tokenShareQr"),
-    tokenShareUrl: requiredElement<HTMLInputElement>("#tokenShareUrl"),
-    tokenShareFullscreenButton: requiredElement<HTMLButtonElement>("#tokenShareFullscreenButton"),
-    tokenShareCopyButton: requiredElement<HTMLButtonElement>("#tokenShareCopyButton"),
-    tokenShareFullscreen: requiredElement<HTMLDivElement>("#tokenShareFullscreen"),
-    tokenShareFullscreenQr: requiredElement<HTMLDivElement>("#tokenShareFullscreenQr"),
-    tokenShareFullscreenCloseButton: requiredElement<HTMLButtonElement>("#tokenShareFullscreenCloseButton"),
+    securitySettings: requiredElement<HTMLElement>("#securitySettings"),
     gitPanel: requiredElement<HTMLElement>("#gitPanel"),
     emptyCwdChooserEl: requiredElement<HTMLDivElement>("#emptyCwdChooser"),
     emptyCwdPathEl: requiredElement<HTMLSpanElement>("#emptyCwdChooser .emptyCwdPath"),

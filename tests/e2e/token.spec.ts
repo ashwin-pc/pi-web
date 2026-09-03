@@ -51,6 +51,55 @@ test.describe("token overlay", () => {
     await expect(page.locator("#messages")).toBeVisible();
   });
 
+  test("mints a session cookie and renders a sandboxed HTML artifact through srcdoc", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
+    expect((await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
+
+    await expect(page.locator("#prompt")).toBeEnabled();
+    await page.waitForTimeout(500);
+    await page.locator("#prompt").fill("show html artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".artifactPreview--html iframe.artifactPreviewFrame").last();
+    await expect(frame).toHaveAttribute("srcdoc", /HTML artifact/);
+    await expect(frame.contentFrame().locator("#script-status")).toHaveText("script ran");
+  });
+
+  test("security inventory follows the normal gate while mutations are session-only", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
+
+    const created = await page.evaluate(async () => {
+      const headers = { "content-type": "application/json", "x-pi-web-client-id": "security-test" };
+      const response = await fetch("/api/auth/tokens", { method: "POST", headers, body: JSON.stringify({ name: "delegation check" }) });
+      return response.json() as Promise<{ id: string; secret: string }>;
+    });
+    const tokenContext = await page.context().browser()!.newContext({ baseURL: page.url() });
+    const bearerHeaders = { "content-type": "application/json", authorization: `Bearer ${created.secret}` };
+    const bearerResults = await Promise.all([
+      tokenContext.request.get("/api/auth/security", { headers: bearerHeaders }).then(r => r.status()),
+      tokenContext.request.post("/api/auth/tokens", { headers: bearerHeaders, data: {} }).then(r => r.status()),
+      tokenContext.request.delete("/api/auth/tokens/missing", { headers: bearerHeaders }).then(r => r.status()),
+    ]);
+    await tokenContext.close();
+    expect(bearerResults).toEqual([401, 401, 401]);
+
+    const missingResults = await page.evaluate(async () => {
+      const headers = { "content-type": "application/json", "x-pi-web-client-id": "security-test" };
+      return Promise.all([
+        fetch("/api/auth/tokens/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/sessions/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/passkeys/missing", { method: "DELETE", headers }).then(r => r.status),
+        fetch("/api/auth/device-grants/missing", { method: "DELETE", headers }).then(r => r.status),
+      ]);
+    });
+    expect(missingResults).toEqual([404, 404, 404, 404]);
+  });
+
   test("token persisted in localStorage after login", async ({ page }) => {
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
@@ -68,7 +117,7 @@ test.describe("token overlay", () => {
     expect(page.url()).not.toContain("token=");
   });
 
-  test("settings reveals token QR only after explicit action", async ({ page }) => {
+  test("Security settings uses revocable grants and one-time API-token secrets", async ({ page }) => {
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
     await page.locator("#tokenForm button[type=submit]").click();
@@ -77,23 +126,45 @@ test.describe("token overlay", () => {
     await page.locator("#sessionButton").click();
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
-    await expect(page.locator("#tokenShareSection")).toBeVisible();
-    await expect(page.locator("#tokenShareQr")).toBeHidden();
-    await expect(page.locator("#tokenShareUrl")).toBeHidden();
-    await expect(page.locator("#tokenShareUrl")).toHaveValue("");
+    const security = page.locator("#securitySettings");
+    await expect(security.getByText("Authentication mode")).toBeVisible();
+    await expect(security.getByText("legacy", { exact: true })).toBeVisible();
+    await expect(security.getByText("Devices & sessions")).toBeVisible();
+    await expect(page.locator("#tokenShareSection")).toHaveCount(0);
 
-    await page.locator("#tokenShareCopyButton").click();
-    await expect(page.locator("#tokenShareQr")).toBeHidden();
-    await expect(page.locator("#tokenShareUrl")).toBeHidden();
-    await expect(page.locator("#tokenShareUrl")).toHaveValue("");
+    const tokenName = `Playwright ${Date.now()}`;
+    await security.getByPlaceholder("Token name").fill(tokenName);
+    await security.getByRole("button", { name: "Create API token" }).click();
+    await expect(security.locator(".securitySecret code")).toHaveText(/^piw_/);
+    await expect(security.getByText("shown once", { exact: false })).toBeVisible();
 
-    await page.locator("#tokenShareFullscreenButton").click();
-    await expect(page.locator("#tokenShareQr svg")).toBeVisible();
-    await expect(page.locator("#tokenShareUrl")).toHaveValue(/token=test-secret/);
-    await expect(page.locator("#tokenShareFullscreen")).toBeVisible();
-    await expect(page.locator("#tokenShareFullscreenQr svg")).toBeVisible();
-    await page.locator("#tokenShareFullscreenCloseButton").click();
-    await expect(page.locator("#tokenShareFullscreen")).toBeHidden();
+    await security.getByRole("button", { name: "Create add-device link" }).click();
+    const link = security.getByLabel("Add-device link");
+    await expect(link).toHaveValue(/\/api\/auth\/device\?grant=/);
+    await expect(link).not.toHaveValue(/token=test-secret/);
+    await expect(security.getByRole("img", { name: "Add device QR code" })).toBeVisible();
+    await security.locator(".deviceGrantOutput").getByRole("button", { name: "Cancel grant" }).click();
+    await expect(security.getByLabel("Add-device link")).toHaveCount(0);
+
+    await security.getByRole("button", { name: "Create add-device link" }).click();
+    const redeemUrl = await security.getByLabel("Add-device link").inputValue();
+    const addedContext = await page.context().browser()!.newContext();
+    const addedPage = await addedContext.newPage();
+    await addedPage.goto(redeemUrl);
+    await addedPage.getByRole("button", { name: "Continue" }).click();
+    await expect(addedPage).toHaveURL(/\/$/);
+    await expect(addedPage.locator("#prompt")).toBeVisible();
+    await addedContext.close();
+
+    await page.locator("#settingsCloseButton").click();
+    await page.locator("#sessionButton").click();
+    await openSessionDrawerFooterAction(page, "Settings");
+    await page.locator("#settingsNavAccess").click();
+    await expect(security.locator(".securitySecret code")).toHaveCount(0);
+    const tokenRow = security.locator(".securityRow", { hasText: tokenName });
+    await expect(tokenRow).toBeVisible();
+    await tokenRow.getByRole("button", { name: "Revoke" }).click();
+    await expect(tokenRow).toHaveCount(0);
   });
 });
 
