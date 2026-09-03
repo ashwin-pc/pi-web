@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { PiWebSession, PiWebSessionInfo } from "./types.js";
-import { simplifyMessage } from "./session/projection.js";
+import { simplifyMessage } from "./session/pi/projection.js";
 import { mapPiEvent } from "./session/piEventMap.js";
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import websiteWorkflowExtension from "./fixtures/websiteWorkflowExtension.js";

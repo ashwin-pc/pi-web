@@ -12,7 +12,7 @@ import {
   simplifyMessage,
   simplifyModel,
   textFromContent,
-} from "../server/session/projection.js";
+} from "../server/session/pi/projection.js";
 
 function fixtureSession(): PiWebSession {
   const branch = [

@@ -293,12 +293,12 @@ describe("LocalSessionService contract", () => {
 
   it("executes the synchronous service-to-host event pipeline with exact wire payloads", async () => {
     const { service, fixture, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.activityViewForPath(path));
     const wire: any[] = [];
     service.subscribe(createHostSessionEventHandler({
-      sessionForId: (id) => service.sessionForId(id),
-      projectState: (value) => service.projectState(value),
-      webUiEntries: (value) => service.webUiEntries(value),
+      sessionViewForId: (id) => service.activityViewForId(id),
+      projectStateForId: (id) => service.projectStateForId(id),
+      webUiEntriesForId: (id) => service.webUiEntriesForId(id),
       sessionActivity: activity,
       broadcast: (value) => wire.push(value),
       markSessionUnreadCompleted: () => undefined,
@@ -381,12 +381,12 @@ describe("LocalSessionService contract", () => {
 
   it("carries unknown harness events through the service and host wire unchanged", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.activityViewForPath(path));
     const wire: any[] = [];
     const handler = createHostSessionEventHandler({
-      sessionForId: (id) => service.sessionForId(id),
-      projectState: (value) => service.projectState(value),
-      webUiEntries: (value) => service.webUiEntries(value),
+      sessionViewForId: (id) => service.activityViewForId(id),
+      projectStateForId: (id) => service.projectStateForId(id),
+      webUiEntriesForId: (id) => service.webUiEntriesForId(id),
       sessionActivity: activity,
       broadcast: (value) => wire.push(value),
       markSessionUnreadCompleted: () => undefined,
@@ -404,11 +404,11 @@ describe("LocalSessionService contract", () => {
 
   it("replays the recorded pi 0.84 event fixture through the service/host wire boundary", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.activityViewForPath(path));
     const wire: any[] = [];
     const handler = createHostSessionEventHandler({
-      sessionForId: (id) => service.sessionForId(id), projectState: (value) => service.projectState(value),
-      webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity,
+      sessionViewForId: (id) => service.activityViewForId(id), projectStateForId: (id) => service.projectStateForId(id),
+      webUiEntriesForId: (id) => service.webUiEntriesForId(id), sessionActivity: activity,
       broadcast: (value) => wire.push(value), markSessionUnreadCompleted: () => undefined,
     });
     const mapped = pi084Events.map(mapPiEvent).filter((item) => item.kind === "event");
@@ -424,18 +424,18 @@ describe("LocalSessionService contract", () => {
 
   it("marks unread and sends exactly one notification from the same final completion transition", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.activityViewForPath(path));
     const transitions: string[] = [];
     const handler = createHostSessionEventHandler({
-      sessionForId: (id) => service.sessionForId(id),
-      projectState: (value) => service.projectState(value),
-      webUiEntries: (value) => service.webUiEntries(value),
+      sessionViewForId: (id) => service.activityViewForId(id),
+      projectStateForId: (id) => service.projectStateForId(id),
+      webUiEntriesForId: (id) => service.webUiEntriesForId(id),
       sessionActivity: activity,
       broadcast: () => undefined,
       markSessionUnreadCompleted: () => transitions.push("unread"),
       notifySessionCompleted: () => transitions.push("notification"),
     });
-    activity.ensureStarted(initial);
+    activity.ensureStarted(service.activityView(initial));
     const completed: SessionServiceEvent = {
       type: "runtime",
       action: "completed",
@@ -452,14 +452,14 @@ describe("LocalSessionService contract", () => {
 
   it("clears aborted work without marking unread or sending completion push", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.activityViewForPath(path));
     const transitions: string[] = [];
     const handler = createHostSessionEventHandler({
-      sessionForId: (id) => service.sessionForId(id), projectState: (value) => service.projectState(value),
-      webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity, broadcast: () => undefined,
+      sessionViewForId: (id) => service.activityViewForId(id), projectStateForId: (id) => service.projectStateForId(id),
+      webUiEntriesForId: (id) => service.webUiEntriesForId(id), sessionActivity: activity, broadcast: () => undefined,
       markSessionUnreadCompleted: () => transitions.push("unread"), notifySessionCompleted: () => transitions.push("notification"),
     });
-    activity.ensureStarted(initial);
+    activity.ensureStarted(service.activityView(initial));
     handler({ type: "runtime", action: "completed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, aborted: true });
     expect(transitions).toEqual([]);
     expect(activity.hasStarted(initial.sessionFile)).toBe(false);
@@ -471,10 +471,32 @@ describe("LocalSessionService contract", () => {
     await expect(resolveWebSocketHelloSession("corrupt", initial, async () => { throw new Error("corrupt session"); })).rejects.toThrow("corrupt session");
   });
 
+  it("keeps host activity and event translation independent of pi session types", async () => {
+    const [activitySource, hostEventsSource] = await Promise.all([
+      readFile(new URL("../server/session/activity.ts", import.meta.url), "utf8"),
+      readFile(new URL("../server/session/hostEvents.ts", import.meta.url), "utf8"),
+    ]);
+    for (const source of [activitySource, hostEventsSource]) {
+      expect(source).not.toContain("PiWebSession");
+      expect(source).not.toMatch(/from ["']\.\/pi\//);
+      expect(source).not.toMatch(/from ["']\.\.\/types/);
+    }
+  });
+
+  it("tracks runtime timestamps without mutating the neutral session view", () => {
+    const view = { sessionFile: "/tmp/neutral.jsonl", sessionId: "neutral", isStreaming: true, isRetrying: false, isCompacting: false, pendingMessageCount: 0 };
+    const activity = new SessionActivity(() => view);
+    activity.enrichEvent(view, { type: "agent_start", startedAt: "2026-03-01T00:00:00.000Z" });
+    expect(view).not.toHaveProperty("runtimeStartedAt");
+    expect(activity.startedAtForPath(view.sessionFile, true)).toBe("2026-03-01T00:00:00.000Z");
+    activity.clearStarted(view);
+    expect(activity.hasStarted(view.sessionFile)).toBe(false);
+  });
+
   it("decorates ID-less tool calls by their matching content position", () => {
     const activity = new SessionActivity(() => undefined);
     const sessionFile = "/tmp/id-less.jsonl";
-    activity.enrichEvent({ sessionFile, sessionId: "id-less" } as PiWebSession, { type: "tool_execution_start", toolName: "read", startedAt: "2026-03-01T00:00:00.000Z" });
+    activity.enrichEvent({ sessionFile, sessionId: "id-less", isStreaming: false, isRetrying: false, isCompacting: false, pendingMessageCount: 0 }, { type: "tool_execution_start", toolName: "read", startedAt: "2026-03-01T00:00:00.000Z" });
     const messages: MessageDto[] = [{
       role: "assistant",
       isError: false,
@@ -491,7 +513,7 @@ describe("LocalSessionService standalone lifecycle", () => {
   it("keeps agent_end running and uses agent_settled as the idle boundary", async () => {
     const { service, fixture, initial } = await fixtureService();
     const activity = new SessionActivity(
-      (path) => service.sessionForPath(path),
+      (path) => service.activityViewForPath(path),
       (path) => service.hasActiveWorkForPath(path),
       (path) => service.hasActiveRetryForPath(path),
     );
@@ -511,7 +533,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; });
     initial.retryFromFailure = vi.fn(() => retryGate);
     const activity = new SessionActivity(
-      (path) => service.sessionForPath(path),
+      (path) => service.activityViewForPath(path),
       (path) => service.hasActiveWorkForPath(path),
       (path) => service.hasActiveRetryForPath(path),
     );
@@ -657,12 +679,12 @@ describe("LocalSessionService standalone lifecycle", () => {
 
   it("captures operation paths and clears both registration and current paths on shutdown", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.activityViewForPath(path));
     const wire: unknown[] = [];
     service.subscribe(createHostSessionEventHandler({
-      sessionForId: (id) => service.sessionForId(id),
-      projectState: (value) => service.projectState(value),
-      webUiEntries: (value) => service.webUiEntries(value),
+      sessionViewForId: (id) => service.activityViewForId(id),
+      projectStateForId: (id) => service.projectStateForId(id),
+      webUiEntriesForId: (id) => service.webUiEntriesForId(id),
       sessionActivity: activity,
       broadcast: (value) => wire.push(value),
       markSessionUnreadCompleted: () => undefined,

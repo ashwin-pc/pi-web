@@ -1,8 +1,21 @@
-import type { PiWebSession } from "../types.js";
-import { sessionIsRetrying, simplifyModel } from "./projection.js";
+import type { HarnessEventDto } from "./piEventMap.js";
+import type { ModelDto } from "./dto.js";
+
+/** Host-facing snapshot of a live session. It deliberately contains no harness object. */
+export interface SessionActivityView {
+  sessionId: string;
+  sessionFile: string;
+  isStreaming: boolean;
+  isRetrying: boolean;
+  isCompacting: boolean;
+  pendingMessageCount: number;
+  model?: ModelDto;
+  runtimeStartedAt?: string;
+  runtimeLastActivityAt?: string;
+}
 
 export interface EnrichedSessionEvent {
-  event: any;
+  event: HarnessEventDto;
   sessionId: string;
   sessionFile: string;
 }
@@ -13,13 +26,13 @@ export class SessionActivity {
   private readonly toolStartedAts = new Map<string, Map<string, string>>();
 
   constructor(
-    private readonly liveSessionForPath: (path: string) => PiWebSession | undefined,
+    private readonly liveSessionForPath: (path: string) => SessionActivityView | undefined,
     private readonly hasActiveWorkForPath: (path: string) => boolean = () => false,
     private readonly hasActiveRetryForPath: (path: string) => boolean = () => false,
   ) {}
 
-  sessionPathKey(value: any): string {
-    return String(value?.sessionFile || value?.sessionId || "");
+  sessionPathKey(value: Pick<SessionActivityView, "sessionFile" | "sessionId">): string {
+    return String(value.sessionFile || value.sessionId || "");
   }
 
   toolRuntimeKey(toolCallId: unknown, toolName: unknown): string {
@@ -44,61 +57,49 @@ export class SessionActivity {
     });
   }
 
-  hasStarted(path: string): boolean {
-    return this.runtimeStartedAts.has(path);
-  }
+  hasStarted(path: string): boolean { return this.runtimeStartedAts.has(path); }
 
   startedAtForPath(path: string, isRunning: boolean): string | undefined {
     if (!isRunning) return undefined;
-    const liveStartedAt = (this.liveSessionForPath(path) as any)?.runtimeStartedAt;
-    return typeof liveStartedAt === "string" && liveStartedAt.trim() ? liveStartedAt : this.runtimeStartedAts.get(path);
+    const live = this.liveSessionForPath(path)?.runtimeStartedAt;
+    return typeof live === "string" && live.trim() ? live : this.runtimeStartedAts.get(path);
   }
 
   lastActivityAtForPath(path: string, isRunning: boolean): string | undefined {
     if (!isRunning) return undefined;
-    const liveLastActivityAt = (this.liveSessionForPath(path) as any)?.runtimeLastActivityAt;
-    return typeof liveLastActivityAt === "string" && liveLastActivityAt.trim()
-      ? liveLastActivityAt
+    const live = this.liveSessionForPath(path)?.runtimeLastActivityAt;
+    return typeof live === "string" && live.trim()
+      ? live
       : this.runtimeLastActivityAts.get(path) || this.startedAtForPath(path, isRunning);
   }
 
-  ensureStarted(targetSession: any, startedAt = new Date().toISOString()): string {
-    const key = this.sessionPathKey(targetSession);
-    const existing = key ? this.runtimeStartedAts.get(key) : undefined;
-    const value = typeof targetSession?.runtimeStartedAt === "string" ? targetSession.runtimeStartedAt : existing || startedAt;
+  ensureStarted(target: Pick<SessionActivityView, "sessionFile" | "sessionId" | "runtimeStartedAt" | "runtimeLastActivityAt">, startedAt = new Date().toISOString()): string {
+    const key = this.sessionPathKey(target);
+    const value = target.runtimeStartedAt || (key ? this.runtimeStartedAts.get(key) : undefined) || startedAt;
     if (key) {
       this.runtimeStartedAts.set(key, value);
-      if (!this.runtimeLastActivityAts.has(key)) this.runtimeLastActivityAts.set(key, value);
-    }
-    if (targetSession && typeof targetSession === "object") {
-      targetSession.runtimeStartedAt = value;
-      if (typeof targetSession.runtimeLastActivityAt !== "string") targetSession.runtimeLastActivityAt = value;
+      if (!this.runtimeLastActivityAts.has(key)) this.runtimeLastActivityAts.set(key, target.runtimeLastActivityAt || value);
     }
     return value;
   }
 
-  mark(targetSession: any, activityAt = new Date().toISOString(), sessionFile = this.sessionPathKey(targetSession)): string {
+  mark(_target: Pick<SessionActivityView, "sessionFile" | "sessionId">, activityAt = new Date().toISOString(), sessionFile = this.sessionPathKey(_target)): string {
     if (sessionFile) this.runtimeLastActivityAts.set(sessionFile, activityAt);
-    if (targetSession && typeof targetSession === "object") targetSession.runtimeLastActivityAt = activityAt;
     return activityAt;
   }
 
-  clearStarted(targetSession: any, sessionFile = this.sessionPathKey(targetSession)): void {
+  clearStarted(_target: Pick<SessionActivityView, "sessionFile" | "sessionId">, sessionFile = this.sessionPathKey(_target)): void {
     if (sessionFile) {
       this.runtimeStartedAts.delete(sessionFile);
       this.runtimeLastActivityAts.delete(sessionFile);
     }
-    if (targetSession && typeof targetSession === "object") {
-      delete targetSession.runtimeStartedAt;
-      delete targetSession.runtimeLastActivityAt;
-    }
   }
 
-  clearSession(key: string, value: any): void {
+  clearSession(key: string, value: { sessionFile?: string }): void {
     this.runtimeStartedAts.delete(key);
     this.runtimeLastActivityAts.delete(key);
     this.toolStartedAts.delete(key);
-    const file = typeof value?.sessionFile === "string" ? value.sessionFile : "";
+    const file = typeof value.sessionFile === "string" ? value.sessionFile : "";
     if (file && file !== key) {
       this.runtimeStartedAts.delete(file);
       this.runtimeLastActivityAts.delete(file);
@@ -109,112 +110,79 @@ export class SessionActivity {
   runtimeForPath(path: string, overrides: { isRetrying?: boolean } = {}) {
     const live = this.liveSessionForPath(path);
     const isStreaming = Boolean(live?.isStreaming);
-    const isRetrying = overrides.isRetrying ?? sessionIsRetrying(live);
+    const isRetrying = overrides.isRetrying ?? Boolean(live?.isRetrying);
     const isCompacting = Boolean(live?.isCompacting);
-    // Work leases cover operations (notably the SDK continuation fallback) that
-    // execute an agent run without updating AgentSession.isStreaming.
     const isRunning = isStreaming || isRetrying || isCompacting || this.hasActiveWorkForPath(path);
     return {
-      loaded: Boolean(live),
-      isRunning,
-      isStreaming,
-      isRetrying,
-      isCompacting,
+      loaded: Boolean(live), isRunning, isStreaming, isRetrying, isCompacting,
       startedAt: this.startedAtForPath(path, isRunning),
       lastActivityAt: this.lastActivityAtForPath(path, isRunning),
       pendingMessageCount: Number(live?.pendingMessageCount || 0),
-      model: simplifyModel(live?.model),
+      model: live?.model,
     };
   }
 
   stoppedRuntimeForPath(path: string) {
     const live = this.liveSessionForPath(path);
     return {
-      loaded: Boolean(live),
-      isRunning: false,
-      isStreaming: false,
-      isRetrying: false,
-      isCompacting: false,
-      startedAt: undefined,
-      lastActivityAt: undefined,
-      pendingMessageCount: Number(live?.pendingMessageCount || 0),
-      model: simplifyModel(live?.model),
+      loaded: Boolean(live), isRunning: false, isStreaming: false, isRetrying: false, isCompacting: false,
+      startedAt: undefined, lastActivityAt: undefined,
+      pendingMessageCount: Number(live?.pendingMessageCount || 0), model: live?.model,
     };
   }
 
-  runtimeForEvent(path: string, event: any) {
-    if ((event?.type === "agent_end" || event?.type === "compaction_end") && event?.willRetry) {
-      return this.runtimeForPath(path, { isRetrying: true });
-    }
-    if (event?.type === "agent_settled") {
-      // pi emits this only after the run and all post-run continuations finish.
-      return this.hasActiveRetryForPath(path) ? this.runtimeForPath(path) : this.stoppedRuntimeForPath(path);
-    }
+  runtimeForEvent(path: string, event: HarnessEventDto) {
+    if ((event.type === "agent_end" || event.type === "compaction_end") && event.willRetry) return this.runtimeForPath(path, { isRetrying: true });
+    if (event.type === "agent_settled") return this.hasActiveRetryForPath(path) ? this.runtimeForPath(path) : this.stoppedRuntimeForPath(path);
     return this.runtimeForPath(path);
   }
 
-  isActivityEvent(event: any): boolean {
-    return ["agent_start", "compaction_start", "message_update", "message_end", "turn_end", "tool_execution_start", "tool_execution_update", "tool_execution_end", "auto_retry_start", "auto_retry_end"].includes(event?.type);
+  isActivityEvent(event: HarnessEventDto): boolean {
+    return ["agent_start", "compaction_start", "message_update", "message_end", "turn_end", "tool_execution_start", "tool_execution_update", "tool_execution_end", "auto_retry_start", "auto_retry_end"].includes(event.type);
   }
 
-  activityTimestamp(event: any, fallback = new Date().toISOString()): string {
-    for (const value of [event?.lastActivityAt, event?.timestamp, event?.startedAt]) {
-      if (typeof value === "string" && value.trim()) return value.trim();
-    }
+  activityTimestamp(event: HarnessEventDto, fallback = new Date().toISOString()): string {
+    const value = event as Record<string, unknown>;
+    for (const candidate of [value.lastActivityAt, value.timestamp, value.startedAt]) if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
     return fallback;
   }
 
-  noteEvent(sessionFile: string, event: any): void {
+  noteEvent(sessionFile: string, event: HarnessEventDto): void {
     if (!sessionFile) return;
-    switch (event?.type) {
-      case "agent_start":
-      case "compaction_start": {
-        const startedAt = typeof event.startedAt === "string" && event.startedAt.trim() ? event.startedAt.trim() : new Date().toISOString();
-        this.runtimeStartedAts.set(sessionFile, startedAt);
-        this.runtimeLastActivityAts.set(sessionFile, this.activityTimestamp(event, startedAt));
-        return;
-      }
-      case "agent_settled":
-      case "compaction_end":
-        if (!event.willRetry) {
-          this.runtimeStartedAts.delete(sessionFile);
-          this.runtimeLastActivityAts.delete(sessionFile);
-        }
-        return;
-      default:
-        if (this.isActivityEvent(event)) this.runtimeLastActivityAts.set(sessionFile, this.activityTimestamp(event));
-    }
+    if (event.type === "agent_start" || event.type === "compaction_start") {
+      const raw = event as Record<string, unknown>;
+      const startedAt = typeof raw.startedAt === "string" && raw.startedAt.trim() ? raw.startedAt.trim() : new Date().toISOString();
+      this.runtimeStartedAts.set(sessionFile, startedAt);
+      this.runtimeLastActivityAts.set(sessionFile, this.activityTimestamp(event, startedAt));
+    } else if (event.type === "agent_settled" || event.type === "compaction_end") {
+      if (event.type === "agent_settled" || !event.willRetry) { this.runtimeStartedAts.delete(sessionFile); this.runtimeLastActivityAts.delete(sessionFile); }
+    } else if (this.isActivityEvent(event)) this.runtimeLastActivityAts.set(sessionFile, this.activityTimestamp(event));
   }
 
-  enrichEvent(targetSession: PiWebSession, event: unknown): EnrichedSessionEvent {
-    const e = event as any;
-    const sessionFile = targetSession.sessionFile;
-    let eventForClient = e;
-    if (e?.type === "agent_start" || e?.type === "compaction_start") {
-      eventForClient = { ...e, startedAt: this.ensureStarted(targetSession, typeof e.startedAt === "string" ? e.startedAt : undefined) };
-    } else if ((e?.type === "agent_settled" || e?.type === "compaction_end") && !e.willRetry) {
-      this.clearStarted(targetSession, sessionFile);
-    }
+  enrichEvent(target: SessionActivityView, event: HarnessEventDto): EnrichedSessionEvent {
+    const sessionFile = target.sessionFile;
+    const raw = event as Record<string, unknown>;
+    let eventForClient: HarnessEventDto = event;
+    if (event.type === "agent_start" || event.type === "compaction_start") {
+      eventForClient = { ...event, startedAt: this.ensureStarted(target, typeof raw.startedAt === "string" ? raw.startedAt : undefined) } as HarnessEventDto;
+    } else if (event.type === "agent_settled" || event.type === "compaction_end" && !event.willRetry) this.clearStarted(target, sessionFile);
 
-    if (e?.type === "tool_execution_start") {
-      const toolKey = this.toolRuntimeKey(e.toolCallId, e.toolName);
-      const startedAt = typeof e.startedAt === "string" ? e.startedAt : new Date().toISOString();
+    if (event.type === "tool_execution_start") {
+      const toolKey = this.toolRuntimeKey(raw.toolCallId, raw.toolName);
+      const startedAt = typeof raw.startedAt === "string" ? raw.startedAt : new Date().toISOString();
       if (toolKey) {
         let starts = this.toolStartedAts.get(sessionFile);
         if (!starts) this.toolStartedAts.set(sessionFile, starts = new Map());
         starts.set(toolKey, startedAt);
       }
-      eventForClient = { ...eventForClient, startedAt };
-    } else if (e?.type === "tool_execution_update" || e?.type === "tool_execution_end") {
-      const toolKey = this.toolRuntimeKey(e.toolCallId, e.toolName);
+      eventForClient = { ...eventForClient, startedAt } as HarnessEventDto;
+    } else if (event.type === "tool_execution_update" || event.type === "tool_execution_end") {
+      const toolKey = this.toolRuntimeKey(raw.toolCallId, raw.toolName);
       const startedAt = toolKey ? this.toolStartedAts.get(sessionFile)?.get(toolKey) : undefined;
-      if (startedAt) eventForClient = { ...eventForClient, startedAt };
-      if (e?.type === "tool_execution_end" && toolKey) this.toolStartedAts.get(sessionFile)?.delete(toolKey);
+      if (startedAt) eventForClient = { ...eventForClient, startedAt } as HarnessEventDto;
+      if (event.type === "tool_execution_end" && toolKey) this.toolStartedAts.get(sessionFile)?.delete(toolKey);
     }
-
-    if (this.isActivityEvent(e)) {
-      eventForClient = { ...eventForClient, lastActivityAt: this.mark(targetSession, this.activityTimestamp(eventForClient), sessionFile) };
-    }
-    return { event: eventForClient, sessionId: targetSession.sessionId, sessionFile };
+    if (this.isActivityEvent(event)) eventForClient = { ...eventForClient, lastActivityAt: this.mark(target, this.activityTimestamp(eventForClient), sessionFile) } as HarnessEventDto;
+    return { event: eventForClient, sessionId: target.sessionId, sessionFile };
   }
 }

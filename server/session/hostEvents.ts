@@ -1,5 +1,4 @@
-import type { PiWebSession } from "../types.js";
-import { SessionActivity } from "./activity.js";
+import { SessionActivity, type SessionActivityView } from "./activity.js";
 import type { BaseSessionStateDto, MessageDto, SessionServiceEvent } from "./dto.js";
 
 export type HostSessionStateDecoration = {
@@ -12,9 +11,9 @@ export type DecoratedSessionState = BaseSessionStateDto & HostSessionStateDecora
 export type WireSessionState = Omit<DecoratedSessionState, "thinkingLevels"> & { thinkingLevels?: string[] };
 
 type HostEventDependencies = {
-  sessionForId(sessionId: string): PiWebSession | undefined;
-  projectState(session: PiWebSession): BaseSessionStateDto;
-  webUiEntries(session: PiWebSession): Pick<HostSessionStateDecoration, "webContributions">;
+  sessionViewForId(sessionId: string): SessionActivityView | undefined;
+  projectStateForId(sessionId: string): BaseSessionStateDto | undefined;
+  webUiEntriesForId(sessionId: string): Pick<HostSessionStateDecoration, "webContributions"> | undefined;
   sessionActivity: SessionActivity;
   broadcast(value: unknown): void;
   markSessionUnreadCompleted(sessionId: string): void;
@@ -23,23 +22,19 @@ type HostEventDependencies = {
 
 export function decorateHostSessionState(
   baseState: BaseSessionStateDto,
-  targetSession: PiWebSession,
+  targetSession: SessionActivityView,
   sessionActivity: SessionActivity,
-  webUiEntries: HostEventDependencies["webUiEntries"],
+  webUiEntries: Pick<HostSessionStateDecoration, "webContributions">,
   includeThinkingLevels = false,
 ): WireSessionState {
   const { thinkingLevels, ...base } = baseState;
   const isRunning = Boolean(base.isStreaming || base.isRetrying || base.isCompacting);
   return {
     ...base,
-    runtimeStartedAt: typeof (targetSession as any).runtimeStartedAt === "string"
-      ? (targetSession as any).runtimeStartedAt
-      : sessionActivity.startedAtForPath(targetSession.sessionFile, isRunning),
-    runtimeLastActivityAt: typeof (targetSession as any).runtimeLastActivityAt === "string"
-      ? (targetSession as any).runtimeLastActivityAt
-      : sessionActivity.lastActivityAtForPath(targetSession.sessionFile, isRunning),
+    runtimeStartedAt: targetSession.runtimeStartedAt || sessionActivity.startedAtForPath(targetSession.sessionFile, isRunning),
+    runtimeLastActivityAt: targetSession.runtimeLastActivityAt || sessionActivity.lastActivityAtForPath(targetSession.sessionFile, isRunning),
     runtime: sessionActivity.runtimeForPath(targetSession.sessionFile),
-    ...webUiEntries(targetSession),
+    ...webUiEntries,
     ...(includeThinkingLevels ? { thinkingLevels } : {}),
   };
 }
@@ -68,13 +63,13 @@ export function decorateHostMessages(messages: MessageDto[], sessionFile: string
 
 /** Synchronous serving-layer adapter from service events to browser wire events. */
 export function createHostSessionEventHandler(deps: HostEventDependencies) {
-  const decorate = (state: BaseSessionStateDto, target: PiWebSession, includeThinkingLevels = false) =>
-    decorateHostSessionState(state, target, deps.sessionActivity, deps.webUiEntries, includeThinkingLevels);
+  const decorate = (state: BaseSessionStateDto, target: SessionActivityView, includeThinkingLevels = false) =>
+    decorateHostSessionState(state, target, deps.sessionActivity, deps.webUiEntriesForId(target.sessionId) || { webContributions: [] }, includeThinkingLevels);
 
   return (serviceEvent: SessionServiceEvent): void => {
     switch (serviceEvent.type) {
       case "agent": {
-        const target = deps.sessionForId(serviceEvent.sessionId);
+        const target = deps.sessionViewForId(serviceEvent.sessionId);
         const enriched = target
           ? deps.sessionActivity.enrichEvent(target, serviceEvent.event)
           : { event: serviceEvent.event, sessionId: serviceEvent.sessionId, sessionFile: serviceEvent.sessionFile };
@@ -116,7 +111,7 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         });
         return;
       case "state": {
-        const target = deps.sessionForId(serviceEvent.state.sessionId);
+        const target = deps.sessionViewForId(serviceEvent.state.sessionId);
         if (target) deps.broadcast({ type: "state_changed", ...decorate(serviceEvent.state, target, Boolean(serviceEvent.includeThinkingLevels)) });
         return;
       }
@@ -130,7 +125,7 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         deps.broadcast({ type: "server_error", ...(serviceEvent.sessionId ? { sessionId: serviceEvent.sessionId } : {}), ...(serviceEvent.sessionFile ? { sessionFile: serviceEvent.sessionFile } : {}), error: serviceEvent.error });
         return;
       case "runtime": {
-        const target = deps.sessionForId(serviceEvent.sessionId);
+        const target = deps.sessionViewForId(serviceEvent.sessionId);
         if (!target) return;
         const activitySessionFile = serviceEvent.activitySessionFile || serviceEvent.sessionFile;
         if (serviceEvent.action === "ensure") {
@@ -161,8 +156,11 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
       case "wire": {
         const value = serviceEvent.value as any;
         if (value?.type === "state_changed" && typeof value.sessionId === "string") {
-          const target = deps.sessionForId(value.sessionId);
-          if (target) return deps.broadcast({ type: "state_changed", ...decorate(deps.projectState(target), target, true) });
+          const target = deps.sessionViewForId(value.sessionId);
+          if (target) {
+            const state = deps.projectStateForId(value.sessionId);
+            if (state) return deps.broadcast({ type: "state_changed", ...decorate(state, target, true) });
+          }
         }
         deps.broadcast(value);
       }
@@ -171,10 +169,10 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
 }
 
 /** Unknown IDs may use the legacy current-session fallback; open failures must propagate. */
-export async function resolveWebSocketHelloSession(
+export async function resolveWebSocketHelloSession<T extends { sessionId: string }>(
   requestedSessionId: string,
-  currentSession: PiWebSession,
-  findSession: (sessionId: string) => Promise<PiWebSession | undefined>,
-): Promise<PiWebSession | undefined> {
+  currentSession: T,
+  findSession: (sessionId: string) => Promise<T | undefined>,
+): Promise<T | undefined> {
   return requestedSessionId === currentSession.sessionId ? currentSession : findSession(requestedSessionId);
 }
