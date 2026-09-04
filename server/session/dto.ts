@@ -256,8 +256,8 @@ export interface SessionService {
   abortBranchSummary(sessionId: string): Promise<{ sessionId: string }>;
   rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;
   navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
-  respondInteraction(response: InteractionResponseDto): boolean;
-  cancelInteractions(): void;
+  respondInteraction(response: InteractionResponseDto): Promise<boolean>;
+  cancelInteractions(): Promise<void>;
   invokeContribution(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
   invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;

@@ -15,7 +15,8 @@ import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts
 import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment } from "./server/shared/attachments.js";
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
-import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, WorkspaceFileError, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
+import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
+import { errorStatus } from "./server/shared/httpStatus.js";
 import type { PiWebSession } from "./server/types.js";
 import type { BaseSessionStateDto, InteractionResponseDto, SessionInfoDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
@@ -23,7 +24,7 @@ import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessio
 import { SessionSettlementTracker } from "./server/session/settlement.js";
 import { RealtimeHub, SessionUnreadTracker } from "./server/realtime.js";
 import { createPushNotificationService } from "./server/pushNotifications.js";
-import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
+import { LocalSessionService } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 import { AuthKernel, AuthStore, type AuthMode } from "./server/auth/kernel.js";
@@ -297,7 +298,7 @@ realtimeHub = new RealtimeHub(
   websocketMaxMissedHeartbeats,
   (value) => unreadTracker.handle(value),
   1000,
-  (count) => { if (count === 0) sessionService?.cancelInteractions(); },
+  (count) => { if (count === 0) void sessionService?.cancelInteractions(); },
 );
 
 const mockPromptCorrelations = new Map<string, Array<{ clientMessageId: string; sourceClientId: string }>>();
@@ -599,7 +600,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           return sendJson(res, 200, await listWorkspaceDirectory(cwd, url.searchParams.get("path") || "", url.searchParams.get("hidden") === "1"));
         } catch (error) {
-          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, errorStatus(error), { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
@@ -608,7 +609,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           return sendJson(res, 200, await readWorkspaceFile(cwd, url.searchParams.get("path") || ""));
         } catch (error) {
-          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, errorStatus(error), { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
@@ -620,7 +621,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           res.end(image.data);
           return;
         } catch (error) {
-          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, errorStatus(error), { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
@@ -630,7 +631,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           const cwd = await requestCwdFromSessionId(typeof body.sessionId === "string" ? body.sessionId : null);
           return sendJson(res, 200, await writeWorkspaceFile(cwd, body.path, body.content, body.expectedRevision));
         } catch (error) {
-          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, errorStatus(error), { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
@@ -767,10 +768,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeContribution(resolveSessionId(body.sessionId), body) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status
-            : message === "key is required" || message.includes("returned no") || message.includes("returned unknown panel") || message === "Contribution is not invokable" ? 400
+          const status = errorStatus(error, message === "key is required" || message.includes("returned no") || message.includes("returned unknown panel") || message === "Contribution is not invokable" ? 400
             : message.includes("not found") ? 404
-            : 500;
+            : 500);
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -781,10 +781,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeHeaderAction(resolveSessionId(body.sessionId), body.key) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status
-            : message === "key is required" || message === "Header action returned no markdown" || message === "Header action returned no result" || message.includes("Header action returned unknown panel") ? 400
+          const status = errorStatus(error, message === "key is required" || message === "Header action returned no markdown" || message === "Header action returned no result" || message.includes("Header action returned unknown panel") ? 400
             : message === "Header action not found" ? 404
-            : 500;
+            : 500);
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -795,7 +794,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeArtifactAction(resolveSessionId(body.sessionId), body) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status : message === "Artifact action not found" ? 404 : message === "Invalid artifact context" || message === "Artifact action does not match this artifact" || message === "key is required" || message === "Artifact action returned no result" ? 400 : 500;
+          const status = errorStatus(error, message === "Artifact action not found" ? 404 : message === "Invalid artifact context" || message === "Artifact action does not match this artifact" || message === "key is required" || message === "Artifact action returned no result" ? 400 : 500);
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -806,7 +805,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeGitTab(resolveSessionId(body.sessionId), body) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Git tab returned no HTML or composer context" ? 400 : message === "Git tab not found" ? 404 : 500;
+          const status = errorStatus(error, message === "key is required" || message === "Git tab returned no HTML or composer context" ? 400 : message === "Git tab not found" ? 404 : 500);
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -817,7 +816,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokePanel(resolveSessionId(body.sessionId), body) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status : message === "key is required" || message === "Panel returned no HTML" ? 400 : message === "Panel not found" ? 404 : 500;
+          const status = errorStatus(error, message === "key is required" || message === "Panel returned no HTML" ? 400 : message === "Panel not found" ? 404 : 500);
           return sendJson(res, status, { ok: false, error: message });
         }
       }
@@ -905,7 +904,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, ...result });
         } catch (error: any) {
-          return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, errorStatus(error), { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
@@ -1040,7 +1039,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const id = String(body.id || "").trim();
         if (!id) return sendJson(res, 400, { ok: false, error: "id is required" });
         const response = { ...body, id } as InteractionResponseDto;
-        if (!sessionService.respondInteraction(response)) return sendJson(res, 404, { ok: false, error: "Interaction request not found" });
+        if (!await sessionService.respondInteraction(response)) return sendJson(res, 404, { ok: false, error: "Interaction request not found" });
         return sendJson(res, 200, { ok: true });
       }
 
@@ -1157,7 +1156,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           broadcast({ type: "state_changed", ...state });
           return sendJson(res, 200, { ok: true, ...state });
         } catch (error) {
-          const status = error instanceof SessionServiceError ? error.status : 400;
+          const status = errorStatus(error, 400);
           return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
@@ -1184,7 +1183,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionServiceError ? error.status : 500;
+    const status = errorStatus(error);
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));
