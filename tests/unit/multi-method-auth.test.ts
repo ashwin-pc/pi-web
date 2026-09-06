@@ -1,5 +1,8 @@
 import { mkdtemp, readFile, writeFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { isolatedAuthEnv } from "../auth-isolation.js";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
@@ -313,6 +316,34 @@ describe("multi-method human authentication", () => {
       methods: ["password", "passkey", "external"],
     });
     expect(() => resolveAuthConfig({ PI_WEB_AUTH_METHODS: "basic" })).toThrow();
+  });
+  it("recovery does not re-enable a retired password method", async () => {
+    const { store } = await fixture();
+    await store.update((s) => {
+      s.config = { policy: "authenticated", methods: ["passkey"] };
+      s.password = { hash: "retired-password-hash", changedAt: 1 };
+    });
+    await promisify(execFile)(
+      process.execPath,
+      ["--import", "tsx", "server/auth/cli.ts", "recover"],
+      { env: { ...isolatedAuthEnv(), PI_WEB_AUTH_STORE: store.path } },
+    );
+    const state = await store.read();
+    expect(state.config?.methods).toEqual(["passkey"]);
+    expect(state.password?.hash).toBe("retired-password-hash");
+    expect(state.bootstrap?.usedAt).toBeUndefined();
+  });
+  it("bounds concurrent password work to one memory allocation", async () => {
+    const outcomes = await Promise.allSettled([
+      hashPassword("first secure password"),
+      hashPassword("second secure password"),
+    ]);
+    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
+    const success = outcomes.find(
+      (o) => o.status === "fulfilled",
+    ) as PromiseFulfilledResult<string>;
+    expect(success.value).toMatch(/^scrypt\$32768\$8\$1\$/);
   });
   it("hashes salted passwords with scrypt and rejects incorrect passwords", async () => {
     const a = await hashPassword("a secure test password"),
