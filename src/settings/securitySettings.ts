@@ -1,4 +1,5 @@
 import type { ApiClient } from "../app/api.js";
+import { clearToken } from "../app/types.js";
 import { createQrSvg } from "../token/qr.js";
 
 export type AuthMode = "none" | "legacy" | "passkey" | "external";
@@ -134,18 +135,31 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
         "Only trust a proxy that strips caller-supplied identity headers. Direct access to the backend must be blocked.",
       none: "Warning: this instance has no authentication.",
     };
-    const mode = section("Authentication mode", modeHints[state.mode]);
+    const mode = section(
+      "Authentication policy",
+      state.policy === "open"
+        ? modeHints.none
+        : "Authenticated access. Keep a backup credential and terminal recovery access.",
+    );
     mode.dataset.mode = state.mode;
     mode.append(
       row(state.mode, state.identity.displayName || state.identity.id),
     );
     if (state.policy) mode.append(row("Access policy", state.policy));
+    if (state.policy === "authenticated") {
+      const reauth = document.createElement("a");
+      reauth.href = "/api/auth/login";
+      reauth.textContent =
+        "Sign in again for security changes (valid five minutes)";
+      mode.append(reauth);
+    }
+    if (state.methods && !state.methods.includes("legacy")) clearToken();
     container.append(mode);
 
     const enabled = new Set(
       state.methods || (state.mode === "none" ? [] : [state.mode]),
     );
-    if (state.mode !== "none") {
+    if (state.policy === "authenticated") {
       const methods = section(
         "Sign-in methods",
         "Legacy is deprecated. Enroll and test a replacement in another browser before disabling it. Existing sessions remain valid until revoked.",
@@ -176,7 +190,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       }
       container.append(methods);
     }
-    if (state.mode !== "none") {
+    if (state.policy === "authenticated") {
       const keys = section(
         "Passkeys",
         "Adding a passkey requires this authenticated browser session. Revoking any passkey signs out all devices.",
@@ -296,7 +310,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       container.append(devices);
     }
 
-    if (state.mode !== "none") {
+    if (state.policy === "authenticated") {
       const password = section(
         "Password",
         state.passwordConfigured
@@ -393,7 +407,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     );
     container.append(tokens);
 
-    if (state.mode !== "none") {
+    if (state.policy === "authenticated") {
       const grants = section(
         "Add device",
         "Create a cancellable, single-use link valid for two minutes. It never shares the permanent server token.",

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { spawn } from "node:child_process";
+import WebSocket from "ws";
 import { createServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -58,6 +59,28 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
         { timeout: 15_000 },
       )
       .toBe(200);
+    // Exercise the real HTTP/WS boundary from an authority other than configured localhost.
+    const ipOrigin = `http://127.0.0.1:${port}`;
+    const minted = await fetch(`${ipOrigin}/api/state`, { headers: { authorization: "Bearer owner-token", "x-pi-web-client-id": "regression" } });
+    const cookie = minted.headers.get("set-cookie")!.split(";")[0];
+    const headers = { cookie, origin: ipOrigin, "x-pi-web-client-id": "regression", "content-type": "application/json" };
+    expect((await fetch(`${ipOrigin}/api/auth/authorize`, { method: "POST", headers })).status).toBe(200);
+    expect((await fetch(`${ipOrigin}/api/auth/authorize`, { method: "POST", headers: { ...headers, origin: "https://evil.example", "x-forwarded-host": "evil.example" } })).status).toBe(403);
+    const machine = await (await fetch(`${ipOrigin}/api/auth/tokens`, { method: "POST", headers, body: JSON.stringify({ name: "ws-regression" }) })).json();
+    const ticket = await (await fetch(`${ipOrigin}/api/ws-ticket`, { method: "POST", headers: { authorization: `Bearer ${machine.secret}` } })).json();
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${ticket.ticket}`, { origin: ipOrigin });
+    await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject); });
+    const closed = new Promise<number>(resolve => socket.once("close", resolve));
+    expect((await fetch(`${ipOrigin}/api/auth/tokens/${machine.id}`, { method: "DELETE", headers })).status).toBe(200);
+    expect(await closed).toBe(1008);
+    expect((await fetch(`${ipOrigin}/api/auth/logout`, { method: "POST", headers })).status).toBe(200);
+    expect((await fetch(`${ipOrigin}/api/state`, { headers: { cookie, authorization: "Bearer owner-token" } })).status).toBe(401);
+    expect(await (await fetch(`${ipOrigin}/api/auth/challenge`, { headers: { cookie } })).json()).toMatchObject({ mode: "redirect" });
+    expect((await fetch(`${ipOrigin}/api/auth/logout`, { method: "POST", headers })).headers.get("set-cookie")).toContain("Max-Age=0");
+    const signedIn = await fetch(`${ipOrigin}/api/auth/legacy/login`, { method: "POST", headers, body: JSON.stringify({ password: "owner-token" }) });
+    expect(signedIn.status).toBe(200);
+    expect((await fetch(`${ipOrigin}/api/state`, { headers: { cookie: signedIn.headers.get("set-cookie")!.split(";")[0] } })).status).toBe(200);
+
     const page = await owner.newPage();
     await page.goto(`${origin}/?token=owner-token`);
     await expect(page.locator("#prompt")).toBeVisible();
