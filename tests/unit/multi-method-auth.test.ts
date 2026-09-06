@@ -135,6 +135,15 @@ describe("multi-method human authentication", () => {
       log.mockRestore();
     }
   });
+  it("the gate observes retirement without relying on a prior config refresh", async () => {
+    const { store, kernel } = await fixture();
+    const request = req({}, { authorization: "Bearer legacy-secret" });
+    expect((await kernel.gate(request)).ok).toBe(true);
+    await store.update((s) => {
+      s.config = { policy: "authenticated", methods: [] };
+    });
+    expect((await kernel.gate(request)).ok).toBe(false);
+  });
   it("warns about saved configuration precedence and no usable methods", async () => {
     const { store, kernel } = await fixture();
     await store.update((s) => {

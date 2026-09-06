@@ -380,6 +380,10 @@ export class AuthKernel {
   }
   async gate(req: IncomingMessage): Promise<GateResult> {
     const state = await this.store.read();
+    // Credential and policy decisions use one snapshot, never a stale refresh
+    // that could restore legacy authority during concurrent method retirement.
+    const methods = new Set(state.config?.methods || this.methods);
+    const policy = state.config?.policy || this.policy;
     const now = Date.now();
     const raw = cookies(req)[SESSION_COOKIE];
     if (raw) {
@@ -408,7 +412,7 @@ export class AuthKernel {
       return { ok: false };
     }
     const auth = req.headers.authorization || "";
-    if (this.methods.has("legacy") && this.legacyToken) {
+    if (methods.has("legacy") && this.legacyToken) {
       const query =
         new URL(req.url || "/", "http://localhost").searchParams.get("token") ||
         "";
@@ -416,7 +420,7 @@ export class AuthKernel {
       if (safeEqual(supplied, this.legacyToken))
         return { ok: true, identity: { id: "legacy:token" }, via: "legacy" };
     }
-    if (this.methods.has("external") && this.trustedHeader) {
+    if (methods.has("external") && this.trustedHeader) {
       const value = req.headers[this.trustedHeader.toLowerCase()];
       const user = (Array.isArray(value) ? value[0] : value)?.trim();
       if (user)
@@ -438,7 +442,7 @@ export class AuthKernel {
           via: "token",
         };
     }
-    return this.policy === "open"
+    return policy === "open"
       ? { ok: true, identity: { id: "none" }, via: "open" }
       : { ok: false };
   }
