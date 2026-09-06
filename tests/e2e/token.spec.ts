@@ -10,10 +10,34 @@ const WRONG_TOKEN = "wrong";
 test.beforeEach(async ({ page, context }) => {
   // Clear stored token before each test
   await context.clearCookies();
+  await context.request.post("/api/mock/reset", { headers: { authorization: `Bearer ${CORRECT_TOKEN}` }, data: {} });
   await context.addInitScript(() => localStorage.removeItem("pi-web-token"));
 });
 
 test.describe("token overlay", () => {
+  for (const failure of ["http", "network"] as const) test(`logout reports ${failure} failure without claiming revocation`, async ({ page }) => {
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.route("**/api/auth/logout", route => failure === "http" ? route.fulfill({ status: 500, json: { error: "store unavailable" } }) : route.abort("failed"));
+    await page.locator("#prompt").fill("/logout");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await expect(page.getByText(/Logout failed; your server session may still be active/)).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("pi-web-token"))).toBe(CORRECT_TOKEN);
+    expect((await page.context().cookies()).some(c => c.name === "pi_web_session")).toBe(true);
+    await expect(page.locator("#tokenOverlay")).toBeHidden();
+  });
+  test("security renders canonical authenticated policy despite legacy none preset", async ({ page }) => {
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.route("**/api/auth/security", async route => {
+      const response = await route.fetch(); const data = await response.json();
+      await route.fulfill({ json: { ...data, mode: "none", policy: "authenticated", methods: ["password"], passwordConfigured: true } });
+    });
+    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
+    await expect(page.getByRole("heading", { name: "Sign-in methods", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Change password", exact: true })).toBeVisible();
+    expect(await page.evaluate(() => localStorage.getItem("pi-web-token"))).toBeNull();
+  });
   test("shows overlay on page load when no token stored", async ({ page }) => {
     await page.goto("/");
     await expect(page.locator("#tokenOverlay")).toBeVisible();
@@ -86,7 +110,7 @@ test.describe("token overlay", () => {
       tokenContext.request.delete("/api/auth/tokens/missing", { headers: bearerHeaders }).then(r => r.status()),
     ]);
     await tokenContext.close();
-    expect(bearerResults).toEqual([401, 401, 401]);
+    expect(bearerResults).toEqual([200, 403, 403]);
 
     const missingResults = await page.evaluate(async () => {
       const headers = { "content-type": "application/json", "x-pi-web-client-id": "security-test" };
@@ -127,8 +151,8 @@ test.describe("token overlay", () => {
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
-    await expect(security.getByText("Authentication mode")).toBeVisible();
-    await expect(security.getByText("legacy", { exact: true })).toBeVisible();
+    await expect(security.getByText("Authentication policy")).toBeVisible();
+    await expect(security.getByText("legacy", { exact: true }).first()).toBeVisible();
     await expect(security.getByText("Devices & sessions")).toBeVisible();
     await expect(page.locator("#tokenShareSection")).toHaveCount(0);
 

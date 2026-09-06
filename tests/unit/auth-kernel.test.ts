@@ -23,11 +23,11 @@ describe("auth kernel", () => {
     const s = await store(); const k = new AuthKernel("external", s, "", false, "Tailscale-User-Login");
     expect(await k.gate(req({ "tailscale-user-login": "alice@example.com" }))).toMatchObject({ ok: true, identity: { id: "external:alice@example.com", displayName: "alice@example.com" } });
     expect((await k.gate(req())).ok).toBe(false);
-    expect((await new AuthKernel("external", s).gate(req())).ok).toBe(true);
+    expect((await new AuthKernel("external", s).gate(req())).ok).toBe(false);
   });
 
   it.each(["external", "none"] as const)("lets %s identities read security inventory but denies mutations", async mode => {
-    const s = await store(); const k = new AuthKernel(mode, s); const gated = await k.gate(req());
+    const s = await store(); const k = new AuthKernel(mode, s, "", false, "x-verified-user"); const gated = await k.gate(req({ "x-verified-user": "owner" }));
     expect(gated.ok).toBe(true);
     if (!gated.ok) return;
 
@@ -95,7 +95,7 @@ describe("auth kernel", () => {
 
   it("mints hashed single-use WebSocket tickets with identity propagation", async () => {
     const k = new AuthKernel("none", await store()); const ticket = k.mintWsTicket({ id: "token:automation" });
-    expect(k.redeemWsTicket(ticket)).toEqual({ id: "token:automation" });
+    expect(k.redeemWsTicket(ticket)?.identity).toEqual({ id: "token:automation" });
     expect(k.redeemWsTicket(ticket)).toBeUndefined();
   });
 
