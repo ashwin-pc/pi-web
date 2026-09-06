@@ -28,6 +28,7 @@ const bytes = (value: string) => new Uint8Array(Buffer.from(value, "base64url"))
 export type PasskeyConfig = { rpID: string; rpName: string; origin: string };
 export async function handlePasskeyRoute(req: IncomingMessage, res: ServerResponse, url: URL, kernel: AuthKernel, store: AuthStore, config: PasskeyConfig): Promise<boolean> {
   if (!url.pathname.startsWith("/api/auth/")) return false;
+  if (!url.pathname.includes("bootstrap") && !kernel.methods.has("passkey")) return false;
   if (req.method === "GET" && url.pathname === "/api/auth/challenge") { json(res, 200, { mode: "redirect", url: "/api/auth/login" }); return true; }
   if (req.method === "GET" && (url.pathname === "/api/auth/login" || url.pathname === "/api/auth/passkey-login" || url.pathname === "/api/auth/passkey-bootstrap")) {
     if (url.pathname.endsWith("bootstrap") && bootstrapRequiresLoopback(config) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap is localhost-only" }); return true; }
@@ -67,7 +68,7 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
     const result = await verifyRegistrationResponse({ response: input.response, expectedChallenge: pending.challenge, expectedOrigin: config.origin, expectedRPID: config.rpID, requireUserVerification: true });
     if (!result.verified || !result.registrationInfo) { json(res, 401, { ok: false, error: "Verification failed" }); return true; }
     const c = result.registrationInfo.credential;
-    await store.update(s => { if (!s.bootstrap || s.bootstrap.hash !== pending.bootstrapHash || s.bootstrap.usedAt || s.bootstrap.expiresAt <= Date.now()) throw new Error("Bootstrap already used"); s.bootstrap.usedAt = Date.now(); s.credentials.push({ id: c.id, publicKey: b64(c.publicKey), counter: c.counter, transports: c.transports, name: input.name?.slice(0, 80) || "Passkey", createdAt: Date.now() }); });
+    await store.update(s => { if (!s.bootstrap || s.bootstrap.hash !== pending.bootstrapHash || s.bootstrap.usedAt || s.bootstrap.expiresAt <= Date.now()) throw new Error("Bootstrap already used"); s.bootstrap.usedAt = Date.now(); s.config = { policy: "authenticated", methods: [...new Set([...(s.config?.methods || kernel.methods), "passkey" as const])] }; s.credentials.push({ id: c.id, publicKey: b64(c.publicKey), counter: c.counter, transports: c.transports, name: input.name?.slice(0, 80) || "Passkey", createdAt: Date.now() }); });
     await kernel.establishSession(res, { id: "owner", displayName: "Owner" }, "passkey", req, true, { passkeyId: c.id }); json(res, 200, { ok: true }); return true;
   }
   return false;

@@ -254,7 +254,8 @@ http://<machine-name>:8787
 - `PI_WEB_AUTH_ORIGIN` - exact public origin for login/WebAuthn/CSRF, including HTTPS and port
 - `PI_WEB_AUTH_RP_ID` - WebAuthn RP ID, defaults to origin hostname
 - `PI_WEB_AUTH_TRUSTED_HEADER` - verified proxy identity header; requires a restricted backend
-- `PI_WEB_AUTH_STORE` - authentication database path (default `~/.pi/agent/web/auth.json`)
+- `PI_WEB_AUTH_STORE` - authentication database path (default `~/.pi/agent/web/auth.json`); independent dev/production instances must use different paths, otherwise policy and revocation changes are shared live
+- `PI_WEB_AUTH_PROXY_PEERS` - optional exact socket IPs allowed to supply a sanitized, single-IP `X-Forwarded-For` for login throttling; requires a header-stripping trusted proxy and restricted backend access (unset by default)
 - `PI_WEB_CWD` - project directory Pi should operate in, default current directory
 - `PI_WEB_NO_SESSION=1` - use in-memory sessions only
 - `PI_WEB_CHILD_HOST` - supervised child bind host, default `127.0.0.1`

@@ -85,8 +85,7 @@ export async function handlePublicDeviceGrant(
     return false;
   const body = (await input(req)) as { grant?: string };
   const hash = hashSecret(body.grant || "");
-  let identity: import("./kernel.js").Identity | undefined,
-    method: HumanAuthMethod | undefined;
+  let identity: import("./kernel.js").Identity | undefined;
   await store.update((state) => {
     const grant = (state.deviceGrants || []).find(
       (g) =>
@@ -106,14 +105,13 @@ export async function handlePublicDeviceGrant(
     if (grant && minter) {
       grant.usedAt = Date.now();
       identity = grant.createdBy;
-      method = minter.method;
     }
   });
   if (!identity) {
     send(res, 401, { ok: false, error: "Invalid or expired device grant" });
     return true;
   }
-  await kernel.establishSession(res, identity, method, req, false);
+  await kernel.establishSession(res, identity, "grant", req, false);
   send(res, 200, { ok: true });
   return true;
 }
@@ -138,6 +136,29 @@ export async function handleSecurityRoute(
       identity: auth.identity,
     });
     return true;
+  }
+  const destructive =
+    (req.method === "PUT" &&
+      ["/api/auth/password", "/api/auth/methods"].includes(url.pathname)) ||
+    (req.method === "DELETE" &&
+      (url.pathname === "/api/auth/sessions" ||
+        url.pathname.startsWith("/api/auth/passkeys/")));
+  if (destructive) {
+    const session = state.sessions.find(
+      (s) => s.hash === auth.sessionHash && !s.revokedAt && s.expiresAt > now,
+    );
+    if (
+      !session?.authenticatedAt ||
+      session.authenticatedAt < now - 5 * 60_000
+    ) {
+      send(res, 403, {
+        error:
+          "Recent sign-in required. Sign in again using the Security page link, then retry within five minutes.",
+        code: "reauth_required",
+        url: "/api/auth/login",
+      });
+      return true;
+    }
   }
   const requireSession = () => {
     if (auth.via === "session") return true;
@@ -248,15 +269,13 @@ export async function handleSecurityRoute(
       return true;
     }
     const retiring = [...kernel.methods].some((m) => !methods.includes(m));
-    const usable = methods.filter((m) =>
-      m === "password"
-        ? !!state.password
-        : m === "passkey"
-          ? state.credentials.some((c) => !c.revokedAt)
-          : m === "external"
-            ? !!kernel.trustedHeader
-            : !!kernel.legacyToken,
-    );
+    const usable = methods.filter((m) => kernel.methodReady(m, state));
+    if (usable.length !== methods.length) {
+      send(res, 409, {
+        error: "Enroll credentials before enabling a sign-in method",
+      });
+      return true;
+    }
     if (retiring && !usable.some((m) => state.verifiedMethods?.includes(m))) {
       send(res, 409, {
         error: "Enroll and verify a replacement login before retiring a method",
@@ -288,6 +307,7 @@ export async function handleSecurityRoute(
   if (req.method === "DELETE" && match) {
     if (!requireSession()) return true;
     let found = false;
+    let current = false;
     await store.update((s) => {
       const item = s.sessions.find(
         (x) => x.hash === match![1] || hashSecret(x.hash) === match![1],
@@ -295,8 +315,10 @@ export async function handleSecurityRoute(
       if (item) {
         item.revokedAt = now;
         found = true;
+        current = item.hash === auth.sessionHash;
       }
     });
+    if (current) kernel.clearSession(res);
     send(
       res,
       found ? 200 : 404,

@@ -1,6 +1,7 @@
 import { isolatedAuthEnv } from "./auth-isolation.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
+import { AuthStore, hashSecret } from "../server/auth/kernel.js";
 import { afterEach, describe, expect, it } from "vitest";
 
 const projectRoot = new URL("..", import.meta.url).pathname;
@@ -72,10 +73,11 @@ describe("pi-web supervisor", () => {
   it("restarts an unexpectedly terminated child without double-spawning on intentional restart", async () => {
     const publicPort = await freePort();
     const childPort = await freePort();
+    const authEnv = isolatedAuthEnv();
     const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
       cwd: projectRoot,
       env: {
-        ...isolatedAuthEnv(),
+        ...authEnv,
         HOST: "127.0.0.1",
         PORT: String(publicPort),
         PI_WEB_CHILD_PORT: String(childPort),
@@ -100,6 +102,19 @@ describe("pi-web supervisor", () => {
       return response.ok ? current : undefined;
     }, supervisor);
     expect(recovered.childGeneration).toBe(initial.childGeneration + 1);
+
+    // A stopped child cannot answer auth requests; the supervisor must verify
+    // the same persistent store directly, including legacy retirement.
+    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
+    await store.update(s => { s.config = { policy: "authenticated", methods: [] }; s.apiTokens.push({ id: "restart", name: "restart", hash: hashSecret("machine-restart"), createdAt: Date.now(), expiresAt: Date.now() + 60_000 }); });
+    process.kill(recovered.childPid!, "SIGSTOP");
+    try {
+      const denied = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: `Bearer ${token}` } });
+      expect(denied.status).toBe(401);
+      const allowed = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: "Bearer machine-restart" }, signal: AbortSignal.timeout(2000) });
+      expect(allowed.status).toBe(200);
+      await store.update(s => { s.config = { policy: "authenticated", methods: ["legacy"] }; });
+    } finally { process.kill(recovered.childPid!, "SIGCONT"); }
 
     const restartResponse = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
       method: "POST",

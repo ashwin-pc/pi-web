@@ -1,13 +1,32 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isIP } from "node:net";
 import {
   hashPassword,
   hashSecret,
+  isLoopback,
   verifyPassword,
   type AuthKernel,
   type AuthStore,
 } from "./kernel.js";
 
-const attempts = new Map<string, { count: number; resetAt: number }>();
+const attempts = new Map<
+  string,
+  { count: number; resetAt: number; nextAt: number }
+>();
+export function loginPeer(req: IncomingMessage) {
+  const peer = req.socket.remoteAddress || "unknown";
+  const trusted = (process.env.PI_WEB_AUTH_PROXY_PEERS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => isIP(s));
+  const forwarded = req.headers["x-forwarded-for"];
+  // Opt-in exact proxy peers; require one sanitized IP, never take an arbitrary chain.
+  return trusted.includes(peer) &&
+    typeof forwarded === "string" &&
+    isIP(forwarded.trim())
+    ? forwarded.trim()
+    : peer;
+}
 let active = 0;
 const send = (res: ServerResponse, status: number, value: unknown) => {
   res.writeHead(status, {
@@ -30,11 +49,15 @@ function allow(req: IncomingMessage, store: AuthStore) {
   const now = Date.now();
   for (const [id, rate] of attempts)
     if (rate.resetAt <= now) attempts.delete(id);
-  const id = `${store.path}:${req.socket.remoteAddress || "unknown"}`;
-  if ((!attempts.has(id) && attempts.size >= 4096) || active >= 4) return false;
-  const rate = attempts.get(id) || { count: 0, resetAt: now + 60_000 };
+  const id = `${store.path}:${loginPeer(req)}`;
+  if ((!attempts.has(id) && attempts.size >= 4096) || active >= 1) return false;
+  const rate = attempts.get(id) || {
+    count: 0,
+    resetAt: now + 60_000,
+    nextAt: 0,
+  };
   attempts.set(id, rate);
-  return ++rate.count <= 10;
+  return now >= rate.nextAt;
 }
 export function passwordLoginPage(
   res: ServerResponse,
@@ -43,7 +66,7 @@ export function passwordLoginPage(
 ) {
   const setup = setupToken !== undefined;
   const form = (method: string, label: string, autocomplete: string) =>
-    `<form data-method="${method}"><label>${label}<input name=secret type=password autocomplete="${autocomplete}" ${setup ? "minlength=12" : ""} required></label><button>${setup ? "Set password" : "Sign in"}</button></form>`;
+    `<form data-method="${method}"><label>${label}<input name=secret type=password autocomplete="${autocomplete}" ${setup ? "minlength=12" : ""} required></label>${setup ? "<label>Confirm password<input name=confirm type=password autocomplete=new-password required></label>" : ""}<button>${setup ? "Set password" : "Sign in"}</button></form>`;
   const password = methods.includes("password")
     ? form(
         "password",
@@ -65,7 +88,7 @@ export function passwordLoginPage(
   const passkey = methods.includes("passkey")
     ? `<a href="${passkeyHref}">${setup ? "Set up" : "Sign in with"} a passkey</a>`
     : "";
-  const html = `<!doctype html><meta name=viewport content="width=device-width"><meta name=referrer content=no-referrer><title>pi-web authentication</title><style>body{font:16px system-ui;max-width:28rem;margin:12vh auto;padding:2rem;background:#111;color:#eee}input,button{box-sizing:border-box;font:inherit;padding:.7rem;width:100%;margin:.5rem 0}a{color:#9cf}</style><h1>${setup ? "Set up pi-web" : "Sign in to pi-web"}</h1>${password}${passkey}${legacy}${external}<p id=e role=alert></p><script>const setup=${JSON.stringify(setupToken || "").replace(/</g, "\\u003c")};document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',async x=>{x.preventDefault();const button=f.querySelector('button');button.disabled=true;try{const method=f.dataset.method;const r=await fetch('/api/auth/'+method+(setup?'/bootstrap':'/login'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:f.elements.secret?.value,token:setup})});if(!r.ok)throw Error((await r.json()).error||'Sign in failed');location.href='/'}catch(error){document.getElementById('e').textContent=error.message;button.disabled=false}}))</script>`;
+  const html = `<!doctype html><meta name=viewport content="width=device-width"><meta name=referrer content=no-referrer><title>pi-web authentication</title><style>body{font:16px system-ui;max-width:28rem;margin:12vh auto;padding:2rem;background:#111;color:#eee}input,button{box-sizing:border-box;font:inherit;padding:.7rem;width:100%;margin:.5rem 0}a{color:#9cf}</style><h1>${setup ? "Set up pi-web" : "Sign in to pi-web"}</h1>${password}${passkey}${legacy}${external}<p id=e role=alert></p><script>const setup=${JSON.stringify(setupToken || "").replace(/</g, "\\u003c")};document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',async x=>{x.preventDefault();const button=f.querySelector('button');button.disabled=true;try{if(setup&&f.elements.secret.value!==f.elements.confirm.value)throw Error('Passwords do not match');const method=f.dataset.method;const r=await fetch('/api/auth/'+method+(setup?'/bootstrap':'/login'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:f.elements.secret?.value,token:setup})});if(!r.ok)throw Error((await r.json()).error||'Sign in failed');location.href='/'}catch(error){document.getElementById('e').textContent=error.message;button.disabled=false}}))</script>`;
   res.writeHead(200, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
@@ -81,6 +104,7 @@ export async function handlePasswordLogin(
   url: URL,
   kernel: AuthKernel,
   store: AuthStore,
+  origin = "http://localhost",
 ) {
   const match =
     /^\/api\/auth\/(password|legacy|external)\/(login|bootstrap)$/.exec(
@@ -89,12 +113,15 @@ export async function handlePasswordLogin(
   if (req.method !== "POST" || !match) return false;
   const method = match[1] as "password" | "legacy" | "external",
     setup = match[2] === "bootstrap";
-  if (!kernel.methods.has(method) || (setup && method !== "password")) {
+  if (
+    (!setup && !kernel.methods.has(method)) ||
+    (setup && method !== "password")
+  ) {
     send(res, 403, { error: "Method disabled" });
     return true;
   }
   if (!allow(req, store)) {
-    res.setHeader("retry-after", "60");
+    res.setHeader("retry-after", "2");
     send(res, 429, { error: "Too many attempts. Try again later." });
     return true;
   }
@@ -104,6 +131,12 @@ export async function handlePasswordLogin(
     const state = await store.read();
     let passwordHash = state.password?.hash;
     if (setup) {
+      if (new URL(origin).hostname === "localhost" && !isLoopback(req)) {
+        send(res, 403, {
+          error: "Bootstrap requires loopback access for localhost origins",
+        });
+        return true;
+      }
       const tokenHash =
         typeof body.token === "string" ? hashSecret(body.token) : "";
       if (
@@ -127,6 +160,15 @@ export async function handlePasswordLogin(
           throw new Error("Setup token already used or expired");
         s.bootstrap.usedAt = Date.now();
         s.password = { hash, changedAt: Date.now() };
+        s.config = {
+          policy: "authenticated",
+          methods: [
+            ...new Set([
+              ...(s.config?.methods || kernel.methods),
+              "password" as const,
+            ]),
+          ],
+        };
         for (const session of s.sessions) session.revokedAt = Date.now();
       });
     } else if (method === "password") {
@@ -178,6 +220,16 @@ export async function handlePasswordLogin(
     });
     return true;
   } finally {
+    const id = `${store.path}:${loginPeer(req)}`;
+    if (res.statusCode < 400) attempts.delete(id);
+    else {
+      const rate = attempts.get(id);
+      if (rate) {
+        rate.count++;
+        rate.nextAt =
+          Date.now() + Math.min(2000, 100 * 2 ** Math.min(rate.count - 1, 5));
+      }
+    }
     active--;
   }
 }

@@ -1,6 +1,11 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
+import { join } from "node:path";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
+import { resolveAuthConfig } from "./server/auth/config.js";
+import { trustedOrigin } from "./server/auth/origin.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 
 const publicHost = process.env.HOST || "127.0.0.1";
@@ -16,11 +21,14 @@ let childGeneration = 0;
 const intentionalStops = new Set<number>();
 
 async function isAuthorized(req: IncomingMessage, mutation = false): Promise<boolean> {
-  // Delegate to the child gate rather than retaining an independent legacy fallback.
-  const headers: Record<string, string> = {};
-  for (const name of ["authorization", "cookie", "origin", "x-pi-web-client-id"]) { const value = req.headers[name]; if (typeof value === "string") headers[name] = value; }
-  const trusted = process.env.PI_WEB_AUTH_TRUSTED_HEADER?.toLowerCase(); if (trusted && typeof req.headers[trusted] === "string") headers[trusted] = req.headers[trusted] as string;
-  try { const response = await fetch(`http://${childHost}:${childPort}/api/auth/${mutation ? "authorize" : "info"}`, { method: mutation ? "POST" : "GET", headers, signal: AbortSignal.timeout(3000) }); return response.ok; } catch { return false; }
+  try {
+    const config = resolveAuthConfig(process.env);
+    const kernel = new AuthKernel(config.legacyMode, new AuthStore(process.env.PI_WEB_AUTH_STORE || join(getAgentDir(), "web", "auth.json")), token, true, config.trustedHeader, config.policy, config.methods);
+    await kernel.refreshConfig();
+    const auth = await kernel.gate(req);
+    if (!auth.ok) return false;
+    return !mutation || auth.via !== "session" || (!!req.headers["x-pi-web-client-id"] && trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`));
+  } catch { return false; }
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
@@ -111,14 +119,14 @@ const supervisor = createServer(async (req, res) => {
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
     if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
-    if (!await isAuthorized(req, true)) return sendJson(res, 401, { ok: false, error: "Unauthorized or child unavailable" });
+    if (!await isAuthorized(req, true)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
     sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
     void restartChild();
     return;
   }
 
   if (url.pathname === "/__supervisor/status") {
-    if (!await isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized or child unavailable" });
+    if (!await isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
     return sendJson(res, 200, {
       ok: true,
       childPid: child?.pid,
@@ -179,5 +187,5 @@ startChild();
 supervisor.listen(publicPort, publicHost, () => {
   console.log(`[supervisor] listening on http://${publicHost}:${publicPort}`);
   console.log(`[supervisor] child target http://${childHost}:${childPort}`);
-  console.log(token ? "[supervisor] restart/status endpoints require token" : "[supervisor] auth disabled");
+  console.log("[supervisor] restart/status endpoints use canonical persistent auth policy");
 });

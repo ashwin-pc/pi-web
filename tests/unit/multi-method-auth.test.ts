@@ -1,8 +1,8 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AuthKernel,
   AuthStore,
@@ -11,7 +11,12 @@ import {
 } from "../../server/auth/kernel.js";
 import { resolveAuthConfig } from "../../server/auth/config.js";
 import { initializeAuth } from "../../server/auth/bootstrap.js";
-import { handlePasswordLogin } from "../../server/auth/password.js";
+import { trustedOrigin } from "../../server/auth/origin.js";
+import {
+  handlePasswordLogin,
+  loginPeer,
+  passwordLoginPage,
+} from "../../server/auth/password.js";
 import { handleSecurityRoute } from "../../server/auth/security.js";
 
 async function fixture() {
@@ -51,6 +56,7 @@ function response() {
     },
     writeHead(status: number, headers: Record<string, string>) {
       this.status = status;
+      this.statusCode = status;
       Object.assign(this.headers, headers);
     },
     end(text: string) {
@@ -65,6 +71,213 @@ const config = {
 };
 
 describe("multi-method human authentication", () => {
+  it("accepts the actual authority and configured origin but never forged forwarding headers", () => {
+    for (const host of [
+      "127.0.0.1:9300",
+      "192.168.1.5:9300",
+      "machine.tailnet:9300",
+    ])
+      expect(
+        trustedOrigin(
+          req({}, { host, origin: `http://${host}` }),
+          "http://localhost:9300",
+        ),
+      ).toBe(true);
+    expect(
+      trustedOrigin(
+        req({}, { host: "internal", origin: "https://public.example" }),
+        "https://public.example",
+      ),
+    ).toBe(true);
+    for (const origin of [
+      "null",
+      "garbage",
+      "https://evil.example",
+      "https://public.example/path",
+    ])
+      expect(
+        trustedOrigin(
+          req(
+            {},
+            { host: "internal", origin, "x-forwarded-host": "evil.example" },
+          ),
+          "https://public.example",
+        ),
+      ).toBe(false);
+  });
+  it("recovers dead PID locks but never steals a live lock by age", async () => {
+    const { store } = await fixture();
+    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: 2147483647 }));
+    await store.update((s) => {
+      s.verifiedMethods = ["legacy"];
+    });
+    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: process.pid }));
+    await utimes(`${store.path}.lock`, new Date(0), new Date(0));
+    await expect(store.update(() => {})).rejects.toThrow(
+      "Auth store is locked",
+    );
+  }, 10_000);
+  it("isolates listener failures from committed writes and other listeners", async () => {
+    const { store } = await fixture();
+    const seen = vi.fn();
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      store.listeners.add(() => {
+        throw Error("listener fault");
+      });
+      store.listeners.add(seen);
+      await store.update((s) => {
+        s.verifiedMethods = ["legacy"];
+      });
+      expect(seen).toHaveBeenCalledOnce();
+      expect((await store.read()).verifiedMethods).toEqual(["legacy"]);
+    } finally {
+      log.mockRestore();
+    }
+  });
+  it("warns about saved configuration precedence and no usable methods", async () => {
+    const { store, kernel } = await fixture();
+    await store.update((s) => {
+      s.config = { policy: "authenticated", methods: ["password"] };
+    });
+    const warn = vi.fn();
+    await kernel.startupDiagnostics(warn);
+    expect(warn).toHaveBeenCalledTimes(2);
+    expect(kernel.methods.has("legacy")).toBe(false);
+  });
+  it("requires explicit sanitized proxy trust for throttle identities", () => {
+    const old = process.env.PI_WEB_AUTH_PROXY_PEERS;
+    try {
+      delete process.env.PI_WEB_AUTH_PROXY_PEERS;
+      const request = req({}, { "x-forwarded-for": "192.0.2.1" });
+      expect(loginPeer(request)).toBe("127.0.0.1");
+      process.env.PI_WEB_AUTH_PROXY_PEERS = "127.0.0.1";
+      expect(loginPeer(request)).toBe("192.0.2.1");
+      request.headers["x-forwarded-for"] = "192.0.2.1, 192.0.2.2";
+      expect(loginPeer(request)).toBe("127.0.0.1");
+    } finally {
+      if (old === undefined) delete process.env.PI_WEB_AUTH_PROXY_PEERS;
+      else process.env.PI_WEB_AUTH_PROXY_PEERS = old;
+    }
+  });
+  it("denies destructive changes for old and grant sessions and rejects unenrolled methods", async () => {
+    const { store, kernel } = await fixture();
+    const res = response();
+    await kernel.establishSession(
+      res,
+      { id: "owner" },
+      "grant",
+      undefined,
+      false,
+    );
+    const request = req(
+      {},
+      { cookie: res.headers["set-cookie"].split(";")[0] },
+      "DELETE",
+    );
+    const auth = await kernel.gate(request);
+    if (!auth.ok) throw Error("session missing");
+    const denied = response();
+    await handleSecurityRoute(
+      request,
+      denied,
+      new URL("/api/auth/sessions", config.origin),
+      auth,
+      kernel,
+      store,
+      config,
+    );
+    expect(denied.status).toBe(403);
+    const recent = response();
+    await kernel.establishSession(recent, { id: "legacy:token" }, "legacy");
+    const r = req(
+      { methods: ["legacy", "password"] },
+      { cookie: recent.headers["set-cookie"].split(";")[0] },
+      "PUT",
+    );
+    const a = await kernel.gate(r);
+    if (!a.ok) throw Error("session missing");
+    const result = response();
+    await handleSecurityRoute(
+      r,
+      result,
+      new URL("/api/auth/methods", config.origin),
+      a,
+      kernel,
+      store,
+      config,
+    );
+    expect(result.status).toBe(409);
+    await store.update((s) => {
+      s.sessions.find((s) => s.hash === a.sessionHash)!.authenticatedAt =
+        Date.now() - 300001;
+    });
+    const expired = response();
+    await handleSecurityRoute(
+      req({}, {}, "DELETE"),
+      expired,
+      new URL("/api/auth/sessions", config.origin),
+      a,
+      kernel,
+      store,
+      config,
+    );
+    expect(expired.status).toBe(403);
+  });
+  it("renders password confirmation only for setup and exposes only ready login methods", async () => {
+    const res = response();
+    passwordLoginPage(res, ["password"], "setup-token");
+    expect(res.text).toContain("name=confirm");
+    expect(res.text).toContain("Passwords do not match");
+    const { kernel } = await fixture();
+    expect(await kernel.readyMethods()).toEqual(["legacy", "external"]);
+  });
+  it("clears the current cookie when self-revoking and records grant attribution honestly", async () => {
+    const { kernel, store } = await fixture();
+    const res = response();
+    await kernel.establishSession(
+      res,
+      { id: "owner" },
+      "grant",
+      undefined,
+      false,
+    );
+    const request = req(
+      {},
+      { cookie: res.headers["set-cookie"].split(";")[0] },
+      "DELETE",
+    );
+    const auth = await kernel.gate(request);
+    if (!auth.ok) throw Error("session missing");
+    expect((await store.read()).sessions[0]).toMatchObject({ method: "grant" });
+    expect((await store.read()).sessions[0].authenticatedAt).toBeUndefined();
+    const result = response();
+    await handleSecurityRoute(
+      request,
+      result,
+      new URL(`/api/auth/sessions/${auth.sessionHash}`, config.origin),
+      auth,
+      kernel,
+      store,
+      config,
+    );
+    expect(result.status).toBe(200);
+    expect(result.headers["set-cookie"]).toContain("Max-Age=0");
+  });
+  it("enforces password bootstrap loopback parity", async () => {
+    const { store, kernel } = await fixture();
+    const request = req({});
+    request.socket.remoteAddress = "192.0.2.1";
+    const res = response();
+    await handlePasswordLogin(
+      request,
+      res,
+      new URL("/api/auth/password/bootstrap", config.origin),
+      kernel,
+      store,
+    );
+    expect(res.status).toBe(403);
+  });
   it("translates legacy configuration into independent policy and methods", () => {
     expect(resolveAuthConfig({ PI_WEB_AUTH_MODE: "none" })).toMatchObject({
       policy: "open",
@@ -106,6 +319,7 @@ describe("multi-method human authentication", () => {
       store,
     );
     expect(res.status).toBe(200);
+    expect((await store.read()).config?.methods).toEqual(["password"]);
     const replay = response();
     await handlePasswordLogin(
       req({ token, password: "another password" }),

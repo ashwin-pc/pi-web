@@ -30,8 +30,9 @@ export type CredentialRecord = {
 export type SessionRecord = {
   hash: string;
   identity: Identity;
-  method?: HumanAuthMethod;
+  method?: HumanAuthMethod | "grant";
   device?: string;
+  authenticatedAt?: number;
   ip?: string;
   createdAt: number;
   lastSeenAt: number;
@@ -89,33 +90,56 @@ const safeEqual = (a: string, b: string) => {
   const bb = Buffer.from(b);
   return aa.length === bb.length && timingSafeEqual(aa, bb);
 };
+let passwordWorkActive = false;
 const scrypt = (
   password: string,
   salt: Buffer,
   length: number,
   options: { N: number; r: number; p: number },
 ): Promise<Buffer> =>
-  new Promise((resolve, reject) =>
-    nodeScrypt(
-      password,
-      salt,
-      length,
-      { ...options, maxmem: 160 * 1024 * 1024 },
-      (error, key) => (error ? reject(error) : resolve(key)),
-    ),
-  );
+  new Promise((resolve, reject) => {
+    if (passwordWorkActive) {
+      reject(new Error("Password verification busy; retry shortly"));
+      return;
+    }
+    passwordWorkActive = true;
+    try {
+      nodeScrypt(
+        password,
+        salt,
+        length,
+        { ...options, maxmem: 160 * 1024 * 1024 },
+        (error, key) => {
+          passwordWorkActive = false;
+          error ? reject(error) : resolve(key);
+        },
+      );
+    } catch (error) {
+      passwordWorkActive = false;
+      reject(error);
+    }
+  });
 export async function hashPassword(password: string) {
   const salt = randomBytes(16);
   const derived = (await scrypt(password, salt, 64, {
-    N: 131072,
+    N: 32768,
     r: 8,
     p: 1,
   })) as Buffer;
-  return `scrypt$131072$8$1$${salt.toString("base64url")}$${derived.toString("base64url")}`;
+  return `scrypt$32768$8$1$${salt.toString("base64url")}$${derived.toString("base64url")}`;
 }
 export async function verifyPassword(password: string, encoded: string) {
   const [kind, n, r, p, salt, expected] = encoded.split("$");
-  if (kind !== "scrypt" || !salt || !expected) return false;
+  if (
+    kind !== "scrypt" ||
+    !salt ||
+    !expected ||
+    ![32768, 65536, 131072].includes(Number(n)) ||
+    r !== "8" ||
+    p !== "1" ||
+    Buffer.from(expected, "base64url").length !== 64
+  )
+    return false;
   try {
     const actual = (await scrypt(
       password,
@@ -126,6 +150,40 @@ export async function verifyPassword(password: string, encoded: string) {
     return safeEqual(actual.toString("base64url"), expected);
   } catch {
     return false;
+  }
+}
+
+/** Serialize reapers so a second reaper cannot unlink a newly acquired lock.
+ * Missing/malformed owner metadata and EPERM are deliberately not evidence of death.
+ * A crash during recovery itself requires operator cleanup of .recovery. */
+async function recoverDeadLock(path: string) {
+  let guard: Awaited<ReturnType<typeof open>>;
+  try {
+    guard = await open(`${path}.recovery`, "wx", 0o600);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") return;
+    throw error;
+  }
+  try {
+    let pid: unknown;
+    try {
+      pid = JSON.parse(await readFile(path, "utf8")).pid;
+    } catch {
+      return;
+    }
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
+      return;
+    try {
+      process.kill(pid, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH")
+        await unlink(path).catch((error) => {
+          if (error.code !== "ENOENT") throw error;
+        });
+    }
+  } finally {
+    await guard.close();
+    await unlink(`${path}.recovery`);
   }
 }
 
@@ -158,9 +216,11 @@ export class AuthStore {
         for (let attempt = 0; attempt < 100; attempt++) {
           try {
             lock = await open(lockPath, "wx", 0o600);
+            await lock.writeFile(JSON.stringify({ pid: process.pid }));
             break;
           } catch (error) {
             if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+            await recoverDeadLock(lockPath);
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
         }
@@ -186,7 +246,16 @@ export class AuthStore {
           });
           await rename(temp, this.path);
           result = state;
-          for (const listener of this.listeners) listener(state);
+          for (const listener of this.listeners) {
+            try {
+              listener(state);
+            } catch (error) {
+              console.error(
+                "Auth store listener failed after committed write",
+                error,
+              );
+            }
+          }
         } finally {
           await lock.close();
           await unlink(lockPath);
@@ -229,6 +298,38 @@ export class AuthKernel {
       this.policy = state.config.policy;
       this.methods = new Set(state.config.methods);
     }
+  }
+  methodReady(method: HumanAuthMethod, state: AuthState) {
+    return method === "password"
+      ? !!state.password
+      : method === "passkey"
+        ? state.credentials.some((c) => !c.revokedAt)
+        : method === "legacy"
+          ? !!this.legacyToken
+          : !!this.trustedHeader;
+  }
+  async readyMethods() {
+    const state = await this.store.read();
+    return [...this.methods].filter((method) =>
+      this.methodReady(method, state),
+    );
+  }
+  async startupDiagnostics(warn: (message: string) => void = console.warn) {
+    const state = await this.store.read();
+    if (
+      state.config &&
+      (state.config.policy !== this.policy ||
+        [...this.methods].sort().join() !==
+          [...state.config.methods].sort().join())
+    )
+      warn(
+        "Auth environment/store disagreement: saved store policy and methods take precedence. Environment changes do not restore retired methods; use Settings or terminal recovery.",
+      );
+    await this.refreshConfig();
+    if (this.policy === "authenticated" && !(await this.readyMethods()).length)
+      warn(
+        "No usable login method; run pi-web auth bootstrap, configure credentials, or deliberately set PI_WEB_AUTH_POLICY=open on an unconfigured store. Saved store policy takes precedence.",
+      );
   }
   async configure(methods: HumanAuthMethod[]) {
     await this.store.update((state) => {
@@ -344,7 +445,7 @@ export class AuthKernel {
   async establishSession(
     res: ServerResponse,
     identity: Identity,
-    method?: HumanAuthMethod,
+    method?: HumanAuthMethod | "grant",
     req?: IncomingMessage,
     verified = true,
     credential?: { passwordHash?: string; passkeyId?: string },
@@ -362,6 +463,7 @@ export class AuthKernel {
       if (
         verified &&
         method &&
+        method !== "grant" &&
         !(s.config?.methods || [...this.methods]).includes(method)
       )
         throw new Error("Authentication method disabled");
@@ -384,7 +486,7 @@ export class AuthKernel {
         );
         if (old) old.revokedAt = now;
       }
-      if (method && verified)
+      if (method && method !== "grant" && verified)
         s.verifiedMethods = [
           ...new Set([...(s.verifiedMethods || []), method]),
         ];
@@ -392,6 +494,7 @@ export class AuthKernel {
         hash: hashSecret(raw),
         identity,
         method,
+        authenticatedAt: verified && method !== "grant" ? now : undefined,
         device,
         ip,
         createdAt: now,

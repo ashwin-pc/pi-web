@@ -20,7 +20,7 @@ export async function initializeAuth(
     return;
   const token = randomSecret();
   await kernel.store.update((s) => {
-    s.config = { policy: "authenticated", methods: ["passkey", "password"] };
+    s.config = { policy: "authenticated", methods: [] };
     s.bootstrap = { hash: hashSecret(token), expiresAt: Date.now() + 600_000 };
   });
   await kernel.refreshConfig();
