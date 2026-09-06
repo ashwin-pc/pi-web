@@ -44,16 +44,18 @@ async function initGitRepo(path: string) {
 
 async function waitForServer(baseUrl: string) {
   const deadline = Date.now() + 15_000;
+  let lastFailure = "No response";
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${baseUrl}/api/state`);
+      const res = await fetch(`${baseUrl}/api/state`, { signal: AbortSignal.timeout(2_000) });
       if (res.ok) return;
-    } catch {
-      // retry
+      lastFailure = `HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`;
+    } catch (error) {
+      lastFailure = String(error);
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  throw new Error(`Server did not start: ${baseUrl}`);
+  throw new Error(`Server did not start: ${baseUrl}; last failure: ${lastFailure}`);
 }
 
 async function waitForCondition(predicate: () => Promise<boolean> | boolean, timeoutMs = 5_000) {
