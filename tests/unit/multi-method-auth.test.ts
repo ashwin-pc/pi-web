@@ -188,6 +188,17 @@ describe("multi-method human authentication", () => {
       config,
     );
     expect(denied.status).toBe(403);
+    const enrollment = response();
+    await handleSecurityRoute(
+      req({}, {}, "POST"),
+      enrollment,
+      new URL("/api/auth/passkeys/options", config.origin),
+      auth,
+      kernel,
+      store,
+      config,
+    );
+    expect(enrollment.status).toBe(403);
     const recent = response();
     await kernel.establishSession(recent, { id: "legacy:token" }, "legacy");
     const r = req(

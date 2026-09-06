@@ -193,7 +193,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     if (state.policy === "authenticated") {
       const keys = section(
         "Passkeys",
-        "Adding a passkey requires this authenticated browser session. Revoking any passkey signs out all devices.",
+        "Adding a passkey requires a sign-in within five minutes. Revoking any passkey signs out all devices.",
       );
       for (const key of state.passkeys)
         keys.append(

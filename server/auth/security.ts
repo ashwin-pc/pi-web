@@ -142,7 +142,11 @@ export async function handleSecurityRoute(
       ["/api/auth/password", "/api/auth/methods"].includes(url.pathname)) ||
     (req.method === "DELETE" &&
       (url.pathname === "/api/auth/sessions" ||
-        url.pathname.startsWith("/api/auth/passkeys/")));
+        url.pathname.startsWith("/api/auth/passkeys/"))) ||
+    (req.method === "POST" &&
+      ["/api/auth/passkeys/options", "/api/auth/passkeys/verify"].includes(
+        url.pathname,
+      ));
   if (destructive) {
     const session = state.sessions.find(
       (s) => s.hash === auth.sessionHash && !s.revokedAt && s.expiresAt > now,
