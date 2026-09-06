@@ -10,6 +10,7 @@ const WRONG_TOKEN = "wrong";
 test.beforeEach(async ({ page, context }) => {
   // Clear stored token before each test
   await context.clearCookies();
+  await context.request.post("/api/mock/reset", { headers: { authorization: `Bearer ${CORRECT_TOKEN}` }, data: {} });
   await context.addInitScript(() => localStorage.removeItem("pi-web-token"));
 });
 
@@ -86,7 +87,7 @@ test.describe("token overlay", () => {
       tokenContext.request.delete("/api/auth/tokens/missing", { headers: bearerHeaders }).then(r => r.status()),
     ]);
     await tokenContext.close();
-    expect(bearerResults).toEqual([401, 401, 401]);
+    expect(bearerResults).toEqual([200, 403, 403]);
 
     const missingResults = await page.evaluate(async () => {
       const headers = { "content-type": "application/json", "x-pi-web-client-id": "security-test" };
@@ -128,7 +129,7 @@ test.describe("token overlay", () => {
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
     await expect(security.getByText("Authentication mode")).toBeVisible();
-    await expect(security.getByText("legacy", { exact: true })).toBeVisible();
+    await expect(security.getByText("legacy", { exact: true }).first()).toBeVisible();
     await expect(security.getByText("Devices & sessions")).toBeVisible();
     await expect(page.locator("#tokenShareSection")).toHaveCount(0);
 

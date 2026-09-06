@@ -529,6 +529,7 @@ test.describe("visual regression", () => {
     await page.getByRole("button", { name: "Create add-device link" }).click();
     await expect(page.getByLabel("Add-device link")).toHaveValue(/single-use-visual-grant/);
     await expect(page.getByRole("img", { name: "Add device QR code" })).toBeVisible();
+    await page.getByRole("img", { name: "Add device QR code" }).scrollIntoViewIfNeeded();
     await expect(page).toHaveScreenshot(`capability-device-handoff-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
   });
 

@@ -639,9 +639,12 @@ export function createComposer(options: {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
     if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) throw new Error("Compaction is not supported by this harness.");
     if (name === "logout") {
+      await fetch("/api/auth/logout", { method: "POST", headers: api.headers(), credentials: "same-origin" });
+      const challenge = await fetch("/api/auth/challenge").then(r => r.json()).catch(() => ({})) as { mode?: string; url?: string };
       stopTokenScanner();
       state.token = "";
       clearToken();
+      if (challenge.mode === "redirect" && challenge.url) { location.assign(challenge.url); return; }
       elements.tokenInput.value = "";
       elements.tokenOverlay.hidden = false;
       elements.tokenInput.focus();
