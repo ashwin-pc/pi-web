@@ -517,7 +517,7 @@ test.describe("visual regression", () => {
 
   test("focused trusted device handoff", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
-    const securityState = { mode: "legacy", identity: { id: "legacy:token", displayName: "Owner" }, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] };
+    const securityState = { mode: "legacy", policy: "authenticated", methods: ["legacy"], identity: { id: "legacy:token", displayName: "Owner" }, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] };
     await page.route("**/api/auth/security", route => route.fulfill({ json: securityState }));
     await page.route("**/api/auth/device-grants", route => route.fulfill({
       status: 201,

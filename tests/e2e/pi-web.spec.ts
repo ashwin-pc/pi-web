@@ -69,6 +69,7 @@ test.describe("composer layout", () => {
     });
 
     await page.clock.install({ time: 0 });
+    await page.clock.pauseAt(0);
     await page.addInitScript(() => {
       const NativeWebSocket = window.WebSocket;
       const fakeSockets: any[] = [];
@@ -100,11 +101,11 @@ test.describe("composer layout", () => {
 
           this.url = parsed.href;
           fakeSockets.push(this);
-          setTimeout(() => {
+          queueMicrotask(() => {
             if (this.readyState !== FakeWebSocket.CONNECTING) return;
             if ((window as any).__piWebSocketAutoOpen) this.emitOpen();
             else this.emitClose();
-          }, 0);
+          });
         }
 
         send() {}
@@ -128,12 +129,14 @@ test.describe("composer layout", () => {
     });
 
     await page.goto("/");
-    await page.clock.runFor(1);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.at(-1)?.readyState)).toBe(1);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await expect(page.locator("#connectionStatus")).toBeHidden();
 
     await page.evaluate(() => (window as any).__piWebSockets.at(-1).emitClose());
     await page.clock.runFor(2501);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.length)).toBe(2);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.at(-1)?.readyState)).toBe(1);
     await expect(page.locator("#connectionStatus")).toBeHidden();
     await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
     expect(messagesRequestCount).toBe(1);
@@ -160,9 +163,22 @@ test.describe("composer layout", () => {
   });
 
   test("connection warning badges refresh the page by click and keyboard", async ({ page }) => {
+    await page.addInitScript(() => {
+      const Native = window.WebSocket;
+      (window as any).__connectionReady = new Promise<void>(resolve => {
+        window.WebSocket = class extends Native {
+          constructor(url: string | URL, protocols?: string | string[]) {
+            super(url, protocols);
+            if (new URL(String(url), location.href).pathname === "/ws") this.addEventListener("open", () => queueMicrotask(resolve));
+          }
+        };
+      });
+    });
     await page.goto("/");
 
     const showWarning = async (kind: "offline" | "syncRequired", text: string) => {
+      // Initial WS open clears warning UI; wait for it instead of racing DOM injection.
+      await page.evaluate(() => (window as any).__connectionReady);
       await page.evaluate(({ kind, text }) => {
         const badge = document.querySelector<HTMLElement>("#connectionStatus")!;
         badge.className = `connectionStatus ${kind}`;
