@@ -26,8 +26,11 @@ import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
-import { AuthKernel, AuthStore, type AuthMode } from "./server/auth/kernel.js";
+import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
+import { resolveAuthConfig } from "./server/auth/config.js";
+import { initializeAuth } from "./server/auth/bootstrap.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
+import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.js";
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 
 
@@ -40,13 +43,15 @@ const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "develo
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
-const authMode = (process.env.PI_WEB_AUTH_MODE || "legacy") as AuthMode;
-if (!["none", "legacy", "passkey", "external"].includes(authMode)) throw new Error(`Invalid PI_WEB_AUTH_MODE: ${authMode}`);
+const authConfig = resolveAuthConfig(process.env);
+const authMode = authConfig.legacyMode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
 const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
-const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", process.env.PI_WEB_AUTH_TRUSTED_HEADER || "");
+const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods);
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
+const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
+if (setupLink) console.log(`First-install setup (single use, expires in 10 minutes): ${setupLink}`);
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
 
@@ -520,19 +525,27 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   try {
 
     if (url.pathname.startsWith("/api/")) {
+      await authKernel.refreshConfig();
+      if (method === "POST" && url.pathname.startsWith("/api/auth/") && req.headers.origin && req.headers.origin !== authOrigin) return sendJson(res, 403, { error: "Origin validation failed" });
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
-      if (authMode === "passkey" && await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
+        if (url.pathname.endsWith("challenge")) return sendJson(res, 200, authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
+        passwordLoginPage(res, [...authKernel.methods], url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined); return;
+      }
+      if (await handlePasswordLogin(req, res, url, authKernel, authStore)) return;
+      if (authKernel.methods.has("passkey") && await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
       const auth = await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
-      if (auth.via === "legacy" && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
-        await authKernel.establishSession(res, auth.identity);
+      if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
+        await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
       if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
-        const validOrigin = authMode !== "passkey" || req.headers.origin === authOrigin;
+        const validOrigin = !req.headers.origin || req.headers.origin === authOrigin;
         if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
       }
+      if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
-      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity), expiresIn: 30 });
+      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);
@@ -757,7 +770,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           ok: true,
           ...await decorateServiceState(await sessionService.state(requestedSessionId)),
           sessionUiState: await sessionUiStateStore.read(),
-          tokenRequired: Boolean(token),
+          tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
 
@@ -1190,6 +1203,11 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 }));
 
 const wss = new WebSocketServer({ noServer: true });
+const browserSockets = new Map<import("ws").WebSocket, string>();
+const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) => { const active = new Set(state.sessions.filter(s => !s.revokedAt && s.expiresAt > Date.now()).map(s => s.hash)); for (const [socket, hash] of browserSockets) if (!active.has(hash)) socket.close(1008, "Browser session revoked"); };
+authStore.listeners.add(enforceBrowserSessions);
+const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
+authSessionSweep.unref();
 server.on("upgrade", (req, socket, head) => {
   let url: URL;
   try {
@@ -1203,7 +1221,9 @@ server.on("upgrade", (req, socket, head) => {
   if (url.pathname !== "/ws") return;
 
   void (async () => {
-    const identity = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authMode === "legacy" && !token ? { id: "mock" } : undefined);
+    const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "mock" }, sessionHash: undefined } : undefined);
+    const identity = ticket?.identity;
+    if (ticket?.sessionHash && !(await authStore.read()).sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     const origin = req.headers.origin;
     if (origin) {
@@ -1213,7 +1233,7 @@ server.on("upgrade", (req, socket, head) => {
       if (!allowed.has(originHost)) { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return; }
     }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
-    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req, url));
+    wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash) { browserSockets.set(ws, ticket.sessionHash); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 });
 

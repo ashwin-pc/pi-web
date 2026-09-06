@@ -15,15 +15,12 @@ let childStarting = false;
 let childGeneration = 0;
 const intentionalStops = new Set<number>();
 
-function requestToken(req: IncomingMessage): string {
-  const auth = req.headers.authorization || "";
-  if (auth.startsWith("Bearer ")) return auth.slice("Bearer ".length);
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
-  return url.searchParams.get("token") || "";
-}
-
-function isAuthorized(req: IncomingMessage): boolean {
-  return !token || requestToken(req) === token;
+async function isAuthorized(req: IncomingMessage, mutation = false): Promise<boolean> {
+  // Delegate to the child gate rather than retaining an independent legacy fallback.
+  const headers: Record<string, string> = {};
+  for (const name of ["authorization", "cookie", "origin", "x-pi-web-client-id"]) { const value = req.headers[name]; if (typeof value === "string") headers[name] = value; }
+  const trusted = process.env.PI_WEB_AUTH_TRUSTED_HEADER?.toLowerCase(); if (trusted && typeof req.headers[trusted] === "string") headers[trusted] = req.headers[trusted] as string;
+  try { const response = await fetch(`http://${childHost}:${childPort}/api/auth/${mutation ? "authorize" : "info"}`, { method: mutation ? "POST" : "GET", headers, signal: AbortSignal.timeout(3000) }); return response.ok; } catch { return false; }
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
@@ -47,6 +44,7 @@ function startChild(): void {
     PORT: String(childPort),
     PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
     PI_WEB_SUPERVISED: "1",
+    PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
   };
 
   console.log(`[supervisor] starting child #${generation} on ${childHost}:${childPort}`);
@@ -112,14 +110,15 @@ const supervisor = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
-    if (!isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+    if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
+    if (!await isAuthorized(req, true)) return sendJson(res, 401, { ok: false, error: "Unauthorized or child unavailable" });
     sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
     void restartChild();
     return;
   }
 
   if (url.pathname === "/__supervisor/status") {
-    if (!isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+    if (!await isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized or child unavailable" });
     return sendJson(res, 200, {
       ok: true,
       childPid: child?.pid,
