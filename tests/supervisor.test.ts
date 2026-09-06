@@ -1,3 +1,4 @@
+import { isolatedAuthEnv } from "./auth-isolation.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
@@ -74,11 +75,11 @@ describe("pi-web supervisor", () => {
     const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
       cwd: projectRoot,
       env: {
-        ...process.env,
+        ...isolatedAuthEnv(),
         HOST: "127.0.0.1",
         PORT: String(publicPort),
         PI_WEB_CHILD_PORT: String(childPort),
-        PI_WEB_TOKEN: token,
+        PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: token,
         PI_WEB_MOCK: "1",
         PI_WEB_NO_SESSION: "1",
       },
