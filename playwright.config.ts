@@ -39,7 +39,7 @@ export default defineConfig({
   webServer: {
     // E2E runs against the preflight production build. Starting many embedded
     // Vite optimizers in parallel made sharded runs slow and resource-sensitive.
-    command: `PI_WEB_DEV=0 NODE_ENV=test PI_WEB_MOCK=1 HOST=127.0.0.1 PORT=${port} PI_WEB_AUTH_STORE=${JSON.stringify(join(runtimeDir, `auth-${port}.json`))} PI_WEB_AUTH_MODE=${authOnly ? "legacy" : "none"} PI_WEB_AUTH_POLICY= PI_WEB_AUTH_METHODS= PI_WEB_AUTH_ORIGIN=http://127.0.0.1:${port} PI_WEB_AUTH_TRUSTED_HEADER= PI_WEB_TOKEN=${authOnly ? "test-secret" : ""} PI_WEB_CWD=$PWD PI_WEB_SETTINGS_FILE=${JSON.stringify(settingsFile(port))} PI_WEB_SESSION_UI_STATE_FILE=${JSON.stringify(sessionUiStateFile(port))} node --import tsx server.ts`,
+    command: `PI_WEB_DEV=0 NODE_ENV=test PI_WEB_MOCK=1 HOST=127.0.0.1 PORT=${port} PI_WEB_AUTH_STORE=${JSON.stringify(join(runtimeDir, `auth-${port}.json`))} PI_WEB_AUTH_MODE=${authOnly ? "legacy" : "none"} PI_WEB_AUTH_POLICY= PI_WEB_AUTH_METHODS= PI_WEB_AUTH_ORIGIN=http://127.0.0.1:${port} PI_WEB_AUTH_TRUSTED_HEADER= PI_WEB_AUTH_PROXY_PEERS= PI_WEB_TOKEN=${authOnly ? "test-secret" : ""} PI_WEB_CWD=$PWD PI_WEB_SETTINGS_FILE=${JSON.stringify(settingsFile(port))} PI_WEB_SESSION_UI_STATE_FILE=${JSON.stringify(sessionUiStateFile(port))} node --import tsx server.ts`,
     url: `http://127.0.0.1:${port}`,
     reuseExistingServer: false,
     timeout: 20_000,

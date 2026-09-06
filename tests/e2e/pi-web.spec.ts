@@ -104,7 +104,8 @@ test.describe("composer layout", () => {
           queueMicrotask(() => {
             if (this.readyState !== FakeWebSocket.CONNECTING) return;
             if ((window as any).__piWebSocketAutoOpen) this.emitOpen();
-            else this.emitClose();
+            // A stalled handshake stays CONNECTING; reopening a CLOSED fake
+            // socket leaves a real reconnect timer pending and is not realistic.
           });
         }
 
@@ -134,9 +135,12 @@ test.describe("composer layout", () => {
     await expect(page.locator("#connectionStatus")).toBeHidden();
 
     await page.evaluate(() => (window as any).__piWebSockets.at(-1).emitClose());
-    await page.clock.runFor(2501);
+    // Advance only to the reconnect timer, then wait for asynchronous ticket
+    // issuance before crossing the UI's 2.5s warning threshold.
+    await page.clock.runFor(1500);
     await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.length)).toBe(2);
     await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.at(-1)?.readyState)).toBe(1);
+    await page.clock.runFor(1001);
     await expect(page.locator("#connectionStatus")).toBeHidden();
     await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
     expect(messagesRequestCount).toBe(1);
@@ -146,6 +150,8 @@ test.describe("composer layout", () => {
       (window as any).__piWebSockets.at(-1).emitClose();
     });
     await page.clock.runFor(2501);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.length)).toBe(3);
+    await expect.poll(() => page.evaluate(() => (window as any).__piWebSockets.at(-1)?.readyState)).toBe(0);
     await expect(page.locator("#connectionStatus")).toHaveText("Live updates reconnecting…");
     await expect(page.locator(".message.system", { hasText: "Disconnected" })).toHaveCount(0);
 
