@@ -1,81 +1,97 @@
-# Passkey authentication (preview)
+# Human authentication and machine credentials
 
-Passkey authentication is additive and disabled by default. Existing installations remain in `legacy` mode, including current `PI_WEB_TOKEN` behavior, until an explicit cutover.
+pi-web has one access policy and a set of enabled sign-in methods. Methods are alternatives, not MFA factors. This remains a single-owner application: every authenticated human session may manage its security settings. In particular, an existing valid legacy browser session is explicitly authorized to enroll the first or additional passkey/password. API tokens cannot do this.
 
-## Configure and enroll
-
-Passkeys require a stable HTTPS origin (localhost HTTP is permitted by WebAuthn). Set these variables for the server:
+## Configuration and migration
 
 ```sh
-export PI_WEB_AUTH_MODE=passkey
-export PI_WEB_AUTH_ORIGIN=https://my-machine.example.ts.net
-# Optional when it differs from the origin hostname:
-export PI_WEB_AUTH_RP_ID=example.ts.net
+PI_WEB_AUTH_POLICY=authenticated
+PI_WEB_AUTH_METHODS=legacy,passkey,password
+PI_WEB_AUTH_ORIGIN=https://my-machine.example.ts.net
+# Optional, defaults to the origin hostname:
+PI_WEB_AUTH_RP_ID=example.ts.net
 ```
 
-Before switching a live instance, install the release while retaining legacy mode, use a secondary instance/store to verify it, and enroll at least two credentials. Generate each enrollment from a terminal on the server machine:
+- Policies: `authenticated` requires a human session or permitted machine credential; `open` deliberately permits unauthenticated access. Open policy does not manufacture an owner session or permit unauthenticated security mutations.
+- Methods: `passkey`, `password`, `legacy`, `external`. Enabling a method does not create its credential.
+- `PI_WEB_AUTH_MODE` remains a compatibility input, translated once through the same configuration path: `none` → open/no methods; `legacy`, `passkey`, `external` → authenticated/the corresponding method. Canonical environment variables override the translated defaults.
+- Once Settings or bootstrap writes canonical configuration, that saved configuration is authoritative across restarts; changing the old mode variable does not silently restore a retired method. Use Settings for subsequent method changes, or terminal recovery when locked out.
+- Explicit legacy mode without a token, and external mode without a trusted identity header, now fail closed. Use an explicit open policy if unauthenticated access is genuinely intended.
+
+Use HTTPS for remote access and set the exact public origin, including the public port when nonstandard. Localhost HTTP is supported for local setup and WebAuthn; IP-address RP IDs are not portable across authenticators. The supervisor supplies its public localhost origin by default. Configure the real public origin when using a reverse proxy.
+
+### Retire legacy deliberately
+
+1. Retain the current token and browser session while installing the release.
+2. In **Settings → Security**, add a password and/or passkey. Enrollment automatically enables that method. Keep a backup credential and terminal access.
+3. Open `/api/auth/login` in another browser and successfully sign in with the replacement. The settings inventory shows verified-login status. Password changes reset that method's verified status.
+4. Disable `legacy` in Sign-in methods. Retirement is rejected unless a remaining enabled, enrolled method has a verified login.
+5. Remove the server's legacy token environment variable when convenient. Existing human sessions remain valid until explicitly revoked; legacy is not a fallback after disabling it.
+
+The deprecated token overlay and token-URL exchange remain available for legacy-only installations. Only the app's state request exchanges that credential for a browser session; ordinary curl requests do not mint sessions. A revoked cookie cannot silently reauthenticate through a saved token or ambient proxy header: use the explicit sign-in form to sign in again.
+
+## First installation and terminal recovery
+
+A genuinely unconfigured first installation (no explicit authentication configuration, credentials, sessions, API tokens, or legacy token) defaults to authenticated access. The terminal automatically prints a cryptographically random, single-use, ten-minute setup URL. Visiting the application without that secret does not grant setup authority. Setup supports a password or passkey; successful redemption consumes the grant. It is not a first-visitor claim flow.
 
 ```sh
-pi-web auth bootstrap                 # single-use URL on the configured origin, valid 10 minutes
+pi-web auth bootstrap                 # New single-use setup link
+pi-web auth recover                   # Restore password/passkey setup after lockout
 pi-web auth bootstrap --minutes 5
 pi-web auth list
+pi-web auth credential-revoke <id>
+pi-web auth sessions-revoke-all
 ```
 
-`recover` creates the same single-use enrollment primitive on `PI_WEB_AUTH_ORIGIN`. Loopback is additionally required when that origin is localhost; for a remote HTTPS origin, possession of the short-lived token is the enrollment gate and the URL must be opened at that exact origin. After recovery, revoke the lost credential (which also revokes every browser session):
+An expired automatic link is not silently regenerated on every restart; use the terminal command. Explicitly configured but unenrolled installations also use the terminal command. Terminal bootstrap/recovery enables password and passkey setup in the canonical configuration. Resetting a password through recovery revokes existing sessions; enrolling a recovery passkey does not automatically revoke unrelated credentials. Revoke lost credentials/sessions deliberately afterward.
+
+## Password security
+
+Password authentication uses an HTML login form, **not HTTP Basic**. Passwords are 12–1024 characters, salted with 128 random bits and hashed using Node's scrypt (`N=131072`, `r=8`, `p=1`, 64-byte output); hashes encode their parameters. Comparison is timing-safe. Passwords are never returned in security inventory.
+
+Password/legacy/external login and password-bootstrap attempts share a bounded per-store, per-peer limiter: ten attempts per minute, with at most four concurrent login handlers. The peer is the actual socket address, not a caller-controlled forwarding header; users behind one proxy therefore share a bucket. Rate limits are in-memory and reset on process restart. Body size and password length are bounded. Internet-facing deployments should also apply edge rate limiting.
+
+An authenticated browser may set/change the owner password. Rotation revokes every *other* browser session and preserves the initiating session; Settings states this policy explicitly. Use **Revoke all sessions** when all devices, including the current one, must sign out. Password setup/change enables password login but a fresh successful password login is required before it qualifies as a verified replacement.
+
+## Shared sessions and device handoff
+
+All human methods use the same persistent, opaque, revocable HttpOnly session cookie. Cookies have SameSite=Lax, a 30-day absolute lifetime, and Secure when the configured public origin is HTTPS. Session secrets are SHA-256 hashed at rest. Explicit reauthentication rotates the cookie and revokes its predecessor. Last-seen tracking is throttled to five-minute writes; it does not extend the absolute expiry.
+
+**Settings → Security → Devices & sessions** lists current/non-current sessions, method, browser user-agent description, and last-seen time. The API additionally includes creation, expiry, and peer-address metadata. Old sessions without method metadata remain usable and are presented as legacy. Individual and all-session revocation are supported. `/logout` revokes the current server-side session, not merely local storage. Revoking a passkey signs out all devices.
+
+Single-use, cancellable add-device grants last two minutes and create a normal shared session for the added device, regardless of the owner's sign-in method. This is one delegation flow, not separate legacy/passkey implementations. A grant becomes unusable when its minting session is revoked/expired. Grant redemption does not count as verifying a replacement authentication method; the added device can enroll its own credential in Settings.
+
+Session-bound WebSocket tickets are checked again at redemption. WebSocket connections close immediately on in-process session revocation; terminal revocations and absolute expiry are picked up within 15 seconds. HTTP checks read current persistent state for every request. Tickets are single-use, hashed in memory, and expire after 30 seconds. Machine-token WebSockets remain separate from the human session inventory.
+
+## Trusted external authentication
 
 ```sh
-pi-web auth recover
-pi-web auth credential-revoke <credential-id>
-```
-
-The auth database defaults to `~/.pi/agent/web/auth.json` (override with `PI_WEB_AUTH_STORE`) and is written atomically with mode `0600`. Credentials, counters, revocations, sessions, and API tokens persist across restarts. Session and token secrets are SHA-256 hashed at rest.
-
-## External proxy identity
-
-In `external` mode, an identity-aware reverse proxy can provide attribution for HTTP and WebSocket requests:
-
-```sh
-PI_WEB_AUTH_MODE=external
+PI_WEB_AUTH_METHODS=external,password,passkey
 PI_WEB_AUTH_TRUSTED_HEADER=Tailscale-User-Login
 ```
 
-When configured, requests missing the header are rejected and authenticated identities are reported as `external:<value>`. Only enable this when pi-web's listening port is reachable exclusively through a proxy that removes caller-supplied copies and sets the verified header itself. Direct callers, including loopback callers, can forge headers.
+External identity is accepted only from the explicitly configured header. The app exchanges it for the same human session cookie; explicit proxy sign-in is also available on the login page. Missing identity does not become an anonymous owner.
 
-## Security settings and adding devices
+**Only enable external authentication when the backend is reachable exclusively through a trusted proxy which removes caller-supplied copies and sets the verified header.** Direct callers, including loopback callers, can forge headers. This release does not infer trust from Tailscale or implement OIDC/GitHub flows. Header selection and network restrictions are server-operator decisions, not unauthenticated web settings.
 
-The kernel-owned **Settings → Security** page exposes the current mode and identity, passkeys, browser devices/sessions, and API tokens. It replaces permanent `PI_WEB_TOKEN` link/QR sharing; the QR renderer is used only for short-lived add-device grants. Passkeys and sessions can be revoked individually; passkey revocation signs out every browser session. Newly created API-token plaintext is returned exactly once.
+## Machine credentials and request security
 
-An authenticated browser session can create a two-minute, single-use add-device link/QR. Grants are stored separately from terminal bootstrap/recovery, record the minting session, and can be cancelled before use. In passkey mode redemption enrolls a credential; in legacy mode it creates a device-specific cookie without disclosing `PI_WEB_TOKEN`. Terminal `bootstrap` and `recover` remain first-credential and lockout-recovery tools, not routine sharing.
-
-Security endpoints are under `/api/auth/`: `info`, `security`, `passkeys`, `sessions`, `tokens`, and `device-grants`. Cookie-authenticated mutations use the normal CSRF checks.
-
-## Machine clients
-
-Create named, expiring tokens. The plaintext is printed once and is accepted only in an `Authorization` header in passkey mode:
+Named, expiring API tokens work through the canonical Authorization-header gate independently of the human methods. Tokens may read security inventory as before, but cannot mutate credentials, issue additional tokens, enroll passkeys, change passwords/methods, delegate devices, or revoke sessions. Token secrets are shown once and stored hashed. They never become browser sessions.
 
 ```sh
 pi-web auth token-create --name CI --days 30
 curl -H 'Authorization: Bearer piw_…' https://host/api/state
 pi-web auth token-revoke <token-id>
-pi-web auth sessions-revoke-all
 ```
 
-API tokens cannot enroll passkeys or become browser sessions. In legacy mode, the SPA's authenticated state request exchanges the configured token for an HttpOnly session cookie so browser-native artifact loads remain authenticated; curl and CI requests without the app client header do not mint sessions.
+Cookie-authenticated mutations require the app client header and reject a supplied mismatched Origin. Public authentication POSTs also reject a supplied mismatched Origin. WebAuthn independently verifies the exact origin and RP ID and requires user verification. Registration challenges for Settings are bound to the initiating session. Bootstrap secrets embedded in pages are script-escaped; setup pages prevent framing/referrer leakage. Query credentials are never accepted for WebSocket upgrades.
 
-## WebSocket tickets
+Supervisor restart/status authorization delegates to the child's canonical gate; there is no separate permanent legacy-token fallback. Restart requires POST. When the child cannot validate credentials, these endpoints fail closed; restart the supervisor from a terminal instead.
 
-WebSocket upgrades never accept API credentials or legacy `?token=` URLs. The browser authenticates `POST /api/ws-ticket` through the canonical HTTP gate, then uses its single-use ticket in `/ws?ticket=…`. Tickets are hashed in memory, expire after 30 seconds, are deleted on redemption, and propagate the minter identity. Origin validation accepts the request Host, the proxy's first `X-Forwarded-Host`, or the configured origin host; malformed and unrelated origins fail closed.
+## Storage, isolation, and validation
 
-## Explicit cutover
+The store defaults to `~/.pi/agent/web/auth.json`; override with `PI_WEB_AUTH_STORE`. Files are atomically replaced with mode 0600. A per-store exclusive lock serializes server/CLI writes. If a process crashes holding `auth.json.lock`, stop writers and remove that lock before retrying; the implementation does not guess that an active writer is stale. Keep independent instances on separate stores.
 
-1. Verify primary and backup passkeys, fresh-browser login, HTTP, WebSocket, artifacts, restart persistence, and recovery on a secondary instance.
-2. Set `PI_WEB_AUTH_MODE=passkey`, the stable origin, and RP ID; remove `PI_WEB_TOKEN`; restart through the supervisor.
-3. Delete `localStorage["pi-web-token"]` in each old browser.
+Tests **never inherit the live auth store or authentication environment**. Every spawned API, supervisor, and Playwright server has a unique temporary store and explicit test policy. Coverage includes kernel/config translation, setup single use, hashing, login limiting, legacy-authorized enrollment, replacement verification, retirement, session metadata/revocation, machine restrictions, and a Chromium UI flow using a virtual authenticator for enrollment and passkey login alongside password login.
 
-In passkey mode legacy Bearer and query tokens are rejected. HTTP APIs, artifacts/downloads, and WebSocket ticket minting share the same kernel gate. Cookie-authenticated mutations require the app client header and reject a mismatched Origin.
-
-Other explicit modes are `none` (open) and `external` (trust an authenticated edge). Tailscale alone does not imply `external`; choose it deliberately.
-
-## Milestone scope
-
-This secure milestone includes the canonical HTTP/WS/artifact gate, WebAuthn registration and authentication, persistent revocable sessions/credentials, terminal bootstrap/recovery, security-management APIs, add-device grants, named API tokens, CSRF/WS Origin checks, and explicit legacy-compatible migration. Deliberately deferred follow-up scope is: server-extension strategy loading and GitHub/OIDC strategies; non-loopback/no-auth startup interlock; session-cookie rotation beyond sliding last-seen tracking; auth rate limiting; and full browser E2E enrollment coverage using virtual authenticators. The passkey cryptography uses `@simplewebauthn/server`; kernel/storage behavior and the existing authenticated browser projects are automated, while real authenticator enrollment must be verified during cutover.
+Validation commands: `npm run typecheck`, `npm run build`, and full parallel `npm test`. Real synced authenticators, backup recovery, reverse-proxy trust configuration, and production TLS still need verification on a secondary instance before live cutover. Nothing in this implementation performs a live cutover automatically.
