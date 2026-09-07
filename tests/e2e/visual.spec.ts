@@ -60,13 +60,16 @@ async function startEmptySession(page: import("@playwright/test").Page) {
   expect(response.ok()).toBe(true);
   const { sessionId } = await response.json();
   await expect(page).toHaveURL((url) => url.searchParams.get("sessionId") === sessionId);
-  // The old session can already be named "New session". Wait for the new
-  // transcript's refresh, not that ambiguous title, before editing its name.
+  // The title and transcript can settle before the models/settings refresh
+  // finishes. Wait for the whole operation (including drawer focus restoration)
+  // before opening the rename input, or the late drawer close can blur it.
+  await expect(page.locator("#sessionNewButton")).toBeEnabled();
   await expect(page.locator("#emptyCwdChooser")).toBeVisible();
   await expect(page.locator("#statusTitle")).toHaveText("New session");
   if (await page.locator("#sessionDrawer").isVisible()) {
     await page.locator("#sessionCloseButton").evaluate((button: HTMLButtonElement) => button.click());
   }
+  return sessionId as string;
 }
 
 async function seedSessionShowcaseState(page: import("@playwright/test").Page, currentSessionId = "mock-current", currentLabel = "Launch roadmap") {
@@ -170,9 +173,7 @@ async function prepareNeutralWorkspace(page: import("@playwright/test").Page, pr
   } }));
   await page.goto("/");
   await expect(page.locator("#prompt")).toBeVisible();
-  await startEmptySession(page);
-  const state = await page.request.get("/api/state").then((response) => response.json());
-  activeSessionId = state.sessionId;
+  activeSessionId = await startEmptySession(page);
   await page.locator("#statusTitle").click();
   await page.locator("#statusTitle input").fill("Launch research workspace");
   await page.locator("#statusTitle input").press("Enter");
@@ -196,12 +197,14 @@ async function prepareRecommendedAddons(page: import("@playwright/test").Page, p
   } }));
   await page.goto("/");
   await expect(page.locator("#prompt")).toBeVisible();
-  await startEmptySession(page);
-  const state = await page.request.get("/api/state").then((response) => response.json());
-  activeSessionId = state.sessionId;
+  activeSessionId = await startEmptySession(page);
   await page.locator("#statusTitle").click();
   await page.locator("#statusTitle input").fill("Studio launch planning");
+  const renamed = page.waitForResponse((response) => response.url().endsWith("/api/session/name") && response.request().method() === "POST");
   await page.locator("#statusTitle input").press("Enter");
+  const renameResponse = await renamed;
+  expect(renameResponse.ok()).toBe(true);
+  expect(await renameResponse.json()).toMatchObject({ sessionId: activeSessionId, sessionTitle: "Studio launch planning" });
   await expect(page.locator("#statusTitle")).toHaveText("Studio launch planning");
   await page.locator("#modelSettingsButton").click();
   await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");

@@ -2799,10 +2799,13 @@ export function createSessions(options: {
       elements.sessionBackdrop.addEventListener("click", () => setSessionDrawerOpen(false));
     }
     elements.sessionNewButton.addEventListener("click", async () => {
+      elements.sessionNewButton.disabled = true;
       try {
         await startNewSession();
       } catch (error) {
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      } finally {
+        elements.sessionNewButton.disabled = false;
       }
     });
 
