@@ -10,12 +10,14 @@ import {
   AuthKernel,
   AuthStore,
   hashPassword,
+  hashSecret,
   verifyPassword,
 } from "../../server/auth/kernel.js";
 import { resolveAuthConfig } from "../../server/auth/config.js";
 import { initializeAuth } from "../../server/auth/bootstrap.js";
 import { trustedOrigin } from "../../server/auth/origin.js";
 import {
+  changePassword,
   handlePasswordLogin,
   loginPeer,
   passwordLoginPage,
@@ -107,6 +109,76 @@ describe("multi-method human authentication", () => {
           "https://public.example",
         ),
       ).toBe(false);
+  });
+  it("trusts only exact canonical proxy peers and a single strict forwarded authority", () => {
+    const old = process.env.PI_WEB_AUTH_PROXY_PEERS;
+    try {
+      process.env.PI_WEB_AUTH_PROXY_PEERS = "::ffff:127.0.0.1";
+      const headers = { host: "internal:9300", origin: "https://public.example", "x-forwarded-host": "public.example" };
+      expect(trustedOrigin(req({}, headers), config.origin)).toBe(true);
+      const untrusted = req({}, headers); untrusted.socket.remoteAddress = "192.0.2.1";
+      expect(trustedOrigin(untrusted, config.origin)).toBe(false);
+      for (const host of ["public.example,evil.example", "public.example/path", "public.example@evil.example", " public.example", "public.example:"])
+        expect(trustedOrigin(req({}, { ...headers, "x-forwarded-host": host }), config.origin)).toBe(false);
+    } finally {
+      if (old === undefined) delete process.env.PI_WEB_AUTH_PROXY_PEERS;
+      else process.env.PI_WEB_AUTH_PROXY_PEERS = old;
+    }
+  });
+  it("denies stale-cookie and grant persistence and other-device lockout", async () => {
+    for (const grant of [false, true]) {
+      const { kernel, store } = await fixture(); const res = response();
+      await kernel.establishSession(res, { id: "owner" }, grant ? "grant" : "legacy", undefined, !grant);
+      const auth = await kernel.gate(req({}, { cookie: res.headers["set-cookie"].split(";")[0] }));
+      if (!auth.ok) throw Error("missing session");
+      if (!grant) await store.update(s => { s.sessions[0].authenticatedAt = Date.now() - 600000; });
+      for (const [path, method] of [["tokens", "POST"], ["device-grants", "POST"], ["sessions/other", "DELETE"]]) {
+        const result = response();
+        await handleSecurityRoute(req({}, {}, method), result, new URL(`/api/auth/${path}`, config.origin), auth, kernel, store, config);
+        expect(result.status).toBe(403);
+        expect(JSON.parse(result.text).code).toBe("reauth_required");
+      }
+      expect((await store.read()).apiTokens).toHaveLength(0);
+      expect((await store.read()).deviceGrants || []).toHaveLength(0);
+    }
+  });
+  it("atomically revokes API tokens by default with an explicit retention option", async () => {
+    for (const revokeApiTokens of [undefined, true, false]) for (const password of [true, false]) {
+      const { kernel, store } = await fixture(); const res = response();
+      await kernel.establishSession(res, { id: "owner" }, "legacy");
+      const auth = await kernel.gate(req({}, { cookie: res.headers["set-cookie"].split(";")[0] }));
+      if (!auth.ok || !auth.sessionHash) throw Error("missing session");
+      await store.update(s => { s.apiTokens.push({ id: "test", hash: "hash", name: "test", createdAt: Date.now(), expiresAt: Date.now() + 60000 }); });
+      const snapshots: boolean[] = [];
+      store.listeners.add(s => { snapshots.push(!!s.apiTokens[0].revokedAt); });
+      if (password) await changePassword(store, "a long replacement password", auth.sessionHash, revokeApiTokens);
+      else {
+        const result = response();
+        await handleSecurityRoute(req({ revokeApiTokens }, {}, "DELETE"), result, new URL("/api/auth/sessions", config.origin), auth, kernel, store, config);
+        expect(result.status).toBe(200);
+      }
+      expect(snapshots).toEqual([revokeApiTokens !== false]);
+    }
+  });
+  it("setup validation does not consume credential failure cooldown", async () => {
+    const { kernel, store } = await fixture();
+    await store.update(s => { s.bootstrap = { hash: hashSecret("setup-secret"), expiresAt: Date.now() + 60000 }; });
+    const url = new URL("/api/auth/password/bootstrap", config.origin);
+    const invalid = response();
+    await handlePasswordLogin(req({ token: "setup-secret", password: "short" }), invalid, url, kernel, store);
+    expect(invalid.status).toBe(400);
+    const valid = response();
+    await handlePasswordLogin(req({ token: "setup-secret", password: "a long setup password" }), valid, url, kernel, store);
+    expect(valid.status).toBe(200);
+  });
+  it("reports environment-only and store-only method deltas", async () => {
+    const { kernel, store } = await fixture();
+    await store.update(s => { s.config = { policy: "authenticated", methods: ["legacy"] }; });
+    const warn = vi.fn(); await kernel.startupDiagnostics(warn);
+    expect(warn.mock.calls[0][0]).toContain("environment-only methods=[password, passkey, external]");
+    kernel.methods = new Set(["password"]);
+    warn.mockClear(); await kernel.startupDiagnostics(warn);
+    expect(warn.mock.calls[0][0]).toContain("store-only methods=[legacy]");
   });
   it("recovers dead PID locks but never steals a live lock by age", async () => {
     const { store } = await fixture();

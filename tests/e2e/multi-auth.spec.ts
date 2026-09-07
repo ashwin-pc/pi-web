@@ -73,6 +73,14 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
     const closed = new Promise<number>(resolve => socket.once("close", resolve));
     expect((await fetch(`${ipOrigin}/api/auth/tokens/${machine.id}`, { method: "DELETE", headers })).status).toBe(200);
     expect(await closed).toBe(1008);
+    const retainedMachine = await (await fetch(`${ipOrigin}/api/auth/tokens`, { method: "POST", headers, body: "{}" })).json();
+    const secondTicket = await (await fetch(`${ipOrigin}/api/ws-ticket`, { method: "POST", headers: { authorization: `Bearer ${retainedMachine.secret}` } })).json();
+    const secondSocket = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${secondTicket.ticket}`, { origin: ipOrigin });
+    await new Promise<void>((resolve, reject) => { secondSocket.once("open", resolve); secondSocket.once("error", reject); });
+    const secondClosed = new Promise<number>(resolve => secondSocket.once("close", resolve));
+    expect((await fetch(`${ipOrigin}/api/auth/sessions`, { method: "DELETE", headers, body: "{}" })).status).toBe(200);
+    expect(await secondClosed).toBe(1008);
+    expect((await fetch(`${ipOrigin}/api/state`, { headers: { authorization: `Bearer ${retainedMachine.secret}` } })).status).toBe(401);
     expect((await fetch(`${ipOrigin}/api/auth/logout`, { method: "POST", headers })).status).toBe(200);
     expect((await fetch(`${ipOrigin}/api/state`, { headers: { cookie, authorization: "Bearer owner-token" } })).status).toBe(401);
     expect(await (await fetch(`${ipOrigin}/api/auth/challenge`, { headers: { cookie } })).json()).toMatchObject({ mode: "redirect" });

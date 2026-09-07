@@ -37,6 +37,25 @@ test.describe("token overlay", () => {
     await expect(page.getByRole("heading", { name: "Sign-in methods", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Change password", exact: true })).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem("pi-web-token"))).toBeNull();
+    await expect(page.getByRole("button", { name: "Re-authenticate with saved token", exact: true })).toHaveCount(0);
+  });
+  test("saved-token reauthentication is explicit and token revocation defaults are visible", async ({ page }) => {
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    let reauth = 0;
+    await page.route("**/api/auth/legacy/login", async route => {
+      reauth++;
+      expect(route.request().postDataJSON().password).toBe(CORRECT_TOKEN);
+      await route.fulfill({ json: { ok: true } });
+    });
+    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
+    const saved = page.getByRole("button", { name: "Re-authenticate with saved token", exact: true });
+    await expect(saved).toBeVisible();
+    expect(reauth).toBe(0);
+    const options = page.getByRole("checkbox", { name: /Also revoke API tokens/ });
+    await expect(options).toHaveCount(2);
+    await expect(options.nth(0)).toBeChecked(); await expect(options.nth(1)).toBeChecked();
+    await saved.click(); expect(reauth).toBe(1);
   });
   test("shows overlay on page load when no token stored", async ({ page }) => {
     await page.goto("/");
