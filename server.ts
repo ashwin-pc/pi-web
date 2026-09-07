@@ -521,7 +521,7 @@ function withAccessLog(
   };
 }
 
-import { trustedOrigin } from "./server/auth/origin.js";
+import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 
 const server = createServer(withAccessLog(async (req, res, url) => {
   const method = req.method || "GET";
@@ -529,7 +529,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     if (url.pathname.startsWith("/api/")) {
       await authKernel.refreshConfig();
-      if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: "Origin validation failed" });
+      if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
         if (url.pathname.endsWith("challenge")) return sendJson(res, 200, !req.headers.cookie?.includes("pi_web_session=") && authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
@@ -550,7 +550,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
       if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
         const validOrigin = trustedOrigin(req, authOrigin);
-        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: "CSRF validation failed" });
+        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
       }
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
@@ -1235,7 +1235,7 @@ server.on("upgrade", (req, socket, head) => {
     if (ticket?.sessionHash && !(await authStore.read()).sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (!trustedOrigin(req, authOrigin)) { socket.write("HTTP/1.1 403 Forbidden\r\n\r\n"); socket.destroy(); return; }
+    if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
     wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());

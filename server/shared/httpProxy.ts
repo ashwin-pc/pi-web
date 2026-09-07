@@ -3,6 +3,7 @@ import { request, type ClientRequest, type IncomingMessage, type ServerResponse 
 export interface HttpProxyTarget {
   host: string;
   port: number;
+  preserveHost?: boolean;
 }
 
 function destroyQuietly(
@@ -17,7 +18,7 @@ export function proxyHttpRequest(
   res: ServerResponse,
   target: HttpProxyTarget,
 ): void {
-  const headers = { ...req.headers, host: `${target.host}:${target.port}` };
+  const headers = { ...req.headers, host: target.preserveHost ? req.headers.host : `${target.host}:${target.port}` };
   let upstreamResponse: IncomingMessage | undefined;
   let upstream: ClientRequest;
 

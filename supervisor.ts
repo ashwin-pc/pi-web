@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
-import { trustedOrigin } from "./server/auth/origin.js";
+import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 
 const publicHost = process.env.HOST || "127.0.0.1";
@@ -119,6 +120,7 @@ const supervisor = createServer(async (req, res) => {
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
     if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
+    if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) return sendJson(res, 403, { ok: false, error: originFailureHint });
     if (!await isAuthorized(req, true)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
     sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
     void restartChild();
@@ -136,10 +138,25 @@ const supervisor = createServer(async (req, res) => {
     });
   }
 
-  proxyHttpRequest(req, res, { host: childHost, port: childPort });
+  trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`);
+  sanitizeProxyHeaders(req);
+  proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
 });
 
+function sanitizeProxyHeaders(req: IncomingMessage) {
+  const authority = forwardedHost(req);
+  if (authority) req.headers.host = authority;
+  if (!trustedProxyPeer(req)) delete req.headers["x-forwarded-for"];
+  // Resolve trust at the public socket, never at the supervisor's loopback hop.
+  delete req.headers["x-forwarded-host"];
+}
+
 supervisor.on("upgrade", (req, socket, head) => {
+  if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
+    socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
+    return;
+  }
+  sanitizeProxyHeaders(req);
   const upstream = net.connect(childPort, childHost);
   let closed = false;
 
