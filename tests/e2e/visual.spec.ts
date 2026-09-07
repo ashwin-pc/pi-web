@@ -54,11 +54,17 @@ async function scrollMessagesToBottom(page: import("@playwright/test").Page) {
 
 async function startEmptySession(page: import("@playwright/test").Page) {
   await page.locator("#sessionButton").click();
+  const created = page.waitForResponse((response) => response.url().endsWith("/api/sessions/new") && response.request().method() === "POST");
   await page.locator("#sessionNewButton").click();
+  const response = await created;
+  expect(response.ok()).toBe(true);
+  const { sessionId } = await response.json();
+  await expect(page).toHaveURL((url) => url.searchParams.get("sessionId") === sessionId);
+  // The old session can already be named "New session". Wait for the new
+  // transcript's refresh, not that ambiguous title, before editing its name.
+  await expect(page.locator("#emptyCwdChooser")).toBeVisible();
   await expect(page.locator("#statusTitle")).toHaveText("New session");
   if (await page.locator("#sessionDrawer").isVisible()) {
-    // New-session setup may auto-close the mobile drawer between the visibility
-    // check and an actionability-based click; a DOM click is safely idempotent.
     await page.locator("#sessionCloseButton").evaluate((button: HTMLButtonElement) => button.click());
   }
 }
@@ -426,8 +432,14 @@ test.describe("visual regression", () => {
     await expect(page.locator("#stopButton")).toBeHidden();
     await sendPrompt(page, "Retry the customer synthesis after the throttle failure.");
     await expect(page.locator(".runtimeErrorCard", { hasText: "response failed" })).toBeVisible({ timeout: 8_000 });
-    await scrollMessagesToBottom(page);
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await page.evaluate(async () => { await document.fonts.ready; });
+    // Hover first: Playwright may scroll the code into view. The final viewport
+    // must instead show the completed recovery card at the transcript bottom.
     await page.locator(".message.assistant .markdownBody pre").first().hover();
+    await scrollMessagesToBottom(page);
+    await expect(page.locator(".runtimeErrorCard").getByRole("button", { name: "Retry", exact: true })).toBeInViewport();
+    await expect(page.locator(".jumpToLatestButton")).toBeHidden();
     await expect(page).toHaveScreenshot(`capability-transcript-recovery-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
   });
 
