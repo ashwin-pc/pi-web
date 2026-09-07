@@ -54,13 +54,22 @@ async function scrollMessagesToBottom(page: import("@playwright/test").Page) {
 
 async function startEmptySession(page: import("@playwright/test").Page) {
   await page.locator("#sessionButton").click();
+  const created = page.waitForResponse((response) => response.url().endsWith("/api/sessions/new") && response.request().method() === "POST");
   await page.locator("#sessionNewButton").click();
+  const response = await created;
+  expect(response.ok()).toBe(true);
+  const { sessionId } = await response.json();
+  await expect(page).toHaveURL((url) => url.searchParams.get("sessionId") === sessionId);
+  // The title and transcript can settle before the models/settings refresh
+  // finishes. Wait for the whole operation (including drawer focus restoration)
+  // before opening the rename input, or the late drawer close can blur it.
+  await expect(page.locator("#sessionNewButton")).toBeEnabled();
+  await expect(page.locator("#emptyCwdChooser")).toBeVisible();
   await expect(page.locator("#statusTitle")).toHaveText("New session");
   if (await page.locator("#sessionDrawer").isVisible()) {
-    // New-session setup may auto-close the mobile drawer between the visibility
-    // check and an actionability-based click; a DOM click is safely idempotent.
     await page.locator("#sessionCloseButton").evaluate((button: HTMLButtonElement) => button.click());
   }
+  return sessionId as string;
 }
 
 async function seedSessionShowcaseState(page: import("@playwright/test").Page, currentSessionId = "mock-current", currentLabel = "Launch roadmap") {
@@ -164,9 +173,7 @@ async function prepareNeutralWorkspace(page: import("@playwright/test").Page, pr
   } }));
   await page.goto("/");
   await expect(page.locator("#prompt")).toBeVisible();
-  await startEmptySession(page);
-  const state = await page.request.get("/api/state").then((response) => response.json());
-  activeSessionId = state.sessionId;
+  activeSessionId = await startEmptySession(page);
   await page.locator("#statusTitle").click();
   await page.locator("#statusTitle input").fill("Launch research workspace");
   await page.locator("#statusTitle input").press("Enter");
@@ -190,12 +197,14 @@ async function prepareRecommendedAddons(page: import("@playwright/test").Page, p
   } }));
   await page.goto("/");
   await expect(page.locator("#prompt")).toBeVisible();
-  await startEmptySession(page);
-  const state = await page.request.get("/api/state").then((response) => response.json());
-  activeSessionId = state.sessionId;
+  activeSessionId = await startEmptySession(page);
   await page.locator("#statusTitle").click();
   await page.locator("#statusTitle input").fill("Studio launch planning");
+  const renamed = page.waitForResponse((response) => response.url().endsWith("/api/session/name") && response.request().method() === "POST");
   await page.locator("#statusTitle input").press("Enter");
+  const renameResponse = await renamed;
+  expect(renameResponse.ok()).toBe(true);
+  expect(await renameResponse.json()).toMatchObject({ sessionId: activeSessionId, sessionTitle: "Studio launch planning" });
   await expect(page.locator("#statusTitle")).toHaveText("Studio launch planning");
   await page.locator("#modelSettingsButton").click();
   await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
@@ -426,8 +435,14 @@ test.describe("visual regression", () => {
     await expect(page.locator("#stopButton")).toBeHidden();
     await sendPrompt(page, "Retry the customer synthesis after the throttle failure.");
     await expect(page.locator(".runtimeErrorCard", { hasText: "response failed" })).toBeVisible({ timeout: 8_000 });
-    await scrollMessagesToBottom(page);
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await page.evaluate(async () => { await document.fonts.ready; });
+    // Hover first: Playwright may scroll the code into view. The final viewport
+    // must instead show the completed recovery card at the transcript bottom.
     await page.locator(".message.assistant .markdownBody pre").first().hover();
+    await scrollMessagesToBottom(page);
+    await expect(page.locator(".runtimeErrorCard").getByRole("button", { name: "Retry", exact: true })).toBeInViewport();
+    await expect(page.locator(".jumpToLatestButton")).toBeHidden();
     await expect(page).toHaveScreenshot(`capability-transcript-recovery-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
   });
 
@@ -517,7 +532,7 @@ test.describe("visual regression", () => {
 
   test("focused trusted device handoff", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
-    const securityState = { mode: "legacy", identity: { id: "legacy:token", displayName: "Owner" }, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] };
+    const securityState = { mode: "legacy", policy: "authenticated", methods: ["legacy"], identity: { id: "legacy:token", displayName: "Owner" }, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] };
     await page.route("**/api/auth/security", route => route.fulfill({ json: securityState }));
     await page.route("**/api/auth/device-grants", route => route.fulfill({
       status: 201,
@@ -529,6 +544,7 @@ test.describe("visual regression", () => {
     await page.getByRole("button", { name: "Create add-device link" }).click();
     await expect(page.getByLabel("Add-device link")).toHaveValue(/single-use-visual-grant/);
     await expect(page.getByRole("img", { name: "Add device QR code" })).toBeVisible();
+    await page.getByRole("img", { name: "Add device QR code" }).scrollIntoViewIfNeeded();
     await expect(page).toHaveScreenshot(`capability-device-handoff-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
   });
 

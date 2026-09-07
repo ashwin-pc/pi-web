@@ -284,6 +284,13 @@ export function createMockHarness(options: MockSessionOptions) {
       newSession() {
         mockSession.sessionId = `mock-${Date.now()}`;
         mockSession.sessionFile = join(piCwd, `.mock-sessions/${mockSession.sessionId}.jsonl`);
+        // Rename reads/writes this index. Without a record, a new-session rename
+        // succeeds optimistically in the browser but returns "New session".
+        mockSessions.push({
+          id: mockSession.sessionId, path: mockSession.sessionFile, name: "",
+          created: new Date(), modified: new Date(), messageCount: 0,
+          firstMessage: "", allMessagesText: "", cwd: piCwd,
+        });
         mockEntries = [];
         mockLeafId = null;
         labelsById.clear();

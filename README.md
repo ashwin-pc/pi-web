@@ -199,7 +199,7 @@ npm start
 
 ## Remote access
 
-pi-web binds to localhost by default. If you want remote access, place it behind a secure networking or reverse-proxy solution of your choice and set `PI_WEB_TOKEN`.
+pi-web binds to localhost by default. For remote access, use HTTPS through your secure networking or reverse proxy, set `PI_WEB_AUTH_ORIGIN` to the public origin, and enable authenticated access. New unconfigured installations print a single-use setup link in the terminal. See [authentication and migration](docs/passkey-auth.md) for password, passkey, and trusted-proxy login.
 
 For example, with Tailscale Serve you can keep the Node app localhost-only:
 
@@ -224,7 +224,7 @@ Then open:
 https://<machine-name>.<tailnet>.ts.net
 ```
 
-Enter `PI_WEB_TOKEN` on the token screen, or use **Scan QR** if another signed-in pi-web tab is showing the Settings → Token sharing QR code.
+For an existing legacy installation, enter `PI_WEB_TOKEN` on the token screen, then use **Settings → Security** to enroll and verify a password/passkey before retiring legacy. Add-device QR codes now contain short-lived, revocable grants—not the permanent token.
 
 ### Direct Tailnet bind
 
@@ -247,7 +247,15 @@ http://<machine-name>:8787
 
 - `HOST` - bind host, default `127.0.0.1`
 - `PORT` - bind port, default `8787`
-- `PI_WEB_TOKEN` - optional bearer token for API/WebSocket access
+- `PI_WEB_TOKEN` - deprecated legacy credential; removable after replacement login is verified
+- `PI_WEB_AUTH_POLICY` - `authenticated` or deliberately `open`
+- `PI_WEB_AUTH_METHODS` - comma-separated `passkey,password,legacy,external`; saved Settings configuration takes precedence after enrollment/configuration
+- `PI_WEB_AUTH_MODE` - compatibility preset translated into the canonical policy/method defaults
+- `PI_WEB_AUTH_ORIGIN` - exact public origin for login/WebAuthn/CSRF, including HTTPS and port
+- `PI_WEB_AUTH_RP_ID` - WebAuthn RP ID, defaults to origin hostname
+- `PI_WEB_AUTH_TRUSTED_HEADER` - verified proxy identity header; requires a restricted backend
+- `PI_WEB_AUTH_STORE` - authentication database path (default `~/.pi/agent/web/auth.json`); independent dev/production instances must use different paths, otherwise policy and revocation changes are shared live
+- `PI_WEB_AUTH_PROXY_PEERS` - optional exact socket IPs allowed to supply a sanitized, single-IP `X-Forwarded-For` for login throttling; requires a header-stripping trusted proxy and restricted backend access (unset by default)
 - `PI_WEB_CWD` - project directory Pi should operate in, default current directory
 - `PI_WEB_NO_SESSION=1` - use in-memory sessions only
 - `PI_WEB_CHILD_HOST` - supervised child bind host, default `127.0.0.1`
@@ -266,4 +274,4 @@ The app is TypeScript end-to-end:
 
 ## Security
 
-This app can drive Pi tools such as `bash`, `write`, and `edit`. Restrict network access with your chosen security controls and set `PI_WEB_TOKEN`.
+This app can drive Pi tools such as `bash`, `write`, and `edit`. Restrict network access and use authenticated access over HTTPS. Human logins share revocable browser sessions; named API tokens are separate machine credentials. See [security design, recovery, and migration](docs/passkey-auth.md).

@@ -1,3 +1,4 @@
+import { isolatedAuthEnv } from "./auth-isolation.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -34,7 +35,7 @@ async function waitForServer(baseUrl: string) {
 function startServer(port: number, cwd: string, settingsFile: string, mock: boolean) {
   const child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
     env: {
-      ...process.env,
+      ...isolatedAuthEnv(),
       ...(mock ? { PI_WEB_MOCK: "1" } : { PI_WEB_NO_SESSION: "1" }),
       PI_WEB_DEV: "1",
       HOST: "127.0.0.1",
