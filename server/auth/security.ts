@@ -85,33 +85,13 @@ export async function handlePublicDeviceGrant(
     return false;
   const body = (await input(req)) as { grant?: string };
   const hash = hashSecret(body.grant || "");
-  let identity: import("./kernel.js").Identity | undefined;
-  await store.update((state) => {
-    const grant = (state.deviceGrants || []).find(
-      (g) =>
-        g.hash === hash &&
-        !g.usedAt &&
-        !g.cancelledAt &&
-        g.expiresAt > Date.now(),
-    );
-    const minter =
-      grant &&
-      state.sessions.find(
-        (s) =>
-          s.hash === grant.createdBySessionHash &&
-          !s.revokedAt &&
-          s.expiresAt > Date.now(),
-      );
-    if (grant && minter) {
-      grant.usedAt = Date.now();
-      identity = grant.createdBy;
-    }
-  });
-  if (!identity) {
+  try {
+    // Consume grant and create its session in the same locked store transaction.
+    await kernel.establishSession(res, { id: "grant" }, "grant", req, false, { grantHash: hash });
+  } catch {
     send(res, 401, { ok: false, error: "Invalid or expired device grant" });
     return true;
   }
-  await kernel.establishSession(res, identity, "grant", req, false);
   send(res, 200, { ok: true });
   return true;
 }
@@ -142,9 +122,11 @@ export async function handleSecurityRoute(
       ["/api/auth/password", "/api/auth/methods"].includes(url.pathname)) ||
     (req.method === "DELETE" &&
       (url.pathname === "/api/auth/sessions" ||
+        (url.pathname.startsWith("/api/auth/sessions/") &&
+          ![auth.sessionHash, auth.sessionHash && hashSecret(auth.sessionHash)].includes(url.pathname.slice("/api/auth/sessions/".length))) ||
         url.pathname.startsWith("/api/auth/passkeys/"))) ||
     (req.method === "POST" &&
-      ["/api/auth/passkeys/options", "/api/auth/passkeys/verify"].includes(
+      ["/api/auth/tokens", "/api/auth/device-grants", "/api/auth/passkeys/options", "/api/auth/passkeys/verify"].includes(
         url.pathname,
       ));
   if (destructive) {
@@ -164,6 +146,13 @@ export async function handleSecurityRoute(
       return true;
     }
   }
+  const updateSecurity: AuthStore["update"] = (mutator) => store.update(async (live) => {
+    if (destructive && !live.sessions.some((s) =>
+      s.hash === auth.sessionHash && !s.revokedAt && s.expiresAt > Date.now() &&
+      !!s.authenticatedAt && s.authenticatedAt >= Date.now() - 5 * 60_000))
+      throw new Error("Recent sign-in required; session changed during request");
+    await mutator(live);
+  });
   const requireSession = () => {
     if (auth.via === "session") return true;
     send(res, 403, { ok: false, error: "A browser session is required" });
@@ -203,7 +192,7 @@ export async function handleSecurityRoute(
     const secret = `piw_${randomSecret()}`,
       id = randomUUID(),
       days = Math.max(1, Math.min(365, Number(b.days) || 30));
-    await store.update((s) => {
+    await updateSecurity((s) => {
       s.apiTokens.push({
         id,
         name: b.name?.slice(0, 80) || "API token",
@@ -219,7 +208,7 @@ export async function handleSecurityRoute(
   if (req.method === "DELETE" && match) {
     if (!requireSession()) return true;
     let found = false;
-    await store.update((s) => {
+    await updateSecurity((s) => {
       const item = s.apiTokens.find((x) => x.id === match![1] && !x.revokedAt);
       if (item) {
         item.revokedAt = now;
@@ -235,8 +224,12 @@ export async function handleSecurityRoute(
   }
   if (req.method === "DELETE" && url.pathname === "/api/auth/sessions") {
     if (!requireSession()) return true;
-    await store.update((s) => {
+    const body = await input(req) as { revokeApiTokens?: boolean };
+    await updateSecurity((s) => {
       for (const item of s.sessions) item.revokedAt = now;
+      for (const grant of s.deviceGrants || []) grant.cancelledAt = now;
+      if (body.revokeApiTokens !== false)
+        for (const token of s.apiTokens) token.revokedAt = now;
     });
     kernel.clearSession(res);
     send(res, 200, { ok: true });
@@ -292,9 +285,9 @@ export async function handleSecurityRoute(
   }
   if (req.method === "PUT" && url.pathname === "/api/auth/password") {
     if (!requireSession()) return true;
-    const b = (await input(req)) as { password?: unknown };
+    const b = (await input(req)) as { password?: unknown; revokeApiTokens?: boolean };
     try {
-      await changePassword(store, b.password, auth.sessionHash!);
+      await changePassword(store, b.password, auth.sessionHash!, b.revokeApiTokens !== false);
       await kernel.configure([
         ...new Set([...kernel.methods, "password" as const]),
       ]);
@@ -312,7 +305,7 @@ export async function handleSecurityRoute(
     if (!requireSession()) return true;
     let found = false;
     let current = false;
-    await store.update((s) => {
+    await updateSecurity((s) => {
       const item = s.sessions.find(
         (x) => x.hash === match![1] || hashSecret(x.hash) === match![1],
       );
@@ -334,7 +327,7 @@ export async function handleSecurityRoute(
   if (req.method === "DELETE" && match) {
     if (!requireSession()) return true;
     let found = false;
-    await store.update((s) => {
+    await updateSecurity((s) => {
       const item = s.credentials.find(
         (x) => x.id === decodeURIComponent(match![1]) && !x.revokedAt,
       );
@@ -359,7 +352,7 @@ export async function handleSecurityRoute(
     }
     const secret = randomSecret(),
       id = randomUUID();
-    await store.update((s) => {
+    await updateSecurity((s) => {
       (s.deviceGrants ||= []).push({
         id,
         hash: hashSecret(secret),
@@ -381,7 +374,7 @@ export async function handleSecurityRoute(
   if (req.method === "DELETE" && match) {
     if (!requireSession()) return true;
     let found = false;
-    await store.update((s) => {
+    await updateSecurity((s) => {
       const grant = (s.deviceGrants || []).find(
         (g) =>
           g.id === match![1] &&
@@ -455,7 +448,7 @@ export async function handleSecurityRoute(
       return true;
     }
     const c = result.registrationInfo.credential;
-    await store.update((s) => {
+    await updateSecurity((s) => {
       s.credentials.push({
         id: c.id,
         publicKey: bytes64(c.publicKey),

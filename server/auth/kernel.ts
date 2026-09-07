@@ -323,7 +323,7 @@ export class AuthKernel {
           [...state.config.methods].sort().join())
     )
       warn(
-        "Auth environment/store disagreement: saved store policy and methods take precedence. Environment changes do not restore retired methods; use Settings or terminal recovery.",
+        `Auth environment/store disagreement: saved store takes precedence. Policy env=${this.policy}, saved=${state.config.policy}; environment-only methods=[${[...this.methods].filter(m => !state.config!.methods.includes(m)).join(", ")}]; store-only methods=[${state.config.methods.filter(m => !this.methods.has(m)).join(", ")}]. Environment neither enables nor retires saved methods; use Settings or terminal recovery.`,
       );
     await this.refreshConfig();
     if (this.policy === "authenticated" && !(await this.readyMethods()).length)
@@ -452,7 +452,7 @@ export class AuthKernel {
     method?: HumanAuthMethod | "grant",
     req?: IncomingMessage,
     verified = true,
-    credential?: { passwordHash?: string; passkeyId?: string },
+    credential?: { passwordHash?: string; passkeyId?: string; grantHash?: string },
   ) {
     const raw = randomBytes(32).toString("base64url"),
       now = Date.now();
@@ -483,6 +483,13 @@ export class AuthKernel {
         )
       )
         throw new Error("Passkey revoked; sign in again");
+      if (method === "grant" && credential?.grantHash) {
+        const grant = s.deviceGrants?.find(g => g.hash === credential?.grantHash && !g.usedAt && !g.cancelledAt && g.expiresAt > now);
+        if (!grant || !s.sessions.some(session => session.hash === grant.createdBySessionHash && !session.revokedAt && session.expiresAt > now))
+          throw new Error("Invalid or expired device grant");
+        grant.usedAt = now;
+        identity = grant.createdBy;
+      }
       const previous = req && cookies(req)[SESSION_COOKIE];
       if (previous) {
         const old = s.sessions.find(

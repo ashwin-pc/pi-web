@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
+import { trustedProxyPeer } from "./proxy.js";
 import {
   hashPassword,
   hashSecret,
@@ -15,13 +16,9 @@ const attempts = new Map<
 >();
 export function loginPeer(req: IncomingMessage) {
   const peer = req.socket.remoteAddress || "unknown";
-  const trusted = (process.env.PI_WEB_AUTH_PROXY_PEERS || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter((s) => isIP(s));
   const forwarded = req.headers["x-forwarded-for"];
   // Opt-in exact proxy peers; require one sanitized IP, never take an arbitrary chain.
-  return trusted.includes(peer) &&
+  return trustedProxyPeer(req) &&
     typeof forwarded === "string" &&
     isIP(forwarded.trim())
     ? forwarded.trim()
@@ -222,7 +219,7 @@ export async function handlePasswordLogin(
   } finally {
     const id = `${store.path}:${loginPeer(req)}`;
     if (res.statusCode < 400) attempts.delete(id);
-    else {
+    else if (res.statusCode === 401) {
       const rate = attempts.get(id);
       if (rate) {
         rate.count++;
@@ -246,16 +243,21 @@ export async function changePassword(
   store: AuthStore,
   password: unknown,
   sessionHash: string,
+  revokeApiTokens = true,
 ) {
   const hash = await validatedPasswordHash(password);
   await store.update((state) => {
     if (
       !state.sessions.some(
         (s) =>
-          s.hash === sessionHash && !s.revokedAt && s.expiresAt > Date.now(),
+          s.hash === sessionHash && !s.revokedAt && s.expiresAt > Date.now() &&
+          !!s.authenticatedAt && s.authenticatedAt >= Date.now() - 5 * 60_000,
       )
     )
       throw new Error("Browser session revoked");
+    for (const grant of state.deviceGrants || []) grant.cancelledAt = Date.now();
+    if (revokeApiTokens)
+      for (const token of state.apiTokens) token.revokedAt = Date.now();
     state.password = { hash, changedAt: Date.now() };
     state.verifiedMethods = (state.verifiedMethods || []).filter(
       (m) => m !== "password",

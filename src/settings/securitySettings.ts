@@ -120,6 +120,13 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     if (action) el.append(action);
     return el;
   }
+  function tokenRevocationOption() {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox"; input.checked = true;
+    label.append(input, " Also revoke API tokens (recommended; stops automation). Uncheck only to preserve trusted automation.");
+    return { label, input };
+  }
   function date(value: number) {
     return new Date(value).toLocaleString();
   }
@@ -152,6 +159,13 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       reauth.textContent =
         "Sign in again for security changes (valid five minutes)";
       mode.append(reauth);
+      const authorization = api.headers().Authorization || api.headers().authorization;
+      if (state.methods?.includes("legacy") && authorization?.startsWith("Bearer "))
+        mode.append(button("Re-authenticate with saved token", async () => {
+          await request("/api/auth/legacy/login", { method: "POST", body: JSON.stringify({ password: authorization.slice(7) }) });
+          await refresh();
+          setStatus("Credential verified; security changes available for five minutes");
+        }));
     }
     if (state.methods && !state.methods.includes("legacy")) clearToken();
     container.append(mode);
@@ -295,13 +309,15 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
             "Sign in from a browser to create a session.",
           ),
         );
+      const revokeTokens = tokenRevocationOption();
       if (state.sessions.length)
         devices.append(
+          revokeTokens.label,
           button(
             "Revoke all sessions",
             async () => {
               if (!confirm("Sign out every browser and device?")) return;
-              await request("/api/auth/sessions", { method: "DELETE" });
+              await request("/api/auth/sessions", { method: "DELETE", body: JSON.stringify({ revokeApiTokens: revokeTokens.input.checked }) });
               location.reload();
             },
             true,
@@ -314,7 +330,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       const password = section(
         "Password",
         state.passwordConfigured
-          ? "Changing it revokes every other session."
+          ? "Changing it revokes every other session and pending device link. API tokens are revoked by default; retaining them preserves their access."
           : "Set a password before retiring the legacy method.",
       );
       const value = document.createElement("input");
@@ -322,18 +338,19 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       value.minLength = 12;
       value.autocomplete = "new-password";
       value.placeholder = "New password (12+ characters)";
+      const revokeTokens = tokenRevocationOption();
       password.append(
-        value,
+        value, revokeTokens.label,
         button(
           state.passwordConfigured ? "Change password" : "Set password",
           async () => {
             await request("/api/auth/password", {
               method: "PUT",
-              body: JSON.stringify({ password: value.value }),
+              body: JSON.stringify({ password: value.value, revokeApiTokens: revokeTokens.input.checked }),
             });
             value.value = "";
             await refresh();
-            setStatus("Password updated; other sessions revoked");
+            setStatus(`Password updated; other sessions and pending links revoked; API tokens ${revokeTokens.input.checked ? "revoked" : "retained"}`);
           },
         ),
       );
