@@ -6,12 +6,12 @@ import { join } from "node:path";
 import { createWebUiBridge } from "../../server/extensions/webUi.js";
 import type { PiWebUi } from "../../src/extensions.js";
 import { AuthKernel, AuthStore } from "../../server/auth/kernel.js";
-import { ExtensionHttpRegistry } from "../../server/auth/extensionHttp.js";
+import { ExtensionHttpRegistry, extensionHttpOrigin, isLoopbackAddress } from "../../server/auth/extensionHttp.js";
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const request = (secret: string, path = "/api/state?sessionId=parent", method = "GET") => ({
-  headers: { authorization: secret }, url: path, method,
+  headers: { authorization: secret }, url: path, method, socket: { remoteAddress: "127.0.0.1" },
 }) as IncomingMessage;
 
 function harness() {
@@ -32,6 +32,78 @@ function harness() {
 }
 
 describe("scoped extension HTTP credentials", () => {
+  it("rejects query and header viewer identities with copied credentials", async () => {
+    const h = harness();
+    await h.client.request("GET", "/api/state");
+    for (const route of ["state", "messages", "models"]) {
+      for (const query of ["clientId=browser", "unknown=x", "sessionId=parent&sessionId=parent"]) {
+        const path = `/api/${route}?${query}`;
+        await expect(h.client.request("GET", path)).rejects.toThrow();
+        expect((await h.registry.authenticate(request(h.auth, path))).ok).toBe(false);
+      }
+    }
+    const req = request(h.auth);
+    req.headers["x-pi-web-client-id"] = "browser";
+    expect((await h.registry.authenticate(req)).ok).toBe(false);
+    for (const route of ["/api/new-chat", "/api/sessions/new", "/api/prompt"]) {
+      await expect(h.client.request("POST", route, { body: { clientId: "browser" } })).rejects.toThrow("viewer identity");
+      h.body.clientId = "browser";
+      expect((await h.registry.authenticate(request(h.auth, route, "POST"))).ok).toBe(false);
+      delete h.body.clientId;
+      const headerReq = request(h.auth, route, "POST");
+      headerReq.headers["x-pi-web-client-id"] = "browser";
+      expect((await h.registry.authenticate(headerReq)).ok).toBe(false);
+    }
+    await expect(h.client.request("POST", "/api/prompt?unknown=x")).rejects.toThrow();
+    expect((await h.registry.authenticate(request(h.auth, "/api/prompt?unknown=x", "POST"))).ok).toBe(false);
+  });
+
+  it("checks IPv4, IPv6 and mapped socket peers without trusting forwarding headers", async () => {
+    const h = harness();
+    await h.client.request("GET", "/api/state");
+    for (const address of ["127.0.0.1", "127.2.3.4", "::1", "0:0:0:0:0:0:0:1", "::ffff:127.0.0.1", "::ffff:7f00:1"]) {
+      expect(isLoopbackAddress(address)).toBe(true);
+      const req = request(h.auth);
+      Object.defineProperty(req.socket, "remoteAddress", { value: address });
+      expect((await h.registry.authenticate(req)).ok).toBe(true);
+    }
+    for (const address of [undefined, "192.168.1.1", "::", "::ffff:192.168.1.1", "::127.0.0.1", "fe80::1%lo0", "garbage"]) {
+      const req = request(h.auth);
+      Object.defineProperty(req.socket, "remoteAddress", { value: address });
+      req.headers["x-forwarded-for"] = "127.0.0.1";
+      req.headers.forwarded = "for=127.0.0.1";
+      expect((await h.registry.authenticate(req)).ok).toBe(false);
+    }
+  });
+
+  it("reports target exhaustion without logging secrets or request data", async () => {
+    const h = harness();
+    await h.client.request("POST", "/api/new-chat");
+    const req = request(h.auth, "/api/new-chat", "POST");
+    expect((await h.registry.authenticate(req)).ok).toBe(true);
+    for (let i = 0; i < 4095; i++) h.registry.recordCreatedSession(req, `child${i}`);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(await h.registry.authenticate(request(h.auth, "/api/new-chat", "POST"))).toEqual({ ok: false, status: 403 });
+      expect(warn).toHaveBeenCalledWith("Extension API creation denied: target limit (4096) reached; dispose and recreate the client to reset its created-target set.");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain(h.auth);
+      expect((await h.registry.authenticate(request(h.auth))).ok).toBe(true);
+    } finally { warn.mockRestore(); }
+  });
+
+  it.each(["127.0.0.1", "localhost", "::1", "0.0.0.0", "::"])("derives loopback transport from a real %s listener and its assigned port", async host => {
+    const server = createServer(async (req, res) => {
+      const result = await registry.authenticate(req);
+      res.writeHead(result.ok ? 200 : 403); res.end();
+    });
+    const registry = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(server.address()), readBody: async () => ({}) });
+    const client = registry.createClient({}, "parent", () => true, { name: "socket", scopes: ["sessions.read"] });
+    await expect(client.request("GET", "/api/state")).rejects.toThrow("listening TCP");
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, host, resolve); });
+    cleanups.push(() => new Promise<void>((resolve, reject) => { server.closeAllConnections(); server.close(err => err ? reject(err) : resolve()); }));
+    expect((await client.request("GET", "/api/state")).ok).toBe(true);
+    expect(() => extensionHttpOrigin({ address: "192.168.1.1", family: "IPv4", port: 123 })).toThrow("loopback or wildcard");
+  });
   it("injects a server-only factory and invalidates clients across runtime reload and session disposal", async () => {
     const h = harness();
     let web!: PiWebUi;

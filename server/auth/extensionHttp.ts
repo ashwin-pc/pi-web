@@ -1,5 +1,25 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
+import { isIP, type AddressInfo } from "node:net";
+
+/** Inspect the socket, never client-controlled forwarding headers. */
+export function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  if (isIP(address) === 4) return address.startsWith("127.");
+  if (isIP(address) !== 6 || address.includes("%")) return false;
+  const normalized = new URL(`http://[${address}]/`).hostname;
+  if (normalized === "[::1]") return true;
+  const mapped = /^\[::ffff:([0-9a-f]+):[0-9a-f]+\]$/.exec(normalized);
+  return !!mapped && (parseInt(mapped[1], 16) >>> 8) === 127;
+}
+
+/** Resolve lazily: extensions can be initialized before listen(), including port 0. */
+export function extensionHttpOrigin(address: AddressInfo | string | null): string {
+  if (!address || typeof address === "string") throw new Error("Extension API requires a listening TCP server");
+  const host = address.address === "0.0.0.0" ? "127.0.0.1" : address.address === "::" ? "::1" : address.address;
+  if (!isLoopbackAddress(host)) throw new Error("Extension API requires a loopback or wildcard listener");
+  return `http://${isIP(host) === 6 ? `[${host}]` : host}:${address.port}`;
+}
 import type { PiWebHttpClient, PiWebHttpClientOptions, PiWebHttpScope } from "../../src/extensionHttp.js";
 import type { GateResult } from "./kernel.js";
 
@@ -113,7 +133,7 @@ export class ExtensionHttpRegistry {
           this.credentials.set(hash(secret), { client, expiresAt: credential.expiresAt });
         }
         const base = new URL(this.deps.origin());
-        if (base.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(base.hostname) || base.username || base.password) throw new Error("Extension API transport must target the local application server");
+        if (base.protocol !== "http:" || !isLoopbackAddress(base.hostname.replace(/^\[|\]$/g, "")) || base.username || base.password) throw new Error("Extension API transport must target the local application server");
         const signals = [client.abort.signal, AbortSignal.timeout(20_000), ...(input?.signal ? [input.signal] : [])];
         return (this.deps.fetch || fetch)(new URL(url.pathname + url.search, base), {
           method, redirect: "error", credentials: "omit", signal: AbortSignal.any(signals),
@@ -125,8 +145,13 @@ export class ExtensionHttpRegistry {
   }
 
   private validateTarget(client: ClientRecord, method: string, url: URL, body: unknown) {
+    // Each GET route permits only sessionId; POST routes accept no query keys.
+    for (const key of url.searchParams.keys()) {
+      if (method !== "GET" || key !== "sessionId") throw new Error("Extension API query parameter is not permitted");
+    }
     const value = body as Record<string, unknown>;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid request body");
+    if (value.clientId !== undefined) throw new Error("Extension API cannot supply a browser viewer identity");
     // Explicit sessionId only: never fall back to the browser's currently active session.
     const ids = url.searchParams.getAll("sessionId");
     const id = method === "GET" ? ids[0] : value.sessionId;
@@ -140,6 +165,8 @@ export class ExtensionHttpRegistry {
 
   async authenticate(req: IncomingMessage): Promise<GateResult> {
     this.sweep();
+    if (!isLoopbackAddress(req.socket?.remoteAddress)) return { ok: false };
+    if (req.headers["x-pi-web-client-id"] !== undefined) return { ok: false, status: 403 };
     const match = /^PiWebExtension ([A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || "");
     const credential = match && this.credentials.get(hash(match[1]));
     if (!credential || !this.live(credential.client)) return { ok: false };
@@ -147,7 +174,11 @@ export class ExtensionHttpRegistry {
       const url = relativeUrl(req.url || "");
       const scope = routes[`${req.method} ${url.pathname}`];
       if (!scope || !credential.client.scopes.has(scope)) return { ok: false, status: 403 };
-      if (scope === "sessions.create" && credential.client.targets !== "all" && credential.client.targets.size >= 4096) return { ok: false, status: 403 };
+      if (scope === "sessions.create" && credential.client.targets !== "all" && credential.client.targets.size >= 4096) {
+        // Static diagnostic: never log credentials, request data or untrusted labels.
+        console.warn("Extension API creation denied: target limit (4096) reached; dispose and recreate the client to reset its created-target set.");
+        return { ok: false, status: 403 };
+      }
       const body = req.method === "GET" ? {} : await this.deps.readBody(req);
       this.validateTarget(credential.client, req.method || "", url, body);
       // Recheck after reading an asynchronous request body.

@@ -27,7 +27,7 @@ import { LocalSessionService, SessionServiceError } from "./server/session/servi
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
-import { ExtensionHttpRegistry, hasExtensionCredential } from "./server/auth/extensionHttp.js";
+import { ExtensionHttpRegistry, extensionHttpOrigin, hasExtensionCredential } from "./server/auth/extensionHttp.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { initializeAuth } from "./server/auth/bootstrap.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
@@ -49,7 +49,9 @@ const authMode = authConfig.legacyMode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
 const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
-const extensionHttp = new ExtensionHttpRegistry({ origin: () => `http://${host === "::1" ? "[::1]" : "127.0.0.1"}:${port}`, readBody });
+// Runtimes can initialize before the HTTP server is constructed or listening.
+let extensionHttpServer: ReturnType<typeof createServer> | undefined;
+const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
 const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
@@ -342,6 +344,8 @@ function cleanClientId(value: unknown) {
 }
 
 function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
+  // Extension operations must never acquire, move or otherwise use browser leases.
+  if (hasExtensionCredential(req)) return "";
   const raw = req.headers["x-pi-web-client-id"];
   const headerValue = Array.isArray(raw) ? raw[0] : raw;
   return cleanClientId(headerValue) || cleanClientId(fallback);
@@ -1300,6 +1304,7 @@ if (isDev) {
 
 startEventLoopTelemetry();
 
+extensionHttpServer = server;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);

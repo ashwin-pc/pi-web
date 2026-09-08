@@ -47,6 +47,28 @@ URL, or redirect is accepted. The transport connects to this child application's
 loopback HTTP listener, not the public supervisor/proxy. Loopback or wildcard
 binding is required (the default is supported; IPv6 loopback is also supported).
 
+The address and actual port come from the listening socket (including `localhost`
+resolving to IPv6 and IPv4/IPv6 wildcard binds). Clients may be created before
+listening; requests made before listening fail explicitly and can be retried after
+startup. Non-loopback, non-wildcard listeners are unsupported.
+
+The verifier also requires a loopback socket peer (IPv4, IPv6 or IPv4-mapped IPv6),
+without trusting `Forwarded` or `X-Forwarded-For`. This is defense in depth, not
+proof of the original caller: a reverse proxy connecting over loopback presents a
+loopback peer even for remote users. Do not forward `PiWebExtension` credentials
+through public proxies; credentials remain the authentication boundary.
+
+For least-privilege work on the owning session, omit create/delete and `sessionIds`:
+
+```ts
+const client = ctx.ui.web.createApiClient!({
+  name: "example.local-helper",
+  scopes: ["sessions.read", "sessions.write"],
+});
+await client.request("GET", "/api/messages");
+await client.request("POST", "/api/session/name", { body: { name: "Reviewed" } });
+```
+
 ## Scope and target policy
 
 | Scope | Exact permitted HTTP operations |
@@ -68,6 +90,15 @@ a caller-provided lineage claim. `sessionIds: [id, ...]` adds explicit targets;
 `all` because its tools deliberately operate on user-selected sessions and restored
 workers as well as newly spawned children. Neither route scope nor target scope is
 inferred from UI focus. Both are checked server-side even for a copied credential.
+GET routes accept only the single `sessionId` query parameter; POST routes accept
+no query parameters. Browser viewer identity headers are rejected, and extension
+requests never acquire or move browser viewer leases (including body `clientId`).
+
+Target restrictions are **not filesystem restrictions**: `sessions.create` accepts
+an arbitrary existing, accessible `cwd`, not just the owning session's workspace.
+Combining create and write allows starting a session there and executing prompts
+with its normal agent/tool authority. This deliberately preserves cross-worktree
+orchestration; use only trusted extensions and tasks.
 
 Installed extensions already execute trusted local code. They may request any
 of this finite catalogue; there is not a new administrator consent screen or
@@ -99,6 +130,9 @@ prevent prompt-driven code execution, or introduce multi-user resource ownership
   automatic retry of mutations. Client count is bounded (32 per session, 1024 per
   instance); explicit target lists are bounded, and default created-target sets
   stop admitting creations at 4096 entries rather than silently widening access.
+  Rejections return 403 and emit a static server warning naming the limit and
+  recovery (dispose/recreate the client); no secret, target id or request data is
+  logged. Recreated clients no longer automatically target the old children.
 
 ## Orchestration migration
 
@@ -107,6 +141,13 @@ localhost with `PI_WEB_TOKEN`. It works with passkey/password-only deployments a
 needs no additional setup. It explicitly declares session read/create/write/delete
 scopes and cross-session access, disposes the client during `session_shutdown`,
 and gives an actionable error on older hosts instead of restoring legacy auth.
+These tools are model-callable authority, not merely extension-internal plumbing:
+prompt injection in task text or material read by the model can influence their use.
+With `sessionIds: "all"`, read/write can inspect or steer unrelated sessions; delete
+can remove sessions across the instance. Delete is retained for existing rollback
+cleanup when a worker spawn fails, rather than silently breaking that behavior.
+Extensions that do not need those powers should use default targets and omit
+create/delete, as in the least-privilege example above.
 Update both core and the installed extension, then reload extensions. Existing
 copied versions will not change automatically; symlinked examples follow checkout
 updates. No live restart or configuration change is performed by this feature.
