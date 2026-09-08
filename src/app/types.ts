@@ -390,6 +390,32 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   };
 }
 
+export type SessionUiStateResponse = { ok: boolean; status?: number; sessionUiState?: unknown };
+
+export function sessionUiStateFromResponse(response: SessionUiStateResponse): SessionUiState | undefined {
+  if (!response.ok || !response.sessionUiState || typeof response.sessionUiState !== "object" || Array.isArray(response.sessionUiState)) return undefined;
+  const revision = (response.sessionUiState as Record<string, unknown>).revision;
+  if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) return undefined;
+  return normalizeSessionUiState(response.sessionUiState);
+}
+
+export function hasAnySessionUiState(value: SessionUiState) {
+  return value.lanes.length > 0
+    || value.sessionNotes.length > 0
+    || value.pinnedFolders.length > 0
+    || value.sessionMarkers.length > 0
+    || value.sessionUnreadStates.length > 0
+    || value.sessionOrigins.length > 0
+    || value.allowedMarkerColors.length > 0
+    || Object.keys(value.bucketLabels).length > 0
+    || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
+}
+
+export function shouldMigrateLocalUiState(response: SessionUiStateResponse, localState: SessionUiState) {
+  const serverState = sessionUiStateFromResponse(response);
+  return serverState?.revision === 0 && hasAnySessionUiState(localState);
+}
+
 export function readLegacyPinnedSessions(): PinnedSession[] {
   try {
     return normalizePinnedSessions(JSON.parse(localStorage.getItem(pinnedSessionsKey) || "[]"));

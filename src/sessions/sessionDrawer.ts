@@ -6,7 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { panelOverlayModeQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, shouldMigrateLocalUiState, writeActiveSessionIdToUrl } from "../app/types.js";
 import { runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
@@ -648,9 +648,9 @@ export function createSessions(options: {
   let sessionUiStateInitialized = false;
   let restoredPersistedLaneFocus = false;
   let sessionUiWriteQueue = Promise.resolve();
-  function applySessionUiStateValue(value: unknown) {
+  function applySessionUiStateValue(value: unknown, force = false) {
     const next = normalizeSessionUiState(value);
-    if (sessionUiStateInitialized && next.revision <= latestSessionUiRevision) return;
+    if (!force && sessionUiStateInitialized && next.revision <= latestSessionUiRevision) return;
     sessionUiStateInitialized = true;
     latestSessionUiRevision = next.revision;
     state.lanes = next.lanes;
@@ -678,26 +678,24 @@ export function createSessions(options: {
     }
   }
 
-  function hasAnySessionUiState(value: SessionUiState) {
-    return value.lanes.length > 0
-      || value.sessionNotes.length > 0
-      || value.pinnedFolders.length > 0
-      || value.sessionMarkers.length > 0
-      || value.sessionUnreadStates.length > 0
-      // Lineage counts as state: without it, a server holding ONLY origins looks
-      // "empty" and a legacy-localStorage push would wipe every recorded origin.
-      || (value.sessionOrigins?.length ?? 0) > 0
-      || value.allowedMarkerColors.length > 0
-      || Object.keys(value.bucketLabels).length > 0
-      || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
-  }
-
   function applySessionUiState(value: unknown) {
     // Realtime snapshots emitted before our PATCH response can contain the old
     // lane projection. Let the mutation response remain authoritative while a
     // local write is in flight so a newly pinned tab cannot immediately revert.
     if (sessionUiWritePending > 0) return;
     applySessionUiStateValue(value);
+  }
+
+  async function fetchSessionUiStateSnapshot() {
+    const res = await fetch("/api/session-ui-state", { headers: api.headers() });
+    const data = await res.json().catch(() => ({}));
+    const response = {
+      ok: res.ok && data.ok !== false,
+      status: res.status,
+      sessionUiState: data.sessionUiState,
+    };
+    const sessionUiState = sessionUiStateFromResponse(response);
+    return sessionUiState ? { response, sessionUiState } : undefined;
   }
 
   async function patchSessionUiState(patch: Partial<SessionUiState>) {
@@ -710,7 +708,13 @@ export function createSessions(options: {
         body: JSON.stringify(patch),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+      if (res.status === 409) {
+        console.warn("Session UI state patch was refused; reloading server state.", data.details);
+        const snapshot = await fetchSessionUiStateSnapshot();
+        if (snapshot) applySessionUiStateValue(snapshot.sessionUiState, true);
+        return;
+      }
+      if (!res.ok || data.ok === false) throw new Error(data.error || `Session UI state update failed (${res.status})`);
       // Keep newer optimistic mutations rendered until their queued write is
       // confirmed; intermediate full-state responses would otherwise revert UI.
       if (writeSequence === sessionUiWriteSequence) applySessionUiStateValue(data.sessionUiState);
@@ -735,26 +739,26 @@ export function createSessions(options: {
   }
 
   async function refreshSessionUiState() {
-    const res = await fetch("/api/session-ui-state", { headers: api.headers() });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    const serverState = normalizeSessionUiState(data.sessionUiState);
+    // Capture the boot-time legacy projection before another server snapshot can
+    // replace it while this request is in flight. It is migration input only.
     const localState = normalizeSessionUiState({
       lanes: state.lanes,
       sessionNotes: state.sessionNotes,
       pinnedFolders: state.pinnedFolders,
       sessionMarkers: state.sessionMarkers,
       sessionUnreadStates: state.sessionUnreadStates,
+      sessionOrigins: state.sessionOrigins,
       selectedMarkerColor: state.selectedMarkerColor,
       allowedMarkerColors: Array.from(allowedMarkerColors),
       bucketLabels: state.bucketLabels,
     });
-    if (!hasAnySessionUiState(serverState) && hasAnySessionUiState(localState)) {
+    const snapshot = await fetchSessionUiStateSnapshot();
+    if (!snapshot) return;
+    if (latestSessionUiRevision === 0 && shouldMigrateLocalUiState(snapshot.response, localState)) {
       await patchSessionUiState(localState);
       return;
     }
-    applySessionUiState(serverState);
+    applySessionUiState(snapshot.sessionUiState);
   }
 
   function unreadStateForSession(sessionId: string) {

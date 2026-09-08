@@ -8,7 +8,7 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
-import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
+import { createSessionUiStateStore, defaultSessionUiState, SessionUiStateShrinkRejected } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
@@ -898,9 +898,16 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
-        const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
-        broadcast({ type: "session_ui_state_changed", sessionUiState });
-        return sendJson(res, 200, { ok: true, sessionUiState });
+        try {
+          const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+          broadcast({ type: "session_ui_state_changed", sessionUiState });
+          return sendJson(res, 200, { ok: true, sessionUiState });
+        } catch (error) {
+          if (error instanceof SessionUiStateShrinkRejected) {
+            return sendJson(res, 409, { ok: false, error: "refusing to shrink session UI state", details: error.details });
+          }
+          throw error;
+        }
       }
 
       if (method === "POST" && (url.pathname === "/api/session-ui-state/read" || url.pathname === "/api/session-ui-state/unread")) {

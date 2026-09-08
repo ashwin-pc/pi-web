@@ -426,6 +426,43 @@ describe("pi-web mock API", () => {
     ]);
   });
 
+  it("returns 409 when a session UI state patch would remove most entries", async () => {
+    const original = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+    const lanes = Array.from({ length: 20 }, (_, index) => ({
+      sessionId: `shrink-guard-${index}`,
+      lane: "pinned",
+      since: "2026-01-01T00:00:00.000Z",
+    }));
+    try {
+      const seeded = await fetch(`${baseUrl}/api/session-ui-state`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lanes, force: true }),
+      });
+      expect(seeded.status).toBe(200);
+
+      const rejected = await fetch(`${baseUrl}/api/session-ui-state`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ lanes: lanes.slice(0, 3) }),
+      });
+      expect(rejected.status).toBe(409);
+      expect(await rejected.json()).toEqual({
+        ok: false,
+        error: "refusing to shrink session UI state",
+        details: { collection: "lanes", current: 20, next: 3 },
+      });
+      const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
+      expect(current.sessionUiState.lanes).toHaveLength(20);
+    } finally {
+      await fetch(`${baseUrl}/api/session-ui-state`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...original, force: true }),
+      });
+    }
+  });
+
   it("applies saved defaults to new sessions", async () => {
     try {
       await fetch(`${baseUrl}/api/settings`, {

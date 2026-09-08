@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green" | "orange" | "cyan" | "pink";
@@ -61,7 +61,25 @@ export type SessionUiStatePatch = Partial<{
   selectedMarkerColor: unknown;
   allowedMarkerColors: unknown;
   bucketLabels: unknown;
+  force: unknown;
 }>;
+
+type GuardedSessionUiStateCollection = "lanes" | "sessionMarkers" | "sessionUnreadStates" | "sessionOrigins";
+export type SessionUiStateShrinkDetails = { collection: GuardedSessionUiStateCollection; current: number; next: number };
+
+export class SessionUiStateShrinkRejected extends Error {
+  readonly details: SessionUiStateShrinkDetails;
+
+  constructor(details: SessionUiStateShrinkDetails) {
+    super(`Refusing to shrink ${details.collection} from ${details.current} to ${details.next}`);
+    this.name = "SessionUiStateShrinkRejected";
+    this.details = details;
+  }
+}
+
+export const SESSION_UI_STATE_SHRINK_MINIMUM_SIZE = 10;
+export const SESSION_UI_STATE_MAX_SHRINK_FRACTION = 0.5;
+const guardedSessionUiStateCollections: GuardedSessionUiStateCollection[] = ["lanes", "sessionMarkers", "sessionUnreadStates", "sessionOrigins"];
 
 const markerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"]);
 const legacyBucketToColor: Record<string, SessionMarkerColorId> = {
@@ -328,6 +346,29 @@ export function createSessionUiStateStore(file: string) {
     return cloneState(cached);
   }
 
+  async function backUpCurrentStateFile() {
+    try {
+      await access(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw error;
+    }
+
+    await rm(`${file}.bak-5.json`, { force: true });
+    for (let index = 5; index >= 2; index -= 1) {
+      try {
+        await rename(`${file}.bak-${index - 1}.json`, `${file}.bak-${index}.json`);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    try {
+      await copyFile(file, `${file}.bak-1.json`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+
   async function writeState(state: SessionUiState) {
     if (futureVersion !== undefined) throw new Error(`Session UI state version ${futureVersion} is newer than this build; refusing to overwrite ${file}`);
     const normalized = normalizeSessionUiState(state);
@@ -335,6 +376,7 @@ export function createSessionUiStateStore(file: string) {
     await mkdir(dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
     await writeFile(tmp, `${JSON.stringify(cached, null, 2)}\n`, "utf-8");
+    await backUpCurrentStateFile();
     await rename(tmp, file);
     return cloneState(cached);
   }
@@ -344,7 +386,25 @@ export function createSessionUiStateStore(file: string) {
   }
 
   async function patch(value: SessionUiStatePatch | unknown) {
-    return serializeWrite(async () => writeState(applySessionUiStatePatch(await read(), value)));
+    return serializeWrite(async () => {
+      const current = await read();
+      const force = isRecord(value) && value.force === true;
+      const patchWithoutForce = isRecord(value)
+        ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== "force"))
+        : value;
+      const next = applySessionUiStatePatch(current, patchWithoutForce);
+      if (!force) {
+        for (const collection of guardedSessionUiStateCollections) {
+          const currentSize = current[collection].length;
+          const nextSize = next[collection].length;
+          if (currentSize >= SESSION_UI_STATE_SHRINK_MINIMUM_SIZE
+            && (currentSize - nextSize) / currentSize > SESSION_UI_STATE_MAX_SHRINK_FRACTION) {
+            throw new SessionUiStateShrinkRejected({ collection, current: currentSize, next: nextSize });
+          }
+        }
+      }
+      return writeState(next);
+    });
   }
 
   async function markUnread(sessionId: string, unreadAt = new Date().toISOString()) {
