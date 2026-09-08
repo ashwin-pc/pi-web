@@ -6,6 +6,7 @@ import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../sett
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
 
 export interface WebUiBridgeDependencies {
+  extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   emit(value: unknown): void;
   clientCount(): number;
   withWorkLease<T>(session: any, label: string, operation: () => Promise<T>): Promise<T>;
@@ -334,6 +335,7 @@ function notifySettingsChanged(id: string, values: Record<string, unknown>) {
 function releaseSessionSettings(value: any) {
   const session = value as object;
   disposedSettingsSessions.add(session);
+  deps.extensionHttp?.revokeOwner(session);
   const previousSchemaList = settingsSchemaListKey();
   for (const [id, entry] of activeSettingsSchemas) {
     if (!entry.registrants.delete(session)) continue;
@@ -546,6 +548,11 @@ function createPiWebUi(value: any): PiWebUi {
   };
   return {
     capabilities: webCapabilities,
+    ...(deps.extensionHttp ? { createApiClient: (options: import("../../src/extensionHttp.js").PiWebHttpClientOptions) => {
+      const runtime = value.extensionRunner;
+      return deps.extensionHttp!.createClient(value, value.sessionId,
+        () => !disposedSettingsSessions.has(value) && value.extensionRunner === runtime, options);
+    } } : {}),
     contribute(keyValue, spec) {
       const key = cleanContributionKey(keyValue);
       if (!key) throw new TypeError("Contribution key is required");

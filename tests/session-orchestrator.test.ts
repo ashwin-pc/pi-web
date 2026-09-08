@@ -111,6 +111,12 @@ function makeCtx(options: {
     },
     ui: {
       web: {
+        createApiClient: vi.fn(() => ({
+          request: (method: string, path: string, options?: { body?: unknown }) => globalThis.fetch(path, {
+            method, ...(options?.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+          }),
+          dispose: vi.fn(),
+        })),
         registerSettings: vi.fn(async () => ({ registered: true, migrated: false, usedBackup: false })),
         getSettings: vi.fn(async () => ({
           schemaVersion: 1,
@@ -204,6 +210,26 @@ afterEach(() => {
 });
 
 describe("sessions_spawn tool surface", () => {
+  it("requests explicit scoped cross-session access and disposes it at shutdown", async () => {
+    const ctx = makeCtx();
+    await activate(ctx);
+    expect(ctx.ui.web.createApiClient).toHaveBeenCalledWith({
+      name: "session-orchestrator", sessionIds: "all",
+      scopes: ["sessions.read", "sessions.create", "sessions.write", "sessions.delete"],
+    });
+    const client = ctx.ui.web.createApiClient.mock.results[0].value;
+    handlers.get("session_shutdown")?.({}, ctx);
+    expect(client.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("fails clearly on older hosts without falling back to browser tokens", async () => {
+    const ctx: any = makeCtx();
+    delete ctx.ui.web.createApiClient;
+    const result = await spawn(ctx, { name: "worker", task: "read" });
+    expect(resultText(result)).toContain("scoped extension HTTP API");
+    expect(calls).toEqual([]);
+  });
+
   it("registers the orchestration tools", async () => {
     await activate(makeCtx());
     expect([...tools.keys()].sort()).toEqual([

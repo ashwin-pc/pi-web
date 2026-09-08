@@ -81,6 +81,7 @@ export interface LocalSessionConfiguration {
 }
 
 export interface LocalSessionServiceDependencies {
+  extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   modelRuntime: ModelRuntime;
   sessionFactory?: LocalSessionFactory;
   additionalExtensionPaths(cwd: string): string[];
@@ -244,6 +245,7 @@ export class LocalSessionService implements SessionService {
   constructor(private readonly deps: LocalSessionServiceDependencies) {
     this.knownSessionCwds.add(resolve(deps.globalCwd()));
     this.webUiBridge = createWebUiBridge({
+      extensionHttp: deps.extensionHttp,
       emit: (input) => {
         const value = input as Record<string, unknown>;
         const request = interactionRequestFromWire(value);

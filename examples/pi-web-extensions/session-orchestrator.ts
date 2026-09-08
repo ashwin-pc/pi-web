@@ -19,7 +19,7 @@
  */
 
 import { Type } from "typebox";
-import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebSettingsSchema } from "@ashwin-pc/pi-web/extensions";
+import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebSettingsSchema, PiWebHttpClient } from "@ashwin-pc/pi-web/extensions";
 
 const WORKER_MARKER = "[pi-web orchestrated worker]";
 const EXT_VERSION = "v9";
@@ -66,10 +66,6 @@ const SETTINGS_SCHEMA: PiWebSettingsSchema = {
     },
   ],
 };
-
-const PORT = Number(process.env.PORT || 8787);
-const TOKEN = process.env.PI_WEB_TOKEN || "";
-const BASE = `http://127.0.0.1:${PORT}`;
 
 // ---------------------------------------------------------------------------
 // Global helpers: token parsing, resolution
@@ -130,23 +126,6 @@ class ApiError extends Error {
   }
 }
 
-async function api(method: string, path: string, body?: unknown): Promise<any> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: {
-      ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(20_000),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || json?.ok === false) {
-    throw new ApiError(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`, res.status);
-  }
-  return json;
-}
-
 function trunc(value: unknown, max: number): string {
   const text = String(value ?? "").trim();
   if (text.length <= max) return text;
@@ -160,11 +139,6 @@ function shortId(id: string): string {
 // ---------------------------------------------------------------------------
 // Transcript helpers (uses /api/messages simplified message shape)
 // ---------------------------------------------------------------------------
-
-async function fetchMessages(sessionId: string): Promise<any[]> {
-  const json = await api("GET", `/api/messages?sessionId=${encodeURIComponent(sessionId)}`);
-  return Array.isArray(json.messages) ? json.messages : [];
-}
 
 function lastAssistantText(messages: any[]): { text: string; isError: boolean } {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -214,6 +188,18 @@ function formatTranscript(messages: any[], tail: number): string {
 // ---------------------------------------------------------------------------
 
 export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
+  let client: PiWebHttpClient | undefined;
+  async function api(method: "GET" | "POST", path: string, body?: Record<string, unknown>): Promise<any> {
+    if (!client) throw new Error("Session orchestration requires pi-web's scoped extension HTTP API; update pi-web and reload extensions.");
+    const res = await client.request(method, path, { body });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json?.ok === false) throw new ApiError(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`, res.status);
+    return json;
+  }
+  async function fetchMessages(sessionId: string): Promise<any[]> {
+    const json = await api("GET", `/api/messages?sessionId=${encodeURIComponent(sessionId)}`);
+    return Array.isArray(json.messages) ? json.messages : [];
+  }
   type Watched = {
     id: string;
     name: string;
@@ -245,6 +231,13 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   // wakeups through /api/prompt (the same battle-tested path the web UI uses
   // for steering), which works both when the parent is idle and mid-turn.
   function captureSelf(ctx: PiWebExtensionContext) {
+    if (!client && !disposed) client = ctx.ui?.web?.createApiClient?.({
+      name: "session-orchestrator",
+      scopes: ["sessions.read", "sessions.create", "sessions.write", "sessions.delete"],
+      // The existing tools deliberately accept arbitrary user-selected sessions,
+      // including restored workers; cross-session access is explicit, not implicit.
+      sessionIds: "all",
+    });
     const id = ownSessionId(ctx);
     if (id && id !== "unknown") selfSessionId = id;
     const reporter = ctx?.ui?.web?.reportSettlementDependencies;
@@ -1087,6 +1080,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   // Lifecycle
   // -------------------------------------------------------------------------
   pi.on("session_shutdown", () => {
+    client?.dispose();
+    client = undefined;
     disposed = true;
     generation += 1;
     if (timer) clearInterval(timer);

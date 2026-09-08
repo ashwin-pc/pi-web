@@ -280,7 +280,11 @@ export interface PiWebSettlementDependencies {
   sessionIds: string[];
 }
 
+export type { PiWebHttpClient, PiWebHttpClientOptions, PiWebHttpScope } from "./extensionHttp.js";
+
 export type PiWebUi = {
+  /** Core-managed scoped HTTP access for trusted server-side extensions only. */
+  createApiClient?(options: import("./extensionHttp.js").PiWebHttpClientOptions): import("./extensionHttp.js").PiWebHttpClient;
   /** Runtime feature discovery for independently distributed extensions. */
   readonly capabilities: PiWebCapabilities;
 
