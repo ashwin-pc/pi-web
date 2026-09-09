@@ -96,6 +96,7 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
+    await security.getByRole("button", { name: "Set up", exact: true }).click();
     await security
       .getByPlaceholder("New password (12+ characters)")
       .fill("my secure replacement password");
@@ -117,6 +118,8 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
         automaticPresenceSimulation: true,
       },
     });
+    await security.getByRole("button", { name: "‹ Security", exact: true }).click();
+    await security.locator(".securityRow", { hasText: "Passkeys" }).getByRole("button", { name: "Manage" }).click();
     await security.getByPlaceholder("Passkey name").fill("Test authenticator");
     await security
       .getByRole("button", { name: "Add passkey", exact: true })
@@ -126,6 +129,7 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
     ).toBeVisible();
     const login = await fresh.newPage();
     await login.goto(`${origin}/api/auth/login`);
+    await login.getByRole("button", { name: "Use a password", exact: true }).click();
     await login
       .getByLabel("Password", { exact: true })
       .fill("my secure replacement password");
@@ -136,6 +140,7 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
     await page.locator("#sessionButton").click();
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
+    await security.getByRole("button", { name: "Sign-in options & legacy retirement", exact: true }).click();
     const methods = security.locator("section", {
       has: page.getByRole("heading", { name: "Sign-in methods", exact: true }),
     });
@@ -145,6 +150,7 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
       })
       .getByRole("button", { name: "Disable" })
       .click();
+    await page.getByRole("dialog").getByRole("button", { name: "Retire legacy login", exact: true }).click();
     await expect(
       methods
         .locator(".securityRow", {
@@ -178,8 +184,14 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
       });
     }, device.id);
     expect((await fresh.request.get(`${origin}/api/state`)).status()).toBe(401);
-    await page.goto(`${origin}/api/auth/passkey-login`);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.goto(`${origin}/api/auth/login`);
+    await page.route("**/api/auth/passkey/options", route => route.fulfill({ status: 503, json: { error: "Authenticator temporarily unavailable" } }));
+    const signIn = page.getByRole("button", { name: "Sign in with passkey", exact: true });
+    await signIn.click();
+    await expect(page.getByRole("status")).toHaveText("Authenticator temporarily unavailable");
+    await expect(signIn).toBeEnabled();
+    await page.unroute("**/api/auth/passkey/options");
+    await signIn.click();
     await expect(page).toHaveURL(`${origin}/`);
     const verified = await page.evaluate(async () =>
       (await fetch("/api/auth/security")).json(),

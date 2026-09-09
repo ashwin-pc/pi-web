@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import { clearToken } from "../app/types.js";
 import { createQrSvg } from "../token/qr.js";
+import { confirmSecurityAction } from "./securityDialog.js";
 
 export type AuthMode = "none" | "legacy" | "passkey" | "external";
 type Identity = { id: string; displayName?: string };
@@ -65,6 +66,24 @@ const encode = (value: ArrayBuffer) =>
 
 export function createSecuritySettings({ container, api, setStatus }: Options) {
   let current: SecurityState | undefined;
+  let activeView = "overview";
+  const panels = new Map<string, HTMLElement>();
+  const feedback = document.createElement("p");
+  feedback.className = "securityFeedback";
+  feedback.setAttribute("role", "status");
+  feedback.setAttribute("aria-live", "polite");
+  function report(message: string, error = false) {
+    feedback.textContent = message;
+    feedback.classList.toggle("error", error);
+    setStatus(message, error);
+  }
+  function signedOut() {
+    // Explicit sign-in, never the legacy overlay or an ambient proxy exchange.
+    clearToken();
+    location.assign("/api/auth/login");
+  }
+  const confirmAction = (title: string, detail: string, confirmLabel: string, tokens = false) =>
+    confirmSecurityAction({ container, title, detail, confirmLabel, tokens });
   async function request<T>(path: string, init: RequestInit = {}) {
     const response = await fetch(path, {
       ...init,
@@ -82,22 +101,29 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     element.textContent = label;
     if (danger) element.className = "danger";
     element.addEventListener("click", () => {
+      const hadFocus = document.activeElement === element;
       element.disabled = true;
+      element.setAttribute("aria-busy", "true");
+      report("");
       action()
         .catch((e) =>
-          setStatus(e instanceof Error ? e.message : String(e), true),
+          report(e instanceof Error ? e.message : String(e), true),
         )
         .finally(() => {
           element.disabled = false;
+          element.removeAttribute("aria-busy");
+          if (hadFocus && element.isConnected && document.activeElement === document.body) element.focus();
         });
     });
     return element;
   }
   function section(title: string, hint?: string) {
     const el = document.createElement("section");
-    el.className = "settingsSection securitySection";
+    el.className = "securitySection";
+    panels.set(title, el);
     const h = document.createElement("h4");
     h.textContent = title;
+    h.tabIndex = -1;
     el.append(h);
     if (hint) {
       const p = document.createElement("p");
@@ -123,17 +149,36 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
   function tokenRevocationOption() {
     const label = document.createElement("label");
     const input = document.createElement("input");
+    label.className = "securityCheckbox";
     input.type = "checkbox"; input.checked = true;
     label.append(input, " Also revoke API tokens (recommended; stops automation). Uncheck only to preserve trusted automation.");
     return { label, input };
   }
+  async function changeMethod(method: string, enabled: Set<string>) {
+    const checked = enabled.has(method);
+    if (checked && !await confirmAction(method === "legacy" ? "Retire legacy login?" : `Disable ${method} sign-in?`, "A remaining enabled method must have a verified login. Existing browser sessions remain until revoked.", method === "legacy" ? "Retire legacy login" : "Disable sign-in")) return;
+    const next = new Set(enabled);
+    if (checked) next.delete(method);
+    else next.add(method);
+    await request("/api/auth/methods", { method: "PUT", body: JSON.stringify({ methods: [...next] }) });
+    await refresh();
+    report(`${method === "legacy" && checked ? "Legacy login retired" : `${method} sign-in ${checked ? "disabled" : "enabled"}`}. Existing sessions remain until revoked.`);
+  }
   function date(value: number) {
     return new Date(value).toLocaleString();
+  }
+  function deviceName(agent?: string) {
+    if (!agent) return "Unknown browser";
+    const device = /iPhone/i.test(agent) ? "iPhone" : /iPad/i.test(agent) ? "iPad" : /Android/i.test(agent) ? "Android" : /Macintosh|Mac OS/i.test(agent) ? "Mac" : /Windows/i.test(agent) ? "Windows" : /Linux/i.test(agent) ? "Linux" : "Device";
+    const browser = /Edg\//.test(agent) ? "Edge" : /Firefox|FxiOS/.test(agent) ? "Firefox" : /Chrome|CriOS/.test(agent) ? "Chrome" : /Safari/.test(agent) ? "Safari" : "Browser";
+    return `${device} · ${browser}`;
   }
 
   function render(state: SecurityState) {
     current = state;
     container.replaceChildren();
+    panels.clear();
+    container.classList.add("securitySettings");
     const modeHints: Record<AuthMode, string> = {
       legacy:
         "Legacy token login is deprecated. Add and verify a replacement below before retiring it.",
@@ -164,7 +209,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
         mode.append(button("Re-authenticate with saved token", async () => {
           await request("/api/auth/legacy/login", { method: "POST", body: JSON.stringify({ password: authorization.slice(7) }) });
           await refresh();
-          setStatus("Credential verified; security changes available for five minutes");
+          report("Credential verified; security changes available for five minutes");
         }));
     }
     if (state.methods && !state.methods.includes("legacy")) clearToken();
@@ -189,16 +234,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
           row(
             method,
             `${checked ? "Enabled" : "Disabled"}${state.verifiedMethods?.includes(method) ? " · Verified login" : " · Not yet verified"}`,
-            button(checked ? "Disable" : "Enable", async () => {
-              const next = new Set(enabled);
-              if (checked) next.delete(method);
-              else next.add(method);
-              await request("/api/auth/methods", {
-                method: "PUT",
-                body: JSON.stringify({ methods: [...next] }),
-              });
-              await refresh();
-            }),
+            button(checked ? "Disable" : "Enable", () => changeMethod(method, enabled)),
           ),
         );
       }
@@ -217,13 +253,12 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
             button(
               "Revoke",
               async () => {
-                if (!confirm(`Revoke ${key.name} and sign out all devices?`))
-                  return;
+                if (!await confirmAction(`Revoke ${key.name}?`, "Revoking any passkey signs out all devices, including this browser. You will need another credential to sign in again. API tokens are not revoked by this action.", "Revoke and sign out")) return;
                 await request(
                   `/api/auth/passkeys/${encodeURIComponent(key.id)}`,
                   { method: "DELETE" },
                 );
-                location.reload();
+                signedOut();
               },
               true,
             ),
@@ -231,6 +266,8 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
         );
       const name = document.createElement("input");
       name.placeholder = "Passkey name";
+      name.setAttribute("aria-label", "Passkey name");
+      name.maxLength = 80;
       name.value = "Passkey";
       keys.append(
         name,
@@ -270,7 +307,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
             }),
           });
           await refresh();
-          setStatus("Passkey added");
+          report("Passkey added");
         }),
       );
       container.append(keys);
@@ -287,15 +324,16 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       for (const session of state.sessions)
         devices.append(
           row(
-            session.identity.displayName || session.identity.id,
-            `${session.current ? "This device · " : ""}${session.method || "legacy"} · ${session.device || "Unknown browser"} · Last seen ${date(session.lastSeenAt)}`,
+            deviceName(session.device),
+            `${session.current ? "This device · " : ""}${session.method || "legacy"} · Last seen ${date(session.lastSeenAt)}`,
             button(
-              "Revoke",
+              "Sign out",
               async () => {
+                if (!await confirmAction(`Sign out ${session.current ? "this device" : deviceName(session.device)}?`, "This ends its session. It must sign in again to reconnect.", "Sign out")) return;
                 await request(`/api/auth/sessions/${session.id}`, {
                   method: "DELETE",
                 });
-                if (session.current) location.reload();
+                if (session.current) signedOut();
                 else await refresh();
               },
               true,
@@ -309,20 +347,13 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
             "Sign in from a browser to create a session.",
           ),
         );
-      const revokeTokens = tokenRevocationOption();
-      if (state.sessions.length)
-        devices.append(
-          revokeTokens.label,
-          button(
-            "Revoke all sessions",
-            async () => {
-              if (!confirm("Sign out every browser and device?")) return;
-              await request("/api/auth/sessions", { method: "DELETE", body: JSON.stringify({ revokeApiTokens: revokeTokens.input.checked }) });
-              location.reload();
-            },
-            true,
-          ),
-        );
+      for (const [index, session] of state.sessions.entries()) {
+        if (!session.current) continue;
+        const pill = document.createElement("span");
+        pill.className = "securityPill";
+        pill.textContent = "THIS DEVICE";
+        devices.querySelectorAll(".securityRow")[index]?.querySelector("div")?.append(pill);
+      }
       container.append(devices);
     }
 
@@ -338,19 +369,22 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       value.minLength = 12;
       value.autocomplete = "new-password";
       value.placeholder = "New password (12+ characters)";
+      value.setAttribute("aria-label", "New password (12+ characters)");
+      value.maxLength = 1024;
       const revokeTokens = tokenRevocationOption();
       password.append(
         value, revokeTokens.label,
         button(
           state.passwordConfigured ? "Change password" : "Set password",
           async () => {
+            if (!value.reportValidity() || value.value.length < 12) throw new Error("Password must be 12–1024 characters");
             await request("/api/auth/password", {
               method: "PUT",
               body: JSON.stringify({ password: value.value, revokeApiTokens: revokeTokens.input.checked }),
             });
             value.value = "";
             await refresh();
-            setStatus(`Password updated; other sessions and pending links revoked; API tokens ${revokeTokens.input.checked ? "revoked" : "retained"}`);
+            report(`Password updated; other sessions and pending links revoked; API tokens ${revokeTokens.input.checked ? "revoked" : "retained"}`);
           },
         ),
       );
@@ -380,6 +414,8 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       );
     const tokenName = document.createElement("input");
     tokenName.placeholder = "Token name";
+    tokenName.setAttribute("aria-label", "Token name");
+    tokenName.maxLength = 80;
     const days = document.createElement("input");
     days.type = "number";
     days.min = "1";
@@ -412,7 +448,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
             code,
             button("Copy secret", async () => {
               await navigator.clipboard.writeText(value.secret);
-              setStatus("API token copied");
+              report("API token copied");
             }),
           );
           secret.hidden = false;
@@ -462,7 +498,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
                   method: "DELETE",
                 });
                 await refresh();
-                setStatus("Add-device grant cancelled");
+                report("Add-device grant cancelled");
               },
               true,
             ),
@@ -490,11 +526,151 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
         );
       container.append(grants);
     }
+    assembleOverview(state, enabled);
+  }
+
+  function assembleOverview(state: SecurityState, enabled: Set<string>) {
+    const overview = document.createElement("div");
+    overview.className = "securityOverview";
+    const detail = document.createElement("div");
+    detail.className = "securityDetail";
+    const back = button("‹ Security", async () => showView("overview", true));
+    back.className = "securityBack";
+    const detailContent = document.createElement("div");
+    detail.append(back, detailContent);
+    const heading = document.createElement("h3");
+    heading.className = "securityTitle";
+    heading.tabIndex = -1;
+    heading.textContent = "Your access.";
+    const intro = document.createElement("p");
+    intro.className = "securityIntro";
+    intro.textContent = "Manage how you sign in and where you’re connected.";
+    const passkeyEnabled = enabled.has("passkey") && state.passkeys.length > 0;
+    const hasBackup = passkeyEnabled && (state.passkeys.length > 1 || (enabled.has("password") && state.passwordConfigured));
+    const banner = row(
+      (state.policy ?? (state.mode === "none" ? "open" : "authenticated")) === "open" ? "Authentication is off" : passkeyEnabled ? "Passkey protection is on" : "Your workspace access",
+      (state.policy ?? (state.mode === "none" ? "open" : "authenticated")) === "open" ? "This instance allows unauthenticated access." : hasBackup ? "You have a backup sign-in method." : "Keep a backup credential and terminal recovery access.",
+    );
+    banner.classList.add("securityBanner", "securityCard");
+    overview.append(heading, intro, banner);
+    const group = (title: string, count?: number) => {
+      const wrapper = document.createElement("section");
+      wrapper.className = "securityGroup";
+      const h = document.createElement("h4");
+      h.textContent = title;
+      if (count !== undefined) {
+        const badge = document.createElement("span");
+        badge.textContent = String(count);
+        h.append(badge);
+      }
+      wrapper.append(h);
+      overview.append(wrapper);
+      return wrapper;
+    };
+    const openButton = (label: string, view: string) => {
+      const trigger = button(label, async () => showView(view, true));
+      return trigger;
+    };
+    if (state.policy === "authenticated") {
+      const methods = group("Sign-in methods");
+      const card = document.createElement("div");
+      card.className = "securityCard";
+      card.append(
+        row("Passkeys", `${state.passkeys.length} ${state.passkeys.length === 1 ? "key" : "keys"} · ${enabled.has("passkey") ? "Enabled" : "Disabled"}`, openButton("Manage", "Passkeys")),
+        row("Password", state.passwordConfigured ? `${enabled.has("password") ? "Enabled" : "Disabled"} · ${state.verifiedMethods?.includes("password") ? "Verified login" : "Not yet verified"}` : "Not configured", openButton(state.passwordConfigured ? "Change" : "Set up", "Password")),
+      );
+      if (enabled.has("legacy")) {
+        const replacementVerified = state.verifiedMethods?.some(method => method !== "legacy" && enabled.has(method));
+        card.append(row("Legacy token", replacementVerified ? "Replacement verified · Ready to retire" : "Deprecated · Verify a replacement before retiring", button("Retire", () => changeMethod("legacy", enabled))));
+      }
+      if (enabled.has("external")) card.append(row("Trusted proxy", "External sign-in enabled", openButton("Manage", "Sign-in methods")));
+      methods.append(card);
+    }
+    const devices = panels.get("Devices & sessions");
+    if (devices) {
+      const groupEl = group("Devices & sessions", state.sessions.length);
+      const card = document.createElement("div");
+      card.className = "securityCard";
+      card.append(...devices.querySelectorAll(".securityRow"));
+      groupEl.append(card);
+      if (panels.has("Add device")) {
+        const connect = openButton("＋ Connect a device", "Add device");
+        connect.className = "securityWide";
+        groupEl.append(connect);
+      }
+    }
+    const automation = group("Automation");
+    const tokenLink = openButton("Manage", "API tokens");
+    const tokenRow = row("API tokens", `${state.apiTokens.filter(token => token.expiresAt > Date.now()).length} active`, tokenLink);
+    tokenRow.classList.add("securityCard");
+    automation.append(tokenRow);
+    const safety = group("Account safety");
+    if (state.sessions.length) {
+      const revoke = button("Sign out all devices", async () => {
+        const result = await confirmAction("Sign out everywhere?", "This includes this browser and cancels pending device links. You’ll need to sign in again. No automatic sign-in will follow.", "Confirm and sign out", true);
+        if (!result) return;
+        await request("/api/auth/sessions", { method: "DELETE", body: JSON.stringify(result) });
+        signedOut();
+      }, true);
+      revoke.classList.add("securityWide");
+      const hint = document.createElement("p");
+      hint.className = "settingsHint";
+      hint.textContent = "Includes this browser. You’ll need to sign in again.";
+      safety.append(revoke, hint);
+    }
+    if (panels.has("Sign-in methods")) safety.append(openButton("Sign-in options & legacy retirement", "Sign-in methods"));
+    safety.append(openButton("Authentication policy & reauthentication", "Authentication policy"));
+    const reauth = document.createElement("a");
+    reauth.href = "/api/auth/login";
+    reauth.className = "securityReauth";
+    reauth.textContent = "Sign in again for security changes";
+    const reauthHint = document.createElement("p");
+    reauthHint.className = "settingsHint";
+    reauthHint.textContent = "Security changes require a credential sign-in within five minutes.";
+    const showView = (view: string, focus = false) => {
+      activeView = panels.has(view) ? view : "overview";
+      const isOverview = activeView === "overview";
+      overview.hidden = !isOverview;
+      detail.hidden = isOverview;
+      detailContent.replaceChildren();
+      if (!isOverview) detailContent.append(panels.get(activeView)!);
+      if (focus) {
+        if (isOverview) heading.focus();
+        else detailContent.querySelector<HTMLElement>("h4")?.focus();
+        container.closest(".settingsContent")?.scrollTo(0, 0);
+      }
+    };
+    container.replaceChildren(feedback, overview, detail, reauth, reauthHint);
+    showView(activeView);
   }
   async function refresh(renderResult = true) {
-    const state = await request<SecurityState>("/api/auth/security");
-    if (renderResult) render(state);
-    else current = state;
+    container.setAttribute("aria-busy", "true");
+    if (!current) { feedback.textContent = "Loading security…"; container.replaceChildren(feedback); }
+    try {
+      const state = await request<SecurityState>("/api/auth/security");
+      if (!current) feedback.textContent = "";
+      if (renderResult) {
+        const restoreFocus = container.contains(document.activeElement);
+        render(state);
+        if (restoreFocus) container.querySelector<HTMLElement>(activeView === "overview" ? ".securityTitle" : ".securityDetail h4")?.focus();
+      }
+      else current = state;
+    } catch (error) {
+      report(error instanceof Error ? error.message : String(error), true);
+      throw error;
+    } finally {
+      container.removeAttribute("aria-busy");
+    }
   }
-  return { refresh, render: () => current && render(current) };
+  return {
+    refresh,
+    reset: () => {
+      activeView = "overview";
+      current = undefined;
+      panels.clear();
+      feedback.textContent = "";
+      container.replaceChildren(feedback);
+    },
+    render: () => current && render(current),
+  };
 }
