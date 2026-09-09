@@ -1,3 +1,4 @@
+import { renderLoginPage } from "./loginPage.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { trustedProxyPeer } from "./proxy.js";
@@ -61,31 +62,7 @@ export function passwordLoginPage(
   methods: readonly string[],
   setupToken?: string,
 ) {
-  const setup = setupToken !== undefined;
-  const form = (method: string, label: string, autocomplete: string) =>
-    `<form data-method="${method}"><label>${label}<input name=secret type=password autocomplete="${autocomplete}" ${setup ? "minlength=12" : ""} required></label>${setup ? "<label>Confirm password<input name=confirm type=password autocomplete=new-password required></label>" : ""}<button>${setup ? "Set password" : "Sign in"}</button></form>`;
-  const password = methods.includes("password")
-    ? form(
-        "password",
-        setup ? "New password (12+ characters)" : "Password",
-        setup ? "new-password" : "current-password",
-      )
-    : "";
-  const legacy =
-    !setup && methods.includes("legacy")
-      ? form("legacy", "Legacy token (deprecated)", "off")
-      : "";
-  const external =
-    !setup && methods.includes("external")
-      ? '<form data-method="external"><button>Sign in through trusted proxy</button></form>'
-      : "";
-  const passkeyHref = setup
-    ? `/api/auth/passkey-bootstrap?token=${encodeURIComponent(setupToken)}`
-    : "/api/auth/passkey-login";
-  const passkey = methods.includes("passkey")
-    ? `<a href="${passkeyHref}">${setup ? "Set up" : "Sign in with"} a passkey</a>`
-    : "";
-  const html = `<!doctype html><meta name=viewport content="width=device-width"><meta name=referrer content=no-referrer><title>pi-web authentication</title><style>body{font:16px system-ui;max-width:28rem;margin:12vh auto;padding:2rem;background:#111;color:#eee}input,button{box-sizing:border-box;font:inherit;padding:.7rem;width:100%;margin:.5rem 0}a{color:#9cf}</style><h1>${setup ? "Set up pi-web" : "Sign in to pi-web"}</h1>${password}${passkey}${legacy}${external}<button id=clear>Clear this browser session</button><p id=e role=alert></p><script>document.getElementById('clear').onclick=async()=>{try{const r=await fetch('/api/auth/logout',{method:'POST',headers:{'x-pi-web-client-id':'explicit-logout'}});if(!r.ok)throw Error('Logout failed; session may still be active');try{localStorage.removeItem('pi-web-token')}catch{}location.href='/'}catch(error){document.getElementById('e').textContent=error.message}};const setup=${JSON.stringify(setupToken || "").replace(/</g, "\\u003c")};document.querySelectorAll('form').forEach(f=>f.addEventListener('submit',async x=>{x.preventDefault();const button=f.querySelector('button');button.disabled=true;try{if(setup&&f.elements.secret.value!==f.elements.confirm.value)throw Error('Passwords do not match');const method=f.dataset.method;const r=await fetch('/api/auth/'+method+(setup?'/bootstrap':'/login'),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({password:f.elements.secret?.value,token:setup})});if(!r.ok)throw Error((await r.json()).error||'Sign in failed');location.href='/'}catch(error){document.getElementById('e').textContent=error.message;button.disabled=false}}))</script>`;
+  const html = renderLoginPage({ methods, setupToken });
   res.writeHead(200, {
     "content-type": "text/html; charset=utf-8",
     "cache-control": "no-store",
