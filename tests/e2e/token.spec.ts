@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { ensurePreviewArtifact } from "./helpers/artifacts.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 
 // These tests run against the auth-enabled server (PI_WEB_TOKEN=test-secret).
@@ -95,6 +96,7 @@ test.describe("token overlay", () => {
   });
 
   test("mints a session cookie and renders a sandboxed HTML artifact through srcdoc", async ({ page }) => {
+    await ensurePreviewArtifact();
     await page.goto("/");
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
     await page.locator("#tokenForm button[type=submit]").click();

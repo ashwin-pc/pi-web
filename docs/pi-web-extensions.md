@@ -379,6 +379,16 @@ Storage notes:
   values are kept in `backup`, and the schema is published with a
   `migrationError` so the UI can surface it.
 
+## Scoped server-side HTTP client
+
+`ctx.ui.web.createApiClient({ name, scopes, sessionIds? })` gives trusted server-side
+extensions scoped access to pi-web's existing HTTP API. Core supplies and renews
+short-lived credentials; do not copy browser cookies or read `PI_WEB_TOKEN`.
+The client is not exposed in browser contribution descriptors. Its default targets
+are the calling agent session and sessions created by the client; cross-session
+access must be explicit. See [Scoped extension HTTP](extension-http.md) for the
+route catalogue, lifecycle, trust model, and a complete example.
+
 ## Referencing sessions from extension output
 
 Extension output can point at other sessions, and pi-web renders those as links.

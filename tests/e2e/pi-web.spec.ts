@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { ensurePreviewArtifact } from "./helpers/artifacts.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -1610,45 +1611,11 @@ test.describe("context compaction", () => {
 test.describe("image rendering", () => {
   test.beforeAll(async () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
-    const htmlPreview = `<!doctype html><html><body>
-<h1>HTML artifact</h1>
-<p id="static">Rendered in a sandboxed iframe.</p>
-<p id="script-status">script did not run</p>
-<script>
-  const statuses = [];
-  document.getElementById("script-status").textContent = "script ran";
-  try {
-    parent.document.body.dataset.artifactAccess = "unexpected";
-    statuses.push("parent accessible");
-  } catch (error) {
-    statuses.push("parent blocked");
-  }
-  try {
-    localStorage.getItem("pi-web-token");
-    statuses.push("localStorage accessible");
-  } catch (error) {
-    statuses.push("localStorage blocked");
-  }
-  try {
-    statuses.push(document.cookie ? "cookies visible" : "cookies empty");
-  } catch (error) {
-    statuses.push("cookies blocked");
-  }
-  const list = document.createElement("ul");
-  list.id = "sandbox-status";
-  for (const status of statuses) {
-    const item = document.createElement("li");
-    item.textContent = status;
-    list.append(item);
-  }
-  document.body.append(list);
-</script>
-</body></html>`;
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
     await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n```ts\nconst preview = true;\n```\n");
     await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
-    await writeFile(join(artifactDir, "preview.html"), htmlPreview);
+    await ensurePreviewArtifact();
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
     await writeFile(join(artifactDir, "e2e-audio-artifact.mp3"), Buffer.from("MP3"));
     await writeFile(join(artifactDir, "e2e-toolpath.gcode"), "G1 X0 Y0\nG1 X10 Y10 E1\n");

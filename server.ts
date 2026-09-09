@@ -27,6 +27,7 @@ import { LocalSessionService, SessionServiceError } from "./server/session/servi
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
+import { ExtensionHttpRegistry, extensionHttpOrigin, hasExtensionCredential } from "./server/auth/extensionHttp.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { initializeAuth } from "./server/auth/bootstrap.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
@@ -48,7 +49,10 @@ const authMode = authConfig.legacyMode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
 const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
-const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods);
+// Runtimes can initialize before the HTTP server is constructed or listening.
+let extensionHttpServer: ReturnType<typeof createServer> | undefined;
+const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
+const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
@@ -125,9 +129,17 @@ async function readBytes(req: IncomingMessage, maxBytes = 30_000_000): Promise<B
   return Buffer.concat(chunks);
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
-  const text = (await readBytes(req, 40_000_000)).toString("utf-8");
-  return text ? JSON.parse(text) : {};
+const jsonBodies = new WeakMap<IncomingMessage, Promise<unknown>>();
+function readBody(req: IncomingMessage): Promise<unknown> {
+  let body = jsonBodies.get(req);
+  if (!body) {
+    body = readBytes(req, hasExtensionCredential(req) ? 1_000_000 : 40_000_000).then(bytes => {
+      const text = bytes.toString("utf-8");
+      return text ? JSON.parse(text) : {};
+    });
+    jsonBodies.set(req, body);
+  }
+  return body;
 }
 
 async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionScoped = false) {
@@ -332,6 +344,8 @@ function cleanClientId(value: unknown) {
 }
 
 function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
+  // Extension operations must never acquire, move or otherwise use browser leases.
+  if (hasExtensionCredential(req)) return "";
   const raw = req.headers["x-pi-web-client-id"];
   const headerValue = Array.isArray(raw) ? raw[0] : raw;
   return cleanClientId(headerValue) || cleanClientId(fallback);
@@ -436,6 +450,7 @@ const mockSessionFactory = mockMode ? {
 } : undefined;
 
 sessionService = new LocalSessionService({
+  extensionHttp,
   modelRuntime,
   sessionFactory: mockSessionFactory,
   additionalExtensionPaths,
@@ -504,6 +519,7 @@ function withAccessLog(
         performance.now() - start,
         Math.max(0, req.socket.bytesWritten - startBytes),
         aborted,
+        extensionHttp.caller(req),
       );
     };
     res.on("finish", () => log(false));
@@ -528,7 +544,11 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   try {
 
     if (url.pathname.startsWith("/api/")) {
-      await authKernel.refreshConfig();
+      // Scoped credentials must be checked before even public auth routes: no
+      // alternate resolver, open-policy fallback, or credential-management path.
+      const extensionAuth = hasExtensionCredential(req) ? await authKernel.gate(req) : undefined;
+      if (extensionAuth && !extensionAuth.ok) return sendJson(res, extensionAuth.status || 401, { ok: false, error: "Extension API authorization failed" });
+      if (!extensionAuth) await authKernel.refreshConfig();
       if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
@@ -543,7 +563,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         authKernel.clearSession(res);
         return sendJson(res, 200, { ok: true });
       }
-      const auth = await authKernel.gate(req);
+      const auth = extensionAuth || await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
       if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
@@ -1144,6 +1164,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
         const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; origin?: unknown };
         const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined);
+        extensionHttp.recordCreatedSession(req, baseState.sessionId);
         const state = await decorateServiceState(baseState);
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
         const origin = body.origin && typeof body.origin === "object" ? body.origin as { sessionId?: unknown; kind?: unknown } : undefined;
@@ -1283,6 +1304,7 @@ if (isDev) {
 
 startEventLoopTelemetry();
 
+extensionHttpServer = server;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
