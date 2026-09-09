@@ -230,12 +230,19 @@ test.describe("token overlay", () => {
     await expect(page.locator("#tokenShareSection")).toHaveCount(0);
 
     const tokenName = `Playwright ${Date.now()}`;
+    const activeTokensBefore = Number.parseInt(await security.locator(".securityRow", { hasText: "API tokens" }).locator("small").innerText(), 10);
     await security.locator(".securityRow", { hasText: "API tokens" }).getByRole("button", { name: "Manage" }).click();
     await security.getByPlaceholder("Token name").fill(tokenName);
     await security.getByRole("button", { name: "Create API token" }).click();
     await expect(security.locator(".securitySecret code")).toHaveText(/^piw_/);
     await expect(security.getByText("shown once", { exact: false })).toBeVisible();
 
+    await security.getByRole("button", { name: "‹ Security", exact: true }).click();
+    const automation = security.locator(".securityRow", { hasText: "API tokens" });
+    await expect(automation.locator("small")).toHaveText(`${activeTokensBefore + 1} active`);
+    await automation.getByRole("button", { name: "Manage", exact: true }).click();
+    await expect(security.locator(".securityRow", { hasText: tokenName })).toBeVisible();
+    await expect(security.locator(".securitySecret code")).toHaveCount(0);
     await security.getByRole("button", { name: "‹ Security", exact: true }).click();
     await security.getByRole("button", { name: "＋ Connect a device", exact: true }).click();
     await security.getByRole("button", { name: "Create add-device link" }).click();

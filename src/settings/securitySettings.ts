@@ -534,7 +534,14 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     overview.className = "securityOverview";
     const detail = document.createElement("div");
     detail.className = "securityDetail";
-    const back = button("‹ Security", async () => showView("overview", true));
+    const back = button("‹ Security", async () => {
+      // Mutations that reveal a one-time secret refresh inventory without
+      // rerendering its view. Rebuild from that inventory when leaving it.
+      activeView = "overview";
+      if (current) render(current);
+      container.querySelector<HTMLElement>(".securityTitle")?.focus();
+      container.closest(".settingsContent")?.scrollTo(0, 0);
+    });
     back.className = "securityBack";
     const detailContent = document.createElement("div");
     detail.append(back, detailContent);
