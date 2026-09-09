@@ -69,4 +69,6 @@ npm run test:unit
 npm run test:e2e
 # or
 npm test
+# Concurrent worktrees: offset all E2E matrix ports to avoid collisions.
+PI_WEB_E2E_PORT_OFFSET=12000 npm test
 ```
