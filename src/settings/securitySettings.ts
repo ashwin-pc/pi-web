@@ -529,6 +529,12 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     assembleOverview(state, enabled);
   }
 
+  function focusOverview() {
+    // The settings shell owns the responsive page title (mobile toolbar or page header).
+    const titles = container.closest(".settingsPanel")?.querySelectorAll<HTMLElement>(".settingsMobileTitle, .settingsPageTitle");
+    Array.from(titles ?? []).find(title => title.getClientRects().length > 0)?.focus();
+  }
+
   function assembleOverview(state: SecurityState, enabled: Set<string>) {
     const overview = document.createElement("div");
     overview.className = "securityOverview";
@@ -539,19 +545,12 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       // rerendering its view. Rebuild from that inventory when leaving it.
       activeView = "overview";
       if (current) render(current);
-      container.querySelector<HTMLElement>(".securityTitle")?.focus();
+      focusOverview();
       container.closest(".settingsContent")?.scrollTo(0, 0);
     });
     back.className = "securityBack";
     const detailContent = document.createElement("div");
     detail.append(back, detailContent);
-    const heading = document.createElement("h3");
-    heading.className = "securityTitle";
-    heading.tabIndex = -1;
-    heading.textContent = "Your access.";
-    const intro = document.createElement("p");
-    intro.className = "securityIntro";
-    intro.textContent = "Manage how you sign in and where you’re connected.";
     const passkeyEnabled = enabled.has("passkey") && state.passkeys.length > 0;
     const hasBackup = passkeyEnabled && (state.passkeys.length > 1 || (enabled.has("password") && state.passwordConfigured));
     const banner = row(
@@ -559,7 +558,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       (state.policy ?? (state.mode === "none" ? "open" : "authenticated")) === "open" ? "This instance allows unauthenticated access." : hasBackup ? "You have a backup sign-in method." : "Keep a backup credential and terminal recovery access.",
     );
     banner.classList.add("securityBanner", "securityCard");
-    overview.append(heading, intro, banner);
+    overview.append(banner);
     const group = (title: string, count?: number) => {
       const wrapper = document.createElement("section");
       wrapper.className = "securityGroup";
@@ -642,7 +641,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       detailContent.replaceChildren();
       if (!isOverview) detailContent.append(panels.get(activeView)!);
       if (focus) {
-        if (isOverview) heading.focus();
+        if (isOverview) focusOverview();
         else detailContent.querySelector<HTMLElement>("h4")?.focus();
         container.closest(".settingsContent")?.scrollTo(0, 0);
       }
@@ -659,7 +658,10 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
       if (renderResult) {
         const restoreFocus = container.contains(document.activeElement);
         render(state);
-        if (restoreFocus) container.querySelector<HTMLElement>(activeView === "overview" ? ".securityTitle" : ".securityDetail h4")?.focus();
+        if (restoreFocus) {
+          if (activeView === "overview") focusOverview();
+          else container.querySelector<HTMLElement>(".securityDetail h4")?.focus();
+        }
       }
       else current = state;
     } catch (error) {

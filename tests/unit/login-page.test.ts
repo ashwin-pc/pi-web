@@ -1,7 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { renderLoginPage } from "../../server/auth/loginPage.js";
 
 describe("shared sign-in presentation", () => {
+  it("uses native default tokens without depending on authenticated assets", () => {
+    const html = renderLoginPage({ methods: ["password", "passkey"] });
+    const native = readFileSync(new URL("../../src/styles/base.css", import.meta.url), "utf8");
+    for (const token of ["bg", "panel", "panel-2", "border", "text", "muted", "accent", "danger"]) {
+      const value = native.match(new RegExp(`--${token}:\\s*([^;]+);`))![1];
+      expect(html).toContain(`--${token}:${value}`);
+    }
+    expect(html).toContain("color-scheme:dark");
+    expect(html).toContain("focus-visible");
+    expect(html).not.toMatch(/<link|<script src=/);
+    expect(html).not.toContain('class="glow"');
+  });
   it("prioritizes direct passkey authentication and discloses enabled alternatives", () => {
     const html = renderLoginPage({ methods: ["password", "passkey", "legacy", "external"] });
     expect(html).toContain('id="go"');

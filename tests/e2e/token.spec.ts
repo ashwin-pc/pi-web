@@ -16,6 +16,34 @@ test.beforeEach(async ({ page, context }) => {
 });
 
 test.describe("token overlay", () => {
+  test("Security inherits native styling and restores responsive title focus", async ({ page }) => {
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await page.locator("#sessionButton").click();
+    await openSessionDrawerFooterAction(page, "Settings");
+    await page.locator("#settingsNavAccess").click();
+    const security = page.locator("#securitySettings");
+    await expect(page.locator("#settingsPageAccessTitle")).toBeVisible();
+    await page.evaluate(() => {
+      document.documentElement.style.setProperty("--accent", "#8fb6ff");
+      document.documentElement.style.setProperty("--panel", "#141820");
+    });
+    await expect(security.locator(".securityBanner strong")).toHaveCSS("color", "rgb(143, 182, 255)");
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 844 });
+      // Crossing into mobile intentionally returns the shell to category navigation.
+      if (width <= 640) await page.locator("#settingsNavAccess").click();
+      await security.getByRole("button", { name: "Authentication policy & reauthentication", exact: true }).click();
+      await security.getByRole("button", { name: "‹ Security", exact: true }).click();
+      await expect(page.locator(width > 640 ? "#settingsPageAccessTitle" : "#settingsMobileTitle")).toBeFocused();
+      expect(await page.locator("#settingsContent").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
+    }
+    await security.getByRole("button", { name: "Sign out all devices", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCSS("background-color", "rgb(20, 24, 32)");
+    await expect(page.getByRole("dialog").getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
   for (const failure of ["http", "network"] as const) test(`logout reports ${failure} failure without claiming revocation`, async ({ page }) => {
     await page.goto(`/?token=${CORRECT_TOKEN}`);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
@@ -73,7 +101,9 @@ test.describe("token overlay", () => {
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
-    await expect(security.getByRole("heading", { name: "Your access." })).toBeVisible();
+    await expect(page.locator("#settingsMobileTitle")).toHaveText("Security");
+    await expect(page.locator("#settingsMobileTitle")).toBeVisible();
+    await expect(security.locator(".securityOverview")).toBeVisible();
     expect(await page.locator("#settingsContent").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     let requests = 0;
     let fail = true;
@@ -224,7 +254,7 @@ test.describe("token overlay", () => {
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
-    await expect(security.getByRole("heading", { name: "Your access." })).toBeVisible();
+    await expect(security.locator(".securityOverview")).toBeVisible();
     await expect(security.getByText("Legacy token", { exact: true })).toBeVisible();
     await expect(security.getByText("Devices & sessions")).toBeVisible();
     await expect(page.locator("#tokenShareSection")).toHaveCount(0);
