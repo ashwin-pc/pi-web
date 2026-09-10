@@ -436,6 +436,7 @@ export function createSettings(options: {
       const info = await response.json() as { mode: AuthMode; identity?: { displayName?: string; id: string } };
       settingsShell?.setSummary("access", `${info.mode} · ${info.identity?.displayName || info.identity?.id || "authenticated"}`);
     }).catch(error => settingsShell?.setSummary("access", error instanceof Error ? error.message : String(error)));
+    securitySettings?.reset();
     void securitySettings?.refresh().catch(error => setSettingsStatus(error instanceof Error ? error.message : String(error), true));
     void refreshExtensionStatus().catch(renderExtensionStatusError);
     void runNotifications.refresh().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));

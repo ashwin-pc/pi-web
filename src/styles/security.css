@@ -1,0 +1,65 @@
+/* Approved auth design palette, scoped to Security rather than app appearance. */
+.settingsPanel:has(#settingsPageAccess:not([hidden])) { background: #101214; }
+#settingsPageAccess { color: #edf0e8; max-width: 560px; }
+#settingsPageAccess > .settingsPageHeader { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.securitySettings, .securityDialog { --border: #303a31; --muted: #a2ada4; --panel: #1a201c; --text: #edf0e8; color: var(--text); font: 14px/1.5 system-ui; }
+.securitySettings * { box-sizing: border-box; }
+.securityOverview[hidden], .securityDetail[hidden] { display: none; }
+.securityTitle { font-size: 34px; font-weight: 600; letter-spacing: -1.2px; line-height: 1.2; margin: 2px 0 8px; }
+.securityIntro { max-width: 290px; color: #a2ada4; line-height: 1.6; margin: 0 0 22px; }
+.securityGroup { margin-top: 28px; }
+.securityGroup > h4 { display: flex; justify-content: space-between; font-size: 12px; font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase; color: #9aa69c; margin: 0 0 12px; }
+.securityCard { background: #1a201c; border: 1px solid #303a31; border-radius: 18px; overflow: hidden; }
+.securityRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 18px; }
+.securityRow + .securityRow { border-top: 1px solid #303a31; }
+.securityRow > div { display: grid; gap: 6px; min-width: 0; }
+.securityRow strong { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.securityRow small { color: #9aa79e; font-size: 12px; overflow-wrap: anywhere; }
+.securitySettings button, .securityDialog button { min-height: 44px; flex-shrink: 0; color: inherit; font: inherit; font-size: 12px; background: transparent; border: 1px solid #465247; border-radius: 10px; padding: 8px 12px; cursor: pointer; }
+.securitySettings button:hover:not(:disabled), .securityDialog button:hover:not(:disabled) { background: #29332b; border-color: #8f9f8e; }
+.securitySettings button:disabled { opacity: .6; cursor: wait; }
+.securitySettings button[aria-busy="true"] { cursor: progress; }
+.securitySettings button[aria-busy="true"]::after { content: ""; display: inline-block; width: 10px; height: 10px; margin-left: 8px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: middle; animation: securityBusy .8s linear infinite; }
+@keyframes securityBusy { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .securitySettings button[aria-busy="true"]::after { animation: none; } }
+.securitySettings :is(button,input,a):focus-visible, .securityDialog :is(button,input):focus-visible { outline: 2px solid #c9e8ae; outline-offset: 3px; }
+.securitySettings :is(h3,h4):focus { outline: none; }
+.securitySettings .securityWide, .securityDialog .securityWide { width: 100%; padding: 15px; background: #c9e8ae; border-color: #c9e8ae; color: #18251c; border-radius: 13px; margin-top: 12px; font-size: 14px; font-weight: 600; }
+.securitySettings .securityWide:not(.danger):not(.securityQuiet):hover:not(:disabled) { background: #def2cc; }
+.securitySettings button.danger, .securityDialog button.danger { color: #efaaa3; border-color: #684540; background: transparent; font-weight: 500; }
+.securityBanner { color: #c9e8ae; gap: 12px; padding: 16px; }
+.securityBanner::before { content: "◈"; font-size: 22px; }
+.securityBanner > div { flex: 1; }
+.securityBanner strong { font-size: 14px; }
+.securityPill { justify-self: start; background: #2b3f2c; color: #d0e7bd; padding: 5px 8px; border-radius: 20px; font-size: 10px; white-space: nowrap; }
+.securitySection { display: grid; gap: 14px; }
+.securitySection h4 { margin: 12px 0 0; font-size: 26px; letter-spacing: -.6px; }
+.securitySection > .securityRow { background: #1a201c; border: 1px solid #303a31; border-radius: 14px; }
+.securitySettings .settingsHint { color: #a2ada4; font-size: 12px; line-height: 1.6; }
+.securitySettings .securityGroup > .settingsHint { margin: 10px 0; }
+.securitySection input:not([type="checkbox"]) { width: 100%; min-height: 48px; padding: 12px; border: 1px solid #465247; border-radius: 12px; background: #1a201c; color: #edf0e8; font: inherit; font-size: 16px; }
+.securityCheckbox { display: flex; align-items: flex-start; gap: 10px; color: #a2ada4; font-size: 12px; line-height: 1.6; }
+.securityCheckbox input { width: 18px; height: 18px; margin: 2px 0 0; flex-shrink: 0; accent-color: #c9e8ae; }
+.securitySecret, .deviceGrantOutput { display: grid; gap: 12px; padding: 16px; border-radius: 14px; background: #1a201c; }
+.securitySecret[hidden], .deviceGrantOutput:empty { display: none; }
+.securitySecret code { user-select: all; overflow-wrap: anywhere; }
+.securitySettings .securityBack { border: 0; padding-left: 0; color: #a5afa6; }
+.securityGroup > button:not(.securityWide) { width: 100%; text-align: left; margin-top: 10px; }
+.securitySettings a { color: #c9e8ae; overflow-wrap: anywhere; }
+.securityReauth { display: block; margin: 28px 0 6px; font-size: 12px; }
+.securityFeedback { color: #c9e8ae; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; position: sticky; top: 0; z-index: 1; background: #1a201c; border: 1px solid #303a31; border-radius: 12px; padding: 12px; margin: 0 0 16px; }
+.securityFeedback:empty { display: none; }
+.securityFeedback.error { color: #efaaa3; border-color: #684540; }
+.securityDialog { box-sizing: border-box; width: calc(100% - 36px); max-width: 395px; max-height: calc(100dvh - 36px); overflow-y: auto; background: #202822; border: 1px solid #4d5b4d; border-radius: 20px; padding: 24px; }
+.securityDialog::backdrop { background: #0009; backdrop-filter: blur(5px); }
+.securityDialog h3 { font-size: 23px; line-height: 1.2; margin: 0; }
+.securityDialog p { color: #a2ada4; line-height: 1.6; margin: 16px 0; }
+.securityDialog .securityQuiet { background: transparent; color: #bbc8bc; border-color: transparent; }
+@media (max-width: 640px) {
+  .settingsContent:has(#settingsPageAccess:not([hidden])) { padding: 25px 22px 45px; }
+  .securitySettings .securityRow { padding: 16px; }
+}
+@media (max-width: 360px) {
+  .settingsContent:has(#settingsPageAccess:not([hidden])) { padding-inline: 14px; }
+  .securitySettings .securityRow { gap: 8px; padding: 13px; }
+}

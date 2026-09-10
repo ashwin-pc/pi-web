@@ -509,6 +509,7 @@ test.describe("visual regression", () => {
     await prepareNeutralWorkspace(page, testInfo.project.name);
     await openSessionDrawerFooterAction(page, "Settings");
     await page.locator("#settingsNavAccess").click();
+    await page.getByRole("button", { name: "＋ Connect a device", exact: true }).click();
     await page.getByRole("button", { name: "Create add-device link" }).click();
     await expect(page.getByLabel("Add-device link")).toHaveValue(/single-use-visual-grant/);
     await expect(page.getByRole("img", { name: "Add device QR code" })).toBeVisible();

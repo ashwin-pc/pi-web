@@ -340,7 +340,7 @@ describe("multi-method human authentication", () => {
   it("renders password confirmation only for setup and exposes only ready login methods", async () => {
     const res = response();
     passwordLoginPage(res, ["password"], "setup-token");
-    expect(res.text).toContain("name=confirm");
+    expect(res.text).toContain('name="confirm"');
     expect(res.text).toContain("Passwords do not match");
     const { kernel } = await fixture();
     expect(await kernel.readyMethods()).toEqual(["legacy", "external"]);
