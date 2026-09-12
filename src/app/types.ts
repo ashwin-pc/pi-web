@@ -105,7 +105,7 @@ export type LoadingAnimation = "fireworks" | "glow" | "pulse";
 export type PiWebSettings = {
   version: 1;
   appearance: {
-    density: "comfortable" | "compact";
+    density: "comfortable" | "compact" | "minimal";
     accentColor: string;
     loadingAnimation: LoadingAnimation;
   };

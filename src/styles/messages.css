@@ -800,7 +800,7 @@ body.artifactPreviewDocument {
   background: rgba(250, 204, 21, .14);
 }
 .message.error { border-color: var(--danger); color: #fecdd3; }
-/* Extension-injected messages, including orchestrator worker updates. */
+/* Extension-injected custom messages. */
 .message.customCard {
   --message-bg: color-mix(in srgb, var(--accent) 4%, var(--panel));
   align-self: flex-start;

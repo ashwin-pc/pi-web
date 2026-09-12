@@ -40,6 +40,11 @@ describe("pi-web settings", () => {
     });
   });
 
+  it("normalizes and patches the minimal density", () => {
+    expect(normalizeSettings({ appearance: { density: "minimal" } }).appearance.density).toBe("minimal");
+    expect(applySettingsPatch(normalizeSettings(undefined), { appearance: { density: "minimal" } }).appearance.density).toBe("minimal");
+  });
+
   it("applies partial patches without accepting unrelated keys", () => {
     const next = applySettingsPatch(normalizeSettings(undefined), {
       appearance: { density: "compact", accentColor: "#f0a", loadingAnimation: "pulse" },
@@ -61,14 +66,17 @@ describe("pi-web settings", () => {
     const store = createSettingsStore(file);
 
     expect(await store.read()).toEqual(normalizeSettings(undefined));
-    const saved = await store.patch({ composer: { queueMode: "followUp" } });
+    const saved = await store.patch({ composer: { queueMode: "followUp" }, appearance: { density: "minimal" } });
     expect(saved.composer.queueMode).toBe("followUp");
+    expect(saved.appearance.density).toBe("minimal");
 
     const fromDisk = JSON.parse(await readFile(file, "utf-8"));
     expect(fromDisk.composer.queueMode).toBe("followUp");
+    expect(fromDisk.appearance.density).toBe("minimal");
 
     const reloaded = createSettingsStore(file);
     expect((await reloaded.read()).composer.queueMode).toBe("followUp");
+    expect((await reloaded.read()).appearance.density).toBe("minimal");
   });
 });
 

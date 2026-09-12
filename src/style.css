@@ -12,6 +12,8 @@
 @import "./styles/conversationTree.css";
 @import "./styles/folderPicker.css";
 @import "./styles/toolCards.css";
+@import "./styles/customMessageReports.css";
+@import "./styles/activeWorkerDock.css";
 @import "./styles/responsive.css";
 @import "./styles/token.css";
 @import "./styles/actionLauncher.css";

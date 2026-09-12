@@ -54,7 +54,7 @@ function normalizeSettings(value: unknown): PiWebSettings {
   if (!isRecord(value)) return settings;
 
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
-  if (appearance?.density === "compact" || appearance?.density === "comfortable") settings.appearance.density = appearance.density;
+  if (appearance?.density === "compact" || appearance?.density === "comfortable" || appearance?.density === "minimal") settings.appearance.density = appearance.density;
   settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
   settings.appearance.loadingAnimation = normalizeLoadingAnimation(appearance?.loadingAnimation) || settings.appearance.loadingAnimation;
 
@@ -106,8 +106,10 @@ export function createSettings(options: {
   api: ApiClient;
   rightPanels?: RightPanelManager;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
+  /** Called after an applied settings response changes the UI density. */
+  onAppearanceChange?: (density: PiWebSettings["appearance"]["density"]) => void;
 }): SettingsController {
-  const { state, elements, api, rightPanels, addMessage } = options;
+  const { state, elements, api, rightPanels, addMessage, onAppearanceChange } = options;
   const expandedStorageKey = "pi-web-composer-expanded";
   let hasAppliedSettings = false;
   let settingsPanelHandle: RightPanelHandle | undefined;
@@ -224,6 +226,7 @@ export function createSettings(options: {
   }
 
   function applySettings(rawSettings: PiWebSettings) {
+    const previousDensity = state.settings.appearance.density;
     const settings = normalizeSettings(rawSettings);
     const storedExpanded = (() => {
       try {
@@ -251,7 +254,7 @@ export function createSettings(options: {
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
     elements.settingModelDefaultsValue.textContent = settingsLabel(settings);
 
-    const density = settings.appearance.density === "compact" ? "Compact" : "Comfortable";
+    const density = settings.appearance.density === "minimal" ? "Minimal" : settings.appearance.density === "compact" ? "Compact" : "Comfortable";
     const queueMode = settings.composer.queueMode === "steer" ? "Steer" : "Follow up";
     const model = settings.defaults.model;
     settingsShell?.setSummary("appearance", `${density} · ${accentName(accentColor)}`);
@@ -262,6 +265,7 @@ export function createSettings(options: {
     updateQueueToggle();
     updateExpandedComposer();
     extSettings?.render();
+    if (settings.appearance.density !== previousDensity) onAppearanceChange?.(settings.appearance.density);
   }
 
   function setSettingsStatus(message: string, isError = false) {

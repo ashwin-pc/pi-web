@@ -67,7 +67,7 @@ const loadingAnimations = new Set<LoadingAnimation>(["fireworks", "glow", "pulse
 export type PiWebSettings = {
   version: 1;
   appearance: {
-    density: "comfortable" | "compact";
+    density: "comfortable" | "compact" | "minimal";
     accentColor: string;
     loadingAnimation: LoadingAnimation;
   };
@@ -292,7 +292,7 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   if (!isRecord(value)) return settings;
 
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
-  if (appearance?.density === "compact" || appearance?.density === "comfortable") {
+  if (appearance?.density === "compact" || appearance?.density === "comfortable" || appearance?.density === "minimal") {
     settings.appearance.density = appearance.density;
   }
   settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
@@ -324,7 +324,7 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
   const next = cloneSettings(current);
 
   if (isRecord(patch.appearance)) {
-    if (patch.appearance.density === "comfortable" || patch.appearance.density === "compact") {
+    if (patch.appearance.density === "comfortable" || patch.appearance.density === "compact" || patch.appearance.density === "minimal") {
       next.appearance.density = patch.appearance.density;
     }
     const accentColor = normalizeAccentColor(patch.appearance.accentColor);

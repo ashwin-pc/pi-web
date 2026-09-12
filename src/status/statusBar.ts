@@ -3,9 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { connectionLostDelayMs, reconnectDelayMs, reconnectNoticeDelayMs } from "../app/types.js";
-import { iconElement } from "../app/icons.js";
 import type { WaitingInfo } from "../sessions/lineage.js";
-import { createSessionRefChip } from "../app/sessionRefs.js";
 
 
 export type StatusBar = {
@@ -54,10 +52,10 @@ export function createStatusBar(options: {
   addMessage: (role: "system", text: string, extraClass?: string) => void;
   refreshSessions: () => Promise<void>;
   refreshState: () => Promise<void>;
-  /** Switch to a spawned session in place (late-bound: sessions is created after). */
-  openSession?: (sessionId: string, cwd: string) => Promise<void> | void;
+  /** Feed the shared worker strip without owning its DOM or focus lifecycle. */
+  onWaitingStatusChanged: (info: WaitingInfo | undefined) => void;
 }): StatusBar {
-  const { state, elements, api, sessionState, addMessage, refreshSessions, refreshState, openSession } = options;
+  const { state, elements, api, sessionState, addMessage, refreshSessions, refreshState, onWaitingStatusChanged } = options;
   const activityBySession = new Map<string, ActivityEntry>();
   let activityTimer: number | undefined;
 
@@ -261,37 +259,12 @@ export function createStatusBar(options: {
   let waitingInfo: WaitingInfo | undefined;
 
   function clearWaitingRender() {
-    elements.waitingSessionsEl.hidden = true;
-    elements.waitingSessionsEl.replaceChildren();
+    onWaitingStatusChanged(undefined);
   }
 
   function renderWaitingStatus() {
     if (!waitingInfo || currentActivity()) return;
-    const container = elements.waitingSessionsEl;
-    container.replaceChildren();
-
-    const label = document.createElement("span");
-    label.className = "waitingSessionsLabel";
-    label.append(iconElement("hourglass"));
-    const count = waitingInfo.count;
-    label.append(document.createTextNode(`Waiting on ${count} spawned session${count === 1 ? "" : "s"}`));
-    label.title = "This session stays usable while spawned sessions run — it will be woken automatically when they finish.";
-    container.append(label);
-
-    for (const session of waitingInfo.sessions) {
-      const chip = createSessionRefChip({ sessionId: session.sessionId, name: session.name }, {
-        className: "waitingSessionChip",
-        openSession: (sessionId) => { void openSession?.(sessionId, session.cwd || ""); },
-      });
-      chip.textContent = "";
-      const spinner = document.createElement("span");
-      spinner.className = "waitingSessionSpinner";
-      spinner.setAttribute("aria-hidden", "true");
-      chip.append(spinner, document.createTextNode(session.name));
-      chip.title = `Open ${session.name}`;
-      container.append(chip);
-    }
-    container.hidden = false;
+    onWaitingStatusChanged(waitingInfo);
   }
 
   function updateWaitingStatus(info: WaitingInfo | undefined) {

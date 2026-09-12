@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { orderItemsWithChildren, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom } from "../src/sessions/lineage.js";
+import { activeWorkersFrom, orderItemsWithChildren, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom } from "../src/sessions/lineage.js";
 
 type Item = { id: string };
 const items = (...ids: string[]): Item[] => ids.map((id) => ({ id }));
@@ -119,6 +119,39 @@ describe("runningChildIdsOf", () => {
 
   it("returns nothing for an empty session id", () => {
     expect(runningChildIdsOf("", origins, () => true)).toEqual([]);
+  });
+});
+
+describe("activeWorkersFrom", () => {
+  const origins = [
+    { sessionId: "running", originSessionId: "parent" },
+    { sessionId: "queued", originSessionId: "parent" },
+    { sessionId: "finished", originSessionId: "parent" },
+    { sessionId: "missing", originSessionId: "parent" },
+    { sessionId: "grandchild", originSessionId: "running" },
+  ];
+
+  it("returns only available active direct children with running precedence", () => {
+    const runtimes: Record<string, { isRunning: boolean; pendingMessageCount: number }> = {
+      running: { isRunning: true, pendingMessageCount: 2 },
+      queued: { isRunning: false, pendingMessageCount: 1 },
+      finished: { isRunning: false, pendingMessageCount: 0 },
+      grandchild: { isRunning: true, pendingMessageCount: 0 },
+    };
+    expect(activeWorkersFrom("parent", origins, {
+      runtime: (id) => runtimes[id],
+      describe: (id) => ({ name: id.toUpperCase(), cwd: `/repo/${id}` }),
+    })).toEqual([
+      { sessionId: "running", name: "RUNNING", cwd: "/repo/running", status: "running" },
+      { sessionId: "queued", name: "QUEUED", cwd: "/repo/queued", status: "queued" },
+    ]);
+  });
+
+  it("keeps active children visible while the parent also runs", () => {
+    expect(activeWorkersFrom("parent", origins, {
+      runtime: (id) => id === "running" ? { isRunning: true } : undefined,
+      describe: () => ({ name: "worker" }),
+    })).toEqual([{ sessionId: "running", name: "worker", cwd: undefined, status: "running" }]);
   });
 });
 

@@ -136,6 +136,11 @@ function shortId(id: string): string {
   return id.length > 8 ? id.slice(-8) : id;
 }
 
+/** Generic pi-web custom-message presentation metadata; semantics stay here. */
+function reportPresentation(label: string, preview: string, tone: "accent" | "danger" = "accent") {
+  return { kind: "expandable-report", label, preview: trunc(preview, 320), tone };
+}
+
 // ---------------------------------------------------------------------------
 // Transcript helpers (uses /api/messages simplified message shape)
 // ---------------------------------------------------------------------------
@@ -779,6 +784,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration) || finished.length === 0) return;
 
     const finishedIds = new Set(finished.map((worker) => worker.id));
+    const catchUpFailed = finished.some((worker) => worker.summary.isError);
     const details = {
       kind: "wakeup",
       catchUp: true,
@@ -786,6 +792,11 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       stillRunning: Array.from(watched.values())
         .filter((worker) => !finishedIds.has(worker.id))
         .map((o) => ({ sessionId: o.id, name: o.name })),
+      presentation: reportPresentation(
+        finished.length === 1 ? `${finished[0].name} · ${catchUpFailed ? "failed" : "finished"}` : `${finished.length} workers · ${catchUpFailed ? "completed with errors" : "finished"}`,
+        finished.map((worker) => worker.summary.text || "No final message captured").join(" · "),
+        catchUpFailed ? "danger" : "accent",
+      ),
     };
     const sections = finished.map((f) => [
       `Worker "${f.name}" (session ${f.id}) finished while this session was offline.`,
@@ -909,7 +920,11 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           if (w.errorPolls >= 20) {
             const ok = await deliverWakeup(
               `🔔 [orchestrator] Lost track of worker "${w.name}" (session ${w.id}): status polling kept failing (it may have been deleted). Check it with sessions_status or in the sidebar.`,
-              { kind: "wakeup", workers: [{ sessionId: w.id, name: w.name, status: "error" }] },
+              {
+                kind: "wakeup",
+                workers: [{ sessionId: w.id, name: w.name, status: "error" }],
+                presentation: reportPresentation(`${w.name} · unavailable`, "Status polling repeatedly failed", "danger"),
+              },
               expectedGeneration,
             );
             if (!isActive(expectedGeneration)) return;
@@ -928,6 +943,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         const completedIds = new Set(completed.map(({ w }) => w.id));
         const activeWorkers = Array.from(watched.values()).filter((w) => !completedIds.has(w.id));
         const stillRunning = activeWorkers.map((o) => `"${o.name}"`).join(", ");
+        const completedWithError = completed.some(({ summary }) => summary.isError);
+        const allAborted = completed.every(({ w }) => w.aborted);
         const details = {
           kind: "wakeup",
           workers: completed.map(({ w, summary }) => ({
@@ -936,6 +953,13 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             status: w.aborted ? "aborted" : summary.isError ? "error" : "idle",
           })),
           stillRunning: activeWorkers.map((o) => ({ sessionId: o.id, name: o.name })),
+          presentation: reportPresentation(
+            completed.length === 1
+              ? `${completed[0].w.name} · ${completed[0].w.aborted ? "stopped" : completedWithError ? "failed" : "finished"}`
+              : `${completed.length} workers · ${allAborted ? "stopped" : completedWithError ? "completed with errors" : "finished"}`,
+            completed.map(({ summary }) => summary.text || "No final message captured").join(" · "),
+            completedWithError ? "danger" : "accent",
+          ),
         };
         const sections = completed.map(({ w, summary }) => [
           `Worker "${w.name}" (session ${w.id}) is now ${w.aborted ? "stopped (aborted)" : "idle"}.`,

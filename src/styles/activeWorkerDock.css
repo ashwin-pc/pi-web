@@ -1,0 +1,106 @@
+/* Keep queued prompts and workers in separate flow rows above the composer. */
+.app:has(> #waitingSessions:not([hidden])) { grid-template-rows: auto minmax(0, 1fr) auto auto auto auto auto; }
+.app:has(> #waitingSessions:not([hidden])) > #waitingSessions { grid-row: 4; }
+.app:has(> #waitingSessions:not([hidden])) > .composer { grid-row: 5; }
+.app:has(> #waitingSessions:not([hidden])) > .extensionFooter { grid-row: 6; }
+.app:has(> #waitingSessions:not([hidden])) > .sessionBar { grid-row: 7; }
+
+.waitingSessions.activeWorkerDock {
+  position: relative;
+  min-width: 0;
+  width: auto;
+  max-width: none;
+  margin: 0 30px 7px;
+  display: flex;
+  height: 32px;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 1px 0 2px;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 8px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 8px), transparent);
+}
+
+.activeWorkerDock[hidden] { display: none; }
+.activeWorkerDock::-webkit-scrollbar { display: none; }
+
+.activeWorkerPill {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-height: 25px;
+  max-width: 220px;
+  box-sizing: border-box;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  border-radius: 999px;
+  background: linear-gradient(145deg, color-mix(in srgb, var(--panel-2) 95%, var(--accent)), var(--panel));
+  box-shadow: inset 0 1px rgba(255, 255, 255, .02);
+  color: #c5bca9;
+  font-size: 10px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.activeWorkerPill:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  background: var(--panel-2);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.activeWorkerPill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.activeWorkerName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.activeWorkerStatus {
+  flex: 0 0 auto;
+  color: #a69b83;
+  font-size: 9px;
+}
+
+.activeWorkerDot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: activeWorkerPulse 1.4s ease-in-out infinite;
+}
+
+.activeWorkerDot--queued {
+  background: #facc15;
+  animation-duration: 2s;
+}
+
+@keyframes activeWorkerPulse {
+  0%, 100% { opacity: .5; }
+  50% { opacity: 1; }
+}
+
+.pendingMessages:not([hidden]) ~ .waitingSessions.activeWorkerDock { margin-bottom: 12px; }
+
+@media (max-width: 600px) {
+  .waitingSessions.activeWorkerDock { margin-inline: 22px; }
+}
+
+@media (pointer: coarse) {
+  .activeWorkerPill { min-height: 44px; padding-inline: 12px; }
+  .waitingSessions.activeWorkerDock { height: 44px; padding-block: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activeWorkerDot { animation: none; }
+}

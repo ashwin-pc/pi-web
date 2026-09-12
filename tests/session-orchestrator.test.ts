@@ -609,6 +609,15 @@ describe("watcher lifecycle and wakeup retries", () => {
 
     expect(pi.sendMessage).toHaveBeenCalledTimes(1);
     expect(String(pi.sendMessage.mock.calls[0][0].content)).toContain("finished after restart");
+    expect(pi.sendMessage.mock.calls[0][0].details).toMatchObject({
+      workers: [{ sessionId: "ledger-worker", name: "ledger worker", status: "idle" }],
+      presentation: {
+        kind: "expandable-report",
+        label: "ledger worker · finished",
+        preview: "finished after restart",
+        tone: "accent",
+      },
+    });
     expect(pi.appendEntry).toHaveBeenCalledWith("orchestrator-watch-resolved", { childId: "ledger-worker" });
     expect(stateCalls).toBe(6); // re-arm failure + status check + four settled polls
   });

@@ -34,6 +34,7 @@ import {
 import { createComposer, type ComposerController } from "./composer/composer.js";
 import { initActionLauncher, type ActionLauncherController } from "./app/actionLauncher.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
+import { createActiveWorkerDock, type ActiveWorkerDockController } from "./composer/activeWorkerDock.js";
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
@@ -46,6 +47,7 @@ import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
+import type { WaitingInfo } from "./sessions/lineage.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
@@ -67,6 +69,8 @@ configureArtifactPreviews({ headers: api.headers, getSessionId: () => state.curr
 let messages: MessageList;
 let composer: ComposerController;
 let contextMeter: ContextMeterController;
+let activeWorkerDock: ActiveWorkerDockController;
+let legacyWaitingInfo: WaitingInfo | undefined;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
 let settings: SettingsController;
@@ -168,7 +172,7 @@ messages = createMessageList({
   openSession: (sessionId) => void sessions.openSessionById(sessionId),
   openPanel: (key, initialEvent) => webPanels.open(key, initialEvent),
 });
-const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId));
+const tools = createToolCards(elements.messagesEl, messages.scrollToBottom, api.headers, (sessionId) => void sessions.openSessionById(sessionId), messages.reconcileActivity);
 
 const webHeaderActions = createWebHeaderActions({
   container: elements.headerActionsEl,
@@ -224,6 +228,7 @@ function renderActiveSessionRuntime(
   contextMeter?.update({ stats: view?.stats, isCompacting: runtime.isCompacting });
   sessionInfo?.update();
   renderRuntimeActivity(runtime, previous, activity);
+  activeWorkerDock?.refresh();
 }
 
 function renderActiveSessionMetadata() {
@@ -276,7 +281,8 @@ function runtimePresentationChanged(
     || previous.isRunning !== next.isRunning
     || previous.isStreaming !== next.isStreaming
     || previous.isRetrying !== next.isRetrying
-    || previous.isCompacting !== next.isCompacting;
+    || previous.isCompacting !== next.isCompacting
+    || previous.pendingMessageCount !== next.pendingMessageCount;
 }
 
 function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptions = {}) {
@@ -425,7 +431,10 @@ statusBar = createStatusBar({
   sessionState,
   addMessage: messages.addMessage,
   refreshSessions: () => sessions.refreshSessions(),
-  openSession: (sessionId, cwd) => sessions.openSessionTab(sessionId, cwd),
+  onWaitingStatusChanged: (info) => {
+    legacyWaitingInfo = info;
+    activeWorkerDock?.refresh();
+  },
   refreshState,
 });
 
@@ -435,6 +444,11 @@ settings = createSettings({
   api,
   rightPanels,
   addMessage: messages.addMessage,
+  onAppearanceChange: () => {
+    activeWorkerDock?.refresh();
+    messages.reconcileActivity();
+    if (state.initialSyncComplete) void refreshMessages().catch(showSystemError);
+  },
 });
 
 systemInfo = createSystemInfo({
@@ -460,13 +474,24 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
-  onDerivedSessionStateChanged: () => statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || "")),
+  onDerivedSessionStateChanged: () => {
+    statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
+    activeWorkerDock?.refresh();
+  },
   clearMessages: () => {
     tools.clearActiveToolCards();
     messages.clear();
   },
   addMessage: messages.addMessage,
 });
+
+activeWorkerDock = createActiveWorkerDock({
+  container: elements.waitingSessionsEl,
+  getWorkers: () => sessions.activeWorkersFor(state.currentSessionId),
+  getWaiting: () => legacyWaitingInfo,
+  openSession: (sessionId) => void sessions.openSessionById(sessionId),
+});
+activeWorkerDock.refresh();
 
 sessionInfo = createSessionInfo({
   state,

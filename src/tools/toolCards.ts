@@ -4,6 +4,8 @@ import { textFromRawContent } from "../messages/content.js";
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import { playToolCardEntry, playToolCardStateTransition } from "../messages/entryAnimation.js";
 import type { ApiHeaders } from "../app/api.js";
+import { isCompactDensity } from "../app/appearance.js";
+import { setActivityCardMetadata } from "../messages/activitySummary.js";
 
 export type ToolCards = {
   addToolCard: (toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => HTMLDivElement;
@@ -26,10 +28,6 @@ function toolSubtitle(toolName: string, args: Record<string, unknown>): string {
     if (typeof val === "string") return val;
   }
   return "";
-}
-
-function isCompactDensity() {
-  return document.documentElement.dataset.density === "compact";
 }
 
 function updateCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
@@ -100,12 +98,11 @@ function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>
  * structured `details`. Generic: no tool name is special-cased and no result
  * text is parsed. Safe to call repeatedly for the same card.
  */
-let openSessionRef: ((sessionId: string) => void) | undefined;
-
-function addToolSessionChips(card: HTMLDivElement, result: unknown) {
+function addToolSessionChips(card: HTMLDivElement, result: unknown, openSession?: (sessionId: string) => void) {
   const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
   const details = record.details ?? (record.raw as Record<string, unknown> | undefined)?.details;
   const refs = sessionRefsFromDetails(details);
+  setActivityCardMetadata(card, { refs });
   const header = card.querySelector<HTMLElement>(".toolCardHeader");
   if (!header) return;
   // Reconcile rather than append: the live path updates a card that may already
@@ -114,7 +111,7 @@ function addToolSessionChips(card: HTMLDivElement, result: unknown) {
   if (!refs.length) return;
   const toggle = header.querySelector(".toolCardExpandToggle");
   for (const ref of refs) {
-    header.insertBefore(createSessionRefChip(ref, { openSession: openSessionRef }), toggle || null);
+    header.insertBefore(createSessionRefChip(ref, { openSession }), toggle || null);
   }
 }
 
@@ -157,7 +154,7 @@ function addCardHeader(card: HTMLDivElement, title: string, subtitleText = "") {
 
   header.addEventListener("click", (event) => {
     const target = event.target instanceof HTMLElement ? event.target : undefined;
-    if (!isCompactDensity() || target?.closest("button")) return;
+    if (!isCompactDensity() || target?.closest("button, a, input, summary")) return;
     setCompactCollapsed(card, !card.classList.contains("toolCard--compactCollapsed"));
   });
 
@@ -354,8 +351,7 @@ function finalizePartialToolOutput(card: HTMLDivElement) {
 
 export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () => void = () => {
   messagesEl.scrollTop = messagesEl.scrollHeight;
-}, apiHeaders?: ApiHeaders, openSession?: (sessionId: string) => void): ToolCards {
-  openSessionRef = openSession;
+}, apiHeaders?: ApiHeaders, openSession?: (sessionId: string) => void, onTranscriptChanged: () => void = () => {}): ToolCards {
   const activeToolCards = new Map<string, HTMLDivElement>();
   const knownToolStartedAts = new Map<string, number>();
   const runningToolStates = new WeakMap<HTMLDivElement, { startedAt?: number; lastActivityAt: number; timer: number }>();
@@ -449,6 +445,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     card.dataset.toolName = toolName;
     startRunningToolProgress(card, parseToolTimestamp(startedAt));
     messagesEl.append(card);
+    onTranscriptChanged();
     scrollToBottom();
     playToolCardEntry(card);
     return card;
@@ -471,8 +468,8 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     }
     addToolImagePreviews(card, result, apiHeaders);
     playToolCardStateTransition(card);
-    addToolSessionChips(card, result);
-
+    addToolSessionChips(card, result, openSession);
+    onTranscriptChanged();
     scrollToBottom();
   }
 
@@ -485,8 +482,14 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     if (toolName === "edit" && args) renderEditDiff(card, args, result);
     else if (resultStr) addToolResultBody(card, resultStr);
     addToolImagePreviews(card, result, apiHeaders);
-    addToolSessionChips(card, result);
+    addToolSessionChips(card, result, openSession);
+    const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
+    const raw = record.raw && typeof record.raw === "object" ? record.raw as Record<string, unknown> : {};
+    const id = record.toolCallId || raw.toolCallId || record.entryId;
+    card.dataset.toolName = toolName;
+    if (typeof id === "string") setActivityCardMetadata(card, { key: `tool:${id}` });
     messagesEl.append(card);
+    onTranscriptChanged();
   }
 
   function addRuntimeErrorCard(title: string, subtitle: string, body: string) {
@@ -495,6 +498,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     addCardHeader(card, title, subtitle);
     if (body) addToolResultBody(card, body);
     messagesEl.append(card);
+    onTranscriptChanged();
     return card;
   }
 
@@ -513,6 +517,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
       return;
     }
     const card = addToolCard(toolName, args, knownStartedAt);
+    if (toolCallId) setActivityCardMetadata(card, { key: `tool:${toolCallId}` });
     activeToolCards.set(cardKey, card);
   }
 
@@ -522,6 +527,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     let card = activeToolCards.get(cardKey);
     if (!card?.isConnected && Object.keys(args).length > 0) {
       card = addToolCard(toolName, args, knownStartedAt);
+      if (toolCallId) setActivityCardMetadata(card, { key: `tool:${toolCallId}` });
       activeToolCards.set(cardKey, card);
     }
     if (!card?.isConnected) return;

@@ -112,6 +112,47 @@ export function runningChildIdsOf(
 export type WaitingSession = { sessionId: string; name: string; cwd?: string };
 export type WaitingInfo = { count: number; names: string[]; sessions: WaitingSession[] };
 
+export type ActiveWorkerStatus = "running" | "queued";
+export type ActiveWorker = WaitingSession & { status: ActiveWorkerStatus };
+
+/**
+ * Live, direct spawn children for the active-session worker dock.
+ *
+ * Missing runtimes are deliberately excluded: an origin is durable history, not
+ * proof that its child is still active. Running takes precedence over queued.
+ */
+export function activeWorkersFrom(
+  sessionId: string,
+  origins: Array<{ sessionId: string; originSessionId: string }>,
+  lookups: {
+    runtime: (id: string) => { isRunning?: boolean; pendingMessageCount?: number } | undefined;
+    describe: (id: string) => { name?: string; cwd?: string };
+  },
+): ActiveWorker[] {
+  if (!sessionId) return [];
+  const seen = new Set<string>();
+  const workers: ActiveWorker[] = [];
+  for (const origin of origins) {
+    const childId = origin.sessionId;
+    if (origin.originSessionId !== sessionId || !childId || childId === sessionId || seen.has(childId)) continue;
+    seen.add(childId);
+    const runtime = lookups.runtime(childId);
+    if (!runtime) continue;
+    const status: ActiveWorkerStatus | undefined = runtime.isRunning
+      ? "running"
+      : Number(runtime.pendingMessageCount || 0) > 0 ? "queued" : undefined;
+    if (!status) continue;
+    const described = lookups.describe(childId) || {};
+    workers.push({
+      sessionId: childId,
+      name: (described.name || "").trim() || childId.slice(-8),
+      cwd: described.cwd,
+      status,
+    });
+  }
+  return workers;
+}
+
 /**
  * Derived "waiting on spawned sessions" state for one session: it is idle, but
  * sessions it spawned are still running. Returns the running children so the UI

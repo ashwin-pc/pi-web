@@ -413,6 +413,35 @@ pi.sendMessage({
   plausible session ids, because `details` is untrusted persisted input. No
   extension or tool name is special-cased.
 
+### Optional compact custom-message presentation
+
+In Minimal density, every displayed custom message has a generic compact,
+expandable report view. An extension may supply a short label, preview, and
+semantic tone through `details.presentation`; the full `content` remains the
+expanded Markdown body. Core validates and bounds this persisted input and does
+not interpret `customType` or extension-authored prose.
+
+```ts
+pi.sendMessage({
+  customType: "my-ext",
+  content: "## Full report\n\nEverything needed for the complete record.",
+  display: true,
+  details: {
+    sessionRefs: [{ sessionId, name: "related session", status: "ok" }],
+    presentation: {
+      kind: "expandable-report",
+      label: "Background check · finished", // maximum 80 characters
+      preview: "No issues found",            // maximum 320 characters
+      tone: "accent",                        // neutral | accent | warning | danger
+    },
+  },
+});
+```
+
+The descriptor is optional. Existing custom messages without it use a readable
+label derived mechanically from `customType`, a plain-text preview of `content`,
+and neutral tone. Ordinary user messages are never reclassified from their text.
+
 ## Example: GitHub PRs and issues tab
 
 The repo includes an opt-in GitHub extension example at [`examples/pi-web-extensions/github-repo-panel.ts`](../examples/pi-web-extensions/github-repo-panel.ts). It adds a **GitHub** tab to the built-in Git drawer for repositories with GitHub remotes. The extension uses the `gh` CLI to list and view pull requests and issues.

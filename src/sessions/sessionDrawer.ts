@@ -7,7 +7,7 @@ import { panelOverlayModeQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
-import { runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type WaitingInfo } from "./lineage.js";
+import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
 import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
@@ -39,6 +39,7 @@ export type SessionsController = {
   applySessionUiState: (value: unknown) => void;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
+  activeWorkersFor: (sessionId: string) => ActiveWorker[];
   openSessionTab: (sessionId: string, cwd: string) => Promise<void>;
   openSessionById: (sessionId: string) => Promise<void>;
 };
@@ -168,7 +169,7 @@ export function createSessions(options: {
   refreshSessionTitle: () => Promise<void>;
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
-  /** Called whenever derived per-session state (e.g. waiting-on-spawned) may have changed. */
+  /** Called whenever derived per-session state (e.g. waiting-on-spawned/active workers) may have changed. */
   onDerivedSessionStateChanged?: () => void;
 }): SessionsController {
   const {
@@ -185,6 +186,7 @@ export function createSessions(options: {
     clearMessages,
     addMessage,
   } = options;
+  const onDerivedSessionStateChanged = options.onDerivedSessionStateChanged;
 
   let cachedSessions: SessionInfo[] = [];
   const knownSessionNames = new Map<string, string>();
@@ -631,6 +633,7 @@ export function createSessions(options: {
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
     updateSessionButtonUnread();
+    options.onDerivedSessionStateChanged?.();
   }
 
   function updateSessionRuntime(sessionId: string, runtime: SessionInfo["runtime"]) {
@@ -638,6 +641,7 @@ export function createSessions(options: {
     cachedSessions = cachedSessions.map((session) => session.id === sessionId ? { ...session, runtime } : session);
     if (!patchRenderedRuntimeBranch(sessionId)) scheduleSessionListRender();
     renderSessionBar();
+    options.onDerivedSessionStateChanged?.();
   }
 
   // ── Markers and pinning ────────────────────────────────────────────────────
@@ -671,7 +675,10 @@ export function createSessions(options: {
     updateSessionButtonUnread();
     updateCurrentSessionPinButton();
     renderCurrentSessionBucketButton();
-    if (state.pinnedSessions.length > 0 && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
+    options.onDerivedSessionStateChanged?.();
+    // Durable worker origins need an initial runtime snapshot too, even when
+    // no sessions are pinned and the drawer has never been opened.
+    if ((state.pinnedSessions.length > 0 || spawnOrigins().length > 0) && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
     if (!restoredPersistedLaneFocus) {
       restoredPersistedLaneFocus = true;
       window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
@@ -797,22 +804,31 @@ export function createSessions(options: {
    * Derived "waiting" state: session is idle but sessions it spawned are still
    * running. Computed purely from origins + live runtimes — nothing to reset.
    */
+  function describeWorker(childId: string) {
+    const cached = cachedSessions.find((item) => item.id === childId);
+    const cachedName = (cached ? sessionTitle(cached) : "").replace(/^[⑂⤑]\s*/, "");
+    return {
+      name: cachedName || knownSessionNames.get(childId) || "",
+      cwd: cached?.cwd,
+    };
+  }
+
   function waitingInfoFor(sessionId: string): WaitingInfo | undefined {
     const self = cachedSessions.find((item) => item.id === sessionId);
     return waitingInfoFrom(sessionId, spawnOrigins(), {
       selfRunning: isSessionRunning(sessionId, Boolean(self?.runtime?.isRunning)),
       isRunning: (childId) => {
-        const cached = cachedSessions.find((item) => item.id === childId);
-        return isSessionRunning(childId, Boolean(cached?.runtime?.isRunning));
+        const runtime = runtimeForSession(childId);
+        return Boolean(runtime?.isRunning || Number(runtime?.pendingMessageCount || 0) > 0);
       },
-      describe: (childId) => {
-        const cached = cachedSessions.find((item) => item.id === childId);
-        const cachedName = (cached ? sessionTitle(cached) : "").replace(/^[⑂⤑]\s*/, "");
-        return {
-          name: cachedName || knownSessionNames.get(childId) || "",
-          cwd: cached?.cwd,
-        };
-      },
+      describe: describeWorker,
+    });
+  }
+
+  function activeWorkersFor(sessionId: string): ActiveWorker[] {
+    return activeWorkersFrom(sessionId, spawnOrigins(), {
+      runtime: runtimeForSession,
+      describe: describeWorker,
     });
   }
 
@@ -1362,10 +1378,12 @@ export function createSessions(options: {
       markCachedCurrentSession(sessionId, cwd);
       if (targetLane) { focusedSessionByLane[targetLane] = sessionId; saveLaneFocus(); }
       markSessionReadBestEffort(sessionId);
+      options.onDerivedSessionStateChanged?.();
     } catch (error) {
       if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
       focusedLane = previousFocusedLane;
       renderSessionBar();
+      options.onDerivedSessionStateChanged?.();
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
     }
   }
@@ -2678,9 +2696,11 @@ export function createSessions(options: {
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         markSessionReadBestEffort(item.id);
+        onDerivedSessionStateChanged?.();
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
       } catch (error) {
         if (switchingSessions && state.currentSessionId === item.id) sessionState.activate(previousSessionId);
+        onDerivedSessionStateChanged?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
         if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
       }
@@ -2844,6 +2864,7 @@ export function createSessions(options: {
     applySessionUiState,
     markSessionRead,
     waitingInfoFor,
+    activeWorkersFor,
     openSessionTab,
     openSessionById,
     openAdjacentPinnedSession,
