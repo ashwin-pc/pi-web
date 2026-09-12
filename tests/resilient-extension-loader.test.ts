@@ -80,6 +80,28 @@ describe("ResilientResourceLoader", () => {
     expect(loader.getExtensions().extensions).toHaveLength(1);
   });
 
+  it("reuses the successful primary loader so its reload can invalidate extension source caches", async () => {
+    let factoryCalls = 0;
+    let primaryReloads = 0;
+    const loader = new ResilientResourceLoader({
+      loaderOptions: { cwd: "/project", agentDir: "/agent" },
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      createLoader: () => {
+        factoryCalls += 1;
+        return factoryCalls === 2
+          ? fakeLoader({ extensions: ["primary"], reload: async () => { primaryReloads += 1; } })
+          : fakeLoader();
+      },
+    });
+
+    await loader.reload();
+    await loader.reload();
+
+    expect(primaryReloads).toBe(2);
+    expect(factoryCalls).toBe(2);
+    expect(loader.getStatus()).toMatchObject({ state: "ready", attempt: 2, extensionCount: 1 });
+  });
+
   it("surfaces loader-reported extension paths and errors", async () => {
     const loader = new ResilientResourceLoader({
       loaderOptions: { cwd: "/project", agentDir: "/agent" },

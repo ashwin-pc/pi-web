@@ -116,6 +116,8 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 
 export class ResilientResourceLoader implements ResourceLoader {
   private active: ResourceLoader;
+  /** Whether `active` is a successfully loaded primary loader (rather than the extension-free fallback). */
+  private activeIsPrimary = false;
   private readonly createLoader: LoaderFactory;
   private readonly log: Pick<Console, "info" | "warn" | "error">;
   private readonly loadTimeoutMs: number;
@@ -224,8 +226,14 @@ export class ResilientResourceLoader implements ResourceLoader {
     };
     this.log.info(`[extensions] load started cwd=${this.primaryOptions.cwd} attempt=${attempt} timeoutMs=${this.loadTimeoutMs} fetchTimeoutMs=${this.fetchTimeoutMs}`);
 
-    const candidate = this.createLoader(this.primaryOptions);
-    for (const paths of this.extendedResources) candidate.extendResources(paths);
+    // Reuse the successful primary loader on reload. DefaultResourceLoader only
+    // clears pi's process-global extension factory cache after that same loader
+    // has loaded once; replacing it with a fresh instance here made every
+    // pi-web /reload silently reuse stale extension source.
+    const candidate = this.activeIsPrimary ? this.active : this.createLoader(this.primaryOptions);
+    if (!this.activeIsPrimary) {
+      for (const paths of this.extendedResources) candidate.extendResources(paths);
+    }
     try {
       await withTimeout(
         extensionFetchContext.run(
@@ -237,6 +245,7 @@ export class ResilientResourceLoader implements ResourceLoader {
       );
       const result = candidate.getExtensions();
       this.active = candidate;
+      this.activeIsPrimary = true;
       const durationMs = Date.now() - started;
       this.status = {
         state: result.errors.length > 0 ? "degraded" : "ready",
@@ -264,6 +273,7 @@ export class ResilientResourceLoader implements ResourceLoader {
       try {
         await fallback.reload(options);
         this.active = fallback;
+        this.activeIsPrimary = false;
       } catch (fallbackError) {
         this.log.error(`[extensions] extension-free fallback failed cwd=${this.primaryOptions.cwd}: ${errorMessage(fallbackError)}`);
         throw fallbackError;
