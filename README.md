@@ -58,7 +58,14 @@ pi-web
 
 `pi-web` starts on `http://127.0.0.1:8787` and runs Pi in the directory where you invoke it; override that workspace with `PI_WEB_CWD=/path/to/project pi-web`. On a genuinely unconfigured installation, the terminal prints a single-use, ten-minute setup URL for enrolling a browser password or passkey.
 
-Provider credentials and pi-web login serve different purposes. Use Pi's `/login` command in a session to authenticate model providers; use pi-web's browser sign-in and **Settings → Security** to control access to the web application. See [authentication and recovery](docs/passkey-auth.md) for setup, migration, and recovery.
+Provider credentials and pi-web login serve different purposes. Configure model-provider credentials locally through Pi. For interactive provider login, install and launch the Pi terminal CLI:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+pi
+```
+
+Run `/login` inside that terminal CLI, complete provider authentication, then exit Pi. pi-web uses the same local provider credentials. Separately, use pi-web's browser sign-in and **Settings → Security** to control access to the web application. See [authentication and recovery](docs/passkey-auth.md) for browser setup, migration, and recovery.
 
 ## Run locally with Vite HMR
 
