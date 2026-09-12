@@ -12,24 +12,6 @@
 }
 .emptyCwdChooser[hidden] { display: none; }
 
-/* A small avatar above the empty-state copy; the circular edge dissolves into the background. */
-.newChatLoadingAnimation {
-  position: relative;
-  flex: 0 0 auto;
-  width: clamp(88px, 14vw, 136px);
-  height: clamp(88px, 14vw, 136px);
-  object-fit: cover;
-  opacity: .78;
-  pointer-events: none;
-  mix-blend-mode: screen;
-  -webkit-mask-image: radial-gradient(ellipse at center, black 0 58%, transparent 76%);
-  mask-image: radial-gradient(ellipse at center, black 0 58%, transparent 76%);
-}
-
-.newChatLoadingAnimation.resetting {
-  visibility: hidden;
-}
-
 .newChatLoadingAnimation + .emptyCwdInner {
   position: relative;
   z-index: 1;
@@ -106,11 +88,6 @@
 }
 
 @media (max-width: 600px) {
-  .newChatLoadingAnimation {
-    width: 92px;
-    height: 92px;
-  }
-
   .emptyCwdInner {
     padding-bottom: 18px;
   }

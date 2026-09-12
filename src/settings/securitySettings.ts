@@ -551,14 +551,12 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     back.className = "securityBack";
     const detailContent = document.createElement("div");
     detail.append(back, detailContent);
-    const passkeyEnabled = enabled.has("passkey") && state.passkeys.length > 0;
-    const hasBackup = passkeyEnabled && (state.passkeys.length > 1 || (enabled.has("password") && state.passwordConfigured));
-    const banner = row(
-      (state.policy ?? (state.mode === "none" ? "open" : "authenticated")) === "open" ? "Authentication is off" : passkeyEnabled ? "Passkey protection is on" : "Your workspace access",
-      (state.policy ?? (state.mode === "none" ? "open" : "authenticated")) === "open" ? "This instance allows unauthenticated access." : hasBackup ? "You have a backup sign-in method." : "Keep a backup credential and terminal recovery access.",
-    );
-    banner.classList.add("securityBanner", "securityCard");
-    overview.append(banner);
+    // Methods are alternatives, not a claim of exclusive or enforced protection.
+    if ((state.policy ?? (state.mode === "none" ? "open" : "authenticated")) === "open") {
+      const banner = row("Authentication is off", "This instance allows unauthenticated access.");
+      banner.classList.add("securityBanner", "securityCard");
+      overview.append(banner);
+    }
     const group = (title: string, count?: number) => {
       const wrapper = document.createElement("section");
       wrapper.className = "securityGroup";

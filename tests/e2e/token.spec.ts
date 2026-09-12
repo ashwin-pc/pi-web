@@ -16,6 +16,37 @@ test.beforeEach(async ({ page, context }) => {
 });
 
 test.describe("token overlay", () => {
+  test("public sign-in reuses the entry video and respects reduced motion without authentication", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    await page.goto('/api/auth/login');
+    await expect(page).toHaveTitle('Pi Web');
+    await expect(page.getByRole('heading', { name: 'Pi Web', exact: true })).toBeVisible();
+    await expect(page.locator('header, footer')).toHaveCount(0);
+    const video = page.locator('video');
+    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeGreaterThan(0);
+    expect(await page.context().cookies()).toEqual([]);
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    await page.reload();
+    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.readyState)).toBeGreaterThanOrEqual(2);
+    expect(await video.evaluate((v: HTMLVideoElement) => v.paused)).toBe(true);
+    await expect(video).toBeHidden();
+    await expect(page.locator('.avatarStill')).toBeVisible();
+    expect(await page.locator('.avatarStill').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+    expect((await page.request.get('/api/state')).status()).toBe(401);
+  });
+  test("open policy retains its unauthenticated access warning", async ({ page }) => {
+    await page.goto(`/?token=${CORRECT_TOKEN}`);
+    await expect(page.locator('#statusTitle')).toHaveText('Current mock session');
+    await page.route('**/api/auth/security', async route => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...await response.json(), policy: 'open' } });
+    });
+    await page.locator('#sessionButton').click();
+    await openSessionDrawerFooterAction(page, 'Settings');
+    await page.locator('#settingsNavAccess').click();
+    await expect(page.locator('.securityBanner')).toContainText('Authentication is off');
+    await expect(page.locator('.securityBanner')).toContainText('This instance allows unauthenticated access.');
+  });
   test("Security inherits native styling and restores responsive title focus", async ({ page }) => {
     await page.goto(`/?token=${CORRECT_TOKEN}`);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
@@ -28,7 +59,8 @@ test.describe("token overlay", () => {
       document.documentElement.style.setProperty("--accent", "#8fb6ff");
       document.documentElement.style.setProperty("--panel", "#141820");
     });
-    await expect(security.locator(".securityBanner strong")).toHaveCSS("color", "rgb(143, 182, 255)");
+    await expect(security.locator(".securityBanner")).toHaveCount(0);
+    await expect(security.getByRole('link', { name: 'Sign in again for security changes' })).toHaveCSS("color", "rgb(143, 182, 255)");
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 844 });
       // Crossing into mobile intentionally returns the shell to category navigation.
@@ -64,8 +96,7 @@ test.describe("token overlay", () => {
     });
     await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
     await expect(page.getByRole("heading", { name: "Sign-in methods", exact: true })).toBeVisible();
-    await expect(page.locator(".securityBanner")).toContainText("Your workspace access");
-    await expect(page.locator(".securityBanner")).not.toContainText("You have a backup sign-in method");
+    await expect(page.locator(".securityBanner")).toHaveCount(0);
     await page.getByRole("button", { name: "Change", exact: true }).click();
     await expect(page.getByRole("button", { name: "Change password", exact: true })).toBeVisible();
     expect(await page.evaluate(() => localStorage.getItem("pi-web-token"))).toBeNull();

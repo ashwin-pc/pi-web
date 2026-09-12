@@ -1,4 +1,4 @@
-import { renderLoginPage } from "./loginPage.js";
+import { loginPageHeaders, renderLoginPage } from "./loginPage.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { trustedProxyPeer } from "./proxy.js";
@@ -63,13 +63,7 @@ export function passwordLoginPage(
   setupToken?: string,
 ) {
   const html = renderLoginPage({ methods, setupToken });
-  res.writeHead(200, {
-    "content-type": "text/html; charset=utf-8",
-    "cache-control": "no-store",
-    "referrer-policy": "no-referrer",
-    "content-security-policy":
-      "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; form-action 'self'; frame-ancestors 'none'",
-  });
+  res.writeHead(200, loginPageHeaders);
   res.end(html);
 }
 export async function handlePasswordLogin(

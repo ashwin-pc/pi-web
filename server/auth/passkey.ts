@@ -1,4 +1,4 @@
-import { renderLoginPage } from "./loginPage.js";
+import { loginPageHeaders, renderLoginPage } from "./loginPage.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON, WebAuthnCredential } from "@simplewebauthn/server";
@@ -35,7 +35,7 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
     if (url.pathname.endsWith("bootstrap") && bootstrapRequiresLoopback(config) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap is localhost-only" }); return true; }
     const bootstrap = url.pathname.endsWith("bootstrap"); const token = bootstrap ? url.searchParams.get("token") || "" : "";
     const html = renderLoginPage({ methods: ["passkey"], passkeyOnly: true, ...(bootstrap ? { setupToken: token } : {}) });
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "referrer-policy": "no-referrer", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'" }); res.end(html); return true;
+    res.writeHead(200, loginPageHeaders); res.end(html); return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/passkey/options") {
     const state = await store.read();

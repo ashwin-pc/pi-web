@@ -332,7 +332,8 @@ describe("new session empty state", () => {
     expect(statSync(new URL("../public/new-chat-loading.mp4", import.meta.url)).size).toBeGreaterThan(0);
     expect(html).toContain('class="newChatLoadingAnimation"');
     expect(html).toContain('src="/new-chat-loading.mp4"');
-    expect(css).toContain(".newChatLoadingAnimation.resetting");
+    expect(readFileSync(new URL("../public/new-chat-animation.css", import.meta.url), "utf8")).toContain(".newChatLoadingAnimation.resetting");
+    expect(html).toContain('href="/new-chat-animation.css"');
     expect(sessionsTs).toContain("function finishTranscriptLoading()");
     expect(sessionsTs).toContain("video.currentTime = 0;");
     expect(sessionsTs).toContain("void video.play()");
