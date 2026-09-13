@@ -29,10 +29,7 @@ export function createActiveWorkerDock(options: {
     const name = document.createElement("span");
     name.className = "activeWorkerName";
     name.textContent = worker.name;
-    const status = document.createElement("span");
-    status.className = "activeWorkerStatus";
-    status.textContent = "running";
-    pill.replaceChildren(dot, name, status);
+    pill.replaceChildren(dot, name);
   }
 
   function refresh() {

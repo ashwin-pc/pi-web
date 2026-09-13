@@ -380,7 +380,7 @@ function refreshSettlementDependencies(sessionId: string) {
     return Array.isArray(status.trackedWorkers)
       ? status.trackedWorkers.map((worker: { id?: unknown }) => worker?.id)
       : [];
-  }, () => sessionId === state.currentSessionId).then((applied) => {
+  }).then((applied) => {
     if (applied) activeWorkerDock?.refresh();
   }).catch(() => { /* live dependency reports will reconcile this best-effort snapshot */ });
 }
@@ -493,6 +493,12 @@ sessions = createSessions({
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
   onDerivedSessionStateChanged: () => {
+    // Rehydrate inactive pinned parents too. Realtime dependency declarations
+    // are not replayed after a browser reconnect, while pinned indicators must
+    // remain correct without opening each parent first.
+    for (const sessionId of new Set([state.currentSessionId, ...state.pinnedSessions.map((item) => item.id)])) {
+      refreshSettlementDependencies(sessionId);
+    }
     activeWorkerDock?.refresh();
   },
   clearMessages: () => {

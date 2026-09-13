@@ -46,12 +46,11 @@ export function createSettlementDependencyStore(target: Record<string, string[]>
   async function hydrate(
     sessionId: string,
     load: () => Promise<readonly unknown[]>,
-    isCurrent: () => boolean,
   ): Promise<boolean> {
     const snapshot = beginSnapshot(sessionId);
     if (!snapshot) return false;
     const childIds = await load();
-    return isCurrent() && applySnapshot(snapshot, childIds);
+    return applySnapshot(snapshot, childIds);
   }
 
   return { applyReport, beginSnapshot, applySnapshot, hydrate };

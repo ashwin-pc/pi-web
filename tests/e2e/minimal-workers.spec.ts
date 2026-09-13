@@ -72,7 +72,12 @@ test("active worker dock shows only running declared dependencies and follows se
       select.value = String(value); select.dispatchEvent(new Event("change", { bubbles: true }));
     }, density);
     await expect(dock.locator(".activeWorkerPill")).toHaveCount(1);
-    await expect(dock.locator('[data-session-id="worker-run"]')).toContainText("Compile assetsrunning");
+    const workerPill = dock.locator('[data-session-id="worker-run"]');
+    await expect(workerPill).toHaveText("Compile assets");
+    await expect(workerPill.locator(".activeWorkerStatus")).toHaveCount(0);
+    const pillBox = await workerPill.boundingBox();
+    expect(pillBox?.height).toBeLessThanOrEqual(32);
+    expect(pillBox?.width).toBeLessThan(140);
     await expect(page.locator(".waitingSessionChip")).toHaveCount(0);
   }
 
@@ -89,6 +94,71 @@ test("active worker dock shows only running declared dependencies and follows se
   await expect(dock).toBeVisible();
   await page.goto("/?sessionId=mock-older");
   await expect(dock).toBeHidden();
+});
+
+test("pinned parent restores waiting after reload before opening, then shows its running pill in every density", async ({ page }) => {
+  await page.request.patch("/api/session-ui-state", { data: {
+    pinnedSessions: [{ id: "mock-current" }, { id: "mock-older" }],
+  } });
+  await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({ json: { ok: true, sessions: [
+    { id: "mock-current", name: "Active worker", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: true,
+      runtime: runtime(true) },
+    { id: "mock-older", name: "Pinned parent", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: false,
+      runtime: runtime(false) },
+  ] } }));
+
+  // Declare through the server's generic dependency event contract before the
+  // browser connects. The subsequent reload must recover it from status; there
+  // is deliberately no realtime declaration available to the new page.
+  await dependencyEvent(page, "mock-older", ["mock-current"]);
+  await page.goto("/?sessionId=mock-current");
+  await page.reload();
+
+  const parentTab = page.locator('.sessionBarTab[data-session-id="mock-older"]');
+  await expect(parentTab).toHaveClass(/\bpinned\b/);
+  await expect(parentTab.locator(".auroraRibbon")).toBeVisible();
+  await expect(parentTab.locator(".auroraRibbon")).toHaveAttribute("aria-label", /Waiting on 1 spawned session: Active worker/);
+
+  // Opening the previously inactive parent uses the same recovered declaration
+  // for composer pills; density only changes presentation, never membership.
+  await parentTab.locator(".sessionBarTabOpen").click();
+  await expect(page).toHaveURL(url => url.searchParams.get("sessionId") === "mock-older");
+  for (const density of ["comfortable", "compact", "minimal"]) {
+    await page.locator("#settingDensitySelect").evaluate((select: HTMLSelectElement, value) => {
+      select.value = String(value); select.dispatchEvent(new Event("change", { bubbles: true }));
+    }, density);
+    const pill = page.locator('.activeWorkerPill[data-session-id="mock-current"]');
+    await expect(pill).toBeVisible();
+    await expect(pill).toHaveText("Active worker");
+    await expect(pill.locator(".activeWorkerStatus")).toHaveCount(0);
+  }
+});
+
+test("current parent restores running dependency pills on initial reload in every density", async ({ page }) => {
+  await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({ json: { ok: true, sessions: [
+    { id: "mock-current", name: "Current parent", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: true,
+      runtime: runtime(false) },
+    { id: "reload-worker", name: "Reloaded worker", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: false,
+      runtime: runtime(true) },
+  ] } }));
+  await page.goto("/?sessionId=mock-current");
+  await dependencyEvent(page, "mock-current", ["reload-worker"]);
+  await runtimeEvent(page, "reload-worker", runtime(true));
+  await expect(page.locator('.activeWorkerPill[data-session-id="reload-worker"]')).toBeVisible();
+  await page.reload();
+  // Re-publish runtime metadata as the mock runtime event is intentionally not
+  // durable; dependency membership itself must come from the status snapshot.
+  await runtimeEvent(page, "reload-worker", runtime(true));
+
+  for (const density of ["comfortable", "compact", "minimal"]) {
+    await page.locator("#settingDensitySelect").evaluate((select: HTMLSelectElement, value) => {
+      select.value = String(value); select.dispatchEvent(new Event("change", { bubbles: true }));
+    }, density);
+    const pill = page.locator('.activeWorkerPill[data-session-id="reload-worker"]');
+    await expect(pill).toBeVisible();
+    await expect(pill).toHaveText("d-worker");
+    await expect(pill.locator(".activeWorkerStatus")).toHaveCount(0);
+  }
 });
 
 test("declared dependencies hydrate an active dock from the settlement snapshot", async ({ page }) => {

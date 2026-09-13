@@ -2,19 +2,17 @@ import { describe, expect, it } from "vitest";
 import { createSettlementDependencyStore } from "../src/sessions/settlementDependencies.js";
 
 describe("settlement dependency snapshots", () => {
-  it("does not write a delayed snapshot after switching sessions", async () => {
+  it("hydrates an inactive parent so pinned indicators survive reconnects", async () => {
     const target: Record<string, string[]> = {};
     const store = createSettlementDependencyStore(target);
-    let currentSessionId = "parent-a";
     let resolve!: (ids: string[]) => void;
     const delayed = new Promise<string[]>((done) => { resolve = done; });
-    const hydration = store.hydrate("parent-a", () => delayed, () => currentSessionId === "parent-a");
+    const hydration = store.hydrate("pinned-parent", () => delayed);
 
-    currentSessionId = "parent-b";
     resolve(["worker-a"]);
 
-    await expect(hydration).resolves.toBe(false);
-    expect(target).toEqual({});
+    await expect(hydration).resolves.toBe(true);
+    expect(target).toEqual({ "pinned-parent": ["worker-a"] });
   });
 
   it("rejects a delayed HTTP snapshot after a newer realtime report", async () => {
@@ -22,7 +20,7 @@ describe("settlement dependency snapshots", () => {
     const store = createSettlementDependencyStore(target);
     let resolve!: (ids: string[]) => void;
     const delayed = new Promise<string[]>((done) => { resolve = done; });
-    const hydration = store.hydrate("parent", () => delayed, () => true);
+    const hydration = store.hydrate("parent", () => delayed);
 
     expect(store.applyReport("parent", ["new-worker"])).toBe(true);
     resolve(["stale-worker"]);

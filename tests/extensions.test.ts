@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { discoverExtensionEntryPaths, resolveBundledExtensionPaths } from "../server/extensions.js";
 import { createWebUiBridge } from "../server/extensions/webUi.js";
+import { SessionSettlementTracker } from "../server/session/settlement.js";
+import { createSettlementDependencyStore } from "../src/sessions/settlementDependencies.js";
 import artifactReferenceExtension from "../examples/pi-web-extensions/artifact-reference.js";
 import { createGitFooterExtension } from "../examples/pi-web-extensions/git-footer.js";
 
@@ -87,6 +89,42 @@ describe("bundled extension path discovery", () => {
 
     await handlers.get("session_shutdown")?.({}, context);
     expect(calls.at(-1)).toEqual(["artifact-reference", undefined]);
+  });
+
+  it("carries a real extension dependency declaration through server status and frontend hydration", async () => {
+    const runtimes = new Map([
+      ["parent", { sessionId: "parent", isRunning: false, pendingMessageCount: 0 }],
+      ["worker", { sessionId: "worker", isRunning: true, pendingMessageCount: 0 }],
+    ]);
+    const tracker = new SessionSettlementTracker(async (id) => runtimes.get(id), () => undefined);
+    const wireEvents: any[] = [];
+    let ui: any;
+    const bridge = createWebUiBridge({
+      emit: (event: any) => {
+        if (event.type === "settlement_dependencies") tracker.report(event.sessionId, event.childIds);
+        wireEvents.push(event);
+      },
+      clientCount: () => 1,
+      withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "parent", sessionFile: "/tmp/parent.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+
+    ui.web.reportSettlementDependencies({ sessionIds: ["worker"] });
+    expect(wireEvents.at(-1)).toEqual({
+      type: "settlement_dependencies", sessionId: "parent", childIds: ["worker"],
+    });
+    const status = await tracker.status("parent");
+    expect(status.trackedWorkers).toEqual([{ id: "worker", state: "running", settled: false }]);
+
+    const clientState: Record<string, string[]> = {};
+    const store = createSettlementDependencyStore(clientState);
+    await expect(store.hydrate("parent", async () => status.trackedWorkers.map((worker) => worker.id))).resolves.toBe(true);
+    expect(clientState).toEqual({ parent: ["worker"] });
   });
 
   it("serializes and securely invokes artifact actions through the web bridge", async () => {
