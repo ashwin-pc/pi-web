@@ -54,6 +54,43 @@ test("accepted restart waits for a newer ready generation", async ({ page }) => 
   await expect(page.locator("#restartServerState")).toContainText("Replacement server is ready");
 });
 
+test("a new child PID is not ready until its authenticated app endpoint responds", async ({ page }) => {
+  let restartAccepted = false;
+  await page.route("**/__supervisor/status", route => route.fulfill({
+    status: 200,
+    contentType: "application/json",
+    body: JSON.stringify({ ok: true, childGeneration: restartAccepted ? 10 : 9, childPid: restartAccepted ? 5678 : 1234 }),
+  }));
+  let appProbes = 0;
+  let appReady = false;
+  await page.route("**/api/system-info", async route => {
+    appProbes += 1;
+    if (!appReady) return route.fulfill({ status: 503, body: "Child is starting" });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, system: { capturedAt: "now" } }) });
+  });
+  await page.route("**/api/restart", route => {
+    restartAccepted = true;
+    return route.fulfill({ status: 202, contentType: "application/json", body: '{"ok":true}' });
+  });
+  await page.goto("/");
+  await openServerSettings(page);
+  await page.locator("#restartServerButton").click();
+  await page.getByRole("dialog").getByRole("button", { name: "Restart server" }).click();
+  await expect.poll(() => appProbes).toBeGreaterThanOrEqual(1);
+  await expect(page.locator("#restartServerState")).toContainText("Waiting for the replacement server");
+  appReady = true;
+  await expect(page.locator("#restartServerState")).toContainText("Replacement server is ready");
+  expect(appProbes).toBeGreaterThanOrEqual(2);
+});
+
+test("repeated restart clicks open only one confirmation", async ({ page }) => {
+  await mockSupervisor(page);
+  await page.goto("/");
+  await openServerSettings(page);
+  await page.locator("#restartServerButton").dblclick();
+  await expect(page.getByRole("dialog", { name: "Restart pi-web server?" })).toHaveCount(1);
+});
+
 for (const [status, message] of [[401, "authorization expired"], [403, "security policy"], [500, "Internal restart failure"]] as const) {
   test(`restart reports ${status} rejection`, async ({ page }) => {
     await mockSupervisor(page);
@@ -74,5 +111,5 @@ test("restart reports a network failure", async ({ page }) => {
   await openServerSettings(page);
   await page.locator("#restartServerButton").click();
   await page.getByRole("dialog").getByRole("button", { name: "Restart server" }).click();
-  await expect(page.locator("#restartServerState")).toContainText("Failed to fetch");
+  await expect(page.locator("#restartServerState")).toContainText("acceptance could not be confirmed");
 });

@@ -40,6 +40,7 @@ export function createRestartSettings(options: {
   const button = buttonElement;
   const state = stateElement;
   let generation: number | undefined;
+  let confirming = false;
   let restarting = false;
 
   function show(visible: boolean) {
@@ -68,13 +69,27 @@ export function createRestartSettings(options: {
     }
   }
 
+  async function appIsReady(): Promise<boolean> {
+    try {
+      const response = await fetchWithTimeout("/api/system-info", { headers: api.headers() });
+      if (!response.ok) return false;
+      const data = await response.json().catch(() => ({})) as { ok?: boolean; system?: unknown };
+      return data.ok !== false && Boolean(data.system);
+    } catch {
+      return false;
+    }
+  }
+
   async function waitForReplacement(previousGeneration: number) {
     const deadline = Date.now() + restartTimeoutMs;
     while (Date.now() < deadline) {
       await new Promise(resolve => window.setTimeout(resolve, pollIntervalMs));
       try {
-        const status = await readStatus();
-        if ((status.childGeneration ?? 0) > previousGeneration && status.childPid) return status;
+        const candidate = await readStatus();
+        if ((candidate.childGeneration ?? 0) <= previousGeneration || !candidate.childPid) continue;
+        if (!await appIsReady()) continue;
+        const confirmed = await readStatus();
+        if (confirmed.childGeneration === candidate.childGeneration && confirmed.childPid) return confirmed;
       } catch {
         // A short unavailable window is expected while the child is replaced.
       }
@@ -83,14 +98,20 @@ export function createRestartSettings(options: {
   }
 
   async function restart() {
-    if (restarting || generation === undefined) return;
-    const confirmed = await confirmSecurityAction({
-      container,
-      title: "Restart pi-web server?",
-      detail: "This affects all sessions and may interrupt work while every browser reconnects.",
-      confirmLabel: "Restart server",
-    });
-    if (!confirmed) return;
+    if (confirming || restarting || generation === undefined) return;
+    confirming = true;
+    let confirmed: Awaited<ReturnType<typeof confirmSecurityAction>>;
+    try {
+      confirmed = await confirmSecurityAction({
+        container,
+        title: "Restart pi-web server?",
+        detail: "This affects all sessions and may interrupt work while every browser reconnects.",
+        confirmLabel: "Restart server",
+      });
+    } finally {
+      confirming = false;
+    }
+    if (!confirmed || restarting) return;
 
     restarting = true;
     button.disabled = true;
@@ -108,8 +129,10 @@ export function createRestartSettings(options: {
       setStatus("Replacement server is ready");
     } catch (error) {
       const message = error instanceof DOMException && error.name === "AbortError"
-        ? "Restart request timed out before it was accepted."
-        : error instanceof Error ? error.message : String(error);
+        ? "The connection timed out, so restart acceptance could not be confirmed. Check the connection before retrying."
+        : error instanceof TypeError || (error instanceof Error && /failed to fetch/i.test(error.message))
+          ? "The connection failed, so restart acceptance could not be confirmed. Check the connection before retrying."
+          : error instanceof Error ? error.message : String(error);
       state.textContent = message;
       setStatus(message, true);
     } finally {
