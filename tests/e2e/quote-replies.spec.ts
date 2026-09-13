@@ -11,7 +11,9 @@ test.beforeEach(async ({ page }) => {
 });
 
 async function selectAssistantExcerpt(page: Page, text: string) {
-  await page.locator(".message.assistant .body p").filter({ hasText: text }).first().evaluate((paragraph: HTMLElement, selectedText: string) => {
+  const paragraph = page.locator(".message.assistant .body p").filter({ hasText: text }).first();
+  await paragraph.scrollIntoViewIfNeeded();
+  await paragraph.evaluate((paragraph: HTMLElement, selectedText: string) => {
     const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
     let node: Text | null = null;
     let start = -1;
@@ -40,6 +42,9 @@ test("keeps one reply action tethered to the highlighted text and dismisses it w
 
   const action = page.locator(".quoteSelectionToolbar");
   await expect(action).toBeVisible();
+  // selectionchange deliberately performs a delayed placement pass (longer on
+  // touch); measure only after that canonical pass has replaced the first one.
+  await page.waitForTimeout(350);
   await action.evaluate((element) => Promise.all(element.getAnimations().map((animation) => animation.finished)));
   const geometry = await page.evaluate(() => {
     const range = getSelection()!.getRangeAt(0);

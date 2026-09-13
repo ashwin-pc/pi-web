@@ -7,6 +7,7 @@ const runtime = (isRunning: boolean, pendingMessageCount = 0) => ({
 
 async function resetMinimal(page: Page) {
   await page.request.post("/api/mock/reset");
+  await page.request.post("/api/mock/event", { data: { type: "settlement_dependencies_changed", sessionId: "mock-current", childIds: [] } });
   await page.waitForTimeout(50);
   await page.request.patch("/api/settings", { data: { appearance: { density: "minimal" } } });
   await page.route("**/api/settings", route => route.request().method() === "GET"
@@ -18,9 +19,13 @@ async function runtimeEvent(page: Page, sessionId: string, value: ReturnType<typ
   await page.request.post("/api/mock/event", { data: { type: "session_runtime_changed", sessionId, runtime: value } });
 }
 
+async function dependencyEvent(page: Page, sessionId: string, childIds: string[]) {
+  await page.request.post("/api/mock/event", { data: { type: "settlement_dependencies_changed", sessionId, childIds } });
+}
+
 test.beforeEach(async ({ page }) => resetMinimal(page));
 
-test("active worker dock derives only direct spawn children and follows running, queued, completed, and session switches", async ({ page }) => {
+test("active worker dock shows only running declared dependencies and follows session switches", async ({ page }) => {
   const sessions = [
     ["mock-current", "Current parent"], ["worker-run", "Compile assets"], ["worker-queue", "Queued review"],
     ["worker-done", "Completed"], ["wrong-parent", "Wrong parent"], ["nonspawn", "Continuation"], ["unavailable", "Unavailable"],
@@ -38,6 +43,11 @@ test("active worker dock derives only direct spawn children and follows running,
   })) } }));
   await page.goto("/");
 
+  // Spawn provenance alone is navigation history, not an ongoing dependency.
+  await runtimeEvent(page, "worker-run", runtime(true));
+  await expect(page.locator(".activeWorkerDock")).toBeHidden();
+  await dependencyEvent(page, "mock-current", ["worker-run", "worker-queue", "worker-done", "unavailable"]);
+
   // The parent may itself be active: child workers must still remain available.
   await runtimeEvent(page, "mock-current", runtime(true));
   await runtimeEvent(page, "worker-run", runtime(true));
@@ -48,22 +58,31 @@ test("active worker dock derives only direct spawn children and follows running,
 
   const dock = page.locator(".activeWorkerDock");
   await expect(dock).toBeVisible();
-  await expect(dock.locator(".activeWorkerPill")).toHaveCount(2);
+  await expect(dock.locator(".activeWorkerPill")).toHaveCount(1);
   await expect(dock.locator('[data-session-id="worker-run"]')).toHaveAttribute("data-worker-status", "running");
-  await expect(dock.locator('[data-session-id="worker-queue"]')).toHaveAttribute("data-worker-status", "queued");
+  await expect(dock).not.toContainText("Queued review");
   await expect(dock).not.toContainText("Completed");
   await expect(dock).not.toContainText("Wrong parent");
   await expect(dock).not.toContainText("Continuation");
   await expect(dock).not.toContainText("Unavailable");
 
+  // Every density keeps the same running pills, names, status, and implementation.
+  for (const density of ["comfortable", "compact", "minimal"]) {
+    await page.locator("#settingDensitySelect").evaluate((select: HTMLSelectElement, value) => {
+      select.value = String(value); select.dispatchEvent(new Event("change", { bubbles: true }));
+    }, density);
+    await expect(dock.locator(".activeWorkerPill")).toHaveCount(1);
+    await expect(dock.locator('[data-session-id="worker-run"]')).toContainText("Compile assetsrunning");
+    await expect(page.locator(".waitingSessionChip")).toHaveCount(0);
+  }
+
   // It persists when the current parent becomes idle and updates without reload.
   await runtimeEvent(page, "mock-current", runtime(false));
   await expect(dock).toBeVisible();
   await runtimeEvent(page, "worker-run", runtime(false, 1));
-  await expect(dock.locator('[data-session-id="worker-run"]')).toHaveAttribute("data-worker-status", "queued");
+  await expect(dock).toBeHidden();
   await runtimeEvent(page, "worker-run", runtime(false));
   await runtimeEvent(page, "worker-queue", runtime(false));
-  await expect(dock).toBeHidden();
 
   // Switching current sessions clears stale parent workers.
   await runtimeEvent(page, "worker-run", runtime(true));
@@ -72,7 +91,7 @@ test("active worker dock derives only direct spawn children and follows running,
   await expect(dock).toBeHidden();
 });
 
-test("durable origins hydrate an active dock from session snapshots with no pins or runtime event", async ({ page }) => {
+test("declared dependencies hydrate an active dock from the settlement snapshot", async ({ page }) => {
   await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: [
     { sessionId: "hydrated-worker", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
   ] } });
@@ -81,6 +100,7 @@ test("durable origins hydrate an active dock from session snapshots with no pins
     { id: "hydrated-worker", name: "Hydrated worker", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: false,
       runtime: runtime(true) },
   ] } }));
+  await dependencyEvent(page, "mock-current", ["hydrated-worker"]);
   await page.goto("/");
   await expect(page.locator("#sessionDrawer")).toBeHidden();
   const strip = page.locator("#waitingSessions.activeWorkerDock");
@@ -96,6 +116,7 @@ test("dock links navigate to workers and retain vertical clearance above the con
     { sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
   ] } });
   await page.goto("/");
+  await dependencyEvent(page, "mock-current", ["mock-older"]);
   // Populate canonical session metadata (including cwd) before the runtime event.
   await page.locator("#sessionButton").click();
   await expect(page.locator("#sessionDrawer")).toBeVisible();

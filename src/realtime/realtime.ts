@@ -57,9 +57,11 @@ export function createRealtime(options: {
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   updateWebContribution?: (key: string, sessionId: string) => void;
+  applySettlementDependencies?: (sessionId: unknown, childIds: readonly unknown[]) => boolean;
+  onSettlementDependenciesChanged?: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, applySettlementDependencies, onSettlementDependenciesChanged, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -772,9 +774,8 @@ export function createRealtime(options: {
         if (key && (!data.runtime?.isRunning || typeof data.runtime?.startedAt === "string")) terminalRuntimeSessions.delete(key);
         if (!data.sessionId) return;
         const transition = sessionState.replaceRuntime(String(data.sessionId), data.runtime);
-        // Any runtime change (including a spawned child's) can flip the
-        // current session's derived "waiting on spawned sessions" state.
-        status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
+        // Any dependency runtime change can update linked-session pill status.
+        onSettlementDependenciesChanged?.();
         if (transition.isActive && transition.previous.isRunning && !transition.next.isRunning) {
           refreshMessages()
             .then(() => {
@@ -804,9 +805,14 @@ export function createRealtime(options: {
         settings.applyWebSettingsSchemas(data.webSettingsSchemas);
         return;
       }
+      if (data.type === "settlement_dependencies_changed") {
+        if (applySettlementDependencies?.(data.sessionId, Array.isArray(data.childIds) ? data.childIds : [])) {
+          onSettlementDependenciesChanged?.();
+        }
+        return;
+      }
       if (data.type === "session_ui_state_changed") {
         sessions.applySessionUiState(data.sessionUiState);
-        status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
         return;
       }
       if (data.type === "interaction_request" || data.type === "interaction_effect") {

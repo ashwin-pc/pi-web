@@ -523,11 +523,21 @@ while a session's workers run, wakeups render as notification cards, and both th
 spawn tool card and wakeup card link to the worker session.
 
 The extension reports its durable worker obligations through
-`ctx.ui.web.reportSettlementDependencies(...)`. Automation can query
-`GET /api/sessions/:id/status`; `settled` means the session is idle, has no
-finished-worker wakeups pending, and every tracked worker is recursively
-settled. A `session-settled` event is emitted on the existing replayable
-WebSocket stream when that value transitions from false to true.
+`ctx.ui.web.reportSettlementDependencies(...)`. Reports are atomic snapshots of
+generic linked session IDs: core uses them both for settlement and for the linked
+session pills above the composer, then combines them with ordinary session
+runtime/name metadata. Core does not infer pill membership from spawn lineage;
+lineage remains navigation provenance only. Extensions must re-report durable
+obligations on session start and clear the snapshot only when no wakeup is owed.
+The last atomic declaration remains authoritative across reload or idle disposal
+until the replacement instance re-reports it, without rewriting prior history.
+
+Automation can query `GET /api/sessions/:id/status`; `trackedWorkers` is also the
+current direct dependency snapshot, while `settled` means the session is idle,
+has no finished-worker wakeups pending, and every tracked worker is recursively
+settled. A `settlement_dependencies_changed` event publishes snapshot changes to
+browser clients, and a `session-settled` event is emitted on the existing
+replayable WebSocket stream when `settled` transitions from false to true.
 
 Install the extension into a pi-web extension directory, and the companion skill
 into a pi skills directory:

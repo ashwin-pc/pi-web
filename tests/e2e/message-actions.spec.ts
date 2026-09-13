@@ -3,9 +3,13 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 async function clickMessageAction(page: Page, message: Locator, buttonName: string, menuLabel: string) {
   const width = page.viewportSize()?.width || 0;
   if (width <= 700) {
+    await message.scrollIntoViewIfNeeded();
     const box = await message.boundingBox();
     if (!box) throw new Error("Message is not visible");
-    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    const viewport = page.viewportSize();
+    const visibleTop = Math.max(0, box.y);
+    const visibleBottom = Math.min(viewport?.height || box.y + box.height, box.y + box.height);
+    await page.mouse.move(box.x + box.width / 2, (visibleTop + visibleBottom) / 2);
     await page.mouse.down();
     await page.waitForTimeout(650);
     await page.mouse.up();

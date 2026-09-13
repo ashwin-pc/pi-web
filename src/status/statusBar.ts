@@ -3,8 +3,6 @@ import type { AppElements } from "../app/elements.js";
 import type { AppState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { connectionLostDelayMs, reconnectDelayMs, reconnectNoticeDelayMs } from "../app/types.js";
-import type { WaitingInfo } from "../sessions/lineage.js";
-
 
 export type StatusBar = {
   init: () => void;
@@ -16,7 +14,6 @@ export type StatusBar = {
   markActivityStart: (label?: string, startedAt?: string | number | Date, lastActivityAt?: string | number | Date) => void;
   markActivityProgress: (label?: string, lastActivityAt?: string | number | Date) => void;
   markActivityEnd: () => void;
-  updateWaitingStatus: (info: WaitingInfo | undefined) => void;
 };
 
 const activityQuietNoticeMs = 30_000;
@@ -52,10 +49,8 @@ export function createStatusBar(options: {
   addMessage: (role: "system", text: string, extraClass?: string) => void;
   refreshSessions: () => Promise<void>;
   refreshState: () => Promise<void>;
-  /** Feed the shared worker strip without owning its DOM or focus lifecycle. */
-  onWaitingStatusChanged: (info: WaitingInfo | undefined) => void;
 }): StatusBar {
-  const { state, elements, api, sessionState, addMessage, refreshSessions, refreshState, onWaitingStatusChanged } = options;
+  const { state, elements, api, sessionState, addMessage, refreshSessions, refreshState } = options;
   const activityBySession = new Map<string, ActivityEntry>();
   let activityTimer: number | undefined;
 
@@ -245,36 +240,6 @@ export function createStatusBar(options: {
     elements.runtimeStatusEl.textContent = "";
     elements.runtimeStatusEl.title = "";
     elements.runtimeStatusEl.className = "runtimeStatus";
-    renderWaitingStatus();
-  }
-
-  // Derived "waiting on spawned sessions" indicator, shown in the runtime
-  // slot above the composer — but only while the session is otherwise idle:
-  // precedence is running > waiting. Static pulsing hourglass (accent, same
-  // color family as unread) + white text naming what it waits for.
-  // Derived "waiting on spawned sessions" state, shown as a strip directly above
-  // the composer. Each spawned session is a link, so the user can jump straight
-  // into a worker while it runs. Only shown while this session is itself idle:
-  // precedence is running > waiting.
-  let waitingInfo: WaitingInfo | undefined;
-
-  function clearWaitingRender() {
-    onWaitingStatusChanged(undefined);
-  }
-
-  function renderWaitingStatus() {
-    if (!waitingInfo || currentActivity()) return;
-    onWaitingStatusChanged(waitingInfo);
-  }
-
-  function updateWaitingStatus(info: WaitingInfo | undefined) {
-    waitingInfo = info;
-    if (currentActivity()) {
-      clearWaitingRender(); // the running indicator owns this slot
-      return;
-    }
-    if (info) renderWaitingStatus();
-    else clearWaitingRender();
   }
 
   function scheduleConnectionStatus() {
@@ -373,6 +338,5 @@ export function createStatusBar(options: {
     markActivityStart,
     markActivityProgress,
     markActivityEnd,
-    updateWaitingStatus,
   };
 }

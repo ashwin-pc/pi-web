@@ -474,6 +474,7 @@ sessionService.subscribe((event) => {
   handleSessionServiceEvent(event);
   if (event.type === "settlement_dependencies") {
     settlementTracker.report(event.sessionId, event.childIds);
+    broadcast({ type: "settlement_dependencies_changed", sessionId: event.sessionId, childIds: event.childIds });
   }
   const settlementRelevant = event.type === "runtime" || event.type === "state"
     || (event.type === "agent" && [
@@ -610,6 +611,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const body = await readBody(req);
         if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as any).type !== "string") {
           return sendJson(res, 400, { ok: false, error: "Mock event requires a type" });
+        }
+        if ((body as any).type === "settlement_dependencies_changed") {
+          settlementTracker.report(String((body as any).sessionId || ""), Array.isArray((body as any).childIds) ? (body as any).childIds : []);
         }
         broadcast(body);
         return sendJson(res, 200, { ok: true });

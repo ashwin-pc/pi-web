@@ -107,6 +107,12 @@ async function sendRuntime(page: Page, sessionId: string, value: ReturnType<type
 
 test("worker dock remains clear and horizontally contained while parent runs or idles", async ({ page }, testInfo) => {
   const workers = Array.from({ length: 6 }, (_, index) => [`worker-${index}`, `Worker ${index + 1}: ${index % 2 ? "content review" : "implementation"}`]);
+  // Keep this dock-only visual independent of the default mock's assistant
+  // response expansion policy.
+  await page.route("**/api/messages?*", route => route.fulfill({ json: { messages: [
+    { role: "user", text: "Show active workers." },
+    prose("The worker dock is ready."),
+  ] } }));
   await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: workers.map(([sessionId]) => ({
     sessionId, originSessionId: "mock-current", kind: "spawn", updatedAt: timestamp,
   })) } });
@@ -115,13 +121,16 @@ test("worker dock remains clear and horizontally contained while parent runs or 
     ...workers.map(([id, name]) => ({ id, name, cwd: ".", created: timestamp, modified: timestamp, messageCount: 1, isCurrent: false })),
   ] } }));
   await page.goto("/");
+  await page.request.post("/api/mock/event", { data: {
+    type: "settlement_dependencies_changed", sessionId: "mock-current", childIds: workers.map(([id]) => id),
+  } });
   await sendRuntime(page, "mock-current", runtime(true));
   for (let index = 0; index < workers.length; index++) {
     await sendRuntime(page, workers[index][0], index % 2 ? runtime(false, 1) : runtime(true));
   }
 
   const dock = page.locator("#waitingSessions.activeWorkerDock");
-  await expect(dock.locator(".activeWorkerPill")).toHaveCount(6);
+  await expect(dock.locator(".activeWorkerPill")).toHaveCount(3);
   await settleVisual(page);
   await expect(page).toHaveScreenshot(`minimal-worker-dock-parent-active-${testInfo.project.name}.png`, { animations: "disabled" });
 

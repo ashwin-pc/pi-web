@@ -131,27 +131,33 @@ describe("activeWorkersFrom", () => {
     { sessionId: "grandchild", originSessionId: "running" },
   ];
 
-  it("returns only available active direct children with running precedence", () => {
+  it("returns only explicitly declared sessions that are currently running", () => {
     const runtimes: Record<string, { isRunning: boolean; pendingMessageCount: number }> = {
       running: { isRunning: true, pendingMessageCount: 2 },
       queued: { isRunning: false, pendingMessageCount: 1 },
       finished: { isRunning: false, pendingMessageCount: 0 },
       grandchild: { isRunning: true, pendingMessageCount: 0 },
     };
-    expect(activeWorkersFrom("parent", origins, {
+    expect(activeWorkersFrom("parent", ["running", "queued", "finished", "missing"], {
       runtime: (id) => runtimes[id],
       describe: (id) => ({ name: id.toUpperCase(), cwd: `/repo/${id}` }),
     })).toEqual([
-      { sessionId: "running", name: "RUNNING", cwd: "/repo/running", status: "running" },
-      { sessionId: "queued", name: "QUEUED", cwd: "/repo/queued", status: "queued" },
+      { sessionId: "running", name: "RUNNING", cwd: "/repo/running" },
     ]);
   });
 
   it("keeps active children visible while the parent also runs", () => {
-    expect(activeWorkersFrom("parent", origins, {
+    expect(activeWorkersFrom("parent", ["running"], {
       runtime: (id) => id === "running" ? { isRunning: true } : undefined,
       describe: () => ({ name: "worker" }),
-    })).toEqual([{ sessionId: "running", name: "worker", cwd: undefined, status: "running" }]);
+    })).toEqual([{ sessionId: "running", name: "worker", cwd: undefined }]);
+  });
+
+  it("shows nothing without an explicit dependency declaration", () => {
+    expect(activeWorkersFrom("parent", [], {
+      runtime: () => ({ isRunning: true }),
+      describe: () => ({ name: "spawned but undeclared" }),
+    })).toEqual([]);
   });
 });
 
@@ -164,7 +170,7 @@ describe("waitingInfoFrom", () => {
   const describe_ = (id: string) => ({ name: id === "worker-1" ? "scout: auth" : "tests: baseline", cwd: `/repo/${id}` });
 
   it("returns each running child so the UI can link to it", () => {
-    const info = waitingInfoFrom("parent", origins, { selfRunning: false, isRunning: () => true, describe: describe_ });
+    const info = waitingInfoFrom("parent", ["worker-1", "worker-2"], { selfRunning: false, isRunning: () => true, describe: describe_ });
     expect(info?.count).toBe(2);
     expect(info?.sessions).toEqual([
       { sessionId: "worker-1", name: "scout: auth", cwd: "/repo/worker-1" },
@@ -175,15 +181,15 @@ describe("waitingInfoFrom", () => {
 
   it("is undefined while the session itself is running", () => {
     // Precedence: a running session shows its own progress, not what it awaits.
-    expect(waitingInfoFrom("parent", origins, { selfRunning: true, isRunning: () => true, describe: describe_ })).toBeUndefined();
+    expect(waitingInfoFrom("parent", ["worker-1", "worker-2"], { selfRunning: true, isRunning: () => true, describe: describe_ })).toBeUndefined();
   });
 
   it("is undefined when no spawned session is still running", () => {
-    expect(waitingInfoFrom("parent", origins, { selfRunning: false, isRunning: () => false, describe: describe_ })).toBeUndefined();
+    expect(waitingInfoFrom("parent", ["worker-1", "worker-2"], { selfRunning: false, isRunning: () => false, describe: describe_ })).toBeUndefined();
   });
 
   it("counts only children that are still running", () => {
-    const info = waitingInfoFrom("parent", origins, {
+    const info = waitingInfoFrom("parent", ["worker-1", "worker-2"], {
       selfRunning: false,
       isRunning: (id) => id === "worker-2",
       describe: describe_,
@@ -192,7 +198,7 @@ describe("waitingInfoFrom", () => {
   });
 
   it("falls back to a short id when a child has no title yet", () => {
-    const info = waitingInfoFrom("parent", [{ sessionId: "abcdef123456", originSessionId: "parent" }], {
+    const info = waitingInfoFrom("parent", ["abcdef123456"], {
       selfRunning: false,
       isRunning: () => true,
       describe: () => ({}),
@@ -201,6 +207,6 @@ describe("waitingInfoFrom", () => {
   });
 
   it("is undefined for an empty session id", () => {
-    expect(waitingInfoFrom("", origins, { selfRunning: false, isRunning: () => true, describe: describe_ })).toBeUndefined();
+    expect(waitingInfoFrom("", ["worker-1", "worker-2"], { selfRunning: false, isRunning: () => true, describe: describe_ })).toBeUndefined();
   });
 });

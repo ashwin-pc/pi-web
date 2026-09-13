@@ -47,7 +47,7 @@ import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
-import type { WaitingInfo } from "./sessions/lineage.js";
+import { createSettlementDependencyStore } from "./sessions/settlementDependencies.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
 import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
@@ -60,6 +60,7 @@ initSwAutoReload();
 
 const elements = getAppElements();
 const state = createAppState();
+const settlementDependencies = createSettlementDependencyStore(state.settlementDependencies);
 initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
@@ -70,7 +71,6 @@ let messages: MessageList;
 let composer: ComposerController;
 let contextMeter: ContextMeterController;
 let activeWorkerDock: ActiveWorkerDockController;
-let legacyWaitingInfo: WaitingInfo | undefined;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
 let settings: SettingsController;
@@ -371,6 +371,20 @@ async function refreshMessages() {
   });
 }
 
+function refreshSettlementDependencies(sessionId: string) {
+  if (!sessionId) return;
+  void settlementDependencies.hydrate(sessionId, async () => {
+    const statusResponse = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/status`, { headers: api.headers() });
+    if (!statusResponse.ok) return [];
+    const status = await statusResponse.json();
+    return Array.isArray(status.trackedWorkers)
+      ? status.trackedWorkers.map((worker: { id?: unknown }) => worker?.id)
+      : [];
+  }, () => sessionId === state.currentSessionId).then((applied) => {
+    if (applied) activeWorkerDock?.refresh();
+  }).catch(() => { /* live dependency reports will reconcile this best-effort snapshot */ });
+}
+
 async function refreshState() {
   const requestedSessionId = state.currentSessionId;
   const query = requestedSessionId ? `?sessionId=${encodeURIComponent(requestedSessionId)}` : "";
@@ -395,7 +409,8 @@ async function refreshState() {
   }
   sessionState.applySnapshot(data, { activate: true });
   syncActiveSessionIdHistoryState(state.currentSessionId);
-  statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
+  const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
+  refreshSettlementDependencies(dependencySessionId);
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -438,10 +453,6 @@ statusBar = createStatusBar({
   sessionState,
   addMessage: messages.addMessage,
   refreshSessions: () => sessions.refreshSessions(),
-  onWaitingStatusChanged: (info) => {
-    legacyWaitingInfo = info;
-    activeWorkerDock?.refresh();
-  },
   refreshState,
 });
 
@@ -482,7 +493,6 @@ sessions = createSessions({
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
   onDerivedSessionStateChanged: () => {
-    statusBar.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
     activeWorkerDock?.refresh();
   },
   clearMessages: () => {
@@ -495,7 +505,6 @@ sessions = createSessions({
 activeWorkerDock = createActiveWorkerDock({
   container: elements.waitingSessionsEl,
   getWorkers: () => sessions.activeWorkersFor(state.currentSessionId),
-  getWaiting: () => legacyWaitingInfo,
   openSession: (sessionId) => void sessions.openSessionById(sessionId),
 });
 activeWorkerDock.refresh();
@@ -551,6 +560,8 @@ realtime = createRealtime({
   sessionState,
   refreshMessages,
   refreshState,
+  applySettlementDependencies: settlementDependencies.applyReport,
+  onSettlementDependenciesChanged: () => activeWorkerDock?.refresh(),
   updateWebContribution: (key) => {
     webPanels?.update(key);
     gitPanel?.updateExtensionTab(key);

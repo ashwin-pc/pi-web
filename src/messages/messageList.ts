@@ -29,6 +29,8 @@ export type MessageMetadata = {
   parentEntryId?: string;
   copyText?: string;
   timestamp?: string;
+  /** Internal identity for prose blocks belonging to one assistant response. */
+  responseKey?: string;
 };
 
 export type TranscriptTerminalFailure = {
@@ -291,7 +293,11 @@ export function createMessageList(options: {
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
   const streamingTextContent = new Map<string, string>();
   const streamingTextBodies = new Map<HTMLElement, string>();
+  const assistantMessageText = new WeakMap<HTMLDivElement, string>();
   let currentStreamingTextKey = "current";
+  let assistantResponseSerial = 0;
+  let currentAssistantResponseKey = "";
+  let currentStreamingResponseKey = `stream:${assistantResponseSerial}`;
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
   let currentStreamingThinkingKey = "current";
@@ -340,7 +346,12 @@ export function createMessageList(options: {
     const composerEl = document.querySelector<HTMLElement>(".composer");
     if (!composerEl) return;
     const composerRect = composerEl.getBoundingClientRect();
-    const bottom = Math.max(jumpButtonGap, window.innerHeight - composerRect.top + jumpButtonGap);
+    const attachmentsEl = composerEl.querySelector<HTMLElement>(".attachments:not(:empty)");
+    const attachmentsRect = attachmentsEl?.getBoundingClientRect();
+    const obstructionTop = attachmentsRect && attachmentsRect.height > 0
+      ? Math.min(composerRect.top, attachmentsRect.top)
+      : composerRect.top;
+    const bottom = Math.max(jumpButtonGap, window.innerHeight - obstructionTop + jumpButtonGap);
     jumpButton.style.setProperty("--jump-to-latest-bottom", `${Math.ceil(bottom)}px`);
   }
 
@@ -348,7 +359,10 @@ export function createMessageList(options: {
   window.addEventListener("resize", updateJumpButtonOffset);
   const composerEl = document.querySelector<HTMLElement>(".composer");
   if (composerEl && "ResizeObserver" in window) {
-    new ResizeObserver(updateJumpButtonOffset).observe(composerEl);
+    const jumpOffsetObserver = new ResizeObserver(updateJumpButtonOffset);
+    jumpOffsetObserver.observe(composerEl);
+    const attachmentsEl = composerEl.querySelector<HTMLElement>(".attachments");
+    if (attachmentsEl) jumpOffsetObserver.observe(attachmentsEl);
   }
 
   function invalidatePendingRefreshes() {
@@ -409,6 +423,8 @@ export function createMessageList(options: {
 
   function beginStreamFollow() {
     invalidatePendingRefreshes();
+    currentStreamingResponseKey = `stream:${++assistantResponseSerial}`;
+    currentAssistantResponseKey = currentStreamingResponseKey;
     isStreaming = true;
     shouldFollowStream = true;
     userScrollIntent = false;
@@ -420,7 +436,11 @@ export function createMessageList(options: {
   function endStreamFollow() {
     isStreaming = false;
     activity.schedule();
-    if (isAtBottom()) setJumpButtonVisible(false);
+    // A wheel/key intent can arrive before the browser physically moves the
+    // viewport. Settlement must not erase that explicit intent merely because
+    // layout still reports the old bottom position.
+    if (userScrollIntent && !shouldFollowStream) setJumpButtonVisible(true);
+    else if (isAtBottom()) setJumpButtonVisible(false);
   }
 
   function isScrollIntentAwayFromBottom(event: Event) {
@@ -470,7 +490,7 @@ export function createMessageList(options: {
       setJumpButtonVisible(true);
       return;
     }
-    if (!shouldFollowStream && isAtBottom()) {
+    if (!shouldFollowStream && isAtBottom() && !userScrollIntent) {
       shouldFollowStream = true;
       userScrollIntent = false;
       setJumpButtonVisible(false);
@@ -690,13 +710,60 @@ export function createMessageList(options: {
     bindMobileActionMenu(messageEl, actions);
   }
 
+  function reconcileAssistantMessageCollapse() {
+    const prose = Array.from(messagesEl.querySelectorAll<HTMLDivElement>(".message.assistant"));
+    const latestResponseKey = prose.at(-1)?.dataset.assistantResponseKey;
+    for (const message of prose) {
+      if (!message.classList.contains("collapsible") || message.dataset.collapsePreference) continue;
+      const latest = Boolean(latestResponseKey && message.dataset.assistantResponseKey === latestResponseKey);
+      message.classList.toggle("collapsed", !latest);
+      const toggle = message.querySelector<HTMLButtonElement>(".messageToggle");
+      if (toggle) toggle.textContent = latest ? "Show less" : "Show more";
+      if (latest && !bulkRendering) {
+        const body = message.querySelector<HTMLElement>(":scope > .body");
+        const text = assistantMessageText.get(message) || "";
+        if (body && text && !streamingTextBodies.has(body) && !body.dataset.markdownRendered) {
+          markdown.unobserve(body);
+          markdown.renderAssistantMarkdown(body, text);
+        }
+      }
+    }
+  }
+
+  function appendMessageCollapseToggle(div: HTMLDivElement, role: Role, body: HTMLElement) {
+    if (div.querySelector(":scope > .messageToggle")) return;
+    div.classList.add("collapsible");
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "messageToggle";
+    toggle.textContent = div.classList.contains("collapsed") ? "Show more" : "Show less";
+    toggle.addEventListener("click", () => {
+      const collapsed = div.classList.toggle("collapsed");
+      div.dataset.collapsePreference = collapsed ? "collapsed" : "expanded";
+      const text = assistantMessageText.get(div) || "";
+      if (!collapsed && role === "assistant" && text && !body.dataset.markdownRendered) {
+        markdown.unobserve(body);
+        markdown.renderAssistantMarkdown(body, text);
+      }
+      toggle.textContent = collapsed ? "Show more" : "Show less";
+    });
+    div.insertBefore(toggle, div.querySelector(":scope > .messageActions"));
+  }
+
   function addMessage(role: Role, text: string, extraClass = "", images: AttachedImage[] = [], metadata: MessageMetadata = {}) {
     invalidatePendingRefreshes();
     const div = document.createElement("div");
     const entryId = metadata.entryId?.trim();
     if (entryId) div.dataset.entryId = entryId;
+    if (role === "user") currentAssistantResponseKey = "";
+    if (role === "assistant") {
+      const responseKey = metadata.responseKey || currentAssistantResponseKey || entryId || `message:${++assistantResponseSerial}`;
+      currentAssistantResponseKey = responseKey;
+      div.dataset.assistantResponseKey = responseKey;
+    }
     const collapsible = shouldCollapseMessage(text);
-    div.className = `message ${role} ${extraClass}${collapsible ? " collapsible collapsed" : ""}`.trim();
+    div.className = `message ${role} ${extraClass}${collapsible ? ` collapsible${role === "assistant" ? "" : " collapsed"}` : ""}`.trim();
+    if (role === "assistant") assistantMessageText.set(div, text);
     const body = document.createElement("div");
     body.className = "body";
 
@@ -785,24 +852,11 @@ export function createMessageList(options: {
       div.append(baseline);
     }
 
-    if (collapsible) {
-      const toggle = document.createElement("button");
-      toggle.type = "button";
-      toggle.className = "messageToggle";
-      toggle.textContent = "Show more";
-      toggle.addEventListener("click", () => {
-        const collapsed = div.classList.toggle("collapsed");
-        if (!collapsed && role === "assistant" && text && !body.dataset.markdownRendered) {
-          markdown.unobserve(body);
-          markdown.renderAssistantMarkdown(body, text);
-        }
-        toggle.textContent = collapsed ? "Show more" : "Show less";
-      });
-      div.append(toggle);
-    }
+    if (collapsible) appendMessageCollapseToggle(div, role, body);
 
     appendMessageActions(div, role, body, metadata.copyText ?? text, metadata);
     messagesEl.append(div);
+    reconcileAssistantMessageCollapse();
     activity.schedule();
     scrollToBottom();
     return div;
@@ -1058,6 +1112,7 @@ export function createMessageList(options: {
     clearStreamingText();
     messagesEl.textContent = "";
     thinkingSerial = 0;
+    currentAssistantResponseKey = "";
     streamingAssistant = null;
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
@@ -1087,7 +1142,7 @@ export function createMessageList(options: {
     invalidatePendingRefreshes();
     // Each indexed text part is a distinct persisted transcript part. Sharing
     // one body lets independent buffers overwrite each other.
-    streamingAssistant = addMessage("assistant", "");
+    streamingAssistant = addMessage("assistant", "", "", [], { responseKey: currentStreamingResponseKey });
     streamingTextBlocks.set(key, streamingAssistant);
     streamingTextContent.set(key, "");
     return streamingAssistant;
@@ -1107,9 +1162,12 @@ export function createMessageList(options: {
     if (!card?.isConnected || messagesEl.lastElementChild !== card) card = createStreamingTextBlock(key);
     const text = `${streamingTextContent.get(key) || ""}${delta || ""}`;
     streamingTextContent.set(key, text);
+    assistantMessageText.set(card, text);
     const body = card.querySelector<HTMLElement>(".body");
     if (body) {
+      if (shouldCollapseMessage(text)) appendMessageCollapseToggle(card, "assistant", body);
       streamingTextBodies.set(body, text);
+      reconcileAssistantMessageCollapse();
       markdown.queueStreamingAssistantMarkdown(body, text, scrollToBottom);
     }
   }
@@ -1119,8 +1177,11 @@ export function createMessageList(options: {
     const card = streamingTextBlocks.get(key);
     const text = typeof content === "string" ? content : streamingTextContent.get(key) || "";
     if (card?.isConnected) {
+      assistantMessageText.set(card, text);
       const body = card.querySelector<HTMLElement>(".body");
       if (body) {
+        if (shouldCollapseMessage(text)) appendMessageCollapseToggle(card, "assistant", body);
+        reconcileAssistantMessageCollapse();
         markdown.finalizeStreamingAssistantMarkdown(body, text);
         streamingTextBodies.delete(body);
       }
@@ -1388,6 +1449,7 @@ export function createMessageList(options: {
       activity.restore();
       activityRestored = true;
       bulkRendering = false;
+      reconcileAssistantMessageCollapse();
       if (wasFollowing) scrollToBottom();
       else {
         programmaticScroll = true;

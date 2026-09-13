@@ -1104,6 +1104,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   // Lifecycle
   // -------------------------------------------------------------------------
   pi.on("session_shutdown", () => {
+    // Keep the last atomic declaration across reload and idle disposal. The
+    // durable ledger lets the replacement instance re-report or resolve it.
     client?.dispose();
     client = undefined;
     disposed = true;

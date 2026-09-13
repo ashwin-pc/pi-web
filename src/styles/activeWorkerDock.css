@@ -1,4 +1,4 @@
-/* Keep queued prompts and workers in separate flow rows above the composer. */
+/* Keep queued prompts and declared session dependencies in separate flow rows. */
 .app:has(> #waitingSessions:not([hidden])) { grid-template-rows: auto minmax(0, 1fr) auto auto auto auto auto; }
 .app:has(> #waitingSessions:not([hidden])) > #waitingSessions { grid-row: 4; }
 .app:has(> #waitingSessions:not([hidden])) > .composer { grid-row: 5; }
@@ -80,10 +80,6 @@
   animation: activeWorkerPulse 1.4s ease-in-out infinite;
 }
 
-.activeWorkerDot--queued {
-  background: #facc15;
-  animation-duration: 2s;
-}
 
 @keyframes activeWorkerPulse {
   0%, 100% { opacity: .5; }
@@ -91,6 +87,11 @@
 }
 
 .pendingMessages:not([hidden]) ~ .waitingSessions.activeWorkerDock { margin-bottom: 12px; }
+
+/* Density changes spacing only; membership and status stay canonical. */
+:root[data-density="comfortable"] .waitingSessions.activeWorkerDock { height: 36px; gap: 8px; }
+:root[data-density="comfortable"] .activeWorkerPill { min-height: 29px; padding-inline: 11px; }
+:root[data-density="compact"] .waitingSessions.activeWorkerDock { height: 34px; }
 
 @media (max-width: 600px) {
   .waitingSessions.activeWorkerDock { margin-inline: 22px; }

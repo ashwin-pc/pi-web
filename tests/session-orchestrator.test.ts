@@ -334,6 +334,17 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: ["worker-1"] });
   });
 
+  it("keeps the last declaration across shutdown for atomic reload or idle handoff", async () => {
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    await spawn(ctx, { name: "scout", task: "look around" });
+    const callsBeforeShutdown = ctx.ui.web.reportSettlementDependencies.mock.calls.length;
+
+    await handlers.get("session_shutdown")?.({}, ctx);
+
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: ["worker-1"] });
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenCalledTimes(callsBeforeShutdown);
+  });
+
   it("returns only the category name after a successful spawn and keeps the model mapping private", async () => {
     const ctx = makeCtx({ categories: [FAST, SMART], defaultCategory: "Fast" });
     const result = await spawn(ctx, { name: "builder", task: "implement it", category: "Smart" });

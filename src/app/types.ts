@@ -491,6 +491,8 @@ export type AppState = {
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
+  /** Generic extension-declared, currently outstanding session dependencies by parent. */
+  settlementDependencies: Record<string, string[]>;
   selectedMarkerColor: SessionMarkerColorId;
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
   collapsedSessionFolders: Set<string>;
@@ -616,6 +618,7 @@ export function createAppState(): AppState {
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
     sessionOrigins: [],
+    settlementDependencies: {},
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     bucketLabels: {},
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
