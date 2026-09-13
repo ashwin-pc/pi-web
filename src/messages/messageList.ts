@@ -289,6 +289,8 @@ export function createMessageList(options: {
   const { messagesEl, markdown, onMessageAction, openSession, openPanel, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
+  const streamingTextContent = new Map<string, string>();
+  const streamingTextBodies = new Map<HTMLElement, string>();
   let currentStreamingTextKey = "current";
   const streamingThinkingCards = new Map<string, HTMLDivElement>();
   const thinkingCardRawText = new WeakMap<HTMLDivElement, string>();
@@ -1037,14 +1039,26 @@ export function createMessageList(options: {
     return card;
   }
 
+  function clearStreamingText(flush = false) {
+    const hadStreamingText = streamingTextBodies.size > 0;
+    for (const [body, text] of streamingTextBodies) {
+      if (flush) markdown.finalizeStreamingAssistantMarkdown(body, text);
+      else markdown.cancelStreamingAssistantMarkdown(body);
+    }
+    streamingTextBodies.clear();
+    streamingTextBlocks.clear();
+    streamingTextContent.clear();
+    currentStreamingTextKey = "current";
+    if (flush && hadStreamingText) scrollToBottom();
+  }
+
   function clearInternal(invalidate = true) {
     if (invalidate) invalidatePendingRefreshes();
     quoteReplies?.clear();
+    clearStreamingText();
     messagesEl.textContent = "";
     thinkingSerial = 0;
     streamingAssistant = null;
-    streamingTextBlocks.clear();
-    currentStreamingTextKey = "current";
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
     setJumpButtonVisible(false);
@@ -1058,8 +1072,9 @@ export function createMessageList(options: {
 
   function resetStreamingAssistant() {
     streamingAssistant = null;
-    streamingTextBlocks.clear();
-    currentStreamingTextKey = "current";
+    // Unlike a transcript clear, a runtime boundary must not discard a final
+    // provider prefix when text_end was omitted.
+    clearStreamingText(true);
     streamingThinkingCards.clear();
     currentStreamingThinkingKey = "current";
   }
@@ -1068,20 +1083,20 @@ export function createMessageList(options: {
     return contentIndex === undefined || contentIndex === null ? currentStreamingTextKey : String(contentIndex);
   }
 
-  function beginStreamingAssistant() {
+  function createStreamingTextBlock(key: string) {
     invalidatePendingRefreshes();
-    if (!streamingAssistant?.isConnected) streamingAssistant = addMessage("assistant", "");
+    // Each indexed text part is a distinct persisted transcript part. Sharing
+    // one body lets independent buffers overwrite each other.
+    streamingAssistant = addMessage("assistant", "");
+    streamingTextBlocks.set(key, streamingAssistant);
+    streamingTextContent.set(key, "");
+    return streamingAssistant;
   }
 
   function startStreamingText(contentIndex?: number | string) {
     const key = textKey(contentIndex);
     currentStreamingTextKey = key;
-    let card = streamingTextBlocks.get(key);
-    if (!card?.isConnected) {
-      beginStreamingAssistant();
-      card = streamingAssistant!;
-      streamingTextBlocks.set(key, card);
-    }
+    if (!streamingTextBlocks.get(key)?.isConnected) createStreamingTextBlock(key);
   }
 
   function appendStreamingDelta(delta: string, contentIndex?: number | string) {
@@ -1089,24 +1104,30 @@ export function createMessageList(options: {
     const key = textKey(contentIndex);
     currentStreamingTextKey = key;
     let card = streamingTextBlocks.get(key);
-    if (!card?.isConnected || messagesEl.lastElementChild !== card) {
-      streamingAssistant = addMessage("assistant", "");
-      card = streamingAssistant;
-      streamingTextBlocks.set(key, card);
-    }
+    if (!card?.isConnected || messagesEl.lastElementChild !== card) card = createStreamingTextBlock(key);
+    const text = `${streamingTextContent.get(key) || ""}${delta || ""}`;
+    streamingTextContent.set(key, text);
     const body = card.querySelector<HTMLElement>(".body");
-    if (body) body.textContent += delta || "";
-    scrollToBottom();
+    if (body) {
+      streamingTextBodies.set(body, text);
+      markdown.queueStreamingAssistantMarkdown(body, text, scrollToBottom);
+    }
   }
 
   function endStreamingText(content?: string, contentIndex?: number | string) {
     const key = textKey(contentIndex);
     const card = streamingTextBlocks.get(key);
-    if (card?.isConnected && typeof content === "string") {
+    const text = typeof content === "string" ? content : streamingTextContent.get(key) || "";
+    if (card?.isConnected) {
       const body = card.querySelector<HTMLElement>(".body");
-      if (body) body.textContent = content;
+      if (body) {
+        markdown.finalizeStreamingAssistantMarkdown(body, text);
+        streamingTextBodies.delete(body);
+      }
     }
     streamingTextBlocks.delete(key);
+    streamingTextContent.delete(key);
+    scrollToBottom();
   }
 
   function thinkingKey(contentIndex?: number | string) {

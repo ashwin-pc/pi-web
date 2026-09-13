@@ -6,6 +6,49 @@ import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import websiteWorkflowExtension from "./fixtures/websiteWorkflowExtension.js";
 import recommendedAddonsExtension from "./fixtures/recommendedAddonsExtension.js";
 
+export const streamingMarkdownFixtureBlocks = [
+  [
+    "# Streaming renderer benchmark\n\n",
+    "This deliberately long response mixes **strong emphasis**, _italics_, `inline code`, and a [reference link][guide] while syntax arrives in incomplete fragments. ",
+    "The renderer must keep ordinary prose readable, preserve punctuation, and avoid executing unsafe markup.\n\n",
+    Array.from({ length: 18 }, (_, index) => `Paragraph ${index + 1} explains a realistic implementation detail with enough repeated prose to exercise incremental parsing, layout, selection stability, and scrolling under sustained output. The value \`${index * 17}\` is deterministic.`).join("\n\n"),
+    "\n\n## Comparison table\n\n| Mode | Update policy | Expected result |\n|---|---:|---|\n| Plain text | every delta | correct final text |\n| Batched markdown | bounded cadence | equivalent rendered DOM |\n\n",
+    "```ts\nexport function accumulate(chunks: string[]) {\n  return chunks.reduce((text, chunk) => text + chunk, \"\");\n}\n\nconst unsafe = \"<script>window.__streamingUnsafe = true</script>\";\n```\n\n",
+    "> A block quote can start before its closing reference definition appears.\n\n",
+    "<script>window.__streamingUnsafe = true</script><img src=x onerror=\"window.__streamingUnsafe = true\">\n\n",
+    "[guide]: https://example.com/streaming \"Streaming guide\"\n",
+  ].join(""),
+  [
+    "## After the tool call\n\n",
+    "The second content block verifies independent content indexes and finalization after interleaving. The earlier selection should survive while this tail changes.\n\n",
+    "```mermaid\ngraph LR\n  Delta --> Batch\n  Batch --> Markdown\n```\n\n",
+    "```html-preview\n<style>body{font:14px system-ui}.ok{color:green}</style><p class=\"ok\">Sandboxed preview</p><script>document.body.dataset.ready='yes'</script>\n```\n\n",
+    Array.from({ length: 12 }, (_, index) => `- Item ${index + 1}: a paced or bursty fragment with **formatting ${index + 1}** and [the shared reference][guide].`).join("\n"),
+    "\n\nFinal line confirms every pending batch is flushed before settlement.\n\n[guide]: https://example.com/streaming\n",
+  ].join(""),
+] as const;
+
+function streamingFixtureChunks(text: string, large = false) {
+  const widths = large ? [97, 211, 53, 389, 144, 610] : [1, 2, 5, 3, 13, 8, 21, 34, 7, 55];
+  const chunks: string[] = [];
+  for (let offset = 0, index = 0; offset < text.length; index += 1) {
+    const width = widths[index % widths.length]!;
+    chunks.push(text.slice(offset, offset + width));
+    offset += width;
+  }
+  return chunks;
+}
+
+function largeStreamingMarkdownFixtureBlocks() {
+  const prose = Array.from({ length: 320 }, (_, index) => `Stress paragraph ${index + 1} carries realistic prose about rendering, reconciliation, layout, and responsiveness. It includes deterministic value ${index * 31}, **emphasis**, and a [late reference][stress-ref].`).join("\n\n");
+  const code = Array.from({ length: 900 }, (_, index) => `const benchmarkValue${index} = ${index} * 31;`).join("\n");
+  const table = Array.from({ length: 420 }, (_, index) => `| Row ${index + 1} | ${index * 7} | deterministic table payload |`).join("\n");
+  return [
+    `${streamingMarkdownFixtureBlocks[0]}\n\n## Large prose stress\n\n${prose}\n\n[stress-ref]: https://example.com/stress\n`,
+    `${streamingMarkdownFixtureBlocks[1]}\n\n## Large code and table stress\n\n\`\`\`ts\n${code}\n\`\`\`\n\n| Entry | Value | Note |\n|---|---:|---|\n${table}\n`,
+  ] as const;
+}
+
 interface MockSessionOptions {
   piCwd: string;
   broadcast(value: unknown): void;
@@ -564,7 +607,12 @@ export function createMockHarness(options: MockSessionOptions) {
         const withStaleRuntimeAfterEnd = /stale runtime after end/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message) || withProgressDemo;
         const withLiveMessageKinds = /live message kinds/i.test(message);
-        const withTools = !withShowcase && !withEditTool && !withMalformedEditTool && !withInterruptedTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
+        const withStreamingMarkdownBenchmark = /streaming markdown benchmark/i.test(message);
+        const withStreamingMarkdownBoundaries = /streaming markdown boundaries/i.test(message);
+        const withStreamingMarkdownAdjacent = /streaming markdown adjacent indexes/i.test(message);
+        const streamingMarkdownBursty = withStreamingMarkdownBenchmark && /bursty/i.test(message);
+        const streamingMarkdownInteractionPause = withStreamingMarkdownBenchmark && /interaction pause/i.test(message);
+        const withTools = !withStreamingMarkdownBenchmark && !withStreamingMarkdownBoundaries && !withStreamingMarkdownAdjacent && !withShowcase && !withEditTool && !withMalformedEditTool && !withInterruptedTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
         mockSession.isStreaming = true;
         if (withQuietRuntime) {
           setRuntimeStartedAt(new Date(Date.now() - 45_000).toISOString(), new Date(Date.now() - 31_000).toISOString());
@@ -650,6 +698,67 @@ export function createMockHarness(options: MockSessionOptions) {
             appendMockMessage(recoveredMessage);
             broadcastPiEvent({ type: "message_end", message: recoveredMessage });
           }
+        } else if (withStreamingMarkdownAdjacent) {
+          const adjacent = ["## Adjacent block zero\n\nFirst independent buffer.", "## Adjacent block one\n\nSecond independent buffer."];
+          for (let contentIndex = 0; contentIndex < adjacent.length; contentIndex += 1) {
+            broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex } });
+            broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex, delta: adjacent[contentIndex] } });
+            broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex, content: adjacent[contentIndex] } });
+          }
+          appendMockMessage({ role: "assistant", content: adjacent.map((text) => ({ type: "text", text })), timestamp: new Date().toISOString() });
+        } else if (withStreamingMarkdownBoundaries) {
+          const first = "## First round without text_end\n\nA pending **Markdown prefix** must flush at message_end.";
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: first } });
+          if (!(await waitForMockRun(10))) return;
+          const firstMessage = { role: "assistant", content: first, timestamp: new Date().toISOString() };
+          appendMockMessage(firstMessage);
+          broadcastPiEvent({ type: "message_end", message: firstMessage });
+          broadcastPiEvent({ type: "message_start", message: { role: "assistant", content: [], timestamp: new Date().toISOString() } });
+          const second = "## Second round\n\nThis must render in a distinct assistant message.";
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: second } });
+          if (!(await waitForMockRun(10))) return;
+          const secondMessage = { role: "assistant", content: second, timestamp: new Date().toISOString() };
+          appendMockMessage(secondMessage);
+          broadcastPiEvent({ type: "message_end", message: secondMessage });
+          broadcastPiEvent({ type: "message_start", message: { role: "assistant", content: [], timestamp: new Date().toISOString() } });
+          const errorPrefix = "Pending text immediately before an error boundary.";
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: errorPrefix } });
+          if (!(await waitForMockRun(10))) return;
+          const errorMessage = { role: "assistant", content: errorPrefix, stopReason: "error", errorMessage: "Synthetic boundary error", timestamp: new Date().toISOString() };
+          appendMockMessage(errorMessage);
+          broadcastPiEvent({ type: "message_end", message: errorMessage });
+        } else if (withStreamingMarkdownBenchmark) {
+          const toolCallId = "call-streaming-benchmark";
+          const largeStress = /large stress/i.test(message);
+          const fixtureBlocks = largeStress ? largeStreamingMarkdownFixtureBlocks() : streamingMarkdownFixtureBlocks;
+          const streamBlock = async (text: string, contentIndex: number) => {
+            broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex } });
+            const chunks = streamingFixtureChunks(text, largeStress);
+            for (let index = 0; index < chunks.length; index += 1) {
+              broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex, delta: chunks[index] } });
+              const shouldYield = streamingMarkdownBursty ? (index + 1) % 24 === 0 : true;
+              if (shouldYield && !(await waitForMockRun(streamingMarkdownBursty ? 12 : 4))) return false;
+            }
+            if (streamingMarkdownInteractionPause && contentIndex === 0 && !(await waitForMockRun(600))) return false;
+            broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex, content: text } });
+            return true;
+          };
+          if (!(await streamBlock(fixtureBlocks[0], 0))) return;
+          broadcastPiEvent({ type: "tool_execution_start", toolName: "read", toolCallId, args: { path: "/benchmark/reference.md" } });
+          if (!(await waitForMockRun(streamingMarkdownBursty ? 12 : 40))) return;
+          broadcastPiEvent({ type: "tool_execution_end", toolName: "read", toolCallId, isError: false, result: "benchmark reference contents" });
+          if (streamingMarkdownInteractionPause && !(await waitForMockRun(600))) return;
+          if (!(await streamBlock(fixtureBlocks[1], 2))) return;
+          const timestamp = new Date().toISOString();
+          appendMockMessage({ role: "assistant", content: [
+            { type: "text", text: fixtureBlocks[0] },
+            { type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/benchmark/reference.md" } },
+            { type: "text", text: fixtureBlocks[1] },
+          ], timestamp });
+          appendMockMessage({ role: "toolResult", toolCallId, toolName: "read", content: "benchmark reference contents", timestamp });
         } else if (withInterruptedTool) {
           const toolCallId = "call-incomplete-read";
           const assistantMessage = { role: "assistant", content: [

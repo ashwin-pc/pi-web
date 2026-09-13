@@ -619,6 +619,10 @@ export function createRealtime(options: {
         const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
         if (deliveredRole === "user") {
           composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId, deliveredMessage.attachments || []);
+        } else if (deliveredRole === "assistant") {
+          // message_end separates assistant rounds and is also the fallback
+          // flush when a provider omits text_end before a tool or error.
+          messages.resetStreamingAssistant();
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {
@@ -656,6 +660,8 @@ export function createRealtime(options: {
       }
       case "agent_settled": {
         sessionState.patchRuntime(state.currentSessionId, { isStreaming: false, isRetrying: false }, { kind: "end" });
+        // A provider may settle without a final text_end. Flush the buffered
+        // prefix before the asynchronous persisted-transcript reconciliation.
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
         tools.clearActiveToolCards();

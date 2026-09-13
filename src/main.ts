@@ -162,7 +162,14 @@ const quoteReplies = createQuoteReplies({
   getSessionId: () => state.currentSessionId,
   onChange: () => composer?.updatePrimaryAction(),
 });
-const markdown = createMarkdownRenderer(elements.messagesEl, quoteReplies.restoreSubmittedReferences);
+const markdownTestOptions = (globalThis as typeof globalThis & {
+  __PI_WEB_STREAMING_MARKDOWN_TEST_OPTIONS__?: { streamingMarkdown?: boolean; streamingBatchMs?: number };
+}).__PI_WEB_STREAMING_MARKDOWN_TEST_OPTIONS__;
+const markdown = createMarkdownRenderer(
+  elements.messagesEl,
+  quoteReplies.restoreSubmittedReferences,
+  markdownTestOptions,
+);
 messages = createMessageList({
   messagesEl: elements.messagesEl,
   markdown,
