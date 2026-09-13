@@ -605,6 +605,13 @@
   min-height: 32px;
   font-size: 12px;
 }
+.settingsActions .settingsDangerButton {
+  border-color: color-mix(in srgb, var(--danger) 55%, var(--border));
+  color: var(--danger);
+}
+.settingsActions .settingsDangerButton:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--danger) 12%, var(--panel));
+}
 .settingsStatus {
   min-height: 18px;
   color: var(--muted);

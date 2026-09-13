@@ -6,6 +6,7 @@ import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, norm
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import { createExtensionSettings, type ExtensionSettingsController } from "./extensionSettings.js";
 import { createRunNotifications } from "./runNotifications.js";
+import { createRestartSettings } from "./restartSettings.js";
 import { createSettingsShell, type SettingsShellController } from "./settingsShell.js";
 import { createSecuritySettings, type AuthMode } from "./securitySettings.js";
 
@@ -116,6 +117,7 @@ export function createSettings(options: {
   let extSettings: ExtensionSettingsController | undefined;
   let settingsShell: SettingsShellController | undefined;
   let securitySettings: ReturnType<typeof createSecuritySettings> | undefined;
+  let restartSettings: ReturnType<typeof createRestartSettings> | undefined;
   const runNotifications = createRunNotifications({
     elements,
     api,
@@ -435,6 +437,7 @@ export function createSettings(options: {
     elements.extensionStatusMessage.textContent = "Checking extension status…";
     elements.extensionStatusDetails.hidden = true;
     settingsShell?.setBadge("extensions", "…", "neutral");
+    void restartSettings?.refreshCapability();
     void fetch("/api/auth/info", { headers: api.headers(), credentials: "same-origin" }).then(async response => {
       if (!response.ok) throw new Error(`Security info unavailable (${response.status})`);
       const info = await response.json() as { mode: AuthMode; identity?: { displayName?: string; id: string } };
@@ -485,6 +488,10 @@ export function createSettings(options: {
     settingsShell = createSettingsShell(elements.settingsPanel);
     settingsShell.init();
     securitySettings = createSecuritySettings({ container: elements.securitySettings, api, setStatus: setSettingsStatus });
+    const restartContainer = elements.settingsPanel.querySelector<HTMLElement>("#settingsPageServer");
+    const restartNavButton = elements.settingsPanel.querySelector<HTMLButtonElement>("#settingsNavServer");
+    if (!restartContainer || !restartNavButton) throw new Error("Missing restart settings page");
+    restartSettings = createRestartSettings({ container: restartContainer, navButton: restartNavButton, api, setStatus: setSettingsStatus });
     extSettings = createExtensionSettings({
       container: elements.extensionSettingsContainer,
       api,
