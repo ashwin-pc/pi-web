@@ -797,7 +797,10 @@ export function createRealtime(options: {
         }
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
-        if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
+        // SDK lifecycle snapshots accompany the ordered live events. Replacing
+        // transcript DOM here discards retry metadata and in-progress tool state.
+        // Initial load/replay and agent_settled already reconcile durable history.
+        if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId && !sessionRuntime(state).isRunning) {
           refreshMessages()
             .then(() => {
               restoreTerminalFailureCard();
