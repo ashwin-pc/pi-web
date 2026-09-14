@@ -14,7 +14,7 @@ const capabilities: HarnessCapabilitiesDto = {
 };
 export interface CodexAdapterOptions extends Omit<CodexLaunchOptions, "cwd"> { interactionTimeoutMs?: number }
 type Turn = { executionId?: string; status: "inProgress" | "completed" | "interrupted" | "failed" };
-type Item = { native: NativeObject; timestamp: string; completed: boolean };
+type Item = { native: NativeObject; timestamp?: string; completed: boolean };
 type PendingControl = { native: NativeRequest; turnId: string; approval: CodexApproval; request: InteractionRequestDto; timer: ReturnType<typeof setTimeout> };
 const requestKey = (id: RpcId): string => `${typeof id}:${id}`;
 const emptyStats = (): SessionSnapshotDto["stats"] => ({ userMessages: 0, assistantMessages: 0, toolResults: 0, totalMessages: 0,
@@ -315,8 +315,7 @@ class CodexHandle implements SessionHandle {
       const itemId = requiredString(params.itemId, "item ID");
       const item = this.items.get(itemMessageId(turnId, itemId));
       if (!item || item.completed || typeof params.delta !== "string") { this.observe(method, params); return; }
-      item.native.aggregatedOutput = `${typeof item.native.aggregatedOutput === "string" ? item.native.aggregatedOutput : ""}${params.delta}`;
-      this.publishItem(turnId, item, false, "part"); return;
+      this.commandOutputDelta(turnId, itemId, item, params.delta); return;
     }
     if (method === "turn/plan/updated" || method === "turn/diff/updated") {
       const text = method === "turn/diff/updated" ? `Changes\n\`\`\`diff\n${typeof params.diff === "string" ? params.diff : ""}\n\`\`\``
@@ -333,7 +332,8 @@ class CodexHandle implements SessionHandle {
     const key = itemMessageId(turnId, native.id);
     const previous = this.items.get(key);
     if (previous?.completed) { this.observe("duplicate-item", { threadId: this.nativeId(), turnId }); return; }
-    const item: Item = { native: { ...previous?.native, ...native }, completed, timestamp: previous?.timestamp ?? timestamp ?? new Date().toISOString() };
+    const observedAt = previous?.timestamp ?? timestamp ?? (publish ? new Date().toISOString() : undefined);
+    const item: Item = { native: { ...previous?.native, ...native }, completed, ...(observedAt ? { timestamp: observedAt } : {}) };
     if (!completed && previous) for (const field of ["text", "aggregatedOutput", "summary", "content"]) {
       if (native[field] == null || native[field] === "" || (Array.isArray(native[field]) && !native[field].length)) item.native[field] = previous.native[field];
     }
@@ -341,14 +341,14 @@ class CodexHandle implements SessionHandle {
     if (!mapped) { if (publish) this.observe(`item:${String(item.native.type)}`, item.native); return; }
     // Unknown native variants are observed in bounded/redacted form, never retained as raw items.
     this.items.set(key, item);
-    this.publishItem(turnId, item, completed, "replace", publish, mapped);
+    this.publishItem(turnId, item, completed, publish, mapped);
     if (native.type === "userMessage" && completed && this.snapshot.nativeSession.persistence === "persistent") {
       this.snapshot.nativeSession.status = "resumable";
       if (publish) this.emitState();
     }
   }
 
-  private publishItem(turnId: string, item: Item, final: boolean, mode: "replace" | "part", publish = true, mapped?: TranscriptMessageDto): void {
+  private publishItem(turnId: string, item: Item, final: boolean, publish = true, mapped?: TranscriptMessageDto): void {
     const message = mapped ?? projectItem(item.native, turnId, this.turns.get(turnId)?.executionId, item.timestamp, final);
     if (!message) { if (publish) this.observe(`item:${String(item.native.type)}`, item.native); return; }
     if (item.native.status === "declined" && this.cancelledItems.has(message.id)) {
@@ -363,8 +363,27 @@ class CodexHandle implements SessionHandle {
       ...(typeof item.native.clientId === "string" ? { clientMessageId: item.native.clientId } : {}),
       ...(this.submitting?.sourceClientId ? { sourceClientId: this.submitting.sourceClientId } : {}) };
     if (!previous) this.emit({ ...correlation, type: "message_start", message });
-    else if (mode === "part") message.parts.forEach((part, index) => this.emit({ ...correlation, type: "message_part", messageId: message.id, index, part }));
-    if (final || (previous && mode === "replace")) this.emit({ ...correlation, type: "message_replace", message, final });
+    if (final || previous) this.emit({ ...correlation, type: "message_replace", message, final });
+  }
+
+  private commandOutputDelta(turnId: string, itemId: string, item: Item, delta: string): void {
+    const messageId = itemMessageId(turnId, itemId);
+    const message = this.transcript.get(messageId);
+    const index = message?.parts.findIndex((part) => part.type === "toolCall") ?? -1;
+    const tool = message?.parts[index];
+    if (!message || tool?.type !== "toolCall") throw new CodexRpcError("Codex command output has no tool part", "protocol");
+    if (!tool.result) {
+      tool.result = { parts: [{ type: "text", id: `${messageId}:result`, text: "", nativeItemId: itemId, nativeExecutionId: turnId }], isError: false };
+      this.emit({ type: "message_part", sessionId: this.sessionId, messageId, index, part: tool });
+    }
+    const text = tool.result.parts.find((part) => part.type === "text");
+    if (!text || text.type !== "text") throw new CodexRpcError("Codex command output changed result kind", "protocol");
+    text.text += delta;
+    item.native.aggregatedOutput = text.text;
+    // The same stable message/part delta reaches nested tool-result text. Only the
+    // final item sends its authoritative aggregate; each chunk is not a prefix resend.
+    this.emit({ type: "message_delta", sessionId: this.sessionId, executionId: message.executionId, nativeExecutionId: turnId,
+      nativeItemId: itemId, messageId, partId: text.id, delta });
   }
 
   private textDelta(method: string, params: NativeObject, turnId: string): void {
@@ -429,6 +448,18 @@ class CodexHandle implements SessionHandle {
   }
 
   private requiredControl(native: NativeRequest): void {
+    const params = object(native.params);
+    const foreignThread = typeof params?.threadId === "string" && params.threadId !== this.snapshot.nativeSession.sessionId;
+    const staleTurn = typeof params?.turnId === "string" && params.turnId !== this.activeTurnId;
+    if (foreignThread || staleTurn) {
+      // `cancel` means Abort in Codex, not merely deny this callback. A stale
+      // callback must never abort a newer turn (or another native thread).
+      this.observe("out-of-scope-control", native.params);
+      this.rpc?.reject(native.id, "This decision does not target the active Codex execution", -32600);
+      const conflicting = this.nativeControlIds.get(requestKey(native.id));
+      if (conflicting) this.removeControl(conflicting, "native");
+      return;
+    }
     const duplicate = this.nativeControlIds.get(requestKey(native.id));
     if (duplicate) {
       if (JSON.stringify(this.controls.get(duplicate)?.native) !== JSON.stringify(native)) {
@@ -437,7 +468,6 @@ class CodexHandle implements SessionHandle {
       }
       return;
     }
-    const params = object(native.params);
     const turnId = typeof params?.turnId === "string" ? params.turnId : undefined;
     const matches = params?.threadId === this.snapshot.nativeSession.sessionId && turnId === this.activeTurnId && !!turnId;
     const item = turnId && typeof params?.itemId === "string" ? this.items.get(itemMessageId(turnId, params.itemId)) : undefined;
@@ -460,13 +490,18 @@ class CodexHandle implements SessionHandle {
   private rejectControl(native: NativeRequest, activeMatch: boolean): void {
     this.observe(`required:${native.method}`, native.params);
     try {
-      const result = unsupportedControlResponse(native);
+      const params = object(native.params);
+      const standaloneMcp = native.method === "mcpServer/elicitation/request" && params?.threadId === this.snapshot.nativeSession.sessionId && params?.turnId == null;
+      const result = activeMatch || standaloneMcp ? unsupportedControlResponse(native) : undefined;
       if (result) this.rpc?.respond(native.id, result); else this.rpc?.reject(native.id);
-      if (activeMatch && this.activeTurnId) void this.rpc?.request("turn/interrupt", { threadId: this.nativeId(), turnId: this.activeTurnId }).catch(() => this.rpc?.dispose());
-      else if (!result) {
-        const params = object(native.params);
-        if (params?.threadId !== this.snapshot.nativeSession.sessionId || typeof params?.turnId !== "string" || !this.turns.has(params.turnId)) void this.rpc?.dispose();
-      }
+      const turnId = this.activeTurnId;
+      if (activeMatch && turnId) void this.rpc?.request("turn/interrupt", { threadId: this.nativeId(), turnId }).catch((error: unknown) => {
+        // A native cancel may have already ended this exact turn. Never dispose a
+        // newer execution because its predecessor's interrupt acknowledgement raced.
+        if (this.activeTurnId !== turnId || (error instanceof CodexRpcError && error.code === -32600)) return;
+        return this.rpc?.dispose();
+      });
+      else if (!result && !unsupportedControlResponse(native) && typeof params?.turnId !== "string") void this.rpc?.dispose();
     } catch { void this.rpc?.dispose(); }
     this.snapshot.error = "A required Codex decision is unsupported or stale; it was not approved.";
     this.emit({ type: "error", sessionId: this.sessionId, error: this.snapshot.error }); this.emitState();

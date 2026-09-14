@@ -51,12 +51,12 @@ export function fileDiff(item: NativeObject): string {
   return Array.isArray(item.changes) ? item.changes.map((entry) => object(entry)?.diff).filter((value): value is string => typeof value === "string").join("\n") : "";
 }
 
-export function projectItem(item: NativeObject, turnId: string, executionId: string | undefined, timestamp: string, final: boolean): TranscriptMessageDto | undefined {
+export function projectItem(item: NativeObject, turnId: string, executionId: string | undefined, timestamp: string | undefined, final: boolean): TranscriptMessageDto | undefined {
   if (typeof item.id !== "string" || typeof item.type !== "string") return;
   const nativeItemId = item.id;
   const id = itemMessageId(turnId, nativeItemId);
   const identity = { nativeItemId, nativeExecutionId: turnId };
-  const base = { id, entryId: id, ...identity, ...(executionId ? { executionId } : {}), timestamp,
+  const base = { id, entryId: id, ...identity, ...(executionId ? { executionId } : {}), ...(timestamp ? { timestamp } : {}),
     status: final ? "completed" as const : "streaming" as const };
   const textPart = (text: string, key = "text"): TextPartDto => ({ type: "text", id: `${id}:${key}`, text, ...identity });
   const message = (role: "user" | "assistant" | "system", parts: MessagePartDto[]): TranscriptMessageDto => ({
@@ -126,7 +126,7 @@ export function projectItem(item: NativeObject, turnId: string, executionId: str
     toolName = "view image"; args = json({ path: item.path });
     if (final) result = resultText("Native image viewed; local file content is not exported.");
   } else return undefined;
-  const part: ToolCallPartDto = { type: "toolCall", id: `${id}:tool`, ...identity, toolCallId: id, toolName, args, status, startedAt: timestamp, ...(result ? { result } : {}) };
+  const part: ToolCallPartDto = { type: "toolCall", id: `${id}:tool`, ...identity, toolCallId: id, toolName, args, status, ...(timestamp ? { startedAt: timestamp } : {}), ...(result ? { result } : {}) };
   return { ...base, role: "assistant", parts: [part], text: "", isError,
     ...(isError ? { status: status === "cancelled" ? "interrupted" as const : "error" as const } : {}) };
 }

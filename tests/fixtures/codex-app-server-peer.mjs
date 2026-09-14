@@ -261,7 +261,7 @@ async function control(command) {
     const item = itemFor(thread, turn, command.itemId ?? "command", "commandExecution", {
       command: command.command ?? "printf synthetic", cwd: thread.cwd, processId: "synthetic-process", source: "agent", status: "inProgress",
       commandActions: [], aggregatedOutput: "", exitCode: null, durationMs: null, pluginId: null, scriptPath: null });
-    if (command.delta !== undefined) { item.aggregatedOutput += command.delta; notify("item/commandExecution/outputDelta", { ...ids, itemId: item.id, delta: command.delta }); }
+    if (command.delta !== undefined) { item.aggregatedOutput = (typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : "") + command.delta; notify("item/commandExecution/outputDelta", { ...ids, itemId: item.id, delta: command.delta }); }
     if (command.done) { Object.assign(item, { status: command.status ?? "completed", exitCode: command.exitCode ?? 0, durationMs: 1 }); itemEvent("item/completed", thread, turn, item); }
   } else if (command.action === "approval") {
     const itemId = command.itemId ?? "approved-command";

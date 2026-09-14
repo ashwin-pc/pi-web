@@ -74,6 +74,37 @@ describe("Codex production adapter through native process ingress", () => {
     for (const event of events) expect(jsonRoundTrip(event)).toStrictEqual(event);
   });
 
+  it("streams keyed nested tool text with linear wire growth, including a null initial result", async () => {
+    const run = async (chunks: number) => {
+      const { handle, peer, events } = await fixture();
+      const receipt = await prompt(handle);
+      const threadId = handle.state().nativeSession.sessionId!;
+      const itemId = "stream-command";
+      await controlPeer(peer, { action: "emit", message: { method: "item/started", params: { threadId, turnId: receipt.nativeExecutionId, startedAtMs: Date.now(),
+        item: { id: itemId, type: "commandExecution", command: "printf native", cwd: "/synthetic", processId: null, source: "agent", commandActions: [],
+          pluginId: null, scriptPath: null, status: "inProgress", aggregatedOutput: null, exitCode: null, durationMs: null } } } });
+      const delta = "x".repeat(256);
+      for (let index = 0; index < chunks; index++) await controlPeer(peer, { action: "tool", itemId, delta });
+      expect((await tools(handle))[0]?.result?.parts[0]).toMatchObject({ type: "text", text: delta.repeat(chunks) });
+      await controlPeer(peer, { action: "tool", itemId, done: true });
+      const message = (await handle.messages()).find((value) => value.nativeItemId === itemId)!;
+      const wire = events.filter((event) => ("messageId" in event && event.messageId === message.id)
+        || ("message" in event && typeof event.message === "object" && event.message?.id === message.id));
+      const deltas = wire.filter((event) => event.type === "message_delta");
+      const resultPart = (await tools(handle))[0]!.result!.parts[0]!;
+      expect(deltas).toHaveLength(chunks);
+      expect(deltas.every((event) => event.type === "message_delta" && event.partId === resultPart.id && event.delta === delta)).toBe(true);
+      expect(wire.filter((event) => event.type === "message_part")).toHaveLength(1); // Establish the initially-null result once.
+      expect(wire.filter((event) => event.type === "message_replace")).toHaveLength(1); // Authoritative final aggregate only.
+      expect(resultPart).toMatchObject({ type: "text", text: delta.repeat(chunks) });
+      await handle.dispose();
+      return Buffer.byteLength(JSON.stringify(wire));
+    };
+    const small = await run(20);
+    const large = await run(40);
+    expect(large / small).toBeLessThan(2.1); // Prefix resends grow quadratically and fail this bound.
+  });
+
   it("retains native MCP image output and correlated file diff in canonical tool result parts/details", async () => {
     const { handle, peer } = await fixture();
     await prompt(handle);
@@ -243,6 +274,43 @@ describe("Codex production adapter through native process ingress", () => {
     expect(handle.state().pendingInteractions).toHaveLength(0);
   });
 
+  it("rejects stale/foreign approval callbacks without cancelling the newer native turn", async () => {
+    const { handle, peer } = await fixture();
+    const old = await prompt(handle);
+    await controlPeer(peer, { action: "complete" });
+    const current = await prompt(handle, "new-guard");
+    const threadId = handle.state().nativeSession.sessionId!;
+    const common = { itemId: "old-item", startedAtMs: Date.now() };
+    for (const request of [
+      { id: "old-command", method: "item/commandExecution/requestApproval", params: { ...common, threadId, turnId: old.nativeExecutionId,
+        kind: "command", environmentId: null, command: "printf unused", cwd: "/synthetic", availableDecisions: ["accept", "decline", "cancel"] } },
+      { id: "foreign-file", method: "item/fileChange/requestApproval", params: { ...common, threadId: "another-native-thread", turnId: current.nativeExecutionId } },
+      { id: "old-permissions", method: "item/permissions/requestApproval", params: { ...common, threadId, turnId: old.nativeExecutionId,
+        environmentId: null, cwd: "/synthetic", reason: null, permissions: { network: { enabled: true }, fileSystem: null } } },
+    ]) {
+      await controlPeer(peer, { action: "emit", message: request });
+      const response = await waitObserved(peer, (record) => record.direction === "client" && record.message.id === request.id);
+      expect(response.message.error?.code).toBe(-32600);
+      expect(response.message.result).toBeUndefined();
+      expect(handle.state()).toMatchObject({ phase: "running", activeExecution: { id: "new-guard", nativeExecutionId: current.nativeExecutionId }, pendingInteractions: [] });
+      expect(handle.state().error).toBeUndefined();
+    }
+    expect(await clientRequests(peer, "turn/interrupt")).toHaveLength(0);
+    await controlPeer(peer, { action: "text", delta: "New turn survives", done: true });
+    await controlPeer(peer, { action: "complete" });
+    expect((await handle.messages()).at(-1)?.text).toBe("New turn survives");
+  });
+
+  it("does not close a healthy transport when an unsupported control's cancel wins the interrupt race", async () => {
+    const { handle, peer } = await fixture();
+    await prompt(handle);
+    await controlPeer(peer, { action: "approval", requestId: "unsupported", decisions: ["future-decision"] });
+    await waitObserved(peer, (record) => record.direction === "client" && record.message.id === "unsupported" && record.message.result?.decision === "cancel");
+    await expect.poll(() => handle.state().phase).toBe("idle");
+    expect((await prompt(handle, "new-guard")).acknowledgement).toBe("accepted");
+    expect(handle.state().activeExecution?.id).toBe("new-guard");
+  });
+
   it("bounds/redacts additive native observations and preserves existing transcript through unknown items", async () => {
     const { handle, peer, events } = await fixture();
     const receipt = await prompt(handle);
@@ -316,6 +384,26 @@ describe("Codex production adapter through native process ingress", () => {
     expect(await clientRequests(resumedPeer, "thread/start")).toHaveLength(0);
     expect(await clientRequests(resumedPeer, "turn/start")).toHaveLength(0);
     expect((await adapter.list(root))[0]?.nativeSession.sessionId).toBe(stale.sessionId);
+  });
+
+  it("omits unknown hydrated item times instead of rebasing the conversation to reopen time", async () => {
+    const { root, adapter, handle, peer, handles } = await fixture();
+    await prompt(handle);
+    await controlPeer(peer, { action: "tool", delta: "Known native output", done: true });
+    await controlPeer(peer, { action: "text", delta: "Durable answer", done: true });
+    await controlPeer(peer, { action: "complete" });
+    const before = await handle.messages();
+    expect(before.every((message) => message.timestamp !== undefined)).toBe(true);
+    expect((await tools(handle))[0]?.startedAt).toBeDefined();
+    const nativeSession = handle.state().nativeSession;
+    await handle.dispose();
+    const reopened = await adapter.open({ sessionId: handle.sessionId, cwd: root, nativeSession }); handles.push(reopened);
+    const after = await reopened.messages();
+    expect(after.map((message) => message.id)).toEqual(before.map((message) => message.id));
+    expect(after.every((message) => message.timestamp === undefined)).toBe(true);
+    expect((await tools(reopened))[0]?.startedAt).toBeUndefined();
+    expect((await tools(reopened))[0]?.result).toEqual((before.find((message) => message.parts?.[0]?.type === "toolCall")!.parts![0] as ToolCallPartDto).result);
+    expect(after.at(-1)?.text).toBe("Durable answer");
   });
 
   it("probes actual unmaterialized persistent IDs and reports failure rather than recreating", async () => {
