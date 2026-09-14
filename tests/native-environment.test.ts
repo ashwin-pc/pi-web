@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Options, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { nativeChildEnvironment } from "../server/session/adapters/nativeEnvironment.js";
 import { createCodexAdapter } from "../server/session/adapters/codex/index.js";
+import { createClaudeAdapter } from "../server/session/adapters/claude/index.js";
 import { CLAUDE_SDK_VERSION, createClaudeQuery } from "../server/session/adapters/claude/native.js";
 import { controlPeer, peerForThread } from "./fixtures/codex-peer-control.js";
 
@@ -141,6 +142,25 @@ describe("native child credential boundary (controlled OS processes, no actual m
     await vi.waitFor(() => expect(rows.every((row) => !alive(row.pid))).toBe(true));
     run.checkInputs();
     run.checkChildren(rows, 3, mode === "inherited");
+  }, 15_000);
+
+  it.each(["inherited", "token-overrides"] as const)("filters BOTH Claude version preflight and runtime children with %s env", async (mode) => {
+    const run = await fixture("claude", mode);
+    const adapter = createClaudeAdapter({ pathToClaudeCodeExecutable: run.wrapper, env: run.environment });
+    const handle = await adapter.create({ sessionId: randomUUID(), cwd: run.root });
+    cleanups.push(() => handle.dispose());
+    // Unlike the direct Query tests below, this production handle first runs
+    // --version. The matching-version executable then starts the real SDK peer;
+    // synthetic input cannot reach an actual CLI or model.
+    await handle.prompt({ message: "Synthetic peer input only", mode: "prompt", attachments: [], executionId: randomUUID() });
+    await handle.dispose();
+    const rows = await run.observations();
+    expect(rows.map((row) => row.stage)).toEqual(["version", "runtime"]);
+    expect(new Set(rows.map((row) => row.pid)).size).toBe(2);
+    await vi.waitFor(() => expect(rows.every((row) => !alive(row.pid))).toBe(true), { timeout: 5000 });
+    run.checkInputs();
+    run.checkChildren(rows, 1, mode === "inherited"); // Checks exclusion/preservation in every row, not runtime alone.
+    expect(rows[1]!.idleOptIn).toBe(true);
   }, 15_000);
 
   it.each([

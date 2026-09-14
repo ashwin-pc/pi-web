@@ -8,6 +8,7 @@ import { getSessionInfo, getSessionMessages, listSessions, type Options, type Qu
 import type { AdapterCreateInput, AdapterOpenInput, AdapterPromptInput, AdapterSessionInfo, SessionAdapter, SessionHandle } from "../../adapter.js";
 import type { HarnessDescriptorDto, InteractionResponseDto, InterruptReceiptDto, NativeSessionRefDto, PromptReceiptDto, SessionServiceEvent, SessionSnapshotDto, SessionStatsDto } from "../../dto.js";
 import { SessionServiceError } from "../../errors.js";
+import { nativeChildEnvironment } from "../nativeEnvironment.js";
 import { ClaudeApprovals } from "./approvals.js";
 import { CLAUDE_CODE_VERSION, createClaudeQuery, type ClaudeIngressObservation } from "./native.js";
 import { ClaudeTranscript } from "./transcript.js";
@@ -213,7 +214,7 @@ class ClaudeHandle implements SessionHandle {
       const path = this.options.pathToClaudeCodeExecutable;
       const script = /\.(?:m?js|cjs|ts|tsx|jsx)$/.test(path);
       const result = await promisify(execFile)(script ? process.execPath : path, script ? [path, "--version"] : ["--version"], {
-        env: this.options.env, timeout: 5000, maxBuffer: 16 * 1024, windowsHide: true,
+        env: nativeChildEnvironment(this.options.env ?? process.env), timeout: 5000, maxBuffer: 16 * 1024, windowsHide: true,
       });
       if (result.stdout.trim().split(/\s/)[0] !== CLAUDE_CODE_VERSION) throw new Error(`Unsupported Claude executable version (expected ${CLAUDE_CODE_VERSION})`);
       this.executableChecked = true;
