@@ -84,7 +84,15 @@ export function initActionLauncher(
   function renderActions() {
     menu.textContent = "";
     const measure = document.createElement("canvas").getContext("2d");
-    if (measure) measure.font = "13px system-ui";
+    if (measure) {
+      // Read the rendered button's typography instead of duplicating CSS here.
+      const sample = document.createElement("button");
+      sample.className = "actionLauncherItem";
+      sample.type = "button";
+      menu.append(sample);
+      measure.font = getComputedStyle(sample).font;
+      sample.remove();
+    }
     const actions: LauncherAction[] = [
       ...builtInActions,
       ...extensionActions.map((action) => ({
@@ -167,9 +175,9 @@ export function initActionLauncher(
     }
   });
 
-  renderActions();
   root.append(menu, toggle);
   elements.formEl.append(root);
+  renderActions();
 
   return {
     setExtensionActions(value) {
