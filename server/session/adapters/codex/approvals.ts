@@ -102,7 +102,7 @@ export function codexApproval(request: NativeRequest, pendingItem?: NativeObject
     for (const entry of changes) {
       const change = object(entry);
       const kind = object(change?.kind);
-      if (!change || typeof change.path !== "string" || !kind || !["add", "delete", "update"].includes(String(kind.type))) return;
+      if (!change || typeof change.path !== "string" || typeof change.diff !== "string" || !kind || !["add", "delete", "update"].includes(String(kind.type))) return;
       files.push(`${String(kind.type)}: ${change.path}`);
     }
     if (files.join("\n").length > 8_192) return;

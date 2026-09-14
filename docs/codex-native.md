@@ -2,7 +2,7 @@
 
 Codex uses its documented **app-server JSONL API**, through the installed `codex` command on PATH. Native configuration, credentials, tools, instruction loading, approvals reviewer and sandbox enforcement remain Codex's responsibility. The adapter must not replace them with Pi defaults, exported credentials or an alternate command executor.
 
-This document records the native contract, setup and compatibility evidence for issue #92. Protocol/unit evidence is not a claim of a completed browser workflow or an actual-model canary.
+This document records the native contract, setup and compatibility evidence for issue #92. The production Codex adapter is exercised by deterministic native-process peers; that evidence is separate from a completed browser workflow or an actual-model canary.
 
 ## Protocol pin and setup
 
@@ -29,7 +29,9 @@ The exact installed schema is authoritative when current online documentation di
 
 Do not override `HOME`/`CODEX_HOME` for a real-wrapper canary: a disposable HOME can prevent Toolbox association resolution, which is a setup-isolation error, not evidence that Codex is missing. Direct invocation of a pinned native binary is acceptable for credential-free version/schema/protocol-syntax checks, but is **not** equivalent to validating the production wrapper/authentication path.
 
-Isolate pi-web metadata instead: use a scratch `PI_CODING_AGENT_DIR`, `PI_WEB_AUTH_STORE`, `PI_WEB_SESSION_UI_STATE_FILE` and the service's Codex registry path; keep native environment/credentials server-side. Use a scratch cwd or private worktree. No credential copying or login changes are needed.
+The shared service enables the optional native harness chooser with `PI_WEB_MULTI_HARNESS=1`; Pi remains the default. Use the normal documented pi-web launch procedure rather than creating another serving path.
+
+Isolate pi-web metadata instead: use a scratch `PI_CODING_AGENT_DIR`, `PI_WEB_AUTH_STORE`, `PI_WEB_SESSION_UI_STATE_FILE` and `PI_WEB_NATIVE_BINDINGS_FILE`; keep native environment/credentials server-side. Use a scratch cwd or private worktree. No credential copying or login changes are needed.
 
 ## Native settings are authoritative
 
@@ -54,7 +56,7 @@ flowchart LR
   C[Control request ID] --> I
 ```
 
-`turn/start` returns the native accepted turn, not proof of completion. Native Codex can use `turn/start` to steer an already active turn, so the adapter must admit new prompts deliberately and use `turn/steer {expectedTurnId}` for explicit active-turn steering. Native request timeout is ambiguous; automatically resending a prompt could execute it twice.
+`turn/start` returns the native accepted turn, not proof of completion. Native Codex can use `turn/start` to steer an already active turn, so the adapter rejects concurrent input instead. Initial Codex sends use `mode: "prompt"`; explicit `steer`, `followUp` and attachments are disabled and service/adapter-rejected. Native request timeout is ambiguous; automatically resending a prompt could execute it twice.
 
 `turn/interrupt` must target the exact nonempty native turn ID. The installed native implementation rejects stale/no-active targets and acknowledges a normal interrupt only after its abort event. An empty native turn ID has special startup-cancellation semantics and is not a UI wildcard.
 
@@ -66,7 +68,7 @@ Thread activity is independent of item/turn completion. Native thread status dis
 |---|---|
 | Live ephemeral thread | Reuse the owned handle. Metadata-only `thread/read` works; stored `thread/list` omits it. |
 | Ephemeral thread after owned process loss | Explicitly unavailable/expired; web metadata may be removed. Never call resume or manufacture durable history. |
-| Persistent but never prompted | Native storage may not yet be materialized. Even a non-null start path does not prove resumability. Native resume can fail with `no rollout`. |
+| Persistent but never prompted | Native storage may not yet be materialized. Even a non-null start path does not prove resumability. Probe the native ID: cached `unmaterialized` metadata may be stale after native acceptance followed by a host crash. An actually unmaterialized thread returns `no rollout`; never recreate or replay input. |
 | Materialized persistent thread | Resume by native thread ID and hydrate native history through public operations. No native JSONL/SQLite parsing. |
 | Process died after ambiguous dispatch | Mark interrupted connectivity/recovery state, not successful completion. Resume authoritative history; do not replay the prompt. |
 
@@ -76,7 +78,7 @@ A surviving native server can replay outstanding approval requests when a client
 
 Command approvals distinguish **allow once**, **allow for this session**, **decline action** and **stop turn**. Only offered and implemented choices are exposed. Decline rejects the action but lets Codex continue; cancel maps to native abort. Persistent exec/network-policy amendments are deferred rather than interpreted by pi-web.
 
-File approvals require the correlated native file-change item so the UI identifies the affected paths. The native schema marks `grantRoot` unstable, so broader file-session grants are not offered initially. Permission requests are different: a user may approve the exact validated requested profile for the native **turn** or **session**, or grant nothing; the browser cannot supply replacement permission JSON.
+File approvals require the correlated native file-change item, expose its affected paths and proposed diff in the dialog, and keep the canonical tool result's `details.diff` available to the renderer. The initial inline-approval limit is 32 KiB of native diff; larger or missing diffs fail safely rather than approving unseen changes. The native schema marks `grantRoot` unstable, so broader file-session grants are not offered initially. Permission requests are different: a user may approve the exact validated requested profile for the native **turn** or **session**, or grant nothing; the browser cannot supply replacement permission JSON.
 
 Responses are validated against the outstanding request and its thread/turn/process identity. Duplicate, foreign-session, resolved, expired or previous-process replies cannot grant anything. `serverRequest/resolved` removes stale dialogs. Known deferred controls receive documented no-grant responses; unknown required controls receive an explicit native error and safe execution cleanup, not silence or fabricated approval.
 
@@ -88,20 +90,21 @@ These classifications distinguish native availability from the first adapter sur
 
 | Area | First Codex treatment | Native basis / limitation |
 |---|---|---|
-| Create/list/open/resume | Required production path | `thread/start,list,read,resume`; lazy materialization and ephemeral limits above. |
-| Text/tool stream | Required production path | Correlated thread/turn/item deltas and authoritative completed items. |
-| Thinking | Conditional native display | Only native reasoning summaries/content; no fabricated thinking. |
-| Exact interrupt/steering | Execution-aware | Native IDs and stale preconditions, not process-wide abort-by-default. |
-| Command/file/permission approvals | Validated native choices | No second enforcement system; unsupported scopes fail closed. |
+| Create/list/open/resume | Supported; production-adapter deterministic tests | `thread/start,list,resume`; lazy materialization, stale metadata reconciliation and ephemeral limits above. |
+| Text/tool stream | Supported; production-adapter deterministic tests | Correlated thread/turn/item deltas and authoritative completed items. Native MCP inline text/images are retained as canonical result parts; local image paths are not read/exported. |
+| Thinking | Supported when exposed; deterministic tests | Only native reasoning summaries/content; no fabricated thinking. |
+| Exact interrupt | Supported; deterministic races/late-event tests | Host stale guard maps to the exact native turn ID, not process-wide abort-by-default. |
+| Steering/follow-ups | Deferred and disabled | No implicit active-turn `turn/start` steering. |
+| Command/file/permission approvals | Supported bounded choices; production-adapter tests | No second enforcement system; unsupported scopes fail closed. |
 | MCP elicitation/user-input/dynamic tools | Deferred positive workflows | Explicit no-grant/error path; no generic form engine or Pi extension port. |
 | Models/effort | Native effective display | No production overrides or catalog-default substitution. |
-| Plans/diffs/review items | Contextual native activity where mapped | Dedicated review/plan editing workflows deferred. |
+| Plans/diffs | Contextual display; deterministic tests | Dedicated review/plan editing workflows deferred. Review item text is recognized, but native review control is not advertised. |
 | History tree/fork/revert | Deferred and disabled | Native fork is inclusive at `lastTurnId`; not equivalent to Pi navigation or filesystem rewind. |
 | Queues/follow-ups/compaction controls | Deferred and disabled | Native experimental queues and compaction differ from Pi. Native retry behavior remains native. |
 | Native instructions/skills/hooks | Inherited | No second loader or automatic Pi command/skill compatibility claim. |
 | MCP/plugin configuration | Native, no administration UI | Native tools stay configured/authenticated in Codex. |
 | Subagents | Native observed activity only | No claim that pi-web worker spawning/completion relations are ported. |
-| Usage | Native token values if exposed | No invented Pi-price monetary cost. |
+| Usage | Native token values; deterministic tests | Monetary cost is omitted. Token usage is not treated as measured context occupancy. |
 | Host/browser Pi extensions | Pi-only unless separately audited | Dialogs/renderers/resources/artifacts/worker tools require explicit compatibility. |
 | Remote/realtime/process/filesystem admin | Not in initial surface | `thread/shellCommand` and `process/*` bypass native sandbox; never use them as tool shortcuts. |
 
@@ -109,12 +112,16 @@ These classifications distinguish native availability from the first adapter sur
 
 ```sh
 npm run typecheck
-npm run test:unit -- tests/codex-transport.test.ts tests/codex-approvals.test.ts
+npm run test:unit -- tests/codex-transport.test.ts tests/codex-approvals.test.ts tests/codex-adapter.test.ts
+# Also check the optional native leaf independently of a dynamic module loader:
+node node_modules/typescript/bin/tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck server/session/adapters/codex/index.ts
 ```
 
 The native process peer is documented in [`tests/fixtures/codex-peer.md`](../tests/fixtures/codex-peer.md). It enters through production subprocess JSONL ingress, with independent scratch-file controls for acceptance/rejection, text/thinking/tool activity, approvals, interruption, terminal/thread state, unknown events and process exit. No user prompt selects a scenario, no HTTP route is fulfilled, and no alternate SessionService is used.
 
-Trusted test-server launch options are `PI_WEB_CODEX_COMMAND` plus JSON-array `PI_WEB_CODEX_ARGS`, with fixture-only `PI_WEB_CODEX_PEER_DIR`. This synthetic peer is LLM-free. Its synthetic persistence is **not** proof of actual native durable resume.
+Trusted test-server launch options are `PI_WEB_CODEX_COMMAND` plus JSON-array `PI_WEB_CODEX_ARGS`, with fixture-only `PI_WEB_CODEX_PEER_DIR`. Factory construction performs only executable availability checks; it does not start Codex or check authentication. This synthetic peer is LLM-free. Its synthetic persistence is **not** proof of actual native durable resume.
+
+Browser tests can import `mcpImageEvents(threadId, turnId)` and `codexFixturePng` from [`codex-native-events.ts`](../tests/fixtures/codex-native-events.ts), then send each frame with `controlPeer(peer, {action:"emit", message:frame})`. The same exact native MCP image frames are exercised through the production adapter, without browser-native schema interpretation.
 
 The separate metadata-only actual-wrapper audit exercised handshake, account readiness without token refresh, model list, ephemeral create/read/list, failed ephemeral resume, process shutdown/restart and repeated failed ephemeral resume. Both owned native processes exited cleanly; no generation/tool/approval/durable-resume canary ran in that audit. Inference entitlement remains untested until the separate bounded opt-in canaries run.
 

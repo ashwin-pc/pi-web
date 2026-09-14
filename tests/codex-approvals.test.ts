@@ -45,6 +45,7 @@ describe("Codex method-specific native approval mapping", () => {
   it("requires the correlated native file-change item and defers unstable session-wide roots", () => {
     const request: NativeRequest = { id: 1, method: "item/fileChange/requestApproval", params: { threadId: "t", turnId: "u", itemId: "i", grantRoot: "/synthetic/project" } };
     expect(codexApproval(request)).toBeUndefined();
+    expect(codexApproval(request, { type: "fileChange", changes: [{ path: "file.ts", kind: { type: "update" } }] })).toBeUndefined();
     const approval = codexApproval(request, { type: "fileChange", changes: [{ path: "file.ts", kind: { type: "update" }, diff: "+test" }] })!;
     expect(approval.description).toContain("update: file.ts");
     expect(approval.description).toContain("Requested write root: /synthetic/project");
