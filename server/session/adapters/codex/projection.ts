@@ -1,5 +1,6 @@
 import type { ImagePartDto, JsonValue, MessagePartDto, TextPartDto, ToolCallPartDto, TranscriptMessageDto } from "../../dto.js";
 import { diagnostic, object, type NativeObject } from "./transport.js";
+import { approvalContext } from "./approval-context.js";
 
 export const itemMessageId = (turnId: string, itemId: string): string => `codex:${turnId}:${itemId}`;
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
@@ -91,7 +92,8 @@ export function projectItem(item: NativeObject, turnId: string, executionId: str
   const resultText = (text: string, details?: JsonValue): ToolCallPartDto["result"] => ({ parts: [textPart(text, "result")], isError, ...(details ? { details } : {}) });
   if (item.type === "commandExecution") {
     toolName = "command";
-    args = json({ command: item.command, cwd: item.cwd });
+    const context = { command: item.command ?? null, cwd: item.cwd ?? null };
+    args = approvalContext(context) ? json(context) : { omitted: "Command context is unsafe or too large to display" };
     if (typeof item.aggregatedOutput === "string" || final || status !== "running") result = resultText(
       typeof item.aggregatedOutput === "string" && item.aggregatedOutput ? item.aggregatedOutput : item.status === "declined" ? "Command declined" : "",
       json({ ...(typeof item.exitCode === "number" ? { exitCode: item.exitCode } : {}), ...(typeof item.durationMs === "number" ? { durationMs: item.durationMs } : {}) }),
@@ -99,8 +101,11 @@ export function projectItem(item: NativeObject, turnId: string, executionId: str
   } else if (item.type === "fileChange") {
     toolName = "file changes";
     const changes = Array.isArray(item.changes) ? item.changes.map(object).filter((entry): entry is NativeObject => !!entry) : [];
-    args = json({ files: changes.map((change) => ({ path: change.path, kind: object(change.kind)?.type })) });
-    result = resultText(changes.map((change) => `${String(object(change.kind)?.type ?? "change")}: ${String(change.path ?? "")}`).join("\n"), { diff: fileDiff(item) });
+    const visible = approvalContext(changes) !== undefined;
+    args = visible ? json({ files: changes.map((change) => ({ path: change.path, kind: object(change.kind)?.type,
+      ...(object(change.kind)?.move_path != null ? { move_path: object(change.kind)?.move_path } : {}) })) }) : { omitted: "File change context is unsafe or too large to display" };
+    result = visible ? resultText(changes.map((change) => `${String(object(change.kind)?.type ?? "change")}: ${String(change.path ?? "")}`).join("\n"), { diff: fileDiff(item) })
+      : resultText("Native file change details omitted; review is not available here.");
   } else if (item.type === "mcpToolCall") {
     toolName = `${String(item.server ?? "MCP")}/${String(item.tool ?? "tool")}`;
     args = json(item.arguments);

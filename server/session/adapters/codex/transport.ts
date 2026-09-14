@@ -14,15 +14,18 @@ function rpcId(value: unknown): value is RpcId {
   return typeof value === "string" || (typeof value === "number" && Number.isSafeInteger(value));
 }
 
+/** Credential filtering is separate from diagnostic shortening/URL elision. */
+export function redactCredentials(value: string): string {
+  return value
+    .replace(/\b(Bearer|Basic)\s+[^\s,;"'}\]]+/gi, "$1 [redacted]")
+    .replace(/\b(?:sk-[\w-]{8,}|(?:AKIA|ASIA)[A-Z0-9]{16})\b/g, "[redacted]")
+    .replace(/((?:["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret|token|(?:aws_)?secret_access_key|(?:aws_)?session_token)["']?)\s*[=:]\s*)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;&]+)/gi, "$1[redacted]");
+}
+
 /** Native diagnostics are not trusted log or UI content. Never retain stderr. */
 export function diagnostic(value: unknown): string {
   if (typeof value !== "string") return "Codex request failed";
-  return value.slice(0, 2_048)
-    .replace(/\b(Bearer|Basic)\s+[^\s,;"'}\]]+/gi, "$1 [redacted]")
-    .replace(/\b(?:sk-[\w-]{8,}|AKIA[A-Z0-9]{16})\b/g, "[redacted]")
-    .replace(/((?:["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret|token|(?:aws_)?secret_access_key|(?:aws_)?session_token)["']?)\s*[=:]\s*)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;&]+)/gi, "$1[redacted]")
-    .replace(/https?:\/\/[^\s]+/gi, "[url]")
-    .slice(0, 2_048);
+  return redactCredentials(value.slice(0, 2_048)).replace(/https?:\/\/[^\s]+/gi, "[url]").slice(0, 2_048);
 }
 
 export class CodexRpcError extends Error {

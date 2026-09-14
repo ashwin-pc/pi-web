@@ -4,7 +4,7 @@ import { delimiter, isAbsolute, join } from "node:path";
 import type { AdapterCreateInput, AdapterOpenInput, AdapterPromptInput, AdapterSessionInfo, SessionAdapter, SessionHandle } from "../../adapter.js";
 import { jsonRoundTrip, type ActiveExecutionDto, type HarnessCapabilitiesDto, type InteractionRequestDto, type InteractionResponseDto, type InterruptReceiptDto, type JsonValue, type MessageDto, type MessagePartDto, type NativeSessionRefDto, type PromptReceiptDto, type SessionServiceEvent, type SessionSnapshotDto, type TranscriptMessageDto } from "../../dto.js";
 import { codexApproval, unsupportedControlResponse, type CodexApproval } from "./approvals.js";
-import { fileDiff, itemMessageId, projectItem } from "./projection.js";
+import { itemMessageId, projectItem } from "./projection.js";
 import { CodexRpcError, CodexTransport, diagnostic, object, type CodexLaunchOptions, type NativeObject, type NativeRequest, type RpcId } from "./transport.js";
 
 const capabilities: HarnessCapabilitiesDto = {
@@ -473,12 +473,10 @@ class CodexHandle implements SessionHandle {
     const item = turnId && typeof params?.itemId === "string" ? this.items.get(itemMessageId(turnId, params.itemId)) : undefined;
     const approval = matches ? codexApproval(native, item?.native) : undefined;
     if (!matches || !approval) { this.rejectControl(native, matches); return; }
-    const diff = native.method === "item/fileChange/requestApproval" && item ? fileDiff(item.native) : "";
-    if (diff.length > 32_768) { this.rejectControl(native, true); return; }
     const id = randomUUID();
     const timeout = this.options.interactionTimeoutMs ?? 120_000;
     const request: InteractionRequestDto = { id, sessionId: this.sessionId, source: "approval", kind: "approval", title: approval.title,
-      body: `${approval.description}${diff ? `\n\nProposed changes:\n${diff}` : ""}`, payload: { harness: "codex", ...(item && turnId ? { messageId: itemMessageId(turnId, String(item.native.id)) } : {}) },
+      body: approval.description, payload: { harness: "codex", ...(item && turnId ? { messageId: itemMessageId(turnId, String(item.native.id)) } : {}) },
       choices: approval.choices.map((choice) => ({ ...choice, meaning: choice.id === "decline" ? "decline" : choice.id === "cancel" ? "cancel" : "accept" })),
       timeout, expiresAt: new Date(Date.now() + timeout).toISOString() };
     const timer = setTimeout(() => this.cancelControl(id, "expired"), timeout); timer.unref?.();
@@ -503,7 +501,7 @@ class CodexHandle implements SessionHandle {
       });
       else if (!result && !unsupportedControlResponse(native) && typeof params?.turnId !== "string") void this.rpc?.dispose();
     } catch { void this.rpc?.dispose(); }
-    this.snapshot.error = "A required Codex decision is unsupported or stale; it was not approved.";
+    this.snapshot.error = "A required Codex decision could not be reviewed safely; it was not approved.";
     this.emit({ type: "error", sessionId: this.sessionId, error: this.snapshot.error }); this.emitState();
   }
 

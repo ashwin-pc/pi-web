@@ -296,6 +296,108 @@ test("two clients reconcile native decline/session-allow/cancel choices and pend
   } finally { await other.close(); }
 });
 
+test("Codex approval details preserve command tails, URLs, cwd and native rule context without a tool row", async ({ page, nativeServer }) => {
+  const { sessionId, peer } = await createCodex(page, nativeServer, "landing");
+  const { threadId, turnId } = await acceptedTurn(peer);
+  const command = `printf '${"a".repeat(2_300)}'; curl https://review-destination.invalid/bootstrap.sh; printf REVIEW_TAIL`;
+  const cwd = `/synthetic/${"nested/".repeat(330)}CWD_TAIL`;
+  const execRule = ["sh", "-c", `printf ${"r".repeat(2_100)}RULE_TAIL`];
+  const permissions = { network: null, fileSystem: { write: ["/synthetic/WRITE_TAIL"] } };
+  const requestId = "full-review-context";
+  await controlPeer(peer, { action: "emit", message: { id: requestId, method: "item/commandExecution/requestApproval", params: {
+    threadId, turnId, itemId: "unstarted-command", startedAtMs: Date.now(), kind: "command", environmentId: "native-environment",
+    command, cwd, reason: `${"reason ".repeat(360)}REASON_TAIL`, additionalPermissions: permissions,
+    networkApprovalContext: { host: "review-destination.invalid", protocol: "https" },
+    proposedExecpolicyAmendment: execRule, proposedNetworkPolicyAmendments: [{ host: "review-destination.invalid", action: "allow" }],
+    availableDecisions: ["accept", "acceptForSession", { acceptWithExecpolicyAmendment: { execpolicy_amendment: execRule } }, "decline", "cancel"],
+  } } });
+  const card = page.locator(".interactionRequest");
+  await expect(card).toHaveCount(1);
+  await card.locator("summary").click();
+  const details = card.locator("pre");
+  await expect(details).toBeVisible();
+  await expect(details).toContainText("REVIEW_TAIL");
+  await expect(details).toContainText("https://review-destination.invalid/bootstrap.sh");
+  await expect(details).toContainText("CWD_TAIL");
+  await expect(details).toContainText("REASON_TAIL");
+  await expect(details).toContainText("RULE_TAIL");
+  expect(JSON.parse((await details.textContent())!)).toMatchObject({ command, cwd, proposedExecpolicyAmendment: execRule,
+    additionalPermissions: { fileSystem: permissions.fileSystem }, networkApprovalContext: { host: "review-destination.invalid", protocol: "https" } });
+  await expect(card.locator('[data-choice-id="accept"]')).toBeEnabled();
+  await expect(card.locator('[data-choice-id="acceptForSession"]')).toBeEnabled();
+  await expect(card.locator('[data-choice-id="acceptWithExecpolicyAmendment"]')).toHaveCount(0);
+  const pending = (await stateOf(page, sessionId)).pendingInteractions[0]!;
+  expect(pending.payload?.messageId).toBeUndefined();
+  await card.locator('[data-choice-id="decline"]').click();
+  await waitObserved(peer, (record) => record.direction === "client" && record.message.id === requestId && record.message.result?.decision === "decline");
+  await expect(card).toHaveCount(0); // Every added review request is declined, never executed.
+  // Actual native Network presentation supplies neither a command nor cwd.
+  await controlPeer(peer, { action: "emit", message: { id: "network-review", method: "item/commandExecution/requestApproval", params: {
+    threadId, turnId, itemId: "unstarted-network", startedAtMs: Date.now(), kind: "command", environmentId: null,
+    command: null, cwd: null, commandActions: null, networkApprovalContext: { host: "review-destination.invalid", protocol: "https" },
+    availableDecisions: ["accept", "decline", "cancel"],
+  } } });
+  await expect(card).toHaveCount(1); await card.locator("summary").click();
+  await expect(card.locator("pre")).toBeVisible();
+  expect(JSON.parse((await card.locator("pre").textContent())!)).toMatchObject({ command: null, cwd: null,
+    networkApprovalContext: { host: "review-destination.invalid", protocol: "https" } });
+  await expect(card.locator("pre")).toContainText("Native network access");
+  await expect(card.locator('[data-choice-id="accept"]')).toBeEnabled();
+  await card.locator('[data-choice-id="decline"]').click();
+  await waitObserved(peer, (record) => record.direction === "client" && record.message.id === "network-review" && record.message.result?.decision === "decline");
+  await expect(card).toHaveCount(0);
+});
+
+test("Codex approval details retain permission paths and file rename/diff/root context", async ({ page, nativeServer }) => {
+  const { peer } = await createCodex(page, nativeServer, "landing");
+  const path = `/synthetic/${"p".repeat(1_800)}PATH_TAIL`;
+  const permissions = { network: null, fileSystem: { entries: [{ path: { type: "glob_pattern", pattern: `${path}/**` }, access: "write" }] } };
+  await controlPeer(peer, { action: "approval", kind: "permissions", requestId: "review-permissions", params: { permissions,
+    environmentId: "permission-environment", cwd: nativeServer.workspace, reason: "Review exact requested paths" } });
+  const card = page.locator(".interactionRequest");
+  await expect(card).toHaveCount(1); await card.locator("summary").click();
+  await expect(card.locator("pre")).toBeVisible();
+  expect(JSON.parse((await card.locator("pre").textContent())!)).toMatchObject({ permissions: { fileSystem: permissions.fileSystem }, cwd: nativeServer.workspace, environmentId: "permission-environment" });
+  await expect(card.locator('[data-choice-id="allowSession"]')).toBeEnabled();
+  await card.locator('[data-choice-id="decline"]').click();
+  await waitObserved(peer, (record) => record.direction === "client" && record.message.id === "review-permissions" && !!record.message.result);
+  await expect(card).toHaveCount(0);
+  const changes = [{ path: "old.ts", kind: { type: "update", move_path: `${path}/RENAME_TAIL.ts` }, diff: "@@ -1 +1 @@\n-before\n+REVIEW_DIFF_TAIL" }];
+  const grantRoot = `/synthetic/${"root/".repeat(430)}ROOT_TAIL`;
+  await controlPeer(peer, { action: "approval", kind: "file", requestId: "review-file", changes, params: { grantRoot } });
+  await expect(card).toHaveCount(1); await card.locator("summary").click();
+  await expect(card.locator("pre")).toBeVisible();
+  expect(JSON.parse((await card.locator("pre").textContent())!)).toMatchObject({ changes, grantRoot });
+  await expect(card.locator("pre")).toContainText("RENAME_TAIL.ts");
+  await expect(card.locator("pre")).toContainText("REVIEW_DIFF_TAIL");
+  await expect(card.locator("pre")).toContainText("ROOT_TAIL");
+  await expect(card.locator('[data-choice-id="acceptForSession"]')).toHaveCount(0);
+  await card.locator('[data-choice-id="decline"]').click();
+  await waitObserved(peer, (record) => record.direction === "client" && record.message.id === "review-file" && record.message.result?.decision === "decline");
+  await expect(card).toHaveCount(0);
+});
+
+test("Codex rejects concealed approval context without offering Allow or exposing credentials in the tool row", async ({ page, nativeServer }) => {
+  const { sessionId, peer } = await createCodex(page, nativeServer, "landing");
+  await controlPeer(peer, { action: "approval", requestId: "unsafe-review", command: 'curl -H "Authorization: Bearer browser-secret-marker" https://example.invalid' });
+  const denied = await waitObserved(peer, (record) => record.direction === "client" && record.message.id === "unsafe-review");
+  expect(denied.message.result).toEqual({ decision: "cancel" });
+  await expect(page.locator(".interactionRequest")).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("browser-secret-marker");
+  await expect.poll(async () => (await stateOf(page, sessionId)).phase).toBe("idle");
+  const oldTurn = await acceptedTurn(peer);
+  await page.locator("#prompt").fill("Another synthetic request."); await page.locator("#primaryButton").click();
+  const { threadId, turnId } = await acceptedTurn(peer, oldTurn.turnId);
+  await controlPeer(peer, { action: "emit", message: { id: "oversized-review", method: "item/commandExecution/requestApproval", params: {
+    threadId, turnId, itemId: "unstarted-oversized", startedAtMs: Date.now(), kind: "command", environmentId: null, cwd: nativeServer.workspace,
+    command: `printf ${"x".repeat(33_000)}OVERSIZED_TAIL`, availableDecisions: ["accept", "decline", "cancel"],
+  } } });
+  const oversized = await waitObserved(peer, (record) => record.direction === "client" && record.message.id === "oversized-review");
+  expect(oversized.message.result).toEqual({ decision: "cancel" });
+  await expect(page.locator(".interactionRequest")).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("OVERSIZED_TAIL");
+});
+
 test("interrupt targets the observed execution and acknowledgement is not settlement", async ({ page, nativeServer }) => {
   const { sessionId, peer } = await createCodex(page, nativeServer, "landing");
   await controlPeer(peer, { action: "configure", interrupt: "defer" });

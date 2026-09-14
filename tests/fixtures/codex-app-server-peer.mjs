@@ -270,7 +270,8 @@ async function control(command) {
       processId: null, source: "agent", status: "inProgress", commandActions: [], aggregatedOutput: null, exitCode: null, durationMs: null, pluginId: null, scriptPath: null });
     if (kind === "file") itemFor(thread, turn, itemId, "fileChange", { changes: command.changes ?? [{ path: "example.txt", kind: { type: "add" }, diff: "+synthetic" }], status: "inProgress" });
     const method = kind === "command" ? "item/commandExecution/requestApproval" : kind === "file" ? "item/fileChange/requestApproval" : kind === "permissions" ? "item/permissions/requestApproval" : kind === "input" ? "item/tool/requestUserInput" : "mcpServer/elicitation/request";
-    const params = { ...ids, itemId, startedAtMs: Date.now(), ...(kind === "command" ? { kind: "command", environmentId: null, command: command.command ?? "printf approved", cwd: thread.cwd, commandActions: [], availableDecisions: command.decisions ?? ["accept", "decline", "cancel"] } : {}), ...command.params };
+    const params = { ...ids, itemId, startedAtMs: Date.now(), ...(kind === "command" ? { kind: "command", environmentId: null, command: command.command ?? "printf approved", cwd: thread.cwd, commandActions: [], availableDecisions: command.decisions ?? ["accept", "decline", "cancel"] } : {}),
+      ...(kind === "permissions" ? { environmentId: null, cwd: thread.cwd, reason: null } : {}), ...command.params };
     const request = { id: command.requestId ?? `approval-${randomUUID()}`, method, params };
     controls.set(request.id, request); send(request);
     activity(thread, { type: "active", activeFlags: ["waitingOnApproval"] });
