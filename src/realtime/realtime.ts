@@ -294,6 +294,7 @@ export function createRealtime(options: {
     const raw = String(message?.raw?.errorMessage || message?.errorMessage || "").trim();
     const stopReason = String(message?.raw?.stopReason || message?.stopReason || "").trim();
     if (role && role !== "assistant") return null;
+    if (stopReason === "aborted") return null;
     if (!raw && stopReason !== "error") return null;
     const text = normalizeAssistantError(raw || stopReason) || "Assistant error";
     return {

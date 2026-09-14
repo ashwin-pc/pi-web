@@ -213,6 +213,7 @@ export function assistantErrorBody(rawError: unknown, fallback = "") {
 }
 
 function errorTextFromRaw(message: any) {
+  if ((message?.raw?.stopReason || message?.stopReason) === "aborted") return "";
   return normalizeAssistantError(message?.raw?.errorMessage || message?.errorMessage || "");
 }
 
@@ -241,7 +242,9 @@ export function messageText(message: any): string {
   // Prefer server-precomputed text, but fall back to raw content parsing.
   // Also reparse from raw if the precomputed text looks like a pure tool-call placeholder.
   const precomputed: string = message?.text || "";
-  if (precomputed && !/^(\[tool call: [^\]]+\]\n?)+$/.test(precomputed.trim())) {
+  const abortedWithContent = (message?.raw?.stopReason || message?.stopReason) === "aborted"
+    && (message?.raw?.content !== undefined || message?.content !== undefined);
+  if (precomputed && !abortedWithContent && !/^(\[tool call: [^\]]+\]\n?)+$/.test(precomputed.trim())) {
     return precomputed;
   }
   const text = textFromRawContent(message?.raw?.content || message?.content);

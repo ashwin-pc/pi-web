@@ -195,7 +195,7 @@ function isAssistantMessage(message: any) {
 }
 
 function retryableAssistantErrorInfo(message: any) {
-  if (!isAssistantMessage(message)) return undefined;
+  if (!isAssistantMessage(message) || assistantStopReason(message) === "aborted") return undefined;
   const raw = rawAssistantError(message);
   if (!raw || !isRetryableAssistantError(raw)) return undefined;
   const text = normalizeAssistantError(raw) || messageText(message) || "Assistant error";
@@ -1387,7 +1387,7 @@ export function createMessageList(options: {
     const content = rawContent(message);
     const text = messageText(message);
 
-    if (message.isError) {
+    if (message.isError && assistantStopReason(message) !== "aborted") {
       const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
       addRuntimeErrorCard({ title: "assistant error", subtitle: text, technicalDetails: distinctAssistantErrorBody(rawError, text) });
       return;
@@ -1425,6 +1425,11 @@ export function createMessageList(options: {
           renderedToolResultIds.add(call.id || "");
         } else if (isStreaming) {
           addPendingToolCard(call.id, call.toolName, call.args, call.startedAt);
+        } else if (assistantStopReason(message) === "aborted") {
+          addToolHistoryCard(call.toolName, true, {
+            toolCallId: call.id,
+            text: "Tool call interrupted before a result was recorded.",
+          }, call.args);
         }
       }
     }
