@@ -37,21 +37,24 @@ function filesystemEntry(value: unknown): boolean {
     && (special.subpath == null || typeof special.subpath === "string");
 }
 
-/** Validate the displayed scope; do not evaluate paths or build a second permission policy. */
+/** Validate the displayed scope; do not evaluate paths or build a second permission policy.
+ * The pinned schema permits omitted/null optional fields. Skip their value checks,
+ * but retain the supplied representation; never turn no-value into a default grant.
+ */
 function permissionProfile(value: unknown): NativeObject | undefined {
   const profile = object(value);
   if (!profile || !onlyKeys(profile, ["network", "fileSystem"])) return;
   if (profile.network != null) {
     const network = object(profile.network);
-    if (!network || !onlyKeys(network, ["enabled"]) || (network.enabled !== null && typeof network.enabled !== "boolean")) return;
+    if (!network || !onlyKeys(network, ["enabled"]) || (network.enabled != null && typeof network.enabled !== "boolean")) return;
   }
   if (profile.fileSystem != null) {
     const filesystem = object(profile.fileSystem);
     if (!filesystem || !onlyKeys(filesystem, ["read", "write", "entries", "globScanMaxDepth"])) return;
     if (filesystem.read !== undefined && !paths(filesystem.read)) return;
     if (filesystem.write !== undefined && !paths(filesystem.write)) return;
-    if (filesystem.entries !== undefined && (!Array.isArray(filesystem.entries) || filesystem.entries.length > 100 || !filesystem.entries.every(filesystemEntry))) return;
-    if (filesystem.globScanMaxDepth !== undefined && (!Number.isSafeInteger(filesystem.globScanMaxDepth) || Number(filesystem.globScanMaxDepth) < 0)) return;
+    if (filesystem.entries != null && (!Array.isArray(filesystem.entries) || filesystem.entries.length > 100 || !filesystem.entries.every(filesystemEntry))) return;
+    if (filesystem.globScanMaxDepth != null && (!Number.isSafeInteger(filesystem.globScanMaxDepth) || Number(filesystem.globScanMaxDepth) < 0)) return;
   }
   if (JSON.stringify(profile).length > 8_192) return;
   return Object.fromEntries(Object.entries(profile).filter(([, entry]) => entry !== null));

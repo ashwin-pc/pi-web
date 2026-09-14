@@ -238,6 +238,33 @@ describe("Codex production adapter through native process ingress", () => {
     expect(result.message.result).toEqual({ permissions: { network: { enabled: true } }, scope: choiceID === "allowTurn" ? "turn" : "session" });
   });
 
+  it.each([
+    { name: "omitted-optionals-positive-control", extra: {}, kind: "permissions" },
+    { name: "explicit-null-entries", extra: { entries: null }, kind: "permissions" },
+    { name: "explicit-null-depth", extra: { globScanMaxDepth: null }, kind: "permissions" },
+    { name: "command-additional-permissions-with-null", extra: { entries: null, globScanMaxDepth: null }, kind: "command" },
+    { name: "network-null-enabled-positive-control", extra: {}, network: { enabled: null }, kind: "permissions" },
+    { name: "network-omitted-enabled", extra: {}, network: {}, kind: "permissions" },
+  ])("keeps schema-valid optional permission context reviewable through native ingress: $name", async (sample) => {
+    const { handle, peer, root } = await fixture();
+    await prompt(handle);
+    const { threadId, turnId } = await acceptedTurn(peer);
+    const permissions = { fileSystem: { write: [join(root, "owned-output")], ...sample.extra }, ...("network" in sample ? { network: sample.network } : {}) };
+    const params = { threadId, turnId, itemId: `optional-${sample.name}`, startedAtMs: Date.now(), cwd: root, environmentId: null,
+      ...(sample.kind === "permissions" ? { permissions } : { kind: "command", command: "printf native-context-only", additionalPermissions: permissions, availableDecisions: ["accept", "decline", "cancel"] }) };
+    const id = `request-${sample.name}`;
+    await controlPeer(peer, { action: "emit", message: { id, method: sample.kind === "permissions" ? "item/permissions/requestApproval" : "item/commandExecution/requestApproval", params } });
+    const pending = handle.state().pendingInteractions[0]!;
+    expect(pending).toBeDefined();
+    expect(handle.state().error).toBeUndefined();
+    expect(pending.choices?.some((choice) => choice.meaning === "accept")).toBe(true);
+    expect(JSON.parse(pending.body!)[sample.kind === "permissions" ? "permissions" : "additionalPermissions"]).toStrictEqual(permissions);
+    expect(handle.respondInteraction({ id: pending.id, sessionId: handle.sessionId, choiceID: "decline" })).toBe(true);
+    const response = await waitObserved(peer, (record) => record.direction === "client" && record.message.id === id);
+    expect(response.message.result).toStrictEqual(sample.kind === "permissions" ? { permissions: {}, scope: "turn" } : { decision: "decline" });
+    expect(handle.state().pendingInteractions).toEqual([]);
+  });
+
   it("projects complete standalone command context through production ingress and safely declines it", async () => {
     const { handle, peer } = await fixture();
     await prompt(handle);

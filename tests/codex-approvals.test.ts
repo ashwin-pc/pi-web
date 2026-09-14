@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { codexApproval, unsupportedControlResponse } from "../server/session/adapters/codex/approvals.js";
 import { approvalContext, MAX_APPROVAL_CONTEXT_BYTES } from "../server/session/adapters/codex/approval-context.js";
@@ -65,9 +66,60 @@ describe("Codex method-specific native approval mapping", () => {
     expect(approval.responses.has("always")).toBe(false);
   });
 
+  it("pins omitted/null permission fields to the checked-in schema", () => {
+    const schema = JSON.parse(readFileSync(new URL("./fixtures/codex-0.154.0/schema.json", import.meta.url), "utf8"));
+    for (const [name, fields] of [
+      ["AdditionalNetworkPermissions", { enabled: "boolean" }],
+      ["AdditionalFileSystemPermissions", { entries: "array", globScanMaxDepth: "integer" }],
+    ] as const) {
+      const definition = schema.definitions.v2[name];
+      for (const [field, type] of Object.entries(fields)) {
+        expect(definition.required || []).not.toContain(field);
+        expect(definition.properties[field].type).toEqual([type, "null"]);
+      }
+    }
+  });
+
+  it.each([
+    { name: "omitted file fields", fields: {} },
+    { name: "null entries", fields: { entries: null } },
+    { name: "null depth", fields: { globScanMaxDepth: null } },
+    { name: "both file nulls", fields: { entries: null, globScanMaxDepth: null } },
+    { name: "null network enabled", fields: {}, network: { enabled: null } },
+    { name: "omitted network enabled", fields: {}, network: {} },
+    { name: "false remains false", fields: { entries: [], globScanMaxDepth: 1 }, network: { enabled: false } },
+    { name: "true remains true", fields: { entries: [], globScanMaxDepth: 2 }, network: { enabled: true } },
+  ])("preserves $name in display and native responses, without injecting defaults", (sample) => {
+    const permissions = { fileSystem: { write: ["/synthetic/project"], ...sample.fields }, ...("network" in sample ? { network: sample.network } : {}) };
+    const before = JSON.stringify(permissions);
+    const grant = codexApproval({ id: "p", method: "item/permissions/requestApproval", params: { cwd: "/synthetic/project", permissions } })!;
+    expect(grant).toBeDefined();
+    expect(JSON.parse(grant.description).permissions).toStrictEqual(permissions);
+    for (const [choice, scope] of [["allowTurn", "turn"], ["allowSession", "session"]]) {
+      expect(grant.responses.get(choice!)).toStrictEqual({ permissions, scope });
+    }
+    expect(grant.responses.get("decline")).toStrictEqual({ permissions: {}, scope: "turn" });
+    const commandGrant = codexApproval(command({ additionalPermissions: permissions, availableDecisions: ["accept", "acceptForSession", "decline", "cancel"] }))!;
+    expect(commandGrant).toBeDefined();
+    expect(JSON.parse(commandGrant.description).additionalPermissions).toStrictEqual(permissions);
+    for (const decision of ["accept", "acceptForSession", "decline", "cancel"]) expect(commandGrant.responses.get(decision)).toStrictEqual({ decision });
+    expect(JSON.stringify(permissions)).toBe(before);
+  });
+
   it.each([
     { network: { enabled: "yes" } },
     { network: { enabled: true, futurePrivilege: true } },
+    { network: { enabled: 0 } },
+    { network: { enabled: null, futurePrivilege: true } },
+    { fileSystem: { entries: null, futurePrivilege: true } },
+    { fileSystem: { entries: {} } },
+    { fileSystem: { entries: Array.from({ length: 101 }, () => ({ path: { type: "path", path: "/synthetic" }, access: "read" })) } },
+    { fileSystem: { globScanMaxDepth: "1" } },
+    { fileSystem: { globScanMaxDepth: -1 } },
+    { fileSystem: { globScanMaxDepth: 1.5 } },
+    { fileSystem: { globScanMaxDepth: Number.MAX_SAFE_INTEGER + 1 } },
+    { fileSystem: { entries: null, globScanMaxDepth: null, write: ["/" + "x".repeat(2_048)] } },
+    { fileSystem: { entries: null, globScanMaxDepth: null, write: Array.from({ length: 5 }, () => "/" + "x".repeat(2_000)) } },
     { fileSystem: { write: [42] } },
     { fileSystem: { entries: [{ path: { type: "special", value: { kind: "unknown", path: "opaque" } }, access: "write" }] } },
     { futurePermission: true },
