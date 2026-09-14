@@ -21,7 +21,11 @@ export default defineConfig({
   // Concurrent shard processes must not delete or overwrite each other's
   // failure artifacts while Playwright prepares its output directory.
   outputDir: join("test-results", String(port)),
-  snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}{ext}",
+  // Existing root snapshots are canonical macOS assets also used by README/website.
+  // Other platforms must have explicitly recorded expectations; never fall back.
+  snapshotPathTemplate: process.platform === "darwin"
+    ? "{testDir}/{testFilePath}-snapshots/{arg}{ext}"
+    : "{testDir}/{testFilePath}-snapshots/{platform}/{arg}{ext}",
   expect: {
     toHaveScreenshot: {
       maxDiffPixelRatio: 0.025,
