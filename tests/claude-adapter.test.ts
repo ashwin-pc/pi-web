@@ -148,7 +148,7 @@ describe("Claude production adapter", () => {
     expect(JSON.stringify(f.events)).not.toContain("DO-NOT-RETAIN");
   });
 
-  it("rejects concurrent/stale control and does not turn an interrupt receipt into idle", async () => {
+  it.each([false, true])("recognizes native interruption (is_error=%s) without turning its receipt into idle", async (isError) => {
     const f = await running();
     await expect(f.handle.prompt(input("second"))).rejects.toMatchObject({ status: 409 });
     await expect(f.handle.interrupt("stale")).rejects.toMatchObject({ status: 409 });
@@ -159,11 +159,15 @@ describe("Claude production adapter", () => {
     f.peer.send({ type: "control_response", response: { subtype: "success", request_id: request.request_id, response: { still_queued: ["native-queued"] } } });
     expect(await interrupted).toEqual({ sessionId: "web-session", executionId: "execution-1", acknowledged: true, stillQueued: true });
     expect(f.handle.state().isStreaming).toBe(true);
-    f.result({ terminal_reason: "aborted_tools" });
+    f.send({ type: "assistant", aborted: true, parent_tool_use_id: null, message: { id: "interrupted-api", role: "assistant", content: [{ type: "text", text: "Partial" }], stop_reason: null, usage: {} } });
+    f.result({ terminal_reason: "aborted_streaming", ...(isError ? { subtype: "error_during_execution", is_error: true, errors: ["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"] } : {}) });
     await flush();
     expect(f.handle.state().phase).toBe("settling");
     f.idle(); await flush();
     expect(f.handle.state().phase).toBe("idle");
+    expect(f.handle.state().error).toBeUndefined();
+    expect((await f.handle.messages()).find((message) => message.role === "assistant")?.status).toBe("interrupted");
+    expect(f.events.some((event) => event.type === "error")).toBe(false);
   });
 
   it("ignores duplicate/late finals and idle while a newer execution lacks its own result", async () => {
@@ -237,8 +241,18 @@ describe("Claude production adapter", () => {
   it("bounds missing interrupt acknowledgement without inventing a successful stop", async () => {
     const f = await running({ controlTimeoutMs: 25 });
     await expect(f.handle.interrupt("execution-1")).rejects.toThrow("interrupt acknowledgement timed out");
-    expect(f.handle.state()).toMatchObject({ phase: "error", isStreaming: false });
+    expect(f.handle.state()).toMatchObject({ phase: "unavailable", isStreaming: false });
     expect(f.handle.state().activeExecution).toBeUndefined();
+  });
+
+  it("marks transport loss unavailable even after a settled native error, and requires explicit reopen", async () => {
+    const f = await running();
+    f.result({ subtype: "error_during_execution", is_error: true, errors: ["Synthetic model error"] });
+    f.idle(); await flush();
+    expect(f.handle.state().phase).toBe("error");
+    f.peer.exit(17);
+    await vi.waitFor(() => expect(f.handle.state().phase).toBe("unavailable"));
+    await expect(f.handle.prompt(input("new"))).rejects.toMatchObject({ status: 410 });
   });
 
   it("rejects a mismatched executable before model input or SDK process initialization", async () => {
@@ -309,7 +323,7 @@ describe("Claude production adapter", () => {
     await flush();
     expect(JSON.stringify(f.events)).not.toContain("DO-NOT-RETAIN");
     f.peer.exit(17);
-    await vi.waitFor(() => expect(f.handle.state().phase).toBe("error"));
+    await vi.waitFor(() => expect(f.handle.state().phase).toBe("unavailable"));
     expect(f.handle.state().isStreaming).toBe(false);
     expect(f.handle.state().activeExecution).toBeUndefined();
     expect(f.events).toContainEqual(expect.objectContaining({ type: "error", clientMessageId: "client-execution-1" }));

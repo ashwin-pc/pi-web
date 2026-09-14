@@ -128,6 +128,9 @@ export function createClaudeQuery(params: {
     prompt: params.prompt,
     options: {
       ...options,
+      // Documented since SDK 0.2.83: session_state_changed is opt-in. Result is
+      // not idle, so the host must request the native post-background-work signal.
+      env: { ...(options.env ?? process.env), CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS: "1" },
       systemPrompt: options.systemPrompt ?? { type: "preset", preset: "claude_code" },
       settingSources: options.settingSources ?? ["user", "project", "local"],
       includePartialMessages: true,

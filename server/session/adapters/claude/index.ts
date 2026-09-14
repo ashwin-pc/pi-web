@@ -155,7 +155,7 @@ class ClaudeHandle implements SessionHandle {
 
   async prompt(input: AdapterPromptInput): Promise<PromptReceiptDto> {
     if (this.disposed) throw new SessionServiceError("Claude session is disposed", 410);
-    if (this.stateValue.nativeSession.persistence === "ephemeral" && this.stateValue.nativeSession.status === "unavailable") throw new SessionServiceError("Ephemeral Claude process is no longer available", 410);
+    if (this.stateValue.phase === "unavailable") throw new SessionServiceError("Claude process is no longer available; reopen the native session before continuing", 410);
     if (input.mode !== "prompt") throw new SessionServiceError(`Claude does not support ${input.mode} input`, 400);
     if (input.attachments.length) throw new SessionServiceError("Claude attachments are not enabled in this integration", 400);
     if (!input.message.trim()) throw new SessionServiceError("A prompt is required", 400);
@@ -195,7 +195,12 @@ class ClaudeHandle implements SessionHandle {
     if (!execution || execution.id !== expectedExecutionId || !query) throw new SessionServiceError("Stale Claude execution interrupt", 409);
     let receipt;
     try { receipt = await bounded(query.interrupt(), this.options.controlTimeoutMs ?? 10_000, "interrupt acknowledgement"); }
-    catch (error) { this.fail(error); throw error; }
+    catch (error) {
+      // An older control can fail after its turn settled and a newer one began.
+      // Report that call's failure without touching the newer execution/process.
+      if (this.execution === execution && this.query === query && generation === this.generation) this.fail(error);
+      throw error;
+    }
     if (this.disposed || generation !== this.generation) throw new SessionServiceError("Claude query changed while interrupting", 409);
     return { sessionId: this.sessionId, executionId: expectedExecutionId, acknowledged: true,
       ...(receipt ? { stillQueued: receipt.still_queued.length > 0 } : {}) };
@@ -299,9 +304,12 @@ class ClaudeHandle implements SessionHandle {
       this.execution.result = true;
       const interrupted = message.terminal_reason === "aborted_streaming" || message.terminal_reason === "aborted_tools";
       this.execution.interrupted = interrupted;
-      this.execution.error = message.is_error ? cleanError(message.subtype === "success" ? message.result : message.errors.join("; ")) : undefined;
+      // Native 2.1.270 can report an intentional abort as error_during_execution
+      // with is_error=true. Its structured abort reason wins over that envelope;
+      // unrelated native failures remain errors, even after an interrupt request.
+      this.execution.error = message.is_error && !interrupted ? cleanError(message.subtype === "success" ? message.result : message.errors.join("; ")) : undefined;
       if (this.execution.error) this.emit({ type: "error", sessionId: this.sessionId, error: this.execution.error, clientMessageId: this.execution.input.clientMessageId });
-      this.transcript.finish(this.execution.id, interrupted ? "interrupted" : message.is_error ? "error" : "completed");
+      this.transcript.finish(this.execution.id, interrupted ? "interrupted" : message.is_error ? "error" : "completed", this.execution.error);
       this.stateValue.phase = "settling";
       this.stateValue.error = this.execution.error;
       this.recordUsage(message);
@@ -364,13 +372,16 @@ class ClaudeHandle implements SessionHandle {
   }
 
   private fail(error: unknown): void {
-    if (this.disposed || !this.execution && ["error", "unavailable"].includes(this.stateValue.phase)) return;
+    if (this.disposed || !this.execution && this.stateValue.phase === "unavailable") return;
     const execution = this.execution;
-    if (execution) this.transcript.finish(execution.id, execution.interrupted ? "interrupted" : "error");
+    if (execution) this.transcript.finish(execution.id, execution.interrupted ? "interrupted" : "error", cleanError(error));
     this.execution = undefined;
     this.stateValue.activeExecution = undefined;
     const ephemeral = this.stateValue.nativeSession.persistence === "ephemeral";
-    this.stateValue.phase = ephemeral ? "unavailable" : "error"; this.stateValue.activity = "idle"; this.stateValue.error = cleanError(error);
+    // Model-result errors may leave a healthy query usable. This path tears the
+    // query down: mark transport loss unavailable so explicit service.open()
+    // replaces the handle using authoritative SDK history, never stale memory.
+    this.stateValue.phase = ephemeral || this.query ? "unavailable" : "error"; this.stateValue.activity = "idle"; this.stateValue.error = cleanError(error);
     if (ephemeral) this.stateValue.nativeSession.status = "unavailable";
     this.stateValue.isStreaming = false; this.stateValue.isRetrying = false; this.stateValue.isCompacting = false;
     this.approvals.cancel("disposed");

@@ -217,12 +217,16 @@ export class ClaudeTranscript {
     this.event({ type: "message_start", message }, correlation);
   }
 
-  finish(executionId: string, status: "completed" | "error" | "interrupted"): void {
+  finish(executionId: string, status: "completed" | "error" | "interrupted", error?: string): void {
     for (const message of this.items.values()) {
       if (message.executionId !== executionId || message.role !== "assistant") continue;
       message.status = status;
-      if (status === "error") message.isError = true;
-      if (status === "interrupted") for (const part of message.parts) if (part?.type === "toolCall" && part.status === "running") part.status = "cancelled";
+      if (status === "error") { message.isError = true; message.errorMessage = error; }
+      if (status !== "completed") for (const part of message.parts) {
+        if (part.type === "toolCall" && part.status === "running") part.status = status === "interrupted" ? "cancelled" : "error";
+        // A missing result remains missing: ending the host's running indicator
+        // does not invent tool output or claim external side effects rolled back.
+      }
       this.event({ type: "message_replace", message, final: true }, { executionId });
     }
   }

@@ -65,6 +65,7 @@ describe("Claude pinned native SDK ingress", () => {
     expect(invocation.cwd).toBe("/synthetic-claude-workspace");
     expect(invocation.env.ANTHROPIC_API_KEY).toBe("synthetic-not-a-credential");
     expect(invocation.env.CLAUDE_CONFIG_DIR).toBe("/synthetic-claude-config");
+    expect(invocation.env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS).toBe("1");
     expect(invocation.args).toEqual(expect.arrayContaining([
       "--input-format", "stream-json", "--output-format", "stream-json",
       "--setting-sources=user,project,local", "--include-partial-messages", "--replay-user-messages",
