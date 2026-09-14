@@ -18,7 +18,8 @@ export interface SessionStatsDto {
   toolResults: number;
   totalMessages: number;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
-  cost: number;
+  /** Omitted when the harness does not expose monetary usage; zero is a known zero. */
+  cost?: number;
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
 
@@ -375,6 +376,8 @@ export interface InteractionResponseDto {
 export interface PromptInputDto {
   message: string;
   mode: string;
+  /** Required for native steering when supported; the browser targets the observed host guard. */
+  expectedExecutionId?: string;
   attachments: AttachmentDto[];
   clientMessageId?: string;
   sourceClientId?: string;

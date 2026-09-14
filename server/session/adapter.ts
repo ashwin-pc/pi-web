@@ -11,7 +11,8 @@ import type {
   SessionSnapshotDto,
 } from "./dto.js";
 
-/** The host supplies a stale-interrupt guard. It is not a fabricated native turn ID. */
+/** The host supplies a guard, not a native turn ID. For supported steering it must
+ * preserve the validated expectedExecutionId, never substitute the current execution. */
 export interface AdapterPromptInput extends PromptInputDto {
   executionId: string;
 }
