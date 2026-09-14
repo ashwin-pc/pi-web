@@ -1,18 +1,19 @@
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test as base, expect, type Page, type TestInfo } from "@playwright/test";
 import type { HarnessCatalogDto, InteractionRequestDto, SessionSnapshotDto } from "../../server/session/dto.js";
-import { acceptedTurn, controlPeer, peerForThread, readObserved, waitObserved } from "../fixtures/codex-peer-control.js";
-import { mcpImageEvents } from "../fixtures/codex-native-events.js";
+import { acceptedTurn, controlPeer, findPeer, peerForThread, readObserved, waitObserved } from "../fixtures/codex-peer-control.js";
+import { codexFixturePng, mcpImageEvents } from "../fixtures/codex-native-events.js";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
 
 const repository = resolve(import.meta.dirname, "../..");
 
-type NativeServer = { root: string; workspace: string; peerDir: string; baseURL: string; restart: () => Promise<void> };
+type NativeServer = { root: string; workspace: string; peerDir: string; claudePeerDir: string; baseURL: string; restart: () => Promise<void> };
 
 async function unusedPort() {
   const socket = createServer();
@@ -22,11 +23,12 @@ async function unusedPort() {
   return port;
 }
 
-async function isolatedServer(testInfo: TestInfo) {
+async function isolatedServer(testInfo: TestInfo, claudeEnabled: boolean) {
   const root = await mkdtemp(join(tmpdir(), "pi-web-native-browser-"));
   const workspace = join(root, "workspace");
   const home = join(root, "home");
   const peerDir = join(root, "codex-peer");
+  const claudePeerDir = join(root, "claude-peer");
   const port = await unusedPort();
   const baseURL = `http://127.0.0.1:${port}`;
   await mkdir(join(home, ".pi", "agent"), { recursive: true });
@@ -47,7 +49,8 @@ async function isolatedServer(testInfo: TestInfo) {
     PI_WEB_NATIVE_BINDINGS_FILE: join(root, "native-bindings.json"), PI_WEB_MULTI_HARNESS: "1",
     PI_WEB_CODEX_COMMAND: process.execPath, PI_WEB_CODEX_ARGS: JSON.stringify([join(repository, "tests/fixtures/codex-app-server-peer.mjs")]),
     PI_WEB_CODEX_PEER_DIR: peerDir,
-    PI_WEB_CLAUDE_EXECUTABLE: join(root, "not-installed-claude"),
+    PI_WEB_CLAUDE_EXECUTABLE: claudeEnabled ? join(repository, "tests/fixtures/claude-native-cli.mjs") : join(root, "not-installed-claude"),
+    PI_WEB_CLAUDE_PEER_DIR: claudePeerDir,
   };
   let child: ChildProcess | undefined;
   let output = "";
@@ -93,21 +96,32 @@ async function isolatedServer(testInfo: TestInfo) {
   async function cleanup() {
     await stop();
     for (const pid of ownedGroups) signalOwned(pid, "SIGKILL");
-    await testInfo.attach("native-server.log", { body: output, contentType: "text/plain" });
+    const serverLog = testInfo.outputPath("native-server.log");
+    await mkdir(dirname(serverLog), { recursive: true });
+    await writeFile(serverLog, output);
+    await testInfo.attach("native-server.log", { path: serverLog, contentType: "text/plain" });
     if (testInfo.status !== testInfo.expectedStatus) {
-      for (const pid of await readdir(join(peerDir, "peers")).catch(() => [])) {
-        const observed = await readFile(join(peerDir, "peers", pid, "observed.jsonl"), "utf8").catch(() => "");
-        if (observed) await testInfo.attach(`synthetic-codex-peer-${pid}.jsonl`, { body: observed, contentType: "application/x-ndjson" });
+      for (const [harness, directory] of [["codex", peerDir], ["claude", claudePeerDir]]) {
+        for (const pid of await readdir(join(directory, "peers")).catch(() => [])) {
+          const observed = await readFile(join(directory, "peers", pid, "observed.jsonl"), "utf8").catch(() => "");
+          if (observed) {
+            const name = `synthetic-${harness}-peer-${pid}.jsonl`;
+            const file = testInfo.outputPath(name);
+            await writeFile(file, observed);
+            await testInfo.attach(name, { path: file, contentType: "application/x-ndjson" });
+          }
+        }
       }
     }
     await rm(root, { recursive: true, force: true });
   }
-  return { value: { root, workspace, peerDir, baseURL, restart: async () => { await stop(); await start(); } } satisfies NativeServer, start, cleanup };
+  return { value: { root, workspace, peerDir, claudePeerDir, baseURL, restart: async () => { await stop(); await start(); } } satisfies NativeServer, start, cleanup };
 }
 
-const test = base.extend<{ nativeServer: NativeServer }>({
-  nativeServer: async ({}, use, testInfo) => {
-    const server = await isolatedServer(testInfo);
+const test = base.extend<{ nativeServer: NativeServer; claudeEnabled: boolean }>({
+  claudeEnabled: [false, { option: true }],
+  nativeServer: async ({ claudeEnabled }, use, testInfo) => {
+    const server = await isolatedServer(testInfo, claudeEnabled);
     try { await server.start(); await use(server.value); }
     finally { await server.cleanup(); }
   },
@@ -161,7 +175,7 @@ async function pendingRequest(page: Page, sessionId: string) {
   return (await stateOf(page, sessionId)).pendingInteractions[0];
 }
 
-function choiceButton(page: Page, request: InteractionRequestDto, meaning: "accept" | "decline" | "cancel", scope?: string) {
+function choiceButton(page: Page, request: InteractionRequestDto, meaning: "accept" | "decline" | "cancel" | "submit", scope?: string) {
   const choice = request.choices?.find((value) => value.meaning === meaning && (!scope || value.scope?.includes(scope)));
   expect(choice, `Missing offered ${meaning} ${scope || ""} choice`).toBeTruthy();
   return page.locator(`[data-request-id="${request.id}"] [data-choice-id="${choice!.id}"]`);
@@ -421,4 +435,213 @@ test("native process death invalidates pending decisions and running controls", 
   await expect(page.locator("#stopButton")).toBeHidden();
   await expect.poll(async () => (await stateOf(page, sessionId)).phase).toMatch(/error|unavailable/);
   await expect(page.locator("#runtimeStatus")).toBeVisible();
+});
+
+async function createClaude(page: Page, server: NativeServer, flow: "landing" | "drawer" = "landing") {
+  await page.goto("/");
+  const initial = await stateOf(page);
+  const createdResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/sessions/new" && response.request().method() === "POST");
+  if (flow === "landing") {
+    await page.locator('[data-harness-selector="landing"] select').selectOption("claude");
+    await page.locator("#prompt").fill("Inspect this Claude workspace.");
+    await page.locator("#primaryButton").click();
+  } else {
+    await page.locator("#sessionButton").click();
+    await page.locator("#sessionNewButton").click();
+    const dialog = page.getByRole("dialog", { name: "New session", exact: true });
+    await dialog.locator('[data-harness-selector="dialog"] select').selectOption("claude");
+    await dialog.getByRole("button", { name: "Start session" }).click();
+  }
+  const response = await createdResponse;
+  expect(response.ok(), await response.text()).toBe(true);
+  const created = await response.json() as SessionSnapshotDto;
+  expect(created.harnessId).toBe("claude");
+  expect(created.sessionId).not.toBe(initial.sessionId);
+  expect(created.nativeSession.sessionId).toBeTruthy();
+  expect(created.nativeSession.sessionId).not.toBe(created.sessionId);
+  expect(created.nativeSession.status).toBe("unmaterialized");
+  expect(created.sessionFile).toBeUndefined();
+  if (flow === "drawer") {
+    // Unlike Codex, creating a Claude handle has not started its native process.
+    expect(await readdir(join(server.claudePeerDir, "peers")).catch(() => [])).toHaveLength(0);
+    await page.locator("#prompt").fill("Inspect this Claude workspace.");
+    await page.locator("#primaryButton").click();
+  }
+  const peer = await findPeer(server.claudePeerDir, (record) => record.direction === "client" && record.message.type === "user" && record.message.session_id === created.nativeSession.sessionId);
+  const user = (await waitObserved(peer, (record) => record.direction === "client" && record.message.type === "user")).message;
+  await expect(page.locator(".message.user", { hasText: "Inspect this Claude workspace." })).toHaveCount(1);
+  return { sessionId: created.sessionId, nativeId: created.nativeSession.sessionId!, peer, user };
+}
+
+type ClaudeRun = Awaited<ReturnType<typeof createClaude>>;
+let claudeControlSerial = 0;
+async function controlClaude(run: ClaudeRun, command: Record<string, unknown>) {
+  const testControlId = randomUUID();
+  const file = join(run.peer.directory, "commands", `${String(++claudeControlSerial).padStart(8, "0")}.json`);
+  await writeFile(`${file}.tmp`, JSON.stringify({ ...command, testControlId }));
+  await rename(`${file}.tmp`, file);
+  if (command.action !== "exit") await waitObserved(run.peer, (record) => record.direction === "control" && record.message.testControlId === testControlId);
+}
+const emitClaude = (run: ClaudeRun, message: Record<string, unknown>) => controlClaude(run, { action: "emit", message });
+const streamClaude = (run: ClaudeRun, event: Record<string, unknown>) => emitClaude(run, { type: "stream_event", parent_tool_use_id: null, user_message_uuid: run.user.uuid, event });
+const assistantClaude = (id: string, content: unknown[]) => ({ type: "assistant", parent_tool_use_id: null, message: { id, role: "assistant", model: "claude-fixture", content, stop_reason: null, stop_sequence: null, usage: {} } });
+async function finishClaude(run: ClaudeRun, overrides: Record<string, unknown> = {}, idle = true) {
+  await emitClaude(run, { type: "result", subtype: "success", is_error: false, result: "done", num_turns: 1,
+    duration_ms: 1, duration_api_ms: 1, stop_reason: "end_turn", total_cost_usd: 0.02, usage: {},
+    modelUsage: { "claude-fixture": { inputTokens: 10, outputTokens: 5, cacheReadInputTokens: 2, cacheCreationInputTokens: 1, costUSD: 0.02 } },
+    permission_denials: [], result_index: 0, user_message_uuid: run.user.uuid, ...overrides });
+  if (idle) await emitClaude(run, { type: "system", subtype: "session_state_changed", state: "idle" });
+}
+const claudeResponse = (run: ClaudeRun, id: string) => waitObserved(run.peer, (record) => record.direction === "client" && record.message.type === "control_response" && record.message.response?.request_id === id);
+
+// The same service fixture and existing UI, through the pinned SDK and executable peer.
+// SDK history readers are deliberately NOT substituted and no private transcript store is fabricated.
+test.describe("Claude native", () => {
+  test.use({ claudeEnabled: true });
+
+  for (const flow of ["landing", "drawer"] as const) {
+    test(`${flow}: SDK stream, per-block finals, tools/images and authoritative idle`, async ({ page, nativeServer }) => {
+      const run = await createClaude(page, nativeServer, flow);
+      const initial = await stateOf(page, run.sessionId);
+      expect(initial.activeExecution?.owner).toBe("host");
+      expect(initial.activeExecution?.nativeExecutionId).toBeUndefined();
+      expect(initial.stats.cost).toBeUndefined();
+      await streamClaude(run, { type: "message_start", message: { id: "claude-api-1" } });
+      await streamClaude(run, { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+      await streamClaude(run, { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Claude provisional intro." } });
+      await expect(page.locator(".message.assistant")).toContainText("Claude provisional intro.");
+      await emitClaude(run, assistantClaude("claude-api-1", [{ type: "text", text: "Claude authoritative intro." }]));
+      await streamClaude(run, { type: "content_block_stop", index: 0 });
+      await streamClaude(run, { type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "" } });
+      await streamClaude(run, { type: "content_block_delta", index: 1, delta: { type: "thinking_delta", thinking: "Exposed Claude summary." } });
+      await emitClaude(run, assistantClaude("claude-api-1", [{ type: "thinking", thinking: "Exposed Claude summary." }]));
+      await streamClaude(run, { type: "content_block_stop", index: 1 });
+      await streamClaude(run, { type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "claude-read", name: "Read", input: {} } });
+      await streamClaude(run, { type: "content_block_delta", index: 2, delta: { type: "input_json_delta", partial_json: '{"file_path":' } });
+      await emitClaude(run, assistantClaude("claude-api-1", [{ type: "tool_use", id: "claude-read", name: "Read", input: { file_path: "hello.txt" } }]));
+      await streamClaude(run, { type: "content_block_stop", index: 2 });
+      await streamClaude(run, { type: "message_stop" });
+      await emitClaude(run, { type: "user", parent_tool_use_id: null, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "claude-read", is_error: false, content: [
+        { type: "text", text: "Native Claude tool output." }, { type: "image", source: { type: "base64", media_type: "image/png", data: codexFixturePng } },
+      ] }] } });
+      await emitClaude(run, assistantClaude("claude-api-2", [{ type: "text", text: "Claude final answer." }]));
+      await expect(page.locator("#messages")).not.toContainText("Claude provisional intro.");
+      await expect(page.locator(".toolCard--thinking")).toContainText("Exposed Claude summary.");
+      await expect(page.locator('.toolCard[data-tool-name="Read"]')).toHaveCount(1);
+      await revealNativeImage(page);
+      await expect(page.locator(".message.user")).toHaveCount(1); // A tool result is not another user prompt.
+      const parts = (await (await page.request.get(`/api/messages?sessionId=${run.sessionId}`)).json()).messages.find((message: any) => message.nativeItemId === "claude-api-1").parts;
+      expect(parts.map((part: any) => part.type)).toEqual(["text", "thinking", "toolCall"]);
+      expect(parts[2]).toMatchObject({ status: "completed", args: { file_path: "hello.txt" } });
+      await finishClaude(run, {}, false);
+      await expect.poll(async () => (await stateOf(page, run.sessionId)).phase).toBe("settling");
+      await expect(page.locator("#stopButton")).toBeVisible();
+      await emitClaude(run, { type: "system", subtype: "session_state_changed", state: "idle" });
+      await expect(page.locator("#stopButton")).toBeHidden();
+      expect((await stateOf(page, run.sessionId)).stats.cost).toBe(0.02);
+      await page.reload(); // Live-handle hydration, not a claim of persisted SDK history.
+      await expect(page.locator("#messages")).toContainText("Claude final answer.");
+      await revealNativeImage(page);
+      expect((await stateOf(page, run.sessionId)).nativeSession.status).toBe("unmaterialized");
+      await page.locator("#modelSettingsButton").click();
+      await expect(page.locator(".modelSettingsNative")).toContainText(initial.nativeSettings!.model!);
+      await expect(page.locator("#modelSelect")).toBeHidden();
+      await expect(page.locator("#attachButton")).toBeHidden();
+    });
+  }
+
+  test("two clients reconcile native deny, suggested session scope and cancel", async ({ page, browser, nativeServer }) => {
+    const run = await createClaude(page, nativeServer);
+    const other = await browser.newContext({ baseURL: nativeServer.baseURL, viewport: page.viewportSize()! });
+    const second = await other.newPage();
+    let dialogs = 0;
+    for (const client of [page, second]) client.on("dialog", async (dialog) => { dialogs++; await dialog.dismiss(); });
+    try {
+      await second.goto(`/?sessionId=${run.sessionId}`);
+      const suggestions = [{ type: "addRules", rules: [{ toolName: "Bash", ruleContent: "git status" }], behavior: "allow", destination: "session" }];
+      const ask = (id: string) => emitClaude(run, { type: "control_request", request_id: id, request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "git status" }, tool_use_id: `tool-${id}`, permission_suggestions: id === "claude-scope" ? suggestions : [], default_to_no: true } });
+      await ask("claude-deny");
+      const deny = await pendingRequest(page, run.sessionId);
+      await expect(page.locator(".interactionSummary")).toContainText("git status");
+      await expect(page.locator(".interactionCaution")).toBeVisible();
+      await second.reload();
+      await expect(second.locator(".interactionRequest")).toHaveCount(1);
+      await choiceButton(second, deny, "decline").click();
+      expect((await claudeResponse(run, "claude-deny")).message.response.response).toMatchObject({ behavior: "deny" });
+      await expect(page.locator(".interactionRequest")).toHaveCount(0);
+      await expect(page.locator("#stopButton")).toBeVisible();
+      const stale = await page.request.post("/api/interactions/respond", { data: { sessionId: run.sessionId, id: deny.id, choiceID: "allow-once" } });
+      expect(stale.ok()).toBe(false);
+      await ask("claude-scope");
+      const scope = await pendingRequest(page, run.sessionId);
+      await page.locator(".interactionRequest summary").click();
+      await expect(page.locator(".interactionRequest pre")).toBeVisible();
+      await expect(page.locator(".interactionRequest pre")).toContainText("Proposed permission changes: addRules: Bash(git status) [session]");
+      await choiceButton(page, scope, "accept", "session").click();
+      expect((await claudeResponse(run, "claude-scope")).message.response.response).toMatchObject({ behavior: "allow", updatedInput: { command: "git status" }, updatedPermissions: suggestions });
+      await expect(second.locator(".interactionRequest")).toHaveCount(0);
+      await ask("claude-cancel");
+      const cancel = await pendingRequest(page, run.sessionId);
+      await choiceButton(page, cancel, "cancel").click();
+      expect((await claudeResponse(run, "claude-cancel")).message.response.response).toMatchObject({ behavior: "deny", interrupt: true });
+      await expect(second.locator(".interactionRequest")).toHaveCount(0);
+      await expect(page.locator("#stopButton")).toBeVisible(); // Native cancellation reply is not idle.
+      await finishClaude(run, { terminal_reason: "aborted_tools" });
+      await expect(page.locator("#stopButton")).toBeHidden();
+      expect(dialogs).toBe(0);
+    } finally { await other.close(); }
+  });
+
+  test("questions retain answers across another pending request and submit native labels", async ({ page, nativeServer }) => {
+    const run = await createClaude(page, nativeServer);
+    await emitClaude(run, { type: "control_request", request_id: "claude-question", request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", tool_use_id: "question-tool", input: { questions: [
+      { question: "Which database?", header: "Database", multiSelect: false, options: [{ label: "SQLite", description: "Embedded" }, { label: "Postgres", description: "Server" }] },
+    ] } } });
+    const request = await pendingRequest(page, run.sessionId);
+    await choiceButton(page, request, "submit").click();
+    await expect(page.locator(".interactionStatus")).toContainText("Answer required");
+    const answer = request.questions![0].options![1];
+    await page.getByRole("combobox", { name: "Which database?", exact: true }).selectOption(answer.id);
+    await page.getByRole("combobox", { name: "Which database?", exact: true }).focus();
+    await emitClaude(run, { type: "control_request", request_id: "parallel-approval", request: { subtype: "can_use_tool", tool_name: "Read", tool_use_id: "parallel-read", input: { file_path: "hello.txt" } } });
+    await expect(page.locator(".interactionRequest")).toHaveCount(2);
+    await expect(page.getByRole("combobox", { name: "Which database?", exact: true })).toHaveValue(answer.id);
+    await expect(page.getByRole("combobox", { name: "Which database?", exact: true })).toBeFocused();
+    await choiceButton(page, request, "submit").click();
+    expect((await claudeResponse(run, "claude-question")).message.response.response).toMatchObject({ behavior: "allow", updatedInput: { answers: { "Which database?": "Postgres" } } });
+    await emitClaude(run, { type: "control_cancel_request", request_id: "parallel-approval" });
+    await expect(page.locator(".interactionRequest")).toHaveCount(0);
+    await finishClaude(run);
+    await expect(page.locator("#stopButton")).toBeHidden();
+  });
+
+  test("guarded SDK interrupt acknowledgement and result are not idle", async ({ page, nativeServer }) => {
+    const run = await createClaude(page, nativeServer);
+    const stale = await page.request.post("/api/abort", { data: { sessionId: run.sessionId, expectedExecutionId: "stale-execution" } });
+    expect(stale.ok()).toBe(false);
+    await page.locator("#stopButton").click();
+    await waitObserved(run.peer, (record) => record.direction === "client" && record.message.type === "control_request" && record.message.request?.subtype === "interrupt");
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await finishClaude(run, { terminal_reason: "aborted_streaming" }, false);
+    await expect.poll(async () => (await stateOf(page, run.sessionId)).phase).toBe("settling");
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await emitClaude(run, { type: "system", subtype: "session_state_changed", state: "idle" });
+    await expect(page.locator("#stopButton")).toBeHidden();
+  });
+
+  test("process death invalidates decisions; absent SDK history fails closed after restart", async ({ page, nativeServer }) => {
+    const run = await createClaude(page, nativeServer);
+    await emitClaude(run, { type: "control_request", request_id: "claude-dies", request: { subtype: "can_use_tool", tool_name: "Write", tool_use_id: "write-dies", input: { file_path: "hello.txt", content: "proposal" } } });
+    await expect(page.locator(".interactionRequest")).toHaveCount(1);
+    await controlClaude(run, { action: "exit", code: 42 });
+    await expect(page.locator(".interactionRequest")).toHaveCount(0);
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await expect.poll(async () => (await stateOf(page, run.sessionId)).phase).toMatch(/error|unavailable/);
+    const peers = await readdir(join(nativeServer.claudePeerDir, "peers"));
+    await nativeServer.restart();
+    const reopened = await page.request.post("/api/sessions/open", { data: { sessionId: run.sessionId } });
+    expect(reopened.ok()).toBe(false);
+    expect(await reopened.text()).toContain("no resumable native history");
+    expect(await readdir(join(nativeServer.claudePeerDir, "peers"))).toEqual(peers);
+  });
 });
