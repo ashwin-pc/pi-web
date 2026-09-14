@@ -164,7 +164,7 @@ Use a clone/review bundle that contains the integration commit. Do not assume `n
 
 ```sh
 # Run in that clone; choose an unused worktree path.
-review_commit=2c5fe718c2b1f9346d957cd46047e845bc91b2d8
+review_commit=2f007fca7710729bb29fbc4af99eb8fd3ef32159
 git worktree add --detach ../pi-web-92-check "$review_commit"
 cd ../pi-web-92-check
 node --version
