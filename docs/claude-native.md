@@ -72,13 +72,25 @@ For forks, checkpointing, tools, commands and richer controls, native support al
 
 ```sh
 npm ci
-npx vitest run tests/claude-native.test.ts
+npx vitest run tests/claude-native.test.ts tests/claude-native-cli.test.ts
 npm run typecheck
 npm run build
 npm run test:unit
 ```
 
-`tests/fixtures/claude-native-peer.ts` exports `ClaudeNativePeer`, a controllable `SpawnedProcess` used by the **real pinned SDK**. It exposes `send`, `sendRaw`, `received`, `nextInput`, `exit`, and `fail`. It is not a Pi-shaped fake session or alternate adapter. A browser test's existing mock controls can drive that peer while using normal application HTTP/WebSocket/session paths; no extra fixture server is needed.
+`tests/fixtures/claude-native-peer.ts` exports `ClaudeNativePeer`, a controllable `SpawnedProcess` used by the **real pinned SDK**. It exposes `send`, `sendRaw`, `received`, `nextInput`, `exit`, and `fail`. It is not a Pi-shaped fake session or alternate adapter.
+
+For real `server.ts` browser tests with `PI_WEB_MOCK` **off**, `tests/fixtures/claude-native-cli.mjs` wraps the same peer in a real child process. Set the server's `PI_WEB_CLAUDE_EXECUTABLE` to its absolute path and `PI_WEB_CLAUDE_PEER_DIR` to an isolated scratch directory. No HTTP fixture controller or `route.fulfill` is needed.
+
+The fixture creates `<scratch>/peers/<pid>/ready.json` with `pid`, `directory`, `nativeSessionId` and `cwd`. `observed.jsonl` records `{direction, message}` for client/server/control traffic. Write numbered JSON files atomically into `commands/` (write a `.tmp` file, then rename):
+
+```json
+{"action":"emit","message":{"type":"system","subtype":"session_state_changed","state":"idle"}}
+```
+
+Other commands are `{"action":"raw","data":"..."}` and `{"action":"exit","code":42}`. Ordinary emitted frames receive missing session/UUID envelope fields. The fixture automatically answers SDK initialization, echoes native user acknowledgement and running state, and acknowledges interrupt **without** manufacturing a result or idle event. Tests inject text/tool/approval/result/idle frames separately. The process ends on stdin EOF, explicit exit, or its finite 120-second lifetime (`PI_WEB_CLAUDE_PEER_MAX_MS`, capped at 300 seconds).
+
+This executable does not create fake private native session files. Supported SDK list/history readers are a separate ingress; do not claim native persisted history from the executable peer alone.
 
 Covered: native invocation/config preservation, six unexpected argv shapes failing closed, exact pin, unknown required-control error, additive info, malformed/oversized/redacted observation, split UTF-8, duplicate approval IDs/scopes/caution flags, cancellation, native interrupt receipt, and process failure. This is synthetic protocol evidence, not native generation evidence.
 
@@ -101,6 +113,6 @@ Complete the common adapter's lifecycle/approval/recovery tests, normal HTTP/Web
 
 Actual generation canaries must be separately enabled, budgeted and run in a trusted disposable cwd with native auth/config/permissions intact. Verify visible text/tool/approval/interrupt/resume/restart paths; record blocked credentials/sandbox cases as blocked, not passed or inapplicable. Never auto-approve to make a canary pass.
 
-Validation on 2026-09-14 before application wiring: 17 native-ingress tests passed; no-LLM actual configuration canary passed; typecheck/build passed; full unit suite 597 passed, 1 opt-in skipped. System CLI remained `2.1.226`. `bwrap` and `socat` were not on PATH; sandbox enforcement was not canary-tested.
+Validation on 2026-09-14 before application wiring: 18 deterministic native-ingress/executable-peer tests passed; no-LLM actual configuration canary passed; typecheck/build passed; full unit suite 597 passed, 1 opt-in skipped. System CLI remained `2.1.226`. `bwrap` and `socat` were not on PATH; sandbox enforcement was not canary-tested.
 
 SDK distribution documentation restricts third-party claude.ai login offerings and prefers “Claude Agent” branding. Preserve server-side native credentials; don't add a new login flow or expose SDK account/auth-output objects to the browser.

@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { PassThrough, Writable } from "node:stream";
+import { StringDecoder } from "node:string_decoder";
 import type {
   SDKControlInitializeResponse,
   SDKControlRequest,
@@ -32,21 +33,28 @@ export class ClaudeNativePeer extends EventEmitter implements SpawnedProcess {
   killed = false;
   exitCode: number | null = null;
   signalCode: NodeJS.Signals | null = null;
+  readonly initialization: SDKControlInitializeResponse | null;
   private ended = false;
   private input = "";
+  private decoder = new StringDecoder("utf8");
 
-  constructor(readonly initialization: SDKControlInitializeResponse | null = claudePeerInitialization) {
+  constructor(initialization: SDKControlInitializeResponse | null = claudePeerInitialization) {
     super();
+    this.initialization = initialization;
     this.stdin = new Writable({
       write: (chunk: Buffer, _encoding, callback) => {
-        this.input += chunk.toString("utf8");
-        let newline: number;
-        while ((newline = this.input.indexOf("\n")) !== -1) {
-          const line = this.input.slice(0, newline);
-          this.input = this.input.slice(newline + 1);
-          if (line.trim()) this.receive(JSON.parse(line) as ClaudePeerInput);
+        try {
+          this.input += this.decoder.write(chunk);
+          let newline: number;
+          while ((newline = this.input.indexOf("\n")) !== -1) {
+            const line = this.input.slice(0, newline);
+            this.input = this.input.slice(newline + 1);
+            if (line.trim()) this.receive(JSON.parse(line) as ClaudePeerInput);
+          }
+          callback();
+        } catch (error) {
+          callback(error instanceof Error ? error : new Error("Invalid SDK fixture input"));
         }
-        callback();
       },
     });
     this.stdin.on("finish", () => queueMicrotask(() => this.exit(0)));
