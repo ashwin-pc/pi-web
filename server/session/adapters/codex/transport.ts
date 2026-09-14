@@ -193,7 +193,15 @@ export class CodexTransport {
   }
 
   dispose(): Promise<void> {
-    return this.disposing ??= this.stop();
+    if (!this.disposing) {
+      // Publish the promise before stop() invokes the closed callback; a consumer may
+      // synchronously dispose in that callback. Cleanup must still run only once.
+      let resolve!: () => void;
+      let reject!: (error: unknown) => void;
+      this.disposing = new Promise<void>((done, failed) => { resolve = done; reject = failed; });
+      void this.stop().then(resolve, reject);
+    }
+    return this.disposing;
   }
 
   private async stop(): Promise<void> {

@@ -17,12 +17,12 @@ async function connection(options: { requestTimeoutMs?: number; maxFrameBytes?: 
   const errors: CodexRpcError[] = [];
   const observations: string[] = [];
   const faults = new Set<string>();
-  const transport = new CodexTransport({ cwd: root, command: process.execPath,
+  const transport: CodexTransport = new CodexTransport({ cwd: root, command: process.execPath,
     args: [fileURLToPath(new URL("./fixtures/codex-app-server-peer.mjs", import.meta.url))],
     env: { ...process.env, PI_WEB_CODEX_PEER_DIR: root }, ...options }, {
     notification: (message) => { if (faults.has("notification")) throw new Error("private mapper details"); notifications.push(message); },
     request: (message) => { if (faults.has("request")) throw new Error("private mapper details"); requests.push(message); },
-    closed: (error) => { errors.push(error); if (faults.has("closed")) throw new Error("closed consumer failed"); },
+    closed: (error) => { errors.push(error); if (faults.has("dispose")) void transport.dispose(); if (faults.has("closed")) throw new Error("closed consumer failed"); },
     observation: (kind) => { if (faults.has("observation")) throw new Error("diagnostic consumer failed"); observations.push(kind); },
   });
   cleanups.push(async () => { await transport.dispose(); await rm(root, { recursive: true, force: true }); });
@@ -160,6 +160,16 @@ describe("Codex native stdio ingress", () => {
     expect(failed.errors[0]?.message).not.toContain("private mapper");
     expect(healthy.transport.closed).toBe(false);
     await expect(healthy.transport.request("thread/loaded/list")).resolves.toMatchObject({ data: [] });
+  });
+
+  it("publishes one disposal promise before a closed consumer reenters disposal", async () => {
+    const { transport, faults, errors } = await connection();
+    faults.add("dispose");
+    const first = transport.dispose();
+    expect(transport.dispose()).toBe(first);
+    await first;
+    expect(errors).toHaveLength(1);
+    expect(transport.closed).toBe(true);
   });
 
   it.each([

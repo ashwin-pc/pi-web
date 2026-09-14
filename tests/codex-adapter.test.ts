@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -284,6 +284,18 @@ describe("Codex production adapter through native process ingress", () => {
     expect(handle.state()).toMatchObject({ phase: "unavailable", activity: "idle", pendingInteractions: [], isStreaming: false });
     expect(handle.state().activeExecution).toBeUndefined();
     expect(await clientRequests(peer, "turn/start")).toHaveLength(1);
+  });
+
+  it("closes the owned transport after native thread closure and leaves no running tool or fresh dispatch", async () => {
+    const { handle, peer } = await fixture();
+    await prompt(handle);
+    await controlPeer(peer, { action: "tool", delta: "partial output" });
+    await controlPeer(peer, { action: "emit", message: { method: "thread/closed", params: { threadId: handle.state().nativeSession.sessionId } } });
+    expect(handle.state()).toMatchObject({ phase: "unavailable", isStreaming: false });
+    expect((await tools(handle))[0]?.status).toBe("error");
+    await expect.poll(() => readFile(join(peer.directory, "closed.json"), "utf8").then((value) => JSON.parse(value).code, () => undefined)).toBe(0);
+    await expect(prompt(handle, "after-close")).rejects.toThrow("closed");
+    expect((await clientRequests(peer, "turn/start"))).toHaveLength(1);
   });
 
   it("recovers native materialization after host metadata stayed stale, without new identity or prompt replay", async () => {

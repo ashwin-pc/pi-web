@@ -112,7 +112,7 @@ These classifications distinguish native availability from the first adapter sur
 
 ```sh
 npm run typecheck
-npm run test:unit -- tests/codex-transport.test.ts tests/codex-approvals.test.ts tests/codex-adapter.test.ts
+npm run test:unit -- tests/codex-transport.test.ts tests/codex-approvals.test.ts tests/codex-adapter.test.ts tests/codex-service.test.ts
 # Also check the optional native leaf independently of a dynamic module loader:
 node node_modules/typescript/bin/tsc --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck server/session/adapters/codex/index.ts
 ```
@@ -125,4 +125,20 @@ Browser tests can import `mcpImageEvents(threadId, turnId)` and `codexFixturePng
 
 The separate metadata-only actual-wrapper audit exercised handshake, account readiness without token refresh, model list, ephemeral create/read/list, failed ephemeral resume, process shutdown/restart and repeated failed ephemeral resume. Both owned native processes exited cleanly; no generation/tool/approval/durable-resume canary ran in that audit. Inference entitlement remains untested until the separate bounded opt-in canaries run.
 
-Full repository validation remains `npm run build` and `npm test` (parallel runner), plus actual browser and native-harness acceptance evidence. Passing protocol/unit fixtures alone is not that completion gate.
+### Recorded implementation checkpoint
+
+Against the baseline lockfile and canonical v2 core:
+
+| Check | Result |
+|---|---|
+| `npm run typecheck` and strict native-leaf TypeScript check | Passed |
+| `npm run build` | Passed (existing large-chunk advisory only) |
+| Native transport/approval/adapter suites | 53 tests passed |
+| Native production service + host relay suite | 2 tests passed |
+| Those suites plus existing `session-service` and `session-adapter-service` regressions | 94 tests across 6 files passed |
+| Actual native generation/tool/approval canaries | Not run in this checkpoint |
+| Native browser suite | Separate integrated UI validation; not claimed by these tests |
+
+The service tests instantiate the real `LocalSessionService`, real Codex adapter and native process peer, and subscribe the production host event handler. They validate web/native identity, supported stream/approval/interrupt behavior, disabled operations, persistent restart without prompt replay and web-metadata-only removal. A registered real Pi adapter is not invoked; an explicit failure spy catches accidental Pi fallback.
+
+Full repository validation remains `npm test` (parallel runner), plus actual browser and native-harness acceptance evidence. The independent baseline had known browser failures; this checkpoint is not a full-suite waiver. Passing protocol/unit fixtures alone is not that completion gate.

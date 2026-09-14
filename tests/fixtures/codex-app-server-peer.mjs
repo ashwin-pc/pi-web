@@ -120,6 +120,8 @@ async function acceptTurn(request, reply = true) {
   currentThread = thread.id;
   currentTurn = turn.id;
   thread.materialized = true;
+  thread.updatedAt = Math.floor(Date.now() / 1000);
+  if (!thread.preview) thread.preview = (request.params.input ?? []).filter((input) => input.type === "text").map((input) => input.text).join("\n");
   save(thread);
   if (reply) response(request.id, { turn: { ...turn, items: [] } });
   if (!active) {

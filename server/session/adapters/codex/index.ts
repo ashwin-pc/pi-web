@@ -198,7 +198,7 @@ class CodexHandle implements SessionHandle {
   }
 
   private live(): CodexTransport {
-    if (!this.rpc || this.rpc.closed || this.snapshot.phase === "unavailable") throw new Error(this.snapshot.error ?? "Codex is unavailable");
+    if (this.disposing || !this.rpc || this.rpc.closed || this.snapshot.phase === "unavailable") throw new Error(this.snapshot.error ?? "Codex is unavailable");
     return this.rpc;
   }
   private nativeId(): string { return requiredString(this.snapshot.nativeSession.sessionId, "thread ID"); }
@@ -275,7 +275,8 @@ class CodexHandle implements SessionHandle {
       if (!status || !["idle", "active", "notLoaded", "systemError"].includes(String(status.type))) throw new CodexRpcError("Unknown required Codex thread state", "protocol");
       this.threadStatus = String(status.type);
       this.activeFlags = Array.isArray(status.activeFlags) ? status.activeFlags.filter((flag): flag is string => typeof flag === "string") : [];
-      if (this.threadStatus === "notLoaded") this.unavailable("Codex unloaded this native thread"); else this.reconcile();
+      if (this.threadStatus === "notLoaded") { this.unavailable("Codex unloaded this native thread"); void this.rpc?.dispose(); }
+      else this.reconcile();
       return;
     }
     if (method === "serverRequest/resolved") {
@@ -283,7 +284,7 @@ class CodexHandle implements SessionHandle {
       if (id) this.removeControl(id, "native");
       return;
     }
-    if (method === "thread/closed") { this.unavailable("Codex closed this native thread"); return; }
+    if (method === "thread/closed") { this.unavailable("Codex closed this native thread"); void this.rpc?.dispose(); return; }
     if (method === "thread/tokenUsage/updated") { this.usage(object(params.tokenUsage)); return; }
     if (method === "turn/started") {
       const turn = object(params.turn);
