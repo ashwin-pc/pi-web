@@ -173,7 +173,7 @@ Actual acceptance used the installed PATH wrapper, unchanged native HOME/auth/co
 | Generation | A native model turn returned the requested marker in the browser. |
 | Owned-file native tool | A native command read a random marker present only in the scratch file, not the prompt. The canonical tool result contained it; the file stayed unchanged. |
 | Exact interrupt | Browser stop sent the observed host guard and received HTTP 202. A zero-generation **public native `thread/read`** subsequently confirmed that exact native turn was `interrupted`. |
-| Persistent app restart/resume | Reopened the same saved web/native identity through the browser. Three earlier user inputs remained without replay; a fourth native turn recalled the earlier file contents without tools. Unknown hydrated times were omitted. |
+| Persistent app restart/resume | Reopened the same saved web/native identity through the browser. Three earlier user inputs remained without replay; the fourth native turn's reply recalled the earlier file contents. The check asserted reply content, not an empty native tool inventory. Unknown hydrated times were omitted. |
 | Effective native settings | `openai.gpt-5.6-sol`, reasoning `medium`, `on-request (auto_review)`, `readOnly`. |
 | Real approval prompt | **Not encountered.** No grant or policy change was made. Approval correctness remains deterministic protocol/browser evidence, not actual prompted-approval acceptance. |
 

@@ -111,7 +111,8 @@ function spawnLocal(options: SpawnOptions): SpawnedProcess {
 }
 
 /**
- * The only Claude process entry point. Native SDK types stay inside the adapter.
+ * Claude SDK Query entry point; index.ts also launches an executable-version preflight.
+ * Both launches use nativeChildEnvironment. Native SDK types stay inside the adapter.
  * The documented custom spawn seam also lets deterministic peers exercise the
  * same SDK ingress as production, without replacing the event mapper or service.
  */
