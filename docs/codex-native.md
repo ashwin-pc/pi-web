@@ -156,10 +156,10 @@ This checkpoint borrows the assembled core/Claude/UI tree equivalent to integrat
 | Deterministic check | Result |
 |---|---|
 | Fresh `npm ci`; project typecheck; strict native leaf and all owned Codex test sources | Passed |
-| Native transport/approvals/adapter/service, native UI state and production HTTP/WS tests | 69 tests across 6 files passed |
+| Native transport/approvals/adapter/service, native UI state and production HTTP/WS tests | 70 tests across 6 files passed |
 | Production HTTP/WS desktop and mobile browser suite, **synthetic native executable** | 18 tests passed, no retries |
 | Production build and diff whitespace check | Passed |
-| New regressions | Linear tool-output bytes, initially-null command result, stale/foreign callbacks, cancel/interrupt race, omitted hydrated times |
+| New regressions | Linear tool-output bytes, initially-null command result, stale/foreign callbacks, cancel/interrupt race, late interrupt failure after a newer turn, omitted hydrated times |
 
 Actual acceptance used the installed PATH wrapper, unchanged native HOME/auth/config and no native model, effort, permission or sandbox overrides. The real app used a scratch cwd/Pi/web state, a fresh normal authenticated web token/cookie, and an unused port. There was no mock mode, fake native peer, HTTP fulfillment, login change or credential logging.
 

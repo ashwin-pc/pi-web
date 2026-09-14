@@ -311,6 +311,25 @@ describe("Codex production adapter through native process ingress", () => {
     expect(handle.state().activeExecution?.id).toBe("new-guard");
   });
 
+  it("ignores an old interrupt failure after a newer native execution starts", async () => {
+    const { handle, peer } = await fixture();
+    const old = await prompt(handle);
+    const threadId = handle.state().nativeSession.sessionId!;
+    await controlPeer(peer, { action: "configure", interrupt: "defer" });
+    await controlPeer(peer, { action: "emit", message: { id: "unsupported", method: "future/required", params: { threadId, turnId: old.nativeExecutionId } } });
+    const request = await waitObserved(peer, (record) => record.direction === "client" && record.message.method === "turn/interrupt");
+    const started = await waitObserved(peer, (record) => record.direction === "server" && record.message.method === "turn/started");
+    // Complete the old turn without releasing its held RPC response yet.
+    await controlPeer(peer, { action: "emit", message: { method: "turn/completed", params: { threadId,
+      turn: { ...started.message.params.turn, status: "interrupted", completedAt: Math.floor(Date.now() / 1_000) } } } });
+    await controlPeer(peer, { action: "activity", status: { type: "idle" } });
+    const current = await prompt(handle, "new-guard");
+    await controlPeer(peer, { action: "release", requestId: request.message.id, error: { code: -32603, message: "Old interrupt failed" } });
+    await controlPeer(peer, { action: "text", delta: "New execution remains alive", done: true });
+    expect(handle.state()).toMatchObject({ phase: "running", activeExecution: { id: "new-guard", nativeExecutionId: current.nativeExecutionId } });
+    expect((await handle.messages()).at(-1)?.text).toBe("New execution remains alive");
+  });
+
   it("bounds/redacts additive native observations and preserves existing transcript through unknown items", async () => {
     const { handle, peer, events } = await fixture();
     const receipt = await prompt(handle);
