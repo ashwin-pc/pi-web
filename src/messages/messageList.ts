@@ -8,7 +8,7 @@ import type { MarkdownRenderer } from "../markdown/render.js";
 import { createActivitySummaries, liveThinkingPreview, setActivityCardMetadata } from "./activitySummary.js";
 import { isCompactDensity, isMinimalDensity } from "../app/appearance.js";
 import { renderCustomMessageReport, type CustomMessageReportInput } from "./customMessageReports.js";
-import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromMessage, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
+import { appendTranscriptDelta, assistantErrorBody, cleanThinkingText, imageFileName, imagesFromMessage, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
@@ -966,10 +966,12 @@ export function createMessageList(options: {
         baseline.append(summary, popover);
       }
       const time = document.createElement("time");
-      const timestamp = metadata.timestamp ? new Date(metadata.timestamp) : new Date();
+      // Preserve Pi/local-input compatibility; an explicit empty native time is unknown.
+      const timestamp = metadata.timestamp === undefined ? new Date() : metadata.timestamp ? new Date(metadata.timestamp) : undefined;
+      const knownTime = timestamp && !Number.isNaN(timestamp.valueOf());
       time.className = "messageTimestamp";
-      time.dateTime = Number.isNaN(timestamp.valueOf()) ? "" : timestamp.toISOString();
-      time.textContent = `You · ${Number.isNaN(timestamp.valueOf()) ? "now" : timestamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      time.dateTime = knownTime ? timestamp.toISOString() : "";
+      time.textContent = knownTime ? `You · ${timestamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}` : "You";
       baseline.append(time);
       div.append(baseline);
     }
@@ -1450,7 +1452,8 @@ export function createMessageList(options: {
     const streaming = canonicalFinal.get(message.id) === false;
     const wanted = new Set(message.parts.map((part) => part.id));
     if (message.role !== "assistant") wanted.add("$message");
-    if (message.errorMessage || message.status === "error" || message.status === "interrupted") wanted.add("$error");
+    const hasToolFailure = message.parts.some((part) => part.type === "toolCall" && (part.status === "error" || part.status === "cancelled"));
+    if (message.errorMessage || !hasToolFailure && (message.status === "error" || message.status === "interrupted")) wanted.add("$error");
     for (const [id, node] of nodes) {
       if (wanted.has(id)) continue;
       const body = node.querySelector<HTMLElement>(".body");
@@ -1463,7 +1466,7 @@ export function createMessageList(options: {
       const role = message.role === "user" ? "user" : "system";
       const text = messageText(message);
       const images = message.attachments || imagesFromMessage(message);
-      if (text || images.length) nodes.set("$message", addMessage(role, text, "", images, { entryId: message.entryId, parentEntryId: message.parentEntryId, timestamp: message.timestamp }));
+      if (text || images.length) nodes.set("$message", addMessage(role, text, "", images, { entryId: message.entryId, parentEntryId: message.parentEntryId, timestamp: message.timestamp ?? (message.raw ? undefined : "") }));
     } else for (const part of message.parts) {
       if (changedPartId && part.id !== changedPartId) continue;
       let node = nodes.get(part.id);
@@ -1535,10 +1538,9 @@ export function createMessageList(options: {
       part = event.part;
       message.parts.splice(Math.max(0, Math.min(event.index, message.parts.length)), 0, part);
     } else {
-      const existing = message.parts.find((value) => value.id === event.partId);
-      if (!existing || (existing.type !== "text" && existing.type !== "thinking")) return false;
-      existing.text += event.delta;
-      part = existing;
+      const updated = appendTranscriptDelta(message, event.partId, event.delta);
+      if (!updated) return false;
+      part = updated;
     }
     renderCanonicalMessage(message, render, part.id);
     return true;

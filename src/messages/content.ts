@@ -1,5 +1,5 @@
 import type { AttachedImage } from "../app/types.js";
-import type { MessageDto } from "../../server/session/dto.js";
+import type { MessageDto, MessagePartDto, TranscriptMessageDto } from "../../server/session/dto.js";
 
 export function shouldCollapseMessage(text: string) {
   return text.length > 1800 || text.split("\n").length > 28;
@@ -17,6 +17,23 @@ export function imagesFromMessage(message: MessageDto): AttachedImage[] {
   return message.parts.filter((part) => part.type === "image").map((part) => ({
     data: part.data, mimeType: part.mediaType, contentUrl: part.url, name: part.alt,
   }));
+}
+
+/** Resolve a delta to its rendered top-level part, including keyed tool-result text. */
+export function appendTranscriptDelta(message: TranscriptMessageDto, partId: string, delta: string): MessagePartDto | undefined {
+  for (const part of message.parts) {
+    if (part.id === partId && (part.type === "text" || part.type === "thinking")) {
+      part.text += delta;
+      return part;
+    }
+    if (part.type !== "toolCall") continue;
+    const result = part.result?.parts.find((value) => value.id === partId && value.type === "text");
+    if (result?.type === "text") {
+      result.text += delta;
+      return part;
+    }
+  }
+  return undefined;
 }
 
 export function stripImagePathNote(text: string) {

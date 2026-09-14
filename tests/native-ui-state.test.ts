@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { activeSessionState, reduceSessionSnapshot, replaceSessionRuntime, selectSession, sessionRuntime } from "../src/app/sessionState.js";
 import type { AppState } from "../src/app/types.js";
-import { imagesFromMessage, messageText } from "../src/messages/content.js";
+import { appendTranscriptDelta, imagesFromMessage, messageText } from "../src/messages/content.js";
 import { collectToolImages, textFromToolResult } from "../src/tools/toolCards.js";
-import type { MessageDto } from "../server/session/dto.js";
+import type { MessageDto, TranscriptMessageDto } from "../server/session/dto.js";
 
 function app(): AppState { return { currentSessionId: "web-codex", sessionsById: {} } as AppState; }
 function snapshot(overrides: Record<string, unknown> = {}) {
@@ -70,6 +70,26 @@ describe("canonical transcript content retains fidelity", () => {
     expect(textFromToolResult(result)).toBe("Exact output\n[image]");
     expect(collectToolImages(result)).toEqual([{ src: image.url, alt: "Example", needsAuth: true }]);
     expect(result.details.diff).toBe("-before\n+after");
+  });
+
+  it("appends keyed prose, thinking and nested tool-result deltas without replacing surrounding parts", () => {
+    const message: TranscriptMessageDto = { id: "message", role: "assistant", isError: false, parts: [
+      { id: "prose", type: "text", text: "Before" },
+      { id: "reasoning", type: "thinking", text: "Reason" },
+      { id: "tool", type: "toolCall", toolCallId: "call", toolName: "command", args: {}, status: "running", result: { parts: [
+        { id: "output", type: "text", text: "first" },
+        { id: "image", type: "image", mediaType: "image/png", data: "aW1hZ2U=" },
+      ], details: { diff: "-before\n+after" } } },
+    ] };
+    expect(appendTranscriptDelta(message, "prose", " text")).toBe(message.parts[0]);
+    expect(appendTranscriptDelta(message, "reasoning", " summary")).toBe(message.parts[1]);
+    expect(appendTranscriptDelta(message, "output", "\nsecond")).toBe(message.parts[2]);
+    expect(message.parts[0]).toMatchObject({ text: "Before text" });
+    expect(message.parts[1]).toMatchObject({ text: "Reason summary" });
+    expect(message.parts[2]).toMatchObject({ result: { parts: [{ text: "first\nsecond" }, { id: "image", data: "aW1hZ2U=" }], details: { diff: "-before\n+after" } } });
+    const before = structuredClone(message);
+    for (const unsupported of ["missing", "tool", "image"]) expect(appendTranscriptDelta(message, unsupported, "not text")).toBeUndefined();
+    expect(message).toEqual(before);
   });
 
   it("continues to parse legacy Pi text and thinking-free tool results", () => {
