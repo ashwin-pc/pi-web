@@ -1,3 +1,9 @@
+/* Capability gates must win over the existing flex/grid button styles. */
+#queueToggle[hidden], #attachButton[hidden], #conversationTreeButton[hidden],
+#modelSettingsThinking[hidden], #thinkingSelect[hidden], #extensionReloadButton[hidden],
+.modelSettingsPopover [hidden], .newSessionFieldLabel[hidden], .harnessHint[hidden],
+.sessionInfoSection[hidden] { display: none !important; }
+
 .pendingInteractions {
   grid-row: 3;
   min-width: 0;
@@ -15,6 +21,7 @@
 .interactionRequest + .interactionRequest { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .interactionRequest h3 { margin: 0 0 8px; font-size: 14px; }
 .interactionRequest details { margin: 6px 0; }
+.interactionSummary { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
 .interactionRequest summary { cursor: pointer; color: var(--muted); }
 .interactionRequest pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .interactionChoices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -32,6 +39,7 @@
 .emptyHarnessControl select { min-width: 0; max-width: 150px; border: 0; background: transparent; color: var(--text); font: inherit; }
 .harnessHint { color: var(--muted); font-size: 12px; line-height: 1.4; }
 .toolCard--cancelled { opacity: .8; }
+.runtimeStatus.error { color: var(--danger); }
 @media (max-width: 600px) {
   .interactionChoices button { min-height: 44px; }
   .pendingInteractions { margin-inline: 8px; }

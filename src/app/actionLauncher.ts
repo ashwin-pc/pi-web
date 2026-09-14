@@ -5,6 +5,7 @@ type LauncherAction = {
   label: string;
   icon: IconName;
   run: () => void;
+  visible?: () => boolean;
 };
 
 type ExtensionLauncherAction = {
@@ -57,7 +58,7 @@ export function initActionLauncher(
     { label: "Session details", icon: "info", run: () => options.onSessionDetails?.() },
     { label: "Git", icon: "git-branch", run: () => elements.gitButton.click() },
     { label: "File explorer", icon: "folder-tree", run: () => elements.filesButton.click() },
-    { label: "Conversation tree", icon: "git-fork", run: () => elements.conversationTreeButton.click() },
+    { label: "Conversation tree", icon: "git-fork", visible: () => !elements.conversationTreeButton.hidden, run: () => elements.conversationTreeButton.click() },
     { label: "New session", icon: "square-pen", run: () => elements.newSessionHeaderButton.click() },
   ];
   let extensionActions: ExtensionLauncherAction[] = [];
@@ -67,6 +68,7 @@ export function initActionLauncher(
     if (menuHideTimer !== undefined) window.clearTimeout(menuHideTimer);
     if (open) {
       menu.hidden = false;
+      renderActions();
       // Start from the collapsed styles even when reopening shortly after close.
       requestAnimationFrame(() => root.classList.add("open"));
     } else {
@@ -94,7 +96,7 @@ export function initActionLauncher(
       sample.remove();
     }
     const actions: LauncherAction[] = [
-      ...builtInActions,
+      ...builtInActions.filter((action) => action.visible?.() !== false),
       ...extensionActions.map((action) => ({
         label: action.label,
         icon: action.icon,

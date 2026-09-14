@@ -69,6 +69,10 @@ export function createInteractions(options: { state: AppState; elements: AppElem
       form.setAttribute("aria-labelledby", title.id);
       form.append(title);
       if (request.body) {
+        const preview = document.createElement("p"); preview.className = "interactionSummary";
+        const firstLines = request.body.split("\n").slice(0, 3).join("\n");
+        preview.textContent = firstLines.length > 300 ? `${firstLines.slice(0, 300)}…` : firstLines;
+        form.append(preview);
         const details = document.createElement("details");
         const summary = document.createElement("summary"); summary.textContent = "Request details";
         const body = document.createElement("pre"); body.textContent = request.body;

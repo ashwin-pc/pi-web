@@ -767,7 +767,6 @@ export function createRealtime(options: {
           addRuntimeErrorCard: tools.addRuntimeErrorCard,
           isStreaming: sessionRuntime(state).isRunning,
         });
-        if (data.type === "message_replace" && ["interrupted", "error"].includes(data.message?.status)) abortedRuns.set(data.sessionId, true);
         if (!applied) {
           if (replayTranscriptRefreshTimer !== undefined) window.clearTimeout(replayTranscriptRefreshTimer);
           replayTranscriptRefreshTimer = window.setTimeout(() => {
@@ -786,10 +785,11 @@ export function createRealtime(options: {
         if (!appliesToCurrentSession) return;
         if (isNativeSession(activeSessionState(state))) {
           const runtime = sessionRuntime(state);
-          if (runtime.isRunning && !previousRuntime.isRunning) { messages.beginStreamFollow(); abortedRuns.delete(state.currentSessionId); }
+          if (runtime.isRunning && !previousRuntime.isRunning) messages.beginStreamFollow();
           if (!runtime.isRunning && previousRuntime.isRunning) {
             messages.resetStreamingAssistant(); messages.endStreamFollow(); tools.clearActiveToolCards();
-            if (!isReplay && data.phase === "idle" && !abortedRuns.get(state.currentSessionId)) playCompletionAlerts();
+            // Native idle can follow success, denial or interruption. Completion
+            // notifications stay Pi-only until an explicit outcome is exposed.
           }
           if (data.type === "hello" || (!isReplay && !runtime.isRunning)) void refreshMessages().catch(() => undefined);
           if (!runtime.isRunning) scheduleSessionRefresh();

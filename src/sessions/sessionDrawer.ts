@@ -468,6 +468,7 @@ export function createSessions(options: {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) throw new Error(data.error || "Could not create the selected harness session.");
+      if (data.harnessId !== harnessId) throw new Error("The server did not create the selected harness. No prompt was sent.");
       sessionState.applySnapshot(data, { activate: true });
       writeActiveSessionIdToUrl(data.sessionId);
       clearMessages();
@@ -529,6 +530,7 @@ export function createSessions(options: {
     });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    if (harnessId !== "pi" && data.harnessId !== harnessId) throw new Error("The server did not create the selected harness. No prompt was sent.");
     if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
     rememberSessionCwd(cwd || data.cwd || state.currentCwd);
     beginTranscriptLoading();

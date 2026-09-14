@@ -158,16 +158,19 @@ export function createComposer(options: {
     const canSendWhileRunning = native ? view?.capabilities?.steering === true && Boolean(view.activeExecution) : view?.capabilities?.queue !== false;
     const unavailable = native && (view?.phase === "unavailable" || view?.nativeSession?.status === "unavailable" || state.wsDisconnected);
     elements.primaryButton.disabled = !hasInput || !initialRealtimeReady || preparingInput || nativeSubmitting || unavailable || runtime.isRunning && !canSendWhileRunning;
-    elements.primaryButton.title = !initialRealtimeReady ? "Connecting live updates…" : unavailable ? "Reconnect or reopen this native session before sending." : native && runtime.isRunning ? "Steer the active execution" : "Send";
+    elements.primaryButton.title = "Send";
+    if (!initialRealtimeReady) elements.primaryButton.title = "Connecting live updates…";
+    else if (unavailable) elements.primaryButton.title = "Reconnect or reopen this native session before sending.";
+    else if (native && runtime.isRunning) elements.primaryButton.title = canSendWhileRunning ? "Steer the active execution" : "This harness cannot accept input while running.";
     elements.stopButton.style.display = (native ? runtime.isRunning : runtime.isStreaming || runtime.isRetrying) ? "" : "none";
-    elements.attachButton.hidden = view?.capabilities?.attachments === false;
-    elements.imageInput.disabled = view?.capabilities?.attachments === false;
+    elements.attachButton.hidden = native ? view?.capabilities?.attachments !== true : view?.capabilities?.attachments === false;
+    elements.imageInput.disabled = elements.attachButton.hidden;
     elements.promptEl.placeholder = native ? `Ask ${harnessName(view)}…` : "Ask pi…";
   }
 
   function updateQueueToggle() {
     const capabilities = activeSessionState(state)?.capabilities;
-    elements.queueToggle.hidden = capabilities?.queue === false;
+    elements.queueToggle.hidden = isNativeSession(activeSessionState(state)) ? capabilities?.queue !== true : capabilities?.queue === false;
     const isSteer = state.queueMode === "steer";
     elements.queueToggle.setAttribute("aria-pressed", String(isSteer));
     elements.queueToggle.title = isSteer ? "Queue mode: steer while running" : "Queue mode: follow up after running";
@@ -314,7 +317,9 @@ export function createComposer(options: {
     if (commands.length === 0) {
       const empty = document.createElement("div");
       empty.className = "slashCommandsEmpty";
-      empty.textContent = slashCommands.length === 0 ? "Loading slash commands…" : "No matching slash commands";
+      empty.textContent = isNativeSession(activeSessionState(state)) && slashCommandsSessionId === state.currentSessionId && slashCommandsLoadedAt
+        ? "This harness has no supported web slash commands."
+        : slashCommands.length === 0 ? "Loading slash commands…" : "No matching slash commands";
       elements.slashCommandsEl.append(empty);
     } else {
       commands.forEach((command, index) => {

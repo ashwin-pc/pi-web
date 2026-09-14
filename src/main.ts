@@ -322,7 +322,7 @@ const quoteReplies = createQuoteReplies({
   composerEl: elements.formEl,
   getSessionId: () => state.currentSessionId,
   drafts: sessionDrafts,
-  canQuote: () => activeSessionState(state)?.capabilities?.attachments !== false,
+  canQuote: () => isNativeSession(activeSessionState(state)) ? activeSessionState(state)?.capabilities?.attachments === true : activeSessionState(state)?.capabilities?.attachments !== false,
   onChange: () => composer?.updatePrimaryAction(),
 });
 const markdownTestOptions = (globalThis as typeof globalThis & {
@@ -450,7 +450,7 @@ function renderActiveSessionMetadata() {
   composer?.setCaptureContributions(captureContributions);
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
-  elements.conversationTreeButton.hidden = view?.capabilities?.tree === false;
+  elements.conversationTreeButton.hidden = isNativeSession(view) ? view?.capabilities?.tree !== true : view?.capabilities?.tree === false;
   sessionInfo?.update();
   modelSettings?.updateSummary();
   sessions?.renderSessionBar();
@@ -916,7 +916,7 @@ const keyboardShortcuts: Shortcut[] = [
       const runtime = sessionRuntime(state);
       return elements.tokenOverlay.hidden
         && elements.slashCommandsEl.hidden
-        && (runtime.isStreaming || runtime.isRetrying);
+        && (isNativeSession(activeSessionState(state)) ? runtime.isRunning : runtime.isStreaming || runtime.isRetrying);
     },
     run: () => composer.stopStreaming(),
   },

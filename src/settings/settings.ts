@@ -349,6 +349,8 @@ export function createSettings(options: {
     elements.settingSaveModelDefaultsButton.title = native ? "Pi defaults only: open a Pi session to save its model settings." : "";
     elements.settingModelDefaultsValue.textContent = `${native ? "Pi only: " : ""}${settingsLabel(state.settings)}`;
     elements.extensionReloadButton.hidden = native;
+    elements.extensionSettingsContainer.inert = native;
+    elements.extensionSettingsContainer.setAttribute("aria-disabled", String(native));
     let note = elements.extensionSettingsContainer.parentElement?.querySelector<HTMLElement>(".piExtensionScope");
     if (native) {
       elements.extensionStatusBadge.textContent = "Pi only";
@@ -357,7 +359,7 @@ export function createSettings(options: {
       elements.extensionStatusDetails.hidden = true;
       if (!note) {
         note = document.createElement("p"); note.className = "settingsHint piExtensionScope";
-        note.textContent = "These settings configure Pi extensions, not native tools or permissions.";
+        note.textContent = "These settings configure Pi extensions, not native tools or permissions. Open a Pi session to edit them.";
         elements.extensionSettingsContainer.before(note);
       }
     } else note?.remove();
@@ -774,7 +776,9 @@ export function createSettings(options: {
       api,
       state,
       fetchModels: async () => {
-        const res = await fetch("/api/models", { headers: api.headers() });
+        if (isNativeSession(activeSessionState(state))) return [];
+        const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
+        const res = await fetch(`/api/models${query}`, { headers: api.headers() });
         if (!res.ok) return [];
         const data = await res.json().catch(() => ({}));
         return Array.isArray(data.models) ? data.models : [];

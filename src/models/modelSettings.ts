@@ -178,6 +178,8 @@ export function createModelSettings(options: {
     elements.thinkingSelectEl.hidden = true;
     elements.modelSettingsThinking.hidden = true;
     elements.modelSettingsLabel.textContent = settings?.model || label;
+    elements.modelSettingsLabel.title = settings?.model ? `${label}: ${settings.model}` : label;
+    delete elements.modelSettingsButton.dataset.thinkingLevel;
     elements.modelSettingsButton.title = `${label} configuration (read-only)`;
     elements.modelSettingsButton.setAttribute("aria-label", elements.modelSettingsButton.title);
     return true;

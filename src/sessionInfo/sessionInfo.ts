@@ -683,7 +683,7 @@ export function createSessionInfo(options: {
       }
     }
 
-    const supportsContext = view?.capabilities?.context !== false;
+    const supportsContext = isNativeSession(view) ? view?.capabilities?.context === true : view?.capabilities?.context !== false;
     toolsSection.hidden = !supportsContext;
     contextSection.hidden = !supportsContext;
     if (!supportsContext) setPromptView(false);
