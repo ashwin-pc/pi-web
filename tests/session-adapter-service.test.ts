@@ -79,7 +79,7 @@ async function fixture(options: { enabled?: boolean; cwd?: string; ephemeral?: b
     nativeBindingsFile: join(cwd, "native.json"), globalCwd: () => cwd, finalizeCreatedSession: async () => undefined });
   services.push(service);
   await service.initialize();
-  return { service, cwd, handles, open };
+  return { service, cwd, handles, open, adapter };
 }
 
 describe("single-handle core routing", () => {
@@ -93,6 +93,22 @@ describe("single-handle core routing", () => {
     await expect(service.create(undefined, undefined, "codex")).rejects.toMatchObject({ status: 503 });
     await expect(service.create(undefined, undefined, "typo" as any)).rejects.toMatchObject({ status: 400 });
     expect(service.lifecycleSnapshot().liveSessions).toHaveLength(count);
+  });
+
+  it("rejects adapter identity/path impersonation and disposes only the returned handle", async () => {
+    const { service, cwd, adapter } = await fixture();
+    const wrong = new Handle("wrong-web-id", cwd);
+    const create = vi.spyOn(adapter, "create").mockResolvedValue(wrong);
+    await expect(service.create(undefined, undefined, "codex")).rejects.toThrow("different session identity");
+    expect(wrong.disposed).toBe(1);
+    expect(service.sessionForId("wrong-web-id")).toBeUndefined();
+    create.mockImplementation(async (input) => {
+      const handle = new Handle(input.sessionId!, cwd);
+      handle.snapshot.sessionFile = "/not-a-native-routing-key";
+      return handle;
+    });
+    await expect(service.create(undefined, undefined, "codex")).rejects.toThrow("Adapter identity mismatch");
+    expect(service.lifecycleSnapshot().liveSessions.every((entry) => entry.harnessId === "pi")).toBe(true);
   });
 
   it("separates web/native/execution IDs and enforces unsupported operations", async () => {
@@ -119,6 +135,44 @@ describe("single-handle core routing", () => {
     expect((await service.state(state.sessionId)).phase).toBe("starting"); // ack is not idle
   });
 
+  it("does not publish or retain a native binding when creation's durable write fails", async () => {
+    const { service, cwd, adapter } = await fixture();
+    let failedHandle!: Handle;
+    vi.spyOn(adapter, "create").mockImplementation(async (input) => {
+      failedHandle = new Handle(input.sessionId!, cwd);
+      const subscribe = failedHandle.subscribe.bind(failedHandle);
+      failedHandle.subscribe = (listener) => { listener({ type: "state", state: failedHandle.state() }); return subscribe(listener); };
+      return failedHandle;
+    });
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    const put = vi.spyOn(NativeBindings.prototype, "put").mockRejectedValue(new Error("synthetic disk failure"));
+    try {
+      await expect(service.create(undefined, undefined, "codex")).rejects.toThrow("synthetic disk failure");
+      expect(put).toHaveBeenCalledTimes(1); // no registration/early-event fire-and-forget write
+    } finally { put.mockRestore(); }
+    expect(failedHandle.disposed).toBe(1);
+    expect(service.sessionForId(failedHandle.sessionId)).toBeUndefined();
+    expect((await service.list()).some((entry) => entry.id === failedHandle.sessionId)).toBe(false);
+    expect(events.some((event) => event.type === "state" && event.state.sessionId === failedHandle.sessionId)).toBe(false);
+    await expect(readFile(join(cwd, "native.json"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(service.state(failedHandle.sessionId)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("does not misreport submitted native input as rejected when metadata persistence fails", async () => {
+    const { service } = await fixture();
+    const state = await service.create(undefined, undefined, "codex");
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    const save = vi.spyOn(NativeBindings.prototype, "put").mockRejectedValue(new Error("disk unavailable"));
+    try {
+      const receipt = await service.prompt(state.sessionId, { message: "submitted once", mode: "prompt", attachments: [] });
+      expect(receipt.acknowledgement).toBe("pending");
+      expect(events).toContainEqual(expect.objectContaining({ type: "error", error: expect.stringContaining("Prompt submitted") }));
+      await expect(service.prompt(state.sessionId, { message: "do not replay", mode: "prompt", attachments: [] })).rejects.toMatchObject({ status: 409 });
+    } finally { save.mockRestore(); }
+  });
+
   it("reuses live ephemeral handles; restart is unavailable, never native resume or Pi fallback", async () => {
     const first = await fixture({ ephemeral: true });
     const state = await first.service.create(undefined, undefined, "codex");
@@ -130,6 +184,48 @@ describe("single-handle core routing", () => {
     expect(second.open).not.toHaveBeenCalled();
     expect(await second.service.delete(state.sessionId)).toMatchObject({ disposition: "deleted" });
     await expect(second.service.open(state.sessionId)).rejects.toMatchObject({ status: 410 });
+  });
+
+  it("recovers a dead persistent process only on explicit open, with one resume and no prompt replay", async () => {
+    const { service, handles, open, cwd } = await fixture();
+    const state = await service.create(undefined, undefined, "codex");
+    await service.prompt(state.sessionId, { message: "already submitted", mode: "prompt", attachments: [] });
+    const previous = handles[0];
+    previous.update({ phase: "unavailable", activity: "idle", activeExecution: undefined,
+      nativeSession: { ...state.nativeSession, status: "resumable" } });
+    await service.state(state.sessionId); await service.state(state.sessionId);
+    expect(open).not.toHaveBeenCalled();
+    const [first, second] = await Promise.all([service.open(state.sessionId), service.open(state.sessionId)]);
+    expect(open).toHaveBeenCalledTimes(1);
+    expect(open).toHaveBeenCalledWith({ sessionId: state.sessionId, cwd, nativeSession: { ...state.nativeSession, status: "resumable" } });
+    expect(first.sessionId).toBe(state.sessionId); expect(second.sessionId).toBe(state.sessionId);
+    expect(previous.disposed).toBe(1);
+    expect(previous.prompts).toHaveLength(1);
+    expect(handles[1].prompts).toHaveLength(0);
+    expect((await service.state(state.sessionId)).phase).toBe("idle");
+  });
+
+  it("does not respawn on state polls after failed recovery; another explicit open may retry", async () => {
+    const { service, handles, open } = await fixture();
+    const state = await service.create(undefined, undefined, "codex");
+    handles[0].update({ phase: "unavailable", nativeSession: { ...state.nativeSession, status: "resumable" } });
+    open.mockRejectedValueOnce(new Error("native resume unavailable"));
+    await expect(service.open(state.sessionId)).rejects.toThrow("native resume unavailable");
+    await expect(service.state(state.sessionId)).rejects.toMatchObject({ status: 503 });
+    await expect(service.state(state.sessionId)).rejects.toMatchObject({ status: 503 });
+    expect(open).toHaveBeenCalledTimes(1);
+    await service.open(state.sessionId);
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(handles.at(-1)!.prompts).toHaveLength(0);
+  });
+
+  it("does not try to resume a cached unavailable ephemeral process", async () => {
+    const { service, handles, open } = await fixture({ ephemeral: true });
+    const state = await service.create(undefined, undefined, "codex");
+    handles[0].update({ phase: "unavailable" });
+    await expect(service.open(state.sessionId)).rejects.toMatchObject({ status: 410 });
+    await expect(service.open(state.sessionId)).rejects.toMatchObject({ status: 410 });
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("resumes the exact persistent native identity without paths, transcript storage or prompt replay", async () => {

@@ -34,6 +34,8 @@ type LiveSessionEntry = {
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
   dispatching?: boolean;
+  initializing: boolean;
+  deferredEvents: SessionServiceEvent[];
 };
 type ViewerLease = { sessionKey: string; sockets: Set<symbol>; releaseTimer?: ReturnType<typeof setTimeout> };
 const envMs = (key: string, fallback: number) => {
@@ -49,6 +51,7 @@ export class LocalSessionService implements SessionService {
   private readonly listeners = new Set<(event: SessionServiceEvent) => void>();
   private readonly liveSessions = new Map<string, LiveSessionEntry>();
   private readonly openingById = new Map<string, Promise<SessionHandle | undefined>>();
+  private readonly failedNativeOpens = new Map<string, Error>();
   private readonly adapters = new Map<HarnessId, SessionAdapter>();
   private readonly piLocations = new Map<string, AdapterOpenInput>();
   private readonly piNames = new Map<string, string | undefined>();
@@ -78,7 +81,7 @@ export class LocalSessionService implements SessionService {
     deps.pi.bindHost({
       captureStore: this.captureStore,
       readSession: (reference, tail) => this.readSession(reference, tail),
-      register: (handle) => { this.register(handle); },
+      register: (handle, initializing) => { this.register(handle, initializing); },
       failed: (handle) => { void this.disposeLiveSession(handle.sessionId, "reset", true); },
       create: (cwd, previousSessionFile) => this.createWithAdapter("pi", cwd, previousSessionFile),
       withWorkLease: (handle, label, kind, operation) => this.withWorkLease(handle, label, kind, operation),
@@ -109,37 +112,56 @@ export class LocalSessionService implements SessionService {
       try { listener(safe); } catch (error) { console.warn("Session service event listener failed:", error); }
     }
   }
-  private register(handle: SessionHandle) {
+  private register(handle: SessionHandle, initializing = false) {
     const existing = this.liveSessions.get(handle.sessionId);
     if (existing?.handle === handle) return handle;
     if (existing) throw new SessionServiceError("Session is already open", 409);
     const state = handle.state();
-    if (state.sessionId !== handle.sessionId || state.harnessId !== handle.harnessId) throw new Error("Adapter identity mismatch");
-    const entry: LiveSessionEntry = { handle, viewerClientIds: new Set(), workLeases: new Map() };
+    if (state.sessionId !== handle.sessionId || state.harnessId !== handle.harnessId || state.nativeSession.harnessId !== handle.harnessId
+      || handle.harnessId !== "pi" && state.sessionFile !== undefined) throw new Error("Adapter identity mismatch");
+    const entry: LiveSessionEntry = { handle, viewerClientIds: new Set(), workLeases: new Map(), initializing, deferredEvents: [] };
     this.liveSessions.set(handle.sessionId, entry);
-    this.remember(state);
+    this.remember(state, false);
     entry.unsubscribe = handle.subscribe((event) => {
-      if (this.liveSessions.get(handle.sessionId) !== entry || entry.disposing && event.type !== "interaction_resolved") return;
+      if (this.liveSessions.get(handle.sessionId) !== entry) return;
       const eventSessionId = event.type === "state" ? event.state.sessionId : event.type === "interaction" ? event.request.sessionId : "sessionId" in event ? event.sessionId : undefined;
       if (eventSessionId && eventSessionId !== handle.sessionId) {
         console.warn("Rejected cross-session adapter event", { harness: handle.harnessId, type: event.type });
         return;
       }
-      if (event.type === "state") this.remember(event.state);
-      this.emit(event);
+      if (event.type === "state") this.remember(event.state, !entry.initializing);
+      this.publish(entry, event);
       this.scheduleLiveSessionCleanup(handle.sessionId);
     });
     queueMicrotask(() => this.scheduleLiveSessionCleanup(handle.sessionId));
     return handle;
   }
-  private remember(state: BaseSessionStateDto) {
+  private publish(entry: LiveSessionEntry, event: SessionServiceEvent) {
+    // New-session defaults and the host finalizer can emit SDK/bridge events.
+    // Hold publication, not execution or request responses, until creation commits.
+    const effect = event.type === "wire" && event.value && typeof event.value === "object" && !Array.isArray(event.value) && event.value.type === "interaction_effect";
+    if (entry.initializing && event.type !== "interaction" && event.type !== "interaction_resolved" && event.type !== "error" && !effect) {
+      entry.deferredEvents.push(event);
+      return;
+    }
+    this.emit(event);
+  }
+  private finishCreation(handle: SessionHandle) {
+    const entry = this.liveSessions.get(handle.sessionId);
+    if (!entry || entry.handle !== handle) throw new Error("Created session was released before publication");
+    entry.initializing = false;
+    this.remember(handle.state());
+    for (const event of entry.deferredEvents.splice(0)) this.emit(event);
+    this.scheduleLiveSessionCleanup(handle.sessionId);
+  }
+  private remember(state: BaseSessionStateDto, persistNative = true) {
     this.knownSessionCwds.add(resolve(state.cwd));
     if (state.harnessId === "pi") {
       if (state.sessionFile) {
         this.piLocations.set(state.sessionId, { sessionId: state.sessionId, cwd: state.cwd, sessionFile: state.sessionFile, nativeSession: state.nativeSession! });
         this.piNames.set(state.sessionFile, state.sessionName);
       }
-    } else if (state.nativeSession && state.harnessId) {
+    } else if (persistNative && state.nativeSession && state.harnessId) {
       void this.saveNative(state).catch((error) => this.emit({ type: "error", sessionId: state.sessionId, error: `Could not persist native binding: ${String(error)}` }));
     }
   }
@@ -193,23 +215,41 @@ export class LocalSessionService implements SessionService {
     if (existing) return existing;
     const pending = this.openingById.get(id);
     if (pending) return pending;
+    const failed = this.failedNativeOpens.get(id);
+    if (failed) throw failed;
     const opening = (async () => {
       const location = await this.location(id);
-      if (!location) return;
-      const adapter = this.adapter(location.nativeSession.harnessId);
-      if (location.nativeSession.persistence === "ephemeral") throw new SessionServiceError("Ephemeral native session expired; it cannot resume after process loss", 410);
-      const handle = await adapter.open(location);
-      if (handle.sessionId !== id) { await handle.dispose(); throw new SessionServiceError("Adapter returned a different session identity", 409); }
-      this.register(handle);
-      if (handle.harnessId !== "pi") await this.saveNative(handle.state());
-      return handle;
+      return location ? this.loadHandle(location) : undefined;
     })();
     this.openingById.set(id, opening);
     try { return await opening; } finally { this.openingById.delete(id); }
   }
+  private async loadHandle(location: AdapterOpenInput): Promise<SessionHandle> {
+    try {
+      const adapter = this.adapter(location.nativeSession.harnessId);
+      if (location.nativeSession.persistence === "ephemeral") throw new SessionServiceError("Ephemeral native session expired; it cannot resume after process loss", 410);
+      const handle = await adapter.open(location);
+      if (handle.sessionId !== location.sessionId || handle.harnessId !== location.nativeSession.harnessId) {
+        await handle.dispose(); throw new SessionServiceError("Adapter returned a different session identity", 409);
+      }
+      try { this.register(handle); }
+      catch (error) { await handle.dispose(); throw error; }
+      if (handle.harnessId !== "pi") await this.saveNative(handle.state());
+      this.failedNativeOpens.delete(location.sessionId);
+      return handle;
+    } catch (error) {
+      if (location.nativeSession.harnessId !== "pi") {
+        this.failedNativeOpens.set(location.sessionId, new SessionServiceError(`Native session is unavailable; explicitly reopen to retry. ${error instanceof Error ? error.message : "Open failed"}`, 503));
+      }
+      throw error;
+    }
+  }
   async require(id?: string) {
     const handle = id ? await this.find(id) : this.currentSessionId ? this.sessionForId(this.currentSessionId) : undefined;
     if (!handle) throw new SessionServiceError("Session not found", 404);
+    const entry = this.liveSessions.get(handle.sessionId);
+    if (entry?.disposing) throw new SessionServiceError("Session is closing", 409);
+    if (entry?.initializing) throw new SessionServiceError("Session is being created", 409);
     return handle;
   }
   private async location(id: string, cwd?: string): Promise<AdapterOpenInput | undefined> {
@@ -292,9 +332,15 @@ export class LocalSessionService implements SessionService {
     try {
       const receipt = await handle.prompt({ ...input, attachments, executionId });
       if (handle.harnessId !== "pi") {
-        await this.saveNative(handle.state());
-        const row = this.bindings.get(handle.sessionId);
-        if (row && !row.firstMessage) await this.bindings.put({ ...row, firstMessage: input.message.slice(0, 500) });
+        try {
+          await this.saveNative(handle.state());
+          const row = this.bindings.get(handle.sessionId);
+          if (row && !row.firstMessage) await this.bindings.put({ ...row, firstMessage: input.message.slice(0, 500) });
+        } catch {
+          // The native dispatch already happened. Do not turn a metadata failure
+          // into a rejected-input receipt that invites replay of accepted work.
+          this.emit({ type: "error", sessionId: handle.sessionId, error: "Prompt submitted, but native identity metadata could not be saved. Recovery after restart may be unavailable." });
+        }
       }
       return receipt;
     } finally { entry.dispatching = false; this.scheduleLiveSessionCleanup(handle.sessionId); }
@@ -356,16 +402,49 @@ export class LocalSessionService implements SessionService {
   private async createWithAdapter(id: HarnessId, cwd: string, previousSessionFile?: string) {
     const adapter = this.adapter(id);
     const targetCwd = await assertDirectory(cwd, this.deps.globalCwd());
-    const handle = await adapter.create({ cwd: targetCwd, ...(id === "pi" ? { previousSessionFile } : { sessionId: randomUUID() }) });
-    this.register(handle);
+    const webId = id === "pi" ? undefined : randomUUID();
+    const handle = await adapter.create({ cwd: targetCwd, ...(id === "pi" ? { previousSessionFile } : { sessionId: webId }) });
     try {
-      if (id !== "pi") await this.saveNative(handle.state());
+      if (handle.harnessId !== id || webId && handle.sessionId !== webId) throw new Error("Adapter returned a different session identity");
+      this.register(handle, true);
       await this.deps.finalizeCreatedSession(handle.sessionId);
+      if (id !== "pi") await this.saveNative(handle.state());
+      this.finishCreation(handle);
       return this.projectState(handle);
-    } catch (error) { await this.disposeLiveSession(handle.sessionId, "reset", true); throw error; }
+    } catch (error) {
+      if (this.sessionForId(handle.sessionId) === handle) await this.disposeLiveSession(handle.sessionId, "reset", true);
+      else await handle.dispose();
+      throw error;
+    }
   }
   async open(id: string, cwd?: string) {
-    if (cwd && !this.sessionForId(id)) await this.location(id, cwd);
+    const pending = this.openingById.get(id);
+    if (pending) {
+      const handle = await pending;
+      if (!handle) throw new SessionServiceError("Session not found", 404);
+      return this.projectState(handle);
+    }
+    const current = this.sessionForId(id);
+    const entry = this.liveSessions.get(id);
+    if (entry?.initializing || entry?.disposing) throw new SessionServiceError("Session is not ready to open", 409);
+    const snapshot = current?.state();
+    if (current && current.harnessId !== "pi" && snapshot?.phase === "unavailable") {
+      if (snapshot.nativeSession.persistence === "ephemeral") throw new SessionServiceError("Ephemeral native session expired; it cannot resume after process loss", 410);
+      if (!snapshot.nativeSession.sessionId) throw new SessionServiceError("Native session did not materialize before process loss", 410);
+      const recovery = (async () => {
+        const location = { sessionId: id, cwd: snapshot.cwd, nativeSession: snapshot.nativeSession };
+        await this.saveNative(snapshot);
+        await this.disposeLiveSession(id, "reset", true);
+        return this.loadHandle(location);
+      })();
+      this.openingById.set(id, recovery);
+      try { return this.projectState(await recovery); }
+      finally { this.openingById.delete(id); }
+    }
+    // Only explicit open clears a failed native open. Polling state/find never
+    // repeatedly launches a process, and recovery never replays submitted input.
+    this.failedNativeOpens.delete(id);
+    if (cwd && !current) await this.location(id, cwd);
     return this.projectState(await this.require(id));
   }
   async switchCwd(id: string, cwd: string) {
@@ -392,6 +471,8 @@ export class LocalSessionService implements SessionService {
   }
   private async listInfo(adapter: SessionAdapter, info: AdapterSessionInfo): Promise<SessionInfoDto | undefined> {
     if (!info.nativeSession.sessionId) return;
+    if ([...this.liveSessions.values()].some((entry) => entry.initializing && entry.handle.harnessId === adapter.harness.id
+      && entry.handle.state().nativeSession.sessionId === info.nativeSession.sessionId)) return;
     let id = info.nativeSession.sessionId;
     let name = info.name;
     if (adapter.harness.id === "pi") {
@@ -428,7 +509,7 @@ export class LocalSessionService implements SessionService {
       }
       const seen = new Set(rows.filter((row) => row.harnessId !== "pi").map((row) => row.id));
       for (const binding of this.bindings.list()) {
-        if (binding.deleted || seen.has(binding.id)) continue;
+        if (binding.deleted || seen.has(binding.id) || this.liveSessions.get(binding.id)?.initializing) continue;
         const live = this.sessionForId(binding.id)?.state();
         rows.push({ id: binding.id, harnessId: binding.nativeSession.harnessId, nativeSession: live?.nativeSession || binding.nativeSession,
           cwd: binding.cwd, name: binding.name, firstMessage: binding.firstMessage, created: binding.created, modified: binding.modified,
@@ -502,11 +583,12 @@ export class LocalSessionService implements SessionService {
   }
   private emitWorkRuntime(handle: SessionHandle) {
     const state = handle.state();
-    if (handle.harnessId === "pi") this.emit({ type: "runtime", sessionId: handle.sessionId, sessionFile: state.sessionFile || "", action: "changed" });
+    const entry = this.liveSessions.get(handle.sessionId);
+    if (entry && handle.harnessId === "pi") this.publish(entry, { type: "runtime", sessionId: handle.sessionId, sessionFile: state.sessionFile || "", action: "changed" });
   }
   private clearTimer(timer?: ReturnType<typeof setTimeout>) { if (timer) clearTimeout(timer); }
   private cancelLiveSessionCleanup(entry: LiveSessionEntry) { this.clearTimer(entry.disposeTimer); entry.disposeTimer = undefined; }
-  private isLiveSessionBusy(entry: LiveSessionEntry) { return Boolean(entry.dispatching || running(entry.handle.state()) || entry.workLeases.size); }
+  private isLiveSessionBusy(entry: LiveSessionEntry) { return Boolean(entry.initializing || entry.dispatching || running(entry.handle.state()) || entry.workLeases.size); }
   private shouldKeepLiveSession(entry: LiveSessionEntry) { return entry.handle.sessionId === this.currentSessionId || entry.viewerClientIds.size > 0 || this.isLiveSessionBusy(entry); }
   private scheduleLiveSessionCleanup(id: string) {
     const entry = this.liveSessions.get(id); if (!entry || entry.disposing) return;
@@ -531,6 +613,7 @@ export class LocalSessionService implements SessionService {
       await this.bindings.ready; const row = this.bindings.get(id);
       if (row && row.nativeSession.persistence === "ephemeral") await this.bindings.put({ ...row, nativeSession: { ...row.nativeSession, status: "unavailable" } });
     }
-    this.emit({ type: "shutdown", sessionId: id, sessionFile: state.sessionFile, sessionKey: id });
+    entry.deferredEvents.length = 0;
+    if (!entry.initializing) this.emit({ type: "shutdown", sessionId: id, sessionFile: state.sessionFile, sessionKey: id });
   }
 }

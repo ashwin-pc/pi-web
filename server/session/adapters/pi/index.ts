@@ -38,7 +38,7 @@ export interface PiAdapterDependencies {
 export interface PiAdapterHost {
   captureStore: EphemeralCaptureStore;
   readSession: ReadSession;
-  register(handle: PiSessionHandle): void;
+  register(handle: PiSessionHandle, initializing?: boolean): void;
   failed(handle: PiSessionHandle): void;
   create(cwd: string, previousSessionFile?: string): Promise<SessionSnapshotDto>;
   withWorkLease<T>(handle: SessionHandle, label: string, kind: "general" | "retry", operation: () => T | Promise<T>): Promise<T>;
@@ -216,7 +216,14 @@ export class PiSessionHandle implements SessionHandle {
     this.cancelInteractions("disposed");
     const runner = this.raw.extensionRunner as any;
     try { if (runner?.hasHandlers?.("session_shutdown")) await runner.emit({ type: "session_shutdown", reason: "quit" }); }
-    finally { this.disposed = true; this.unsubscribe?.(); (this.raw as any).dispose?.(); this.adapter.webUiBridge.releaseSessionSettings(this.raw); this.adapter.releaseBridge(this.sessionId); this.listeners.clear(); }
+    finally {
+      this.unsubscribe?.();
+      (this.raw as any).dispose?.();
+      this.adapter.webUiBridge.releaseSessionSettings(this.raw);
+      this.adapter.releaseBridge(this.sessionId);
+      this.disposed = true;
+      this.listeners.clear();
+    }
   }
   async context(): Promise<SessionContextDto> {
     const value = this.raw;

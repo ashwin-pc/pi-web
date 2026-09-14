@@ -118,10 +118,14 @@ export class PiAdapter implements SessionAdapter {
       fallback = result.modelFallbackMessage;
     }
     if (fallback) console.warn(fallback);
+    if (path && input.sessionId && raw.sessionId !== input.sessionId) {
+      (raw as any).dispose?.();
+      throw new SessionServiceError("Session location did not match requested ID", 409);
+    }
     const handle = new PiSessionHandle(raw, this, loader);
     this.handles.set(raw, handle);
     this.bridgeSinks.set(handle.sessionId, (event) => handle.bridgeEvent(event));
-    this.host.register(handle);
+    this.host.register(handle, sessionStartEvent?.reason === "new");
     try {
       await this.webUiBridge.bind(raw);
       if (sessionStartEvent?.reason === "new") {
@@ -141,7 +145,7 @@ export class PiAdapter implements SessionAdapter {
     if (!input.sessionFile) throw new SessionServiceError("Pi session path is missing", 404);
     if (!this.deps.peer && dirname(resolve(input.sessionFile)) !== this.defaultSessionDir(input.cwd)) throw new SessionServiceError("Invalid Pi session location", 400);
     const handle = await this.make(input, input.sessionFile);
-    if (handle.sessionId !== input.sessionId) { await handle.dispose(); throw new SessionServiceError("Session location did not match requested ID", 409); }
+    if (handle.sessionId !== input.sessionId) { await handle.dispose(); this.host.failed(handle); throw new SessionServiceError("Session location did not match requested ID", 409); }
     return handle;
   }
   async readHistory(input: AdapterOpenInput) {

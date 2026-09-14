@@ -83,6 +83,8 @@ type FixtureServiceOptions = {
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: PiSessionPeer["list"];
   clientCount?: number | (() => number);
+  defaults?: { model?: { provider: string; id: string }; thinkingLevel?: string };
+  configure?: (fixture: ReturnType<typeof fixtureSession>, input: Parameters<PiSessionPeer["create"]>[0]) => void;
 };
 
 async function fixtureService(options: FixtureServiceOptions = {}) {
@@ -96,6 +98,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
       creates.push({ cwd: input.cwd, path: input.path, reason: input.sessionStartEvent?.reason, previous: input.sessionStartEvent?.previousSessionFile });
       const id = input.path ? input.path.split("/").at(-1)?.replace(/\.jsonl$/, "") || "opened" : creates.length === 1 ? "current" : `factory-${creates.length}`;
       const value = fixtureSession(input.cwd, id, input.path);
+      options.configure?.(value, input);
       sessions.set(id, value);
       return { session: value.session };
     },
@@ -104,7 +107,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
   vi.stubEnv("PI_WEB_SETTINGS_FILE", join(cwd, "settings.json"));
   const piAdapter = createPiAdapter({
     modelRuntime: {} as any, peer: factory, additionalExtensionPaths: () => [],
-    defaultsFor: async () => ({}), globalCwd: () => cwd,
+    defaultsFor: async () => options.defaults || ({}), globalCwd: () => cwd,
     clientCount: () => typeof options.clientCount === "function" ? options.clientCount() : options.clientCount ?? 0,
   });
   const deps: LocalSessionServiceDependencies = {
@@ -284,6 +287,60 @@ describe("LocalSessionService contract", () => {
     });
     await fixture.extensionOptions.commandContextActions.newSession();
     expect(order).toEqual(["session_ui_state_changed", "state_changed"]);
+  });
+
+  it("holds defaults and delayed-finalizer state events while startup interactions stay responsive", async () => {
+    let newborn: ReturnType<typeof fixtureSession> | undefined;
+    let finalizerEntered!: () => void;
+    let releaseFinalizer!: () => void;
+    const entered = new Promise<void>((resolve) => { finalizerEntered = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseFinalizer = resolve; });
+    let finalized = false;
+    const { service } = await fixtureService({
+      clientCount: 1,
+      defaults: { model: { provider: "test", id: "model" }, thinkingLevel: "off" },
+      configure: (fixture, input) => {
+        if (input.sessionStartEvent?.reason !== "new") return;
+        newborn = fixture;
+        fixture.session.setModel = async (model) => {
+          fixture.session.model = model as PiWebSession["model"];
+          fixture.session.setSessionName!("Defaults applied");
+          fixture.emit({ type: "session_info_changed", name: "Defaults applied" });
+          expect(await fixture.extensionOptions.uiContext.confirm("Startup", "Confirm defaults", { timeout: 5_000 })).toBe(true);
+        };
+        fixture.session.setThinkingLevel = (level) => {
+          fixture.session.thinkingLevel = level;
+          fixture.emit({ type: "thinking_level_changed", level });
+        };
+      },
+      finalizeCreatedSession: async () => { finalizerEntered(); await gate; finalized = true; },
+    });
+    const events: SessionServiceEvent[] = [];
+    const premature: SessionServiceEvent[] = [];
+    const wire: any[] = [];
+    const activity = new SessionActivity((id) => service.sessionForPath(id)?.state());
+    service.subscribe((event) => {
+      if (!finalized && ["state", "agent", "runtime"].includes(event.type)) premature.push(event);
+      events.push(event);
+    });
+    service.subscribe(createHostSessionEventHandler({ sessionForId: (id) => service.sessionForId(id), projectState: (handle) => service.projectState(handle),
+      webUiEntries: (handle) => service.webUiEntries(handle), sessionActivity: activity, broadcast: (value) => wire.push(value), markSessionUnreadCompleted: () => undefined }));
+    const creating = service.create(undefined);
+    await vi.waitFor(() => expect(events.some((event) => event.type === "interaction")).toBe(true));
+    const request = events.find((event) => event.type === "interaction")! as Extract<SessionServiceEvent, { type: "interaction" }>;
+    expect(wire.some((event) => ["state_changed", "agent_event", "session_runtime_changed"].includes(event.type))).toBe(false);
+    expect(service.respondInteraction({ id: request.request.id, sessionId: request.request.sessionId, confirmed: true })).toBe(true);
+    await entered;
+    newborn!.session.setSessionName!("Changed during finalizer");
+    newborn!.emit({ type: "session_info_changed", name: "Changed during finalizer" });
+    await expect(service.state(newborn!.session.sessionId)).rejects.toMatchObject({ status: 409 });
+    expect(wire.some((event) => ["state_changed", "agent_event", "session_runtime_changed"].includes(event.type))).toBe(false);
+    releaseFinalizer();
+    const created = await creating;
+    expect(premature).toEqual([]);
+    expect(created).toMatchObject({ sessionName: "Changed during finalizer", thinkingLevel: "off" });
+    expect(wire).toContainEqual(expect.objectContaining({ type: "agent_event", event: { type: "thinking_level_changed", level: "off" } }));
+    expect(wire).toContainEqual(expect.objectContaining({ type: "state_changed", sessionName: "Changed during finalizer" }));
   });
 
   it("keeps lifecycle externals typed and raw Pi creation out of the service", async () => {
@@ -476,10 +533,10 @@ describe("LocalSessionService contract", () => {
     expect(activity.hasStarted(initial.sessionFile)).toBe(false);
   });
 
-  it("propagates WebSocket open failures but keeps unknown-ID fallback eligible", async () => {
-    const { initial } = await fixtureService();
-    await expect(resolveWebSocketHelloSession("unknown", initial, async () => undefined)).resolves.toBeUndefined();
-    await expect(resolveWebSocketHelloSession("corrupt", initial, async () => { throw new Error("corrupt session"); })).rejects.toThrow("corrupt session");
+  it("rejects unknown WebSocket session IDs and propagates open failures without fallback", async () => {
+    const { handle } = await fixtureService();
+    await expect(resolveWebSocketHelloSession("unknown", handle, async () => undefined)).rejects.toMatchObject({ status: 404 });
+    await expect(resolveWebSocketHelloSession("corrupt", handle, async () => { throw new Error("corrupt session"); })).rejects.toThrow("corrupt session");
   });
 
   it("decorates ID-less tool calls by their matching content position", () => {

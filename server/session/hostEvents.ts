@@ -1,4 +1,5 @@
 import type { SessionHandle } from "./adapter.js";
+import { SessionServiceError } from "./errors.js";
 import { SessionActivity } from "./activity.js";
 import type { BaseSessionStateDto, MessageDto, SessionServiceEvent } from "./dto.js";
 
@@ -196,11 +197,13 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
   };
 }
 
-/** Unknown IDs may use the legacy current-session fallback; open failures must propagate. */
+/** An explicit unknown/failed session must never become a hello for another harness. */
 export async function resolveWebSocketHelloSession(
   requestedSessionId: string,
   currentSession: SessionHandle,
   findSession: (sessionId: string) => Promise<SessionHandle | undefined>,
-): Promise<SessionHandle | undefined> {
-  return requestedSessionId === currentSession.sessionId ? currentSession : findSession(requestedSessionId);
+): Promise<SessionHandle> {
+  const handle = requestedSessionId === currentSession.sessionId ? currentSession : await findSession(requestedSessionId);
+  if (!handle) throw new SessionServiceError("Session not found", 404);
+  return handle;
 }
