@@ -1,0 +1,8 @@
+{
+  "extends": "../tsconfig.json",
+  "include": [
+    "../server/session/adapters/claude/**/*.ts",
+    "./claude-*.test.ts",
+    "./fixtures/claude-native-peer.ts"
+  ]
+}
