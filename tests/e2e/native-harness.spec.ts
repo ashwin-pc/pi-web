@@ -5,7 +5,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { test as base, expect, type Page, type TestInfo } from "@playwright/test";
+import { test as base, expect, type Page, type Response, type TestInfo } from "@playwright/test";
 import type { HarnessCatalogDto, InteractionRequestDto, SessionSnapshotDto } from "../../server/session/dto.js";
 import { acceptedTurn, controlPeer, findPeer, peerForThread, readObserved, waitObserved } from "../fixtures/codex-peer-control.js";
 import { codexFixturePng, mcpImageEvents } from "../fixtures/codex-native-events.js";
@@ -135,17 +135,46 @@ async function stateOf(page: Page, sessionId?: string): Promise<SessionSnapshotD
   return response.json();
 }
 
+// The drawer rehydrates after creation; landing adopts the create snapshot and
+// sends directly, so it must not wait for a GET that its flow never requests.
+function postCreateState(page: Page, previousId: string) {
+  return page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    const id = url.searchParams.get("sessionId");
+    return response.request().method() === "GET" && url.pathname === "/api/state" && Boolean(id && id !== previousId);
+  });
+}
+
+async function nativeComposerReady(page: Page, response: Response, sessionId: string) {
+  expect(response.ok(), await response.text()).toBe(true);
+  expect((await response.json()).sessionId).toBe(sessionId);
+  await response.finished();
+  // Creation's HTTP receipt precedes state hydration and overlay close. Desktop
+  // intentionally retains its side-by-side drawer; only overlays must disappear.
+  if (await page.evaluate(() => matchMedia("(max-width: 1024px), (max-height: 520px)").matches)) {
+    await expect(page.locator("#sessionDrawer")).toBeHidden();
+  }
+}
+
+async function submitNativePrompt(page: Page) {
+  // A programmatic fill can type behind an overlay, then its late close restores
+  // focus to Sessions. Activate the ready composer exactly as a user would.
+  await page.locator("#prompt").click();
+  await page.locator("#primaryButton").click();
+}
+
 async function createCodex(page: Page, server: NativeServer, flow: "landing" | "drawer", prompt = true) {
   await page.goto("/");
   await expect(page.locator("#emptyCwdChooser")).toBeVisible();
   const initial = await stateOf(page);
+  const readyState = flow === "drawer" ? postCreateState(page, initial.sessionId) : undefined;
   expect(initial.harnessId).toBe("pi");
   await expect(page.locator('[data-harness-selector="landing"] select')).toHaveValue("pi");
   const createdResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/sessions/new" && response.request().method() === "POST");
   if (flow === "landing") {
     await page.locator('[data-harness-selector="landing"] select').selectOption("codex");
     await page.locator("#prompt").fill("Inspect this isolated workspace.");
-    await page.locator("#primaryButton").click();
+    await submitNativePrompt(page);
   } else {
     await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
@@ -162,13 +191,69 @@ async function createCodex(page: Page, server: NativeServer, flow: "landing" | "
   expect(created.nativeSession.sessionId).toBeTruthy();
   expect(created.nativeSession.sessionId).not.toBe(created.sessionId);
   const peer = await peerForThread(server.peerDir, created.nativeSession.sessionId!);
+  if (readyState) await nativeComposerReady(page, await readyState, created.sessionId);
   if (flow === "drawer" && prompt) {
     await page.locator("#prompt").fill("Inspect this isolated workspace.");
-    await page.locator("#primaryButton").click();
+    await submitNativePrompt(page);
   }
   if (flow === "landing" || prompt) await acceptedTurn(peer);
   return { sessionId: created.sessionId, peer };
 }
+
+test("drawer: native prompt submission handles delayed creation focus restoration", async ({ page, nativeServer }) => {
+  const overlay = await page.evaluate(() => matchMedia("(max-width: 1024px), (max-height: 520px)").matches);
+  let creating = false;
+  let previousId: string | undefined;
+  let held = false;
+  let signalHeld!: () => void;
+  let release!: () => void;
+  const requestHeld = new Promise<void>((resolve) => { signalHeld = resolve; });
+  const barrier = new Promise<void>((resolve) => { release = resolve; });
+  page.on("request", (request) => {
+    if (request.method() === "POST" && new URL(request.url()).pathname === "/api/sessions/new") {
+      creating = true;
+      previousId = request.postDataJSON().sessionId;
+    }
+  });
+  // Delay one real GET, never its contents. An HTTP create receipt can precede
+  // post-create state hydration and the overlay's focus restoration.
+  await page.route("**/api/state?**", async (route) => {
+    const id = new URL(route.request().url()).searchParams.get("sessionId");
+    if (creating && id && id !== previousId && !held) {
+      held = true; signalHeld(); await barrier;
+    }
+    await route.continue();
+  });
+  const creation = createCodex(page, nativeServer, "drawer", false);
+  try {
+    await requestHeld;
+    await expect(page.locator("#sessionDrawer")).toBeVisible();
+    // Reproduce the old helper's premature programmatic fill, behind the overlay.
+    await page.locator("#prompt").fill("Inspect this isolated workspace.");
+    await expect(page.locator("#prompt")).toBeFocused();
+    release();
+    if (overlay) {
+      await expect(page.locator("#sessionDrawer")).toBeHidden();
+      await expect(page.locator("#sessionButton")).toBeFocused();
+      await expect(page.locator("#primaryButton")).toBeHidden();
+    } else {
+      // Desktop retains the side-by-side drawer, so there is no late close.
+      await expect(page.locator("#sessionDrawer")).toBeVisible();
+      await expect(page.locator("#prompt")).toBeFocused();
+      await expect(page.locator("#primaryButton")).toBeVisible();
+    }
+    const { peer } = await creation;
+    const accepted = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/prompt" && response.request().method() === "POST");
+    await submitNativePrompt(page);
+    expect((await accepted).status()).toBe(202);
+    await acceptedTurn(peer);
+    await controlPeer(peer, { action: "complete" });
+    await expect(page.locator("#stopButton")).toBeHidden();
+  } finally {
+    release();
+    await creation.catch(() => undefined);
+  }
+});
 
 async function pendingRequest(page: Page, sessionId: string) {
   await expect.poll(async () => (await stateOf(page, sessionId)).pendingInteractions.length).toBeGreaterThan(0);
@@ -520,7 +605,7 @@ test("explicit drawer reopen recovers a lost persistent peer without replay or p
 test("native rejection is visible without a fabricated accepted user message", async ({ page, nativeServer }) => {
   const { sessionId, peer } = await createCodex(page, nativeServer, "drawer", false);
   await controlPeer(peer, { action: "configure", prompt: "reject" });
-  await page.locator("#prompt").fill("This input will be rejected."); await page.locator("#primaryButton").click();
+  await page.locator("#prompt").fill("This input will be rejected."); await submitNativePrompt(page);
   await expect(page.locator("body")).toContainText(/Synthetic native (prompt )?rejection/);
   await expect(page.locator(".message.user")).toHaveCount(0);
   await expect(page.locator("#stopButton")).toBeHidden();
@@ -542,11 +627,12 @@ test("native process death invalidates pending decisions and running controls", 
 async function createClaude(page: Page, server: NativeServer, flow: "landing" | "drawer" = "landing") {
   await page.goto("/");
   const initial = await stateOf(page);
+  const readyState = flow === "drawer" ? postCreateState(page, initial.sessionId) : undefined;
   const createdResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/sessions/new" && response.request().method() === "POST");
   if (flow === "landing") {
     await page.locator('[data-harness-selector="landing"] select').selectOption("claude");
     await page.locator("#prompt").fill("Inspect this Claude workspace.");
-    await page.locator("#primaryButton").click();
+    await submitNativePrompt(page);
   } else {
     await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
@@ -563,11 +649,12 @@ async function createClaude(page: Page, server: NativeServer, flow: "landing" | 
   expect(created.nativeSession.sessionId).not.toBe(created.sessionId);
   expect(created.nativeSession.status).toBe("unmaterialized");
   expect(created.sessionFile).toBeUndefined();
+  if (readyState) await nativeComposerReady(page, await readyState, created.sessionId);
   if (flow === "drawer") {
     // Unlike Codex, creating a Claude handle has not started its native process.
     expect(await readdir(join(server.claudePeerDir, "peers")).catch(() => [])).toHaveLength(0);
     await page.locator("#prompt").fill("Inspect this Claude workspace.");
-    await page.locator("#primaryButton").click();
+    await submitNativePrompt(page);
   }
   const peer = await findPeer(server.claudePeerDir, (record) => record.direction === "client" && record.message.type === "user" && record.message.session_id === created.nativeSession.sessionId);
   const user = (await waitObserved(peer, (record) => record.direction === "client" && record.message.type === "user")).message;
