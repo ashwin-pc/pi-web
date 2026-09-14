@@ -30,6 +30,13 @@ test.describe("stop button", () => {
     await expect(page.locator(".message.assistant", { hasText: "Mock response." }).last()).toBeVisible();
     await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5000 });
     await expect(page.locator("#runtimeStatus")).toBeHidden();
+    // The SDK mock now uses production adapter ingress. Inject the adversarial
+    // browser envelope explicitly rather than giving the mock a broadcast bypass.
+    const state = await (await page.request.get("/api/state")).json();
+    await page.request.post("/api/mock/event", { data: {
+      type: "session_runtime_changed", sessionId: state.sessionId, sessionFile: state.sessionFile,
+      runtime: { loaded: true, isRunning: true, isStreaming: true, isCompacting: false, pendingMessageCount: 0 },
+    } });
     await page.waitForTimeout(300);
     await expect(page.locator("#stopButton")).toBeHidden();
     await expect(page.locator("#runtimeStatus")).toBeHidden();

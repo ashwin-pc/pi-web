@@ -418,7 +418,7 @@ export type SessionServiceEvent =
   | { type: "stats"; sessionId: string; sessionFile: string; stats: SessionStatsDto }
   | { type: "models"; sessionId: string; models: ModelDto[] }
   | { type: "error"; sessionId?: string; sessionFile?: string; error: string; clientMessageId?: string }
-  | { type: "shutdown"; sessionId: string; sessionFile: string; sessionKey: string }
+  | { type: "shutdown"; sessionId: string; sessionFile?: string; sessionKey: string }
   | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed"; aborted?: boolean }
   | { type: "wire"; value: JsonValue };
 

@@ -1,8 +1,5 @@
 import { join } from "node:path";
 import type { PiWebSession, PiWebSessionInfo } from "./types.js";
-import { simplifyMessage } from "./session/projection.js";
-import { mapPiEvent } from "./session/piEventMap.js";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import websiteWorkflowExtension from "./fixtures/websiteWorkflowExtension.js";
 import recommendedAddonsExtension from "./fixtures/recommendedAddonsExtension.js";
 
@@ -51,13 +48,10 @@ function largeStreamingMarkdownFixtureBlocks() {
 
 interface MockSessionOptions {
   piCwd: string;
-  broadcast(value: unknown): void;
-  isCurrentSession(session: PiWebSession): boolean;
-  currentState(): unknown;
 }
 
 export function createMockHarness(options: MockSessionOptions) {
-  const { piCwd, broadcast, isCurrentSession, currentState } = options;
+  const { piCwd } = options;
   const mockModel = { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 };
 
   function initialMockSessions(): PiWebSessionInfo[] {
@@ -235,6 +229,7 @@ export function createMockHarness(options: MockSessionOptions) {
 
     syncMessagesToLeaf();
     let mockSession: PiWebSession;
+    const eventListeners = new Set<(event: unknown) => void>();
     const extensionHandlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
     let extensionContext: any;
     let compactionAbortRequested = false;
@@ -278,22 +273,7 @@ export function createMockHarness(options: MockSessionOptions) {
     function broadcastPiEvent(input: Record<string, unknown>, activityAt?: string | false) {
       const lastActivityAt = activityAt === false ? runtimeLastActivityAt : markRuntimeActivity(activityAt || new Date().toISOString());
       const event = lastActivityAt ? { ...input, lastActivityAt } : input;
-      const mapped = mapPiEvent(event as unknown as AgentSessionEvent);
-      const committedMessage = input.type === "message_end" ? simplifyMessage(input.message) : undefined;
-      if (mapped.kind === "event") broadcast({
-        type: "agent_event",
-        sessionId: mockSession.sessionId,
-        sessionFile: mockSession.sessionFile,
-        event: mapped.event,
-      });
-      else broadcast({ type: "committed_message", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, kind: mapped.entryKind });
-      broadcastRuntimeChanged();
-      if (committedMessage) broadcast({
-        type: "committed_message",
-        sessionId: mockSession.sessionId,
-        sessionFile: mockSession.sessionFile,
-        message: committedMessage,
-      });
+      for (const listener of eventListeners) listener(event);
     }
 
     async function runMockCompaction(customInstructions?: string, slow = false) {
@@ -301,14 +281,14 @@ export function createMockHarness(options: MockSessionOptions) {
       setRuntimeStartedAt();
       compactionAbortRequested = false;
       broadcastPiEvent({ type: "compaction_start", reason: "manual", startedAt: runtimeStartedAt }, runtimeStartedAt);
-      if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+
       const deadline = Date.now() + (slow ? 5_000 : 1_000);
       while (!compactionAbortRequested && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 50));
       mockSession.isCompacting = false;
       clearRuntimeTimestamps();
       if (compactionAbortRequested) {
         broadcastPiEvent({ type: "compaction_end", reason: "manual", aborted: true, willRetry: false }, false);
-        if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+
         return undefined;
       }
       const result = {
@@ -319,7 +299,7 @@ export function createMockHarness(options: MockSessionOptions) {
       };
       appendMockMessage({ role: "compactionSummary", content: result.summary, tokensBefore: result.tokensBefore, summary: result.summary, timestamp: new Date().toISOString() } as any);
       broadcastPiEvent({ type: "compaction_end", reason: "manual", result, aborted: false, willRetry: false }, false);
-      if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+
       return result;
     }
 
@@ -369,21 +349,7 @@ export function createMockHarness(options: MockSessionOptions) {
     };
 
     function broadcastRuntimeChanged() {
-      broadcast({
-        type: "session_runtime_changed",
-        sessionId: mockSession.sessionId,
-        sessionFile: mockSession.sessionFile,
-        runtime: {
-          loaded: true,
-          isRunning: Boolean(mockSession.isStreaming) || Boolean(mockSession.isRetrying) || Boolean(mockSession.isCompacting),
-          isStreaming: Boolean(mockSession.isStreaming),
-          isRetrying: Boolean(mockSession.isRetrying),
-          isCompacting: Boolean(mockSession.isCompacting),
-          startedAt: runtimeStartedAt,
-          lastActivityAt: runtimeLastActivityAt,
-          pendingMessageCount: 0,
-        },
-      });
+      broadcastPiEvent({ type: "agent_settled" }, false);
     }
 
     function isMockAssistantFailure(message: any) {
@@ -428,7 +394,7 @@ export function createMockHarness(options: MockSessionOptions) {
       clearRuntimeTimestamps();
       broadcastPiEvent({ type: "agent_end", messages: [recovered], willRetry: false }, false);
       broadcastPiEvent({ type: "agent_settled" }, false);
-      if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+
     }
 
     mockSession = {
@@ -520,7 +486,7 @@ export function createMockHarness(options: MockSessionOptions) {
         const info = mockSessions.find((item) => item.path === mockSession.sessionFile);
         if (info) info.name = name.trim();
         broadcastPiEvent({ type: "session_info_changed", name: name.trim() || undefined });
-        if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
+
       },
       setModel: async (model: unknown) => { mockSession.model = model as typeof mockModel; },
       setThinkingLevel: (level: string) => { mockSession.thinkingLevel = level; },
@@ -604,7 +570,6 @@ export function createMockHarness(options: MockSessionOptions) {
         const withQuietRuntime = /quiet runtime/i.test(message);
         const withLateToolTimestamp = /late tool timestamp/i.test(message);
         const withoutAgentEnd = /missing agent end|no agent end/i.test(message);
-        const withStaleRuntimeAfterEnd = /stale runtime after end/i.test(message);
         const withPendingToolRefresh = /pending tool refresh/i.test(message) || withProgressDemo;
         const withLiveMessageKinds = /live message kinds/i.test(message);
         const withStreamingMarkdownBenchmark = /streaming markdown benchmark/i.test(message);
@@ -898,29 +863,18 @@ export function createMockHarness(options: MockSessionOptions) {
           broadcastRuntimeChanged();
         }
         while (followUpQueue.length) deliverQueuedMessage(followUpQueue);
-        if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
-        if (withStaleRuntimeAfterEnd) {
-          broadcast({
-            type: "session_runtime_changed",
-            sessionId: mockSession.sessionId,
-            sessionFile: mockSession.sessionFile,
-            runtime: {
-              loaded: true,
-              isRunning: true,
-              isStreaming: true,
-              isCompacting: false,
-              pendingMessageCount: 0,
-            },
-          });
-        }
+
+        // Obsolete browser runtimes are injected by /api/mock/event in the UI
+        // regression. The SDK peer emits only native Pi events through subscribe.
+
       },
       retryFromFailure: async () => runMockRetryFromFailure(),
       abort: async () => { mockSession.isStreaming = false; mockSession.isRetrying = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,
-      subscribe: () => undefined,
+      subscribe: (listener) => { eventListeners.add(listener); return () => eventListeners.delete(listener); },
     };
-    (mockSession as any).dispose = () => { lifecycleFor(mockSession.sessionId).disposes += 1; };
+    (mockSession as any).dispose = () => { eventListeners.clear(); lifecycleFor(mockSession.sessionId).disposes += 1; };
     return mockSession;
   }
 

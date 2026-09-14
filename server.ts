@@ -18,8 +18,9 @@ import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment }
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, WorkspaceFileError, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
-import type { PiWebSession } from "./server/types.js";
-import type { BaseSessionStateDto, InteractionResponseDto, SessionInfoDto } from "./server/session/dto.js";
+import type { SessionAdapter, SessionHandle } from "./server/session/adapter.js";
+import { createPiAdapter } from "./server/session/adapters/pi/index.js";
+import type { BaseSessionStateDto, HarnessDescriptorDto, HarnessId, InteractionResponseDto, SessionInfoDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessionState, resolveWebSocketHelloSession, type DecoratedSessionState, type WireSessionState } from "./server/session/hostEvents.js";
 import { SessionSettlementTracker } from "./server/session/settlement.js";
@@ -237,8 +238,8 @@ async function requestCwdFromSessionId(sessionId: string | null) {
   return sessionService.cwdForSessionId(sessionId);
 }
 
-function sessionCwd(targetSession: PiWebSession | any = session) {
-  return sessionService ? sessionService.cwdForSession(targetSession) : String(targetSession?.sessionManager?.getCwd?.() || targetSession?.cwd || piCwd);
+function sessionCwd(targetSession: SessionHandle = session) {
+  return sessionService.cwdForSession(targetSession);
 }
 
 function resolveSessionId(value: unknown) {
@@ -253,16 +254,16 @@ function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessio
   });
 }
 
-function decorateState(baseState: BaseSessionStateDto, targetSession: PiWebSession, includeThinkingLevels = false): WireSessionState {
+function decorateState(baseState: BaseSessionStateDto, targetSession: SessionHandle, includeThinkingLevels = false): WireSessionState {
   const state = decorateHostSessionState(baseState, targetSession, sessionActivity, (value) => sessionService.webUiEntries(value), includeThinkingLevels);
   return (mockMode ? { ...state, ...mockStateOverrides } : state) as WireSessionState;
 }
 
-function currentState(targetSession: PiWebSession = session) {
+function currentState(targetSession: SessionHandle = session) {
   return decorateState(sessionService.projectState(targetSession), targetSession);
 }
 
-function currentStateWithThinkingLevels(targetSession: PiWebSession = session) {
+function currentStateWithThinkingLevels(targetSession: SessionHandle = session) {
   return decorateState(sessionService.projectState(targetSession), targetSession, true);
 }
 
@@ -270,11 +271,11 @@ async function decorateServiceState(baseState: BaseSessionStateDto, includeThink
   return decorateState(baseState, await sessionService.require(baseState.sessionId), includeThinkingLevels) as DecoratedSessionState;
 }
 
-const decorateMessages = (messages: Parameters<typeof decorateHostMessages>[0], sessionFile: string) =>
+const decorateMessages = (messages: Parameters<typeof decorateHostMessages>[0], sessionFile: string | undefined) =>
   decorateHostMessages(messages, sessionFile, sessionActivity);
 
 function decorateSessionInfos(infos: SessionInfoDto[]) {
-  return infos.map(({ path, ...info }) => ({ ...info, ...(path ? { runtime: sessionActivity.runtimeForPath(path) } : {}) }));
+  return infos.map(({ path, ...info }) => ({ ...info, runtime: sessionActivity.runtimeForPath(info.id) }));
 }
 
 function envMs(name: string, fallback: number) {
@@ -290,17 +291,17 @@ const pushNotifications = createPushNotificationService(
 );
 let sessionService: LocalSessionService;
 const sessionActivity = new SessionActivity(
-  (path) => sessionService?.sessionForPath(path),
+  (path) => sessionService?.sessionForPath(path)?.state(),
   (path) => sessionService?.hasActiveWorkForPath(path) ?? false,
   (path) => sessionService?.hasActiveRetryForPath(path) ?? false,
 );
-let session: PiWebSession;
+let session: SessionHandle;
 
 const settlementTracker = new SessionSettlementTracker(
   async (sessionId) => {
     const target = await sessionService?.find(sessionId);
     if (!target) return undefined;
-    const runtime = sessionActivity.runtimeForPath(target.sessionFile);
+    const runtime = sessionActivity.runtimeForPath(target.sessionId);
     return {
       sessionId: target.sessionId,
       isRunning: runtime.isRunning,
@@ -322,22 +323,7 @@ realtimeHub = new RealtimeHub(
   (count) => { if (count === 0) sessionService?.cancelInteractions(); },
 );
 
-const mockPromptCorrelations = new Map<string, Array<{ clientMessageId: string; sourceClientId: string }>>();
-function broadcast(value: unknown) {
-  if (mockMode && value && typeof value === "object" && (value as any).type === "agent_event") {
-    const envelope = value as Record<string, any>;
-    const eventMessage = envelope.event?.message;
-    const raw = eventMessage?.message && typeof eventMessage.message === "object" ? eventMessage.message : eventMessage;
-    if (envelope.event?.type === "message_end" && String(raw?.role || raw?.raw?.role || "") === "user") {
-      const key = String(envelope.sessionFile || envelope.sessionId || "");
-      const pending = mockPromptCorrelations.get(key);
-      const correlation = pending?.shift();
-      if (pending && pending.length === 0) mockPromptCorrelations.delete(key);
-      if (correlation) return realtimeHub.broadcast({ ...envelope, ...correlation });
-    }
-  }
-  realtimeHub.broadcast(value);
-}
+function broadcast(value: unknown) { realtimeHub.broadcast(value); }
 
 function markSessionUnreadCompleted(sessionId: string, unreadAt = new Date().toISOString()) { unreadTracker.markCompleted(sessionId, unreadAt); }
 function clearSessionUnread(sessionId: string) { unreadTracker.clear(sessionId); }
@@ -355,7 +341,7 @@ function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
   return cleanClientId(headerValue) || cleanClientId(fallback);
 }
 
-function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, fallbackClientId?: unknown) {
+function noteViewerLeaseFromRequest(req: IncomingMessage, value: SessionHandle, fallbackClientId?: unknown) {
   const clientId = clientIdFromRequest(req, fallbackClientId);
   if (clientId) sessionService.acquireViewer(value.sessionId, clientId);
 }
@@ -365,12 +351,7 @@ function bindViewerSocket(clientId: string, ws: WebSocket) {
   if (connection) ws.on("close", () => sessionService.disconnectViewer(connection));
 }
 
-const mockHarness = createMockHarness({
-  piCwd,
-  broadcast,
-  isCurrentSession: (value: PiWebSession) => value === session,
-  currentState,
-});
+const mockHarness = createMockHarness({ piCwd });
 const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled } = mockHarness;
 
 function additionalExtensionPaths(cwd = piCwd) {
@@ -442,8 +423,8 @@ const handleSessionServiceEvent = createHostSessionEventHandler({
   },
 });
 
-const mockSessionFactory = mockMode ? {
-  isMock: true,
+const mockPeer = mockMode ? {
+  newSessionAfterCreate: true,
   create: async ({ path }: { path?: string }) => ({ session: createMockSession(path) }),
   list: async () => mockSessions,
   remove: async (id: string) => {
@@ -453,28 +434,47 @@ const mockSessionFactory = mockMode ? {
   },
 } : undefined;
 
-sessionService = new LocalSessionService({
-  extensionHttp,
-  modelRuntime,
-  sessionFactory: mockSessionFactory,
-  additionalExtensionPaths,
-  sessionConfig: {
-    defaultsFor: async () => {
-      const defaults = (await settingsStore.read()).defaults;
-      return { model: defaults.model, thinkingLevel: defaults.thinkingLevel };
-    },
-    finalizeCreatedSession: applyDefaultSessionBucket,
+// Trusted operator configuration only; browser requests cannot supply executables,
+// environment, credentials or native policy overrides. Native startup stays lazy.
+const multiHarnessEnabled = process.env.PI_WEB_MULTI_HARNESS === "1";
+const nativeAdapters: SessionAdapter[] = [];
+const unavailableHarnesses: HarnessDescriptorDto[] = [];
+for (const id of ["codex", "claude"] as const) {
+  try {
+    const moduleUrl = new URL(`./server/session/adapters/${id}/index.js`, import.meta.url);
+    // Dynamic load keeps Pi usable when an optional native installation is absent.
+    const native = await import(moduleUrl.href);
+    let adapter: SessionAdapter;
+    if (id === "codex") {
+      const args: unknown = process.env.PI_WEB_CODEX_ARGS ? JSON.parse(process.env.PI_WEB_CODEX_ARGS) : undefined;
+      if (args !== undefined && (!Array.isArray(args) || !args.every((arg) => typeof arg === "string"))) throw new Error("PI_WEB_CODEX_ARGS must be a JSON string array");
+      adapter = native.createCodexAdapter({ command: process.env.PI_WEB_CODEX_COMMAND, args });
+    } else adapter = native.createClaudeAdapter({ pathToClaudeCodeExecutable: process.env.PI_WEB_CLAUDE_EXECUTABLE });
+    nativeAdapters.push(adapter);
+  } catch (error) {
+    unavailableHarnesses.push({ id, name: id === "codex" ? "Codex" : "Claude", enabled: multiHarnessEnabled, available: false,
+      unavailableReason: `Native ${id} adapter unavailable: ${error instanceof Error ? error.message : "installation failed"}`,
+      capabilities: { harness: id, queue: false, steering: false, followUp: false, thinkingLevel: false, tree: false,
+        compaction: false, retry: false, bash: false, extensions: false, interactions: false, models: false, context: false, attachments: false, historyFork: false } });
+  }
+}
+const piAdapter = createPiAdapter({
+  extensionHttp, modelRuntime, peer: mockPeer, additionalExtensionPaths,
+  defaultsFor: async () => {
+    const defaults = (await settingsStore.read()).defaults;
+    return { model: defaults.model, thinkingLevel: defaults.thinkingLevel };
   },
   globalCwd: () => piCwd,
   clientCount: () => realtimeHub.clientCount,
 });
+sessionService = new LocalSessionService({
+  pi: piAdapter, adapters: nativeAdapters, unavailableHarnesses, multiHarnessEnabled,
+  nativeBindingsFile: process.env.PI_WEB_NATIVE_BINDINGS_FILE || join(agentDir, "pi-web-native-sessions.json"),
+  finalizeCreatedSession: applyDefaultSessionBucket,
+  globalCwd: () => piCwd,
+});
 const settingsStore = sessionService.settingsStore;
 sessionService.subscribe((event) => {
-  if (event.type === "shutdown") {
-    mockPromptCorrelations.delete(event.sessionKey);
-    mockPromptCorrelations.delete(event.sessionFile);
-    mockPromptCorrelations.delete(event.sessionId);
-  }
   handleSessionServiceEvent(event);
   if (event.type === "settlement_dependencies") {
     settlementTracker.report(event.sessionId, event.childIds);
@@ -591,7 +591,6 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (mockMode && method === "POST" && url.pathname === "/api/mock/reset") {
         const body = await readBody(req) as { websiteWorkflowExtension?: unknown; recommendedAddonsExtension?: unknown };
         await sessionService.disposeAll("reset");
-        mockPromptCorrelations.clear();
         mockStateOverrides = {};
         setWebsiteWorkflowExtensionEnabled(body.websiteWorkflowExtension === true);
         setRecommendedAddonsExtensionEnabled(body.recommendedAddonsExtension === true);
@@ -627,6 +626,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (mockMode && method === "GET" && url.pathname === "/api/mock/live-sessions") {
         return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(), lifecycle: getMockLifecycle() });
       }
+
+      if (method === "GET" && url.pathname === "/api/harnesses") return sendJson(res, 200, { ok: true, ...sessionService.catalog() });
 
       if (method === "GET" && url.pathname === "/api/fs/dirs") {
         try {
@@ -942,7 +943,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "GET" && url.pathname === "/api/messages") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
         const target = await sessionService.require(requestedSessionId);
-        return sendJson(res, 200, { ok: true, messages: decorateMessages(await sessionService.messages(target.sessionId), target.sessionFile) });
+        return sendJson(res, 200, { ok: true, messages: decorateMessages(await sessionService.messages(target.sessionId), target.sessionId) });
       }
 
       if (method === "GET" && url.pathname === "/api/session/reference") {
@@ -1152,6 +1153,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "POST" && url.pathname === "/api/attachments") {
         const sessionId = url.searchParams.get("sessionId");
         const target = await sessionService.require(resolveSessionId(sessionId));
+        if (target.state().capabilities.attachments === false) throw new SessionServiceError("Attachments are not supported by this harness", 400);
         const name = url.searchParams.get("name") || "attachment";
         const requestedMediaType = url.searchParams.get("mediaType") || "";
         const mediaType = requestedMediaType && requestedMediaType.length <= 160 ? requestedMediaType : "application/octet-stream";
@@ -1161,22 +1163,17 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; expectedExecutionId?: unknown; attachments?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
         const target = await sessionService.require(resolveSessionId(body.sessionId));
         const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);
         if (!message && attachments.length === 0) return sendJson(res, 400, { ok: false, error: "message or attachment is required" });
         const clientMessageId = cleanClientId(body.clientMessageId);
         const sourceClientId = clientIdFromRequest(req);
-        if (mockMode && clientMessageId && sourceClientId) {
-          const key = target.sessionFile || target.sessionId;
-          const pending = mockPromptCorrelations.get(key) || [];
-          pending.push({ clientMessageId, sourceClientId });
-          mockPromptCorrelations.set(key, pending);
-        }
         const result = await sessionService.prompt(target.sessionId, {
           message,
-          mode: body.mode === "followUp" ? "followUp" : "steer",
+          mode: target.harnessId === "pi" ? body.mode === "followUp" ? "followUp" : "steer" : body.mode === undefined ? "prompt" : String(body.mode),
+          expectedExecutionId: typeof body.expectedExecutionId === "string" ? body.expectedExecutionId : undefined,
           attachments,
           clientMessageId,
           sourceClientId,
@@ -1190,8 +1187,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/abort") {
-        const body = await readBody(req) as { sessionId?: unknown };
-        return sendJson(res, 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId)) });
+        const body = await readBody(req) as { sessionId?: unknown; expectedExecutionId?: unknown };
+        return sendJson(res, 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId), typeof body.expectedExecutionId === "string" ? body.expectedExecutionId : undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/compaction/abort") {
@@ -1207,8 +1204,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
-        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; origin?: unknown };
-        const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined);
+        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; harnessId?: unknown; origin?: unknown };
+        if (body.harnessId !== undefined && typeof body.harnessId !== "string") throw new SessionServiceError("harnessId must be a string", 400);
+        const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined, body.harnessId as HarnessId | undefined);
         extensionHttp.recordCreatedSession(req, baseState.sessionId);
         const state = await decorateServiceState(baseState);
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
@@ -1317,7 +1315,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-  let targetSession: PiWebSession | undefined;
+  let targetSession: SessionHandle | undefined;
   try {
     targetSession = await resolveWebSocketHelloSession(requestedSessionId, session, (id) => sessionService.find(id));
   } catch {
@@ -1348,6 +1346,21 @@ if (isDev) {
 }
 
 startEventLoopTelemetry();
+
+let shuttingDown = false;
+async function shutdownOwnedSessions() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const deadline = setTimeout(() => process.exit(1), 10_000);
+  deadline.unref();
+  server.close();
+  for (const socket of wss.clients) socket.close(1001, "Server shutting down");
+  try { await sessionService.disposeAll(); await viteDevServer?.close(); }
+  catch (error) { console.warn("Session cleanup failed:", error); }
+  finally { clearTimeout(deadline); process.exit(0); }
+}
+process.once("SIGTERM", () => { void shutdownOwnedSessions(); });
+process.once("SIGINT", () => { void shutdownOwnedSessions(); });
 
 extensionHttpServer = server;
 server.listen(port, host, () => {
