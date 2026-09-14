@@ -10,6 +10,26 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+async function switchSession(page: Page, sessionName: string) {
+  const drawer = page.locator("#sessionDrawer");
+  const target = page.locator(".sessionItem").filter({ hasText: sessionName }).locator(".sessionItemNavBtn");
+  if (!await target.isVisible()) {
+    await expect(drawer).toBeHidden();
+    await page.locator("#sessionButton").click();
+  }
+  await expect(target).toBeAttached();
+  await target.evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.locator("#statusTitle")).toHaveText(sessionName);
+}
+
+async function delayQuoteDraftPersistence(page: Page) {
+  await page.evaluate(() => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+      nativeSetTimeout(handler, timeout === 120 ? 1_000 : timeout, ...args)) as typeof window.setTimeout;
+  });
+}
+
 async function selectAssistantExcerpt(page: Page, text: string) {
   const paragraph = page.locator(".message.assistant .body p").filter({ hasText: text }).first();
   await paragraph.scrollIntoViewIfNeeded();
@@ -103,6 +123,42 @@ test("restores unfinished quote replies and composer text after reload", async (
   await expect(page.locator(".quoteReplySummaryButton")).toContainText("1 linked reply");
   await page.locator(".quoteReplyPin").click();
   await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("How should this work offline?");
+});
+
+test("restores an outgoing quote draft after switching sessions before its debounce fires", async ({ page }) => {
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await delayQuoteDraftPersistence(page);
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Preserve this outgoing draft");
+
+  await switchSession(page, "Older mock session");
+  await switchSession(page, "Current mock session");
+
+  await page.locator(".quoteReplyPin").click();
+  await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("Preserve this outgoing draft");
+});
+
+test("does not delete destination quote drafts during a fast session switch", async ({ page }) => {
+  await page.goto("/");
+  const destinationDraft = [{
+    id: 7,
+    quote: "Resumed older session.",
+    question: "Keep the destination draft",
+    sourceMessageId: "destination-entry",
+    startOffset: 0,
+    endOffset: 22,
+  }];
+  await page.evaluate((draft) => localStorage.setItem("pi-web-quote-reply-drafts-v1", JSON.stringify({ "mock-older": draft })), destinationDraft);
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await delayQuoteDraftPersistence(page);
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Pending source edit");
+
+  await switchSession(page, "Older mock session");
+  await page.waitForTimeout(1_100);
+
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-quote-reply-drafts-v1") || "{}")["mock-older"])).toEqual(destinationDraft);
 });
 
 test("links questions to multiple assistant responses and sends structured quote pairs", async ({ page }) => {

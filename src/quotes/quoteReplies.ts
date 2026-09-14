@@ -90,7 +90,7 @@ export function createQuoteReplies(options: {
   const draftStorageKey = "pi-web-quote-reply-drafts-v1";
   type StoredDraft = Pick<QuoteReference, "id" | "quote" | "question" | "sourceMessageId" | "startOffset" | "endOffset">;
   let restoredDraftSession = "";
-  let persistTimer = 0;
+  let pendingPersist: { timer: number; sessionId: string; drafts: StoredDraft[] } | undefined;
   const isMobileSelection = () => matchMedia("(pointer: coarse)").matches || innerWidth <= 760;
 
   const toolbar = document.createElement("div");
@@ -134,15 +134,15 @@ export function createQuoteReplies(options: {
     }
   }
 
-  function persistDrafts() {
-    window.clearTimeout(persistTimer);
-    persistTimer = 0;
-    const sessionId = getSessionId();
-    if (!sessionId) return;
-    const stored = readStoredDrafts();
-    const drafts = draftReferences().map(({ id, quote, question, sourceMessageId, startOffset, endOffset }) => ({
+  function serializedDrafts() {
+    return draftReferences().map(({ id, quote, question, sourceMessageId, startOffset, endOffset }) => ({
       id, quote, question, sourceMessageId, startOffset, endOffset,
     }));
+  }
+
+  function persistSessionDrafts(sessionId: string, drafts: StoredDraft[]) {
+    if (!sessionId) return;
+    const stored = readStoredDrafts();
     if (drafts.length) stored[sessionId] = drafts;
     else delete stored[sessionId];
     try {
@@ -151,9 +151,30 @@ export function createQuoteReplies(options: {
     } catch { /* ignore unavailable storage */ }
   }
 
+  function flushPendingDrafts() {
+    const pending = pendingPersist;
+    if (!pending) return false;
+    window.clearTimeout(pending.timer);
+    pendingPersist = undefined;
+    persistSessionDrafts(pending.sessionId, pending.drafts);
+    return true;
+  }
+
+  function persistDrafts() {
+    if (pendingPersist) window.clearTimeout(pendingPersist.timer);
+    pendingPersist = undefined;
+    persistSessionDrafts(getSessionId(), serializedDrafts());
+  }
+
   function schedulePersistDrafts() {
-    window.clearTimeout(persistTimer);
-    persistTimer = window.setTimeout(persistDrafts, 120);
+    if (pendingPersist) window.clearTimeout(pendingPersist.timer);
+    const pending = { timer: 0, sessionId: getSessionId(), drafts: serializedDrafts() };
+    pending.timer = window.setTimeout(() => {
+      if (pendingPersist !== pending) return;
+      pendingPersist = undefined;
+      persistSessionDrafts(pending.sessionId, pending.drafts);
+    }, 120);
+    pendingPersist = pending;
   }
 
   function hideToolbar(clearSelection = false) {
@@ -558,7 +579,9 @@ export function createQuoteReplies(options: {
   });
   messagesEl.addEventListener("scroll", () => hideToolbar(), { passive: true });
   window.addEventListener("resize", () => hideToolbar());
-  window.addEventListener("pagehide", persistDrafts);
+  window.addEventListener("pagehide", () => {
+    if (!flushPendingDrafts()) persistDrafts();
+  });
   summaryButton.addEventListener("click", (event) => {
     event.stopPropagation();
     summaryPopover.hidden = !summaryPopover.hidden;
@@ -612,6 +635,10 @@ export function createQuoteReplies(options: {
       updateSummary();
     },
     clear() {
+      // The active session may already have changed by the time transcript
+      // teardown runs, so only flush the session-scoped snapshot captured when
+      // the draft was edited. Never derive its owner during clear.
+      flushPendingDrafts();
       references = [];
       persistedReplies.clear();
       restoredDraftSession = "";
