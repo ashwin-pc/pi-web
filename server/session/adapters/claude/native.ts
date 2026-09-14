@@ -8,6 +8,7 @@ import {
   type SpawnedProcess,
   type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
+import { nativeChildEnvironment } from "../nativeEnvironment.js";
 
 export const CLAUDE_SDK_VERSION = "0.3.270";
 export const CLAUDE_CODE_VERSION = "2.1.270";
@@ -136,7 +137,13 @@ export function createClaudeQuery(params: {
       includePartialMessages: true,
       extraArgs: { ...options.extraArgs, "replay-user-messages": null },
       spawnClaudeCodeProcess(spawnOptions) {
-        const child = spawnProcess({ ...spawnOptions, args: preserveNativePermissionMode(spawnOptions.args, options.permissionMode) });
+        const child = spawnProcess({
+          ...spawnOptions,
+          args: preserveNativePermissionMode(spawnOptions.args, options.permissionMode),
+          // Filter after SDK environment assembly/updates, not just Options.env,
+          // for both local and supported custom spawns.
+          env: nativeChildEnvironment(spawnOptions.env),
+        });
         if (!observe) return child;
         return {
           stdin: child.stdin,

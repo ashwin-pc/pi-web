@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { nativeChildEnvironment } from "../nativeEnvironment.js";
 
 export type RpcId = string | number;
 export type NativeObject = Record<string, unknown>;
@@ -76,8 +77,8 @@ export class CodexTransport {
     this.requestTimeoutMs = options.requestTimeoutMs ?? 45_000;
     this.child = spawn(options.command ?? "codex", options.args ?? ["app-server", "--listen", "stdio://"], {
       cwd: options.cwd,
-      // Do not replace HOME/CODEX_HOME, export credentials or bypass the installed wrapper.
-      env: options.env ?? process.env,
+      // Preserve native auth/config and explicit-env semantics, not the host control token.
+      env: nativeChildEnvironment(options.env ?? process.env),
       stdio: ["pipe", "pipe", "pipe"],
       // Own a process group so a wrapper's children cannot outlive explicit disposal.
       detached: process.platform !== "win32",

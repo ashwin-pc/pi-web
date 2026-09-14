@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "@earendil-works/pi-ai";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
@@ -24,6 +25,8 @@ it("uses the actual Pi SDK for startup, extension commands, identity and disposa
   await mkdir(agentDir); await mkdir(cwd);
   vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
   vi.stubEnv("PI_WEB_SETTINGS_FILE", join(root, "settings.json"));
+  const hostToken = randomUUID();
+  vi.stubEnv("PI_WEB_TOKEN", hostToken);
   const extension = join(root, "sdk-fixture.ts");
   await writeFile(extension, `export default function (pi) {
     pi.on("session_start", (_event, ctx) => {
@@ -33,7 +36,10 @@ it("uses the actual Pi SDK for startup, extension commands, identity and disposa
     });
     pi.registerCommand("sdk-no-inference", {
       description: "Local fixture command",
-      handler: async (_args, ctx) => { ctx.ui.notify("SDK command handled", "info"); },
+      handler: async (_args, ctx) => {
+        ctx.ui.notify("SDK host token available: " + Boolean(process.env.PI_WEB_TOKEN), "info");
+        ctx.ui.notify("SDK command handled", "info");
+      },
     });
     pi.on("session_shutdown", (_event, ctx) => { ctx.ui.notify("SDK shutdown", "info"); });
   }\n`);
@@ -54,6 +60,8 @@ it("uses the actual Pi SDK for startup, extension commands, identity and disposa
   expect(receipt.acknowledgement).toBe("not-exposed");
   await vi.waitFor(() => expect(events).toContainEqual(expect.objectContaining({ type: "wire", value: expect.objectContaining({ type: "interaction_effect", kind: "notify", payload: { message: "SDK command handled", notifyType: "info" } }) })));
   await vi.waitFor(() => expect(handle.state().phase).toBe("idle"));
+  expect(events).toContainEqual(expect.objectContaining({ type: "wire", value: expect.objectContaining({ payload: { message: "SDK host token available: true", notifyType: "info" } }) }));
+  expect(process.env.PI_WEB_TOKEN === hostToken).toBe(true); // Never log the value, even on failure.
   expect(events.some((event) => event.type === "agent" && event.event.type === "agent_start")).toBe(false);
   expect(receipt).not.toHaveProperty("nativeExecutionId");
   await service.disposeAll();
