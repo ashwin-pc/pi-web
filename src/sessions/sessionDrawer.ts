@@ -453,7 +453,9 @@ export function createSessions(options: {
   }
 
   async function prepareLandingSession() {
-    if (elements.emptyCwdChooserEl.hidden) return;
+    // A failed native create may have painted an error over the landing view.
+    // Keep honoring its explicit choice on retry; never fall back to the old Pi ID.
+    if (elements.emptyCwdChooserEl.hidden && !landingHarnessId) return;
     if (preparingLanding) return preparingLanding;
     const harnessId = selectedLandingHarness();
     if (harnessId === (activeSessionState(state)?.harnessId || "pi")) return;
