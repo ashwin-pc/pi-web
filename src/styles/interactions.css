@@ -22,6 +22,7 @@
 .interactionRequest h3 { margin: 0 0 8px; font-size: 14px; }
 .interactionRequest details { margin: 6px 0; }
 .interactionSummary { white-space: pre-wrap; overflow-wrap: anywhere; font-family: ui-monospace, monospace; }
+.interactionCaution { color: var(--danger); }
 .interactionRequest summary { cursor: pointer; color: var(--muted); }
 .interactionRequest pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .interactionChoices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }

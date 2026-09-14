@@ -14,6 +14,8 @@ export function createInteractions(options: { state: AppState; elements: AppElem
   elements.pendingMessagesEl.before(panel);
   const sending = new Set<string>();
   const errors = new Map<string, string>();
+  const cards = new Map<string, { signature: string; form: HTMLFormElement }>();
+  const cardKey = (request: InteractionRequestDto) => JSON.stringify([request.sessionId, request.id]);
   let renderedKey = "";
   let expiryTimer: number | undefined;
 
@@ -58,8 +60,17 @@ export function createInteractions(options: { state: AppState; elements: AppElem
     if (requests.length && expiryTimer === undefined) expiryTimer = window.setInterval(updateDisabled, 1000);
     if (key === renderedKey) { updateDisabled(); return; }
     renderedKey = key;
-    panel.replaceChildren();
+    const wanted = new Set(requests.map(cardKey));
+    for (const [id, card] of cards) {
+      if (!wanted.has(id)) { card.form.remove(); cards.delete(id); }
+    }
     for (const request of requests) {
+      const id = cardKey(request);
+      // Ignore wire-envelope fields: live requests and snapshot DTOs render identically.
+      const signature = JSON.stringify([request.source, request.kind, request.title, request.body, request.questions, request.choices, request.payload, request.expiresAt]);
+      const previous = cards.get(id);
+      // A parallel request must not reset this request's answers, focus or disclosure.
+      if (previous?.signature === signature) continue;
       const form = document.createElement("form");
       form.className = "interactionRequest"; form.dataset.requestId = request.id;
       form.addEventListener("submit", (event) => event.preventDefault());
@@ -68,14 +79,28 @@ export function createInteractions(options: { state: AppState; elements: AppElem
       title.id = `request-${request.id}`;
       form.setAttribute("aria-labelledby", title.id);
       form.append(title);
-      if (request.body) {
+      if (request.payload?.defaultToNo === true) {
+        const caution = document.createElement("p"); caution.className = "interactionCaution";
+        caution.textContent = "Native caution: review before allowing.";
+        form.append(caution);
+      }
+      // Native tool input is display-only context, never a browser-editable policy.
+      const input = request.questions?.length ? undefined : request.payload?.input;
+      const bodyText = [
+        request.body,
+        input === undefined ? undefined : JSON.stringify(input, null, 2),
+        typeof request.payload?.agentId === "string" ? `Native agent: ${request.payload.agentId}` : undefined,
+        typeof request.payload?.blockedPath === "string" ? `Blocked path: ${request.payload.blockedPath}` : undefined,
+        typeof request.payload?.permissionSuggestionSummary === "string" ? `Proposed permission changes: ${request.payload.permissionSuggestionSummary}` : undefined,
+      ].filter(Boolean).join("\n");
+      if (bodyText) {
         const preview = document.createElement("p"); preview.className = "interactionSummary";
-        const firstLines = request.body.split("\n").slice(0, 3).join("\n");
+        const firstLines = bodyText.split("\n").slice(0, 3).join("\n");
         preview.textContent = firstLines.length > 300 ? `${firstLines.slice(0, 300)}…` : firstLines;
         form.append(preview);
         const details = document.createElement("details");
         const summary = document.createElement("summary"); summary.textContent = "Request details";
-        const body = document.createElement("pre"); body.textContent = request.body;
+        const body = document.createElement("pre"); body.textContent = bodyText;
         details.append(summary, body); form.append(details);
       }
       const readers = new Map<string, () => string | string[]>();
@@ -129,7 +154,10 @@ export function createInteractions(options: { state: AppState; elements: AppElem
         const unsupported = document.createElement("p"); unsupported.textContent = "This request has no supported response here. Stop the execution to cancel safely."; form.append(unsupported);
       }
       const status = document.createElement("p"); status.className = "interactionStatus"; status.setAttribute("role", "status");
-      form.append(actions, status); panel.append(form);
+      form.append(actions, status);
+      if (previous) previous.form.replaceWith(form);
+      else panel.append(form);
+      cards.set(id, { signature, form });
     }
     updateDisabled();
   }
