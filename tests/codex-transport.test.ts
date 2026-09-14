@@ -16,17 +16,20 @@ async function connection(options: { requestTimeoutMs?: number; maxFrameBytes?: 
   const requests: NativeRequest[] = [];
   const errors: CodexRpcError[] = [];
   const observations: string[] = [];
+  const faults = new Set<string>();
   const transport = new CodexTransport({ cwd: root, command: process.execPath,
     args: [fileURLToPath(new URL("./fixtures/codex-app-server-peer.mjs", import.meta.url))],
     env: { ...process.env, PI_WEB_CODEX_PEER_DIR: root }, ...options }, {
-    notification: (message) => notifications.push(message), request: (message) => requests.push(message),
-    closed: (error) => errors.push(error), observation: (kind) => observations.push(kind),
+    notification: (message) => { if (faults.has("notification")) throw new Error("private mapper details"); notifications.push(message); },
+    request: (message) => { if (faults.has("request")) throw new Error("private mapper details"); requests.push(message); },
+    closed: (error) => { errors.push(error); if (faults.has("closed")) throw new Error("closed consumer failed"); },
+    observation: (kind) => { if (faults.has("observation")) throw new Error("diagnostic consumer failed"); observations.push(kind); },
   });
   cleanups.push(async () => { await transport.dispose(); await rm(root, { recursive: true, force: true }); });
   await transport.request("initialize", { clientInfo: { name: "native-test", version: "1" } });
   transport.notify("initialized");
   const peer = await findPeer(root);
-  return { transport, peer, root, notifications, requests, errors, observations };
+  return { transport, peer, root, notifications, requests, errors, observations, faults };
 }
 
 async function start(transport: CodexTransport, cwd: string) {
@@ -137,10 +140,40 @@ describe("Codex native stdio ingress", () => {
     await transport.dispose();
   });
 
-  it("does not forward credentials embedded in native error diagnostics", () => {
-    const text = diagnostic("bad Authorization: Bearer abcdef api_key=private refresh_token=private https://private.test/?token=private");
+  it.each(["notification", "request", "observation"])("contains a throwing %s handler, rejects pending calls once and cleans only its child", async (kind) => {
+    const failed = await connection();
+    const healthy = await connection();
+    const threadId = await start(failed.transport, failed.root);
+    await controlPeer(failed.peer, { action: "configure", prompt: "defer" });
+    let rejectionCount = 0;
+    const pending = failed.transport.request("turn/start", { threadId, input: [] }).catch((error: unknown) => { rejectionCount++; return error; });
+    await waitObserved(failed.peer, (record) => record.direction === "client" && record.message.method === "turn/start");
+    failed.faults.add(kind);
+    failed.faults.add("closed");
+    const message = kind === "notification" ? { method: "new/event", params: {} }
+      : kind === "request" ? { id: "control", method: "new/control", params: {} } : { id: "orphan", result: {} };
+    await controlPeer(failed.peer, { action: "emit", message });
+    expect(await pending).toMatchObject({ code: "protocol", ambiguous: true });
+    await failed.transport.dispose();
+    expect(rejectionCount).toBe(1);
+    expect(failed.errors).toHaveLength(1);
+    expect(failed.errors[0]?.message).not.toContain("private mapper");
+    expect(healthy.transport.closed).toBe(false);
+    await expect(healthy.transport.request("thread/loaded/list")).resolves.toMatchObject({ data: [] });
+  });
+
+  it.each([
+    "bad Authorization: Bearer abcdef api_key=private refresh_token=private https://private.test/?token=private",
+    '{"access_token":"private-value","password":"private value with spaces"}',
+    "failure password='private value with spaces' next=okay",
+    JSON.stringify({ refreshToken: 'private \\"quoted\\" value', apiKey: "private" }),
+    `{"secret":"private${"x".repeat(4_000)}`,
+  ])("redacts bounded quoted and unquoted native credential diagnostics", (value) => {
+    const text = diagnostic(value);
     expect(text).not.toContain("abcdef");
     expect(text).not.toContain("private");
     expect(text).toContain("[redacted]");
+    expect(text.length).toBeLessThanOrEqual(2_048);
+    expect(new CodexRpcError(value, -32603).message).toBe(text);
   });
 });

@@ -18,10 +18,11 @@ function rpcId(value: unknown): value is RpcId {
 export function diagnostic(value: unknown): string {
   if (typeof value !== "string") return "Codex request failed";
   return value.slice(0, 2_048)
-    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/gi, "$1 [redacted]")
+    .replace(/\b(Bearer|Basic)\s+[^\s,;"'}\]]+/gi, "$1 [redacted]")
     .replace(/\b(?:sk-[\w-]{8,}|AKIA[A-Z0-9]{16})\b/g, "[redacted]")
-    .replace(/((?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret)\s*[=:]\s*)[^\s,;&]+/gi, "$1[redacted]")
-    .replace(/https?:\/\/[^\s]+/gi, "[url]");
+    .replace(/((?:["']?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|password|secret|token|(?:aws_)?secret_access_key|(?:aws_)?session_token)["']?)\s*[=:]\s*)(?:"(?:\\.|[^"\\])*(?:"|$)|'(?:\\.|[^'\\])*(?:'|$)|[^\s,;&]+)/gi, "$1[redacted]")
+    .replace(/https?:\/\/[^\s]+/gi, "[url]")
+    .slice(0, 2_048);
 }
 
 export class CodexRpcError extends Error {
@@ -81,8 +82,8 @@ export class CodexTransport {
     this.exited = new Promise((resolve) => this.child.once("close", () => resolve()));
     this.child.stdout.on("data", (chunk: Buffer) => this.receive(this.decoder.write(chunk)));
     this.child.stderr.resume(); // Native stderr may contain private diagnostics; do not forward it.
-    this.child.stdin.on("error", () => this.finish(new CodexRpcError("Codex input closed", "closed", true)));
-    this.child.once("error", () => this.finish(new CodexRpcError("Could not launch Codex app-server; check the configured executable and native setup", "closed")));
+    this.child.stdin.on("error", () => this.fail(new CodexRpcError("Codex input closed", "closed", true)));
+    this.child.once("error", () => this.fail(new CodexRpcError("Could not launch Codex app-server; check the configured executable and native setup", "closed")));
     this.child.once("close", (code, signal) => {
       this.finish(new CodexRpcError(`Codex app-server exited (${signal ?? code ?? "unknown"})`, "closed", true));
     });
@@ -137,9 +138,11 @@ export class CodexTransport {
       if (typeof message.method === "string") {
         if (Object.hasOwn(message, "id")) {
           if (!rpcId(message.id)) return this.invalidFrame(Buffer.byteLength(line));
-          this.callbacks.request({ method: message.method, id: message.id, params: message.params });
+          const request = { method: message.method, id: message.id, params: message.params };
+          if (!this.deliver(() => this.callbacks.request(request))) return;
         } else {
-          this.callbacks.notification({ method: message.method, params: message.params });
+          const notification = { method: message.method, params: message.params };
+          if (!this.deliver(() => this.callbacks.notification(notification))) return;
         }
         continue;
       }
@@ -148,7 +151,7 @@ export class CodexTransport {
       }
       const pending = this.pending.get(message.id);
       if (!pending) {
-        this.callbacks.observation("orphan-response");
+        if (!this.deliver(() => this.callbacks.observation("orphan-response"))) return;
         continue;
       }
       this.pending.delete(message.id);
@@ -160,9 +163,19 @@ export class CodexTransport {
     if (Buffer.byteLength(this.buffer) > this.maxFrameBytes) this.invalidFrame(Buffer.byteLength(this.buffer));
   }
 
+  private deliver(callback: () => void): boolean {
+    try { callback(); }
+    catch { this.fail(new CodexRpcError("Codex protocol handler failed; its connection was closed", "protocol", true)); }
+    return !this.ended;
+  }
+
   private invalidFrame(bytes: number): void {
-    this.callbacks.observation("invalid-frame", bytes);
-    this.finish(new CodexRpcError("Invalid or oversized Codex protocol message", "protocol", true));
+    if (!this.deliver(() => this.callbacks.observation("invalid-frame", bytes))) return;
+    this.fail(new CodexRpcError("Invalid or oversized Codex protocol message", "protocol", true));
+  }
+
+  private fail(error: CodexRpcError): void {
+    this.finish(error);
     void this.dispose();
   }
 
@@ -175,7 +188,8 @@ export class CodexTransport {
       pending.reject(error);
     }
     this.pending.clear();
-    this.callbacks.closed(error);
+    try { this.callbacks.closed(error); }
+    catch { /* A failed consumer must not crash the host or prevent owned-child cleanup. */ }
   }
 
   dispose(): Promise<void> {
