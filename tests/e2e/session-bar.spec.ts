@@ -866,7 +866,9 @@ test.describe("session quick bar", () => {
       await route.continue();
     });
     await page.goto("/");
-    const tabBox = await page.locator('.sessionBarTab.laned[data-session-id="mock-current"]').boundingBox();
+    const tab = page.locator('.sessionBarTab.laned[data-session-id="mock-current"]');
+    await expect(tab).toBeVisible();
+    const tabBox = await tab.boundingBox();
     expect(tabBox).not.toBeNull();
     const x = tabBox!.x + tabBox!.width / 2;
     const viewportHeight = page.viewportSize()?.height;

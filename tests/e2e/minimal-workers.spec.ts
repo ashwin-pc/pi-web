@@ -116,35 +116,38 @@ test("pinned parent restores waiting after reload before opening, then shows its
   ] } }));
 
   // Declare through the server's generic dependency event contract before the
-  // browser connects. The subsequent reload must recover membership from the
-  // status snapshot; there is deliberately no realtime dependency declaration
-  // available to the new page. Runtime is separately live (and mock runtime
-  // broadcasts are intentionally non-durable), so publish its current value
-  // only after the reloaded page is ready to receive it.
-  await dependencyEvent(page, "mock-older", ["mock-current"]);
-  await pinSettlementSnapshot(page, "mock-older", ["mock-current"]);
-  await page.goto("/?sessionId=mock-current");
-  await page.reload();
-  await expect(page.locator("#prompt")).toBeVisible();
-  await runtimeEvent(page, "mock-current", runtime(true));
+  // browser connects. The subsequent reload must recover it from status; there
+  // is deliberately no realtime declaration available to the new page.
+  // Keep the real mock SDK snapshot consistent with the busy worker in /sessions.
+  // Otherwise an idle hello/state races the list's synthetic running value on reload.
+  const started = await page.request.post("/api/prompt", { data: { sessionId: "mock-current", message: "quiet runtime" } });
+  expect(started.ok()).toBe(true);
+  try {
+    await dependencyEvent(page, "mock-older", ["mock-current"]);
+    await pinSettlementSnapshot(page, "mock-older", ["mock-current"]);
+    await page.goto("/?sessionId=mock-current");
+    await page.reload();
 
-  const parentTab = page.locator('.sessionBarTab[data-session-id="mock-older"]');
-  await expect(parentTab).toHaveClass(/\bpinned\b/);
-  await expect(parentTab.locator(".auroraRibbon")).toBeVisible();
-  await expect(parentTab.locator(".auroraRibbon")).toHaveAttribute("aria-label", /Waiting on 1 spawned session: Active worker/);
+    const parentTab = page.locator('.sessionBarTab[data-session-id="mock-older"]');
+    await expect(parentTab).toHaveClass(/\bpinned\b/);
+    await expect(parentTab.locator(".auroraRibbon")).toBeVisible();
+    await expect(parentTab.locator(".auroraRibbon")).toHaveAttribute("aria-label", /Waiting on 1 spawned session: Active worker/);
 
-  // Opening the previously inactive parent uses the same recovered declaration
-  // for composer pills; density only changes presentation, never membership.
-  await parentTab.locator(".sessionBarTabOpen").click();
-  await expect(page).toHaveURL(url => url.searchParams.get("sessionId") === "mock-older");
-  for (const density of ["comfortable", "compact", "minimal"]) {
-    await page.locator("#settingDensitySelect").evaluate((select: HTMLSelectElement, value) => {
-      select.value = String(value); select.dispatchEvent(new Event("change", { bubbles: true }));
-    }, density);
-    const pill = page.locator('.activeWorkerPill[data-session-id="mock-current"]');
-    await expect(pill).toBeVisible();
-    await expect(pill).toHaveText("Active worker");
-    await expect(pill.locator(".activeWorkerStatus")).toHaveCount(0);
+    // Opening the previously inactive parent uses the same recovered declaration
+    // for composer pills; density only changes presentation, never membership.
+    await parentTab.locator(".sessionBarTabOpen").click();
+    await expect(page).toHaveURL(url => url.searchParams.get("sessionId") === "mock-older");
+    for (const density of ["comfortable", "compact", "minimal"]) {
+      await page.locator("#settingDensitySelect").evaluate((select: HTMLSelectElement, value) => {
+        select.value = String(value); select.dispatchEvent(new Event("change", { bubbles: true }));
+      }, density);
+      const pill = page.locator('.activeWorkerPill[data-session-id="mock-current"]');
+      await expect(pill).toBeVisible();
+      await expect(pill).toHaveText("Active worker");
+      await expect(pill.locator(".activeWorkerStatus")).toHaveCount(0);
+    }
+  } finally {
+    await page.request.post("/api/abort", { data: { sessionId: "mock-current" } });
   }
 });
 

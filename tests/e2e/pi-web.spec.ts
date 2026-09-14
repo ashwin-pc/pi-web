@@ -797,8 +797,12 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
 
     await page.getByText("Older mock session").click();
-    const isMobile = (page.viewportSize()?.width || 0) <= 700;
-    if (isMobile) {
+    await expect(page).toHaveURL((url) => url.searchParams.get("sessionId") === "mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    // Tablet panels are overlays too; do not pass against the old drawer before switch completion.
+    const viewport = page.viewportSize();
+    const isOverlay = (viewport?.width || 0) <= 1024 || (viewport?.height || 0) <= 520;
+    if (isOverlay) {
       await expect(page.locator("#sessionDrawer")).toBeHidden();
       await page.locator("#sessionButton").click();
     } else {
@@ -1230,9 +1234,12 @@ test.describe("tool cards", () => {
   });
 
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
+    // Persist the setting: late state/settings snapshots must not undo a DOM-only override.
+    const settings = await page.request.patch("/api/settings", { data: { appearance: { density: "compact" } } });
+    expect(settings.ok()).toBe(true);
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-    await page.evaluate(() => { document.documentElement.dataset.density = "compact"; });
+    await expect(page.locator("html")).toHaveAttribute("data-density", "compact");
     await page.locator("#prompt").fill("use tool");
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.assistant", { hasText: "Let me check that for you." }).last()).toBeVisible();
