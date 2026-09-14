@@ -24,7 +24,7 @@ flowchart LR
 - `server/session/hostEvents.ts` and `activity.ts`: one browser relay and host activity decoration. Native events do not pass through a mock broadcaster or imitate Pi events.
 - `server/mock.ts`: a controllable Pi SDK peer. Its events enter the production Pi handle via `subscribe`; it has no browser-broadcast dependency.
 
-Pi's extension bridge uses the same handle registration and work leases as every other service operation. Registration precedes `session_start` binding so startup dialogs and contributions are observable. Creating a session from an extension still awaits the host post-create finalizer before publishing the replacement state.
+Pi's extension bridge uses the same handle registration and work leases as every other service operation. Registration precedes `session_start` binding so startup decisions can be answered, but newborn state, agent, runtime and contribution events remain buffered through defaults and the host post-create finalizer. Interaction requests/resolutions remain live; the finalizer therefore cannot be bypassed by SDK events or deadlock their response channel. Native registration does not persist an early snapshot: the initial binding commits only after the finalizer succeeds.
 
 ## Identity and persistence
 
@@ -40,6 +40,8 @@ Pi's extension bridge uses the same handle registration and work leases as every
 `nativeSession.persistence` distinguishes persistent and ephemeral sessions. `status` distinguishes `unmaterialized`, `resumable`, `live-only`, and `unavailable`. Creating a persistent native session is not proof that it can resume yet. The service reuses live ephemeral handles; after process loss they are explicitly unavailable, not silently replaced or resumed.
 
 Native removal tombstones the web binding and leaves the native transcript untouched. Pi deletion retains its existing trash/delete behavior. Native discovery uses supported adapter APIs, never private native JSONL or databases.
+
+Binding validation, candidate construction, atomic rename and in-memory publication are one serialized operation. Failed writes leave both committed views unchanged, and no queued write can include another pending candidate. Explicit open can replace a dead persistent handle by resuming its exact native reference; an unavailable ephemeral handle remains 410. State polling never repeatedly respawns a failed native open, and recovery never replays submitted prompts.
 
 ## Input and lifecycle
 

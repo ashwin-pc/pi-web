@@ -53,15 +53,26 @@ npm run test:unit -- tests/session-service.test.ts tests/session-adapter-service
 
 The new `session-adapter-service` fixture proves core routing/admission and metadata behavior only. Codex/Claude protocol fixtures must enter the production native process/SDK seam; browser evidence must launch the real `server.ts` with `PI_WEB_MOCK` off. Native executable/peer configuration is server-side only. A missing native installation is an unavailable catalog entry, never Pi fallback.
 
-## Extraction checkpoint evidence
+## Core integration evidence
 
-At the core extraction checkpoint:
+The core checkpoint integrates the native Codex leaf and canonical frontend. Claude's leaf/dependencies and the final full-suite/native-browser verification remain separately integrated work; the policy matrix above is not a claim that those checks have run here.
 
-- `npm run typecheck`: passed.
+- `npm run typecheck`: passed, including all present native adapter sources.
 - `npm run build`: passed (existing large-chunk advisory only).
-- Focused six files / 70 tests: passed, including shared lifecycle/identity tests and existing Pi/extension regressions.
-- Full unit run before moving one context-source assertion: 579/580 passed; that assertion now points to the Pi adapter and passes in the focused run. Re-run the full suite after integration.
-- Pi browser extraction check: 23/24 passed. The SDK mock no longer broadcasts browser events directly. Moving the existing stale-runtime adversary to explicit `/api/mock/event` injection exposed a delayed-stale-runtime frontend guard bug; the frontend owner is fixing it without weakening assertions.
-- Native actual-model/tool canaries and full integrated native browser validation are **not established by this checkpoint**. Per-adapter native reports and the final integrated verification must state exact pins, commands, outcomes, and limitations separately.
+- Full unit suite: **662 tests passed across 65 files**.
+- Pi desktop browser regression subset: **24 passed** (send/stop, stale runtime, steering/follow-up queues and reconnect, thinking, and both session-creation contribution flows). The stale-runtime adversary now uses explicit `/api/mock/event`, not a mock broadcast bypass; the frontend guard was fixed without weakening the assertion.
+- `tests/pi-adapter-sdk.test.ts`: actual **Pi SDK 0.84.1**, isolated credentials/home, startup extension binding, command handling, shutdown notification, and `ctx.sessionManager` UUID matching the public ID. No inference was requested.
+- `tests/native-bindings.test.ts`: partial-write/rename failures preserve memory and disk; own temporary files are removed; concurrent duplicate native identities reject at commit; a later queued candidate cannot leak into an earlier snapshot; retry succeeds.
+- `tests/session-service.test.ts`: defaults and delayed-finalizer SDK/state events cannot publish early, while a startup confirmation can still be answered. Pi's existing behavior assertions remain.
+- `tests/session-adapter-service.test.ts`: failed creation has no registration-snapshot binding leak; explicit persistent recovery is coalesced and never replays prompts; failed recovery cannot repeatedly respawn on state polls; unavailable ephemeral handles remain 410.
+- `tests/session-codex-http.test.ts`: real `server.ts`, HTTP and WebSocket, `PI_WEB_MOCK=0`, production native Codex adapter, and a synthetic native process. Covers catalog/create, independent IDs, native settings inheritance, prompt acknowledgement, ordered text/thinking/tool output, native approval request ID `0` and decline/continue, authoritative final replacement, exact native interrupt, terminal-versus-idle, process death, and explicit resume with durable transcript keys/content and no prompt replay. This is application/production-ingress evidence, **not an actual-model canary**.
 
-This is a local implementation checkpoint, not the #92 merge gate. Keep this evidence updated as actual adapters and frontend changes integrate.
+Reproduce the application vertical:
+
+```sh
+npm run test:unit -- tests/session-codex-http.test.ts
+```
+
+The test creates only scratch metadata/native-peer files and an owned loopback server. Its child environment is allowlisted and never inherits live credentials, agent homes or UI state. Host execution guards and live observation timestamps are not durable native replay guarantees. Historical timestamp presentation remains adapter-owned review work; the recovery assertion requires native IDs, ordered content, tool results, and error state to survive.
+
+Full `npm test`, integrated native browser workflows, and actual native model/tool/approval canaries are **not replaced** by these focused results. Their reports must state exact pins, commands, results, and blockers separately before the #92 merge gate.
