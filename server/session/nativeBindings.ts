@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { NativeSessionRefDto } from "./dto.js";
 
@@ -15,9 +15,28 @@ export interface NativeBinding {
   deleted?: boolean;
 }
 
+const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+function validate(row: NativeBinding, rows: ReadonlyMap<string, NativeBinding>) {
+  const ref = row?.nativeSession;
+  if (!row || typeof row.id !== "string" || !row.id || typeof row.cwd !== "string" || !row.cwd
+    || typeof row.created !== "string" || typeof row.modified !== "string"
+    || !ref || !["codex", "claude"].includes(ref.harnessId)
+    || !["persistent", "ephemeral"].includes(ref.persistence)
+    || !["unmaterialized", "resumable", "live-only", "unavailable"].includes(ref.status)
+    || (ref.sessionId !== undefined && (typeof ref.sessionId !== "string" || !ref.sessionId))) {
+    throw new Error("Invalid native session binding");
+  }
+  const existing = rows.get(row.id);
+  if (existing && existing.nativeSession.harnessId !== ref.harnessId) throw new Error("Cannot change a session's harness");
+  if (ref.sessionId && [...rows.values()].some((other) => other.id !== row.id
+    && other.nativeSession.harnessId === ref.harnessId && other.nativeSession.sessionId === ref.sessionId)) {
+    throw new Error("Conflicting native session identity");
+  }
+}
+
 /** Web-owned identity metadata only. Never read a native private store or save a transcript. */
 export class NativeBindings {
-  private readonly rows = new Map<string, NativeBinding>();
+  private rows = new Map<string, NativeBinding>();
   private tail: Promise<void> = Promise.resolve();
   readonly ready: Promise<void>;
   constructor(private readonly file: string) { this.ready = this.load(); }
@@ -27,45 +46,46 @@ export class NativeBindings {
     catch (error: any) { if (error?.code === "ENOENT") return; throw error; }
     const data = JSON.parse(text);
     if (data?.version !== 1 || !Array.isArray(data.sessions)) throw new Error("Invalid native session bindings");
-    const nativeKeys = new Set<string>();
-    for (const row of data.sessions) {
-      const ref = row?.nativeSession;
-      if (!row || typeof row.id !== "string" || !row.id || typeof row.cwd !== "string" || !row.cwd
-        || typeof row.created !== "string" || typeof row.modified !== "string"
-        || !ref || !["codex", "claude"].includes(ref.harnessId)
-        || !["persistent", "ephemeral"].includes(ref.persistence)
-        || !["unmaterialized", "resumable", "live-only", "unavailable"].includes(ref.status)
-        || (ref.sessionId !== undefined && (typeof ref.sessionId !== "string" || !ref.sessionId))
-        || this.rows.has(row.id)) throw new Error("Invalid or conflicting native session binding");
-      const key = ref.sessionId ? `${ref.harnessId}:${ref.sessionId}` : undefined;
-      if (key && nativeKeys.has(key)) throw new Error("Conflicting native session identity");
-      if (key) nativeKeys.add(key);
+    const candidate = new Map<string, NativeBinding>();
+    for (const row of data.sessions as NativeBinding[]) {
+      validate(row, candidate);
+      if (candidate.has(row.id)) throw new Error("Conflicting native web identity");
       // A new host process has no surviving ephemeral Query/thread handle.
-      if (ref.persistence === "ephemeral") ref.status = "unavailable";
-      this.rows.set(row.id, row as NativeBinding);
+      if (row.nativeSession.persistence === "ephemeral") row.nativeSession.status = "unavailable";
+      candidate.set(row.id, row);
     }
+    this.rows = candidate;
   }
-  get(id: string) { return this.rows.get(id); }
-  list() { return [...this.rows.values()]; }
+  get(id: string) { const row = this.rows.get(id); return row ? copy(row) : undefined; }
+  list() { return copy([...this.rows.values()]); }
   byNative(ref: NativeSessionRefDto) {
     return ref.sessionId ? this.list().find((row) => row.nativeSession.harnessId === ref.harnessId && row.nativeSession.sessionId === ref.sessionId) : undefined;
   }
-  async put(row: NativeBinding) {
-    await this.ready;
-    const existing = this.rows.get(row.id);
-    if (existing && existing.nativeSession.harnessId !== row.nativeSession.harnessId) throw new Error("Cannot change a session's harness");
-    const other = this.byNative(row.nativeSession);
-    if (other && other.id !== row.id) throw new Error("Native session already has a web identity");
-    this.rows.set(row.id, JSON.parse(JSON.stringify(row)) as NativeBinding);
-    const write = async () => {
+  put(row: NativeBinding): Promise<void> {
+    // Capture caller input now, but validate against committed rows only when this
+    // job reaches the head of the queue. Pending candidates never become visible.
+    const input = copy(row);
+    const commit = async () => {
+      await this.ready;
+      validate(input, this.rows);
+      const candidate = new Map(this.rows);
+      candidate.set(input.id, input);
+      const snapshot = `${JSON.stringify({ version: 1, sessions: [...candidate.values()] }, null, 2)}\n`;
       await mkdir(dirname(this.file), { recursive: true });
       const temporary = `${this.file}.${randomUUID()}.tmp`;
-      await writeFile(temporary, `${JSON.stringify({ version: 1, sessions: this.list() }, null, 2)}\n`, { mode: 0o600 });
-      await rename(temporary, this.file);
+      try {
+        await writeFile(temporary, snapshot, { mode: 0o600, flag: "wx" });
+        await rename(temporary, this.file);
+      } catch (error) {
+        // EEXIST means the exclusive create never owned this pathname.
+        if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") await rm(temporary, { force: true }).catch(() => undefined);
+        throw error;
+      }
+      this.rows = candidate;
     };
-    const pending = this.tail.then(write, write);
+    const pending = this.tail.then(commit, commit);
     this.tail = pending;
-    await pending;
+    return pending;
   }
   async flush() { await this.ready; await this.tail; }
 }
