@@ -5,6 +5,7 @@ import "./files/files.css";
 import "./files/artifacts.css";
 import "./styles/appLayout.css";
 import "./styles/debugDiagnostics.css";
+import "./styles/interactions.css";
 import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
 import { getAppElements, initAppHeightSync } from "./app/elements.js";
@@ -28,6 +29,7 @@ import {
 import {
   activeSessionState,
   activeSessionStats,
+  isNativeSession,
   mergeSessionInfo,
   patchSessionRuntime,
   reduceSessionSnapshot,
@@ -57,6 +59,7 @@ import { createMessageList, type MessageActionContext, type MessageList } from "
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createSessionDraftStore } from "./drafts/sessionDraftStore.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
+import { createInteractions } from "./realtime/interactions.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { createSettlementDependencyStore } from "./sessions/settlementDependencies.js";
@@ -77,6 +80,7 @@ const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
+const interactions = createInteractions({ state, elements, api, refreshState });
 configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
 configureArtifactPreviews({ headers: api.headers, getSessionId: () => state.currentSessionId });
 
@@ -271,6 +275,7 @@ async function submitPromptFromMessageAction(message: string) {
 }
 
 async function navigateMessageActionTarget(context: MessageActionContext) {
+  if (activeSessionState(state)?.capabilities?.tree === false) throw new Error("History navigation is not supported by this harness.");
   const runtime = sessionRuntime(state);
   if (runtime.isStreaming || runtime.isRetrying) throw new Error("Wait for the current response to finish first.");
   if (runtime.isCompacting) throw new Error("Wait for compaction to finish first.");
@@ -317,6 +322,7 @@ const quoteReplies = createQuoteReplies({
   composerEl: elements.formEl,
   getSessionId: () => state.currentSessionId,
   drafts: sessionDrafts,
+  canQuote: () => activeSessionState(state)?.capabilities?.attachments !== false,
   onChange: () => composer?.updatePrimaryAction(),
 });
 const markdownTestOptions = (globalThis as typeof globalThis & {
@@ -336,6 +342,8 @@ messages = createMessageList({
   getSessionId: () => state.currentSessionId,
   citationHref: absoluteSessionCitationHref,
   openCitation,
+  canNavigateHistory: () => activeSessionState(state)?.capabilities?.tree !== false,
+  upsertToolPart: (part, card) => tools.upsertToolPart(part, card),
   openSession: (sessionId) => void sessions.openSessionById(sessionId),
   openPanel: (key, initialEvent) => webPanels.open(key, initialEvent),
 });
@@ -354,6 +362,12 @@ function showSystemError(error: unknown) {
 }
 
 function runtimeLabel(runtime = sessionRuntime(state)) {
+  const view = activeSessionState(state);
+  if (isNativeSession(view)) {
+    if (view?.activity === "waiting-approval") return "waiting for approval";
+    if (view?.activity === "waiting-input") return "waiting for your answer";
+    if (view?.phase === "starting" || view?.phase === "settling") return view.phase;
+  }
   return runtime.isCompacting ? "compacting" : runtime.isRetrying ? "retrying" : "active";
 }
 
@@ -363,6 +377,15 @@ function renderRuntimeActivity(
   activity: RuntimeActivityUpdate = { kind: "sync" },
 ) {
   if (!statusBar || activity.kind === "preserve") return;
+  const view = activeSessionState(state);
+  if (isNativeSession(view) && (view?.phase === "error" || view?.phase === "unavailable")) {
+    statusBar.markActivityEnd();
+    elements.runtimeStatusEl.hidden = false;
+    elements.runtimeStatusEl.textContent = view.error || (view.phase === "error" ? "Execution failed" : "Native session unavailable");
+    elements.runtimeStatusEl.title = elements.runtimeStatusEl.textContent;
+    elements.runtimeStatusEl.classList.add("error");
+    return;
+  }
   if (activity.kind === "start") {
     statusBar.markActivityStart(activity.label || runtimeLabel(runtime), activity.startedAt || runtime.startedAt, activity.lastActivityAt || runtime.lastActivityAt);
     return;
@@ -379,7 +402,7 @@ function renderRuntimeActivity(
     statusBar.markActivityEnd();
     return;
   }
-  if (previous?.isRunning) statusBar.markActivityProgress(undefined, runtime.lastActivityAt);
+  if (previous?.isRunning) statusBar.markActivityProgress(isNativeSession(view) ? runtimeLabel(runtime) : undefined, runtime.lastActivityAt);
   else statusBar.markActivityStart(runtimeLabel(runtime), runtime.startedAt, runtime.lastActivityAt);
 }
 
@@ -392,6 +415,7 @@ function renderActiveSessionRuntime(
   composer?.updatePendingQueue(view?.capabilities?.queue === false ? [] : view?.queue?.steering, view?.capabilities?.queue === false ? [] : view?.queue?.followUp);
   composer?.updateQueueToggle();
   composer?.updatePrimaryAction();
+  if (isNativeSession(view)) sessions?.updateEmptyCwdChooser();
   contextMeter?.update({ stats: view?.stats, isCompacting: runtime.isCompacting });
   sessionInfo?.update();
   renderRuntimeActivity(runtime, previous, activity);
@@ -405,6 +429,8 @@ function renderActiveSessionMetadata() {
   state.currentThinkingLevel = view?.thinkingLevel || "off";
   state.currentCwd = view?.cwd || "";
   filesPanel?.sessionChanged();
+  interactions.render();
+  settings?.updateSessionScope();
 
   const contributions = view?.capabilities?.extensions === false
     ? []
@@ -471,16 +497,16 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   }
   if (data && "sessionUiState" in data) sessions?.applySessionUiState(data.sessionUiState);
 
-  const includesRuntime = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting"].some((key) => key in data));
+  const includesRuntime = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting", "phase", "activity"].some((key) => key in data));
   if (includesRuntime && previous && view.runtime && runtimePresentationChanged(previous, view.runtime)) {
     sessions?.updateSessionRuntime(view.id, view.runtime);
   }
   if (view.id !== state.currentSessionId) return view;
 
-  const includesRuntimeView = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting", "stats", "queue"].some((key) => key in data));
+  const includesRuntimeView = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting", "stats", "queue", "phase", "activity", "activeExecution"].some((key) => key in data));
   const includesMetadataView = Boolean(data && [
     "cwd", "model", "thinkingLevel", "sessionName", "sessionTitle",
-    "webContributions",
+    "webContributions", "harnessId", "capabilities", "nativeSession", "nativeSettings", "pendingInteractions",
   ].some((key) => key in data));
   if (activatesSession || includesMetadataView) renderActiveSessionMetadata();
   if (activatesSession || includesRuntimeView) {
@@ -533,7 +559,8 @@ async function refreshMessages() {
     addPendingToolCard: tools.startTool,
     addRuntimeErrorCard: tools.addRuntimeErrorCard,
     clearActiveToolCards: tools.clearActiveToolCards,
-    isStreaming: runtime.isStreaming || runtime.isRetrying,
+    isStreaming: isNativeSession(activeSessionState(state)) ? runtime.isRunning : runtime.isStreaming || runtime.isRetrying,
+    inferPiRuntime: !isNativeSession(activeSessionState(state)),
     updateEmptyCwdChooser: () => sessions.finishTranscriptLoading(),
     onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
   });
@@ -580,6 +607,7 @@ async function refreshState() {
   syncActiveSessionIdHistoryState(state.currentSessionId);
   const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
   refreshSettlementDependencies(dependencySessionId);
+  await sessions.refreshHarnesses();
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -710,6 +738,7 @@ composer = createComposer({
   beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,
+  prepareLandingSession: () => sessions.prepareLandingSession(),
   quoteReplies,
   drafts: sessionDrafts,
 });
@@ -732,6 +761,7 @@ realtime = createRealtime({
   composer,
   messages,
   models: modelSettings,
+  interactions,
   sessions,
   status: statusBar,
   tools,

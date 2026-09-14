@@ -1,13 +1,14 @@
 import type { ApiHeaders } from "../app/api.js";
 import { iconElement, type IconName } from "../app/icons.js";
 import { sessionCitationFromHref, type AttachedImage, type Role, type SessionCitation } from "../app/types.js";
-import type { MessageDto } from "../../server/session/dto.js";
+import type { MessageDto, MessagePartDto, TranscriptEventDto, TranscriptMessageDto } from "../../server/session/dto.js";
+import type { ToolCards } from "../tools/toolCards.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 import { createActivitySummaries, liveThinkingPreview, setActivityCardMetadata } from "./activitySummary.js";
 import { isCompactDensity, isMinimalDensity } from "../app/appearance.js";
 import { renderCustomMessageReport, type CustomMessageReportInput } from "./customMessageReports.js";
-import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
+import { assistantErrorBody, cleanThinkingText, imageFileName, imagesFromMessage, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, shouldCollapseMessage, stripImagePathNote, thinkingTextSegments } from "./content.js";
 import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation.js";
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
@@ -80,10 +81,12 @@ export type MessageList = {
     isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
     onTranscriptRuntimeState?: (state: TranscriptRuntimeState) => void;
+    inferPiRuntime?: boolean;
   }) => Promise<void>;
   resetStreamingAssistant: () => void;
   invalidateRefreshes: () => void;
   reconcileActivity: () => void;
+  applyTranscriptEvent: (event: TranscriptEventDto, options: TranscriptRenderOptions) => boolean;
   appendCommittedMessage: (message: MessageDto, options: {
     addToolHistoryCard: AddToolHistoryCard;
     addPendingToolCard: AddPendingToolCard;
@@ -94,6 +97,13 @@ export type MessageList = {
   /** Center, focus, and briefly highlight a normal persisted message. */
   scrollToEntry: (entryId: string) => boolean;
   copyCitation: (reference: SessionCitation) => Promise<void>;
+};
+
+type TranscriptRenderOptions = {
+  addToolHistoryCard: AddToolHistoryCard;
+  addPendingToolCard: AddPendingToolCard;
+  addRuntimeErrorCard: AddRuntimeErrorCard;
+  isStreaming?: boolean;
 };
 
 function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, apiHeaders?: ApiHeaders, onMissing?: () => void) {
@@ -293,10 +303,16 @@ export function createMessageList(options: {
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
+  canNavigateHistory?: () => boolean;
+  upsertToolPart?: ToolCards["upsertToolPart"];
   apiHeaders?: ApiHeaders;
   quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, apiHeaders, quoteReplies } = options;
+  const { messagesEl, markdown, onMessageAction, canNavigateHistory, upsertToolPart, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, apiHeaders, quoteReplies } = options;
+  const canonicalMessages = new Map<string, TranscriptMessageDto>();
+  const canonicalNodes = new Map<string, Map<string, HTMLDivElement>>();
+  const canonicalAnchors = new Map<string, Comment>();
+  const canonicalFinal = new Map<string, boolean>();
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
   const streamingTextContent = new Map<string, string>();
@@ -777,7 +793,7 @@ export function createMessageList(options: {
     const actionText = () => copyText || body.textContent || "";
     const entryId = metadata.entryId?.trim();
     if (entryId) messageEl.dataset.entryId = entryId;
-    if (entryId && onMessageAction) {
+    if (entryId && onMessageAction && canNavigateHistory?.() !== false) {
       const runAction = (action: MessageActionKind) => {
         void onMessageAction({ action, entryId, parentEntryId: metadata.parentEntryId?.trim(), role, text: actionText() });
       };
@@ -893,6 +909,12 @@ export function createMessageList(options: {
       body.textContent = text || "";
     }
 
+    if (role === "assistant" && standardAttachments.length) {
+      const previews = document.createElement("div");
+      previews.className = "messageImages";
+      for (const image of standardAttachments) appendAttachedImage(previews, image, apiHeaders);
+      body.append(previews);
+    }
     div.append(body);
 
     if (role === "user") {
@@ -1211,6 +1233,10 @@ export function createMessageList(options: {
     quoteReplies?.clear();
     clearStreamingText();
     messagesEl.textContent = "";
+    canonicalMessages.clear();
+    canonicalNodes.clear();
+    canonicalAnchors.clear();
+    canonicalFinal.clear();
     thinkingSerial = 0;
     currentAssistantResponseKey = "";
     streamingAssistant = null;
@@ -1411,6 +1437,113 @@ export function createMessageList(options: {
     }
   }
 
+  function renderCanonicalMessage(message: TranscriptMessageDto, render: TranscriptRenderOptions, changedPartId?: string) {
+    canonicalMessages.set(message.id, message);
+    let anchor = canonicalAnchors.get(message.id);
+    if (!anchor?.isConnected) {
+      anchor = document.createComment(`message:${message.id}`);
+      messagesEl.append(anchor);
+      canonicalAnchors.set(message.id, anchor);
+    }
+    let nodes = canonicalNodes.get(message.id);
+    if (!nodes) { nodes = new Map(); canonicalNodes.set(message.id, nodes); }
+    const streaming = canonicalFinal.get(message.id) === false;
+    const wanted = new Set(message.parts.map((part) => part.id));
+    if (message.role !== "assistant") wanted.add("$message");
+    if (message.errorMessage || message.status === "error" || message.status === "interrupted") wanted.add("$error");
+    for (const [id, node] of nodes) {
+      if (wanted.has(id)) continue;
+      const body = node.querySelector<HTMLElement>(".body");
+      if (body) { markdown.cancelStreamingAssistantMarkdown(body); streamingTextBodies.delete(body); }
+      node.remove(); nodes.delete(id);
+    }
+
+    if (message.role !== "assistant") {
+      nodes.get("$message")?.remove();
+      const role = message.role === "user" ? "user" : "system";
+      const text = messageText(message);
+      const images = message.attachments || imagesFromMessage(message);
+      if (text || images.length) nodes.set("$message", addMessage(role, text, "", images, { entryId: message.entryId, parentEntryId: message.parentEntryId, timestamp: message.timestamp }));
+    } else for (const part of message.parts) {
+      if (changedPartId && part.id !== changedPartId) continue;
+      let node = nodes.get(part.id);
+      if (part.type === "text") {
+        if (!node && !part.text) continue;
+        node ||= addMessage("assistant", "", "", [], { entryId: message.entryId, responseKey: message.id, copyText: "" });
+        assistantMessageText.set(node, part.text);
+        const body = node.querySelector<HTMLElement>(".body")!;
+        if (shouldCollapseMessage(part.text)) appendMessageCollapseToggle(node, "assistant", body);
+        if (streaming) {
+          streamingTextBodies.set(body, part.text);
+          markdown.queueStreamingAssistantMarkdown(body, part.text, scrollToBottom);
+        } else {
+          markdown.finalizeStreamingAssistantMarkdown(body, part.text);
+          streamingTextBodies.delete(body);
+        }
+      } else if (part.type === "thinking") {
+        if (!part.text.trim()) { node?.remove(); nodes.delete(part.id); continue; }
+        node ||= addThinkingCard(part.text, streaming);
+        node.classList.toggle("toolCard--thinkingStreaming", streaming);
+        updateThinkingCardText(node, part.text, streaming);
+      } else if (part.type === "toolCall") {
+        if (upsertToolPart) node = upsertToolPart(part, node);
+        else if (!node) {
+          const previous = messagesEl.lastElementChild;
+          const args = part.args && typeof part.args === "object" && !Array.isArray(part.args) ? part.args as Record<string, unknown> : {};
+          if (part.status === "running") render.addPendingToolCard(part.toolCallId, part.toolName, args, part.startedAt);
+          else render.addToolHistoryCard(part.toolName, part.status !== "completed", part.result, args);
+          if (messagesEl.lastElementChild !== previous) node = messagesEl.lastElementChild as HTMLDivElement;
+        }
+      } else if (part.type === "image") {
+        node?.remove();
+        node = addMessage("assistant", "", "", [{ data: part.data, contentUrl: part.url, mimeType: part.mediaType, name: part.alt }], { responseKey: message.id });
+      }
+      if (node) {
+        node.dataset.messageId = message.id;
+        node.dataset.partId = part.id;
+        nodes.set(part.id, node);
+      }
+    }
+    if (wanted.has("$error") && !nodes.has("$error")) {
+      const interrupted = message.status === "interrupted";
+      const error = message.errorMessage || (interrupted ? "Response interrupted." : "Assistant error");
+      nodes.set("$error", render.addRuntimeErrorCard(interrupted ? "interrupted" : "assistant error", normalizeAssistantError(error), distinctAssistantErrorBody(error)));
+    }
+    const order = message.role === "assistant" ? message.parts.map((part) => part.id) : ["$message"];
+    for (const id of [...order, "$error"]) {
+      const node = nodes.get(id);
+      if (node) { node.dataset.messageId = message.id; messagesEl.insertBefore(node, anchor); }
+    }
+    reconcileAssistantMessageCollapse();
+    activity.schedule();
+    scrollToBottom();
+  }
+
+  function applyTranscriptEvent(event: TranscriptEventDto, render: TranscriptRenderOptions): boolean {
+    invalidatePendingRefreshes();
+    if (event.type === "message_start" || event.type === "message_replace") {
+      canonicalFinal.set(event.message.id, event.type === "message_replace" && event.final);
+      renderCanonicalMessage({ ...event.message, parts: [...event.message.parts] }, render);
+      return true;
+    }
+    const message = canonicalMessages.get(event.messageId);
+    if (!message) return false;
+    let part: MessagePartDto;
+    if (event.type === "message_part") {
+      const previousIndex = message.parts.findIndex((value) => value.id === event.part.id);
+      if (previousIndex >= 0) message.parts.splice(previousIndex, 1);
+      part = event.part;
+      message.parts.splice(Math.max(0, Math.min(event.index, message.parts.length)), 0, part);
+    } else {
+      const existing = message.parts.find((value) => value.id === event.partId);
+      if (!existing || (existing.type !== "text" && existing.type !== "thinking")) return false;
+      existing.text += event.delta;
+      part = existing;
+    }
+    renderCanonicalMessage(message, render, part.id);
+    return true;
+  }
+
   function assertNeverMessage(message: never): never {
     throw new Error(`Unsupported transcript message: ${JSON.stringify(message)}`);
   }
@@ -1424,6 +1557,11 @@ export function createMessageList(options: {
     isStreaming?: boolean;
   }) {
     const { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming } = options;
+    if (message.id && message.parts && !["custom", "toolResult", "bashExecution"].includes(message.role)) {
+      canonicalFinal.set(message.id, message.status !== "streaming");
+      renderCanonicalMessage(message as TranscriptMessageDto, options);
+      return;
+    }
     switch (message.role) {
       case "toolResult": {
         const id = message.toolCallId;
@@ -1489,7 +1627,7 @@ export function createMessageList(options: {
     }
   }
 
-  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming: historyIsStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState }: {
+  async function refreshMessages({ sessionId, headers, addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, clearActiveToolCards, isStreaming: historyIsStreaming, updateEmptyCwdChooser, onTranscriptRuntimeState, inferPiRuntime = true }: {
     sessionId: string;
     headers: ApiHeaders;
     addToolHistoryCard: AddToolHistoryCard;
@@ -1499,6 +1637,7 @@ export function createMessageList(options: {
     isStreaming?: boolean;
     updateEmptyCwdChooser?: () => void;
     onTranscriptRuntimeState?: (state: TranscriptRuntimeState) => void;
+    inferPiRuntime?: boolean;
   }) {
     const refreshId = ++refreshSerial;
     const mutationAtStart = mutationSerial;
@@ -1518,7 +1657,7 @@ export function createMessageList(options: {
       clearInternal(false);
       clearActiveToolCards();
       const allMessages = (data.messages || []) as MessageDto[];
-      const runtimeState = transcriptRuntimeState(allMessages, historyIsStreaming);
+      const runtimeState = inferPiRuntime ? transcriptRuntimeState(allMessages, historyIsStreaming) : {};
       bulkRendering = true;
       const completedToolResults = new Map<string, MessageDto>();
       const renderedToolResultIds = new Set<string>();
@@ -1570,6 +1709,7 @@ export function createMessageList(options: {
 
   return {
     addMessage,
+    applyTranscriptEvent,
     appendCommittedMessage,
     startStreamingText,
     appendStreamingDelta,

@@ -82,6 +82,7 @@ export function createQuoteReplies(options: {
   composerEl: HTMLFormElement;
   getSessionId: () => string;
   drafts: SessionDraftStore;
+  canQuote?: () => boolean;
   onChange: () => void;
 }): QuoteRepliesController {
   const { messagesEl, composerEl, getSessionId, drafts, onChange } = options;
@@ -147,6 +148,7 @@ export function createQuoteReplies(options: {
   }
 
   function showSelection() {
+    if (options.canQuote?.() === false) { hideToolbar(); return; }
     const selection = getSelection();
     if (!selection || selection.isCollapsed || selection.rangeCount !== 1) {
       hideToolbar();

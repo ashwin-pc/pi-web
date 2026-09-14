@@ -1,5 +1,7 @@
 import hljs from "highlight.js/lib/common";
 import { renderEditDiff } from "../components/editDiff.js";
+import { renderUnifiedPatch } from "../components/diff.js";
+import type { ToolCallPartDto } from "../../server/session/dto.js";
 import { textFromRawContent } from "../messages/content.js";
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import { playToolCardEntry, playToolCardStateTransition } from "../messages/entryAnimation.js";
@@ -13,8 +15,9 @@ export type RuntimeErrorPresentation = { title: string; subtitle?: string; techn
 export type ToolCards = {
   addToolCard: (toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => HTMLDivElement;
   updateToolCard: (card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) => void;
-  addToolHistoryCard: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
+  addToolHistoryCard: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => HTMLDivElement;
   addRuntimeErrorCard: (presentation: RuntimeErrorPresentation) => HTMLDivElement;
+  upsertToolPart: (part: ToolCallPartDto, card?: HTMLDivElement) => HTMLDivElement;
   startTool: (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
   updateToolProgress: (toolCallId: string | undefined, toolName: string, partialResult?: unknown, args?: Record<string, unknown>, startedAt?: string | number | Date) => void;
   endTool: (toolCallId: string | undefined, toolName: string, isError: boolean, result?: unknown) => void;
@@ -273,7 +276,7 @@ export function textFromToolResult(result: unknown): string {
   }
   if (typeof value.text === "string") return value.text;
   const raw = value.raw && typeof value.raw === "object" ? value.raw as Record<string, unknown> : undefined;
-  return textFromRawContent(value.content) || textFromRawContent(raw?.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
+  return textFromRawContent(value.parts) || textFromRawContent(value.content) || textFromRawContent(raw?.content) || textFromRawContent(value.raw) || JSON.stringify(result, null, 2);
 }
 
 type ToolImage = { src: string; alt: string; needsAuth?: boolean };
@@ -291,7 +294,7 @@ export function collectToolImages(result: unknown): ToolImage[] {
     if (obj.type === "image") {
       const source = obj.source && typeof obj.source === "object" ? obj.source as Record<string, unknown> : undefined;
       const mimeType = [obj.mimeType, obj.mediaType, obj.mime_type, source?.media_type].find((v): v is string => typeof v === "string") || "image/png";
-      const alt = typeof obj.name === "string" ? obj.name : "tool result image";
+      const alt = typeof obj.alt === "string" ? obj.alt : typeof obj.name === "string" ? obj.name : "tool result image";
       const data = typeof obj.data === "string" ? obj.data : typeof source?.data === "string" ? source.data : undefined;
       const url = typeof obj.url === "string" ? obj.url : typeof source?.url === "string" ? source.url : undefined;
       if (data) images.push({ src: `data:${mimeType};base64,${data}`, alt });
@@ -306,6 +309,7 @@ export function collectToolImages(result: unknown): ToolImage[] {
       const imageUrl = obj.image_url as Record<string, unknown>;
       if (typeof imageUrl.url === "string") images.push({ src: imageUrl.url, alt: "tool result image", needsAuth: imageUrl.url.startsWith("/") });
     }
+    visit(obj.parts);
     visit(obj.content);
     visit(obj.raw);
     visit(obj.source);
@@ -483,10 +487,12 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
 
   function updateToolCard(card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) {
     stopRunningToolProgress(card);
-    card.classList.remove("toolCard--running");
+    card.classList.remove("toolCard--running", "toolCard--error", "toolCard--success");
     card.classList.add(isError ? "toolCard--error" : "toolCard--success");
 
     card.querySelector(".toolCardBadge")?.remove();
+    // Native part replacement can update a completed result more than once.
+    card.querySelectorAll(":scope > .toolCardBody:not(.toolCardPartialBody), :scope > .toolCardImage, :scope > .toolCardCollapseToggle, :scope > .nativeToolDiff").forEach((node) => node.remove());
 
     if (toolName === "edit" && !isError) renderEditDiff(card, {}, result);
     const resultStr = textFromToolResult(result);
@@ -500,6 +506,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
       finalizePartialToolOutput(card);
     }
     addToolImagePreviews(card, result, apiHeaders);
+    addNativeDiff(card, toolName, result);
     playToolCardStateTransition(card);
     addToolSessionChips(card, result, openSession);
     onTranscriptChanged();
@@ -516,6 +523,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     else if (toolName === "edit" && args) renderEditDiff(card, args, result);
     else if (resultStr) addToolResultBody(card, resultStr);
     addToolImagePreviews(card, result, apiHeaders);
+    addNativeDiff(card, toolName, result);
     addToolSessionChips(card, result, openSession);
     const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
     const raw = record.raw && typeof record.raw === "object" ? record.raw as Record<string, unknown> : {};
@@ -524,6 +532,35 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     if (typeof id === "string") setActivityCardMetadata(card, { key: `tool:${id}` });
     messagesEl.append(card);
     onTranscriptChanged();
+    return card;
+  }
+
+  function addNativeDiff(card: HTMLDivElement, toolName: string, result: unknown) {
+    if (toolName === "edit" || !result || typeof result !== "object") return;
+    const details = (result as { details?: { diff?: unknown } }).details;
+    if (typeof details?.diff !== "string" || !details.diff.trim()) return;
+    const diff = renderUnifiedPatch(details.diff, { stacked: window.matchMedia("(max-width: 700px)").matches });
+    diff.classList.add("nativeToolDiff");
+    card.append(diff);
+  }
+
+  function upsertToolPart(part: ToolCallPartDto, existing?: HTMLDivElement) {
+    const args = part.args && typeof part.args === "object" && !Array.isArray(part.args) ? part.args as Record<string, unknown> : { value: part.args };
+    const running = part.status === "running";
+    const card = existing?.isConnected ? existing : running
+      ? addToolCard(part.toolName, args, part.startedAt)
+      : addToolHistoryCard(part.toolName, part.status === "error" || part.status === "cancelled", part.result, args);
+    card.dataset.toolCallId = part.toolCallId;
+    if (running) {
+      activeToolCards.set(part.toolCallId, card);
+      noteToolActivity(card, part.result);
+    } else if (existing?.isConnected) {
+      updateToolCard(card, part.toolName, part.status === "error" || part.status === "cancelled", part.result);
+      activeToolCards.delete(part.toolCallId);
+    }
+    card.classList.toggle("toolCard--cancelled", part.status === "cancelled");
+    if (part.status === "cancelled") card.setAttribute("aria-label", `${part.toolName}: cancelled`);
+    return card;
   }
 
   function addRuntimeErrorCard(presentation: RuntimeErrorPresentation) {
@@ -582,6 +619,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     addToolCard,
     updateToolCard,
     addToolHistoryCard,
+    upsertToolPart,
     addRuntimeErrorCard,
     startTool,
     updateToolProgress,

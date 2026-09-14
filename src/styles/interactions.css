@@ -1,0 +1,39 @@
+.pendingInteractions {
+  grid-row: 3;
+  min-width: 0;
+  max-height: min(45vh, 360px);
+  margin: 8px 16px 0;
+  padding: 12px;
+  overflow: auto;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+}
+.pendingInteractions[hidden] { display: none; }
+.interactionRequest + .interactionRequest { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.interactionRequest h3 { margin: 0 0 8px; font-size: 14px; }
+.interactionRequest details { margin: 6px 0; }
+.interactionRequest summary { cursor: pointer; color: var(--muted); }
+.interactionRequest pre { max-height: 160px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.interactionChoices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.interactionChoices button { display: flex; flex-direction: column; gap: 3px; min-height: 36px; padding: 7px 10px; border-radius: 8px; }
+.interactionChoices button[data-meaning="cancel"] { color: var(--danger); }
+.interactionChoices small, .interactionQuestion small { color: var(--muted); font-size: 11px; }
+.interactionQuestion { display: flex; flex-direction: column; gap: 5px; margin-top: 10px; }
+.interactionQuestion input, .interactionQuestion select { min-width: 0; padding: 8px; color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; }
+.interactionStatus { margin-top: 8px; color: var(--muted); }
+.interactionStatus:empty { display: none; }
+.modelSettingsNative { padding: 4px; font-size: 13px; overflow-wrap: anywhere; }
+.modelSettingsNative p { margin-top: 8px; color: var(--muted); }
+.sessionHarnessBadge { flex: 0 0 auto; padding: 1px 5px; border: 1px solid var(--border); border-radius: 5px; color: var(--muted); font-size: 10px; font-weight: 500; }
+.emptyHarnessControl { flex: 0 0 auto; }
+.emptyHarnessControl select { min-width: 0; max-width: 150px; border: 0; background: transparent; color: var(--text); font: inherit; }
+.harnessHint { color: var(--muted); font-size: 12px; line-height: 1.4; }
+.toolCard--cancelled { opacity: .8; }
+@media (max-width: 600px) {
+  .interactionChoices button { min-height: 44px; }
+  .pendingInteractions { margin-inline: 8px; }
+  .emptyWorkspaceControls:has(.emptyHarnessControl) { flex-wrap: wrap; }
+}

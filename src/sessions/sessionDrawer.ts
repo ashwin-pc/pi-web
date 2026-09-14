@@ -5,7 +5,7 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import { panelOverlayModeQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
-import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
+import { sessionRuntime, activeSessionState, harnessName, isNativeSession, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
@@ -13,6 +13,8 @@ import { buildSessionInspector } from "./sessionInspector.js";
 import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
 import { animateReorderLayout, edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 import { openFolderPicker as showFolderPicker, type FolderListing } from "../files/folderPicker.js";
+import { harnessChoice } from "./harnessChoice.js";
+import type { HarnessCatalogDto, HarnessId } from "../../server/session/dto.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -24,6 +26,8 @@ export async function fetchSessionList(url: string, headers: HeadersInit, timeou
 export type SessionsController = {
   init: () => void;
   refreshSessions: () => Promise<void>;
+  refreshHarnesses: () => Promise<void>;
+  prepareLandingSession: () => Promise<void>;
   setSessionDrawerOpen: (open: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
   toggleCurrentSessionPin: () => void;
@@ -191,6 +195,11 @@ export function createSessions(options: {
   const onDerivedSessionStateChanged = options.onDerivedSessionStateChanged;
 
   let cachedSessions: SessionInfo[] = [];
+  let harnessCatalogLoaded = false;
+  let harnessCatalogRequest: Promise<void> | undefined;
+  let landingHarnessId: HarnessId | undefined;
+  let landingHarnessControl: ReturnType<typeof harnessChoice> | undefined;
+  let preparingLanding: Promise<void> | undefined;
   const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
   // TTL dedupe (issue #112): a message_end-driven refetch arriving within a short
@@ -315,7 +324,9 @@ export function createSessions(options: {
 
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = state.currentCwd;
-    elements.emptyCwdChooserEl.hidden = transcriptLoading || elements.messagesEl.children.length > 0 || sessionRuntime(state).isStreaming;
+    const runtime = sessionRuntime(state);
+    elements.emptyCwdChooserEl.hidden = transcriptLoading || elements.messagesEl.children.length > 0 || (isNativeSession(activeSessionState(state)) ? runtime.isRunning : runtime.isStreaming);
+    renderLandingHarnessChoice();
   }
 
   function finishTranscriptLoading() {
@@ -411,12 +422,108 @@ export function createSessions(options: {
     });
   }
 
+  async function refreshHarnesses() {
+    if (harnessCatalogLoaded) return;
+    if (!harnessCatalogRequest) harnessCatalogRequest = (async () => {
+      const response = await fetch("/api/harnesses", { headers: api.headers() });
+      // Older Pi-only servers do not publish a catalog.
+      if (response.status === 404) { harnessCatalogLoaded = true; return; }
+      if (!response.ok) throw new Error("Could not load available harnesses.");
+      state.harnessCatalog = await response.json() as HarnessCatalogDto;
+      harnessCatalogLoaded = true;
+      renderLandingHarnessChoice();
+    })().finally(() => { harnessCatalogRequest = undefined; });
+    return harnessCatalogRequest;
+  }
+
+  function selectedLandingHarness(): HarnessId {
+    return landingHarnessId || activeSessionState(state)?.harnessId || "pi";
+  }
+
+  function renderLandingHarnessChoice() {
+    const catalog = state.harnessCatalog;
+    if (!catalog?.multiHarnessEnabled) { landingHarnessControl?.label.remove(); landingHarnessControl = undefined; return; }
+    if (!landingHarnessControl) {
+      landingHarnessControl = harnessChoice(catalog, selectedLandingHarness(), "landing", (id) => {
+        landingHarnessId = id;
+      });
+      elements.emptyCwdChooserEl.querySelector(".emptyWorkspaceControls")?.append(landingHarnessControl.label);
+    }
+    landingHarnessControl.select.value = selectedLandingHarness();
+  }
+
+  async function prepareLandingSession() {
+    if (elements.emptyCwdChooserEl.hidden) return;
+    if (preparingLanding) return preparingLanding;
+    const harnessId = selectedLandingHarness();
+    if (harnessId === (activeSessionState(state)?.harnessId || "pi")) return;
+    const selected = state.harnessCatalog?.harnesses.find((entry) => entry.id === harnessId);
+    if (!selected?.enabled || !selected.available) throw new Error(selected?.unavailableReason || `${harnessId} is unavailable.`);
+    preparingLanding = (async () => {
+      const response = await fetch("/api/sessions/new", {
+        method: "POST", headers: api.headers(),
+        body: JSON.stringify({ sessionId: state.currentSessionId, cwd: state.currentCwd, harnessId }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || data.ok === false) throw new Error(data.error || "Could not create the selected harness session.");
+      sessionState.applySnapshot(data, { activate: true });
+      writeActiveSessionIdToUrl(data.sessionId);
+      clearMessages();
+      await refreshModels();
+    })().finally(() => { preparingLanding = undefined; });
+    return preparingLanding;
+  }
+
   async function startNewSession(cwd?: string) {
+    await refreshHarnesses();
+    let harnessId: HarnessId = "pi";
+    if (state.harnessCatalog?.multiHarnessEnabled) {
+      const chosen = await promptNewSessionHarness();
+      if (chosen === undefined) return;
+      harnessId = chosen;
+    }
+    await createNewSession(cwd, state.currentSessionId, harnessId);
+  }
+
+  function promptNewSessionHarness(): Promise<HarnessId | undefined> {
+    return new Promise((resolve) => {
+      blurActiveEditableOnMobile();
+      const backdrop = document.createElement("div");
+      backdrop.className = "folderPickerBackdrop newSessionFieldBackdrop";
+      const modal = document.createElement("div");
+      modal.className = "folderPicker newSessionFieldPicker";
+      modal.setAttribute("role", "dialog"); modal.setAttribute("aria-modal", "true"); modal.setAttribute("aria-label", "New session");
+      const title = document.createElement("h2"); title.textContent = "New session";
+      let harnessId: HarnessId = "pi";
+      const hint = document.createElement("p"); hint.className = "harnessHint"; hint.hidden = true;
+      const picker = harnessChoice(state.harnessCatalog!, harnessId, "dialog", (id) => {
+        harnessId = id;
+        hint.hidden = id === "pi";
+        hint.textContent = "Uses native settings and permissions. Pi extensions do not run in this session.";
+      });
+      const actions = document.createElement("div"); actions.className = "folderPickerActions";
+      const cancel = document.createElement("button"); cancel.type = "button"; cancel.textContent = "Cancel";
+      const start = document.createElement("button"); start.type = "button"; start.className = "primaryAction"; start.textContent = "Start session";
+      actions.append(cancel, start); modal.append(title, picker.label, hint, actions); backdrop.append(modal); document.body.append(backdrop);
+      let settled = false;
+      const finish = (result: HarnessId | undefined) => {
+        if (settled) return;
+        settled = true; backdrop.remove(); resolve(result);
+      };
+      cancel.addEventListener("click", () => finish(undefined));
+      backdrop.addEventListener("click", (event) => { if (event.target === backdrop) finish(undefined); });
+      modal.addEventListener("keydown", (event) => { if (event.key === "Escape") { event.stopPropagation(); finish(undefined); } });
+      start.addEventListener("click", () => finish(harnessId));
+      picker.select.focus();
+    });
+  }
+
+  async function createNewSession(cwd: string | undefined, parentSessionId: string, harnessId: HarnessId = "pi") {
     const wasDrawerOpen = !elements.sessionDrawer.hidden;
     const res = await fetch("/api/sessions/new", {
       method: "POST",
       headers: api.headers(),
-      body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: state.currentSessionId }),
+      body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: parentSessionId, ...(harnessId !== "pi" ? { harnessId } : {}) }),
     });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
@@ -2089,11 +2196,13 @@ export function createSessions(options: {
   }
 
   async function deleteSession(item: SessionInfo, cwd: string) {
-    if (item.isCurrent) throw new Error("Switch to another session before deleting the current session.");
-    if (item.runtime?.isRunning) throw new Error("Wait for the session to finish before deleting it.");
+    const native = isNativeSession(item);
+    const verb = native ? "removing" : "deleting";
+    if (item.isCurrent) throw new Error(`Switch to another session before ${verb} the current session.`);
+    if (item.runtime?.isRunning) throw new Error(`Wait for the session to finish before ${verb} it.`);
 
     const title = sessionTitle(item);
-    if (!window.confirm(`Delete session “${title}”?`)) return;
+    if (!window.confirm(native ? `Remove “${title}” from pi-web?\n\nNative conversation history is not deleted.` : `Delete session “${title}”?`)) return;
 
     const res = await fetch("/api/sessions/delete", {
       method: "POST",
@@ -2111,14 +2220,15 @@ export function createSessions(options: {
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== item.id);
     renderSessionList(cachedSessions);
     renderSessionBar();
-    addMessage("system", data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
+    addMessage("system", native ? "Removed from pi-web. Native conversation history was retained." : data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
   }
 
   function getSessionActions(item: SessionInfo, cwd: string): SessionAction[] {
+    const verb = isNativeSession(item) ? "removing" : "deleting";
     const deleteDisabledReason = item.isCurrent
-      ? "Switch to another session before deleting the current session"
+      ? `Switch to another session before ${verb} the current session`
       : item.runtime?.isRunning
-        ? "Wait for the session to finish before deleting it"
+        ? `Wait for the session to finish before ${verb} it`
         : undefined;
     const pinned = isPinned(item.id);
     const lane = laneOf(item.id);
@@ -2141,7 +2251,7 @@ export function createSessions(options: {
       },
       {
         id: "delete",
-        label: "Delete",
+        label: isNativeSession(item) ? "Remove from pi-web" : "Delete",
         icon: "trash-2",
         danger: true,
         disabled: Boolean(deleteDisabledReason),
@@ -2635,6 +2745,11 @@ export function createSessions(options: {
     title.className = "sessionItemTitle";
     title.textContent = sessionTitle(item);
     titleRow.append(title);
+    if (state.harnessCatalog?.multiHarnessEnabled || item.harnessId && item.harnessId !== "pi") {
+      const badge = document.createElement("span"); badge.className = "sessionHarnessBadge";
+      badge.textContent = harnessName(item); badge.title = `Harness: ${badge.textContent}`;
+      titleRow.append(badge);
+    }
 
     if (unread) {
       const unreadDot = document.createElement("span");
@@ -2855,6 +2970,8 @@ export function createSessions(options: {
     // External reconciliation requests represent a known state transition and
     // must bypass the drawer-open TTL. Internal opportunistic reads still dedupe.
     refreshSessions: () => refreshSessions(true),
+    refreshHarnesses,
+    prepareLandingSession,
     setSessionDrawerOpen,
     startNewSession,
     toggleCurrentSessionPin,
