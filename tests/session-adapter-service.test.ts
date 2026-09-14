@@ -1,16 +1,38 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMockHarness } from "../server/mock.js";
 import { createPiAdapter } from "../server/session/adapters/pi/index.js";
 import { LocalSessionService } from "../server/session/service.js";
-import { NativeBindings } from "../server/session/nativeBindings.js";
+import { NativeBindings, type NativeBinding } from "../server/session/nativeBindings.js";
 import type { AdapterPromptInput, SessionAdapter, SessionHandle } from "../server/session/adapter.js";
 import type { HarnessDescriptorDto, InteractionResponseDto, SessionServiceEvent, SessionSnapshotDto } from "../server/session/dto.js";
 import { SessionActivity } from "../server/session/activity.js";
 import { createHostSessionEventHandler } from "../server/session/hostEvents.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rename: vi.fn(actual.rename) };
+});
+
+async function pauseNativeCommit(cwd: string, matches: (row: NativeBinding) => boolean = () => true, failure?: Error) {
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  let entered!: () => void;
+  let release!: () => void;
+  let held = false;
+  const atCommit = new Promise<void>((resolve) => { entered = resolve; });
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  vi.mocked(rename).mockImplementation(async (from, to) => {
+    if (!held && to === join(cwd, "native.json") && JSON.parse(await actual.readFile(from, "utf8")).sessions.some(matches)) {
+      held = true; entered(); await gate;
+      if (failure) throw failure;
+    }
+    await actual.rename(from, to);
+  });
+  return { atCommit, release, restore: () => { release(); vi.mocked(rename).mockImplementation(actual.rename); } };
+}
 
 const roots: string[] = [];
 const services: LocalSessionService[] = [];
@@ -146,7 +168,7 @@ describe("single-handle core routing", () => {
     });
     const events: SessionServiceEvent[] = [];
     service.subscribe((event) => events.push(event));
-    const put = vi.spyOn(NativeBindings.prototype, "put").mockRejectedValue(new Error("synthetic disk failure"));
+    const put = vi.spyOn(NativeBindings.prototype, "update").mockRejectedValue(new Error("synthetic disk failure"));
     try {
       await expect(service.create(undefined, undefined, "codex")).rejects.toThrow("synthetic disk failure");
       expect(put).toHaveBeenCalledTimes(1); // no registration/early-event fire-and-forget write
@@ -164,13 +186,132 @@ describe("single-handle core routing", () => {
     const state = await service.create(undefined, undefined, "codex");
     const events: SessionServiceEvent[] = [];
     service.subscribe((event) => events.push(event));
-    const save = vi.spyOn(NativeBindings.prototype, "put").mockRejectedValue(new Error("disk unavailable"));
+    const save = vi.spyOn(NativeBindings.prototype, "update").mockRejectedValue(new Error("disk unavailable"));
     try {
       const receipt = await service.prompt(state.sessionId, { message: "submitted once", mode: "prompt", attachments: [] });
       expect(receipt.acknowledgement).toBe("pending");
       expect(events).toContainEqual(expect.objectContaining({ type: "error", error: expect.stringContaining("Prompt submitted") }));
       await expect(service.prompt(state.sessionId, { message: "do not replay", mode: "prompt", attachments: [] })).rejects.toMatchObject({ status: 409 });
     } finally { save.mockRestore(); }
+  });
+
+  it.each(["rename", "firstMessage"] as const)("preserves an in-flight %s when later native state persistence queues", async (field) => {
+    const { service, cwd, handles } = await fixture();
+    const state = await service.create(undefined, undefined, "codex");
+    await service.rename(state.sessionId, "Original name"); // drain creation metadata
+    const value = field === "rename" ? "Renamed in pi-web" : "The original first prompt";
+    const gate = await pauseNativeCommit(cwd, (row) => field === "rename" ? row.name === value : row.firstMessage === value);
+    const changing = field === "rename" ? service.rename(state.sessionId, value)
+      : service.prompt(state.sessionId, { message: value, mode: "prompt", attachments: [] });
+    try {
+      await gate.atCommit;
+      handles[0].update({ nativeSession: { ...state.nativeSession, status: "resumable" } });
+      await Promise.resolve(); // enqueue the observation behind the paused metadata write
+      gate.release(); await changing;
+      await service.disposeAll(); // drain state persistence before inspecting either view
+      const binding = new NativeBindings(join(cwd, "native.json")); await binding.ready;
+      expect(binding.get(state.sessionId)).toMatchObject({
+        name: field === "rename" ? value : "Original name",
+        ...(field === "firstMessage" ? { firstMessage: value } : {}),
+        nativeSession: { ...state.nativeSession, status: "resumable" },
+      });
+      expect((await service.list()).find((row) => row.id === state.sessionId)).toMatchObject({
+        name: field === "rename" ? value : "Original name", ...(field === "firstMessage" ? { firstMessage: value } : {}),
+      });
+    } finally { gate.restore(); await changing; }
+  });
+
+  it.each(["rename", "delete"] as const)("does not let queued discovery overwrite a concurrent %s or drop the first prompt preview", async (operation) => {
+    const { service, cwd, handles, adapter } = await fixture();
+    const state = await service.create(undefined, undefined, "codex");
+    await service.prompt(state.sessionId, { message: "Original prompt preview", mode: "prompt", attachments: [] });
+    handles[0].update({ phase: "idle", activity: "idle", activeExecution: undefined });
+    await service.rename(state.sessionId, "Original name");
+    const gate = await pauseNativeCommit(cwd, (row) => operation === "rename" ? row.name === "New name" : row.deleted === true);
+    const changing = operation === "rename" ? service.rename(state.sessionId, "New name") : service.delete(state.sessionId);
+    let nativeList!: () => void;
+    const listed = new Promise<void>((resolve) => { nativeList = resolve; });
+    adapter.list = async () => { nativeList(); return [{ nativeSession: state.nativeSession, cwd,
+      name: "Old native label", created: "2026-01-01", modified: "2026-01-02" }]; };
+    let listing: ReturnType<LocalSessionService["list"]> | undefined;
+    try {
+      await gate.atCommit;
+      listing = service.list();
+      await listed; await Promise.resolve(); // discovery read occurred before the held commit
+      gate.release(); await changing;
+      const found = (await listing).find((row) => row.id === state.sessionId);
+      await service.disposeAll();
+      const binding = new NativeBindings(join(cwd, "native.json")); await binding.ready;
+      if (operation === "rename") {
+        expect(found).toMatchObject({ name: "New name", firstMessage: "Original prompt preview" });
+        expect(binding.get(state.sessionId)).toMatchObject({ name: "New name", firstMessage: "Original prompt preview" });
+      } else {
+        expect(found).toBeUndefined();
+        expect(binding.get(state.sessionId)).toMatchObject({ deleted: true, firstMessage: "Original prompt preview" });
+        await expect(service.open(state.sessionId)).rejects.toMatchObject({ status: 410 });
+      }
+    } finally { gate.restore(); await changing; await listing; }
+  });
+
+  it("holds native open state and command admission until its metadata commit", async () => {
+    const first = await fixture();
+    const state = await first.service.create(undefined, undefined, "codex");
+    await first.service.disposeAll();
+    const { service, cwd, handles } = await fixture({ cwd: first.cwd });
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    const gate = await pauseNativeCommit(cwd);
+    const opening = service.open(state.sessionId);
+    try {
+      await gate.atCommit;
+      handles[0].update({ activity: "idle" });
+      await expect(service.state(state.sessionId)).rejects.toMatchObject({ status: 409 });
+      await expect(service.prompt(state.sessionId, { message: "not admitted", mode: "prompt", attachments: [] })).rejects.toMatchObject({ status: 409 });
+      expect(handles[0].prompts).toHaveLength(0);
+      expect(events).toEqual([]);
+      gate.release();
+      expect((await opening).phase).toBe("idle");
+      expect(events.some((event) => event.type === "state" && event.state.sessionId === state.sessionId)).toBe(true);
+      expect(await service.state(state.sessionId)).toMatchObject({ phase: "idle", sessionId: state.sessionId });
+    } finally { gate.restore(); await opening; }
+  });
+
+  it("rolls back a native open if its binding refresh fails, and only explicit retry reopens", async () => {
+    const first = await fixture();
+    const state = await first.service.create(undefined, undefined, "codex");
+    await first.service.disposeAll();
+    const { service, cwd, handles, open } = await fixture({ cwd: first.cwd });
+    const disk = await readFile(join(cwd, "native.json"), "utf8");
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    const gate = await pauseNativeCommit(cwd, () => true, new Error("synthetic open metadata failure"));
+    const opening = service.open(state.sessionId);
+    const rejected = expect(opening).rejects.toThrow("synthetic open metadata failure");
+    try {
+      await gate.atCommit;
+      handles[0].update({ sessionTitle: "Tentative native state" });
+      await Promise.resolve();
+      gate.release(); await rejected;
+      expect(service.sessionForId(state.sessionId)).toBeUndefined();
+      expect(handles[0].disposed).toBe(1);
+      expect(handles[0].listeners.size).toBe(0);
+      expect(events.some((event) => event.type === "state" || event.type === "shutdown")).toBe(false);
+      expect(await readFile(join(cwd, "native.json"), "utf8")).toBe(disk);
+      await expect(service.state(state.sessionId)).rejects.toMatchObject({ status: 503 });
+      await expect(service.state(state.sessionId)).rejects.toMatchObject({ status: 503 });
+      expect(open).toHaveBeenCalledTimes(1);
+      gate.restore();
+      const reopened = await service.open(state.sessionId);
+      expect(reopened).toMatchObject({ sessionId: state.sessionId, nativeSession: state.nativeSession });
+      expect(open).toHaveBeenCalledTimes(2);
+      expect(handles.every((handle) => handle.prompts.length === 0)).toBe(true);
+    } finally {
+      gate.restore(); await opening.catch(() => undefined);
+      // Also recover the intentionally failing pre-fix implementation for cleanup.
+      const live = service.sessionForId(state.sessionId) as Handle | undefined;
+      if (live) live.update({});
+      else await service.open(state.sessionId);
+    }
   });
 
   it("reuses live ephemeral handles; restart is unavailable, never native resume or Pi fallback", async () => {

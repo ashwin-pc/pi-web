@@ -37,7 +37,7 @@ function validate(row: NativeBinding, rows: ReadonlyMap<string, NativeBinding>) 
 /** Web-owned identity metadata only. Never read a native private store or save a transcript. */
 export class NativeBindings {
   private rows = new Map<string, NativeBinding>();
-  private tail: Promise<void> = Promise.resolve();
+  private tail: Promise<unknown> = Promise.resolve();
   readonly ready: Promise<void>;
   constructor(private readonly file: string) { this.ready = this.load(); }
   private async load() {
@@ -62,11 +62,17 @@ export class NativeBindings {
     return ref.sessionId ? this.list().find((row) => row.nativeSession.harnessId === ref.harnessId && row.nativeSession.sessionId === ref.sessionId) : undefined;
   }
   put(row: NativeBinding): Promise<void> {
-    // Capture caller input now, but validate against committed rows only when this
-    // job reaches the head of the queue. Pending candidates never become visible.
     const input = copy(row);
+    return this.update(input.id, () => input).then(() => undefined);
+  }
+  /** Read, merge and commit in the same queue; callers never merge a stale get(). */
+  update(id: string, change: (current: NativeBinding | undefined) => NativeBinding | undefined): Promise<NativeBinding | undefined> {
     const commit = async () => {
       await this.ready;
+      const changed = change(this.get(id));
+      if (!changed) return;
+      const input = copy(changed);
+      if (input.id !== id) throw new Error("Cannot change a native binding's web identity");
       validate(input, this.rows);
       const candidate = new Map(this.rows);
       candidate.set(input.id, input);
@@ -82,6 +88,7 @@ export class NativeBindings {
         throw error;
       }
       this.rows = candidate;
+      return copy(input);
     };
     const pending = this.tail.then(commit, commit);
     this.tail = pending;

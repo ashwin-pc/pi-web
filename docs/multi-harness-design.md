@@ -41,7 +41,9 @@ Pi's extension bridge uses the same handle registration and work leases as every
 
 Native removal tombstones the web binding and leaves the native transcript untouched. Pi deletion retains its existing trash/delete behavior. Native discovery uses supported adapter APIs, never private native JSONL or databases.
 
-Binding validation, candidate construction, atomic rename and in-memory publication are one serialized operation. Failed writes leave both committed views unchanged, and no queued write can include another pending candidate. Explicit open can replace a dead persistent handle by resuming its exact native reference; an unavailable ephemeral handle remains 410. State polling never repeatedly respawns a failed native open, and recovery never replays submitted prompts.
+Binding read/merge, validation, candidate construction, atomic rename and in-memory publication share one queue. Rename, first-prompt previews, discovery and tombstones merge against the last successful row when their job runs, not a pre-queue `get()`. Failed writes leave both committed views unchanged; later state/discovery updates cannot undo a pending rename, erase a preview or resurrect a removed binding.
+
+Explicit open can replace a dead persistent handle by resuming its exact native reference; an unavailable ephemeral handle remains 410. Native open registration is tentative until its metadata refresh commits: commands and state publication are gated, while interaction responses remain live. A failed refresh disposes/unsubscribes the tentative handle rather than rejecting with a usable handle still cached. State polling never repeatedly respawns a failed native open, and explicit recovery never replays submitted prompts.
 
 ## Input and lifecycle
 

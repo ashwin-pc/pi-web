@@ -1317,7 +1317,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
   let targetSession: SessionHandle | undefined;
   try {
-    targetSession = await resolveWebSocketHelloSession(requestedSessionId, session, (id) => sessionService.find(id));
+    targetSession = await resolveWebSocketHelloSession(requestedSessionId, session, (id) => sessionService.require(id));
   } catch {
     realtimeWs.close(1011, "Could not open requested session");
     return;

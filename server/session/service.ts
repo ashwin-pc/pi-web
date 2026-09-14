@@ -137,8 +137,8 @@ export class LocalSessionService implements SessionService {
     return handle;
   }
   private publish(entry: LiveSessionEntry, event: SessionServiceEvent) {
-    // New-session defaults and the host finalizer can emit SDK/bridge events.
-    // Hold publication, not execution or request responses, until creation commits.
+    // Initialization can emit SDK/bridge events before its binding commits.
+    // Hold publication, not execution or request responses, until it succeeds.
     const effect = event.type === "wire" && event.value && typeof event.value === "object" && !Array.isArray(event.value) && event.value.type === "interaction_effect";
     if (entry.initializing && event.type !== "interaction" && event.type !== "interaction_resolved" && event.type !== "error" && !effect) {
       entry.deferredEvents.push(event);
@@ -146,9 +146,9 @@ export class LocalSessionService implements SessionService {
     }
     this.emit(event);
   }
-  private finishCreation(handle: SessionHandle) {
+  private finishInitialization(handle: SessionHandle) {
     const entry = this.liveSessions.get(handle.sessionId);
-    if (!entry || entry.handle !== handle) throw new Error("Created session was released before publication");
+    if (!entry || entry.handle !== handle) throw new Error("Session was released before publication");
     entry.initializing = false;
     this.remember(handle.state());
     for (const event of entry.deferredEvents.splice(0)) this.emit(event);
@@ -165,14 +165,18 @@ export class LocalSessionService implements SessionService {
       void this.saveNative(state).catch((error) => this.emit({ type: "error", sessionId: state.sessionId, error: `Could not persist native binding: ${String(error)}` }));
     }
   }
-  private async saveNative(state: BaseSessionStateDto) {
-    await this.bindings.ready;
-    const previous = this.bindings.get(state.sessionId);
-    if (previous?.deleted || !state.nativeSession) return;
-    const now = new Date().toISOString();
-    await this.bindings.put({ id: state.sessionId, cwd: state.cwd, nativeSession: state.nativeSession,
-      name: previous?.name ?? state.sessionName, firstMessage: previous?.firstMessage,
-      created: previous?.created || now, modified: now });
+  private async saveNative(state: BaseSessionStateDto, metadata: Pick<NativeBinding, "name" | "firstMessage"> = {}) {
+    if (!state.nativeSession) return;
+    const { sessionId, cwd, sessionName } = state;
+    const nativeSession = { ...state.nativeSession };
+    const { name, firstMessage } = metadata;
+    return this.bindings.update(sessionId, (previous) => {
+      if (previous?.deleted) return;
+      const now = new Date().toISOString();
+      return { id: sessionId, cwd, nativeSession,
+        name: name ?? previous?.name ?? sessionName, firstMessage: previous?.firstMessage || firstMessage,
+        created: previous?.created || now, modified: now };
+    });
   }
   async initialize(path?: string) {
     await this.bindings.ready;
@@ -229,14 +233,24 @@ export class LocalSessionService implements SessionService {
       const adapter = this.adapter(location.nativeSession.harnessId);
       if (location.nativeSession.persistence === "ephemeral") throw new SessionServiceError("Ephemeral native session expired; it cannot resume after process loss", 410);
       const handle = await adapter.open(location);
-      if (handle.sessionId !== location.sessionId || handle.harnessId !== location.nativeSession.harnessId) {
-        await handle.dispose(); throw new SessionServiceError("Adapter returned a different session identity", 409);
+      try {
+        if (handle.sessionId !== location.sessionId || handle.harnessId !== location.nativeSession.harnessId) {
+          throw new SessionServiceError("Adapter returned a different session identity", 409);
+        }
+        this.register(handle, handle.harnessId !== "pi");
+        if (handle.harnessId !== "pi") {
+          await this.saveNative(handle.state());
+          this.finishInitialization(handle);
+        }
+        this.failedNativeOpens.delete(location.sessionId);
+        return handle;
+      } catch (error) {
+        // A rejected open owns no usable cache entry. Startup interactions stay
+        // live, but commands/events cannot use this handle before its commit.
+        if (this.sessionForId(handle.sessionId) === handle) await this.disposeLiveSession(handle.sessionId, "reset", true);
+        else await handle.dispose();
+        throw error;
       }
-      try { this.register(handle); }
-      catch (error) { await handle.dispose(); throw error; }
-      if (handle.harnessId !== "pi") await this.saveNative(handle.state());
-      this.failedNativeOpens.delete(location.sessionId);
-      return handle;
     } catch (error) {
       if (location.nativeSession.harnessId !== "pi") {
         this.failedNativeOpens.set(location.sessionId, new SessionServiceError(`Native session is unavailable; explicitly reopen to retry. ${error instanceof Error ? error.message : "Open failed"}`, 503));
@@ -249,7 +263,7 @@ export class LocalSessionService implements SessionService {
     if (!handle) throw new SessionServiceError("Session not found", 404);
     const entry = this.liveSessions.get(handle.sessionId);
     if (entry?.disposing) throw new SessionServiceError("Session is closing", 409);
-    if (entry?.initializing) throw new SessionServiceError("Session is being created", 409);
+    if (entry?.initializing) throw new SessionServiceError("Session is initializing", 409);
     return handle;
   }
   private async location(id: string, cwd?: string): Promise<AdapterOpenInput | undefined> {
@@ -333,9 +347,7 @@ export class LocalSessionService implements SessionService {
       const receipt = await handle.prompt({ ...input, attachments, executionId });
       if (handle.harnessId !== "pi") {
         try {
-          await this.saveNative(handle.state());
-          const row = this.bindings.get(handle.sessionId);
-          if (row && !row.firstMessage) await this.bindings.put({ ...row, firstMessage: input.message.slice(0, 500) });
+          await this.saveNative(handle.state(), { firstMessage: input.message.slice(0, 500) });
         } catch {
           // The native dispatch already happened. Do not turn a metadata failure
           // into a rejected-input receipt that invites replay of accepted work.
@@ -356,9 +368,7 @@ export class LocalSessionService implements SessionService {
     if (handle.harnessId === "pi") {
       const state = await this.pi(handle).rename(name); this.remember(state); return state;
     }
-    await this.saveNative(handle.state());
-    const row = this.bindings.get(id)!;
-    await this.bindings.put({ ...row, name });
+    await this.saveNative(handle.state(), { name });
     const state = this.projectState(handle); this.emit({ type: "state", state }); return state;
   }
   respondInteraction(response: InteractionResponseDto) {
@@ -409,7 +419,7 @@ export class LocalSessionService implements SessionService {
       this.register(handle, true);
       await this.deps.finalizeCreatedSession(handle.sessionId);
       if (id !== "pi") await this.saveNative(handle.state());
-      this.finishCreation(handle);
+      this.finishInitialization(handle);
       return this.projectState(handle);
     } catch (error) {
       if (this.sessionForId(handle.sessionId) === handle) await this.disposeLiveSession(handle.sessionId, "reset", true);
@@ -466,7 +476,7 @@ export class LocalSessionService implements SessionService {
       this.piLocations.delete(id); if (location.sessionFile) this.piNames.delete(location.sessionFile);
       return { id, disposition };
     }
-    await this.bindings.put({ ...this.bindings.get(id)!, deleted: true });
+    await this.bindings.update(id, (row) => row && { ...row, deleted: true });
     return { id, disposition: "deleted" }; // Web metadata only; native history is untouched.
   }
   private async listInfo(adapter: SessionAdapter, info: AdapterSessionInfo): Promise<SessionInfoDto | undefined> {
@@ -475,6 +485,8 @@ export class LocalSessionService implements SessionService {
       && entry.handle.state().nativeSession.sessionId === info.nativeSession.sessionId)) return;
     let id = info.nativeSession.sessionId;
     let name = info.name;
+    let firstMessage = info.firstMessage;
+    let created = info.created;
     if (adapter.harness.id === "pi") {
       this.piLocations.set(id, { sessionId: id, cwd: info.cwd, nativeSession: info.nativeSession, sessionFile: info.sessionFile });
       if (info.sessionFile && this.piNames.has(info.sessionFile)) name = this.piNames.get(info.sessionFile);
@@ -482,15 +494,18 @@ export class LocalSessionService implements SessionService {
       const existing = this.bindings.byNative(info.nativeSession);
       if (existing?.deleted) return;
       id = existing?.id || randomUUID();
-      name = existing?.name ?? name;
-      await this.bindings.put({ id, nativeSession: info.nativeSession, cwd: info.cwd, name, firstMessage: info.firstMessage,
-        created: existing?.created || info.created, modified: info.modified });
+      const binding = await this.bindings.update(id, (previous) => previous?.deleted ? undefined : {
+        id, nativeSession: info.nativeSession, cwd: info.cwd, name: previous?.name ?? info.name,
+        firstMessage: previous?.firstMessage || info.firstMessage, created: previous?.created || info.created, modified: info.modified,
+      });
+      if (!binding) return;
+      ({ name, firstMessage, created } = binding);
     }
     const candidate = this.sessionForId(id)?.state();
     const live = adapter.harness.id !== "pi" || candidate?.sessionFile === info.sessionFile ? candidate : undefined;
     return { id, ...(info.sessionFile && adapter.harness.id === "pi" ? { path: info.sessionFile } : {}), harnessId: adapter.harness.id,
       nativeSession: live?.nativeSession || info.nativeSession, name: live && adapter.harness.id === "pi" ? live.sessionName : name,
-      firstMessage: info.firstMessage, created: info.created, modified: info.modified, cwd: live?.cwd || info.cwd,
+      firstMessage, created, modified: info.modified, cwd: live?.cwd || info.cwd,
       messageCount: live?.stats.totalMessages ?? info.messageCount, isCurrent: false };
   }
   async list(extraCwds: string[] = []): Promise<SessionInfoDto[]> {
@@ -609,9 +624,9 @@ export class LocalSessionService implements SessionService {
     const state = entry.handle.state();
     try { await entry.handle.dispose(); } catch (error) { console.warn(`Could not dispose session after ${reason}:`, error); }
     entry.unsubscribe?.(); this.liveSessions.delete(id);
-    if (entry.handle.harnessId !== "pi") {
-      await this.bindings.ready; const row = this.bindings.get(id);
-      if (row && row.nativeSession.persistence === "ephemeral") await this.bindings.put({ ...row, nativeSession: { ...row.nativeSession, status: "unavailable" } });
+    if (entry.handle.harnessId !== "pi" && state.nativeSession?.persistence === "ephemeral") {
+      await this.bindings.update(id, (row) => row?.nativeSession.persistence === "ephemeral"
+        ? { ...row, nativeSession: { ...row.nativeSession, status: "unavailable" } } : undefined);
     }
     entry.deferredEvents.length = 0;
     if (!entry.initializing) this.emit({ type: "shutdown", sessionId: id, sessionFile: state.sessionFile, sessionKey: id });

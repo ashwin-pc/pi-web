@@ -88,3 +88,48 @@ it("does not let a queued candidate leak into an earlier write or caller mutatio
   const view = store.get("first")!; view.name = "mutated reader";
   expect(store.get("first")).toEqual(row("first"));
 });
+
+it("runs read-modify-write callbacks against the latest committed row and detaches their views", async () => {
+  const { file, store } = await fixture();
+  await store.put(row("web"));
+  const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const atRename = new Promise<void>((resolve) => { entered = resolve; });
+  vi.mocked(rename).mockImplementationOnce(async (from, to) => { entered(); await gate; await actual.rename(from, to); });
+  const first = store.update("web", (current) => ({ ...current!, name: "Renamed" }));
+  await atRename;
+  let callbackView: NativeBinding | undefined;
+  const change = vi.fn((current: NativeBinding | undefined) => {
+    callbackView = current;
+    return { ...current!, firstMessage: "First prompt" };
+  });
+  const second = store.update("web", change);
+  expect(change).not.toHaveBeenCalled();
+  expect(store.get("web")).toEqual(row("web"));
+  release(); await first;
+  const returned = await second;
+  expect(returned).toEqual({ ...row("web"), name: "Renamed", firstMessage: "First prompt" });
+  expect(JSON.parse(await readFile(file, "utf8")).sessions).toEqual([returned]);
+  returned!.name = "Mutated response";
+  callbackView!.nativeSession.sessionId = "Mutated callback view";
+  expect(store.get("web")).toEqual({ ...row("web"), name: "Renamed", firstMessage: "First prompt" });
+});
+
+it("an update after a failed commit reads the last successful row, not the failed candidate", async () => {
+  const { file, store } = await fixture();
+  const original = { ...row("web"), name: "Original" };
+  await store.put(original);
+  vi.mocked(rename).mockRejectedValueOnce(new Error("update rename failed"));
+  const failed = store.update("web", (current) => ({ ...current!, name: "Failed candidate" }));
+  const rejected = expect(failed).rejects.toThrow("update rename failed");
+  const next = store.update("web", (current) => ({ ...current!, firstMessage: "Kept prompt" }));
+  await rejected; await next;
+  expect(store.get("web")).toEqual({ ...original, firstMessage: "Kept prompt" });
+  expect(JSON.parse(await readFile(file, "utf8")).sessions).toEqual([{ ...original, firstMessage: "Kept prompt" }]);
+  await store.update("web", (current) => ({ ...current!, name: "Retried rename" }));
+  expect(store.get("web")).toMatchObject({ name: "Retried rename", firstMessage: "Kept prompt" });
+  await expect(store.update("web", () => row("foreign"))).rejects.toThrow("Cannot change a native binding's web identity");
+  expect(store.get("foreign")).toBeUndefined();
+});
