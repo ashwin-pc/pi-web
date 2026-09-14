@@ -98,6 +98,9 @@ export function createRealtime(options: {
       case "agent_end":
         if (!eventWillRetry(event)) terminalRuntimeSessions.add(sessionKey);
         break;
+      case "agent_settled":
+        terminalRuntimeSessions.add(sessionKey);
+        break;
       case "compaction_end":
         if (!eventWillRetry(event)) terminalRuntimeSessions.add(sessionKey);
         break;
@@ -813,7 +816,10 @@ export function createRealtime(options: {
       if (data.type === "session_runtime_changed") {
         const key = String(data.sessionId || data.sessionFile || "");
         if (isStaleRunningRuntimeAfterTerminal(key, data.runtime)) return;
-        if (key && (!data.runtime?.isRunning || typeof data.runtime?.startedAt === "string")) terminalRuntimeSessions.delete(key);
+        // An idle snapshot confirms the terminal guard; it must not erase it.
+        // Only a genuine new start (above) or a timestamped running snapshot
+        // can admit a new run after settlement.
+        if (key && data.runtime?.isRunning && typeof data.runtime?.startedAt === "string" && data.runtime.startedAt.trim()) terminalRuntimeSessions.delete(key);
         if (!data.sessionId) return;
         const transition = sessionState.replaceRuntime(String(data.sessionId), data.runtime);
         // Any dependency runtime change can update linked-session pill status.
