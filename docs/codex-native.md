@@ -2,7 +2,7 @@
 
 Codex uses its documented **app-server JSONL API**, through the installed `codex` command on PATH. Native configuration, credentials, tools, instruction loading, approvals reviewer and sandbox enforcement remain Codex's responsibility. The adapter must not replace them with Pi defaults, exported credentials or an alternate command executor.
 
-This document records the native contract, setup and compatibility evidence for issue #92. The production Codex adapter is exercised by deterministic native-process peers; that evidence is separate from a completed browser workflow or an actual-model canary.
+This document records the native contract, setup and compatibility evidence for issue #92. The production adapter has deterministic native-process coverage and a separately recorded bounded actual-wrapper browser canary. These are different evidence classes; real approval prompting remains untested.
 
 ## Protocol pin and setup
 
@@ -62,6 +62,8 @@ flowchart LR
 
 Thread activity is independent of item/turn completion. Native thread status distinguishes idle, active (including waiting on approval/user input), not loaded and system error. Native errors can carry `willRetry`; an error or an assistant final-answer item must not falsely mark a session settled.
 
+Command output uses the existing keyed `message_delta`, targeting the text part inside a tool result. A null initial result is established once, and the final native item replaces the authoritative aggregate once. Streaming never resends the accumulated output prefix on every chunk; regression coverage doubles the chunk count and requires less than 2.1× serialized transcript-event bytes.
+
 ## Persistence and recovery
 
 | Native session state | Honest behavior |
@@ -74,6 +76,8 @@ Thread activity is independent of item/turn completion. Native thread status dis
 
 A surviving native server can replay outstanding approval requests when a client rejoins. Deduplicate those by exact native request identity. No exactly-once/replay cursor guarantee has been established for incremental text; terminal native items and resumed history are authoritative.
 
+Hydrated history has no per-item timestamp in the pinned native schema. Omit unknown message timestamps and tool `startedAt` values rather than replacing them with reopen time. Live native timestamps or live receipt times remain available; reopening must not make an old conversation appear newly generated.
+
 ## Approval safety
 
 Command approvals distinguish **allow once**, **allow for this session**, **decline action** and **stop turn**. Only offered and implemented choices are exposed. Decline rejects the action but lets Codex continue; cancel maps to native abort. Persistent exec/network-policy amendments are deferred rather than interpreted by pi-web.
@@ -81,6 +85,8 @@ Command approvals distinguish **allow once**, **allow for this session**, **decl
 File approvals require the correlated native file-change item, expose its affected paths and proposed diff in the dialog, and keep the canonical tool result's `details.diff` available to the renderer. The initial inline-approval limit is 32 KiB of native diff; larger or missing diffs fail safely rather than approving unseen changes. The native schema marks `grantRoot` unstable, so broader file-session grants are not offered initially. Permission requests are different: a user may approve the exact validated requested profile for the native **turn** or **session**, or grant nothing; the browser cannot supply replacement permission JSON.
 
 Responses are validated against the outstanding request and its thread/turn/process identity. Duplicate, foreign-session, resolved, expired or previous-process replies cannot grant anything. `serverRequest/resolved` removes stale dialogs. Known deferred controls receive documented no-grant responses; unknown required controls receive an explicit native error and safe execution cleanup, not silence or fabricated approval.
+
+A stale/foreign native approval callback gets a JSON-RPC error, **not** `cancel`: native cancel means abort and could otherwise cancel a newer turn. No interrupt is dispatched for such callbacks. A current-turn unsupported control may be cancelled and interrupted by exact native ID; a raced stale-interrupt acknowledgement must not dispose a newer healthy execution. The [pinned native handlers](https://github.com/openai/codex/blob/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/app-server/src/bespoke_event_handling.rs#L1968-L2160) map client errors to denied command/file actions or an empty turn-scoped permission grant, not abort.
 
 Unknown informational variants are tolerated separately. Retain only bounded/redacted observations (method/shape/known IDs/size), never arbitrary credential-bearing native envelopes in browser persistence. Do not discard already accumulated text when an additive native variant appears.
 
@@ -123,7 +129,7 @@ Trusted test-server launch options are `PI_WEB_CODEX_COMMAND` plus JSON-array `P
 
 Browser tests can import `mcpImageEvents(threadId, turnId)` and `codexFixturePng` from [`codex-native-events.ts`](../tests/fixtures/codex-native-events.ts), then send each frame with `controlPeer(peer, {action:"emit", message:frame})`. The same exact native MCP image frames are exercised through the production adapter, without browser-native schema interpretation.
 
-The separate metadata-only actual-wrapper audit exercised handshake, account readiness without token refresh, model list, ephemeral create/read/list, failed ephemeral resume, process shutdown/restart and repeated failed ephemeral resume. Both owned native processes exited cleanly; no generation/tool/approval/durable-resume canary ran in that audit. Inference entitlement remains untested until the separate bounded opt-in canaries run.
+The separate metadata-only actual-wrapper audit exercised handshake, account readiness without token refresh, model list, ephemeral create/read/list, failed ephemeral resume, process shutdown/restart and repeated failed ephemeral resume. Both owned native processes exited cleanly; no generation/tool/approval/durable-resume canary ran in that audit. Inference entitlement was untested at that metadata-only checkpoint; the later actual-model result is recorded below.
 
 ### Recorded implementation checkpoint
 
@@ -142,3 +148,44 @@ Against the baseline lockfile and canonical v2 core:
 The service tests instantiate the real `LocalSessionService`, real Codex adapter and native process peer, and subscribe the production host event handler. They validate web/native identity, supported stream/approval/interrupt behavior, disabled operations, persistent restart without prompt replay and web-metadata-only removal. A registered real Pi adapter is not invoked; an explicit failure spy catches accidental Pi fallback.
 
 Full repository validation remains `npm test` (parallel runner), plus actual browser and native-harness acceptance evidence. The independent baseline had known browser failures; this checkpoint is not a full-suite waiver. Passing protocol/unit fixtures alone is not that completion gate.
+
+### Review fixes and actual canary — 2026-09-14
+
+This checkpoint borrows the assembled core/Claude/UI tree equivalent to integration `9de905f`, including UI `f91bdcd` for nested tool-result deltas and omitted history times. Only Codex adapter/tests/docs are changed by the follow-up.
+
+| Deterministic check | Result |
+|---|---|
+| Fresh `npm ci`; project typecheck; strict native leaf and all owned Codex test sources | Passed |
+| Native transport/approvals/adapter/service, native UI state and production HTTP/WS tests | 69 tests across 6 files passed |
+| Production HTTP/WS desktop and mobile browser suite, **synthetic native executable** | 18 tests passed, no retries |
+| Production build and diff whitespace check | Passed |
+| New regressions | Linear tool-output bytes, initially-null command result, stale/foreign callbacks, cancel/interrupt race, omitted hydrated times |
+
+Actual acceptance used the installed PATH wrapper, unchanged native HOME/auth/config and no native model, effort, permission or sandbox overrides. The real app used a scratch cwd/Pi/web state, a fresh normal authenticated web token/cookie, and an unused port. There was no mock mode, fake native peer, HTTP fulfillment, login change or credential logging.
+
+| Actual native behavior | Observed result |
+|---|---|
+| Browser create and authentication | Unauthenticated API rejected with 401; normal browser login minted a session cookie; Codex created with distinct web/native IDs. |
+| Generation | A native model turn returned the requested marker in the browser. |
+| Owned-file native tool | A native command read a random marker present only in the scratch file, not the prompt. The canonical tool result contained it; the file stayed unchanged. |
+| Exact interrupt | Browser stop sent the observed host guard and received HTTP 202. A zero-generation **public native `thread/read`** subsequently confirmed that exact native turn was `interrupted`. |
+| Persistent app restart/resume | Reopened the same saved web/native identity through the browser. Three earlier user inputs remained without replay; a fourth native turn recalled the earlier file contents without tools. Unknown hydrated times were omitted. |
+| Effective native settings | `openai.gpt-5.6-sol`, reasoning `medium`, `on-request (auto_review)`, `readOnly`. |
+| Real approval prompt | **Not encountered.** No grant or policy change was made. Approval correctness remains deterministic protocol/browser evidence, not actual prompted-approval acceptance. |
+
+The phase submitted **four model turns total**, with a 120-second watchdog for each. Two canary-only assumptions were corrected: desktop may leave its drawer open, and native interrupt returns 202 rather than 200. The zero-turn setup attempt and original three-turn record were retained. An explicit resume-only continuation reused the same owned web state and spent only the fourth unused turn; it did not replay the first three or reset the budget. Thus these are verified observations across bounded invocations, not a claim that the initial canary script ran uninterrupted.
+
+[`tests/codex-actual-canary.ts`](../tests/codex-actual-canary.ts) is an explicit opt-in manual canary, excluded from `npm test`. It keeps a persistent four-turn budget and refuses automatic replay. Run it only with a separately authorized native-inference budget, from an owned tmux session:
+
+```sh
+PI_WEB_CODEX_ACTUAL_CANARY=1 node --import tsx tests/codex-actual-canary.ts
+```
+
+The `--resume` path is specifically for the retained three-turn record; it requires a budget of three and submits only the final resume turn. The completed phase budget is exhausted—do not rerun or reset it as part of validation.
+
+Bounded, non-secret evidence in the Codex worktree:
+
+- `.pi/web/artifacts/codex-review-phase3/`: deterministic test/build/typecheck logs; synthetic browser results.
+- `.pi/web/artifacts/codex-actual-phase3/`: actual report, retained setup/three-turn records, screenshots, budget and cleanup audit.
+
+All three owned app processes exited, their ports had no listeners, and the cleanup audit found no process in either owned native workspace. No live-server restart/deployment occurred and no native session file was read or manually edited. This focused checkpoint does **not** replace the independently assigned full-suite acceptance gate.
