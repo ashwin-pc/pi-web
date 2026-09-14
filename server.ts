@@ -274,7 +274,7 @@ const decorateMessages = (messages: Parameters<typeof decorateHostMessages>[0], 
   decorateHostMessages(messages, sessionFile, sessionActivity);
 
 function decorateSessionInfos(infos: SessionInfoDto[]) {
-  return infos.map(({ path, ...info }) => ({ ...info, runtime: sessionActivity.runtimeForPath(path) }));
+  return infos.map(({ path, ...info }) => ({ ...info, ...(path ? { runtime: sessionActivity.runtimeForPath(path) } : {}) }));
 }
 
 function envMs(name: string, fallback: number) {

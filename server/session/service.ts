@@ -1212,7 +1212,7 @@ export class LocalSessionService implements SessionService {
     this.emit({ type: "shutdown", sessionId, sessionFile, sessionKey: key });
   }
 
-  private rememberSessionLocation(info: { id: string; path: string; cwd?: string }, cwd = this.deps.globalCwd()) {
+  private rememberSessionLocation(info: { id: string; path?: string; cwd?: string }, cwd = this.deps.globalCwd()) {
     if (info.id && info.path) this.sessionLocations.set(info.id, { path: resolve(info.path), cwd: resolve(info.cwd || cwd) });
   }
 
@@ -1222,6 +1222,7 @@ export class LocalSessionService implements SessionService {
   }
 
   private overlaySessionName(info: SessionInfoDto): SessionInfoDto {
+    if (!info.path) return info;
     const live = this.liveById.get(info.id);
     if (live && resolve(live.sessionFile || "") === resolve(info.path)) {
       return {

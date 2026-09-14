@@ -17,6 +17,7 @@
   },
   "include": [
     "server.ts",
+    "server/session/adapter.ts",
     "supervisor.ts",
     "vite.config.ts",
     "src/**/*.ts",
