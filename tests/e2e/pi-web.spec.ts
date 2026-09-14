@@ -1078,6 +1078,27 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
   });
 
+  test("a second client receives attachment previews before the active run settles", async ({ page, browser, baseURL }) => {
+    const other = await browser.newContext({ baseURL, viewport: page.viewportSize()! });
+    const observer = await other.newPage();
+    try {
+      await observer.goto("/");
+      await expect(observer.locator("#statusTitle")).toHaveText("Current mock session");
+      await page.locator("#imageInput").setInputFiles({ name: "shared.png", mimeType: "image/png", buffer: VALID_PNG });
+      await page.locator("#prompt").fill("quiet runtime with an attachment");
+      await page.locator("#primaryButton").click();
+      const message = observer.locator(".message.user", { hasText: "quiet runtime with an attachment" });
+      await expect(message).toHaveCount(1);
+      await expect(message.locator(".messageAttachmentImage")).toBeVisible();
+      await expect(message.locator(".messageAttachmentCount")).toHaveText("1 attached");
+      await expect(observer.locator("#messages")).not.toContainText("pi-web-attachments-v2");
+      await expect(observer.locator("#stopButton")).toBeVisible();
+    } finally {
+      await page.request.post("/api/abort", { data: { sessionId: "mock-current" } });
+      await other.close();
+    }
+  });
+
   test("restores uploaded attachment drafts after the page is reloaded", async ({ page }) => {
     const file = {
       name: "android-picker.png",

@@ -797,10 +797,10 @@ export function createRealtime(options: {
         }
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
-        // SDK lifecycle snapshots accompany the ordered live events. Replacing
-        // transcript DOM here discards retry metadata and in-progress tool state.
-        // Initial load/replay and agent_settled already reconcile durable history.
-        if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId && !sessionRuntime(state).isRunning) {
+        // Durable history cannot restore a live retry's attempt/backoff metadata.
+        // Preserve it until settlement. Other Pi snapshots still reconcile newly
+        // committed cross-client attachments and existing streaming behavior.
+        if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId && !sessionRuntime(state).isRetrying) {
           refreshMessages()
             .then(() => {
               restoreTerminalFailureCard();
