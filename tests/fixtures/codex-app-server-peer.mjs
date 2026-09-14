@@ -48,8 +48,8 @@ function view(thread, includeTurns = false) {
 }
 function settings(thread) {
   return { thread: view(thread), model: "native-fixture-model", modelProvider: "native-fixture", cwd: thread.cwd,
-    serviceTier: null, instructionSources: [], approvalPolicy: "on-request", approvalsReviewer: "user",
-    sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: "medium" };
+    serviceTier: null, runtimeWorkspaceRoots: [thread.cwd], instructionSources: [], approvalPolicy: "on-request", approvalsReviewer: "user",
+    sandbox: { type: "readOnly", networkAccess: false }, activePermissionProfile: null, reasoningEffort: "medium", multiAgentMode: "explicitRequestOnly" };
 }
 function selected(command = {}) {
   const thread = threads.get(command.threadId ?? currentThread);
@@ -162,10 +162,14 @@ async function client(message) {
   if (method === "initialized") return;
   if (!initialized) return reject(id, "Not initialized");
   if (method === "model/list") return response(id, { data: [{ id: "native-fixture-model", model: "native-fixture-model", displayName: "Native fixture", isDefault: true, hidden: false,
+    upgrade: null, upgradeInfo: null, availabilityNux: null, description: "Synthetic native catalog", modelSpecialty: null,
+    multiAgentVersion: null, additionalSpeedTiers: [], serviceTiers: [], defaultServiceTier: null,
     supportedReasoningEfforts: [{ reasoningEffort: "low", description: "Low" }, { reasoningEffort: "medium", description: "Medium" }], defaultReasoningEffort: "low", inputModalities: ["text"], supportsPersonality: false }], nextCursor: null });
   if (method === "account/read") return response(id, { account: { type: "amazonBedrock" }, requiresOpenaiAuth: false });
   if (method === "thread/start") {
     const thread = { id: randomUUID(), sessionId: null, forkedFromId: null, parentThreadId: null, preview: "", ephemeral: Boolean(params.ephemeral),
+      environments: null, extra: null, section: null, sectionEnteredAt: null, projectId: null, recencyAt: null,
+      canAcceptDirectInput: true, threadSource: null, agentNickname: null, agentRole: null, gitInfo: null, daybreakEnabled: null,
       path: params.ephemeral ? null : "/synthetic/unstable-path", cwd: params.cwd ?? process.cwd(), status: { type: "idle" },
       historyMode: "legacy", modelProvider: "native-fixture", model: "native-fixture-model", reasoningEffort: "medium",
       createdAt: Math.floor(Date.now() / 1000), updatedAt: Math.floor(Date.now() / 1000), source: "appServer", originator: "native-fixture", cliVersion: "0.154.0", name: null, turns: [], materialized: false };
@@ -185,7 +189,7 @@ async function client(message) {
     if (params.includeTurns && (thread.ephemeral || !thread.materialized)) return reject(id, "includeTurns unavailable for this thread");
     if (method === "thread/read") return response(id, { thread: view(thread, params.includeTurns) });
     threads.set(thread.id, thread); currentThread = thread.id; currentTurn = thread.turns.at(-1)?.id;
-    response(id, { ...settings(thread), thread: view(thread, true), turnsBackwardsCursor: null, itemsBackwardsCursor: null });
+    response(id, { ...settings(thread), thread: view(thread, true), initialTurnsPage: null, turnsBackwardsCursor: null, itemsBackwardsCursor: null });
     notify("thread/started", { thread: view(thread) }); return;
   }
   if (method === "thread/list") {
@@ -269,7 +273,7 @@ async function control(command) {
     controls.set(request.id, request); send(request);
     activity(thread, { type: "active", activeFlags: ["waitingOnApproval"] });
   } else if (command.action === "complete") settle(thread, turn, command.status ?? "completed", command.idle !== false);
-  else if (command.action === "error") notify("error", { ...ids, willRetry: Boolean(command.willRetry), error: { message: command.message ?? "Synthetic native failure", codexErrorInfo: "Other", additionalDetails: null } });
+  else if (command.action === "error") notify("error", { ...ids, willRetry: Boolean(command.willRetry), error: { message: command.message ?? "Synthetic native failure", codexErrorInfo: "other", additionalDetails: null, misalignment: null } });
   else throw new Error(`Unknown control action ${command.action}`);
   save(thread);
 }
