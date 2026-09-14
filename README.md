@@ -111,6 +111,10 @@ The session UI is built for small screens first, then scales up to desktop. Sess
 
 Right-click a session—or long-press it on touch devices—to open the Inspector Card and change its lane, bucket, or optional note. Keyboard shortcuts cover pinning (`Ctrl/Cmd+Shift+P`), parking (`Ctrl/Cmd+Shift+K`), bookmarking (`Ctrl/Cmd+Shift+B`), and cycling through the focused lane (`Ctrl/Cmd+Shift+←/→`).
 
+### Cross-session references
+
+Copy a saved message or session link and paste it into another conversation. Markdown links such as `[Decision](/?sessionId=<id>&entryId=<entry-id>)` render as chat-icon citations and open the session at that message. If the message is outside the visible transcript, the UI shows a bounded read-only quote with links to the saved message and its session, without changing branches. The core `sessions_read` tool accepts a session ID or a copied link in its `id` argument, with optional `tail` for short session excerpts; links require the instance's usual access.
+
 ### Workspace Explorer
 
 The responsive Explorer opens the active session's working directory as a lazy-loaded file tree and a full CodeMirror editor. A dedicated Artifacts scope presents generated project output as a visual gallery, with large interactive previews for images, sandboxed HTML, rendered Markdown, video, and PDFs—without digging through Pi's internal storage folders. Workspace and Artifacts each preserve their folder, scroll, and preview state when switching views or reopening the panel. Browser Back returns an open file or artifact to its prior tree or gallery before closing the panel on the next step. The Explorer supports syntax highlighting, multiple closeable tabs, conflict-aware saves, search and editor shortcuts, line wrapping, pinch or slider font resizing, and a resizable or collapsible tree. Desktop keeps chat, tree, and editor visible together; phones and touch-first foldables switch cleanly between the tree and editor without summoning the keyboard until the editor is tapped.

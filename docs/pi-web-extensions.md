@@ -510,9 +510,12 @@ It lets one session spawn, monitor, steer, and interrupt other sessions, turning
 pi-web into a multi-agent workspace where each worker is a **normal, fully
 visible session** in the sidebar rather than a hidden subagent.
 
-It registers five tools — `sessions_spawn`, `sessions_status`, `sessions_read`,
-`sessions_prompt`, `sessions_abort` — and a zero-token background poller that
-delivers a wakeup message when a worker goes idle, so the parent never polls.
+It registers four tools — `sessions_spawn`, `sessions_status`, `sessions_prompt`,
+and `sessions_abort` — and a zero-token background poller that delivers a wakeup
+message when a worker goes idle, so the parent never polls. Transcript inspection
+uses core `sessions_read`, which accepts a session ID or message link in `id` and
+an optional `tail`. Update pi-web alongside the extension; the extension no longer
+registers its own reader.
 Worker models are chosen from user-authored **categories** (name + "when to use"
 prose + a model) configured through the Settings API above; the concrete model
 mapping stays private to the config and the spawn tool resolves it fail-closed.

@@ -10,11 +10,21 @@ import { createApiClient } from "./app/api.js";
 import { getAppElements, initAppHeightSync } from "./app/elements.js";
 import { initSwAutoReload } from "./app/sw-update.js";
 import { initDebugDiagnostics } from "./app/debugDiagnostics.js";
-import { setIcon } from "./app/icons.js";
+import { iconElement, setIcon } from "./app/icons.js";
 import { createShortcutHelp, type ShortcutHelpController } from "./app/shortcutHelp.js";
 import { initKeyboardShortcuts, type Shortcut } from "./app/shortcuts.js";
 import { createRightPanelManager } from "./layout/rightPanel.js";
-import { createAppState, readActiveSessionIdFromHistoryState, readActiveSessionIdFromUrl, syncActiveSessionIdHistoryState } from "./app/types.js";
+import {
+  absoluteSessionCitationHref,
+  createAppState,
+  readActiveSessionIdFromHistoryState,
+  readActiveSessionIdFromUrl,
+  readSessionCitationFromUrl,
+  sessionCitationHref,
+  syncActiveSessionIdHistoryState,
+  writeSessionCitationToUrl,
+  type SessionCitation,
+} from "./app/types.js";
 import {
   activeSessionState,
   activeSessionStats,
@@ -83,6 +93,149 @@ let filesPanel: FilesPanelController;
 const webPanels: WebPanelsController = createWebPanels({ rightPanels, apiHeaders: api.headers, getSessionId: () => state.currentSessionId });
 let actionLauncher: ActionLauncherController;
 let realtime: RealtimeController;
+type PendingCitation = { reference: SessionCitation & { entryId: string }; serial: number };
+let citationSerial = 0;
+let pendingCitation: PendingCitation | undefined;
+
+function queueCitation(reference: SessionCitation | undefined) {
+  pendingCitation = reference?.entryId ? { reference: { sessionId: reference.sessionId, entryId: reference.entryId }, serial: citationSerial } : undefined;
+}
+
+let citationDialog: HTMLDialogElement | undefined;
+let citationDialogBody: HTMLElement | undefined;
+let citationDialogRestoreFocus: HTMLElement | null = null;
+
+function closeCitationDialog() {
+  if (citationDialog?.open) citationDialog.close();
+}
+
+function dismissCitationDialog() {
+  citationSerial++;
+  pendingCitation = undefined;
+  closeCitationDialog();
+}
+
+function ensureCitationDialog() {
+  if (citationDialog) return citationDialog;
+  const dialog = document.createElement("dialog");
+  dialog.className = "citationQuoteDialog";
+  dialog.setAttribute("aria-labelledby", "citationQuoteTitle");
+  const header = document.createElement("header");
+  const title = document.createElement("h2");
+  title.id = "citationQuoteTitle";
+  title.textContent = "Referenced message";
+  const close = document.createElement("button");
+  close.type = "button";
+  close.className = "citationQuoteClose";
+  close.title = "Close referenced message";
+  close.setAttribute("aria-label", close.title);
+  close.append(iconElement("x"));
+  const body = document.createElement("div");
+  body.className = "citationQuoteBody";
+  header.append(title, close);
+  dialog.append(header, body);
+  document.body.append(dialog);
+  close.addEventListener("click", dismissCitationDialog);
+  dialog.addEventListener("click", (event) => { if (event.target === dialog) dismissCitationDialog(); });
+  dialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+    dismissCitationDialog();
+  });
+  dialog.addEventListener("close", () => {
+    const target = citationDialogRestoreFocus;
+    citationDialogRestoreFocus = null;
+    requestAnimationFrame(() => target?.focus());
+  });
+  citationDialog = dialog;
+  citationDialogBody = body;
+  return dialog;
+}
+
+function citationLink(label: string, reference: SessionCitation) {
+  const link = document.createElement("a");
+  link.href = sessionCitationHref(reference);
+  link.dataset.sessionCitation = "true";
+  link.className = "sessionCitation citationQuoteLink";
+  link.title = reference.entryId ? "Open exact saved message" : "Open session";
+  link.addEventListener("click", (event) => {
+    if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+    event.preventDefault();
+    closeCitationDialog();
+    void openCitation(reference);
+  });
+  const icon = iconElement("message-circle");
+  icon.classList.add("sessionCitationChatIcon");
+  link.append(icon, label);
+  return link;
+}
+
+function citationStillCurrent(pending: PendingCitation) {
+  const locationReference = readSessionCitationFromUrl();
+  return pending.serial === citationSerial && state.currentSessionId === pending.reference.sessionId
+    && locationReference?.sessionId === pending.reference.sessionId && locationReference.entryId === pending.reference.entryId;
+}
+
+function renderCitationDialog(pending: PendingCitation, headingText: string, text: string, truncated = false) {
+  const dialog = ensureCitationDialog();
+  const body = citationDialogBody!;
+  body.replaceChildren();
+  const heading = document.createElement("strong");
+  heading.textContent = headingText;
+  const quote = document.createElement("blockquote");
+  quote.textContent = text;
+  if (truncated) quote.append(document.createTextNode("\n… Saved text was truncated."));
+  const actions = document.createElement("nav");
+  actions.setAttribute("aria-label", "Citation links");
+  actions.append(citationLink("Message", pending.reference), citationLink("Session", { sessionId: pending.reference.sessionId }));
+  body.append(heading, quote, actions);
+  if (!dialog.open) {
+    citationDialogRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    dialog.showModal();
+    dialog.querySelector<HTMLButtonElement>(".citationQuoteClose")?.focus();
+  }
+}
+
+async function showCitationFallback(pending: PendingCitation) {
+  renderCitationDialog(pending, "Loading saved message…", "Reading saved history…");
+  try {
+    const query = new URLSearchParams(pending.reference);
+    const response = await fetch(`/api/session/reference?${query}`, { headers: api.headers() });
+    const data = await response.json().catch(() => ({})) as { entries?: Array<{ text?: string; truncated?: boolean }>; truncated?: boolean; error?: string };
+    if (!citationStillCurrent(pending)) return closeCitationDialog();
+    const entry = data.entries?.[0];
+    renderCitationDialog(pending, response.ok && entry?.text ? "Quoted saved message" : "Referenced message unavailable",
+      response.ok && entry?.text ? entry.text : (data.error || "Referenced message is not available in saved history."),
+      Boolean(response.ok && (entry?.truncated || data.truncated)));
+  } catch {
+    if (!citationStillCurrent(pending)) return closeCitationDialog();
+    renderCitationDialog(pending, "Referenced message unavailable", "Referenced message could not be loaded.");
+  }
+}
+
+function revealPendingCitation() {
+  const pending = pendingCitation;
+  pendingCitation = undefined; // A URL target is navigation intent, not a persistent watcher.
+  if (!pending || !citationStillCurrent(pending)) return;
+  if (messages.scrollToEntry(pending.reference.entryId)) closeCitationDialog();
+  else void showCitationFallback(pending);
+}
+
+async function openCitation(reference: SessionCitation) {
+  const serial = ++citationSerial;
+  pendingCitation = undefined;
+  closeCitationDialog();
+  if (reference.sessionId !== state.currentSessionId) {
+    await sessions.openSessionById(reference.sessionId);
+    if (serial !== citationSerial || state.currentSessionId !== reference.sessionId) return;
+    // The existing opener pushed the new session URL; replace it with this citation.
+    writeSessionCitationToUrl(reference, "replace");
+  } else {
+    writeSessionCitationToUrl(reference);
+  }
+  queueCitation(reference);
+  revealPendingCitation();
+}
+
 async function submitPromptFromMessageAction(message: string) {
   const promptText = message.trim();
   if (!promptText) throw new Error("Message is empty.");
@@ -176,6 +329,9 @@ messages = createMessageList({
   apiHeaders: api.headers,
   quoteReplies,
   onMessageAction: handleMessageAction,
+  getSessionId: () => state.currentSessionId,
+  citationHref: absoluteSessionCitationHref,
+  openCitation,
   openSession: (sessionId) => void sessions.openSessionById(sessionId),
   openPanel: (key, initialEvent) => webPanels.open(key, initialEvent),
 });
@@ -369,6 +525,7 @@ async function refreshMessages() {
     updateEmptyCwdChooser: () => sessions.finishTranscriptLoading(),
     onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
   });
+  revealPendingCitation();
 }
 
 function refreshSettlementDependencies(sessionId: string) {
@@ -426,6 +583,7 @@ async function refreshState() {
 
 function initStaticIcons() {
   setIcon(elements.sessionButton, "menu");
+  setIcon(elements.copySessionLinkButton, "copy");
   setIcon(elements.newSessionHeaderButton, "square-pen");
   setIcon(elements.conversationTreeButton, "git-fork");
   setIcon(elements.filesButton, "folder-tree");
@@ -454,6 +612,7 @@ statusBar = createStatusBar({
   addMessage: messages.addMessage,
   refreshSessions: () => sessions.refreshSessions(),
   refreshState,
+  copySessionLink: () => messages.copyCitation({ sessionId: state.currentSessionId }).then(() => true, () => false),
 });
 
 settings = createSettings({
@@ -751,8 +910,15 @@ gitPanel = initGitPanel({
   onComposerContext: (context) => composer.addContextAttachment(context),
 });
 window.addEventListener("popstate", (event) => {
-  const nextSessionId = readActiveSessionIdFromHistoryState(event.state) ?? readActiveSessionIdFromUrl();
-  if (nextSessionId === state.currentSessionId) return;
+  citationSerial++;
+  const reference = readSessionCitationFromUrl();
+  queueCitation(reference);
+  const nextSessionId = readActiveSessionIdFromHistoryState(event.state) ?? reference?.sessionId ?? readActiveSessionIdFromUrl();
+  if (nextSessionId === state.currentSessionId) {
+    syncActiveSessionIdHistoryState(nextSessionId);
+    revealPendingCitation();
+    return;
+  }
   syncActiveSessionIdHistoryState(nextSessionId);
   sessionState.activate(nextSessionId);
   tools.clearActiveToolCards();
@@ -763,5 +929,6 @@ window.addEventListener("popstate", (event) => {
   refreshState().catch(showSystemError);
 });
 composer.updatePrimaryAction();
+queueCitation(readSessionCitationFromUrl());
 refreshState().catch(showSystemError);
 realtime.connect();

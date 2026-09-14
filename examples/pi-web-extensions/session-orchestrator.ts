@@ -2,9 +2,9 @@
  * session-orchestrator — experimental pi-web extension
  *
  * Gives every pi-web session the same orchestration verbs a human has in the
- * UI: spawn sibling sessions, check on them, read their transcripts, steer or
- * interrupt them, and abort them. Workers are ordinary first-class pi-web
- * sessions (full history, visible in the sidebar, resumable).
+ * UI: spawn sibling sessions, check on them, steer or interrupt them, and abort
+ * them. Workers are ordinary first-class pi-web sessions (full history, visible
+ * in the sidebar, resumable). Core supplies sessions_read for transcript inspection.
  *
  * Wakeups: after spawning/prompting a worker, the parent does NOT block. A
  * background watcher (plain JS polling — zero tokens) injects a user message
@@ -153,39 +153,6 @@ function lastAssistantText(messages: any[]): { text: string; isError: boolean } 
     }
   }
   return { text: "", isError: false };
-}
-
-function shortArgs(args: Record<string, unknown> | undefined): string {
-  if (!args || typeof args !== "object") return "";
-  const parts: string[] = [];
-  for (const [key, value] of Object.entries(args)) {
-    parts.push(`${key}: ${trunc(typeof value === "string" ? value : JSON.stringify(value), 60)}`);
-    if (parts.join(", ").length > 140) break;
-  }
-  return trunc(parts.join(", "), 160);
-}
-
-function formatTranscript(messages: any[], tail: number): string {
-  const slice = messages.slice(-tail);
-  const lines: string[] = [];
-  if (messages.length > slice.length) lines.push(`… (${messages.length - slice.length} earlier entries omitted; increase tail to see more)`);
-  for (const m of slice) {
-    if (!m || typeof m !== "object") continue;
-    if (m.role === "user") {
-      lines.push(`[user] ${trunc(m.text, 400)}`);
-    } else if (m.role === "assistant") {
-      if (m.text) lines.push(`[assistant] ${trunc(m.text, 700)}`);
-      for (const call of m.toolCalls || []) {
-        lines.push(`  → ${call.toolName}(${shortArgs(call.args)})`);
-      }
-    } else if (m.role === "toolResult") {
-      lines.push(`  ${m.isError ? "✗" : "✓"} ${m.toolName}: ${trunc(m.text, 200)}`);
-    } else if (m.role === "bashExecution") {
-      lines.push(`  $ ${trunc(m.command, 160)}`);
-      if (m.output) lines.push(`    ${trunc(m.output, 200)}`);
-    }
-  }
-  return lines.join("\n") || "(no messages)";
 }
 
 // ---------------------------------------------------------------------------
@@ -1027,25 +994,6 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         }
       }
       return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
-    },
-  });
-
-  // -------------------------------------------------------------------------
-  // sessions_read
-  // -------------------------------------------------------------------------
-  pi.registerTool({
-    name: "sessions_read",
-    label: "Read worker transcript",
-    description: "Read the tail of a session's transcript (compact rendering: user/assistant text, tool calls one-line each). Use to review a worker's work or diagnose one that's going down the wrong path. Keep tails small — don't pull a worker's full process back into your context.",
-    promptSnippet: "Read the recent transcript of another session",
-    parameters: Type.Object({
-      id: Type.String({ description: "Session id" }),
-      tail: Type.Optional(Type.Number({ description: "How many trailing entries to include (default 20)" })),
-    }),
-    async execute(_toolCallId: string, params: any) {
-      const messages = await fetchMessages(params.id);
-      const text = formatTranscript(messages, Math.max(1, Math.min(200, params.tail || 20)));
-      return { content: [{ type: "text", text }], details: { sessionId: params.id, totalMessages: messages.length } };
     },
   });
 

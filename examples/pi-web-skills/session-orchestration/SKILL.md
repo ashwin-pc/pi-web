@@ -79,9 +79,10 @@ the session's default model. Never guess model ids; pass a category **name**.
 
 - `sessions_status` — quick glance (running/idle, cost). Fine occasionally,
   e.g. before ending a message to the user.
-- `sessions_read { id, tail }` — compact transcript tail. Use it to review
-  evidence or diagnose a struggling worker. Keep tails small; do not import a
-  worker's whole process into your context.
+- `sessions_read { id, tail }` — core transcript reader, available without the
+  orchestrator. `id` accepts a session ID or a copied session/message link.
+  Use it to review evidence; keep tails small rather than importing a worker's
+  whole process into your context.
 - `sessions_prompt { id, message, interrupt? }` — follow up, or with
   `interrupt: true` stop a worker that is going down the wrong path and
   redirect it. Also works to re-engage a worker that already went idle.

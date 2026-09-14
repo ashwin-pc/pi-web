@@ -151,6 +151,9 @@ describe("scoped extension HTTP credentials", () => {
       expect(await h.registry.authenticate(request(h.auth, path, "POST"))).toEqual({ ok: false, status: 403 });
     }
     expect(await h.registry.authenticate(request(h.auth, "/api/state?sessionId=other"))).toEqual({ ok: false, status: 403 });
+    expect((await h.registry.authenticate(request(h.auth, "/api/session/reference?sessionId=parent&entryId=entry-1"))).ok).toBe(true);
+    expect(await h.registry.authenticate(request(h.auth, "/api/session/reference?sessionId=other&entryId=entry-1"))).toEqual({ ok: false, status: 403 });
+    expect(await h.registry.authenticate(request(h.auth, "/api/session/reference?sessionId=parent", "POST"))).toEqual({ ok: false, status: 403 });
     h.body.sessionId = "other";
     expect(await h.registry.authenticate(request(h.auth, "/api/prompt", "POST"))).toEqual({ ok: false, status: 403 });
     await expect(h.client.request("POST", "/api/auth/tokens")).rejects.toThrow("scope");

@@ -15,7 +15,7 @@ async function clickMessageAction(page: Page, message: Locator, buttonName: stri
     await page.mouse.up();
     const menu = page.locator(".messageActionMenu");
     await expect(menu).toBeVisible();
-    await menu.getByRole("menuitem", { name: menuLabel }).click();
+    await menu.getByRole("menuitem", { name: menuLabel, exact: true }).click();
     return;
   }
 

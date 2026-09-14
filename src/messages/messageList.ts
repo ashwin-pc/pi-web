@@ -1,6 +1,6 @@
 import type { ApiHeaders } from "../app/api.js";
 import { iconElement, type IconName } from "../app/icons.js";
-import type { AttachedImage, Role } from "../app/types.js";
+import { sessionCitationFromHref, type AttachedImage, type Role, type SessionCitation } from "../app/types.js";
 import type { MessageDto } from "../../server/session/dto.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
@@ -90,6 +90,9 @@ export type MessageList = {
     isStreaming?: boolean;
   }) => void;
   scrollToBottom: () => void;
+  /** Center, focus, and briefly highlight a normal persisted message. */
+  scrollToEntry: (entryId: string) => boolean;
+  copyCitation: (reference: SessionCitation) => Promise<void>;
 };
 
 function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, apiHeaders?: ApiHeaders, onMissing?: () => void) {
@@ -280,6 +283,10 @@ function transcriptRuntimeState(messages: any[], isStreaming?: boolean): Transcr
 export function createMessageList(options: {
   /** Switch to a referenced session in place instead of reloading the app. */
   openSession?: (sessionId: string) => void;
+  /** Open a Markdown citation; structured session chips keep openSession. */
+  openCitation?: (reference: SessionCitation) => void | Promise<void>;
+  getSessionId?: () => string;
+  citationHref?: (reference: SessionCitation) => string;
   /** Open an extension panel from a transcript deep link. */
   openPanel?: (key: string, initialEvent: PiWebPanelEvent) => void;
   messagesEl: HTMLDivElement;
@@ -288,7 +295,7 @@ export function createMessageList(options: {
   apiHeaders?: ApiHeaders;
   quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession, openPanel, apiHeaders, quoteReplies } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
   const streamingTextContent = new Map<string, string>();
@@ -421,6 +428,21 @@ export function createMessageList(options: {
     setJumpButtonVisible(false);
   }
 
+  function scrollToEntry(entryId: string) {
+    const target = Array.from(messagesEl.querySelectorAll<HTMLDivElement>(".message[data-entry-id]"))
+      .find((message) => message.dataset.entryId === entryId);
+    if (!target) return false;
+    shouldFollowStream = false;
+    userScrollIntent = true;
+    target.scrollIntoView({ block: "center", inline: "nearest" });
+    target.tabIndex = -1;
+    target.classList.add("sessionCitationTarget");
+    target.focus({ preventScroll: true });
+    window.setTimeout(() => target.isConnected && target.classList.remove("sessionCitationTarget"), 1_200);
+    setJumpButtonVisible(!isAtBottom());
+    return true;
+  }
+
   function beginStreamFollow() {
     invalidatePendingRefreshes();
     currentStreamingResponseKey = `stream:${++assistantResponseSerial}`;
@@ -462,8 +484,15 @@ export function createMessageList(options: {
 
   messagesEl.addEventListener("click", (event) => {
     const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
-    if (!anchor || !messagesEl.contains(anchor)) return;
+    if (!anchor || !messagesEl.contains(anchor) || event.defaultPrevented) return;
     const href = anchor.getAttribute("href")?.trim() || "";
+    if (anchor.dataset.sessionCitation) {
+      const reference = sessionCitationFromHref(href);
+      if (!reference || !openCitation || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      event.preventDefault();
+      void Promise.resolve(openCitation(reference));
+      return;
+    }
     if (!href.startsWith("#panel:")) return;
     event.preventDefault();
     const target = href.slice("#panel:".length);
@@ -593,16 +622,26 @@ export function createMessageList(options: {
       }
     }
 
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
     const textarea = document.createElement("textarea");
     textarea.value = text;
     textarea.setAttribute("readonly", "true");
     textarea.style.position = "fixed";
     textarea.style.left = "-9999px";
     textarea.style.top = "0";
-    document.body.append(textarea);
-    textarea.select();
-    document.execCommand("copy");
-    textarea.remove();
+    try {
+      document.body.append(textarea);
+      textarea.select();
+      if (!document.execCommand("copy")) throw new Error("Clipboard unavailable");
+    } finally {
+      textarea.remove();
+      if (previousFocus?.isConnected) try { previousFocus.focus({ preventScroll: true }); } catch { previousFocus.focus(); }
+    }
+  }
+
+  function copyCitation(reference: SessionCitation) {
+    if (!citationHref) return Promise.reject(new Error("Citation copying is unavailable"));
+    return copyTextToClipboard(citationHref(reference));
   }
 
   function renderMessageActionIcon(button: HTMLButtonElement, icon: IconName, title: string) {
@@ -685,8 +724,8 @@ export function createMessageList(options: {
 
     const actionText = () => copyText || body.textContent || "";
     const entryId = metadata.entryId?.trim();
+    if (entryId) messageEl.dataset.entryId = entryId;
     if (entryId && onMessageAction) {
-      messageEl.dataset.entryId = entryId;
       const runAction = (action: MessageActionKind) => {
         void onMessageAction({ action, entryId, parentEntryId: metadata.parentEntryId?.trim(), role, text: actionText() });
       };
@@ -705,6 +744,15 @@ export function createMessageList(options: {
         () => flashActionButton(copyButton, "x", "Copy failed"),
       );
     });
+    const sessionId = getSessionId().trim();
+    if (entryId && sessionId && citationHref) {
+      const copyLinkButton = appendMessageActionButton(actions, "copy", "Copy link to this message", "Copy link", () => {
+        void copyCitation({ sessionId, entryId }).then(
+          () => flashActionButton(copyLinkButton, "check", "Copied link"),
+          () => flashActionButton(copyLinkButton, "x", "Copy failed"),
+        );
+      });
+    }
 
     messageEl.append(actions);
     bindMobileActionMenu(messageEl, actions);
@@ -1484,6 +1532,8 @@ export function createMessageList(options: {
     invalidateRefreshes: invalidateExternalRefreshes,
     reconcileActivity: activity.schedule,
     scrollToBottom,
+    scrollToEntry,
+    copyCitation,
     startStreamingThinking,
   };
 }
