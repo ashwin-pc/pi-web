@@ -755,12 +755,15 @@ test.describe("session quick bar", () => {
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
     ] });
+    // Seed before app initialization; an earlier page's delayed hydration must
+    // not overwrite the saved destination focus between evaluate() and reload().
+    await page.addInitScript(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
     await page.goto("/");
-    await page.evaluate(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
-    await page.reload();
     await page.locator(".sessionLayersButton").click();
     const handle = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"] .sessionLaneDragHandle');
     const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
+    await expect(handle).toBeVisible();
+    await expect(destination).toBeVisible();
     const handleBox = await handle.boundingBox(); const destinationBox = await destination.boundingBox();
     expect(handleBox).not.toBeNull(); expect(destinationBox).not.toBeNull();
     const pointer = { pointerId: 29, pointerType: "touch", isPrimary: true, button: 0 };
