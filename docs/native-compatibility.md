@@ -153,7 +153,6 @@ git worktree add --detach ../pi-web-92-check "$review_commit"
 cd ../pi-web-92-check
 node --version
 npm ci
-npx playwright install chromium
 npm ls @earendil-works/pi-coding-agent @earendil-works/pi-ai @anthropic-ai/claude-agent-sdk
 ```
 
@@ -208,7 +207,7 @@ To test restart, stop only this owned app and restart with the **same** scratch 
 
 ### Deterministic full gate — no real models
 
-Use a disposable HOME and allowlisted environment for **test peers**, unlike actual native-auth checks. Execute these commands in an owned tmux shell; change the offset if any computed port is in use. The full runner uses `9876 + offset`, `10176 + offset`, `10476 + offset`, `10776 + offset`, plus `10 * shardIndex` for viewport shards.
+Use a disposable HOME and allowlisted environment for **test peers**, unlike actual native-auth checks. Keep the validation checkout outside directories named `artifact`: an existing mock scenario matches that word in attachment paths. Execute these commands in an owned tmux shell; change the offset if any computed port is in use. The full runner uses `9876 + offset`, `10176 + offset`, `10476 + offset`, `10776 + offset`, plus `10 * shardIndex` for viewport shards.
 
 ```sh
 check="$(mktemp -d)"
@@ -219,8 +218,11 @@ check_run() {
     PI_WEB_AUTH_STORE="$check/auth.json" PI_WEB_SETTINGS_FILE="$check/settings.json" \
     PI_WEB_SESSION_UI_STATE_FILE="$check/ui.json" PI_WEB_NATIVE_BINDINGS_FILE="$check/native.json" \
     PI_WEB_PUSH_FILE="$check/push.json" \
+    PLAYWRIGHT_BROWSERS_PATH="$check/browsers" \
     PI_WEB_CLAUDE_CONFIG_CANARY=0 PI_WEB_E2E_PORT_OFFSET=20000 "$@"
 }
+# Install into the same explicit cache used by every isolated browser process.
+check_run npx playwright install chromium
 check_run npm run typecheck
 check_run npm run build # includes extension declarations
 check_run npm test     # full parallel/sharded runner, not test:serial
@@ -257,6 +259,8 @@ This suite deliberately redirects HOME/config and uses synthetic credentials plu
 No additional paid calls are authorized by these instructions or by a green fixture suite. All recorded phase budgets above are exhausted. For a separately approved fresh phase, inspect the checked-in runner, preserve existing ledgers/evidence and use an owned tmux shell with asserted native profile/configuration:
 
 ```sh
+# Actual runners inherit native HOME; provision their browser cache separately.
+npx playwright install chromium
 # Explicit opt-ins, excluded from npm test; execute only with a new authorized budget.
 PI_WEB_CODEX_ACTUAL_CANARY=1 node --import tsx tests/codex-actual-canary.ts
 PI_WEB_CLAUDE_ACTUAL_CANARY=1 npm run canary:claude
