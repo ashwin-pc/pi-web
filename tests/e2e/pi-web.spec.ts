@@ -1082,7 +1082,7 @@ test.describe("attachments and prompt", () => {
     };
     await page.locator("#imageInput").setInputFiles(file);
     await expect(page.locator(".attachmentChip")).toContainText("android-picker.png");
-    await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-composer-attachments-v1"))).toContain("android-picker.png");
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-session-drafts-v1"))).toContain("android-picker.png");
 
     await page.reload();
 
@@ -1102,7 +1102,7 @@ test.describe("attachments and prompt", () => {
     await expect(report).toHaveValue(/attachment-picker-change/);
     await expect(report).toHaveValue(/attachment-upload-complete/);
     await expect(report).toHaveValue(/page-hide/);
-    await expect(report).toHaveValue(/attachment-draft-restored/);
+    await expect(report).toHaveValue(/composer-draft-restored/);
   });
 
   test("supports attachment-only prompts and attachment removal", async ({ page }) => {

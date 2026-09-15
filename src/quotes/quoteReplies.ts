@@ -1,6 +1,8 @@
 import type { AttachedImage, QuoteReplyAttachment } from "../app/types.js";
+import type { SessionDraftStore, StoredQuoteDraft } from "../drafts/sessionDraftStore.js";
 
 export type QuoteReplySubmission = {
+  sessionId: string;
   message: string;
   attachments: QuoteReplyAttachment[];
   referenceIds: number[];
@@ -79,18 +81,17 @@ export function createQuoteReplies(options: {
   messagesEl: HTMLElement;
   composerEl: HTMLFormElement;
   getSessionId: () => string;
+  drafts: SessionDraftStore;
   onChange: () => void;
 }): QuoteRepliesController {
-  const { messagesEl, composerEl, getSessionId, onChange } = options;
+  const { messagesEl, composerEl, getSessionId, drafts, onChange } = options;
   let references: QuoteReference[] = [];
   let pending: PendingSelection | undefined;
   let nextId = 1;
   let settleTimer = 0;
   const persistedReplies = new Map<string, Map<string, AttachedImage>>();
-  const draftStorageKey = "pi-web-quote-reply-drafts-v1";
-  type StoredDraft = Pick<QuoteReference, "id" | "quote" | "question" | "sourceMessageId" | "startOffset" | "endOffset">;
+  type StoredDraft = StoredQuoteDraft;
   let restoredDraftSession = "";
-  let persistTimer = 0;
   const isMobileSelection = () => matchMedia("(pointer: coarse)").matches || innerWidth <= 760;
 
   const toolbar = document.createElement("div");
@@ -125,35 +126,19 @@ export function createQuoteReplies(options: {
     return references.filter((reference) => !reference.submitted);
   }
 
-  function readStoredDrafts() {
-    try {
-      const value = JSON.parse(localStorage.getItem(draftStorageKey) || "{}") as Record<string, StoredDraft[]>;
-      return value && typeof value === "object" ? value : {};
-    } catch {
-      return {};
-    }
-  }
-
-  function persistDrafts() {
-    window.clearTimeout(persistTimer);
-    persistTimer = 0;
-    const sessionId = getSessionId();
-    if (!sessionId) return;
-    const stored = readStoredDrafts();
-    const drafts = draftReferences().map(({ id, quote, question, sourceMessageId, startOffset, endOffset }) => ({
+  function serializedDrafts() {
+    return draftReferences().map(({ id, quote, question, sourceMessageId, startOffset, endOffset }) => ({
       id, quote, question, sourceMessageId, startOffset, endOffset,
     }));
-    if (drafts.length) stored[sessionId] = drafts;
-    else delete stored[sessionId];
-    try {
-      if (Object.keys(stored).length) localStorage.setItem(draftStorageKey, JSON.stringify(stored));
-      else localStorage.removeItem(draftStorageKey);
-    } catch { /* ignore unavailable storage */ }
+  }
+
+  function persistDrafts(immediate = false) {
+    drafts.update(getSessionId(), { quoteReplies: serializedDrafts() }, immediate);
   }
 
   function schedulePersistDrafts() {
-    window.clearTimeout(persistTimer);
-    persistTimer = window.setTimeout(persistDrafts, 120);
+    // Ownership is resolved now, never later when the shared debounce fires.
+    drafts.update(getSessionId(), { quoteReplies: serializedDrafts() });
   }
 
   function hideToolbar(clearSelection = false) {
@@ -439,9 +424,10 @@ export function createQuoteReplies(options: {
     const sessionId = getSessionId();
     if (sessionId && restoredDraftSession !== sessionId) {
       restoredDraftSession = sessionId;
-      const drafts = readStoredDrafts()[sessionId];
-      if (Array.isArray(drafts)) {
-        for (const draft of drafts) {
+      const storedQuotes = drafts.get(sessionId).quoteReplies;
+      if (storedQuotes.length) {
+        const sessionQuotes = storedQuotes;
+        for (const draft of sessionQuotes) {
           if (!draft || !Number.isSafeInteger(draft.id) || typeof draft.quote !== "string" || typeof draft.question !== "string" || typeof draft.sourceMessageId !== "string" || !Number.isSafeInteger(draft.startOffset) || !Number.isSafeInteger(draft.endOffset)) continue;
           const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
           if (sourceBody) restoreDraftReference(draft, sourceBody);
@@ -558,7 +544,6 @@ export function createQuoteReplies(options: {
   });
   messagesEl.addEventListener("scroll", () => hideToolbar(), { passive: true });
   window.addEventListener("resize", () => hideToolbar());
-  window.addEventListener("pagehide", persistDrafts);
   summaryButton.addEventListener("click", (event) => {
     event.stopPropagation();
     summaryPopover.hidden = !summaryPopover.hidden;
@@ -583,6 +568,7 @@ export function createQuoteReplies(options: {
         throw new Error("Each linked quote needs its own question.");
       }
       return {
+        sessionId: getSessionId(),
         message: overallInstruction.trim(),
         attachments: drafts.map((reference) => ({
           type: "quote-reply" as const,
@@ -601,6 +587,9 @@ export function createQuoteReplies(options: {
     },
     commitSubmission(submission) {
       const submittedIds = new Set(submission.referenceIds);
+      const remaining = drafts.get(submission.sessionId).quoteReplies.filter((reference) => !submittedIds.has(reference.id));
+      drafts.update(submission.sessionId, { quoteReplies: remaining }, true);
+      if (getSessionId() !== submission.sessionId) return;
       references.forEach((reference) => {
         if (!submittedIds.has(reference.id)) return;
         reference.submitted = true;
@@ -608,10 +597,12 @@ export function createQuoteReplies(options: {
         reference.note.classList.remove("open");
         reference.pin.classList.add("submitted");
       });
-      persistDrafts();
       updateSummary();
     },
     clear() {
+      // Transcript teardown only clears rendered UI. Draft deletion is reserved
+      // for explicit submission/removal paths.
+      drafts.flush();
       references = [];
       persistedReplies.clear();
       restoredDraftSession = "";
