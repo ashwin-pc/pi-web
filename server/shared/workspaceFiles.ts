@@ -1,13 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { HttpStatusError } from "./httpStatus.js";
 
 const editableLimit = 5 * 1024 * 1024;
 const hiddenDirectories = new Set([".git", "node_modules", "dist", "build", "coverage", ".cache", ".next", "target", "vendor"]);
 
-export class WorkspaceFileError extends Error {
-  constructor(message: string, readonly status = 400) { super(message); }
-}
+export class WorkspaceFileError extends HttpStatusError {}
 
 function normalizedRelativePath(value: unknown) {
   const path = String(value ?? "").replaceAll("\\", "/").replace(/^\.\//, "");

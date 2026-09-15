@@ -16,6 +16,7 @@ import {
 import { serializeAttachmentMarkup } from "../shared/attachments.js";
 import { isSessionReferenceId, type SessionReference } from "../shared/sessionReference.js";
 import { assertDirectory } from "../shared/fsList.js";
+import { HttpStatusError } from "../shared/httpStatus.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { createWebUiBridge } from "../extensions/webUi.js";
 import { ResilientResourceLoader } from "../extensions/resilientLoader.js";
@@ -56,9 +57,7 @@ import {
   simplifyModel,
 } from "./projection.js";
 
-export class SessionServiceError extends Error {
-  constructor(message: string, readonly status = 400) { super(message); }
-}
+export class SessionServiceError extends HttpStatusError {}
 
 export interface SessionDefaults {
   model?: { provider: string; id: string };
@@ -689,8 +688,8 @@ export class LocalSessionService implements SessionService {
     return this.require(sessionId).then((value) => this.webUiBridge.invokePanel(value, input));
   }
 
-  respondInteraction(response: InteractionResponseDto) { return this.webUiBridge.respond(response.id, response); }
-  cancelInteractions() { this.webUiBridge.cancelPendingInteractions(); }
+  async respondInteraction(response: InteractionResponseDto) { return this.webUiBridge.respond(response.id, response); }
+  async cancelInteractions() { this.webUiBridge.cancelPendingInteractions(); }
 
   private extensionStatusFor(value: PiWebSession, loader: ResilientResourceLoader) {
     const status = loader.getStatus();
