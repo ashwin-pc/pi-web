@@ -160,7 +160,7 @@
   width: 100%;
   min-width: 0;
   min-height: 47px;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
+  grid-template-columns: 28px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 9px;
   border: 1px solid transparent;
@@ -232,6 +232,7 @@
   color: var(--muted);
   font-size: 8px;
   font-weight: 750;
+  white-space: nowrap;
 }
 .settingsNavBadge[hidden] { display: none; }
 .settingsNavBadge[data-tone="ready"] {
@@ -910,7 +911,7 @@
   }
   .settingsNavButton {
     min-height: 55px;
-    grid-template-columns: 32px minmax(0, 1fr) auto;
+    grid-template-columns: 32px minmax(0, 1fr) auto auto;
     gap: 10px;
     border-radius: 11px;
     padding: 7px 9px;
