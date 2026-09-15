@@ -1,3 +1,5 @@
+import { parseSessionReference, sessionReferenceHref, type SessionReference } from "../../server/shared/sessionReference.js";
+
 export type Role = "user" | "assistant" | "tool" | "system";
 
 export type PiEvent = {
@@ -534,8 +536,27 @@ function consumeUrlToken() {
   history.replaceState(null, "", url.toString());
 }
 
+export type SessionCitation = SessionReference;
+
 export function readActiveSessionIdFromUrl() {
   return new URLSearchParams(location.search).get(sessionIdUrlParam) || "";
+}
+
+export function readSessionCitationFromUrl(): SessionCitation | undefined {
+  return parseSessionReference(location.href, location.origin) || undefined;
+}
+
+/** Parse only canonical, same-origin session links rendered in Markdown. */
+export function sessionCitationFromHref(href: string): SessionCitation | undefined {
+  return parseSessionReference(href, location.origin) || undefined;
+}
+
+export function sessionCitationHref(reference: SessionCitation) {
+  return sessionReferenceHref(reference);
+}
+
+export function absoluteSessionCitationHref(reference: SessionCitation) {
+  return new URL(sessionCitationHref(reference), location.origin).href;
 }
 
 function objectHistoryState(value: unknown): Record<string, unknown> {
@@ -552,10 +573,7 @@ export function syncActiveSessionIdHistoryState(sessionId: string) {
   history.replaceState({ ...objectHistoryState(history.state), [sessionIdHistoryStateKey]: sessionId }, "");
 }
 
-export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "replace" = "push") {
-  const url = new URL(location.href);
-  if (sessionId) url.searchParams.set(sessionIdUrlParam, sessionId);
-  else url.searchParams.delete(sessionIdUrlParam);
+function writeSessionUrl(url: URL, sessionId: string, mode: "push" | "replace") {
   if (url.href === location.href) {
     syncActiveSessionIdHistoryState(sessionId);
     return;
@@ -563,6 +581,19 @@ export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "rep
   const nextState: Record<string, unknown> = { ...objectHistoryState(history.state), [sessionIdHistoryStateKey]: sessionId };
   for (const key of sessionScopedHistoryStateKeys) delete nextState[key];
   history[mode === "replace" ? "replaceState" : "pushState"](nextState, "", url.toString());
+}
+
+export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "replace" = "push") {
+  const url = new URL(location.href);
+  if (sessionId) url.searchParams.set(sessionIdUrlParam, sessionId);
+  else url.searchParams.delete(sessionIdUrlParam);
+  url.searchParams.delete("entryId");
+  writeSessionUrl(url, sessionId, mode);
+}
+
+/** Citation navigation intentionally drops incidental token and panel query state. */
+export function writeSessionCitationToUrl(reference: SessionCitation, mode: "push" | "replace" = "push") {
+  writeSessionUrl(new URL(sessionCitationHref(reference), location.origin), reference.sessionId, mode);
 }
 
 function readCollapsedSessionFolders() {

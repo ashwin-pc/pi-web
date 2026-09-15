@@ -9,7 +9,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="pi" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" href="/pwa-192x192.png" />
     <link rel="stylesheet" href="/new-chat-animation.css" />
   </head>
   <body>
@@ -35,6 +35,9 @@
           <span data-icon="menu"></span>
         </button>
         <span id="statusTitle" class="statusTitle"></span>
+        <button id="copySessionLinkButton" class="iconButton statusBarButton" type="button" aria-label="Copy session link" title="Copy session link" hidden>
+          <span data-icon="copy"></span>
+        </button>
         <span id="statusPath" class="statusPath"></span>
         <span id="activityStatus" class="activityStatus" hidden></span>
         <span id="connectionStatus" class="connectionStatus" aria-live="polite" hidden></span>
@@ -232,6 +235,11 @@
               </section>
               <section class="settingsNavGroup" data-settings-nav-group>
                 <h3>System</h3>
+                <button id="settingsNavServer" class="settingsNavButton" type="button" data-settings-page-target="server" data-settings-search="server restart supervisor reconnect sessions" aria-controls="settingsPageServer" hidden>
+                  <span class="settingsNavIcon" data-settings-icon="server" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Server</span><span class="settingsNavSummary">Supervised restart</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
                 <button id="settingsNavExtensions" class="settingsNavButton" type="button" data-settings-page-target="extensions" data-settings-search="extensions plugins runtime health retry reload contributed settings" aria-controls="settingsPageExtensions">
                   <span class="settingsNavIcon" data-settings-icon="settings" aria-hidden="true"></span>
                   <span class="settingsNavCopy"><span class="settingsNavTitle">Extensions</span><span class="settingsNavSummary">Health and contributed settings</span></span>
@@ -419,6 +427,21 @@
             <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>
             <button id="settingClearModelDefaultsButton" type="button">Clear model</button>
           </div>
+              </section>
+            </section>
+            <section id="settingsPageServer" class="settingsPage" data-settings-page="server" aria-labelledby="settingsPageServerTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>System</span>
+                <h3 id="settingsPageServerTitle" class="settingsPageTitle" tabindex="-1">Server</h3>
+                <p>Manage this supervised pi-web server.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Restart server</h4>
+                <p class="settingsHint">Restarts pi-web for everyone. All sessions may be interrupted while browsers reconnect.</p>
+                <p id="restartServerState" class="settingsHint" aria-live="polite">Checking restart availability…</p>
+                <div class="settingsActions">
+                  <button id="restartServerButton" class="settingsDangerButton" type="button">Restart server…</button>
+                </div>
               </section>
             </section>
             <section id="settingsPageDiagnostics" class="settingsPage" data-settings-page="diagnostics" aria-labelledby="settingsPageDiagnosticsTitle" hidden>

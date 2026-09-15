@@ -29,6 +29,7 @@ const scopes = new Set<PiWebHttpScope>(["sessions.read", "sessions.create", "ses
 const routes: Readonly<Record<string, PiWebHttpScope>> = Object.freeze({
   "GET /api/state": "sessions.read",
   "GET /api/messages": "sessions.read",
+  "GET /api/session/reference": "sessions.read",
   "GET /api/models": "sessions.read",
   "POST /api/new-chat": "sessions.create",
   "POST /api/sessions/new": "sessions.create",
@@ -145,10 +146,14 @@ export class ExtensionHttpRegistry {
   }
 
   private validateTarget(client: ClientRecord, method: string, url: URL, body: unknown) {
-    // Each GET route permits only sessionId; POST routes accept no query keys.
+    // GET routes permit sessionId; the exact-reference reader additionally accepts one validated entryId.
     for (const key of url.searchParams.keys()) {
-      if (method !== "GET" || key !== "sessionId") throw new Error("Extension API query parameter is not permitted");
+      if (method !== "GET" || (key !== "sessionId" && !(url.pathname === "/api/session/reference" && key === "entryId"))) {
+        throw new Error("Extension API query parameter is not permitted");
+      }
     }
+    const entryIds = url.searchParams.getAll("entryId");
+    if (entryIds.length && (entryIds.length !== 1 || !validId(entryIds[0]))) throw new Error("Unambiguous entryId is required");
     const value = body as Record<string, unknown>;
     if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid request body");
     if (value.clientId !== undefined) throw new Error("Extension API cannot supply a browser viewer identity");

@@ -1,6 +1,7 @@
 export type AppElements = {
   messagesEl: HTMLDivElement;
   statusTitleEl: HTMLSpanElement;
+  copySessionLinkButton: HTMLButtonElement;
   statusPathEl: HTMLSpanElement;
   activityStatusEl: HTMLSpanElement;
   connectionStatusEl: HTMLSpanElement;
@@ -101,6 +102,7 @@ export function getAppElements(): AppElements {
   return {
     messagesEl: requiredElement<HTMLDivElement>("#messages"),
     statusTitleEl: requiredElement<HTMLSpanElement>("#statusTitle"),
+    copySessionLinkButton: requiredElement<HTMLButtonElement>("#copySessionLinkButton"),
     statusPathEl: requiredElement<HTMLSpanElement>("#statusPath"),
     activityStatusEl: requiredElement<HTMLSpanElement>("#activityStatus"),
     connectionStatusEl: requiredElement<HTMLSpanElement>("#connectionStatus"),

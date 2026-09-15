@@ -230,12 +230,11 @@ describe("sessions_spawn tool surface", () => {
     expect(calls).toEqual([]);
   });
 
-  it("registers the orchestration tools", async () => {
+  it("registers worker-management tools, leaving sessions_read to core", async () => {
     await activate(makeCtx());
     expect([...tools.keys()].sort()).toEqual([
       "sessions_abort",
       "sessions_prompt",
-      "sessions_read",
       "sessions_spawn",
       "sessions_status",
     ]);

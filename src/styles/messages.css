@@ -742,6 +742,26 @@ body.artifactPreviewDocument {
   background: color-mix(in srgb, var(--panel-2) 82%, transparent);
 }
 .message.system { align-self: center; max-width: 100%; background: transparent; color: var(--muted); margin: 8px 0; }
+.citationQuoteDialog {
+  width: min(560px, calc(100vw - 28px));
+  max-height: min(70vh, 520px);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 22px 70px rgba(0, 0, 0, .55);
+}
+.citationQuoteDialog::backdrop { background: rgba(0, 0, 0, .48); }
+.citationQuoteDialog header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+.citationQuoteDialog h2 { margin: 0; font-size: 14px; }
+.citationQuoteClose { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--muted); }
+.citationQuoteClose:hover { background: var(--panel-2); color: var(--text); }
+.citationQuoteClose svg { width: 17px; height: 17px; }
+.citationQuoteBody { display: grid; gap: 10px; padding: 12px; }
+.citationQuoteBody blockquote { margin: 0; padding-left: 10px; border-left: 3px solid var(--border); white-space: pre-wrap; max-height: 14em; overflow: auto; }
+.citationQuoteBody nav { display: flex; gap: 12px; }
+.citationQuoteLink { display: inline-flex; align-items: center; gap: 4px; }
 .jumpToLatestButton {
   position: fixed;
   left: 50%;
@@ -875,3 +895,34 @@ body.artifactPreviewDocument {
     margin: 8px;
   }
 }
+
+/* Markdown citations use an icon-only chat target. */
+.markdownBody a.sessionCitation {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid color-mix(in srgb, var(--accent) 36%, var(--border));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text);
+  padding: 1px 7px;
+  font-size: .88em;
+  font-weight: 600;
+  line-height: 1.45;
+  text-decoration: none;
+  vertical-align: baseline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.markdownBody a.sessionCitation .sessionCitationChatIcon { width: .92em; height: .92em; flex: 0 0 auto; color: var(--muted); }
+.markdownBody a.sessionCitation:hover { border-color: color-mix(in srgb, var(--accent) 68%, var(--border)); color: var(--text); text-decoration: none; }
+.message.sessionCitationTarget {
+  scroll-margin-block: 28px;
+  outline: 2px solid color-mix(in srgb, var(--accent) 68%, transparent);
+  outline-offset: 3px;
+  animation: sessionCitationTargetFlash 1.2s ease;
+}
+@keyframes sessionCitationTargetFlash { 32% { background-color: color-mix(in srgb, var(--accent) 17%, transparent); } }
+@media (prefers-reduced-motion: reduce) { .message.sessionCitationTarget { animation: none; } }

@@ -1,10 +1,11 @@
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, Copy, createElement, Download, PanelRightOpen } from "lucide";
+import { Check, Copy, createElement, Download, MessageCircle, PanelRightOpen } from "lucide";
 import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 import { matchingArtifactPreview, mountArtifactPreview } from "../extensions/artifactPreviews.js";
 import { createStreamingBatch, type StreamingBatch } from "./streamingScheduler.js";
+import { sessionCitationFromHref, sessionCitationHref } from "../app/types.js";
 
 marked.setOptions({
   async: false,
@@ -132,6 +133,28 @@ function highlightCodeBlock(code: HTMLElement) {
 
 function parseMarkdownHtml(text: string) {
   return sanitizeMarkdownHtml(marked.parse(text) as string);
+}
+
+function enhanceSessionCitationLinks(root: ParentNode) {
+  for (const anchor of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+    if (anchor.dataset.sessionCitation) continue;
+    const reference = sessionCitationFromHref(anchor.getAttribute("href") || "");
+    if (!reference) continue;
+    const label = anchor.textContent?.trim() || "";
+    const rawLabel = !label || Boolean(sessionCitationFromHref(label));
+    anchor.href = sessionCitationHref(reference);
+    anchor.dataset.sessionCitation = "true";
+    anchor.classList.add("sessionCitation");
+    anchor.title = reference.entryId
+      ? `Open session ${reference.sessionId} at message ${reference.entryId}`
+      : `Open session ${reference.sessionId}`;
+    anchor.setAttribute("aria-label", rawLabel ? anchor.title : `Open ${label}`);
+    if (rawLabel) anchor.textContent = reference.entryId ? `Session ${reference.sessionId.slice(-8)} · ${reference.entryId.slice(-8)}` : `Session ${reference.sessionId.slice(-8)}`;
+    const icon = createElement(MessageCircle);
+    icon.classList.add("sessionCitationChatIcon");
+    icon.setAttribute("aria-hidden", "true");
+    anchor.prepend(icon);
+  }
 }
 
 function markdownHtml(text: string) {
@@ -796,6 +819,7 @@ export function renderStandaloneMarkdown(
 ) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
+  enhanceSessionCitationLinks(body);
   enhanceMermaid(body);
   enhanceInlineHtmlPreviews(body);
   enhanceCodeBlocks(body);
@@ -846,6 +870,7 @@ export function createMarkdownRenderer(
 
   const finalizeStreaming = (body: HTMLElement, text: string) => {
     renderStreaming(body, text);
+    enhanceSessionCitationLinks(body);
     enhanceMermaid(body);
     enhanceInlineHtmlPreviews(body);
     enhanceCodeBlocks(body);

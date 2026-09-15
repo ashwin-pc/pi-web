@@ -911,6 +911,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, { ok: true, messages: decorateMessages(await sessionService.messages(target.sessionId), target.sessionFile) });
       }
 
+      if (method === "GET" && url.pathname === "/api/session/reference") {
+        const sessionId = url.searchParams.get("sessionId")?.trim() || "";
+        const entryId = url.searchParams.get("entryId")?.trim() || "";
+        if (!sessionId || !entryId) return sendJson(res, 400, { ok: false, error: "sessionId and entryId are required" });
+        return sendJson(res, 200, { ok: true, ...await sessionService.readSession({ sessionId, entryId }, 1) });
+      }
+
       if (method === "GET" && url.pathname === "/api/sessions") {
         const extraCwds = url.searchParams.getAll("cwd");
         const sessionUiState = await sessionUiStateStore.read();

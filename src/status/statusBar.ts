@@ -49,8 +49,9 @@ export function createStatusBar(options: {
   addMessage: (role: "system", text: string, extraClass?: string) => void;
   refreshSessions: () => Promise<void>;
   refreshState: () => Promise<void>;
+  copySessionLink?: () => Promise<boolean>;
 }): StatusBar {
-  const { state, elements, api, sessionState, addMessage, refreshSessions, refreshState } = options;
+  const { state, elements, api, sessionState, addMessage, refreshSessions, refreshState, copySessionLink } = options;
   const activityBySession = new Map<string, ActivityEntry>();
   let activityTimer: number | undefined;
 
@@ -59,6 +60,8 @@ export function createStatusBar(options: {
     state.currentSessionTitle = value;
     elements.statusTitleEl.title = "Rename session";
     elements.statusTitleEl.setAttribute("aria-label", `Session: ${value}. Click to rename.`);
+    elements.copySessionLinkButton.hidden = !state.currentSessionId || !copySessionLink;
+    elements.copySessionLinkButton.disabled = !state.currentSessionId || !copySessionLink;
     if (!state.statusTitleEditing) elements.statusTitleEl.textContent = value;
   }
 
@@ -315,6 +318,19 @@ export function createStatusBar(options: {
       if (event.target !== elements.statusTitleEl || (event.key !== "Enter" && event.key !== " ")) return;
       event.preventDefault();
       beginRenameSessionTitle();
+    });
+    elements.copySessionLinkButton.addEventListener("click", () => {
+      if (!copySessionLink) return;
+      void copySessionLink().then((copied) => {
+        const label = copied ? "Session link copied" : "Copy session link failed";
+        elements.copySessionLinkButton.title = label;
+        elements.copySessionLinkButton.setAttribute("aria-label", label);
+        window.setTimeout(() => {
+          if (!elements.copySessionLinkButton.isConnected) return;
+          elements.copySessionLinkButton.title = "Copy session link";
+          elements.copySessionLinkButton.setAttribute("aria-label", elements.copySessionLinkButton.title);
+        }, 1_200);
+      });
     });
     const reloadForConnectionStatus = () => {
       if (!elements.connectionStatusEl.classList.contains("syncRequired") && !elements.connectionStatusEl.classList.contains("offline")) return;
