@@ -64,6 +64,7 @@ export function createComposer(options: {
   let tokenScanFrame = 0;
   let tokenScanActive = false;
   let contextAttachments: ComposerContextAttachment[] = [];
+  const sessionContextAttachments = new Map<string, ComposerContextAttachment[]>();
   let pendingSteering: string[] = [];
   let pendingFollowUp: string[] = [];
   const optimisticUserMessages = new Set<string>();
@@ -370,12 +371,19 @@ export function createComposer(options: {
     elements.formEl.classList.toggle("dragOver", active);
   }
 
+  function rememberContextAttachments(sessionId = ownedSessionId) {
+    if (!sessionId) return;
+    if (contextAttachments.length) sessionContextAttachments.set(sessionId, [...contextAttachments]);
+    else sessionContextAttachments.delete(sessionId);
+  }
+
   function addContextAttachment(context: ComposerContextAttachment) {
     const existingIndex = context.id
       ? contextAttachments.findIndex((attachment) => attachment.id === context.id)
       : -1;
     if (existingIndex >= 0) contextAttachments[existingIndex] = context;
     else contextAttachments.push(context);
+    rememberContextAttachments();
     renderAttachments();
     updatePrimaryAction();
     hideSlashCommands();
@@ -390,6 +398,7 @@ export function createComposer(options: {
     if (!sessionId || sessionId === ownedSessionId) return;
     if (ownedSessionId) {
       drafts.update(ownedSessionId, { text: elements.promptEl.value, attachments: state.attachedImages }, true);
+      rememberContextAttachments();
     }
     drafts.attachInitialSession(sessionId);
     if (!ownedSessionId && elements.promptEl.value) {
@@ -399,6 +408,7 @@ export function createComposer(options: {
     const draft = drafts.get(sessionId);
     elements.promptEl.value = draft.text;
     state.attachedImages = draft.attachments;
+    contextAttachments = [...(sessionContextAttachments.get(sessionId) || [])];
     recordDebugEvent("composer-draft-restored", { sessionId, attachmentCount: draft.attachments.length });
     if (draft.attachments.length) recordDebugEvent("attachment-draft-restored", { sessionId, count: draft.attachments.length });
     renderAttachments();
@@ -436,6 +446,7 @@ export function createComposer(options: {
       remove.setAttribute("aria-label", remove.title);
       remove.addEventListener("click", () => {
         contextAttachments.splice(index, 1);
+        rememberContextAttachments();
         renderAttachments();
         updatePrimaryAction();
       });
@@ -744,6 +755,7 @@ export function createComposer(options: {
       hideSlashCommands();
       state.attachedImages = [];
       contextAttachments = [];
+      rememberContextAttachments(sessionId);
       renderAttachments();
       const submittedWhileRunning = activeRuntime.isStreaming || activeRuntime.isRetrying;
       const runtimeTransition = sessionState.patchRuntime(sessionId, {
@@ -780,8 +792,11 @@ export function createComposer(options: {
           state.attachedImages = restoredAttachments;
           if (!elements.promptEl.value) elements.promptEl.value = rawMessage;
           if (contextAttachments.length === 0) contextAttachments = contexts;
+          rememberContextAttachments(sessionId);
           renderAttachments();
           updatePrimaryAction();
+        } else {
+          sessionContextAttachments.set(sessionId, contexts);
         }
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");

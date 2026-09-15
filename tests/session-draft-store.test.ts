@@ -84,6 +84,35 @@ describe("session draft store", () => {
     expect(persisted.sessions.b.text).toBe("new b");
   });
 
+  it("refreshes a clean cached session before a field-scoped update", () => {
+    const storage = new MemoryStorage();
+    storage.setItem("pi-web-session-drafts-v1", JSON.stringify({ version: 1, sessions: {
+      a: { text: "old", attachments: [], quoteReplies: [] },
+    } }));
+    const store = createSessionDraftStore(storage);
+
+    storage.setItem("pi-web-session-drafts-v1", JSON.stringify({ version: 1, sessions: {
+      a: { text: "other-tab text", attachments: [], quoteReplies: [quote] },
+    } }));
+    expect(store.get("a")).toMatchObject({ text: "other-tab text", quoteReplies: [quote] });
+    store.update("a", { attachments: [attachment] }, true);
+
+    expect(JSON.parse(storage.getItem("pi-web-session-drafts-v1")!).sessions.a).toMatchObject({
+      text: "other-tab text", attachments: [attachment], quoteReplies: [quote],
+    });
+  });
+
+  it("backs up malformed unified state and resumes persistence", () => {
+    const storage = new MemoryStorage();
+    storage.setItem("pi-web-session-drafts-v1", "{broken unified state");
+    const store = createSessionDraftStore(storage);
+
+    store.update("a", { text: "recoverable" }, true);
+
+    expect(storage.getItem("pi-web-session-drafts-v1-malformed-backup")).toBe("{broken unified state");
+    expect(JSON.parse(storage.getItem("pi-web-session-drafts-v1")!).sessions.a.text).toBe("recoverable");
+  });
+
   it("keeps updates bound to their explicit session owner", () => {
     const storage = new MemoryStorage();
     const store = createSessionDraftStore(storage);

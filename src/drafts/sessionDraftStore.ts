@@ -44,7 +44,7 @@ export type SessionDraftStore = ReturnType<typeof createSessionDraftStore>;
 
 export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> = localStorage) {
   const sessions = new Map<string, SessionDraft>();
-  const dirtySessionIds = new Set<string>();
+  const dirtyFields = new Map<string, Set<keyof SessionDraft>>();
   let timer: number | undefined;
   let storageAvailable = true;
   let initialSessionAttached = false;
@@ -92,7 +92,9 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
         const draft = sessions.get(id) || emptyDraft();
         if (!draft.quoteReplies.length) draft.quoteReplies = quotes;
         sessions.set(id, draft);
-        dirtySessionIds.add(id);
+        const fields = dirtyFields.get(id) || new Set<keyof SessionDraft>();
+      fields.add("quoteReplies");
+      dirtyFields.set(id, fields);
       }
       if (legacyQuotes) migratedLegacy.add(legacyQuotesKey);
     }
@@ -104,7 +106,9 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
       const draft = sessions.get(parsed.sessionId) || emptyDraft();
       if (!draft.attachments.length) draft.attachments = parsed.attachments.filter(validAttachment);
       sessions.set(parsed.sessionId, draft);
-      dirtySessionIds.add(parsed.sessionId);
+      const fields = dirtyFields.get(parsed.sessionId) || new Set<keyof SessionDraft>();
+      fields.add("attachments");
+      dirtyFields.set(parsed.sessionId, fields);
       migratedLegacy.add(legacyAttachmentsKey);
     } else if (legacyAttachments) malformedLegacy.set(legacyAttachmentsKey, legacyAttachments);
   } catch { if (legacyAttachments) malformedLegacy.set(legacyAttachmentsKey, legacyAttachments); }
@@ -116,14 +120,16 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
       const draft = sessions.get(sessionId) || emptyDraft();
       if (!draft.text) draft.text = legacyText;
       sessions.set(sessionId, draft);
-      dirtySessionIds.add(sessionId);
+      const fields = dirtyFields.get(sessionId) || new Set<keyof SessionDraft>();
+      fields.add("text");
+      dirtyFields.set(sessionId, fields);
       migratedLegacy.add(legacyTextKey);
     }
     flush();
   }
 
   function get(sessionId: string): SessionDraft {
-    if (!sessions.has(sessionId) && storageAvailable) {
+    if (!dirtyFields.has(sessionId) && storageAvailable && !malformedStoredState) {
       try {
         const latest = JSON.parse(storage.getItem(storageKey) || "null") as Partial<StoredState> | null;
         const external = latest?.version === 1 && latest.sessions && typeof latest.sessions === "object"
@@ -138,7 +144,9 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
   function update(sessionId: string, patch: Partial<SessionDraft>, immediate = false) {
     if (!sessionId) return;
     sessions.set(sessionId, normalize({ ...get(sessionId), ...patch }));
-    dirtySessionIds.add(sessionId);
+    const fields = dirtyFields.get(sessionId) || new Set<keyof SessionDraft>();
+    for (const field of Object.keys(patch) as Array<keyof SessionDraft>) fields.add(field);
+    dirtyFields.set(sessionId, fields);
     if (immediate) flush(); else schedule();
   }
 
@@ -150,7 +158,9 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
       else draft[field] = [];
     }
     sessions.set(sessionId, draft);
-    dirtySessionIds.add(sessionId);
+    const dirty = dirtyFields.get(sessionId) || new Set<keyof SessionDraft>();
+    for (const field of fields) dirty.add(field);
+    dirtyFields.set(sessionId, dirty);
     flush();
   }
 
@@ -166,16 +176,27 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
     try {
       // Retain sessions written by another tab since this store was created;
       // explicitly-owned in-memory updates win for the sessions they touched.
-      const latest = JSON.parse(storage.getItem(storageKey) || "null") as Partial<StoredState> | null;
+      const latest = malformedStoredState
+        ? null
+        : JSON.parse(storage.getItem(storageKey) || "null") as Partial<StoredState> | null;
       const external = latest?.version === 1 && latest.sessions && typeof latest.sessions === "object" ? latest.sessions : {};
-      const changed = Object.fromEntries(Array.from(dirtySessionIds, (id) => [id, sessions.get(id)!]));
-      const record = { ...external, ...changed };
+      const record: Record<string, Partial<SessionDraft>> = { ...external };
+      for (const [id, fields] of dirtyFields) {
+        const current = sessions.get(id)!;
+        const merged = normalize(external[id]);
+        for (const field of fields) {
+          if (field === "text") merged.text = current.text;
+          else if (field === "attachments") merged.attachments = current.attachments;
+          else merged.quoteReplies = current.quoteReplies;
+        }
+        record[id] = merged;
+      }
       if (malformedStoredState) {
         storage.setItem(`${storageKey}-malformed-backup`, malformedStoredState);
         malformedStoredState = undefined;
       }
       storage.setItem(storageKey, JSON.stringify({ version: 1, sessions: record } satisfies StoredState));
-      dirtySessionIds.clear();
+      dirtyFields.clear();
       for (const [key, raw] of malformedLegacy) storage.setItem(`${key}-malformed-backup`, raw);
       for (const key of migratedLegacy) storage.removeItem(key);
       malformedLegacy.clear();
