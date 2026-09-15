@@ -29,7 +29,10 @@ function displayMode() {
 function report(state: AppState) {
   const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
   let attachmentDraft: unknown = null;
-  try { attachmentDraft = JSON.parse(localStorage.getItem("pi-web-composer-attachments-v1") || "null"); } catch { attachmentDraft = "malformed"; }
+  try {
+    const stored = JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "null") as { sessions?: Record<string, { attachments?: unknown }> } | null;
+    attachmentDraft = stored?.sessions?.[state.currentSessionId]?.attachments || null;
+  } catch { attachmentDraft = "malformed"; }
   return JSON.stringify({
     generatedAt: new Date().toISOString(),
     page: { href: `${location.origin}${location.pathname}${location.search.replace(/([?&]token=)[^&]*/i, "$1[redacted]")}`, visibility: document.visibilityState, displayMode: displayMode(), navigationType: navigation?.type },
