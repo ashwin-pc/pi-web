@@ -407,7 +407,6 @@ button, select {
   height: 40px;
   min-height: 40px;
   border: 1px solid var(--border);
-  border-top: 0;
   border-radius: 0;
   background: var(--panel-2);
   color: var(--text);
@@ -437,6 +436,10 @@ select {
   border-bottom-left-radius: 15px;
   padding: 4px 10px;
   text-align: left;
+}
+.composerFooter .modelSettingsButton,
+.composerFooter > button {
+  border-top: 0;
 }
 .composerFooter .modelSettingsButton { background-color: transparent; }
 .modelSettingsButton:hover { border-color: var(--accent); }

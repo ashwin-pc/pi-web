@@ -187,6 +187,8 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 20%, transparent);
 }
 .settingsNavIcon {
+  grid-column: 1;
+  grid-row: 1;
   display: grid;
   width: 28px;
   height: 28px;
@@ -206,6 +208,8 @@
   color: var(--accent);
 }
 .settingsNavCopy {
+  grid-column: 2;
+  grid-row: 1;
   display: grid;
   min-width: 0;
   gap: 2px;
@@ -226,6 +230,8 @@
   white-space: nowrap;
 }
 .settingsNavBadge {
+  grid-column: 3;
+  grid-row: 1;
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 2px 5px;
@@ -246,7 +252,12 @@
   background: color-mix(in srgb, var(--danger) 9%, transparent);
   color: var(--danger);
 }
-.settingsNavChevron { display: none; }
+.settingsNavChevron {
+  display: none;
+  grid-column: 4;
+  grid-row: 1;
+  justify-self: end;
+}
 .settingsSearchEmpty {
   margin: 22px 8px;
   color: var(--muted);
