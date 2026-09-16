@@ -57,10 +57,8 @@ jobs:
 
       - name: Complete E2E matrix
         env:
-          # The macOS runner becomes timing-unstable when two browser/server
-          # matrices compete for CPU. Keep sharding, but execute shards one at a time.
           PI_WEB_E2E_SHARDS: 2
-          PI_WEB_E2E_CONCURRENCY: 1
+          PI_WEB_E2E_CONCURRENCY: 2
         run: node scripts/run-all-tests.mjs --e2e-only --skip-build
 
       - name: Upload Playwright report

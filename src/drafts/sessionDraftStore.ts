@@ -104,9 +104,9 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
   const legacyAttachments = safeGet(legacyAttachmentsKey);
   try {
     const parsed = JSON.parse(legacyAttachments || "null") as { sessionId?: unknown; attachments?: unknown } | null;
-    if (parsed && typeof parsed.sessionId === "string" && Array.isArray(parsed.attachments)) {
+    if (parsed && typeof parsed.sessionId === "string" && parsed.sessionId && Array.isArray(parsed.attachments) && parsed.attachments.every(validAttachment)) {
       const draft = sessions.get(parsed.sessionId) || emptyDraft();
-      if (!draft.attachments.length) draft.attachments = parsed.attachments.filter(validAttachment);
+      if (!draft.attachments.length) draft.attachments = parsed.attachments;
       sessions.set(parsed.sessionId, draft);
       const fields = dirtyFields.get(parsed.sessionId) || new Set<keyof SessionDraft>();
       fields.add("attachments");

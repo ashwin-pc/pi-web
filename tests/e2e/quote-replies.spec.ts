@@ -139,6 +139,26 @@ test("restores unfinished quote replies and composer text after reload", async (
   await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("How should this work offline?");
 });
 
+test("retries a source-session quote draft until its body renders without duplicates", async ({ page }) => {
+  const quote = { id: 7, quote: "Later source body", question: "Restored later", sourceMessageId: "later-entry", startOffset: 0, endOffset: 17 };
+  await page.addInitScript((draft) => localStorage.setItem("pi-web-session-drafts-v1", JSON.stringify({
+    version: 1,
+    sessions: { "mock-current": { text: "", attachments: [], quoteReplies: [draft] } },
+  })), quote);
+  await page.route("**/api/messages?*", (route) => route.fulfill({ json: { messages: [
+    { role: "assistant", text: "Earlier body", entryId: "earlier-entry" },
+    { role: "assistant", text: "Later source body", entryId: "later-entry" },
+  ] } }));
+
+  await page.goto("/");
+  await expect(page.locator('.message.assistant[data-entry-id="later-entry"]')).toContainText("Later source body");
+  await expect(page.locator(".quoteReplyMark")).toHaveCount(1);
+  await expect(page.locator(".quoteFootnoteQuestion")).toHaveText("Restored later");
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+  await expect(page.locator(".quoteReplyMark")).toHaveCount(1);
+  await expect(page.locator(".quoteFootnote")).toHaveCount(1);
+});
+
 test("keeps composer text per session across fast switches and reload", async ({ page }) => {
   await page.goto("/");
   await page.locator("#prompt").fill("Current session draft");

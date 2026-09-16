@@ -91,7 +91,6 @@ export function createQuoteReplies(options: {
   let settleTimer = 0;
   const persistedReplies = new Map<string, Map<string, AttachedImage>>();
   type StoredDraft = StoredQuoteDraft;
-  let restoredDraftSession = "";
   const isMobileSelection = () => matchMedia("(pointer: coarse)").matches || innerWidth <= 760;
 
   const toolbar = document.createElement("div");
@@ -420,17 +419,22 @@ export function createQuoteReplies(options: {
     updateSummary();
   }
 
-  function restoreSubmittedReferences(body?: HTMLElement) {
+  function restoreSubmittedReferences(body?: HTMLElement, allowDeferredRetry = true) {
     const sessionId = getSessionId();
-    if (sessionId && restoredDraftSession !== sessionId) {
-      restoredDraftSession = sessionId;
-      // The store already validated shape; restoreDraftReference rejects drafts without a source message.
+    let hasPendingSource = false;
+    // Rendering is incremental: keep retrying drafts whose source body has not
+    // arrived yet, while existing references make each successful restore idempotent.
+    if (sessionId) {
       for (const draft of drafts.get(sessionId).quoteReplies) {
-        if (!draft.sourceMessageId) continue;
+        if (!draft.sourceMessageId || references.some((reference) => reference.id === draft.id && reference.sourceMessageId === draft.sourceMessageId)) continue;
         const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
         if (sourceBody) restoreDraftReference(draft, sourceBody);
+        else hasPendingSource = true;
       }
     }
+    // Markdown rendering runs before message metadata is attached. Retry once
+    // after that synchronous render completes; subsequent bodies trigger fresh retries.
+    if (hasPendingSource && allowDeferredRetry) queueMicrotask(() => restoreSubmittedReferences(undefined, false));
     const bodies = body
       ? [body]
       : Array.from(messagesEl.querySelectorAll<HTMLElement>(".message.assistant > .body"));
@@ -602,7 +606,6 @@ export function createQuoteReplies(options: {
       drafts.flush();
       references = [];
       persistedReplies.clear();
-      restoredDraftSession = "";
       pending = undefined;
       nextId = 1;
       toolbar.hidden = true;

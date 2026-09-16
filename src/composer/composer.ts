@@ -122,11 +122,10 @@ export function createComposer(options: {
   function updatePrimaryAction() {
     const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0 || quoteReplies.hasDrafts();
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
-    const localSlashReady = elements.promptEl.value.startsWith("/") && webSlashCommandNames.has(slashCommandName(elements.promptEl.value));
     const runtime = sessionRuntime(state);
     const canSendWhileRunning = activeSessionState(state)?.capabilities?.queue !== false;
-    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady && !localSlashReady || runtime.isRunning && !canSendWhileRunning;
-    elements.primaryButton.title = initialRealtimeReady || localSlashReady ? "Send" : "Connecting live updates…";
+    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady || runtime.isRunning && !canSendWhileRunning;
+    elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
     elements.stopButton.style.display = runtime.isStreaming || runtime.isRetrying ? "" : "none";
   }
 

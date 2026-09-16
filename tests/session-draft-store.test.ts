@@ -53,6 +53,20 @@ describe("session draft store", () => {
     expect(storage.getItem("pi-web-quote-reply-drafts-v1-malformed-backup")).toBe(legacyValue);
   });
 
+  it("preserves an entire legacy attachment record when any element is invalid", () => {
+    const storage = new MemoryStorage();
+    const legacyValue = JSON.stringify({ sessionId: "b", attachments: [attachment, { ...attachment, bytes: "invalid" }] });
+    storage.setItem("pi-web-composer-attachments-v1", legacyValue);
+
+    const store = createSessionDraftStore(storage);
+    store.attachInitialSession("a");
+    store.update("a", { text: "safe edit" }, true);
+
+    expect(store.get("b").attachments).toEqual([]);
+    expect(storage.getItem("pi-web-composer-attachments-v1")).toBe(legacyValue);
+    expect(storage.getItem("pi-web-composer-attachments-v1-malformed-backup")).toBe(legacyValue);
+  });
+
   it("preserves malformed legacy records through initialization and flush", () => {
     const storage = new MemoryStorage();
     storage.setItem("pi-web-composer-attachments-v1", "{broken attachment");
