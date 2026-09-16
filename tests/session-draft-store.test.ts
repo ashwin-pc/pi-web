@@ -113,6 +113,18 @@ describe("session draft store", () => {
     expect(JSON.parse(storage.getItem("pi-web-session-drafts-v1")!).sessions.a.text).toBe("recoverable");
   });
 
+  it("removes fully-empty drafts instead of accumulating one record per visited session", () => {
+    const storage = new MemoryStorage();
+    const store = createSessionDraftStore(storage);
+    store.update("a", { text: "sent later" }, true);
+    store.update("b", { text: "kept" }, true);
+    store.discard("a");
+
+    const persisted = JSON.parse(storage.getItem("pi-web-session-drafts-v1")!);
+    expect(Object.keys(persisted.sessions)).toEqual(["b"]);
+    expect(store.get("a")).toEqual({ text: "", attachments: [], quoteReplies: [] });
+  });
+
   it("keeps updates bound to their explicit session owner", () => {
     const storage = new MemoryStorage();
     const store = createSessionDraftStore(storage);

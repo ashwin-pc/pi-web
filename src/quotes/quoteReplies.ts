@@ -424,14 +424,11 @@ export function createQuoteReplies(options: {
     const sessionId = getSessionId();
     if (sessionId && restoredDraftSession !== sessionId) {
       restoredDraftSession = sessionId;
-      const storedQuotes = drafts.get(sessionId).quoteReplies;
-      if (storedQuotes.length) {
-        const sessionQuotes = storedQuotes;
-        for (const draft of sessionQuotes) {
-          if (!draft || !Number.isSafeInteger(draft.id) || typeof draft.quote !== "string" || typeof draft.question !== "string" || typeof draft.sourceMessageId !== "string" || !Number.isSafeInteger(draft.startOffset) || !Number.isSafeInteger(draft.endOffset)) continue;
-          const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
-          if (sourceBody) restoreDraftReference(draft, sourceBody);
-        }
+      // The store already validated shape; restoreDraftReference rejects drafts without a source message.
+      for (const draft of drafts.get(sessionId).quoteReplies) {
+        if (!draft.sourceMessageId) continue;
+        const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
+        if (sourceBody) restoreDraftReference(draft, sourceBody);
       }
     }
     const bodies = body

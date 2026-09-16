@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import { sessionDraftPersistDelayMs } from "../../src/drafts/sessionDraftStore.js";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -23,11 +24,11 @@ async function switchSession(page: Page, sessionName: string) {
 }
 
 async function delayQuoteDraftPersistence(page: Page) {
-  await page.evaluate(() => {
+  await page.evaluate((debounceMs) => {
     const nativeSetTimeout = window.setTimeout.bind(window);
     window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
-      nativeSetTimeout(handler, timeout === 120 ? 1_000 : timeout, ...args)) as typeof window.setTimeout;
-  });
+      nativeSetTimeout(handler, timeout === debounceMs ? 1_000 : timeout, ...args)) as typeof window.setTimeout;
+  }, sessionDraftPersistDelayMs);
 }
 
 async function selectAssistantExcerpt(page: Page, text: string) {

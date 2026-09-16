@@ -18,6 +18,8 @@ export type SessionDraft = {
 type StoredState = { version: 1; sessions: Record<string, Partial<SessionDraft>> };
 
 const storageKey = "pi-web-session-drafts-v1";
+/** Debounce window for non-immediate updates; e2e tests stretch this exact value. */
+export const sessionDraftPersistDelayMs = 120;
 const legacyTextKey = "pi-web-composer-draft";
 const legacyAttachmentsKey = "pi-web-composer-attachments-v1";
 const legacyQuotesKey = "pi-web-quote-reply-drafts-v1";
@@ -93,8 +95,8 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
         if (!draft.quoteReplies.length) draft.quoteReplies = quotes;
         sessions.set(id, draft);
         const fields = dirtyFields.get(id) || new Set<keyof SessionDraft>();
-      fields.add("quoteReplies");
-      dirtyFields.set(id, fields);
+        fields.add("quoteReplies");
+        dirtyFields.set(id, fields);
       }
       if (legacyQuotes) migratedLegacy.add(legacyQuotesKey);
     }
@@ -166,7 +168,7 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
 
   function schedule() {
     if (timer !== undefined) window.clearTimeout(timer);
-    timer = window.setTimeout(flush, 120);
+    timer = window.setTimeout(flush, sessionDraftPersistDelayMs);
   }
 
   function flush() {
@@ -189,7 +191,9 @@ export function createSessionDraftStore(storage: Pick<Storage, "getItem" | "setI
           else if (field === "attachments") merged.attachments = current.attachments;
           else merged.quoteReplies = current.quoteReplies;
         }
-        record[id] = merged;
+        // Drop fully-empty drafts so sent/discarded sessions do not accumulate forever.
+        if (!merged.text && !merged.attachments.length && !merged.quoteReplies.length) delete record[id];
+        else record[id] = merged;
       }
       if (malformedStoredState) {
         storage.setItem(`${storageKey}-malformed-backup`, malformedStoredState);
