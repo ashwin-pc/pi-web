@@ -592,6 +592,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         setWebsiteWorkflowExtensionEnabled(body.websiteWorkflowExtension === true);
         setRecommendedAddonsExtensionEnabled(body.recommendedAddonsExtension === true);
         resetMockSessions();
+        settlementTracker.reset();
         await sessionUiStateStore.write(defaultSessionUiState);
         session = await sessionService.initialize();
         broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });

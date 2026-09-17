@@ -791,7 +791,7 @@ test.describe("sessions drawer", () => {
 
   test("shows a spinner for a background running session", async ({ page }) => {
     await page.goto("/");
-    await page.locator("#prompt").fill("slow background task");
+    await page.locator("#prompt").fill("slow quiet runtime background task");
     await page.locator("#primaryButton").click();
     await page.locator("#sessionButton").click();
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
