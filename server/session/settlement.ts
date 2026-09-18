@@ -45,6 +45,7 @@ export class SessionSettlementTracker {
   private readonly lastSettled = new Map<string, boolean>();
   private readonly pendingRecomputations = new Set<string>();
   private revision = 0;
+  private generation = 0;
   private drainScheduled = false;
   private draining = false;
 
@@ -82,6 +83,16 @@ export class SessionSettlementTracker {
     else this.dependenciesByParent.delete(parent);
     this.revision += 1;
     this.enqueueWithAncestors(parent);
+  }
+
+  /** Reset all dependency and transition state at a server lifecycle boundary. */
+  reset(): void {
+    this.generation += 1;
+    this.revision += 1;
+    this.dependenciesByParent.clear();
+    this.parentsByChild.clear();
+    this.lastSettled.clear();
+    this.pendingRecomputations.clear();
   }
 
   /** Remove a session's outbound report and cached transition baseline. */
@@ -160,8 +171,10 @@ export class SessionSettlementTracker {
         const roots = [...this.pendingRecomputations];
         this.pendingRecomputations.clear();
         const revision = this.revision;
+        const generation = this.generation;
         const evaluated = new Map<string, EvaluatedStatus>();
         for (const root of roots) await this.evaluate(root, evaluated, new Set());
+        if (generation !== this.generation) continue;
         if (revision !== this.revision) {
           for (const root of roots) this.pendingRecomputations.add(root);
           continue;

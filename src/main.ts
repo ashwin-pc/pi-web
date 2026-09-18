@@ -54,6 +54,7 @@ import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
+import { createSessionDraftStore } from "./drafts/sessionDraftStore.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
@@ -71,6 +72,7 @@ initSwAutoReload();
 const elements = getAppElements();
 const state = createAppState();
 const settlementDependencies = createSettlementDependencyStore(state.settlementDependencies);
+const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
@@ -313,6 +315,7 @@ const quoteReplies = createQuoteReplies({
   messagesEl: elements.messagesEl,
   composerEl: elements.formEl,
   getSessionId: () => state.currentSessionId,
+  drafts: sessionDrafts,
   onChange: () => composer?.updatePrimaryAction(),
 });
 const markdownTestOptions = (globalThis as typeof globalThis & {
@@ -432,6 +435,7 @@ function renderActiveSession(
 }
 
 function activateSession(sessionId: string) {
+  composer?.switchSession(sessionId);
   selectSession(state, sessionId);
   renderActiveSession();
 }
@@ -456,7 +460,10 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   if (!view) return undefined;
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
-  if (activatesSession) selectSession(state, view.id);
+  if (activatesSession) {
+    composer?.switchSession(view.id);
+    selectSession(state, view.id);
+  }
   if (data && "sessionUiState" in data) sessions?.applySessionUiState(data.sessionUiState);
 
   const includesRuntime = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting"].some((key) => key in data));
@@ -697,6 +704,7 @@ composer = createComposer({
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,
   quoteReplies,
+  drafts: sessionDrafts,
 });
 
 conversationTree = createConversationTree({

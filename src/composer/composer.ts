@@ -10,6 +10,7 @@ import { openImageOverlay } from "../components/imageActions.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
 import type { QuoteRepliesController, QuoteReplySubmission } from "../quotes/quoteReplies.js";
+import type { SessionDraftStore } from "../drafts/sessionDraftStore.js";
 
 type BarcodeDetectorLike = {
   detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
@@ -23,6 +24,7 @@ export type ComposerController = {
   init: () => void;
   addContextAttachment: (context: ComposerContextAttachment) => void;
   renderAttachments: () => void;
+  switchSession: (sessionId: string) => void;
   setPromptText: (text: string) => void;
   stopStreaming: () => Promise<void>;
   updatePrimaryAction: () => void;
@@ -48,13 +50,12 @@ export function createComposer(options: {
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
   quoteReplies: QuoteRepliesController;
+  drafts: SessionDraftStore;
 }): ComposerController {
-  const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow, quoteReplies } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow, quoteReplies, drafts } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
-  const draftStorageKey = "pi-web-composer-draft";
-  const attachmentDraftStorageKey = "pi-web-composer-attachments-v1";
   const expandedStorageKey = "pi-web-composer-expanded";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
@@ -63,9 +64,11 @@ export function createComposer(options: {
   let tokenScanFrame = 0;
   let tokenScanActive = false;
   let contextAttachments: ComposerContextAttachment[] = [];
+  const sessionContextAttachments = new Map<string, ComposerContextAttachment[]>();
   let pendingSteering: string[] = [];
   let pendingFollowUp: string[] = [];
   const optimisticUserMessages = new Set<string>();
+  let ownedSessionId = "";
 
   function renderPendingQueue() {
     const entries = [
@@ -150,12 +153,8 @@ export function createComposer(options: {
     await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId: state.currentSessionId }) });
   }
 
-  function persistDraft() {
-    try {
-      const value = elements.promptEl.value;
-      if (value) localStorage.setItem(draftStorageKey, value);
-      else localStorage.removeItem(draftStorageKey);
-    } catch { /* ignore */ }
+  function persistDraft(immediate = false) {
+    drafts.update(ownedSessionId, { text: elements.promptEl.value }, immediate);
   }
 
   async function persistComposerSettings(patch: { queueMode?: AppState["queueMode"] }) {
@@ -169,7 +168,7 @@ export function createComposer(options: {
   }
 
   function clearDraft() {
-    try { localStorage.removeItem(draftStorageKey); } catch { /* ignore */ }
+    drafts.discard(ownedSessionId, ["text"]);
   }
 
   function settlePromptFocusAfterSubmit() {
@@ -328,11 +327,12 @@ export function createComposer(options: {
 
   async function attachFiles(files: File[]) {
     if (!files.length) return;
+    const uploadSessionId = ownedSessionId;
     recordDebugEvent("attachment-upload-start", { files: files.map(({ name, size, type }) => ({ name, size, type })) });
     try {
       const attachments = await Promise.all(files.map(async (file): Promise<FileAttachment> => {
         const params = new URLSearchParams({
-          sessionId: state.currentSessionId,
+          sessionId: uploadSessionId,
           name: file.name,
           mediaType: file.type || "application/octet-stream",
         });
@@ -347,11 +347,15 @@ export function createComposer(options: {
         if (!result.attachment) throw new Error(`Could not attach ${file.name}`);
         return result.attachment;
       }));
-      state.attachedImages.push(...attachments);
-      recordDebugEvent("attachment-upload-complete", { attachments: attachments.map(({ id, name, bytes, mediaType }) => ({ id, name, bytes, mediaType })) });
-      renderAttachments();
-      updatePrimaryAction();
-      hideSlashCommands();
+      const sessionAttachments = [...drafts.get(uploadSessionId).attachments, ...attachments];
+      drafts.update(uploadSessionId, { attachments: sessionAttachments }, true);
+      recordDebugEvent("attachment-upload-complete", { sessionId: uploadSessionId, attachments: attachments.map(({ id, name, bytes, mediaType }) => ({ id, name, bytes, mediaType })) });
+      if (ownedSessionId === uploadSessionId) {
+        state.attachedImages = sessionAttachments;
+        renderAttachments();
+        updatePrimaryAction();
+        hideSlashCommands();
+      }
     } catch (error) {
       recordDebugEvent("attachment-upload-error", { message: error instanceof Error ? error.message : String(error) });
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
@@ -366,12 +370,19 @@ export function createComposer(options: {
     elements.formEl.classList.toggle("dragOver", active);
   }
 
+  function rememberContextAttachments(sessionId = ownedSessionId) {
+    if (!sessionId) return;
+    if (contextAttachments.length) sessionContextAttachments.set(sessionId, [...contextAttachments]);
+    else sessionContextAttachments.delete(sessionId);
+  }
+
   function addContextAttachment(context: ComposerContextAttachment) {
     const existingIndex = context.id
       ? contextAttachments.findIndex((attachment) => attachment.id === context.id)
       : -1;
     if (existingIndex >= 0) contextAttachments[existingIndex] = context;
     else contextAttachments.push(context);
+    rememberContextAttachments();
     renderAttachments();
     updatePrimaryAction();
     hideSlashCommands();
@@ -379,39 +390,28 @@ export function createComposer(options: {
   }
 
   function persistAttachmentDraft() {
-    try {
-      if (state.attachedImages.length) {
-        localStorage.setItem(attachmentDraftStorageKey, JSON.stringify({
-          sessionId: state.currentSessionId,
-          attachments: state.attachedImages,
-        }));
-      } else {
-        localStorage.removeItem(attachmentDraftStorageKey);
-      }
-    } catch { /* ignore */ }
+    drafts.update(ownedSessionId, { attachments: state.attachedImages });
   }
 
-  function restoreAttachmentDraft() {
-    try {
-      const value = JSON.parse(localStorage.getItem(attachmentDraftStorageKey) || "null") as { sessionId?: unknown; attachments?: unknown } | null;
-      if (!value || !Array.isArray(value.attachments)) return;
-      // Initial state arrives asynchronously after the composer is created. If
-      // no session is active yet, restore now just like the text draft does.
-      if (state.currentSessionId && value.sessionId !== state.currentSessionId) return;
-      state.attachedImages = value.attachments.filter((item): item is FileAttachment => {
-        if (!item || typeof item !== "object") return false;
-        const attachment = item as Partial<FileAttachment>;
-        return typeof attachment.id === "string"
-          && typeof attachment.name === "string"
-          && typeof attachment.mediaType === "string"
-          && typeof attachment.bytes === "number"
-          && typeof attachment.path === "string"
-          && typeof attachment.contentUrl === "string";
-      });
-      recordDebugEvent("attachment-draft-restored", { count: state.attachedImages.length, storedSessionId: value.sessionId });
-      renderAttachments();
-      updatePrimaryAction();
-    } catch { /* ignore malformed or unavailable storage */ }
+  function switchSession(sessionId: string) {
+    if (!sessionId || sessionId === ownedSessionId) return;
+    if (ownedSessionId) {
+      drafts.update(ownedSessionId, { text: elements.promptEl.value, attachments: state.attachedImages }, true);
+      rememberContextAttachments();
+    }
+    drafts.attachInitialSession(sessionId);
+    if (!ownedSessionId && elements.promptEl.value) {
+      drafts.update(sessionId, { text: elements.promptEl.value, attachments: state.attachedImages }, true);
+    }
+    ownedSessionId = sessionId;
+    const draft = drafts.get(sessionId);
+    elements.promptEl.value = draft.text;
+    state.attachedImages = draft.attachments;
+    contextAttachments = [...(sessionContextAttachments.get(sessionId) || [])];
+    recordDebugEvent("composer-draft-restored", { sessionId, attachmentCount: draft.attachments.length });
+    if (draft.attachments.length) recordDebugEvent("attachment-draft-restored", { sessionId, count: draft.attachments.length });
+    renderAttachments();
+    updatePrimaryAction();
   }
 
   function renderAttachments() {
@@ -445,6 +445,7 @@ export function createComposer(options: {
       remove.setAttribute("aria-label", remove.title);
       remove.addEventListener("click", () => {
         contextAttachments.splice(index, 1);
+        rememberContextAttachments();
         renderAttachments();
         updatePrimaryAction();
       });
@@ -687,6 +688,7 @@ export function createComposer(options: {
       if ((activeRuntime.isStreaming || activeRuntime.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0 && !quoteReplies.hasDrafts()) return;
 
       const rawMessage = elements.promptEl.value;
+      const sessionId = ownedSessionId;
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
       let quoteSubmission: QuoteReplySubmission | undefined;
@@ -752,9 +754,9 @@ export function createComposer(options: {
       hideSlashCommands();
       state.attachedImages = [];
       contextAttachments = [];
+      rememberContextAttachments(sessionId);
       renderAttachments();
       const submittedWhileRunning = activeRuntime.isStreaming || activeRuntime.isRetrying;
-      const sessionId = state.currentSessionId;
       const runtimeTransition = sessionState.patchRuntime(sessionId, {
         loaded: true,
         isStreaming: true,
@@ -779,11 +781,22 @@ export function createComposer(options: {
       } catch (error) {
         optimisticUserMessages.delete(clientMessageId);
         sessionState.replaceRuntime(sessionId, runtimeTransition.previous);
-        state.attachedImages = [...submittedAttachments, ...state.attachedImages];
-        if (!elements.promptEl.value) elements.promptEl.value = rawMessage;
-        if (contextAttachments.length === 0) contextAttachments = contexts;
-        renderAttachments();
-        updatePrimaryAction();
+        const failedDraft = drafts.get(sessionId);
+        const restoredAttachments = [...submittedAttachments, ...failedDraft.attachments.filter((attachment) => !submittedAttachments.some(({ id }) => id === attachment.id))];
+        drafts.update(sessionId, {
+          text: failedDraft.text || rawMessage,
+          attachments: restoredAttachments,
+        }, true);
+        if (ownedSessionId === sessionId) {
+          state.attachedImages = restoredAttachments;
+          if (!elements.promptEl.value) elements.promptEl.value = rawMessage;
+          if (contextAttachments.length === 0) contextAttachments = contexts;
+          rememberContextAttachments(sessionId);
+          renderAttachments();
+          updatePrimaryAction();
+        } else {
+          sessionContextAttachments.set(sessionId, contexts);
+        }
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       } finally {
@@ -928,14 +941,7 @@ export function createComposer(options: {
       focusIfKeyboardFriendly(elements.promptEl);
     });
 
-    try {
-      const draft = localStorage.getItem(draftStorageKey);
-      if (draft && !elements.promptEl.value) {
-        elements.promptEl.value = draft;
-        updatePrimaryAction();
-      }
-    } catch { /* ignore */ }
-    restoreAttachmentDraft();
+    if (state.currentSessionId) switchSession(state.currentSessionId);
 
     let restoreFocus = false;
     try {
@@ -954,6 +960,7 @@ export function createComposer(options: {
     init,
     addContextAttachment,
     renderAttachments,
+    switchSession,
     setPromptText,
     stopStreaming,
     updatePrimaryAction,

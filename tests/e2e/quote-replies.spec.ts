@@ -1,4 +1,5 @@
 import { expect, type Page, test } from "@playwright/test";
+import { sessionDraftPersistDelayMs } from "../../src/drafts/sessionDraftStore.js";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -9,6 +10,26 @@ test.beforeEach(async ({ page }) => {
     },
   });
 });
+
+async function switchSession(page: Page, sessionName: string) {
+  const drawer = page.locator("#sessionDrawer");
+  const target = page.locator(".sessionItem").filter({ hasText: sessionName }).locator(".sessionItemNavBtn");
+  if (!await target.isVisible()) {
+    await expect(drawer).toBeHidden();
+    await page.locator("#sessionButton").click();
+  }
+  await expect(target).toBeAttached();
+  await target.evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.locator("#statusTitle")).toHaveText(sessionName);
+}
+
+async function delayQuoteDraftPersistence(page: Page) {
+  await page.evaluate((debounceMs) => {
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    window.setTimeout = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) =>
+      nativeSetTimeout(handler, timeout === debounceMs ? 1_000 : timeout, ...args)) as typeof window.setTimeout;
+  }, sessionDraftPersistDelayMs);
+}
 
 async function selectAssistantExcerpt(page: Page, text: string) {
   const paragraph = page.locator(".message.assistant .body p").filter({ hasText: text }).first();
@@ -88,6 +109,19 @@ test("keeps one reply action tethered to the highlighted text and dismisses it w
   await expect.poll(() => page.evaluate(() => getSelection()?.isCollapsed)).toBe(true);
 });
 
+test("migrates legacy composer and session quote drafts", async ({ page }) => {
+  const quote = [{ id: 4, quote: "Image attachment support", question: "Migrated question", sourceMessageId: "assistant-entry", startOffset: 0, endOffset: 24 }];
+  await page.addInitScript((legacyQuote) => {
+    localStorage.setItem("pi-web-composer-draft", "Migrated composer text");
+    localStorage.setItem("pi-web-quote-reply-drafts-v1", JSON.stringify({ "mock-current": legacyQuote }));
+  }, quote);
+  await page.goto("/");
+
+  await expect(page.locator("#prompt")).toHaveValue("Migrated composer text");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-session-drafts-v1"))).toContain("Migrated question");
+  await expect.poll(() => page.evaluate(() => localStorage.getItem("pi-web-composer-draft"))).toBeNull();
+});
+
 test("restores unfinished quote replies and composer text after reload", async ({ page }) => {
   await page.goto("/");
   await selectAssistantExcerpt(page, "Image attachment support");
@@ -103,6 +137,136 @@ test("restores unfinished quote replies and composer text after reload", async (
   await expect(page.locator(".quoteReplySummaryButton")).toContainText("1 linked reply");
   await page.locator(".quoteReplyPin").click();
   await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("How should this work offline?");
+});
+
+test("retries a source-session quote draft until its body renders without duplicates", async ({ page }) => {
+  const quote = { id: 7, quote: "Later source body", question: "Restored later", sourceMessageId: "later-entry", startOffset: 0, endOffset: 17 };
+  await page.addInitScript((draft) => localStorage.setItem("pi-web-session-drafts-v1", JSON.stringify({
+    version: 1,
+    sessions: { "mock-current": { text: "", attachments: [], quoteReplies: [draft] } },
+  })), quote);
+  await page.route("**/api/messages?*", (route) => route.fulfill({ json: { messages: [
+    { role: "assistant", text: "Earlier body", entryId: "earlier-entry" },
+    { role: "assistant", text: "Later source body", entryId: "later-entry" },
+  ] } }));
+
+  await page.goto("/");
+  await expect(page.locator('.message.assistant[data-entry-id="later-entry"]')).toContainText("Later source body");
+  await expect(page.locator(".quoteReplyMark")).toHaveCount(1);
+  await expect(page.locator(".quoteFootnoteQuestion")).toHaveText("Restored later");
+  await page.evaluate(() => window.dispatchEvent(new Event("resize")));
+  await expect(page.locator(".quoteReplyMark")).toHaveCount(1);
+  await expect(page.locator(".quoteFootnote")).toHaveCount(1);
+});
+
+test("keeps composer text per session across fast switches and reload", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#prompt").fill("Current session draft");
+  await switchSession(page, "Older mock session");
+  await expect(page.locator("#prompt")).toHaveValue("");
+  await page.locator("#prompt").fill("Older session draft");
+
+  await switchSession(page, "Current mock session");
+  await expect(page.locator("#prompt")).toHaveValue("Current session draft");
+  await switchSession(page, "Older mock session");
+  await expect(page.locator("#prompt")).toHaveValue("Older session draft");
+  await expect(page).toHaveURL(/sessionId=mock-older/);
+
+  await page.reload();
+  await expect(page.locator("#prompt")).toHaveValue("Older session draft");
+});
+
+test("a failed send restores only its captured session after switching", async ({ page }) => {
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/prompt", async (route) => {
+    await delayed;
+    await route.fulfill({ status: 500, body: "delayed failure" });
+  });
+  await page.goto("/");
+  await page.locator("#prompt").fill("Session A submission");
+  await page.locator("#primaryButton").click();
+  await switchSession(page, "Older mock session");
+  await page.locator("#prompt").fill("Session B draft");
+  release();
+  await expect(page.locator("#prompt")).toHaveValue("Session B draft");
+  await switchSession(page, "Current mock session");
+  await expect(page.locator("#prompt")).toHaveValue("Session A submission");
+});
+
+test("an upload completion remains owned by the session where it started", async ({ page }) => {
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/attachments?**", async (route) => {
+    await delayed;
+    await route.fulfill({ json: { attachment: { type: "file", id: "delayed-file", name: "delayed.png", mediaType: "image/png", bytes: 3, path: "/tmp/delayed.png", contentUrl: "/api/attachments/delayed-file" } } });
+  });
+  await page.goto("/");
+  await page.locator("#imageInput").setInputFiles({ name: "delayed.png", mimeType: "image/png", buffer: Buffer.from([1, 2, 3]) });
+  await switchSession(page, "Older mock session");
+  release();
+  await expect(page.locator(".attachmentChip")).toHaveCount(0);
+  await switchSession(page, "Current mock session");
+  await expect(page.locator(".attachmentChip")).toContainText("delayed.png");
+});
+
+test("restores an outgoing quote draft after switching sessions before its debounce fires", async ({ page }) => {
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await delayQuoteDraftPersistence(page);
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Preserve this outgoing draft");
+
+  await switchSession(page, "Older mock session");
+  await switchSession(page, "Current mock session");
+
+  await page.locator(".quoteReplyPin").click();
+  await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("Preserve this outgoing draft");
+});
+
+test("a successful in-flight quote send cannot commit into the destination session", async ({ page }) => {
+  const destinationDraft = [{ id: 7, quote: "Resumed older session.", question: "Keep destination", sourceMessageId: "destination-entry", startOffset: 0, endOffset: 22 }];
+  await page.addInitScript((draft) => localStorage.setItem("pi-web-session-drafts-v1", JSON.stringify({ version: 1, sessions: {
+    "mock-older": { text: "", attachments: [], quoteReplies: draft },
+  } })), destinationDraft);
+  let release!: () => void;
+  const delayed = new Promise<void>((resolve) => { release = resolve; });
+  await page.route("**/api/prompt", async (route) => { await delayed; await route.fulfill({ json: { ok: true } }); });
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Send from A");
+  await page.getByRole("button", { name: "Confirm question" }).click();
+  await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+  await switchSession(page, "Older mock session");
+  release();
+
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-older"]?.quoteReplies)).toEqual(destinationDraft);
+});
+
+test("does not delete destination quote drafts during a fast session switch", async ({ page }) => {
+  const destinationDraft = [{
+    id: 7,
+    quote: "Resumed older session.",
+    question: "Keep the destination draft",
+    sourceMessageId: "destination-entry",
+    startOffset: 0,
+    endOffset: 22,
+  }];
+  await page.addInitScript((draft) => localStorage.setItem("pi-web-session-drafts-v1", JSON.stringify({
+    version: 1,
+    sessions: { "mock-older": { text: "", attachments: [], quoteReplies: draft } },
+  })), destinationDraft);
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await delayQuoteDraftPersistence(page);
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Pending source edit");
+
+  await switchSession(page, "Older mock session");
+  await page.waitForTimeout(1_100);
+
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-older"]?.quoteReplies)).toEqual(destinationDraft);
 });
 
 test("links questions to multiple assistant responses and sends structured quote pairs", async ({ page }) => {

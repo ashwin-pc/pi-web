@@ -23,6 +23,14 @@ async function dependencyEvent(page: Page, sessionId: string, childIds: string[]
   await page.request.post("/api/mock/event", { data: { type: "settlement_dependencies_changed", sessionId, childIds } });
 }
 
+async function pinSettlementSnapshot(page: Page, sessionId: string, expectedChildIds: string[]) {
+  const response = await page.request.get(`/api/sessions/${sessionId}/status`);
+  expect(response.ok()).toBe(true);
+  const status = await response.json();
+  expect(status.trackedWorkers.map((worker: { id: string }) => worker.id)).toEqual(expectedChildIds);
+  await page.route(`**/api/sessions/${sessionId}/status`, (route) => route.fulfill({ json: status }));
+}
+
 test.beforeEach(async ({ page }) => resetMinimal(page));
 
 test("active worker dock shows only running declared dependencies and follows session switches", async ({ page }) => {
@@ -111,6 +119,7 @@ test("pinned parent restores waiting after reload before opening, then shows its
   // browser connects. The subsequent reload must recover it from status; there
   // is deliberately no realtime declaration available to the new page.
   await dependencyEvent(page, "mock-older", ["mock-current"]);
+  await pinSettlementSnapshot(page, "mock-older", ["mock-current"]);
   await page.goto("/?sessionId=mock-current");
   await page.reload();
 
@@ -143,6 +152,7 @@ test("current parent restores running dependency pills on initial reload in ever
   ] } }));
   await page.goto("/?sessionId=mock-current");
   await dependencyEvent(page, "mock-current", ["reload-worker"]);
+  await pinSettlementSnapshot(page, "mock-current", ["reload-worker"]);
   await runtimeEvent(page, "reload-worker", runtime(true));
   await expect(page.locator('.activeWorkerPill[data-session-id="reload-worker"]')).toBeVisible();
   await page.reload();

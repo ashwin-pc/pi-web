@@ -11,9 +11,10 @@ async function clickMessageAction(page: Page, message: Locator, buttonName: stri
   if (!box) throw new Error("Message is not visible");
   await page.mouse.move(box.x + box.width / 2, Math.max(8, box.y + Math.min(box.height / 2, 24)));
   await page.mouse.down();
-  await page.waitForTimeout(550);
+  const menuItem = page.locator(".messageActionMenu").getByRole("menuitem", { name: menuLabel, exact: true });
+  await expect(menuItem).toBeVisible();
   await page.mouse.up();
-  await page.locator(".messageActionMenu").getByRole("menuitem", { name: menuLabel, exact: true }).click();
+  await menuItem.click();
 }
 
 function messagesFor(sessionId: string, origin: string) {
