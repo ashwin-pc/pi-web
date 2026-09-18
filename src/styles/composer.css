@@ -629,6 +629,51 @@ button:disabled:hover { border-color: var(--border); }
   color: var(--accent);
 }
 #queueToggle[aria-pressed="true"] { color: var(--accent); }
+.composerExtensionInputs { position: relative; display: inline-flex; align-items: center; gap: 0; }
+/* Attachment and cancel share one stable utility slot throughout capture. */
+.composer[data-capture-phase]:not([data-capture-phase="idle"]) .composerExtensionInputs:not(:has(.composerCaptureCancel))::after {
+  content: "";
+  display: block;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+}
+.composerCaptureButton.recording { color: #ef4444; animation: capturePulse 1.25s ease-in-out infinite; }
+.composerCaptureCancel { color: var(--muted); }
+.composerCaptureStatus {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 7px);
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.composerCaptureVisual {
+  position: absolute;
+  z-index: 2;
+  top: 16px;
+  left: 14px;
+  max-width: 200px;
+  pointer-events: none;
+}
+.composer[data-capture-phase="permission"] #prompt,
+.composer[data-capture-phase="recording"] #prompt {
+  transition: color 120ms linear;
+}
+.composer[data-capture-phase]:not([data-capture-phase="idle"]) #prompt { color: transparent; caret-color: transparent; }
+.composer[data-capture-phase="permission"] #prompt::placeholder,
+.composer[data-capture-phase="recording"] #prompt::placeholder {
+  transition: color 120ms linear, opacity 120ms linear;
+}
+.composer[data-capture-phase]:not([data-capture-phase="idle"]) #prompt::placeholder {
+  color: transparent;
+  opacity: 0;
+}
+.composer[data-capture-phase]:not([data-capture-phase="idle"]) #attachButton { display: none; }
+@keyframes capturePulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .composerCaptureButton.recording { animation: none; } }
 #stopButton {
   position: relative;
   z-index: 13;
@@ -696,11 +741,45 @@ button:disabled:hover { border-color: var(--border); }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #primaryButton {
   display: none !important;
 }
+/* Queue and send join the expanded footer as zero-width slots, then consume
+   their final budget while the footer itself grows. This prevents an 80px
+   first-frame subtraction from the compact model control. */
+.composer[data-capture-chrome="settling"] #queueToggle,
+.composer[data-capture-chrome="settling"] #primaryButton {
+  display: inline-grid !important;
+  box-sizing: border-box;
+  width: var(--capture-chrome-action-width, 0px);
+  min-width: var(--capture-chrome-action-width, 0px);
+  padding-inline: 0;
+  overflow: hidden;
+  transition: width 140ms linear, min-width 140ms linear;
+}
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerFooter {
   height: 38px;
   align-items: center;
   overflow: visible;
   background: transparent;
+}
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureVisual {
+  top: 7px;
+  left: 14px;
+  max-width: 156px;
+}
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerExtensionInputs:not(:has(.composerCaptureCancel))::after {
+  flex-basis: 38px;
+  width: 38px;
+  height: 38px;
+}
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureStatus {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelControl {
   flex: 0 1 auto;
@@ -747,6 +826,8 @@ button:disabled:hover { border-color: var(--border); }
   transform: translateX(-50%);
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureCancel,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
   width: 38px;
   min-width: 38px;

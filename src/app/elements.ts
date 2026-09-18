@@ -36,6 +36,7 @@ export type AppElements = {
   sessionListEl: HTMLDivElement;
   sessionBarEl: HTMLDivElement;
   queueToggle: HTMLButtonElement;
+  composerExtensionInputs: HTMLDivElement;
   attachButton: HTMLButtonElement;
   imageInput: HTMLInputElement;
   attachmentsEl: HTMLDivElement;
@@ -137,6 +138,7 @@ export function getAppElements(): AppElements {
     sessionListEl: requiredElement<HTMLDivElement>("#sessionList"),
     sessionBarEl: requiredElement<HTMLDivElement>("#sessionBar"),
     queueToggle: requiredElement<HTMLButtonElement>("#queueToggle"),
+    composerExtensionInputs: requiredElement<HTMLDivElement>("#composerExtensionInputs"),
     attachButton: requiredElement<HTMLButtonElement>("#attachButton"),
     imageInput: requiredElement<HTMLInputElement>("#imageInput"),
     attachmentsEl: requiredElement<HTMLDivElement>("#attachments"),

@@ -18,6 +18,7 @@ import { isSessionReferenceId, type SessionReference } from "../shared/sessionRe
 import { assertDirectory } from "../shared/fsList.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { createWebUiBridge } from "../extensions/webUi.js";
+import { EphemeralCaptureStore } from "../extensions/captureStore.js";
 import { ResilientResourceLoader } from "../extensions/resilientLoader.js";
 import { mapPiEvent } from "./piEventMap.js";
 import { createSettingsStore } from "../settings.js";
@@ -319,12 +320,14 @@ export class LocalSessionService implements SessionService {
   private readonly idleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 24 * 60 * 60 * 1000);
   private readonly viewerGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, this.idleGraceMs));
   private readonly workLeaseWatchdogMs = envMs("PI_WEB_WORK_LEASE_WATCHDOG_MS", 3 * 60 * 1000);
+  private readonly captureStore = new EphemeralCaptureStore();
   private readonly webUiBridge;
 
   constructor(private readonly deps: LocalSessionServiceDependencies) {
     this.knownSessionCwds.add(resolve(deps.globalCwd()));
     this.webUiBridge = createWebUiBridge({
       extensionHttp: deps.extensionHttp,
+      captureStore: this.captureStore,
       emit: (input) => {
         const value = input as Record<string, unknown>;
         const request = interactionRequestFromWire(value);
@@ -388,6 +391,7 @@ export class LocalSessionService implements SessionService {
 
   async disposeAll(reason: "reset" | "idle" = "reset") {
     await Promise.all(Array.from(this.liveSessions.keys()).map((key) => this.disposeLiveSession(key, reason, true)));
+    await this.captureStore.dispose();
   }
 
   sessionForPath(path: string) { return this.liveSessions.get(path)?.session; }
@@ -669,8 +673,23 @@ export class LocalSessionService implements SessionService {
     });
   }
 
-  invokeContribution(sessionId: string | undefined, input: Record<string, unknown>) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokeContribution(value, input));
+  async storeCapture(sessionId: string | undefined, key: unknown, registrationId: unknown, input: { mimeType: string; durationMs: number; bytes: Uint8Array }) {
+    const value = await this.require(sessionId);
+    const registration = this.webUiBridge.captureRegistration(value, key, registrationId);
+    if (!registration) throw new SessionServiceError("Composer capture registration is stale or missing", 409);
+    return this.captureStore.store({ sessionId: value.sessionId, contributionKey: registration.key, registrationId: registration.registrationId, policy: registration.policy, ...input });
+  }
+
+  async invokeContribution(sessionId: string | undefined, input: Record<string, unknown>, signal?: AbortSignal) {
+    const value = await this.require(sessionId);
+    const invoke = () => this.webUiBridge.invokeContribution(value, input, signal);
+    // Capture handlers can run long enough to outlive an unviewed session, so
+    // keep their runtime alive. Existing rendered actions must not acquire a
+    // lease: the running -> idle runtime transition refreshes the transcript,
+    // detaching the action card before its response handler can render output.
+    return input.slot === "composer-input"
+      ? this.withWorkLease(value, "composer-capture", "general", invoke)
+      : invoke();
   }
 
   invokeHeaderAction(sessionId: string | undefined, key: unknown) {

@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+# Never commit common local model/checkpoint formats.
+*.safetensors
+*.gguf
+*.bin
+*.ckpt
+*.pt
+*.pth
+models/
