@@ -16,12 +16,12 @@ import time
 from typing import Any
 import wave
 
-from adapters import get_adapter
+from adapters import capabilities, get_adapter, preflight
 
-DEFAULT_BACKEND = "parakeet"
+DEFAULT_FAMILY = "parakeet"
+DEFAULT_RUNTIME = "mlx"
 DEFAULT_MODEL = "mlx-community/parakeet-tdt-0.6b-v3"
-MAX_BACKEND_CHARS = 32
-MAX_MODEL_CHARS = 256
+MAX_SETTING_CHARS = 256
 MAX_INPUT_BYTES = 25_000_000
 MAX_AUDIO_SECONDS = 120
 MIN_RMS = 0.0015  # roughly -56.5 dBFS; rejects silence before model inference
@@ -66,6 +66,21 @@ def validate_input(raw_path: object) -> Path:
     return path
 
 
+def is_windows_reparse_point(info: os.stat_result) -> bool:
+    """Detect junctions and other reparse points on Python 3.10+."""
+    attributes = getattr(info, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    return bool(attributes & reparse_flag or getattr(info, "st_reparse_tag", 0))
+
+
+def validate_private_directory(info: os.stat_result, host_name: str = os.name) -> None:
+    if host_name == "posix":
+        if hasattr(os, "getuid") and info.st_uid != os.getuid():
+            raise ValueError("workDir must be owned by the current user")
+        if info.st_mode & 0o077:
+            raise ValueError("workDir must not be accessible by group or other users")
+
+
 def validate_work_dir(raw_path: object) -> Path:
     if not isinstance(raw_path, str) or not raw_path:
         raise ValueError("workDir must be a non-empty string")
@@ -75,9 +90,14 @@ def validate_work_dir(raw_path: object) -> Path:
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
         raise ValueError("workDir must be a real directory")
-    # The Node host creates this per invocation with mode 0700 and owns cleanup.
-    if info.st_mode & 0o077:
-        raise ValueError("workDir must not be accessible by group or other users")
+    # Windows junctions are directory reparse points, not POSIX symlinks.
+    # st_file_attributes is available on supported Python 3.10/3.11 too.
+    if is_windows_reparse_point(info):
+        raise ValueError("workDir must not be a junction or reparse point")
+    # POSIX exposes meaningful owner/mode information. Windows temp isolation is
+    # provided by the current user's inherited ACL; synthetic st_mode bits must
+    # not be interpreted as POSIX group access.
+    validate_private_directory(info)
     return path
 
 
@@ -154,23 +174,27 @@ def ensure_audible(path: Path) -> None:
         raise RuntimeError("recording is silent or too quiet")
 
 
-def transcribe(path: Path, work_dir: Path, demuxer: str, backend: str, model_id: str) -> dict[str, object]:
+def transcribe(path: Path, work_dir: Path, demuxer: str, family: str, runtime: str, model_id: str, device: str, compute_type: str) -> dict[str, object]:
     started = time.monotonic()
+    # Fail on unsupported platforms or missing packages before decoding audio or
+    # loading model weights. The registry is fixed and settings cannot import code.
+    preflight(family, runtime)
+    adapter = get_adapter(family, runtime)
     wav = work_dir / "capture.wav"
     if wav.exists():
         raise ValueError("workDir is not empty")
     duration = decode_audio(path, wav, demuxer)
     ensure_audible(wav)
     decoded_at = time.monotonic()
-    adapter = get_adapter(backend)
-    text = adapter.transcribe(wav, model_id, log).strip()
+    text = adapter.transcribe(wav, model_id, log, device=device, compute_type=compute_type).strip()
     if not text:
         raise RuntimeError("no speech was recognized")
     finished = time.monotonic()
     return {
         "text": text,
         "model": model_id,
-        "backend": backend,
+        "family": family,
+        "runtime": runtime,
         "durationMs": round(duration * 1000),
         "decodeMs": round((decoded_at - started) * 1000),
         "inferenceMs": round((finished - decoded_at) * 1000),
@@ -185,7 +209,7 @@ def handle(message: object) -> dict[str, object]:
         raise ValueError("request id must be a non-empty string")
     operation = message.get("op")
     if operation == "ping":
-        return {"id": request_id, "ok": True, "backends": ["parakeet", "whisper"]}
+        return {"id": request_id, "ok": True, "capabilities": capabilities()}
     if operation != "transcribe":
         raise ValueError(f"unsupported operation: {operation!r}")
     return {
@@ -195,8 +219,11 @@ def handle(message: object) -> dict[str, object]:
             validate_input(message.get("path")),
             validate_work_dir(message.get("workDir")),
             input_format(message.get("mimeType")),
-            bounded_string(message.get("backend"), "backend", DEFAULT_BACKEND, MAX_BACKEND_CHARS),
-            bounded_string(message.get("model"), "model", DEFAULT_MODEL, MAX_MODEL_CHARS),
+            bounded_string(message.get("family"), "family", DEFAULT_FAMILY, MAX_SETTING_CHARS),
+            bounded_string(message.get("runtime"), "runtime", DEFAULT_RUNTIME, MAX_SETTING_CHARS),
+            bounded_string(message.get("model"), "model", DEFAULT_MODEL, MAX_SETTING_CHARS),
+            bounded_string(message.get("device"), "device", "cpu", MAX_SETTING_CHARS),
+            bounded_string(message.get("computeType"), "computeType", "int8", MAX_SETTING_CHARS),
         ),
     }
 

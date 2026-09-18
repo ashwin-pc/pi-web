@@ -29,6 +29,44 @@ jobs:
       - name: Validate website output
         run: npm run website:test
 
+  dictation-portability:
+    name: Dictation portability (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.10"
+          - os: windows-latest
+            python: "3.13"
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install JavaScript dependencies
+        run: npm ci
+
+      - name: Python worker and setup tests
+        working-directory: examples/pi-web-extensions/dictation
+        run: python -m unittest -v test_worker.py test_setup.py
+
+      - name: TypeScript worker tests
+        run: npx vitest run --config examples/pi-web-extensions/dictation/vitest.config.ts
+
   test:
     runs-on: macos-latest
 

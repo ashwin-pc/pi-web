@@ -1,30 +1,36 @@
 import { access, lstat, mkdtemp, rm } from "node:fs/promises";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { arch, platform } from "node:process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, sep } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { PiWebExtensionAPI } from "@ashwin-pc/pi-web/extensions";
-import { DEFAULT_DICTATION_BACKEND, DICTATION_BACKENDS } from "./adapters/config.js";
+import {
+  defaultModel, DICTATION_FAMILIES, DICTATION_RUNTIMES, platformDefaults, resolveRuntime, validateCombination,
+  type DictationFamily, type DictationRuntime,
+} from "./adapters/config.js";
 
 const CONTRIBUTION_KEY = "dictation.record";
 const SETTINGS_ID = "dictation.settings";
-const DEFAULT_BACKEND = DEFAULT_DICTATION_BACKEND.value;
-const DEFAULT_MODEL = DEFAULT_DICTATION_BACKEND.defaultModel;
-const MAX_BACKEND_CHARS = 32;
-const MAX_MODEL_CHARS = 256;
+const HOST_DEFAULTS = platformDefaults();
+const MAX_SETTING_CHARS = 256;
 const MAX_CAPTURE_BYTES = 25_000_000;
 const MAX_PENDING = 3;
 const MAX_PROTOCOL_BUFFER_CHARS = 1_000_000;
 // Core owns the outer invoke deadline and currently caps it at three minutes.
 const DEFAULT_TIMEOUT_SECONDS = 180;
 const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
-const DEFAULT_PYTHON = join(EXTENSION_DIR, ".venv", "bin", "python");
+const DEFAULT_PYTHON = platform === "win32"
+  ? join(EXTENSION_DIR, ".venv", "Scripts", "python.exe")
+  : join(EXTENSION_DIR, ".venv", "bin", "python");
 const WORKER_SCRIPT = join(EXTENSION_DIR, "worker.py");
 
 type WorkerResult = {
   text: string;
   model: string;
+  family?: string;
+  runtime?: string;
   durationMs: number;
   decodeMs: number;
   inferenceMs: number;
@@ -39,9 +45,8 @@ type Pending = {
 
 type ProtocolMessage = Partial<WorkerResult> & { id?: string; ok?: boolean; error?: string };
 
-async function waitForExit(child: ChildProcessWithoutNullStreams) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  await new Promise<void>((resolve) => {
+async function waitForExit(child: ChildProcessWithoutNullStreams, treeKill?: Promise<void>) {
+  const exit = child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, 2_000);
     timer.unref?.();
     child.once("exit", () => {
@@ -49,6 +54,38 @@ async function waitForExit(child: ChildProcessWithoutNullStreams) {
       resolve();
     });
   });
+  await Promise.all([exit, treeKill ?? Promise.resolve()]);
+}
+
+function killWindowsProcessTree(pid: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const killer = spawn("taskkill.exe", ["/PID", String(pid), "/T", "/F"], { shell: false, windowsHide: true, stdio: "ignore" });
+    killer.once("error", reject);
+    killer.once("exit", (code) => code === 0 || code === 128 ? resolve() : reject(new Error(`taskkill exited with code ${code}`)));
+  });
+}
+
+async function boundedWindowsTreeKill(
+  child: ChildProcessWithoutNullStreams,
+  killer: (pid: number) => Promise<void>,
+  timeoutMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, timeoutMs);
+    timer.unref?.();
+  });
+  try {
+    // Promise.resolve().then also converts a synchronous injected-hook throw to
+    // a rejection. Race bounds taskkill and hooks that never settle.
+    await Promise.race([Promise.resolve().then(() => killer(child.pid!)), timeout]);
+  } catch {
+    // Tree termination is best effort; direct child termination below is the
+    // platform-correct fallback and cancellation's original error must survive.
+  } finally {
+    if (timer) clearTimeout(timer);
+    try { child.kill(); } catch { /* already gone */ }
+  }
 }
 
 export class DictationWorker {
@@ -58,16 +95,24 @@ export class DictationWorker {
   private pythonPath = DEFAULT_PYTHON;
   private generation = 0;
   private reservations = 0;
+  private treeKills = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
-  constructor(private readonly options: { workerScript?: string; tempRoot?: string } = {}) {}
+  constructor(private readonly options: {
+    workerScript?: string;
+    tempRoot?: string;
+    hostPlatform?: NodeJS.Platform;
+    killWindowsTree?: (pid: number) => Promise<void>;
+    windowsKillTimeoutMs?: number;
+  } = {}) {}
 
-  async transcribe(path: string, options: { mimeType: string; backend?: string; model?: string; pythonPath?: string; timeoutMs: number; signal?: AbortSignal }): Promise<WorkerResult> {
+  async transcribe(path: string, options: { mimeType: string; family: string; runtime: string; model: string; device: string; computeType: string; pythonPath?: string; timeoutMs: number; signal?: AbortSignal }): Promise<WorkerResult> {
     // Reserve synchronously, before any await, so simultaneous cold-start calls
     // cannot all pass a stale pending.size check.
     if (this.reservations >= MAX_PENDING) throw new Error("Dictation is busy; wait for the current transcription to finish.");
     this.reservations += 1;
     let workDir: string | undefined;
     let requestChild: ChildProcessWithoutNullStreams | undefined;
+    let completed = false;
     try {
       // Allocate invocation-owned state first. Cancellation during this await is
       // observed below, and finally always removes the directory.
@@ -88,7 +133,7 @@ export class DictationWorker {
       const id = randomUUID();
       requestChild = child;
       const generation = this.generation;
-      return await new Promise<WorkerResult>((resolve, reject) => {
+      const result = await new Promise<WorkerResult>((resolve, reject) => {
         const abort = () => this.stop(new Error("Dictation cancelled."), true, child, generation);
         options.signal?.addEventListener("abort", abort, { once: true });
         const timer = setTimeout(
@@ -101,25 +146,36 @@ export class DictationWorker {
           timer,
           cleanupAbort: () => options.signal?.removeEventListener("abort", abort),
         });
-        child.stdin.write(`${JSON.stringify({ id, op: "transcribe", path, mimeType: options.mimeType, workDir, backend: options.backend ?? DEFAULT_BACKEND, model: options.model ?? DEFAULT_MODEL })}\n`, (error) => {
+        child.stdin.write(`${JSON.stringify({ id, op: "transcribe", path, mimeType: options.mimeType, workDir, family: options.family, runtime: options.runtime, model: options.model, device: options.device, computeType: options.computeType })}\n`, (error) => {
           if (error && this.child === child && this.generation === generation) {
             this.stop(new Error(`Could not send audio to the dictation worker: ${error.message}`), true, child, generation);
           }
         });
       });
+      completed = true;
+      return result;
     } finally {
       this.reservations -= 1;
       // If cancellation/timeout replaced this generation, wait for Node to reap
       // its process-group leader before unlinking ffmpeg's output directory.
-      if (requestChild && this.child !== requestChild) await waitForExit(requestChild);
-      if (workDir) await rm(workDir, { recursive: true, force: true });
+      if (requestChild && this.child !== requestChild) await waitForExit(requestChild, this.treeKills.get(requestChild));
+      if (workDir) {
+        try { await rm(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+        catch (error) {
+          if (completed) throw error;
+          process.stderr.write(`[dictation] could not remove temporary work directory: ${error instanceof Error ? error.message : String(error)}\n`);
+        }
+      }
     }
   }
 
   private async ensureStarted() {
     if (this.child && !this.child.killed) return;
     const workerScript = this.options.workerScript ?? WORKER_SCRIPT;
-    await Promise.all([access(this.pythonPath), access(workerScript)]);
+    await Promise.all([
+      this.pythonPath.includes(sep) || isAbsolute(this.pythonPath) ? access(this.pythonPath) : Promise.resolve(),
+      access(workerScript),
+    ]);
     if (this.child && !this.child.killed) return;
     const child = spawn(this.pythonPath, ["-u", workerScript], {
       cwd: EXTENSION_DIR,
@@ -182,10 +238,21 @@ export class DictationWorker {
     this.child = undefined;
     this.buffer = "";
     if (kill && !expectedChild.killed) {
-      // detached:true gives the worker and ffmpeg descendants one process group.
-      // Kill the whole group so cancellation cannot orphan a decoder.
-      try { if (expectedChild.pid) process.kill(-expectedChild.pid, "SIGKILL"); }
-      catch { try { expectedChild.kill("SIGKILL"); } catch { /* already gone */ } }
+      // POSIX uses a detached process group. Windows has no negative-PID group
+      // signals, so taskkill receives fixed arguments without a shell and kills
+      // Python plus decoder descendants before temporary files are removed.
+      const hostPlatform = this.options.hostPlatform ?? platform;
+      if (hostPlatform === "win32" && expectedChild.pid) {
+        const treeKill = boundedWindowsTreeKill(
+          expectedChild,
+          this.options.killWindowsTree ?? killWindowsProcessTree,
+          this.options.windowsKillTimeoutMs ?? 2_000,
+        );
+        this.treeKills.set(expectedChild, treeKill);
+      } else {
+        try { if (expectedChild.pid) process.kill(-expectedChild.pid, "SIGKILL"); }
+        catch { try { expectedChild.kill("SIGKILL"); } catch { /* already gone */ } }
+      }
     }
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timer);
@@ -198,7 +265,7 @@ export class DictationWorker {
 
 // jiti can instantiate the extension once per live session. A process-global
 // singleton keeps one model-bearing Python worker shared by all those instances.
-const workerSymbol = Symbol.for("pi-web.dictation.worker.v1");
+const workerSymbol = Symbol.for("pi-web.dictation.worker.v2");
 const processGlobals = globalThis as typeof globalThis & { [workerSymbol]?: DictationWorker };
 const worker = processGlobals[workerSymbol] ??= new DictationWorker();
 
@@ -216,6 +283,21 @@ async function validateCapture(path: unknown) {
 
 function stringSetting(value: unknown, fallback: string, maxLength: number) {
   return typeof value === "string" && value.trim() && value.trim().length <= maxLength ? value.trim() : fallback;
+}
+
+function familySetting(value: unknown): DictationFamily {
+  return value === "parakeet" || value === "whisper" ? value : HOST_DEFAULTS.family;
+}
+
+function runtimeSetting(value: unknown): "auto" | DictationRuntime {
+  return value === "mlx" || value === "faster-whisper" ? value : "auto";
+}
+
+export function migrateDictationSettings(oldValues: Record<string, unknown>) {
+  const { backend, ...rest } = oldValues;
+  // v1 contained MLX-only adapters. Preserve its explicit family/model and
+  // make that runtime explicit rather than silently changing behavior.
+  return { ...rest, family: backend === "whisper" ? "whisper" : "parakeet", runtime: "mlx" };
 }
 
 export default function dictation(pi: PiWebExtensionAPI) {
@@ -245,12 +327,20 @@ export default function dictation(pi: PiWebExtensionAPI) {
           const path = await validateCapture(event.capture.path);
           const { values } = await web.getSettings(SETTINGS_ID);
           const timeoutSeconds = numberSetting(values?.timeoutSeconds, DEFAULT_TIMEOUT_SECONDS, 30, 180);
-          const backend = stringSetting(values?.backend, DEFAULT_BACKEND, MAX_BACKEND_CHARS);
-          const model = stringSetting(values?.model, DEFAULT_MODEL, MAX_MODEL_CHARS);
+          const family = familySetting(values?.family);
+          const runtime = resolveRuntime(family, runtimeSetting(values?.runtime));
+          validateCombination(family, runtime);
+          const model = stringSetting(values?.model, defaultModel(family, runtime), MAX_SETTING_CHARS);
+          const device = values?.device === "cuda" ? "cuda" : "cpu";
+          if (device === "cuda" && runtime !== "faster-whisper") throw new Error("CUDA is available only with the faster-whisper runtime in this extension.");
+          const computeType = stringSetting(values?.computeType, device === "cuda" ? "float16" : "int8", 32);
           const result = await worker.transcribe(path, {
             mimeType: event.capture.mimeType,
-            backend,
+            family,
+            runtime,
             model,
+            device,
+            computeType,
             pythonPath: typeof values?.pythonPath === "string" ? values.pythonPath : undefined,
             timeoutMs: timeoutSeconds * 1000,
             signal: event.signal,
@@ -263,13 +353,17 @@ export default function dictation(pi: PiWebExtensionAPI) {
     await web.registerSettings({
       id: SETTINGS_ID,
       title: "Dictation",
-      schemaVersion: 1,
+      schemaVersion: 2,
+      migrate: (oldValues) => migrateDictationSettings(oldValues as Record<string, unknown>),
       fields: [
-        { key: "backend", type: "select", label: "Backend", default: DEFAULT_BACKEND, options: DICTATION_BACKENDS.map(({ value, label }) => ({ value, label })) },
-        { key: "model", type: "text", label: "Model ID or local model path", description: "Weights stay outside the extension. Hugging Face IDs use its external cache.", default: DEFAULT_MODEL, required: true, maxLength: MAX_MODEL_CHARS },
+        { key: "family", type: "select", label: "Model family", default: HOST_DEFAULTS.family, options: DICTATION_FAMILIES.map(({ value, label }) => ({ value, label })) },
+        { key: "runtime", type: "select", label: "Runtime", default: "auto", options: DICTATION_RUNTIMES.map(({ value, label }) => ({ value, label })) },
+        { key: "model", type: "text", label: "Model ID or local model path", description: "Leave blank for the family/runtime default. Weights use an external provider cache.", default: "", maxLength: MAX_SETTING_CHARS },
+        { key: "device", type: "select", label: "Device", description: "CUDA is opt-in and requires a compatible faster-whisper/CTranslate2 installation.", default: "cpu", options: [{ value: "cpu", label: "CPU" }, { value: "cuda", label: "NVIDIA CUDA (explicit)" }] },
+        { key: "computeType", type: "text", label: "Compute type", description: "Blank uses int8 on CPU or float16 on CUDA.", default: "", maxLength: 32 },
         { key: "maxSeconds", type: "number", label: "Maximum recording length (seconds)", default: 120, min: 1, max: 120 },
         { key: "timeoutSeconds", type: "number", label: "Transcription timeout (seconds)", description: "Core enforces an outer three-minute limit.", default: DEFAULT_TIMEOUT_SECONDS, min: 30, max: 180 },
-        { key: "pythonPath", type: "text", label: "Python executable", description: "Leave blank to use this extension's .venv/bin/python.", default: "" },
+        { key: "pythonPath", type: "text", label: "Python executable", description: "Blank uses .venv/Scripts/python.exe on Windows or .venv/bin/python elsewhere.", default: "" },
       ],
       onChange: (values) => registerContribution(values.maxSeconds),
     });

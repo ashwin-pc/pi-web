@@ -2,7 +2,8 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DictationWorker } from "./index.js";
+import { DictationWorker, migrateDictationSettings } from "./index.js";
+import { defaultModel, platformDefaults, resolveRuntime, validateCombination } from "./adapters/config.js";
 
 const fakeWorker = String.raw`
 import json, sys, time
@@ -35,9 +36,14 @@ describe("DictationWorker lifecycle", () => {
     return worker;
   }
 
-  const request = (worker: DictationWorker, signal?: AbortSignal) => worker.transcribe("/tmp/fake.webm", {
+  const request = (worker: DictationWorker, signal?: AbortSignal) => worker.transcribe(join(root, "fake.webm"), {
     mimeType: "audio/webm",
-    pythonPath: "/usr/bin/python3",
+    family: "whisper",
+    runtime: "faster-whisper",
+    model: "tiny",
+    device: "cpu",
+    computeType: "int8",
+    pythonPath: process.platform === "win32" ? "python" : "python3",
     timeoutMs: 5_000,
     signal,
   });
@@ -71,6 +77,51 @@ describe("DictationWorker lifecycle", () => {
     workers.push(worker);
     await expect(request(worker)).rejects.toThrow("protocol buffer limit");
     expect((await readdir(root)).filter((name) => name.startsWith("pi-dictation-"))).toEqual([]);
+  });
+
+  it("migrates legacy MLX settings without changing explicit models", () => {
+    expect(migrateDictationSettings({ backend: "whisper", model: "org/custom", maxSeconds: 42 })).toEqual({
+      family: "whisper", runtime: "mlx", model: "org/custom", maxSeconds: 42,
+    });
+    expect(migrateDictationSettings({ backend: "parakeet", model: "local/model" })).toEqual({
+      family: "parakeet", runtime: "mlx", model: "local/model",
+    });
+  });
+
+  it("uses platform-appropriate automatic defaults and runtime models", () => {
+    expect(platformDefaults("darwin", "arm64")).toEqual({ family: "parakeet", runtime: "auto" });
+    expect(resolveRuntime("parakeet", "auto", "darwin", "arm64")).toBe("mlx");
+    expect(defaultModel("parakeet", "mlx")).toBe("mlx-community/parakeet-tdt-0.6b-v3");
+    expect(platformDefaults("linux", "x64").family).toBe("whisper");
+    expect(platformDefaults("win32", "x64").family).toBe("whisper");
+    expect(platformDefaults("darwin", "x64").family).toBe("whisper");
+    expect(resolveRuntime("whisper", "auto", "win32", "x64")).toBe("faster-whisper");
+    expect(defaultModel("whisper", "faster-whisper")).toBe("large-v3-turbo");
+    expect(() => resolveRuntime("parakeet", "auto", "win32", "x64")).toThrow("no portable runtime");
+    expect(() => validateCombination("whisper", "mlx", "linux", "x64")).toThrow("Apple Silicon");
+    expect(() => validateCombination("parakeet", "faster-whisper", "win32", "x64")).toThrow("Parakeet only through MLX");
+  });
+
+  it.each([
+    ["throws synchronously", () => { throw new Error("tree kill threw"); }],
+    ["rejects", async () => { throw new Error("tree kill rejected"); }],
+    ["never settles", () => new Promise<void>(() => {})],
+  ] as const)("bounds a Windows process-tree hook that %s and preserves cancellation cleanup", async (_label, killWindowsTree) => {
+    const worker = new DictationWorker({
+      workerScript: script,
+      tempRoot: root,
+      hostPlatform: "win32",
+      killWindowsTree,
+      windowsKillTimeoutMs: 50,
+    });
+    workers.push(worker);
+    const controller = new AbortController();
+    const cancelled = request(worker, controller.signal);
+    setTimeout(() => controller.abort(), 40);
+    await expect(cancelled).rejects.toThrow("cancelled");
+    expect((await readdir(root)).filter((name) => name.startsWith("pi-dictation-"))).toEqual([]);
+    // Direct child.kill() fallback must leave the worker restartable.
+    await expect(request(worker)).resolves.toMatchObject({ text: "fake transcript" });
   });
 
   it("cancels the process group, cleans work directories, and restarts cleanly", async () => {
