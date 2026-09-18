@@ -226,25 +226,29 @@ test("result handoff pins the rendered gate while the populated composer expands
     };
     return { composer: rect("#promptForm"), model: rect("#modelControl"), canvas: rect(".composerCaptureVisual") };
   });
-  const targets = [0, 16, 50, 100, 190, 205, 220, 300, 350, 420];
-  const sampling = page.evaluate((sampleTargets) => new Promise<Array<Record<string, any>>>((resolveSamples) => {
-    const collect = (targetMs: number, startedAt: number) => {
-      const form = document.querySelector<HTMLElement>("#promptForm")!;
-      const prompt = document.querySelector<HTMLTextAreaElement>("#prompt")!;
-      const visual = document.querySelector<HTMLCanvasElement>(".composerCaptureVisual")!;
-      const model = document.querySelector<HTMLElement>("#modelControl")!;
-      const rect = (element: Element) => {
-        const value = element.getBoundingClientRect();
-        return { x: value.x, y: value.y, width: value.width, height: value.height };
-      };
+  // Sample every rendered browser frame rather than scheduling a few wall-clock
+  // callbacks. Under CI load, delayed timers can all run after the 150ms reveal
+  // and falsely report that the intermediate fade never happened.
+  const sampling = page.evaluate(() => new Promise<Array<Record<string, any>>>((resolveSamples, reject) => {
+    const form = document.querySelector<HTMLElement>("#promptForm")!;
+    const prompt = document.querySelector<HTMLTextAreaElement>("#prompt")!;
+    const visual = document.querySelector<HTMLCanvasElement>(".composerCaptureVisual")!;
+    const model = document.querySelector<HTMLElement>("#modelControl")!;
+    const colorSample = document.createElement("canvas");
+    colorSample.width = colorSample.height = 1;
+    const colorContext = colorSample.getContext("2d")!;
+    const rect = (element: Element) => {
+      const value = element.getBoundingClientRect();
+      return { x: value.x, y: value.y, width: value.width, height: value.height };
+    };
+    const results: Array<Record<string, any>> = [];
+    let startedAt = 0;
+    let frame = 0;
+    const collect = () => {
       const canvasStyle = getComputedStyle(visual), promptStyle = getComputedStyle(prompt);
-      const colorSample = document.createElement("canvas");
-      colorSample.width = colorSample.height = 1;
-      const colorContext = colorSample.getContext("2d")!;
       colorContext.clearRect(0, 0, 1, 1);
       colorContext.fillStyle = promptStyle.color;
       colorContext.fillRect(0, 0, 1, 1);
-      const promptColorAlpha = colorContext.getImageData(0, 0, 1, 1).data[3]!;
       const transformedAncestors: string[] = [];
       for (let node = visual.parentElement; node; node = node.parentElement) {
         const style = getComputedStyle(node);
@@ -252,48 +256,52 @@ test("result handoff pins the rendered gate while the populated composer expands
           transformedAncestors.push(`${node.id || node.className}:${style.transform}:${style.contain}:${style.filter}`);
         }
       }
-      const frame = document.createElement("canvas");
-      frame.width = visual.width; frame.height = visual.height;
-      const frameContext = frame.getContext("2d")!;
-      frameContext.globalAlpha = visual.hidden ? 0 : Number(canvasStyle.opacity);
-      frameContext.drawImage(visual, 0, 0);
-      return {
-        targetMs, actualMs: performance.now() - startedAt,
+      results.push({
+        actualMs: performance.now() - startedAt,
         phase: form.dataset.capturePhase || "",
         composer: rect(form), prompt: rect(prompt), canvas: rect(visual), model: rect(model),
         canvasPosition: canvasStyle.position, canvasOpacity: Number(canvasStyle.opacity),
         canvasLeft: canvasStyle.left, canvasTop: canvasStyle.top, canvasRight: canvasStyle.right, canvasBottom: canvasStyle.bottom,
-        promptColor: promptStyle.color, promptColorAlpha, promptOpacity: Number(promptStyle.opacity),
-        promptFocused: document.activeElement === prompt, draft: prompt.value,
-        transformedAncestors, canvasPng: frame.width && frame.height ? frame.toDataURL("image/png") : "",
-      };
+        promptColor: promptStyle.color, promptColorAlpha: colorContext.getImageData(0, 0, 1, 1).data[3]!,
+        promptOpacity: Number(promptStyle.opacity), promptFocused: document.activeElement === prompt,
+        draft: prompt.value, transformedAncestors,
+      });
     };
+    const timeout = window.setTimeout(() => {
+      cancelAnimationFrame(frame);
+      reject(new Error(`Capture resolving did not settle; last phase: ${form.dataset.capturePhase || "missing"}`));
+    }, 2_000);
     const observer = new MutationObserver(() => {
-      const form = document.querySelector<HTMLElement>("#promptForm")!;
       if (form.dataset.capturePhase !== "resolving") return;
       observer.disconnect();
-      const startedAt = performance.now(), results: Array<Record<string, any>> = [];
-      sampleTargets.forEach((target, index) => window.setTimeout(() => {
-        results[index] = collect(target, startedAt);
-        if (results.filter(Boolean).length === sampleTargets.length) resolveSamples(results);
-      }, target));
+      window.clearTimeout(timeout);
+      startedAt = performance.now();
+      // Capture the synchronous reveal state before the first animation frame.
+      collect();
+      const settleTimeout = window.setTimeout(() => {
+        cancelAnimationFrame(frame);
+        reject(new Error(`Capture resolving did not settle; last phase: ${form.dataset.capturePhase || "missing"}`));
+      }, 2_000);
+      const settleFrame = () => {
+        collect();
+        if (form.dataset.capturePhase === "idle") {
+          window.clearTimeout(settleTimeout);
+          resolveSamples(results);
+        } else frame = requestAnimationFrame(settleFrame);
+      };
+      frame = requestAnimationFrame(settleFrame);
     });
-    observer.observe(document.querySelector("#promptForm")!, { attributes: true, attributeFilter: ["data-capture-phase"] });
-  }), targets);
+    observer.observe(form, { attributes: true, attributeFilter: ["data-capture-phase"] });
+  }));
   releaseInvocation();
   const samples = await sampling;
 
   const artifactDir = resolve(".pi/web/artifacts/decode-gate");
   mkdirSync(artifactDir, { recursive: true });
-  for (const sample of samples) {
-    const png = String(sample.canvasPng || "").replace(/^data:image\/png;base64,/, "");
-    if (png) writeFileSync(resolve(artifactDir, `handoff-${String(sample.targetMs).padStart(3, "0")}ms.png`), Buffer.from(png, "base64"));
-    delete sample.canvasPng;
-  }
   writeFileSync(resolve(artifactDir, "handoff-metrics.json"), JSON.stringify({ before, samples }, null, 2));
 
-  const pinned = samples.filter((sample) => sample.targetMs <= 205) as Array<any>;
-  const first = samples[0] as any;
+  const pinned = samples.filter((sample) => sample.phase === "resolving") as Array<any>;
+  const first = pinned[0] as any;
   expect(Math.abs(first.model.width - before.model.width)).toBeLessThanOrEqual(.5);
   expect(first.model.width).toBeGreaterThan(80);
   expect(Math.abs(first.model.x - before.model.x)).toBeLessThanOrEqual(1);
@@ -303,14 +311,13 @@ test("result handoff pins the rendered gate while the populated composer expands
   expect(Math.max(...pinned.map((sample) => sample.canvas.y)) - Math.min(...pinned.map((sample) => sample.canvas.y))).toBeLessThanOrEqual(.5);
   expect(pinned.map((sample) => sample.canvasOpacity)).toEqual([...pinned.map((sample) => sample.canvasOpacity)].sort((a, b) => b - a));
   expect(pinned.every((sample) => sample.draft === "captured result" && !sample.promptFocused)).toBe(true);
-  const at = (targetMs: number) => samples.find((sample) => sample.targetMs === targetMs)!;
-  expect(at(16).promptColorAlpha).toBe(0);
-  expect(at(190).promptColorAlpha).toBeGreaterThan(0);
-  expect(at(190).promptColorAlpha).toBeLessThan(255);
-  // The reveal contract completes before the 220ms cleanup, so this must be
-  // fully opaque while the pinned gate is still present.
-  expect(at(205).promptColorAlpha).toBeGreaterThanOrEqual(250);
-  expect(Math.abs(at(220).promptColorAlpha - at(205).promptColorAlpha)).toBeLessThanOrEqual(5);
+  const alphas = pinned.map((sample) => sample.promptColorAlpha as number);
+  expect(alphas[0]).toBe(0);
+  // Prove that text fades through a visible intermediate frame instead of
+  // hard-popping from transparent to opaque, independent of frame cadence.
+  expect(alphas.some((alpha) => alpha > 0 && alpha < 255)).toBe(true);
+  expect(alphas).toEqual([...alphas].sort((a, b) => a - b));
+  expect(Math.max(...alphas)).toBeGreaterThanOrEqual(250);
   const heights = samples.map((sample) => sample.composer.height);
   expect(heights).toEqual([...heights].sort((a, b) => a - b));
   expect(samples.at(-1)?.phase).toBe("idle");
