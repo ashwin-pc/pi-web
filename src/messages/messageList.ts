@@ -311,7 +311,12 @@ export function createMessageList(options: {
   let isStreaming = false;
   let shouldFollowStream = true;
   let programmaticScroll = false;
-  let userScrollIntent = false;
+  // A gesture can arrive before its corresponding scroll event. Keep that
+  // pending intent separate from the settled follow state so layout work in
+  // between cannot pull the viewport back to the tail.
+  let pendingUserScrollIntent = false;
+  let pendingUserScrollTop = 0;
+  let pendingUserScrollDirection = 0;
   let refreshSerial = 0;
   let mutationSerial = 0;
   let applyingRefresh = false;
@@ -323,7 +328,7 @@ export function createMessageList(options: {
     onLayout: () => {
       // A layout update must not cancel explicit scroll intent before the
       // browser has physically moved the viewport (e.g. the first wheel event).
-      if (userScrollIntent && !shouldFollowStream) setJumpButtonVisible(true);
+      if (!shouldFollowStream) setJumpButtonVisible(true);
       else showJumpButtonIfAwayFromBottom();
     },
   });
@@ -416,7 +421,7 @@ export function createMessageList(options: {
   function scrollToBottom() {
     if (bulkRendering) return;
     if (!shouldFollowStream) {
-      if (isAtBottom() && !userScrollIntent) {
+      if (isAtBottom() && !pendingUserScrollIntent) {
         shouldFollowStream = true;
         setJumpButtonVisible(false);
       } else {
@@ -433,7 +438,7 @@ export function createMessageList(options: {
       .find((message) => message.dataset.entryId === entryId);
     if (!target) return false;
     shouldFollowStream = false;
-    userScrollIntent = true;
+    pendingUserScrollIntent = false;
     target.scrollIntoView({ block: "center", inline: "nearest" });
     target.tabIndex = -1;
     target.classList.add("sessionCitationTarget");
@@ -449,7 +454,7 @@ export function createMessageList(options: {
     currentAssistantResponseKey = currentStreamingResponseKey;
     isStreaming = true;
     shouldFollowStream = true;
-    userScrollIntent = false;
+    pendingUserScrollIntent = false;
     activity.schedule();
     forceScrollToBottom();
     setJumpButtonVisible(false);
@@ -461,23 +466,39 @@ export function createMessageList(options: {
     // A wheel/key intent can arrive before the browser physically moves the
     // viewport. Settlement must not erase that explicit intent merely because
     // layout still reports the old bottom position.
-    if (userScrollIntent && !shouldFollowStream) setJumpButtonVisible(true);
+    if (!shouldFollowStream) setJumpButtonVisible(true);
     else if (isAtBottom()) setJumpButtonVisible(false);
   }
 
-  function isScrollIntentAwayFromBottom(event: Event) {
-    if (event instanceof WheelEvent) return event.deltaY < 0;
-    if (event instanceof KeyboardEvent) {
-      return event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey);
-    }
-    return false;
+  function userScrollDirection(event: Event) {
+    if (event instanceof WheelEvent) return Math.sign(event.deltaY);
+    if (!(event instanceof KeyboardEvent)) return 0;
+    if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) return -1;
+    if (["ArrowDown", "PageDown", "End"].includes(event.key) || event.key === " ") return 1;
+    return 0;
   }
 
   function pauseStreamFollow(event: Event) {
     if (programmaticScroll) return;
-    userScrollIntent = true;
+    const direction = userScrollDirection(event);
+    const canScroll = messagesEl.scrollHeight > messagesEl.clientHeight + 1;
+    const atPhysicalBottom = distanceFromBottom() <= 1;
+    const canMove = canScroll
+      && !(direction < 0 && messagesEl.scrollTop <= 1)
+      && !(direction > 0 && atPhysicalBottom);
+    // A no-op gesture at an edge must not leave stale intent behind.
+    if ((!canMove && direction !== 0) || !canScroll) {
+      pendingUserScrollIntent = false;
+      if (atPhysicalBottom) {
+        shouldFollowStream = true;
+        setJumpButtonVisible(false);
+      }
+      return;
+    }
+    pendingUserScrollIntent = true;
+    pendingUserScrollTop = messagesEl.scrollTop;
+    pendingUserScrollDirection = direction;
     if (!isStreaming) return;
-    if (isAtBottom() && !isScrollIntentAwayFromBottom(event)) return;
     shouldFollowStream = false;
     setJumpButtonVisible(true);
   }
@@ -505,29 +526,59 @@ export function createMessageList(options: {
     const payload = Object.fromEntries(params);
     openPanel?.(key, { action: "deep-link", payload });
   });
+  function settlePointerIntent() {
+    if (!pendingUserScrollIntent || Math.abs(messagesEl.scrollTop - pendingUserScrollTop) > 1) return;
+    pendingUserScrollIntent = false;
+    if (isAtBottom()) {
+      shouldFollowStream = true;
+      setJumpButtonVisible(false);
+    }
+  }
+
   messagesEl.addEventListener("wheel", pauseStreamFollow, { passive: true });
   messagesEl.addEventListener("touchstart", pauseStreamFollow, { passive: true });
+  messagesEl.addEventListener("touchend", settlePointerIntent, { passive: true });
+  messagesEl.addEventListener("touchcancel", settlePointerIntent, { passive: true });
   messagesEl.addEventListener("pointerdown", pauseStreamFollow);
+  messagesEl.addEventListener("pointerup", settlePointerIntent);
+  messagesEl.addEventListener("pointercancel", settlePointerIntent);
   messagesEl.addEventListener("keydown", (event) => {
     if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseStreamFollow(event);
   });
   messagesEl.addEventListener("scroll", () => {
     if (!actionMenu.hidden) closeActionMenu();
     if (programmaticScroll) return;
+    // Ignore layout/anchoring events until the viewport has moved in the
+    // gesture's direction. Once it has, the settled position is authoritative.
+    if (pendingUserScrollIntent) {
+      const delta = messagesEl.scrollTop - pendingUserScrollTop;
+      if (Math.abs(delta) <= 1 || (pendingUserScrollDirection !== 0 && Math.sign(delta) !== pendingUserScrollDirection)) return;
+      if (!isAtBottom()) {
+        if (pendingUserScrollDirection === 0) pendingUserScrollDirection = Math.sign(delta);
+        // The gesture moved away. Pause now, but retain its intent so a later
+        // layout/anchoring event at the bottom cannot silently resume follow.
+        shouldFollowStream = false;
+        setJumpButtonVisible(true);
+        return;
+      }
+      // Upward intent can coincide with anchoring that changes scrollTop while
+      // remaining at the bottom; only return/toward-bottom intent may resume.
+      if (pendingUserScrollDirection < 0) return;
+      pendingUserScrollIntent = false;
+    }
+    if (isAtBottom()) {
+      shouldFollowStream = true;
+      setJumpButtonVisible(false);
+      return;
+    }
     if (shouldFollowStream && !isNearBottom()) {
       shouldFollowStream = false;
       setJumpButtonVisible(true);
-      return;
-    }
-    if (!shouldFollowStream && isAtBottom() && !userScrollIntent) {
-      shouldFollowStream = true;
-      userScrollIntent = false;
-      setJumpButtonVisible(false);
     }
   }, { passive: true });
   jumpButton.addEventListener("click", () => {
     shouldFollowStream = true;
-    userScrollIntent = false;
+    pendingUserScrollIntent = false;
     forceScrollToBottom();
     setJumpButtonVisible(false);
   });
