@@ -38,7 +38,11 @@ export type ActionLauncherController = {
 
 export function initActionLauncher(
   elements: AppElements,
-  options: { onSessionDetails?: () => void; onExtensionAction?: (opensPanelKey: string) => void } = {},
+  options: {
+    onSessionDetails?: () => void;
+    onExtensionAction?: (opensPanelKey: string) => void;
+    onComposerBlurred?: () => void;
+  } = {},
 ): ActionLauncherController {
   const root = document.createElement("div");
   root.className = "actionLauncher";
@@ -123,7 +127,7 @@ export function initActionLauncher(
       button.addEventListener("click", () => {
         button.blur();
         elements.promptEl.blur();
-        elements.formEl.classList.add("compactInactive");
+        options.onComposerBlurred?.();
         setOpen(false);
         action.run();
       });
@@ -149,8 +153,8 @@ export function initActionLauncher(
   toggle.addEventListener("click", () => {
     setOpen(!root.classList.contains("open"));
     elements.promptEl.blur();
-    elements.formEl.classList.add("compactInactive");
     toggle.blur();
+    options.onComposerBlurred?.();
   });
   elements.promptEl.addEventListener("focus", () => setOpen(false));
   document.addEventListener("pointerdown", (event) => {

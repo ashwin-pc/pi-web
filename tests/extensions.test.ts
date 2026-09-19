@@ -288,9 +288,9 @@ describe("bundled extension path discovery", () => {
 
     expect(ui.web.capabilities).toEqual({
       apiVersion: 1,
-      slots: ["footer", "header-action", "artifact-action", "artifact-preview", "git-tab", "panel", "system-info", "fab"],
-      kinds: ["static", "rendered"],
-      effects: ["open-panel"],
+      slots: ["footer", "header-action", "artifact-action", "artifact-preview", "git-tab", "panel", "system-info", "fab", "composer-input"],
+      kinds: ["static", "rendered", "capture"],
+      effects: ["open-panel", "insert-composer-text"],
     });
     expect(Object.isFrozen(ui.web.capabilities)).toBe(true);
     expect(Object.isFrozen(ui.web.capabilities.slots)).toBe(true);
@@ -331,6 +331,110 @@ describe("bundled extension path discovery", () => {
     })).toThrow("conflicting or missing delivery fields");
     ui.web.contribute("status", undefined);
     expect(bridge.entries(session).webContributions).toEqual([]);
+  });
+
+  it("publishes and securely invokes generic composer audio capture contributions", async () => {
+    let ui: any;
+    let received: any;
+    const released: string[] = [];
+    let registrationId = "";
+    const captureStore = {
+      consume: vi.fn(async (_id: string, owner: any, policy: any) => {
+        expect(owner).toEqual({ sessionId: "session", contributionKey: "voice.input", registrationId });
+        expect(policy).toMatchObject({ maxSeconds: 30, maxBytes: 2_000_000 });
+        return { path: "/private/capture", mimeType: "audio/webm", size: 42, durationMs: 900 };
+      }),
+      releasePath: vi.fn(async (path: string) => { released.push(path); }),
+    };
+    const bridge = createWebUiBridge({
+      captureStore, emit: () => undefined, clientCount: () => 1,
+      withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+    ui.web.contribute("voice.input", {
+      slot: "composer-input", kind: "capture", title: "Dictate", icon: "mic",
+      capture: { media: "audio", maxSeconds: 30, maxBytes: 2_000_000, mimeTypes: ["audio/webm"] },
+      invoke: ({ capture, signal }: any) => {
+        expect(signal).toBeInstanceOf(AbortSignal);
+        received = capture;
+        return { effects: [{ type: "insert-composer-text", text: "transcript", placement: "selection" }] };
+      },
+    });
+
+    const descriptor = bridge.entries(session).webContributions[0] as any;
+    registrationId = descriptor.capture.registrationId;
+    expect(registrationId).toMatch(/^[a-f0-9-]{36}$/);
+    expect(descriptor).toEqual({
+      version: 1, key: "voice.input", slot: "composer-input", kind: "capture", title: "Dictate", label: undefined, icon: "mic",
+      capture: { media: "audio", maxSeconds: 30, maxBytes: 2_000_000, mimeTypes: ["audio/webm"], registrationId },
+    });
+    expect(bridge.captureRegistration(session, "voice.input", registrationId)).toEqual({
+      key: "voice.input", registrationId, policy: { media: "audio", maxSeconds: 30, maxBytes: 2_000_000, mimeTypes: ["audio/webm"] },
+    });
+    await expect(bridge.invokeContribution(session, { slot: "composer-input", key: "voice.input", event: { captureId: "owned-id", capture: { path: "/attacker" } } }))
+      .resolves.toEqual({ label: "Dictate", effects: [{ type: "insert-composer-text", text: "transcript", placement: "selection" }] });
+    expect(received).toEqual({ path: "/private/capture", mimeType: "audio/webm", size: 42, durationMs: 900 });
+    expect(captureStore.consume).toHaveBeenCalledWith("owned-id", { sessionId: "session", contributionKey: "voice.input", registrationId }, expect.any(Object));
+    expect(released).toEqual(["/private/capture"]);
+
+    ui.web.contribute("voice.input", {
+      slot: "composer-input", kind: "capture", title: "Replacement",
+      capture: { media: "audio", maxSeconds: 10 }, invoke: () => ({ effects: [{ type: "insert-composer-text", text: "new" }] }),
+    });
+    const replacement = (bridge.entries(session).webContributions[0] as any).capture.registrationId;
+    expect(replacement).not.toBe(registrationId);
+    expect(bridge.captureRegistration(session, "voice.input", registrationId)).toBeUndefined();
+
+    const contribution = (mimeTypes: unknown) => ({
+      slot: "composer-input", kind: "capture", title: "MIME validation",
+      capture: { media: "audio", mimeTypes },
+      invoke: () => ({ effects: [{ type: "insert-composer-text", text: "ok" }] }),
+    });
+    expect(() => ui.web.contribute("mime.nonarray", contribution("audio/webm"))).toThrow("non-empty array");
+    expect(() => ui.web.contribute("mime.empty", contribution([]))).toThrow("between 1 and 20");
+    expect(() => ui.web.contribute("mime.invalid", contribution(["text/plain", 7]))).toThrow("valid audio MIME");
+    expect(() => ui.web.contribute("mime.mixed", contribution(["audio/webm", "bad"]))).toThrow("valid audio MIME");
+    expect(() => ui.web.contribute("mime.first", contribution(["audio/!private"]))).toThrow("valid audio MIME");
+    expect(() => ui.web.contribute("mime.long", contribution([`audio/${"a".repeat(128)}`]))).toThrow("valid audio MIME");
+    expect(() => ui.web.contribute("mime.many", contribution(Array.from({ length: 21 }, () => "audio/webm")))).toThrow("between 1 and 20");
+    ui.web.contribute("mime.normalized", contribution([
+      " Audio/WebM; codecs=opus ", "audio/webm", "audio/x-private-", "audio/vnd.example.codec+json",
+    ]));
+    expect((bridge.entries(session).webContributions.find((entry: any) => entry.key === "mime.normalized") as any).capture.mimeTypes)
+      .toEqual(["audio/webm", "audio/x-private-", "audio/vnd.example.codec+json"]);
+  });
+
+  it("aborts a non-cooperative capture invocation and releases its file", async () => {
+    let ui: any;
+    const releasePath = vi.fn(async () => undefined);
+    const bridge = createWebUiBridge({
+      captureStore: {
+        consume: async () => ({ path: "/private/hung", mimeType: "audio/webm", size: 1, durationMs: 1 }),
+        releasePath,
+      },
+      emit: () => undefined, clientCount: () => 1,
+      withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = { sessionId: "session", bindExtensions: async (options: any) => { ui = options.uiContext; } };
+    await bridge.bind(session);
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    ui.web.contribute("hung", {
+      slot: "composer-input", kind: "capture", title: "Hung", capture: { media: "audio" },
+      invoke: () => { markStarted(); return new Promise(() => undefined); },
+    });
+    const controller = new AbortController();
+    const invoked = bridge.invokeContribution(session, { slot: "composer-input", key: "hung", event: { captureId: "id" } }, controller.signal);
+    await started;
+    controller.abort();
+    await expect(invoked).rejects.toMatchObject({ status: 408 });
+    expect(releasePath).toHaveBeenCalledWith("/private/hung");
   });
 
   it("registers, invokes, sanitizes, and clears system-info contributions", async () => {

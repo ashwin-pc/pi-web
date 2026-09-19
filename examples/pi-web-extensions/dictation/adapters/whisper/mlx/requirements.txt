@@ -1,0 +1,2 @@
+# Keep this adapter optional: installing it does not download model weights.
+mlx-whisper

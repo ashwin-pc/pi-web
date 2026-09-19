@@ -42,6 +42,7 @@ import {
   type SessionStateController,
 } from "./app/sessionState.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
+import type { ComposerCaptureDescriptor } from "./composer/composerCapture.js";
 import { initActionLauncher, type ActionLauncherController } from "./app/actionLauncher.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { createActiveWorkerDock, type ActiveWorkerDockController } from "./composer/activeWorkerDock.js";
@@ -417,6 +418,10 @@ function renderActiveSessionMetadata() {
   webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
   systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   actionLauncher?.setExtensionActions(inSlot("fab"));
+  const captureContributions = inSlot("composer-input").filter((entry): entry is ComposerCaptureDescriptor =>
+    entry.kind === "capture" && entry.capture?.media === "audio" && typeof entry.capture.registrationId === "string" && typeof entry.key === "string",
+  );
+  composer?.setCaptureContributions(captureContributions);
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
   elements.conversationTreeButton.hidden = view?.capabilities?.tree === false;
@@ -746,6 +751,7 @@ initStaticIcons();
 actionLauncher = initActionLauncher(elements, {
   onSessionDetails: () => sessionInfo.open(),
   onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey),
+  onComposerBlurred: () => composer.syncCompactState(),
 });
 statusBar.init();
 sessions.init();

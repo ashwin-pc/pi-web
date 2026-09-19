@@ -2,6 +2,9 @@ import { randomUUID } from "node:crypto";
 import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
 import type { PiWebArtifactAction, PiWebArtifactPreview, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
+import type { AudioCapturePolicy, ValidatedAudioCapture } from "./captureStore.js";
+import { MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
+import { HttpError } from "../shared/httpError.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
 
@@ -16,6 +19,11 @@ export interface WebUiBridgeDependencies {
   settingsStore: ReturnType<typeof createSettingsStore>;
   /** Allowed model tokens ("<provider>:<id>") for `optionsSource: "models"` fields. */
   modelOptions(): Set<string>;
+  captureStore?: {
+    consume(id: string, owner: { sessionId: string; contributionKey: string; registrationId: string }, policy: AudioCapturePolicy): Promise<ValidatedAudioCapture>;
+    releasePath(path: string): Promise<void>;
+    releaseOwner?(sessionId: string): Promise<void>;
+  };
 }
 
 export function createWebUiBridge(deps: WebUiBridgeDependencies) {
@@ -48,7 +56,8 @@ type WebContribution =
   | { version: 1; key: string; slot: "git-tab"; kind: "rendered"; source: PiWebGitTab }
   | { version: 1; key: string; slot: "panel"; kind: "rendered"; source: PiWebPanel }
   | { version: 1; key: string; slot: "system-info"; kind: "rendered"; source: PiWebPanel }
-  | { version: 1; key: string; slot: "fab"; kind: "static"; source: PiWebFabAction };
+  | { version: 1; key: string; slot: "fab"; kind: "static"; source: PiWebFabAction }
+  | { version: 1; key: string; slot: "composer-input"; kind: "capture"; source: Extract<PiWebContribution, { slot: "composer-input" }>; policy: AudioCapturePolicy; registrationId: string };
 
 /** Canonical per-runtime registry. Legacy surfaces below are wire adapters over it. */
 const webContributionStates = new WeakMap<object, Map<string, WebContribution>>();
@@ -336,6 +345,7 @@ function releaseSessionSettings(value: any) {
   const session = value as object;
   disposedSettingsSessions.add(session);
   deps.extensionHttp?.revokeOwner(session);
+  if (value?.sessionId) void deps.captureStore?.releaseOwner?.(String(value.sessionId));
   const previousSchemaList = settingsSchemaListKey();
   for (const [id, entry] of activeSettingsSchemas) {
     if (!entry.registrants.delete(session)) continue;
@@ -390,6 +400,39 @@ function normalizePiWebFooter(value: unknown): PiWebFooter | undefined {
 }
 
 const cleanIcon = (value: unknown) => cleanHeaderActionText(value, 80);
+
+function normalizeAudioMimeTypes(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new TypeError("capture.mimeTypes must be a non-empty array");
+  if (value.length === 0 || value.length > 20) throw new TypeError("capture.mimeTypes must contain between 1 and 20 entries");
+  const normalized = value.map((item) => {
+    const mime = typeof item === "string" ? item.split(";", 1)[0]?.trim().toLowerCase() : "";
+    const subtype = mime.startsWith("audio/") ? mime.slice("audio/".length) : "";
+    // RFC 6838 restricted-name: an alphanumeric first character followed by
+    // at most 126 alphanumeric or !#$&-^_.+ characters. The final character
+    // is not separately restricted by the ABNF.
+    if (!subtype || subtype.length > 127 || !/^[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(subtype)) {
+      throw new TypeError("capture.mimeTypes entries must be valid audio MIME types");
+    }
+    return mime;
+  });
+  return [...new Set(normalized)];
+}
+
+function normalizeAudioCapturePolicy(value: unknown): AudioCapturePolicy {
+  if (!value || typeof value !== "object" || (value as Record<string, unknown>).media !== "audio") {
+    throw new TypeError("Composer capture contribution requires capture.media=audio");
+  }
+  const capture = value as Record<string, unknown>;
+  const maxSeconds = capture.maxSeconds === undefined ? MAX_CAPTURE_SECONDS : Number(capture.maxSeconds);
+  const maxBytes = capture.maxBytes === undefined ? MAX_CAPTURE_BYTES : Number(capture.maxBytes);
+  if (!Number.isFinite(maxSeconds) || maxSeconds < 1) throw new TypeError("capture.maxSeconds must be positive");
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new TypeError("capture.maxBytes must be a positive integer");
+  const mimeTypes = Object.prototype.hasOwnProperty.call(capture, "mimeTypes")
+    ? normalizeAudioMimeTypes(capture.mimeTypes)
+    : undefined;
+  return { media: "audio", maxSeconds: Math.min(maxSeconds, MAX_CAPTURE_SECONDS), maxBytes: Math.min(maxBytes, MAX_CAPTURE_BYTES), ...(mimeTypes ? { mimeTypes } : {}) };
+}
+
 const cleanArtifactExtensions = (value: unknown) => Array.isArray(value) ? value.flatMap((extension) => {
   const cleaned = cleanHeaderActionText(extension, 30)?.toLowerCase();
   return cleaned && /^\.[a-z0-9]+$/.test(cleaned) ? [cleaned] : [];
@@ -440,6 +483,10 @@ const contributionPolicies = {
   fab: {
     allowedKinds: ["static"], viewFields: [], viewBudget: 0,
     descriptor: (entry: Extract<WebContribution, { slot: "fab" }>) => ({ opens: cleanContributionKey(entry.source.opens) }),
+  },
+  "composer-input": {
+    allowedKinds: ["capture"], viewFields: [], effects: ["insert-composer-text"], viewBudget: 100_000,
+    descriptor: (entry: Extract<WebContribution, { slot: "composer-input" }>) => ({ capture: { ...entry.policy, registrationId: entry.registrationId } }),
   },
 } as const;
 
@@ -496,9 +543,8 @@ function normalizedPublicContribution(key: string, spec: PiWebContribution): Web
   const delivery = spec as PiWebContribution & { view?: unknown; render?: unknown; entry?: unknown };
   const deliveryFields = [delivery.view !== undefined, delivery.render !== undefined, delivery.entry !== undefined].filter(Boolean).length;
   if (delivery.entry !== undefined) throw new TypeError("Webview contributions are not supported yet");
-  if (spec.slot === "fab" ? deliveryFields !== 0 : deliveryFields !== 1) {
-    throw new TypeError("Contribution has conflicting or missing delivery fields");
-  }
+  const expectedDeliveryFields = spec.slot === "fab" || spec.slot === "composer-input" ? 0 : 1;
+  if (deliveryFields !== expectedDeliveryFields) throw new TypeError("Contribution has conflicting or missing delivery fields");
   const policy = contributionPolicies[spec.slot as ContributionSlot];
   if (!policy || !(policy.allowedKinds as readonly string[]).includes(spec.kind)) {
     throw new TypeError(`Unsupported contribution slot/kind: ${String(spec.slot)}/${String(spec.kind)}`);
@@ -511,6 +557,9 @@ function normalizedPublicContribution(key: string, spec: PiWebContribution): Web
   if (spec.slot === "fab" && spec.kind === "static") {
     if (!cleanContributionKey(spec.opens)) throw new TypeError("FAB contribution requires a valid panel key in opens");
     return { version: 1, key, slot: "fab", kind: "static", source: spec };
+  }
+  if (spec.slot === "composer-input" && spec.kind === "capture" && typeof spec.invoke === "function") {
+    return { version: 1, key, slot: "composer-input", kind: "capture", source: spec, policy: normalizeAudioCapturePolicy(spec.capture), registrationId: randomUUID() };
   }
   if ((spec.slot === "header-action" || spec.slot === "artifact-action" || spec.slot === "artifact-preview" || spec.slot === "git-tab" || spec.slot === "panel" || spec.slot === "system-info")
     && spec.kind === "rendered" && typeof spec.render === "function") {
@@ -922,6 +971,51 @@ async function bindWebExtensions(value: any) {
     return { title: cleanHeaderActionText(result?.title), html };
   }
 
+  function captureRegistration(value: any, keyValue: unknown, registrationValue?: unknown) {
+    const key = cleanContributionKey(keyValue);
+    if (!key) return undefined;
+    const contribution = contributionState(value).get(contributionId("composer-input", key));
+    if (contribution?.slot !== "composer-input") return undefined;
+    if (registrationValue !== undefined && registrationValue !== contribution.registrationId) return undefined;
+    return { key, policy: contribution.policy, registrationId: contribution.registrationId };
+  }
+
+  async function invokeComposerCapture(value: any, input: { key?: unknown; captureId?: unknown; signal?: AbortSignal }) {
+    const key = cleanContributionKey(input.key);
+    if (!key) throw new Error("key is required");
+    const contribution = contributionState(value).get(contributionId("composer-input", key));
+    if (!contribution || contribution.slot !== "composer-input") throw new Error("Composer capture contribution not found");
+    const captureId = typeof input.captureId === "string" ? input.captureId : "";
+    if (!captureId || !deps.captureStore) throw new Error("Audio capture is unavailable");
+    const capture = await deps.captureStore.consume(captureId, {
+      sessionId: String(value.sessionId), contributionKey: key, registrationId: contribution.registrationId,
+    }, contribution.policy);
+    try {
+      const signal = input.signal ?? new AbortController().signal;
+      if (signal.aborted) throw new HttpError("Composer capture invocation aborted", 408);
+      const invocation = Promise.resolve().then(() => contribution.source.invoke({ capture, signal }));
+      // Promise.race attaches handlers to invocation, so a late extension
+      // rejection after abort cannot become unhandled.
+      const aborted = new Promise<never>((_resolve, reject) => {
+        const fail = () => reject(new HttpError("Composer capture invocation aborted", 408));
+        if (signal.aborted) fail();
+        else signal.addEventListener("abort", fail, { once: true });
+      });
+      const result = await Promise.race([invocation, aborted]);
+      const rawEffects = Array.isArray(result?.effects) ? result.effects : [];
+      const effects = rawEffects.flatMap((effect) => {
+        if (effect?.type !== "insert-composer-text") return [];
+        const text = cleanFooterText(effect.text, contributionPolicies["composer-input"].viewBudget);
+        const placement = effect.placement === "cursor" || effect.placement === "end" ? effect.placement : "selection";
+        return text ? [{ type: "insert-composer-text" as const, text, placement }] : [];
+      }).slice(0, 1);
+      if (!effects.length) throw new Error("Composer capture returned no supported effect");
+      return { label: cleanHeaderActionText(contribution.source.label) || cleanHeaderActionText(contribution.source.title) || key, effects };
+    } finally {
+      await deps.captureStore.releasePath(capture.path);
+    }
+  }
+
   async function invokeSystemInfo(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; fields?: unknown }) {
     const { key, contribution } = renderedContribution(value, "system-info", input.key);
     if (!contribution) throw new Error("System-info contribution not found");
@@ -948,7 +1042,7 @@ async function bindWebExtensions(value: any) {
     return { title: cleanHeaderActionText(result?.title), html };
   }
 
-  async function invokeContribution(value: any, input: { slot?: unknown; key?: unknown; event?: unknown }) {
+  async function invokeContribution(value: any, input: { slot?: unknown; key?: unknown; event?: unknown }, signal?: AbortSignal) {
     const slot = input.slot;
     const event = input.event && typeof input.event === "object" ? input.event as Record<string, unknown> : {};
     if (slot === "header-action") return invokeHeaderAction(value, input.key);
@@ -967,6 +1061,7 @@ async function bindWebExtensions(value: any) {
     if (slot === "system-info") {
       return invokeSystemInfo(value, { key: input.key, action: event.action, payload: event.payload, fields: event.fields });
     }
+    if (slot === "composer-input") return invokeComposerCapture(value, { key: input.key, captureId: event.captureId, signal });
     throw new Error("Contribution is not invokable");
   }
 
@@ -990,6 +1085,8 @@ async function bindWebExtensions(value: any) {
     invokeGitTab,
     invokePanel,
     invokeSystemInfo,
+    invokeComposerCapture,
+    captureRegistration,
     respond,
     cancelPendingInteractions,
     runtimeErrors: (value: object) => [...(extensionRuntimeErrors.get(value) || [])],

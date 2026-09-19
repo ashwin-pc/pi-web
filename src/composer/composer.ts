@@ -11,6 +11,7 @@ import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
 import type { QuoteRepliesController, QuoteReplySubmission } from "../quotes/quoteReplies.js";
 import type { SessionDraftStore } from "../drafts/sessionDraftStore.js";
+import { capturedTextInsertion, createComposerCapture, type ComposerCaptureDescriptor } from "./composerCapture.js";
 
 type BarcodeDetectorLike = {
   detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
@@ -26,6 +27,8 @@ export type ComposerController = {
   renderAttachments: () => void;
   switchSession: (sessionId: string) => void;
   setPromptText: (text: string) => void;
+  setCaptureContributions: (contributions: ComposerCaptureDescriptor[]) => void;
+  syncCompactState: () => void;
   stopStreaming: () => Promise<void>;
   updatePrimaryAction: () => void;
   updateQueueToggle: () => void;
@@ -69,6 +72,29 @@ export function createComposer(options: {
   let pendingFollowUp: string[] = [];
   const optimisticUserMessages = new Set<string>();
   let ownedSessionId = "";
+  let promptRevision = 0;
+  const composerCapture = createComposerCapture({
+    container: elements.composerExtensionInputs,
+    prompt: elements.promptEl,
+    api,
+    getSessionId: () => ownedSessionId,
+    getRevision: () => promptRevision,
+    insertText(text, placement, snapshot) {
+      const insertion = capturedTextInsertion({ text, placement, snapshot, current: {
+        sessionId: ownedSessionId, revision: promptRevision, value: elements.promptEl.value,
+        selectionStart: elements.promptEl.selectionStart, selectionEnd: elements.promptEl.selectionEnd,
+      } });
+      if (!insertion) return false;
+      elements.promptEl.value = insertion.value;
+      elements.promptEl.setSelectionRange(insertion.cursor, insertion.cursor);
+      promptRevision += 1;
+      persistDraft();
+      updatePrimaryAction();
+      updateCompactInactive();
+      return true;
+    },
+    onError: (message) => addMessage("system", message, "error"),
+  });
 
   function renderPendingQueue() {
     const entries = [
@@ -145,7 +171,8 @@ export function createComposer(options: {
 
   function updateCompactInactive() {
     const active = document.activeElement;
-    applyCompactInactive(!active || !elements.formEl.contains(active));
+    const unfocused = !active || !elements.formEl.contains(active);
+    applyCompactInactive(unfocused && !elements.promptEl.value.trim());
   }
 
   async function stopStreaming() {
@@ -183,7 +210,9 @@ export function createComposer(options: {
   }
 
   function setPromptText(text: string) {
+    composerCapture.cancel();
     elements.promptEl.value = text;
+    promptRevision += 1;
     persistDraft();
     updatePrimaryAction();
     renderSlashCommands();
@@ -244,6 +273,7 @@ export function createComposer(options: {
   function applySlashCommand(command: SlashCommand) {
     const leadingWhitespace = elements.promptEl.value.match(/^\s*/)?.[0] || "";
     elements.promptEl.value = `${leadingWhitespace}/${command.name} `;
+    promptRevision += 1;
     elements.promptEl.setSelectionRange(elements.promptEl.value.length, elements.promptEl.value.length);
     updatePrimaryAction();
     hideSlashCommands();
@@ -395,6 +425,8 @@ export function createComposer(options: {
 
   function switchSession(sessionId: string) {
     if (!sessionId || sessionId === ownedSessionId) return;
+    composerCapture.cancel();
+    promptRevision += 1;
     if (ownedSessionId) {
       drafts.update(ownedSessionId, { text: elements.promptEl.value, attachments: state.attachedImages }, true);
       rememberContextAttachments();
@@ -412,6 +444,7 @@ export function createComposer(options: {
     if (draft.attachments.length) recordDebugEvent("attachment-draft-restored", { sessionId, count: draft.attachments.length });
     renderAttachments();
     updatePrimaryAction();
+    updateCompactInactive();
   }
 
   function renderAttachments() {
@@ -708,7 +741,9 @@ export function createComposer(options: {
       if (!message && attachments.length === 0) return;
 
       if (rawMessage.startsWith("!") && attachments.length === 0 && contexts.length === 0 && !quoteSubmission) {
+        composerCapture.cancel();
         elements.promptEl.value = "";
+        promptRevision += 1;
         clearDraft();
         hideSlashCommands();
         updatePrimaryAction();
@@ -733,7 +768,9 @@ export function createComposer(options: {
         }
 
         if (!commandInfo || commandInfo.source === "web") {
+          composerCapture.cancel();
           elements.promptEl.value = "";
+          promptRevision += 1;
           clearDraft();
           hideSlashCommands();
           updatePrimaryAction();
@@ -749,7 +786,9 @@ export function createComposer(options: {
         }
       }
 
+      composerCapture.cancel();
       elements.promptEl.value = "";
+      promptRevision += 1;
       clearDraft();
       hideSlashCommands();
       state.attachedImages = [];
@@ -789,7 +828,14 @@ export function createComposer(options: {
         }, true);
         if (ownedSessionId === sessionId) {
           state.attachedImages = restoredAttachments;
-          if (!elements.promptEl.value) elements.promptEl.value = rawMessage;
+          if (!elements.promptEl.value) {
+            // A capture may have started against the empty post-submit editor.
+            // Invalidate its snapshot before restoring the failed submission so
+            // a late transcript cannot splice itself into that restored text.
+            composerCapture.cancel();
+            elements.promptEl.value = rawMessage;
+            promptRevision += 1;
+          }
           if (contextAttachments.length === 0) contextAttachments = contexts;
           rememberContextAttachments(sessionId);
           renderAttachments();
@@ -850,8 +896,10 @@ export function createComposer(options: {
     elements.promptEl.addEventListener("focus", () => { void maybeRefreshSlashCommands(); });
     elements.promptEl.addEventListener("blur", () => window.setTimeout(hideSlashCommands, 100));
     elements.promptEl.addEventListener("input", () => {
+      promptRevision += 1;
       persistDraft();
       updatePrimaryAction();
+      updateCompactInactive();
       slashCommandSelectedIndex = 0;
       renderSlashCommands();
       void maybeRefreshSlashCommands();
@@ -949,16 +997,21 @@ export function createComposer(options: {
       sessionStorage.removeItem(restoreFocusStorageKey);
     } catch { /* ignore */ }
 
-    applyCompactInactive(restoreFocus ? false : !elements.formEl.contains(document.activeElement));
-    if (restoreFocus) {
-      // Defer until the browser has completed its own load-time focus handling.
-      window.requestAnimationFrame(() => elements.promptEl.focus({ preventScroll: true }));
-    }
+    if (restoreFocus) applyCompactInactive(false);
+    else updateCompactInactive();
+    // Defer until the browser has completed load-time focus and form-value
+    // restoration before deriving compact state from the active draft.
+    window.requestAnimationFrame(() => {
+      if (restoreFocus) elements.promptEl.focus({ preventScroll: true });
+      updateCompactInactive();
+    });
   }
 
   return {
     init,
     addContextAttachment,
+    setCaptureContributions: (contributions) => composerCapture.setContributions(contributions, ownedSessionId),
+    syncCompactState: updateCompactInactive,
     renderAttachments,
     switchSession,
     setPromptText,

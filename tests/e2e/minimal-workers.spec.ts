@@ -116,12 +116,17 @@ test("pinned parent restores waiting after reload before opening, then shows its
   ] } }));
 
   // Declare through the server's generic dependency event contract before the
-  // browser connects. The subsequent reload must recover it from status; there
-  // is deliberately no realtime declaration available to the new page.
+  // browser connects. The subsequent reload must recover membership from the
+  // status snapshot; there is deliberately no realtime dependency declaration
+  // available to the new page. Runtime is separately live (and mock runtime
+  // broadcasts are intentionally non-durable), so publish its current value
+  // only after the reloaded page is ready to receive it.
   await dependencyEvent(page, "mock-older", ["mock-current"]);
   await pinSettlementSnapshot(page, "mock-older", ["mock-current"]);
   await page.goto("/?sessionId=mock-current");
   await page.reload();
+  await expect(page.locator("#prompt")).toBeVisible();
+  await runtimeEvent(page, "mock-current", runtime(true));
 
   const parentTab = page.locator('.sessionBarTab[data-session-id="mock-older"]');
   await expect(parentTab).toHaveClass(/\bpinned\b/);
