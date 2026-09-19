@@ -1,3 +1,5 @@
+import { createComposerCaptureLayout } from "./composerCaptureLayout.js";
+
 export type CaptureVisualPhase = "permission" | "recording" | "handoff" | "processing" | "resolving" | "idle";
 
 type Sample = { at: number; rms: number };
@@ -53,9 +55,8 @@ export function createComposerCaptureRenderer(container: HTMLElement) {
   let textRevealColor: [number, number, number] = [242, 242, 242];
   const footer = composer.querySelector<HTMLElement>(".composerFooter");
   const captureInputs = container;
-  let chromePinned = false;
   let chromeReleaseTimer: number | undefined;
-  let pinnedModelGeometry: DOMRect | undefined;
+  const chromeLayout = createComposerCaptureLayout(composer, footer, captureInputs);
 
   function clearTextReveal() {
     textRevealActive = false;
@@ -73,87 +74,10 @@ export function createComposerCaptureRenderer(container: HTMLElement) {
     return [pixel[0]!, pixel[1]!, pixel[2]!];
   }
 
-  function pinChrome() {
-    if (!footer) return;
-    const composerRect = composer.getBoundingClientRect();
-    const footerRect = footer.getBoundingClientRect();
-    const model = composer.querySelector<HTMLElement>(".modelControl");
-    const modelRect = model?.getBoundingClientRect();
-    pinnedModelGeometry = modelRect;
-    footer.style.position = "absolute";
-    footer.style.left = `${footerRect.left - composerRect.left - 1}px`;
-    footer.style.bottom = `${composerRect.bottom - footerRect.bottom - 1}px`;
-    footer.style.width = `${footerRect.width}px`;
-    footer.style.height = `${footerRect.height}px`;
-    footer.style.zIndex = "3";
-    composer.dataset.captureChrome = "settling";
-    composer.style.setProperty("--capture-chrome-action-width", "0px");
-    const captureWidth = captureInputs.getBoundingClientRect().width;
-    captureInputs.style.width = `${captureWidth}px`;
-    captureInputs.style.flex = `0 0 ${captureWidth}px`;
-    captureInputs.style.overflow = "hidden";
-    // Reading the pinned rectangle commits this as the transition origin before
-    // synchronous draft insertion changes the composer's canonical layout.
-    footer.getBoundingClientRect();
-    if (model && modelRect) {
-      const pinnedModel = model.getBoundingClientRect();
-      const slotDelta = modelRect.width - pinnedModel.width;
-      if (Math.abs(slotDelta) > .01) {
-        footer.style.width = `${footerRect.width + slotDelta}px`;
-        footer.getBoundingClientRect();
-      }
-    }
-    chromePinned = true;
-  }
-
   function releaseChrome() {
     if (chromeReleaseTimer !== undefined) window.clearTimeout(chromeReleaseTimer);
     chromeReleaseTimer = undefined;
-    if (!chromePinned || !footer) return;
-    footer.style.removeProperty("position");
-    footer.style.removeProperty("left");
-    footer.style.removeProperty("bottom");
-    footer.style.removeProperty("width");
-    footer.style.removeProperty("height");
-    footer.style.removeProperty("z-index");
-    footer.style.removeProperty("transition");
-    delete composer.dataset.captureChrome;
-    composer.style.removeProperty("--capture-chrome-action-width");
-    composer.style.removeProperty("padding-bottom");
-    captureInputs.style.removeProperty("width");
-    captureInputs.style.removeProperty("flex");
-    captureInputs.style.removeProperty("flex-basis");
-    captureInputs.style.removeProperty("overflow");
-    captureInputs.style.removeProperty("transition");
-    pinnedModelGeometry = undefined;
-    chromePinned = false;
-  }
-
-  function settleChrome() {
-    if (!chromePinned || !footer) return;
-    const model = composer.querySelector<HTMLElement>(".modelControl");
-    if (model && pinnedModelGeometry) {
-      const currentModel = model.getBoundingClientRect();
-      const currentFooter = footer.getBoundingClientRect();
-      footer.style.transition = "none";
-      footer.style.width = `${currentFooter.width + pinnedModelGeometry.width - currentModel.width}px`;
-      footer.style.left = `${parseFloat(footer.style.left || "0") + pinnedModelGeometry.x - currentModel.x}px`;
-      footer.getBoundingClientRect();
-    }
-    // The footer is temporarily out of flow; reserve its final row so the
-    // composer's auto-height target does not change again when cleanup restores it.
-    composer.style.paddingBottom = "40px";
-    footer.style.transition = "left 140ms linear, bottom 140ms linear, width 140ms linear, height 140ms linear";
-    footer.style.left = "0px";
-    footer.style.bottom = "0px";
-    footer.style.width = "100%";
-    footer.style.height = "40px";
-    composer.style.setProperty("--capture-chrome-action-width", "40px");
-    const buttonCount = captureInputs.querySelectorAll(".composerCaptureButton").length;
-    const targetCaptureWidth = buttonCount * 40 + 40;
-    captureInputs.style.transition = "width 140ms linear, flex-basis 140ms linear";
-    captureInputs.style.width = `${targetCaptureWidth}px`;
-    captureInputs.style.flexBasis = `${targetCaptureWidth}px`;
+    chromeLayout.release();
   }
 
   function pinExitFrame() {
@@ -397,20 +321,13 @@ export function createComposerCaptureRenderer(container: HTMLElement) {
       draw(now);
       cancelAnimationFrame(frame); frame = 0;
       pinExitFrame();
-      pinChrome();
+      chromeLayout.pin();
     } else if (next === "idle") {
       clearTextReveal();
-      if (chromePinned && footer) {
-        // Idle swaps the reserved cancel slot back to the real attachment slot.
-        // Keep the footer in the same visual track until the parent height has
-        // settled, then restore normal flow with equivalent geometry.
-        const buttonCount = captureInputs.querySelectorAll(".composerCaptureButton").length;
-        const targetWidth = buttonCount * 40;
-        // The attachment appears in this same style update as the pseudo utility
-        // slot disappears, so exchange those equal widths without interpolating.
-        captureInputs.style.transition = "none";
-        captureInputs.style.width = `${targetWidth}px`;
-        captureInputs.style.flexBasis = `${targetWidth}px`;
+      if (chromeLayout.isPinned() && footer) {
+        // Exchange the pseudo utility slot for the real attachment without
+        // interpolating, then restore flow once the parent has settled.
+        chromeLayout.prepareIdle();
         const remaining = Math.max(0, CHROME_SETTLE_MS - (now - phaseStarted));
         chromeReleaseTimer = window.setTimeout(() => {
           chromeReleaseTimer = undefined;
@@ -444,7 +361,7 @@ export function createComposerCaptureRenderer(container: HTMLElement) {
       const target = getComputedStyle(composer).getPropertyValue("--text").trim() || "#f2f2f2";
       textRevealColor = parseColor(target);
       textRevealActive = true;
-      settleChrome();
+      chromeLayout.settle();
       const elapsed = performance.now() - phaseStarted;
       const alpha = reduced.matches ? 1 : clamp((elapsed - TEXT_REVEAL_DELAY_MS) / TEXT_REVEAL_DURATION_MS);
       const [red, green, blue] = textRevealColor;

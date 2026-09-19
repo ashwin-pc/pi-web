@@ -60,9 +60,18 @@ jobs:
       - name: Install JavaScript dependencies
         run: npm ci
 
-      - name: Python worker and setup tests
+      - name: Ensure FFmpeg for Linux decode smoke coverage
+        if: runner.os == 'Linux'
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y ffmpeg
+          fi
+          ffmpeg -version
+
+      - name: Python worker, setup, and audio fixture tests
         working-directory: examples/pi-web-extensions/dictation
-        run: python -m unittest -v test_worker.py test_setup.py
+        run: python -m unittest -v test_worker.py test_setup.py test_smoke_fixture.py
 
       - name: TypeScript worker tests
         run: npx vitest run --config examples/pi-web-extensions/dictation/vitest.config.ts

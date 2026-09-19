@@ -3,7 +3,8 @@ import type { ExtensionUIDialogOptions, ExtensionUIContext } from "@earendil-wor
 import type { PiWebArtifactAction, PiWebArtifactPreview, PiWebContribution, PiWebFabAction, PiWebFooter, PiWebGitTab, PiWebHeaderAction, PiWebPanel, PiWebRegisterSettingsResult, PiWebSettingsRegistration, PiWebStoredSettings, PiWebUi } from "../../src/extensions.js";
 import type { createSettingsStore } from "../settings.js";
 import type { AudioCapturePolicy, ValidatedAudioCapture } from "./captureStore.js";
-import { CaptureHttpError, MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
+import { MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
+import { HttpError } from "../shared/httpError.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
 
@@ -399,12 +400,23 @@ function normalizePiWebFooter(value: unknown): PiWebFooter | undefined {
 }
 
 const cleanIcon = (value: unknown) => cleanHeaderActionText(value, 80);
-const cleanAudioMimeTypes = (value: unknown) => Array.isArray(value)
-  ? [...new Set(value.flatMap((item) => {
-      const mime = typeof item === "string" ? item.split(";", 1)[0]?.trim().toLowerCase() : "";
-      return mime && /^audio\/[a-z0-9.+-]+$/.test(mime) ? [mime] : [];
-    }))].slice(0, 20)
-  : undefined;
+
+function normalizeAudioMimeTypes(value: unknown): string[] {
+  if (!Array.isArray(value)) throw new TypeError("capture.mimeTypes must be a non-empty array");
+  if (value.length === 0 || value.length > 20) throw new TypeError("capture.mimeTypes must contain between 1 and 20 entries");
+  const normalized = value.map((item) => {
+    const mime = typeof item === "string" ? item.split(";", 1)[0]?.trim().toLowerCase() : "";
+    const subtype = mime.startsWith("audio/") ? mime.slice("audio/".length) : "";
+    // RFC 6838 restricted-name: an alphanumeric first character followed by
+    // at most 126 alphanumeric or !#$&-^_.+ characters. The final character
+    // is not separately restricted by the ABNF.
+    if (!subtype || subtype.length > 127 || !/^[a-z0-9][a-z0-9!#$&^_.+-]*$/.test(subtype)) {
+      throw new TypeError("capture.mimeTypes entries must be valid audio MIME types");
+    }
+    return mime;
+  });
+  return [...new Set(normalized)];
+}
 
 function normalizeAudioCapturePolicy(value: unknown): AudioCapturePolicy {
   if (!value || typeof value !== "object" || (value as Record<string, unknown>).media !== "audio") {
@@ -415,7 +427,10 @@ function normalizeAudioCapturePolicy(value: unknown): AudioCapturePolicy {
   const maxBytes = capture.maxBytes === undefined ? MAX_CAPTURE_BYTES : Number(capture.maxBytes);
   if (!Number.isFinite(maxSeconds) || maxSeconds < 1) throw new TypeError("capture.maxSeconds must be positive");
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new TypeError("capture.maxBytes must be a positive integer");
-  return { media: "audio", maxSeconds: Math.min(maxSeconds, MAX_CAPTURE_SECONDS), maxBytes: Math.min(maxBytes, MAX_CAPTURE_BYTES), ...(cleanAudioMimeTypes(capture.mimeTypes)?.length ? { mimeTypes: cleanAudioMimeTypes(capture.mimeTypes) } : {}) };
+  const mimeTypes = Object.prototype.hasOwnProperty.call(capture, "mimeTypes")
+    ? normalizeAudioMimeTypes(capture.mimeTypes)
+    : undefined;
+  return { media: "audio", maxSeconds: Math.min(maxSeconds, MAX_CAPTURE_SECONDS), maxBytes: Math.min(maxBytes, MAX_CAPTURE_BYTES), ...(mimeTypes ? { mimeTypes } : {}) };
 }
 
 const cleanArtifactExtensions = (value: unknown) => Array.isArray(value) ? value.flatMap((extension) => {
@@ -977,12 +992,12 @@ async function bindWebExtensions(value: any) {
     }, contribution.policy);
     try {
       const signal = input.signal ?? new AbortController().signal;
-      if (signal.aborted) throw new CaptureHttpError("Composer capture invocation aborted", 408);
+      if (signal.aborted) throw new HttpError("Composer capture invocation aborted", 408);
       const invocation = Promise.resolve().then(() => contribution.source.invoke({ capture, signal }));
       // Promise.race attaches handlers to invocation, so a late extension
       // rejection after abort cannot become unhandled.
       const aborted = new Promise<never>((_resolve, reject) => {
-        const fail = () => reject(new CaptureHttpError("Composer capture invocation aborted", 408));
+        const fail = () => reject(new HttpError("Composer capture invocation aborted", 408));
         if (signal.aborted) fail();
         else signal.addEventListener("abort", fail, { once: true });
       });

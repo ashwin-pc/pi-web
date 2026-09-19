@@ -12,7 +12,7 @@ A pi-web-only composer action that records in the browser, transcribes through a
 | Whisper | faster-whisper CUDA | Not applicable | Not applicable | Available only with a compatible NVIDIA/CUDA/cuDNN installation | Available only with a compatible NVIDIA/CUDA/cuDNN installation | User-selected |
 | Parakeet | Other runtimes | Not included | Not included | Not included | Not included | — |
 
-CUDA is opt-in and is not exercised by this example's lightweight CI. Follow faster-whisper's current CUDA/cuDNN compatibility documentation; an installed Python package alone does not prove the GPU runtime is usable. This PR does not claim native Windows support for NVIDIA NeMo and does not include a community ONNX Parakeet conversion.
+CUDA is opt-in and is not exercised by this example's lightweight CI. Follow faster-whisper's current CUDA/cuDNN compatibility documentation; an installed Python package alone does not prove the GPU runtime is usable. This example does not claim native Windows support for NVIDIA NeMo and does not include a community ONNX Parakeet conversion.
 
 `Runtime: Automatic` resolves to MLX on Apple Silicon. Fresh non-Apple hosts default to Whisper/faster-whisper on CPU. Parakeet selected on another host fails clearly rather than silently switching families. A blank model field is resolved only when a request starts, so changing family/runtime cannot carry an incompatible generated default. Explicit model values are always preserved.
 
@@ -43,7 +43,7 @@ Windows PowerShell or Command Prompt:
 py -3 setup.py whisper-faster-whisper
 ```
 
-`setup.sh` remains a thin compatibility wrapper for existing macOS installs (`./setup.sh parakeet` and `./setup.sh whisper`). Runtime dependencies are deliberately separate under `adapters/<family>/<runtime>/requirements.txt`; the Apple-only `requirements.lock` records the tested Parakeet MLX environment and must not be installed on Windows/Linux.
+`setup.sh` remains a thin compatibility wrapper for existing macOS installs (`./setup.sh parakeet` and `./setup.sh whisper`). Runtime dependencies are deliberately separate under `adapters/<family>/<runtime>/requirements.txt`; there is no shared root requirements file because no dependency set applies to every runtime. The Apple-only `requirements.lock` is an optional reproducibility snapshot of the tested Parakeet MLX environment, not the cross-platform installer. On Apple Silicon, install that exact snapshot explicitly with `.venv/bin/python -m pip install -r requirements.lock`.
 
 The default interpreter is `.venv/Scripts/python.exe` on Windows and `.venv/bin/python` elsewhere. Settings can point to another executable. An executable name without a path is resolved through the service `PATH`.
 
@@ -71,13 +71,17 @@ Weights are never bundled. A Hugging Face/model name downloads on first use to t
 
 ## Architecture and security
 
-The common worker owns capture validation, safe FFmpeg decoding, silence detection, bounded queueing, cancellation, and cleanup. Provider/runtime code is isolated and loaded only after a fixed registry lookup. Settings cannot supply a module name or command.
+The extension owns capture-content validation, safe FFmpeg decoding, silence detection, bounded queueing, cancellation, and cleanup; core only enforces the generic capture contract and temporary-file lifecycle. Provider/runtime code is isolated and loaded only after a fixed registry lookup. Settings cannot supply a module name or command.
 
 The browser capture contract gives the extension a validated private temporary file only for the invocation. On POSIX, core and the worker enforce private owner/mode checks. On Windows, Node's per-user temporary directory ACL is inherited; the worker still rejects non-directories, symlinks, and junctions instead of interpreting synthetic Windows mode bits as POSIX permissions.
 
 `worker.py` forces MIME-selected WebM, MP4, Ogg, or WAV demuxers, limits FFmpeg protocols to `file,pipe`, emits mono 16 kHz PCM16, and independently rejects decoded audio over 120 seconds. Runtime/platform/dependency preflight happens before decode or model loading.
 
-Node and Python communicate through bounded JSON-lines stdio. Cancellation kills the detached POSIX process group or invokes `taskkill.exe /PID <pid> /T /F` directly without a shell on Windows, waits for termination, then retries temporary-directory cleanup. One process-global worker keeps loaded models warm; cancelling one request currently aborts all requests pending on that worker.
+Node owns a FIFO queue with capacity for three total active-plus-queued requests and dispatches one request at a time. The transcription timeout begins at dispatch, not while waiting in the queue. Cancelling a queued request removes only that request, leaving the warm worker and other requests intact. Cancelling or timing out the active request interrupts native work by killing the detached POSIX process group or invoking `taskkill.exe /PID <pid> /T /F` directly without a shell on Windows. Termination is bounded, temporary cleanup is retried, and queued requests continue on a replacement worker. Only an interrupted active request requires a model reload.
+
+Node and Python communicate through bounded JSON-lines stdio. Python retains a private, non-inheritable duplicate of the protocol output descriptor and redirects operating-system stdout to stderr; native library logging cannot contaminate protocol output. Worker stderr is separately bounded.
+
+Hiding the browser tab stops a live microphone recording, but lets its upload and transcription finish. Pending microphone permission is cancelled; explicit Cancel, leaving the page, or switching sessions still cancels the operation. Result insertion retains the session/revision/selection checks. Changing model/runtime settings does not replace existing capture registrations; only a changed recording-duration policy requires re-registration.
 
 ## Adding a family/runtime adapter
 
@@ -98,11 +102,11 @@ Do not put arbitrary import paths or install commands in settings. Do not claim 
 Lightweight tests do not install inference packages or download weights:
 
 ```sh
-python3 -m unittest -v test_worker.py test_setup.py
+python3 -m unittest -v test_worker.py test_setup.py test_smoke_fixture.py
 npx vitest run --config examples/pi-web-extensions/dictation/vitest.config.ts
 ```
 
-The optional external-cache Parakeet smoke fixture remains `test-data/smoke.wav`; real inference is intentionally outside CI. The repository's PR workflow runs these lightweight tests on macOS, Linux, and Windows. GPU inference and model downloads are not part of that matrix.
+`test_smoke_fixture.py` always verifies the committed PCM fixture's exact metadata and non-empty samples, and exercises the production FFmpeg decode path when FFmpeg is available. The Linux portability CI job ensures FFmpeg is installed, so that decode check runs there rather than being silently skipped. Real ASR inference remains intentionally outside CI because it requires large model weights and runtime-specific hardware/dependencies. The repository's PR workflow runs the lightweight tests on macOS, Linux, and Windows; GPU inference and model downloads are not part of that matrix.
 
 ## Limitations
 

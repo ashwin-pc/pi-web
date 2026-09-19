@@ -66,7 +66,9 @@ export function createComposerCapture(options: {
     if (op.ticker) window.clearInterval(op.ticker);
     if (op.analyserFrame) cancelAnimationFrame(op.analyserFrame);
     void op.audioContext?.close().catch(() => undefined);
-    for (const track of op.stream?.getTracks() || []) track.stop();
+    const stream = op.stream;
+    op.stream = undefined;
+    for (const track of stream?.getTracks() || []) track.stop();
   }
 
   function cancel() {
@@ -80,6 +82,39 @@ export function createComposerCapture(options: {
     }
     visual.reset();
     render();
+  }
+
+  function stopRecording(op: CaptureOperation) {
+    if (stale(op) || op.phase !== "recording" || op.recorder?.state === "inactive") return;
+    // Stopping MediaRecorder is already the beginning of processing. Mark that
+    // synchronously so a visibility change cannot mistake finalization/upload
+    // for live microphone ownership and abort an otherwise complete capture.
+    op.phase = "processing";
+    visual.setPhase("handoff");
+    op.recorder?.stop();
+    releaseMedia(op);
+    render();
+  }
+
+  async function responseBody(response: Response): Promise<Record<string, unknown>> {
+    const text = await response.text();
+    let data: Record<string, unknown> = {};
+    if (text) {
+      try {
+        const parsed: unknown = JSON.parse(text);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) data = parsed as Record<string, unknown>;
+      } catch { data = { text }; }
+    }
+    const structuredError = data.error;
+    const errorMessage = typeof structuredError === "string" ? structuredError
+      : structuredError && typeof structuredError === "object" && typeof (structuredError as { message?: unknown }).message === "string"
+        ? (structuredError as { message: string }).message : "";
+    if (!response.ok || errorMessage) {
+      const plain = errorMessage.trim()
+        || (typeof data.text === "string" && !/^\s*</.test(data.text) ? data.text.trim() : "");
+      throw new Error((plain || response.statusText || `Request failed (${response.status})`).slice(0, 2_000));
+    }
+    return data;
   }
 
   function stale(op: CaptureOperation) {
@@ -107,16 +142,14 @@ export function createComposerCapture(options: {
       const upload = await fetch(`/api/web-captures?${params}`, {
         method: "POST", headers: { ...headers, "content-type": blob.type || "audio/webm" }, body: blob, signal: op.abort.signal,
       });
-      if (!upload.ok) throw new Error(await upload.text());
-      const { captureId } = await upload.json() as { captureId?: string };
+      const { captureId } = await responseBody(upload) as { captureId?: string };
       if (!captureId) throw new Error("Capture upload returned no id");
       const response = await fetch("/api/web-contributions/invoke", {
         method: "POST", headers: options.api.headers(), signal: op.abort.signal,
         body: JSON.stringify({ sessionId: op.snapshot.sessionId, slot: "composer-input", key: op.descriptor.key, event: { captureId } }),
       });
-      if (!response.ok) throw new Error(await response.text());
-      const result = await response.json() as { effects?: Array<{ type?: string; text?: string; placement?: string }> };
-      if (stale(op) || document.visibilityState === "hidden") return;
+      const result = await responseBody(response) as { effects?: Array<{ type?: string; text?: string; placement?: string }> };
+      if (stale(op)) return;
       visual.setPhase("resolving");
       for (const effect of result.effects || []) {
         if (effect.type !== "insert-composer-text" || typeof effect.text !== "string") continue;
@@ -203,7 +236,7 @@ export function createComposerCapture(options: {
       op.phase = "recording";
       visual.setPhase("recording");
       op.startedAt = performance.now();
-      op.timeout = window.setTimeout(() => { if (recorder.state !== "inactive") recorder.stop(); }, descriptor.capture.maxSeconds * 1000);
+      op.timeout = window.setTimeout(() => stopRecording(op), descriptor.capture.maxSeconds * 1000);
       op.ticker = window.setInterval(() => updateStatus(op), 1_000);
       render();
     } catch (error) {
@@ -252,7 +285,7 @@ export function createComposerCapture(options: {
       // composer controls rerender between record and stop.
       button.addEventListener("pointerdown", (event) => event.preventDefault());
       button.addEventListener("click", () => {
-        if (recording && operation?.recorder?.state !== "inactive") operation?.recorder?.stop();
+        if (recording && operation) stopRecording(operation);
         else if (!operation) void start(descriptor);
       });
       options.container.append(button);
@@ -283,7 +316,12 @@ export function createComposerCapture(options: {
   }
 
   window.addEventListener("pagehide", cancel);
-  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "hidden") cancel(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "hidden" || !operation) return;
+    if (operation.phase === "recording") stopRecording(operation);
+    else if (operation.phase === "permission") cancel();
+    // Processing owns no microphone and is intentionally allowed to finish.
+  });
 
   return {
     setContributions(next: ComposerCaptureDescriptor[], sessionId: string) {

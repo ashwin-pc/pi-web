@@ -188,7 +188,13 @@ textarea:focus { border-bottom-color: var(--accent); }
 .composer:hover .expandButton,
 .composer.expanded .expandButton { display: inline-grid; }
 /* Keep composer chrome that protrudes into the message row above its edge fade. */
-.composer { position: relative; z-index: 3; }
+.composer {
+  --composer-footer-height: 40px;
+  --composer-action-size: 40px;
+  --composer-control-size: var(--composer-action-size);
+  position: relative;
+  z-index: 3;
+}
 .composer.dragOver::after {
   content: "Drop files to attach";
   position: absolute;
@@ -392,7 +398,7 @@ textarea:focus { border-bottom-color: var(--accent); }
   min-width: 0;
   align-items: stretch;
   gap: 0;
-  height: 40px;
+  height: var(--composer-footer-height);
   margin-top: 0;
   padding: 0;
   overflow: visible;
@@ -417,6 +423,12 @@ button, select {
 select {
   min-width: 0;
   max-width: 100%;
+}
+.composerFooter > button,
+.composerFooter > .modelControl > .modelSettingsButton,
+.composerFooter > .composerExtensionInputs button {
+  height: var(--composer-action-size);
+  min-height: var(--composer-action-size);
 }
 .modelControl {
   position: relative;
@@ -598,6 +610,15 @@ select {
   padding: 0;
   border-bottom: 0;
 }
+.composerFooter > .iconButton,
+.composerFooter > .composerExtensionInputs .iconButton {
+  width: var(--composer-action-size);
+  min-width: var(--composer-action-size);
+}
+.composer:not([data-capture-chrome="settling"]) .composerFooter > .iconButton,
+.composer:not([data-capture-chrome="settling"]) .composerFooter > .composerExtensionInputs .iconButton {
+  flex: 0 0 var(--composer-action-size);
+}
 .iconButton svg {
   width: 17px;
   height: 17px;
@@ -634,9 +655,9 @@ button:disabled:hover { border-color: var(--border); }
 .composer[data-capture-phase]:not([data-capture-phase="idle"]) .composerExtensionInputs:not(:has(.composerCaptureCancel))::after {
   content: "";
   display: block;
-  flex: 0 0 40px;
-  width: 40px;
-  height: 40px;
+  flex: 0 0 var(--composer-control-size);
+  width: var(--composer-control-size);
+  height: var(--composer-control-size);
 }
 .composerCaptureButton.recording { color: #ef4444; animation: capturePulse 1.25s ease-in-out infinite; }
 .composerCaptureCancel { color: var(--muted); }
@@ -690,6 +711,7 @@ button:disabled:hover { border-color: var(--border); }
 }
 
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) {
+  --composer-control-size: 38px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
@@ -755,7 +777,7 @@ button:disabled:hover { border-color: var(--border); }
   transition: width 140ms linear, min-width 140ms linear;
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerFooter {
-  height: 38px;
+  height: var(--composer-control-size);
   align-items: center;
   overflow: visible;
   background: transparent;
@@ -766,9 +788,9 @@ button:disabled:hover { border-color: var(--border); }
   max-width: 156px;
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerExtensionInputs:not(:has(.composerCaptureCancel))::after {
-  flex-basis: 38px;
-  width: 38px;
-  height: 38px;
+  flex-basis: var(--composer-control-size);
+  width: var(--composer-control-size);
+  height: var(--composer-control-size);
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureStatus {
   position: absolute;
@@ -829,10 +851,11 @@ button:disabled:hover { border-color: var(--border); }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureButton,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureCancel,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
-  width: 38px;
-  min-width: 38px;
-  height: 38px;
-  min-height: 38px;
+  flex-basis: var(--composer-control-size);
+  width: var(--composer-control-size);
+  min-width: var(--composer-control-size);
+  height: var(--composer-control-size);
+  min-height: var(--composer-control-size);
   border: 0;
   border-radius: 999px;
 }

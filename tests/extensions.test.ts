@@ -389,6 +389,24 @@ describe("bundled extension path discovery", () => {
     const replacement = (bridge.entries(session).webContributions[0] as any).capture.registrationId;
     expect(replacement).not.toBe(registrationId);
     expect(bridge.captureRegistration(session, "voice.input", registrationId)).toBeUndefined();
+
+    const contribution = (mimeTypes: unknown) => ({
+      slot: "composer-input", kind: "capture", title: "MIME validation",
+      capture: { media: "audio", mimeTypes },
+      invoke: () => ({ effects: [{ type: "insert-composer-text", text: "ok" }] }),
+    });
+    expect(() => ui.web.contribute("mime.nonarray", contribution("audio/webm"))).toThrow("non-empty array");
+    expect(() => ui.web.contribute("mime.empty", contribution([]))).toThrow("between 1 and 20");
+    expect(() => ui.web.contribute("mime.invalid", contribution(["text/plain", 7]))).toThrow("valid audio MIME");
+    expect(() => ui.web.contribute("mime.mixed", contribution(["audio/webm", "bad"]))).toThrow("valid audio MIME");
+    expect(() => ui.web.contribute("mime.first", contribution(["audio/!private"]))).toThrow("valid audio MIME");
+    expect(() => ui.web.contribute("mime.long", contribution([`audio/${"a".repeat(128)}`]))).toThrow("valid audio MIME");
+    expect(() => ui.web.contribute("mime.many", contribution(Array.from({ length: 21 }, () => "audio/webm")))).toThrow("between 1 and 20");
+    ui.web.contribute("mime.normalized", contribution([
+      " Audio/WebM; codecs=opus ", "audio/webm", "audio/x-private-", "audio/vnd.example.codec+json",
+    ]));
+    expect((bridge.entries(session).webContributions.find((entry: any) => entry.key === "mime.normalized") as any).capture.mimeTypes)
+      .toEqual(["audio/webm", "audio/x-private-", "audio/vnd.example.codec+json"]);
   });
 
   it("aborts a non-cooperative capture invocation and releases its file", async () => {

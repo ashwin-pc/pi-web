@@ -229,22 +229,27 @@ def handle(message: object) -> dict[str, object]:
 
 
 def main() -> int:
-    protocol_stdout = sys.stdout
-    for line in sys.stdin:
-        request_id: object = None
-        try:
-            message = json.loads(line)
-            request_id = message.get("id") if isinstance(message, dict) else None
-            # Third-party import chatter must never corrupt the stdout protocol.
-            with open(os.devnull, "w") as sink:
-                sys.stdout = sink
+    # Preserve a dedicated protocol descriptor, then redirect OS fd 1 itself.
+    # Native libraries using write(1, ...) now join bounded stderr logging rather
+    # than corrupting JSONL. This happens only in the executable worker, never on
+    # module import (unit tests and embedders keep their process descriptors).
+    protocol_fd = os.dup(1)
+    os.set_inheritable(protocol_fd, False)
+    os.dup2(2, 1)
+    protocol_stdout = os.fdopen(protocol_fd, "w", encoding="utf-8", buffering=1)
+    try:
+        for line in sys.stdin:
+            request_id: object = None
+            try:
+                message = json.loads(line)
+                request_id = message.get("id") if isinstance(message, dict) else None
                 response = handle(message)
-        except Exception as error:
-            response = {"id": request_id, "ok": False, "error": f"{type(error).__name__}: {error}"}
-        finally:
-            sys.stdout = protocol_stdout
-        protocol_stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
-        protocol_stdout.flush()
+            except Exception as error:
+                response = {"id": request_id, "ok": False, "error": f"{type(error).__name__}: {error}"}
+            protocol_stdout.write(json.dumps(response, ensure_ascii=False) + "\n")
+            protocol_stdout.flush()
+    finally:
+        protocol_stdout.close()
     return 0
 
 

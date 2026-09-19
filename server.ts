@@ -8,7 +8,8 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
-import { CaptureHttpError, CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { HttpError } from "./server/shared/httpError.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
@@ -126,7 +127,7 @@ async function readBytes(req: IncomingMessage, maxBytes = 30_000_000, onChunk?: 
     const buffer = Buffer.from(chunk);
     bytes += buffer.length;
     onChunk?.(buffer.length);
-    if (bytes > maxBytes) throw new CaptureHttpError("Request body is too large", 413);
+    if (bytes > maxBytes) throw new HttpError("Request body is too large", 413);
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
@@ -843,7 +844,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeContribution(resolveSessionId(body.sessionId), body, controller.signal) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError || error instanceof CaptureHttpError ? error.status
+          const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status
             : message === "key is required" || message.includes("returned no") || message.includes("returned unknown panel") || message === "Contribution is not invokable" ? 400
             : message.includes("not found") ? 404
             : 500;
@@ -1271,7 +1272,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionServiceError || error instanceof CaptureHttpError ? error.status : 500;
+    const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));

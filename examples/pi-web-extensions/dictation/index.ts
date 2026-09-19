@@ -18,6 +18,7 @@ const MAX_SETTING_CHARS = 256;
 const MAX_CAPTURE_BYTES = 25_000_000;
 const MAX_PENDING = 3;
 const MAX_PROTOCOL_BUFFER_CHARS = 1_000_000;
+const MAX_STDERR_CHARS = 100_000;
 // Core owns the outer invoke deadline and currently caps it at three minutes.
 const DEFAULT_TIMEOUT_SECONDS = 180;
 const EXTENSION_DIR = dirname(fileURLToPath(import.meta.url));
@@ -36,23 +37,29 @@ type WorkerResult = {
   inferenceMs: number;
 };
 
-type Pending = {
+type TranscribeOptions = { mimeType: string; family: string; runtime: string; model: string; device: string; computeType: string; pythonPath?: string; timeoutMs: number; signal?: AbortSignal };
+type Job = {
+  id: string;
+  path: string;
+  options: TranscribeOptions;
   resolve: (value: WorkerResult) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  workDir?: string;
+  ready: boolean;
+  settled: boolean;
+  timer?: ReturnType<typeof setTimeout>;
   cleanupAbort: () => void;
+  child?: ChildProcessWithoutNullStreams;
+  generation?: number;
+  deferredError?: Error;
 };
 
 type ProtocolMessage = Partial<WorkerResult> & { id?: string; ok?: boolean; error?: string };
 
 async function waitForExit(child: ChildProcessWithoutNullStreams, treeKill?: Promise<void>) {
   const exit = child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise<void>((resolve) => {
-    const timer = setTimeout(resolve, 2_000);
-    timer.unref?.();
-    child.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
+    const timer = setTimeout(resolve, 2_000); timer.unref?.();
+    child.once("exit", () => { clearTimeout(timer); resolve(); });
   });
   await Promise.all([exit, treeKill ?? Promise.resolve()]);
 }
@@ -65,201 +72,177 @@ function killWindowsProcessTree(pid: number): Promise<void> {
   });
 }
 
-async function boundedWindowsTreeKill(
-  child: ChildProcessWithoutNullStreams,
-  killer: (pid: number) => Promise<void>,
-  timeoutMs: number,
-): Promise<void> {
+async function boundedWindowsTreeKill(child: ChildProcessWithoutNullStreams, killer: (pid: number) => Promise<void>, timeoutMs: number): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<void>((resolve) => {
-    timer = setTimeout(resolve, timeoutMs);
-    timer.unref?.();
-  });
-  try {
-    // Promise.resolve().then also converts a synchronous injected-hook throw to
-    // a rejection. Race bounds taskkill and hooks that never settle.
-    await Promise.race([Promise.resolve().then(() => killer(child.pid!)), timeout]);
-  } catch {
-    // Tree termination is best effort; direct child termination below is the
-    // platform-correct fallback and cancellation's original error must survive.
-  } finally {
-    if (timer) clearTimeout(timer);
-    try { child.kill(); } catch { /* already gone */ }
-  }
+  const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); timer.unref?.(); });
+  try { await Promise.race([Promise.resolve().then(() => killer(child.pid!)), timeout]); }
+  catch { /* best effort; preserve the request's original error */ }
+  finally { if (timer) clearTimeout(timer); try { child.kill(); } catch { /* gone */ } }
 }
 
 export class DictationWorker {
   private child?: ChildProcessWithoutNullStreams;
   private buffer = "";
-  private pending = new Map<string, Pending>();
+  private stderrChars = 0;
   private pythonPath = DEFAULT_PYTHON;
   private generation = 0;
-  private reservations = 0;
+  private queue: Job[] = [];
+  private active?: Job;
+  private pumping = false;
   private treeKills = new WeakMap<ChildProcessWithoutNullStreams, Promise<void>>();
 
-  constructor(private readonly options: {
-    workerScript?: string;
-    tempRoot?: string;
-    hostPlatform?: NodeJS.Platform;
-    killWindowsTree?: (pid: number) => Promise<void>;
-    windowsKillTimeoutMs?: number;
-  } = {}) {}
+  constructor(private readonly options: { workerScript?: string; tempRoot?: string; hostPlatform?: NodeJS.Platform; killWindowsTree?: (pid: number) => Promise<void>; windowsKillTimeoutMs?: number } = {}) {}
 
-  async transcribe(path: string, options: { mimeType: string; family: string; runtime: string; model: string; device: string; computeType: string; pythonPath?: string; timeoutMs: number; signal?: AbortSignal }): Promise<WorkerResult> {
-    // Reserve synchronously, before any await, so simultaneous cold-start calls
-    // cannot all pass a stale pending.size check.
-    if (this.reservations >= MAX_PENDING) throw new Error("Dictation is busy; wait for the current transcription to finish.");
-    this.reservations += 1;
-    let workDir: string | undefined;
-    let requestChild: ChildProcessWithoutNullStreams | undefined;
-    let completed = false;
+  transcribe(path: string, options: TranscribeOptions): Promise<WorkerResult> {
+    // Admission is synchronous and counts the active request plus queued work.
+    if (this.queue.length + (this.active ? 1 : 0) >= MAX_PENDING) return Promise.reject(new Error("Dictation is busy; wait for the current transcription to finish."));
+    return new Promise<WorkerResult>((resolve, reject) => {
+      const job: Job = { id: randomUUID(), path, options: { ...options }, resolve, reject, ready: false, settled: false, cleanupAbort: () => {} };
+      const abort = () => this.cancel(job);
+      job.cleanupAbort = () => options.signal?.removeEventListener("abort", abort);
+      options.signal?.addEventListener("abort", abort, { once: true });
+      this.queue.push(job);
+      if (options.signal?.aborted) return this.cancel(job);
+      void this.prepare(job);
+    });
+  }
+
+  private async prepare(job: Job) {
     try {
-      // Allocate invocation-owned state first. Cancellation during this await is
-      // observed below, and finally always removes the directory.
-      workDir = await mkdtemp(join(this.options.tempRoot ?? tmpdir(), "pi-dictation-"));
-      if (options.signal?.aborted) throw new Error("Dictation cancelled.");
-      const pythonPath = options.pythonPath?.trim() || DEFAULT_PYTHON;
-      if (this.child && pythonPath !== this.pythonPath) this.stop(new Error("Dictation Python setting changed."));
+      const dir = await mkdtemp(join(this.options.tempRoot ?? tmpdir(), "pi-dictation-"));
+      if (job.settled) { await rm(dir, { recursive: true, force: true }); return; }
+      job.workDir = dir; job.ready = true;
+      if (job.deferredError) this.finish(job, undefined, job.deferredError);
+      else void this.pump();
+    } catch (error) { this.finish(job, undefined, job.deferredError ?? (error instanceof Error ? error : new Error(String(error)))); }
+  }
+
+  private async pump() {
+    if (this.pumping || this.active) return;
+    const job = this.queue[0];
+    if (!job || !job.ready || job.settled) return;
+    this.pumping = true;
+    try {
+      const pythonPath = job.options.pythonPath?.trim() || DEFAULT_PYTHON;
+      if (this.child && pythonPath !== this.pythonPath) await this.terminateChild(this.child, false);
       this.pythonPath = pythonPath;
       await this.ensureStarted();
-
-      // This is the final await before listener + pending registration. JS runs
-      // the following block synchronously, so abort cannot slip between this
-      // check and addEventListener. Another request may have stopped the shared
-      // generation while startup awaited, so validate the child explicitly.
-      if (options.signal?.aborted) throw new Error("Dictation cancelled.");
+      if (job.settled || this.queue[0] !== job) return;
       const child = this.child;
       if (!child || child.killed) throw new Error("Dictation worker stopped during setup.");
-      const id = randomUUID();
-      requestChild = child;
-      const generation = this.generation;
-      const result = await new Promise<WorkerResult>((resolve, reject) => {
-        const abort = () => this.stop(new Error("Dictation cancelled."), true, child, generation);
-        options.signal?.addEventListener("abort", abort, { once: true });
-        const timer = setTimeout(
-          () => this.stop(new Error(`Dictation timed out after ${Math.round(options.timeoutMs / 1000)} seconds.`), true, child, generation),
-          options.timeoutMs,
-        );
-        this.pending.set(id, {
-          resolve,
-          reject,
-          timer,
-          cleanupAbort: () => options.signal?.removeEventListener("abort", abort),
-        });
-        child.stdin.write(`${JSON.stringify({ id, op: "transcribe", path, mimeType: options.mimeType, workDir, family: options.family, runtime: options.runtime, model: options.model, device: options.device, computeType: options.computeType })}\n`, (error) => {
-          if (error && this.child === child && this.generation === generation) {
-            this.stop(new Error(`Could not send audio to the dictation worker: ${error.message}`), true, child, generation);
-          }
-        });
+      this.queue.shift(); this.active = job; job.child = child; job.generation = this.generation;
+      job.timer = setTimeout(() => this.cancelActive(job, new Error(`Dictation timed out after ${Math.round(job.options.timeoutMs / 1000)} seconds.`)), job.options.timeoutMs);
+      const { mimeType, family, runtime, model, device, computeType } = job.options;
+      child.stdin.write(`${JSON.stringify({ id: job.id, op: "transcribe", path: job.path, mimeType, workDir: job.workDir, family, runtime, model, device, computeType })}\n`, (error) => {
+        if (error && this.active === job) this.cancelActive(job, new Error(`Could not send audio to the dictation worker: ${error.message}`));
       });
-      completed = true;
-      return result;
-    } finally {
-      this.reservations -= 1;
-      // If cancellation/timeout replaced this generation, wait for Node to reap
-      // its process-group leader before unlinking ffmpeg's output directory.
-      if (requestChild && this.child !== requestChild) await waitForExit(requestChild, this.treeKills.get(requestChild));
-      if (workDir) {
-        try { await rm(workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
-        catch (error) {
-          if (completed) throw error;
-          process.stderr.write(`[dictation] could not remove temporary work directory: ${error instanceof Error ? error.message : String(error)}\n`);
-        }
-      }
-    }
+    } catch (error) { this.finish(job, undefined, error instanceof Error ? error : new Error(String(error))); }
+    finally { this.pumping = false; if (!this.active) void this.pump(); }
+  }
+
+  private cancel(job: Job) {
+    const error = new Error("Dictation cancelled.");
+    if (this.active === job) this.cancelActive(job, error);
+    else if (!job.ready) {
+      // Wait for the in-flight mkdir before settling so no temporary directory
+      // can appear after the caller observes cancellation.
+      job.deferredError = error;
+      job.cleanupAbort();
+      const index = this.queue.indexOf(job); if (index >= 0) this.queue.splice(index, 1);
+      void this.pump();
+    } else this.finish(job, undefined, error);
+  }
+
+  private cancelActive(job: Job, error: Error) {
+    if (this.active !== job || job.settled) return;
+    const child = job.child;
+    this.active = undefined;
+    if (child) void this.terminateChild(child, true);
+    this.finish(job, undefined, error);
+    void this.pump();
+  }
+
+  private finish(job: Job, result?: WorkerResult, error?: Error) {
+    if (job.settled) return;
+    job.settled = true;
+    if (job.timer) clearTimeout(job.timer);
+    job.cleanupAbort();
+    const index = this.queue.indexOf(job); if (index >= 0) this.queue.splice(index, 1);
+    if (this.active === job) this.active = undefined;
+    void (async () => {
+      if (job.child && this.child !== job.child) await waitForExit(job.child, this.treeKills.get(job.child));
+      if (job.workDir) try { await rm(job.workDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+      catch (cleanupError) { if (!error) error = cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)); else process.stderr.write(`[dictation] could not remove temporary work directory: ${String(cleanupError)}\n`); }
+      if (error) job.reject(error); else job.resolve(result!);
+    })();
+    void this.pump();
   }
 
   private async ensureStarted() {
     if (this.child && !this.child.killed) return;
     const workerScript = this.options.workerScript ?? WORKER_SCRIPT;
-    await Promise.all([
-      this.pythonPath.includes(sep) || isAbsolute(this.pythonPath) ? access(this.pythonPath) : Promise.resolve(),
-      access(workerScript),
-    ]);
+    await Promise.all([this.pythonPath.includes(sep) || isAbsolute(this.pythonPath) ? access(this.pythonPath) : Promise.resolve(), access(workerScript)]);
     if (this.child && !this.child.killed) return;
-    const child = spawn(this.pythonPath, ["-u", workerScript], {
-      cwd: EXTENSION_DIR,
-      detached: true,
-      stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    const child = spawn(this.pythonPath, ["-u", workerScript], { cwd: EXTENSION_DIR, detached: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, PYTHONUNBUFFERED: "1" } });
+    const generation = ++this.generation; this.child = child; this.buffer = ""; this.stderrChars = 0;
+    child.stdout.setEncoding("utf8"); child.stdout.on("data", (chunk: string) => { if (this.child === child && this.generation === generation) this.consume(chunk, child, generation); });
+    child.stderr.setEncoding("utf8"); child.stderr.on("data", (chunk: string) => {
+      if (this.child !== child || this.generation !== generation || this.stderrChars >= MAX_STDERR_CHARS) return;
+      const remaining = MAX_STDERR_CHARS - this.stderrChars;
+      const output = chunk.slice(0, remaining); this.stderrChars += output.length;
+      process.stderr.write(`[dictation] ${output}`);
+      if (chunk.length > remaining) process.stderr.write("[dictation] worker stderr truncated.\n");
     });
-    const generation = ++this.generation;
-    this.child = child;
-    this.buffer = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      if (this.child === child && this.generation === generation) this.consume(chunk, child, generation);
-    });
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk: string) => {
-      if (this.child === child && this.generation === generation) process.stderr.write(`[dictation] ${chunk}`);
-    });
-    child.once("error", (error) => {
-      if (this.child === child && this.generation === generation) {
-        this.stop(new Error(`Dictation worker failed to start: ${error.message}`), false, child, generation);
-      }
-    });
-    child.once("exit", (code, signal) => {
-      if (this.child === child && this.generation === generation) {
-        this.stop(new Error(`Dictation worker exited (${signal || code || "unknown"}).`), false, child, generation);
-      }
-    });
+    child.once("error", (error) => this.childFailed(child, generation, new Error(`Dictation worker failed to start: ${error.message}`)));
+    child.once("exit", (code, signal) => this.childFailed(child, generation, new Error(`Dictation worker exited (${signal || code || "unknown"}).`)));
+  }
+
+  private childFailed(child: ChildProcessWithoutNullStreams, generation: number, error: Error) {
+    if (this.child !== child || this.generation !== generation) return;
+    this.child = undefined; this.buffer = ""; this.stderrChars = 0;
+    const active = this.active;
+    if (active?.child === child) this.finish(active, undefined, error);
+    void this.pump();
   }
 
   private consume(chunk: string, child: ChildProcessWithoutNullStreams, generation: number) {
     if (this.child !== child || this.generation !== generation) return;
-    if (this.buffer.length + chunk.length > MAX_PROTOCOL_BUFFER_CHARS) {
-      return this.stop(new Error("Dictation worker exceeded the protocol buffer limit."), true, child, generation);
-    }
+    if (this.buffer.length + chunk.length > MAX_PROTOCOL_BUFFER_CHARS) return this.protocolFailure(child, generation, new Error("Dictation worker exceeded the protocol buffer limit."));
     this.buffer += chunk;
     while (true) {
-      const newline = this.buffer.indexOf("\n");
-      if (newline < 0) return;
-      const line = this.buffer.slice(0, newline);
-      this.buffer = this.buffer.slice(newline + 1);
-      if (!line.trim()) continue;
+      const newline = this.buffer.indexOf("\n"); if (newline < 0) return;
+      const line = this.buffer.slice(0, newline); this.buffer = this.buffer.slice(newline + 1); if (!line.trim()) continue;
       let message: ProtocolMessage;
-      try { message = JSON.parse(line) as ProtocolMessage; }
-      catch { return this.stop(new Error("Dictation worker returned invalid JSON."), true, child, generation); }
-      if (!message.id) continue;
-      const pending = this.pending.get(message.id);
-      if (!pending) continue;
-      this.pending.delete(message.id);
-      clearTimeout(pending.timer);
-      pending.cleanupAbort();
-      if (!message.ok) pending.reject(new Error(message.error || "Dictation failed."));
-      else if (typeof message.text !== "string") pending.reject(new Error("Dictation worker returned no transcript."));
-      else pending.resolve(message as WorkerResult);
+      try { message = JSON.parse(line) as ProtocolMessage; } catch { return this.protocolFailure(child, generation, new Error("Dictation worker returned invalid JSON.")); }
+      const job = this.active; if (!job || message.id !== job.id) continue;
+      if (!message.ok) this.finish(job, undefined, new Error(message.error || "Dictation failed."));
+      else if (typeof message.text !== "string") this.finish(job, undefined, new Error("Dictation worker returned no transcript."));
+      else this.finish(job, message as WorkerResult);
     }
   }
 
-  stop(error = new Error("Dictation worker stopped."), kill = true, expectedChild = this.child, expectedGeneration = this.generation) {
-    if (!expectedChild || this.child !== expectedChild || this.generation !== expectedGeneration) return;
-    this.child = undefined;
-    this.buffer = "";
-    if (kill && !expectedChild.killed) {
-      // POSIX uses a detached process group. Windows has no negative-PID group
-      // signals, so taskkill receives fixed arguments without a shell and kills
-      // Python plus decoder descendants before temporary files are removed.
-      const hostPlatform = this.options.hostPlatform ?? platform;
-      if (hostPlatform === "win32" && expectedChild.pid) {
-        const treeKill = boundedWindowsTreeKill(
-          expectedChild,
-          this.options.killWindowsTree ?? killWindowsProcessTree,
-          this.options.windowsKillTimeoutMs ?? 2_000,
-        );
-        this.treeKills.set(expectedChild, treeKill);
-      } else {
-        try { if (expectedChild.pid) process.kill(-expectedChild.pid, "SIGKILL"); }
-        catch { try { expectedChild.kill("SIGKILL"); } catch { /* already gone */ } }
-      }
-    }
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.cleanupAbort();
-      pending.reject(error);
-    }
-    this.pending.clear();
+  private protocolFailure(child: ChildProcessWithoutNullStreams, generation: number, error: Error) {
+    if (this.child !== child || this.generation !== generation) return;
+    const job = this.active; this.active = undefined; void this.terminateChild(child, true);
+    if (job) this.finish(job, undefined, error);
+  }
+
+  private async terminateChild(child: ChildProcessWithoutNullStreams, kill: boolean) {
+    if (this.child === child) { this.child = undefined; this.buffer = ""; this.stderrChars = 0; }
+    if (!kill) { try { child.kill(); } catch {} await waitForExit(child); return; }
+    if (child.killed) return;
+    const hostPlatform = this.options.hostPlatform ?? platform;
+    if (hostPlatform === "win32" && child.pid) {
+      const treeKill = boundedWindowsTreeKill(child, this.options.killWindowsTree ?? killWindowsProcessTree, this.options.windowsKillTimeoutMs ?? 2_000);
+      this.treeKills.set(child, treeKill); await treeKill;
+    } else { try { if (child.pid) process.kill(-child.pid, "SIGKILL"); } catch { try { child.kill("SIGKILL"); } catch {} } }
+  }
+
+  stop(error = new Error("Dictation worker stopped.")) {
+    const child = this.child; this.child = undefined; this.buffer = ""; this.stderrChars = 0;
+    if (child) void this.terminateChild(child, true);
+    const jobs = [...this.queue, ...(this.active ? [this.active] : [])]; this.queue = []; this.active = undefined;
+    for (const job of jobs) this.finish(job, undefined, error);
   }
 }
 
@@ -309,8 +292,11 @@ export default function dictation(pi: PiWebExtensionAPI) {
       return;
     }
 
+    let registeredMaxSeconds: number | undefined;
     const registerContribution = (rawMaxSeconds: unknown) => {
       const maxSeconds = numberSetting(rawMaxSeconds, 120, 1, 120);
+      if (registeredMaxSeconds === maxSeconds) return;
+      registeredMaxSeconds = maxSeconds;
       web.contribute(CONTRIBUTION_KEY, {
         slot: "composer-input",
         kind: "capture",

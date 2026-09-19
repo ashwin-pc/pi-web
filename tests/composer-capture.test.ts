@@ -1,6 +1,7 @@
 import { access, stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
-import { CaptureHttpError, CaptureUploadLimiter, EphemeralCaptureStore } from "../server/extensions/captureStore.js";
+import { CaptureUploadLimiter, EphemeralCaptureStore } from "../server/extensions/captureStore.js";
+import { HttpError } from "../server/shared/httpError.js";
 import { capturedTextInsertion } from "../src/composer/composerCapture.js";
 
 const policy = { media: "audio" as const, maxSeconds: 120, maxBytes: 1024, mimeTypes: ["audio/webm"] };
@@ -36,7 +37,7 @@ describe("ephemeral composer captures", () => {
     expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(32);
     const rejected = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
     expect(rejected).toHaveLength(8);
-    expect(rejected.every((result) => result.reason instanceof CaptureHttpError && result.reason.status === 429)).toBe(true);
+    expect(rejected.every((result) => result.reason instanceof HttpError && result.reason.status === 429)).toBe(true);
     await store.dispose();
   });
 

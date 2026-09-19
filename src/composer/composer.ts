@@ -828,7 +828,14 @@ export function createComposer(options: {
         }, true);
         if (ownedSessionId === sessionId) {
           state.attachedImages = restoredAttachments;
-          if (!elements.promptEl.value) elements.promptEl.value = rawMessage;
+          if (!elements.promptEl.value) {
+            // A capture may have started against the empty post-submit editor.
+            // Invalidate its snapshot before restoring the failed submission so
+            // a late transcript cannot splice itself into that restored text.
+            composerCapture.cancel();
+            elements.promptEl.value = rawMessage;
+            promptRevision += 1;
+          }
           if (contextAttachments.length === 0) contextAttachments = contexts;
           rememberContextAttachments(sessionId);
           renderAttachments();

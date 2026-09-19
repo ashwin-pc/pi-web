@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { HttpError } from "../shared/httpError.js";
 
 export const MAX_CAPTURE_SECONDS = 120;
 export const MAX_CAPTURE_BYTES = 25_000_000;
@@ -10,10 +11,6 @@ const MAX_PENDING_CAPTURES = 32;
 const MAX_PENDING_BYTES = 100_000_000;
 const MAX_ACTIVE_UPLOADS = 4;
 const MAX_ACTIVE_UPLOAD_BYTES = 50_000_000;
-
-export class CaptureHttpError extends Error {
-  constructor(message: string, readonly status: 400 | 408 | 409 | 413 | 429) { super(message); }
-}
 
 export type AudioCapturePolicy = {
   media: "audio";
@@ -44,10 +41,10 @@ export class CaptureUploadLimiter {
   private activeBytes = 0;
 
   begin(declaredBytes?: number) {
-    if (this.activeUploads >= MAX_ACTIVE_UPLOADS) throw new CaptureHttpError("Too many audio capture uploads", 429);
-    if (declaredBytes !== undefined && (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0)) throw new CaptureHttpError("Invalid Content-Length", 400);
-    if (declaredBytes !== undefined && declaredBytes > MAX_CAPTURE_BYTES) throw new CaptureHttpError("Audio capture is too large", 413);
-    if (declaredBytes !== undefined && this.activeBytes + declaredBytes > MAX_ACTIVE_UPLOAD_BYTES) throw new CaptureHttpError("Audio capture upload quota exceeded", 429);
+    if (this.activeUploads >= MAX_ACTIVE_UPLOADS) throw new HttpError("Too many audio capture uploads", 429);
+    if (declaredBytes !== undefined && (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0)) throw new HttpError("Invalid Content-Length", 400);
+    if (declaredBytes !== undefined && declaredBytes > MAX_CAPTURE_BYTES) throw new HttpError("Audio capture is too large", 413);
+    if (declaredBytes !== undefined && this.activeBytes + declaredBytes > MAX_ACTIVE_UPLOAD_BYTES) throw new HttpError("Audio capture upload quota exceeded", 429);
     this.activeUploads += 1;
     this.activeBytes += declaredBytes || 0;
     let accounted = declaredBytes || 0;
@@ -59,7 +56,7 @@ export class CaptureUploadLimiter {
         received += bytes;
         const additional = Math.max(0, received - accounted);
         if (!additional) return;
-        if (this.activeBytes + additional > MAX_ACTIVE_UPLOAD_BYTES) throw new CaptureHttpError("Audio capture upload quota exceeded", 429);
+        if (this.activeBytes + additional > MAX_ACTIVE_UPLOAD_BYTES) throw new HttpError("Audio capture upload quota exceeded", 429);
         this.activeBytes += additional;
         accounted += additional;
       },
@@ -101,17 +98,17 @@ export class EphemeralCaptureStore {
     policy: AudioCapturePolicy;
   }) {
     const { policy } = input;
-    if (!input.bytes.byteLength) throw new CaptureHttpError("Audio capture is empty", 400);
-    if (input.bytes.byteLength > policy.maxBytes || input.bytes.byteLength > MAX_CAPTURE_BYTES) throw new CaptureHttpError("Audio capture is too large", 413);
-    if (!Number.isFinite(input.durationMs) || input.durationMs <= 0 || input.durationMs > policy.maxSeconds * 1000) throw new CaptureHttpError("Audio capture duration is invalid", 400);
+    if (!input.bytes.byteLength) throw new HttpError("Audio capture is empty", 400);
+    if (input.bytes.byteLength > policy.maxBytes || input.bytes.byteLength > MAX_CAPTURE_BYTES) throw new HttpError("Audio capture is too large", 413);
+    if (!Number.isFinite(input.durationMs) || input.durationMs <= 0 || input.durationMs > policy.maxSeconds * 1000) throw new HttpError("Audio capture duration is invalid", 400);
     const mimeType = input.mimeType.split(";", 1)[0]?.trim().toLowerCase() || "";
-    if (!mimeType.startsWith("audio/")) throw new CaptureHttpError("Audio capture MIME type is invalid", 400);
-    if (policy.mimeTypes?.length && !policy.mimeTypes.includes(mimeType)) throw new CaptureHttpError("Audio capture MIME type is not accepted", 400);
+    if (!mimeType.startsWith("audio/")) throw new HttpError("Audio capture MIME type is invalid", 400);
+    if (policy.mimeTypes?.length && !policy.mimeTypes.includes(mimeType)) throw new HttpError("Audio capture MIME type is not accepted", 400);
 
     // Reserve synchronously before the first await so parallel stores cannot all
     // observe the same pre-write counters.
     if (this.pendingCount >= MAX_PENDING_CAPTURES || this.pendingBytes + input.bytes.byteLength > MAX_PENDING_BYTES) {
-      throw new CaptureHttpError("Audio capture temporary quota exceeded", 429);
+      throw new HttpError("Audio capture temporary quota exceeded", 429);
     }
     this.pendingCount += 1;
     this.pendingBytes += input.bytes.byteLength;
@@ -147,14 +144,14 @@ export class EphemeralCaptureStore {
     const capture = this.captures.get(id);
     if (!capture || capture.expiresAt <= Date.now()) {
       if (capture) await this.delete(id);
-      throw new CaptureHttpError("Audio capture is unavailable or expired", 409);
+      throw new HttpError("Audio capture is unavailable or expired", 409);
     }
     if (capture.sessionId !== owner.sessionId || capture.contributionKey !== owner.contributionKey || capture.registrationId !== owner.registrationId) {
-      throw new CaptureHttpError("Audio capture does not belong to this contribution registration", 409);
+      throw new HttpError("Audio capture does not belong to this contribution registration", 409);
     }
     if (capture.size > policy.maxBytes || capture.durationMs > policy.maxSeconds * 1000 || (policy.mimeTypes?.length && !policy.mimeTypes.includes(capture.mimeType))) {
       await this.delete(id);
-      throw new CaptureHttpError("Audio capture no longer satisfies the contribution policy", 409);
+      throw new HttpError("Audio capture no longer satisfies the contribution policy", 409);
     }
     this.captures.delete(id);
     this.releaseReservation(capture.size);

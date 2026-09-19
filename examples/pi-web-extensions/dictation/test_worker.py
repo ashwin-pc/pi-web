@@ -194,6 +194,30 @@ class WorkerTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "group or other"):
                 worker.validate_private_directory(info, "posix")
 
+    def test_native_fd1_output_isolated_from_jsonl_protocol(self):
+        code = (
+            "import os, worker\n"
+            "original = worker.handle\n"
+            "def noisy(message):\n"
+            " os.write(1, b'native stdout noise\\n')\n"
+            " return original(message)\n"
+            "worker.handle = noisy\n"
+            "raise SystemExit(worker.main())\n"
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-u", "-c", code],
+            cwd=str(Path(worker.__file__).parent),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        stdout, stderr = process.communicate('{"id":"native","op":"ping"}\n', timeout=5)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(json.loads(stdout)["id"], "native")
+        self.assertIn("native stdout noise", stderr)
+        self.assertNotIn("native stdout noise", stdout)
+
     def test_stdio_worker_exits_cleanly_on_parent_eof(self):
         process = subprocess.Popen(
             [sys.executable, "-u", worker.__file__],

@@ -2,7 +2,7 @@ import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DictationWorker, migrateDictationSettings } from "./index.js";
+import dictation, { DictationWorker, migrateDictationSettings } from "./index.js";
 import { defaultModel, platformDefaults, resolveRuntime, validateCombination } from "./adapters/config.js";
 
 const fakeWorker = String.raw`
@@ -12,6 +12,28 @@ for line in sys.stdin:
     time.sleep(0.2)
     print(json.dumps({"id": message["id"], "ok": True, "text": "fake transcript", "model": "fake", "durationMs": 10, "decodeMs": 1, "inferenceMs": 1}), flush=True)
 `;
+
+describe("dictation contribution settings", () => {
+  it("re-registers capture only when the capture maximum changes", async () => {
+    const handlers = new Map<string, (...args: any[]) => unknown>();
+    let settingsRegistration: any;
+    const contributions: unknown[] = [];
+    const web = {
+      capabilities: { slots: ["composer-input"], kinds: ["capture"] },
+      contribute: (_key: string, value: unknown) => contributions.push(value),
+      registerSettings: async (registration: unknown) => { settingsRegistration = registration; },
+      getSettings: async () => ({ values: { maxSeconds: 120 } }),
+    };
+    dictation({ on: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, handler) } as any);
+    await handlers.get("session_start")?.({}, { ui: { web, notify: () => {} } });
+    expect(contributions).toHaveLength(1);
+    settingsRegistration.onChange({ maxSeconds: 120, model: "changed" });
+    settingsRegistration.onChange({ maxSeconds: 120, pythonPath: "changed" });
+    expect(contributions).toHaveLength(1);
+    settingsRegistration.onChange({ maxSeconds: 60 });
+    expect(contributions).toHaveLength(2);
+  });
+});
 
 describe("DictationWorker lifecycle", () => {
   let root: string;
@@ -36,7 +58,7 @@ describe("DictationWorker lifecycle", () => {
     return worker;
   }
 
-  const request = (worker: DictationWorker, signal?: AbortSignal) => worker.transcribe(join(root, "fake.webm"), {
+  const request = (worker: DictationWorker, signal?: AbortSignal, timeoutMs = 5_000) => worker.transcribe(join(root, "fake.webm"), {
     mimeType: "audio/webm",
     family: "whisper",
     runtime: "faster-whisper",
@@ -44,7 +66,7 @@ describe("DictationWorker lifecycle", () => {
     device: "cpu",
     computeType: "int8",
     pythonPath: process.platform === "win32" ? "python" : "python3",
-    timeoutMs: 5_000,
+    timeoutMs,
     signal,
   });
 
@@ -68,6 +90,36 @@ describe("DictationWorker lifecycle", () => {
     await expect(duringSetup).rejects.toThrow("cancelled");
     expect((await readdir(root)).filter((name) => name.startsWith("pi-dictation-"))).toEqual([]);
     await expect(request(worker)).resolves.toMatchObject({ text: "fake transcript" });
+  });
+
+  it("removes a cancelled queued request without interrupting the warm worker or its neighbors", async () => {
+    const worker = createWorker();
+    const queuedController = new AbortController();
+    const first = request(worker);
+    const cancelled = request(worker, queuedController.signal);
+    const third = request(worker);
+    queuedController.abort();
+    await expect(cancelled).rejects.toThrow("cancelled");
+    await expect(Promise.all([first, third])).resolves.toHaveLength(2);
+  });
+
+  it("keeps queued work after active cancellation", async () => {
+    const worker = createWorker();
+    const activeController = new AbortController();
+    const active = request(worker, activeController.signal);
+    const queued = request(worker);
+    setTimeout(() => activeController.abort(), 40);
+    await expect(active).rejects.toThrow("cancelled");
+    await expect(queued).resolves.toMatchObject({ text: "fake transcript" });
+  });
+
+  it("starts a queued request timeout at dispatch rather than enqueue", async () => {
+    const worker = createWorker();
+    const first = request(worker);
+    // Each request takes 200ms. A 300ms enqueue deadline would expire before
+    // the queued response (~400ms), while a dispatch deadline succeeds.
+    const queued = request(worker, undefined, 300);
+    await expect(Promise.all([first, queued])).resolves.toHaveLength(2);
   });
 
   it("bounds unread worker protocol output", async () => {

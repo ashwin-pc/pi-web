@@ -122,8 +122,56 @@ function fulfillUpload(route: Route) {
   return route.fulfill({ status: 201, contentType: "application/json", body: JSON.stringify({ ok: true, captureId: "capture-1" }) });
 }
 
+async function setDocumentVisibility(page: Page, visibility: "visible" | "hidden") {
+  await page.evaluate((next) => {
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: next });
+    Object.defineProperty(document, "hidden", { configurable: true, value: next === "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  }, visibility);
+}
+
+async function expectPointerTarget(page: Page, selector: string, minimumHeight: number) {
+  const hit = await page.locator(selector).evaluate((element, minHeight) => {
+    const rect = element.getBoundingClientRect();
+    const target = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
+    return { height: rect.height, hit: target === element || Boolean(target && element.contains(target)), minHeight };
+  }, minimumHeight);
+  expect(hit.height).toBeGreaterThanOrEqual(hit.minHeight);
+  expect(hit.hit).toBe(true);
+}
+
 test.beforeEach(async ({ page }) => {
   await prepare(page);
+});
+
+test("compact capture start, stop, and cancel remain genuine pointer targets", async ({ page }) => {
+  let releaseInvocation!: () => void;
+  const invocationGate = new Promise<void>((resolve) => { releaseInvocation = resolve; });
+  await page.route("**/api/web-captures?**", fulfillUpload);
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    await invocationGate;
+    try { await route.fulfill({ json: { ok: true, effects: [] } }); } catch { /* cancelled request */ }
+  });
+
+  const composer = page.locator("#promptForm");
+  const prompt = page.locator("#prompt");
+  await expect(composer).toHaveClass(/compactInactive/);
+  await expect(prompt).not.toBeFocused();
+  await expectPointerTarget(page, ".composerCaptureButton", 38);
+  await expect(page.locator("#contextMeter")).toHaveJSProperty("clientHeight", 5);
+
+  await page.locator(".composerCaptureButton").click();
+  await expect(prompt).not.toBeFocused();
+  await page.waitForTimeout(1_100);
+  await expect.poll(() => page.evaluate(() => (window as any).__captureHarness.dataEvents)).toBeGreaterThan(0);
+  await expectPointerTarget(page, ".composerCaptureButton", 38);
+  await page.locator(".composerCaptureButton").click();
+
+  await expect(page.locator(".composerCaptureStatus")).toHaveText("Transcribing…");
+  await expectPointerTarget(page, ".composerCaptureCancel", 38);
+  await page.locator(".composerCaptureCancel").click();
+  await expect(page.locator(".composerCaptureStatus")).toHaveCount(0);
+  releaseInvocation();
 });
 
 test("renders recording and processing strokes with the approved warm palette", async ({ page }) => {
@@ -367,6 +415,47 @@ test("recovers a transcript without overwriting a draft edited during recording"
   await expect(page.locator(".message.system.error").last()).toContainText("recovered words");
 });
 
+test("surfaces JSON upload errors through the existing composer error path", async ({ page }) => {
+  await page.route("**/api/web-captures?**", (route) => route.fulfill({
+    status: 422,
+    contentType: "application/json",
+    body: JSON.stringify({ error: "Audio format is not supported" }),
+  }));
+
+  await startRecording(page);
+  await stopAfterRecorderData(page);
+
+  await expect(page.locator(".message.system.error").last()).toContainText("Audio format is not supported");
+});
+
+test("surfaces nested JSON invocation errors through the existing composer error path", async ({ page }) => {
+  await page.route("**/api/web-captures?**", fulfillUpload);
+  await page.route("**/api/web-contributions/invoke", (route) => route.fulfill({
+    status: 500,
+    contentType: "application/json",
+    body: JSON.stringify({ error: { message: "Transcription provider is unavailable" } }),
+  }));
+
+  await startRecording(page);
+  await stopAfterRecorderData(page);
+
+  await expect(page.locator(".message.system.error").last()).toContainText("Transcription provider is unavailable");
+});
+
+test("uses a bounded status fallback for null or HTML error bodies", async ({ page }) => {
+  await page.route("**/api/web-captures?**", (route) => route.fulfill({
+    status: 502,
+    contentType: "application/json",
+    body: "null",
+  }));
+
+  await startRecording(page);
+  await stopAfterRecorderData(page);
+
+  await expect(page.locator(".message.system.error").last()).toContainText(/Bad Gateway|Request failed \(502\)/);
+  await expect(page.locator(".message.system.error").last()).not.toContainText("<html");
+});
+
 test("cancel while microphone permission is pending stops a stream that resolves late", async ({ page }) => {
   await page.evaluate(() => (window as any).__captureHarness.setPermissionMode("pending"));
   const button = page.locator(".composerCaptureButton");
@@ -382,6 +471,91 @@ test("cancel while microphone permission is pending stops a stream that resolves
   await expect(page.locator(".composerCaptureStatus")).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => (window as any).__captureHarness.tracksStopped)).toBe(1);
   await expect(button).toBeEnabled();
+});
+
+test("hiding while processing lets the owned transcript finish", async ({ page }) => {
+  let releaseInvocation!: () => void;
+  const invocationGate = new Promise<void>((resolve) => { releaseInvocation = resolve; });
+  await page.route("**/api/web-captures?**", fulfillUpload);
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    await invocationGate;
+    await route.fulfill({ json: { ok: true, effects: [{ type: "insert-composer-text", text: "hidden result", placement: "selection" }] } });
+  });
+
+  await startRecording(page);
+  await stopAfterRecorderData(page);
+  await expect(page.locator(".composerCaptureStatus")).toHaveText("Transcribing…");
+  await setDocumentVisibility(page, "hidden");
+  releaseInvocation();
+
+  await expect(page.locator("#prompt")).toHaveValue("hidden result");
+  await expect(page.locator(".composerCaptureStatus")).toHaveCount(0);
+  await setDocumentVisibility(page, "visible");
+});
+
+test("hiding while recording stops the microphone but processes captured audio", async ({ page }) => {
+  await page.route("**/api/web-captures?**", fulfillUpload);
+  await page.route("**/api/web-contributions/invoke", (route) => route.fulfill({ json: {
+    ok: true,
+    effects: [{ type: "insert-composer-text", text: "privacy stop result", placement: "selection" }],
+  } }));
+
+  await startRecording(page);
+  await page.waitForTimeout(1_100);
+  await expect.poll(() => page.evaluate(() => (window as any).__captureHarness.dataEvents)).toBeGreaterThan(0);
+  await setDocumentVisibility(page, "hidden");
+
+  await expect.poll(() => page.evaluate(() => (window as any).__captureHarness.tracksStopped)).toBeGreaterThan(0);
+  await expect(page.locator("#prompt")).toHaveValue("privacy stop result");
+  await setDocumentVisibility(page, "visible");
+});
+
+test("hiding during permission cancels and releases a late-granted stream", async ({ page }) => {
+  await page.evaluate(() => (window as any).__captureHarness.setPermissionMode("pending"));
+  const button = page.locator(".composerCaptureButton");
+  await button.focus();
+  await button.click();
+  await expect(page.locator(".composerCaptureStatus")).toHaveText("Microphone…");
+
+  await setDocumentVisibility(page, "hidden");
+  await page.evaluate(() => (window as any).__captureHarness.resolvePermission());
+
+  await expect(page.locator(".composerCaptureStatus")).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as any).__captureHarness.tracksStopped)).toBe(1);
+  await setDocumentVisibility(page, "visible");
+});
+
+test("failed submission invalidates dictation started in the cleared editor", async ({ page }) => {
+  let releasePrompt!: () => void;
+  const promptGate = new Promise<void>((resolve) => { releasePrompt = resolve; });
+  let releaseInvocation!: () => void;
+  const invocationGate = new Promise<void>((resolve) => { releaseInvocation = resolve; });
+  await page.route("**/api/prompt", async (route) => {
+    await promptGate;
+    await route.fulfill({ status: 500, contentType: "text/plain", body: "submission failed" });
+  });
+  await page.route("**/api/web-captures?**", fulfillUpload);
+  await page.route("**/api/web-contributions/invoke", async (route) => {
+    await invocationGate;
+    try {
+      await route.fulfill({ json: { ok: true, effects: [{ type: "insert-composer-text", text: "late dictation", placement: "selection" }] } });
+    } catch { /* restoration cancels the in-flight capture */ }
+  });
+
+  const prompt = page.locator("#prompt");
+  await prompt.fill("restore this message");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(prompt).toHaveValue("");
+  await startRecording(page);
+  await stopAfterRecorderData(page);
+  releasePrompt();
+
+  await expect(prompt).toHaveValue("restore this message");
+  await expect(page.locator(".message.system.error").last()).toContainText("submission failed");
+  releaseInvocation();
+  await page.waitForTimeout(100);
+  await expect(prompt).toHaveValue("restore this message");
+  await expect(prompt).not.toContainText("late dictation");
 });
 
 test("cancel while transcribing aborts the request and ignores a late result", async ({ page }) => {
