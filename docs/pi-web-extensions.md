@@ -293,6 +293,19 @@ ln -sfn "$PWD/examples/pi-web-extensions/3d-modeling" ~/.pi/web/extensions/3d-mo
 
 Run `/reload` or restart pi-web after installing it.
 
+### Example: Wavy music projects
+
+[`examples/pi-web-extensions/wavy/`](../examples/pi-web-extensions/wavy/) is an opt-in, artifact-first music extension. A `.wavy` index references native lyrics, ABC scores, settings, source audio, and immutable takes. Its read-only preview provides notation, piano roll, and synthesized score audition; agent tools handle local YuE2 composition/rendering, optional SheetSage2 transcription, revisions, and portable export.
+
+It uses the generic preview asset/theme bridge for authenticated recording playback, host-matched appearance, and local sampled-piano score audition. Mounted previews remain snapshots (reopen after changes), and playback handoff is not provided. Older hosts retain the ordinary audio artifact links as a fallback. The extension does not expose credentials, weaken the sandbox, embed recordings into preview HTML, or download models at startup. Model prerequisites, piano attribution, and non-commercial model licensing are documented in its README.
+
+```sh
+mkdir -p ~/.pi/web/extensions
+ln -s "$PWD/examples/pi-web-extensions/wavy" ~/.pi/web/extensions/wavy
+```
+
+Reload existing sessions with `/reload`; new sessions discover the global example automatically.
+
 ## Artifact preview action API
 
 `ctx.ui.web.setArtifactAction(key, action)` adds an action to matching Markdown, HTML, or video artifact preview cards. Match by preview kind, filename extension, or both. The handler receives the artifact's name, `/api/artifacts/...` path, and kind, and may return Markdown or a plain-text message shown in the card.

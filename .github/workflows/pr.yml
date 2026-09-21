@@ -93,6 +93,9 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium
 
+      - name: Generate Wavy browser artifact
+        run: npm run build:wavy-browser
+
       - name: Typecheck
         run: npm run typecheck
 
@@ -101,6 +104,12 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Verify packaged Wavy runtime
+        run: |
+          mkdir -p "$RUNNER_TEMP/pi-web-pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pi-web-pack"
+          node scripts/verify-wavy-package.mjs "$RUNNER_TEMP"/pi-web-pack/*.tgz
 
       - name: Complete E2E matrix
         env:

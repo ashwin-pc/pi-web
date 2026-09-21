@@ -37,6 +37,7 @@ const e2eTasks = e2eProjects.flatMap((project) =>
   }),
 );
 
+const bundleTask = { name: "wavy-browser", command: process.execPath, args: ["scripts/build-wavy-browser.mjs"], kind: "static" };
 const preflightTasks = [
   { name: "typecheck", command: bin("tsc"), args: ["--noEmit"], kind: "static" },
   { name: "unit", command: bin("vitest"), args: ["run"], kind: "unit" },
@@ -128,10 +129,15 @@ async function runE2eTasks() {
   return !failed;
 }
 
-if (e2eOnly) {
-  const buildTask = skipBuild ? [] : preflightTasks.filter((task) => task.name === "build");
-  if (buildTask.length === 0 || await runPhase(buildTask)) await runE2eTasks();
-} else if (await runPhase(preflightTasks)) await runE2eTasks();
+// Unit and E2E imports can render Wavy previews. Generate the shipped browser
+// artifact once before parallel test collection; this is build setup, never
+// preview-runtime compilation.
+if (await runPhase([bundleTask])) {
+  if (e2eOnly) {
+    const buildTask = skipBuild ? [] : preflightTasks.filter((task) => task.name === "build");
+    if (buildTask.length === 0 || await runPhase(buildTask)) await runE2eTasks();
+  } else if (await runPhase(preflightTasks)) await runE2eTasks();
+}
 
 const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 const failed = results.filter((result) => result.code !== 0);

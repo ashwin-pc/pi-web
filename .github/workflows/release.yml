@@ -23,6 +23,7 @@ jobs:
           package-manager-cache: false
 
       - run: npm ci
+      - run: npm run build:wavy-browser
       - run: npm run typecheck
       - run: npm run test:unit
       - run: npm run build
@@ -42,6 +43,7 @@ jobs:
         run: |
           mkdir -p release
           npm pack --pack-destination release
+          node scripts/verify-wavy-package.mjs release/*.tgz
           cd release
           sha256sum *.tgz > SHA256SUMS.txt
 
