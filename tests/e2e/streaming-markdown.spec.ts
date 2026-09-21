@@ -174,7 +174,11 @@ test("batched streaming preserves scroll-away intent and a selection in stable c
   await page.locator("#primaryButton").click();
   const stableText = page.locator(".message.assistant p", { hasText: "This deliberately long response" });
   await expect(stableText).toContainText("avoid executing unsafe markup", { timeout: 10_000 });
-  await page.locator("#messages").dispatchEvent("wheel", { deltaY: -600 });
+  const messages = page.locator("#messages");
+  // An upward gesture on content that cannot scroll is intentionally a no-op.
+  // Wait until this test can exercise real scroll-away intent on tall viewports.
+  await expect.poll(() => messages.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(1);
+  await messages.dispatchEvent("wheel", { deltaY: -600 });
   await stableText.evaluate((element) => {
     const node = element.firstChild;
     if (!node) throw new Error("selection text missing");
