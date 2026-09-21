@@ -67,13 +67,15 @@ export type AttachmentDto = {
   id: string;
   label: string;
   title?: string;
-  reference: {
-    provider: "github";
-    repository: string;
-    resource: "issue" | "pull-request";
-    number: number;
-    url: string;
-  };
+  reference:
+    | { provider: "github"; repository: string; resource: "issue" | "pull-request"; number: number; url: string }
+    | {
+        provider: "artifact";
+        path: string;
+        sha256: string;
+        snapshot?: { label?: string; revision?: string };
+        ranges?: Array<{ start: number; end: number; unit: "utf16"; label?: string }>;
+      };
 } | {
   type: "quote-reply";
   id: string;

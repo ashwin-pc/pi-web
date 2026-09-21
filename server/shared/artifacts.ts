@@ -44,6 +44,31 @@ export function legacyArtifactFileForCwd(cwd: string, name: string): string {
   return join(legacyArtifactDirForCwd(cwd), name);
 }
 
+export function canonicalSessionArtifactUrl(cwd: string, sessionId: string, raw: unknown): { path: string; artifactPath: string; name: string } | undefined {
+  if (typeof raw !== "string" || !sessionId || raw.includes("?") || raw.includes("#") || raw.includes("\0")) return undefined;
+  let encodedPath: string;
+  if (raw.startsWith("/api/artifacts/")) encodedPath = raw.slice("/api/artifacts/".length);
+  else if (raw.startsWith("/api/session-artifacts/")) {
+    const rest = raw.slice("/api/session-artifacts/".length);
+    const separator = rest.indexOf("/");
+    if (separator <= 0) return undefined;
+    let owner: string;
+    try { owner = decodeURIComponent(rest.slice(0, separator)); } catch { return undefined; }
+    if (owner !== sessionId) return undefined;
+    encodedPath = rest.slice(separator + 1);
+  } else return undefined;
+  if (!encodedPath || encodedPath.startsWith("/") || encodedPath.endsWith("/")) return undefined;
+  let artifactPath: string;
+  try { artifactPath = encodedPath.split("/").map((part) => decodeURIComponent(part)).join("/"); } catch { return undefined; }
+  if (!isValidArtifactPath(artifactPath) || !findArtifactFile([cwd], artifactPath)) return undefined;
+  const canonicalPath = artifactPath.split("/").map(encodeURIComponent).join("/");
+  return {
+    path: `/api/session-artifacts/${encodeURIComponent(sessionId)}/${canonicalPath}`,
+    artifactPath,
+    name: artifactPath.split("/").at(-1)!,
+  };
+}
+
 export function findArtifactFile(cwds: Iterable<string>, path: string): string | undefined {
   if (!isValidArtifactPath(path)) return undefined;
   for (const cwd of cwds) {

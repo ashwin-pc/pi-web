@@ -1,0 +1,36 @@
+.artifactReviewDialog {
+  width: min(560px, calc(100vw - 24px));
+  max-height: min(720px, calc(100dvh - 24px));
+  margin: auto;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  padding: 20px;
+  overflow: auto;
+  color: var(--text);
+  background: var(--panel);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
+}
+.artifactReviewDialog::backdrop { background: rgba(0, 0, 0, .56); backdrop-filter: blur(3px); }
+.artifactReviewDialog h2 { margin: 0 0 8px; font-size: 18px; }
+.artifactReviewSummary,
+.artifactReviewNote { margin: 8px 0; color: var(--muted); line-height: 1.45; }
+.artifactReviewText {
+  max-height: min(300px, 38dvh);
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  background: var(--panel-2);
+  font: inherit;
+}
+.artifactReviewActions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.artifactReviewActions button { min-height: 44px; padding-inline: 16px; }
+.artifactReviewActions .primary { border-color: var(--accent); color: var(--bg); background: var(--accent); }
+@media (max-width: 480px) {
+  .artifactReviewDialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); padding: 16px; border-radius: 16px; }
+  .artifactReviewActions { display: grid; grid-template-columns: 1fr 1fr; }
+}

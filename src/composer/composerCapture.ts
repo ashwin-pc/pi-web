@@ -29,6 +29,13 @@ export function capturedTextInsertion(input: {
   return { value: `${input.current.value.slice(0, start)}${input.text}${input.current.value.slice(end)}`, cursor: start + input.text.length };
 }
 
+export function reviewedTextInsertion(input: Parameters<typeof capturedTextInsertion>[0]) {
+  const text = input.placement === "end" && input.current.value && !/\s$/.test(input.current.value) && !/^\s/.test(input.text)
+    ? `\n\n${input.text}`
+    : input.text;
+  return capturedTextInsertion({ ...input, text });
+}
+
 type CaptureOperation = {
   generation: number;
   descriptor: ComposerCaptureDescriptor;

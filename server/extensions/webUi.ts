@@ -7,6 +7,9 @@ import { MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
 import { HttpError } from "../shared/httpError.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
+import { normalizeArtifactPreviewAssets } from "./artifactAssets.js";
+import { normalizeSubmittedAttachments } from "../shared/attachments.js";
+import { canonicalSessionArtifactUrl } from "../shared/artifacts.js";
 
 export interface WebUiBridgeDependencies {
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
@@ -52,7 +55,7 @@ type WebContribution =
   | { version: 1; key: string; slot: "footer"; kind: "static"; view: PiWebFooter }
   | { version: 1; key: string; slot: "header-action"; kind: "rendered"; source: PiWebHeaderAction }
   | { version: 1; key: string; slot: "artifact-action"; kind: "rendered"; source: PiWebArtifactAction }
-  | { version: 1; key: string; slot: "artifact-preview"; kind: "rendered"; source: PiWebArtifactPreview }
+  | { version: 1; key: string; slot: "artifact-preview"; kind: "rendered"; source: PiWebArtifactPreview; registrationId: string; actions: string[] }
   | { version: 1; key: string; slot: "git-tab"; kind: "rendered"; source: PiWebGitTab }
   | { version: 1; key: string; slot: "panel"; kind: "rendered"; source: PiWebPanel }
   | { version: 1; key: string; slot: "system-info"; kind: "rendered"; source: PiWebPanel }
@@ -381,6 +384,13 @@ function cleanFooterText(value: unknown, maxLength = 2_000) {
   return cleaned ? cleaned.slice(0, maxLength) : undefined;
 }
 
+/** Trusted extension HTML is byte-bounded but otherwise byte-for-byte content preserving. */
+function boundedHtml(value: unknown, maxBytes: number) {
+  if (typeof value !== "string") throw new HttpError("Artifact preview returned invalid HTML", 400);
+  if (!value || Buffer.byteLength(value, "utf8") > maxBytes) throw new HttpError("Artifact preview HTML exceeds its byte limit", 400);
+  return value;
+}
+
 function normalizeTextLines(value: unknown) {
   const rawLines = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
   const lines = rawLines.slice(0, 8).map((line) => cleanFooterText(line)).filter((line): line is string => Boolean(line));
@@ -462,11 +472,11 @@ const contributionPolicies = {
     } }),
   },
   "artifact-preview": {
-    allowedKinds: ["rendered"], viewFields: ["html"], viewBudget: 1_000_000,
-    descriptor: (entry: Extract<WebContribution, { slot: "artifact-preview" }>) => ({ match: {
-      kinds: cleanArtifactKinds(entry.source.kinds),
-      extensions: cleanArtifactExtensions(entry.source.extensions),
-    } }),
+    allowedKinds: ["rendered"], viewFields: ["html", "assets", "review"], effects: ["insert-composer-text", "add-composer-context"], viewBudget: 1_000_000,
+    descriptor: (entry: Extract<WebContribution, { slot: "artifact-preview" }>) => ({
+      match: { kinds: cleanArtifactKinds(entry.source.kinds), extensions: cleanArtifactExtensions(entry.source.extensions) },
+      ...(entry.actions.length ? { interaction: { registrationId: entry.registrationId, actions: entry.actions } } : {}),
+    }),
   },
   "git-tab": {
     allowedKinds: ["rendered"], viewFields: ["html", "composerContext"], viewBudget: 500_000,
@@ -497,6 +507,7 @@ const webCapabilities = Object.freeze({
   slots: Object.freeze(Object.keys(contributionPolicies)),
   kinds: Object.freeze([...new Set(Object.values(contributionPolicies).flatMap((policy) => [...policy.allowedKinds]))]),
   effects: Object.freeze([...new Set(Object.values(contributionPolicies).flatMap((policy) => "effects" in policy ? [...policy.effects] : []))]),
+  artifactPreview: Object.freeze({ assets: true as const, theme: true as const, interactions: true as const, viewport: true as const }),
 });
 
 function webContributionEntries(value: any) {
@@ -571,10 +582,20 @@ function normalizedPublicContribution(key: string, spec: PiWebContribution): Web
       version: 1, key, slot: spec.slot, kind: "rendered",
       source: { ...spec, kinds: spec.match?.kinds, extensions: spec.match?.extensions, invoke: (artifact) => spec.render({ context: artifact }) },
     };
-    if (spec.slot === "artifact-preview") return {
-      version: 1, key, slot: spec.slot, kind: "rendered",
-      source: { ...spec, kinds: spec.match?.kinds, extensions: spec.match?.extensions, render: (artifact) => spec.render({ context: artifact }) },
-    };
+    if (spec.slot === "artifact-preview") {
+      const rawActions = spec.interactions?.actions;
+      if (rawActions !== undefined && (!Array.isArray(rawActions) || rawActions.length < 1 || rawActions.length > 32)) throw new TypeError("Artifact preview interaction actions must contain between 1 and 32 entries");
+      const actions = rawActions?.map((action) => cleanContributionKey(action)).filter((action): action is string => Boolean(action)) || [];
+      if (rawActions && (actions.length !== rawActions.length || actions.some((action, index) => action !== rawActions[index]) || new Set(actions).size !== actions.length || typeof spec.interactions?.invoke !== "function")) throw new TypeError("Artifact preview interactions require unique valid actions and an invoke handler");
+      return {
+        version: 1, key, slot: spec.slot, kind: "rendered", registrationId: randomUUID(), actions,
+        source: {
+          ...spec, kinds: spec.match?.kinds, extensions: spec.match?.extensions,
+          render: (artifact) => spec.render({ context: artifact }),
+          ...(spec.interactions ? { interactions: { actions, invoke: spec.interactions.invoke } } : {}),
+        },
+      };
+    }
     if (spec.slot === "git-tab") return {
       version: 1, key, slot: spec.slot, kind: "rendered",
       source: { ...spec, render: (event) => spec.render({ action: event?.action, payload: event?.payload, context: event?.repo }) },
@@ -623,7 +644,7 @@ function createPiWebUi(value: any): PiWebUi {
     setFooter: (key, footer) => contributeForSlot(key, "footer", footer === undefined ? undefined : { slot: "footer", kind: "static", view: footer }),
     setHeaderAction: (key, action) => contributeForSlot(key, "header-action", action === undefined ? undefined : { slot: "header-action", kind: "rendered", ...action, render: () => action.invoke() }),
     setArtifactAction: (key, action) => contributeForSlot(key, "artifact-action", action === undefined ? undefined : { slot: "artifact-action", kind: "rendered", title: action.title, label: action.label, match: { kinds: action.kinds, extensions: action.extensions }, render: (event) => action.invoke(event?.context as any) }),
-    setArtifactPreview: (key, preview) => contributeForSlot(key, "artifact-preview", preview === undefined ? undefined : { slot: "artifact-preview", kind: "rendered", title: preview.title, label: preview.label, match: { kinds: preview.kinds, extensions: preview.extensions }, render: (event) => preview.render(event?.context as any) }),
+    setArtifactPreview: (key, preview) => contributeForSlot(key, "artifact-preview", preview === undefined ? undefined : { slot: "artifact-preview", kind: "rendered", title: preview.title, label: preview.label, match: { kinds: preview.kinds, extensions: preview.extensions }, render: (event) => preview.render(event?.context as any), interactions: preview.interactions }),
     setGitTab: (key, tab) => contributeForSlot(key, "git-tab", tab === undefined ? undefined : { slot: "git-tab", kind: "rendered", title: tab.title, label: tab.label, render: (event) => tab.render({ action: event?.action, payload: event?.payload, repo: event?.context }) }),
     setPanel: (key, panel) => contributeForSlot(key, "panel", panel === undefined ? undefined : { slot: "panel", kind: "rendered", ...panel }),
     setSystemInfo: (key, panel) => contributeForSlot(key, "system-info", panel === undefined ? undefined : { slot: "system-info", kind: "rendered", ...panel }),
@@ -846,23 +867,14 @@ async function bindWebExtensions(value: any) {
     };
   }
 
-  function cleanArtifactContext(input: { name?: unknown; path?: unknown; kind?: unknown }) {
+  function cleanArtifactContext(value: any, input: { name?: unknown; path?: unknown; kind?: unknown }) {
     const name = cleanHeaderActionText(input.name, 500);
-    const path = cleanHeaderActionText(input.path, 2_000);
     const kind = artifactKinds.includes(input.kind as typeof artifactKinds[number])
       ? input.kind as typeof artifactKinds[number]
       : undefined;
-    let pathName: string | undefined;
-    try {
-      const artifactPath = path?.startsWith("/api/artifacts/")
-        ? path.slice("/api/artifacts/".length)
-        : path?.startsWith("/api/session-artifacts/")
-          ? path.split("/").slice(4).join("/")
-          : undefined;
-      if (artifactPath) pathName = decodeURIComponent(artifactPath).split("/").at(-1);
-    } catch { /* invalid encoded artifact path */ }
-    if (!name || !path || !kind || pathName !== name) throw new Error("Invalid artifact context");
-    return { name, path, kind };
+    const canonical = canonicalSessionArtifactUrl(deps.sessionCwd(value), String(value.sessionId || ""), input.path);
+    if (!name || !kind || !canonical || canonical.name !== name) throw new Error("Invalid artifact context");
+    return { name: canonical.name, path: canonical.path, kind };
   }
 
   function artifactMatches(source: { kinds?: readonly string[]; extensions?: readonly string[] }, artifact: { name: string; kind: string }) {
@@ -875,7 +887,7 @@ async function bindWebExtensions(value: any) {
     const { key, contribution } = renderedContribution(value, "artifact-action", input.key);
     if (!contribution) throw new Error("Artifact action not found");
     const action = contribution.source;
-    const artifact = cleanArtifactContext(input);
+    const artifact = cleanArtifactContext(value, input);
     if (!artifactMatches(action, artifact)) throw new Error("Artifact action does not match this artifact");
     const result = await action.invoke(artifact);
     const markdown = cleanFooterText(result?.markdown, contributionPolicies["artifact-action"].viewBudget);
@@ -894,12 +906,91 @@ async function bindWebExtensions(value: any) {
     const { key, contribution } = renderedContribution(value, "artifact-preview", input.key);
     if (!contribution) throw new Error("Artifact preview not found");
     const preview = contribution.source;
-    const artifact = cleanArtifactContext(input);
+    const artifact = cleanArtifactContext(value, input);
     if (!artifactMatches(preview, artifact)) throw new Error("Artifact preview does not match this artifact");
     const result = await preview.render(artifact);
-    const html = cleanFooterText(result?.html, contributionPolicies["artifact-preview"].viewBudget);
-    if (!html) throw new Error("Artifact preview returned no HTML");
-    return { label: cleanHeaderActionText(preview.label) || cleanHeaderActionText(preview.title) || key, html };
+    const html = boundedHtml(result?.html, contributionPolicies["artifact-preview"].viewBudget);
+    const assets = await normalizeArtifactPreviewAssets(result?.assets, {
+      cwd: deps.sessionCwd(value),
+      sessionId: String(value.sessionId),
+    });
+    return {
+      label: cleanHeaderActionText(preview.label) || cleanHeaderActionText(preview.title) || key,
+      html,
+      ...(assets ? { assets } : {}),
+    };
+  }
+
+  function hasOnlyInteractionKeys(value: unknown, allowed: readonly string[]): value is Record<string, unknown> {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const keys = Object.keys(value as Record<string, unknown>);
+    return keys.length <= allowed.length && keys.every((key) => allowed.includes(key));
+  }
+
+  function boundedInteractionPayload(value: unknown) {
+    if (value === undefined) return undefined;
+    let nodes = 0; let stringBytes = 0;
+    const visit = (item: unknown, depth: number): void => {
+      if (depth > 8) throw new HttpError("Artifact preview interaction payload is too deeply nested", 400);
+      if (++nodes > 4_096) throw new HttpError("Artifact preview interaction payload has too many values", 400);
+      if (typeof item === "string") {
+        stringBytes += Buffer.byteLength(item, "utf8");
+        if (stringBytes > 32 * 1024) throw new HttpError("Artifact preview interaction payload is too large", 400);
+        return;
+      }
+      if (!item || typeof item !== "object") return;
+      if (Array.isArray(item)) { for (const child of item) visit(child, depth + 1); return; }
+      for (const child of Object.values(item as Record<string, unknown>)) visit(child, depth + 1);
+    };
+    visit(value, 0);
+    let encoded: string;
+    try { encoded = JSON.stringify(value); } catch { throw new HttpError("Artifact preview interaction payload must be JSON-serializable", 400); }
+    if (encoded === undefined || Buffer.byteLength(encoded, "utf8") > 32 * 1024) throw new HttpError("Artifact preview interaction payload is too large", 400);
+    return JSON.parse(encoded) as unknown;
+  }
+
+  function normalizeArtifactReviewContext(value: any, raw: unknown) {
+    const context = normalizeSubmittedAttachments(deps.sessionCwd(value), [raw])[0];
+    return context?.type === "reference" ? context : undefined;
+  }
+
+  async function invokeArtifactPreviewInteraction(value: any, input: { key?: unknown; registrationId?: unknown; action?: unknown; payload?: unknown; name?: unknown; path?: unknown; kind?: unknown }) {
+    const { contribution } = renderedContribution(value, "artifact-preview", input.key);
+    if (!contribution) throw new Error("Artifact preview not found");
+    if (input.registrationId !== contribution.registrationId) return { status: "stale", message: "The preview registration changed." };
+    const action = cleanContributionKey(input.action);
+    if (!action || !contribution.actions.includes(action) || !contribution.source.interactions) return { status: "unsupported", message: "This preview action is unavailable." };
+    const artifact = cleanArtifactContext(value, input);
+    if (!artifactMatches(contribution.source, artifact)) throw new Error("Artifact preview does not match this artifact");
+    const result = await contribution.source.interactions.invoke({ action, payload: boundedInteractionPayload(input.payload), context: artifact });
+    if (result?.status === "stale" || result?.status === "unsupported") {
+      if (!hasOnlyInteractionKeys(result, ["status", "message"]) || (result.message !== undefined && typeof result.message !== "string")) throw new Error("Artifact preview interaction returned unsupported fields");
+      return { status: result.status, ...(cleanHeaderActionText(result.message, 500) ? { message: cleanHeaderActionText(result.message, 500) } : {}) };
+    }
+    if (!hasOnlyInteractionKeys(result, ["status", "review"]) || result.status !== "review"
+      || !hasOnlyInteractionKeys(result.review, ["title", "summary", "effects"])
+      || (result.review.summary !== undefined && typeof result.review.summary !== "string")
+      || !Array.isArray(result.review.effects) || result.review.effects.length !== 2) throw new Error("Artifact preview interaction returned no supported review");
+    const title = cleanHeaderActionText(result.review.title, 200);
+    const summary = cleanFooterText(result.review.summary, 2_000);
+    const textEffect = result.review.effects[0];
+    const contextEffect = result.review.effects[1];
+    if (!hasOnlyInteractionKeys(textEffect, ["type", "text", "placement"]) || !hasOnlyInteractionKeys(contextEffect, ["type", "context"])) throw new Error("Artifact preview interaction returned unsupported effect fields");
+    const text = textEffect?.type === "insert-composer-text" ? cleanFooterText(textEffect.text, 100_000) : undefined;
+    const placement = textEffect?.type === "insert-composer-text" && textEffect.placement === "end" ? "end" : undefined;
+    const context = contextEffect?.type === "add-composer-context" ? normalizeArtifactReviewContext(value, contextEffect.context) : undefined;
+    if (!title || !text || !placement || !context) throw new Error("Artifact preview interaction returned no supported review");
+    return {
+      status: "review",
+      review: {
+        title,
+        ...(summary ? { summary } : {}),
+        effects: [
+          { type: "insert-composer-text" as const, text, placement },
+          { type: "add-composer-context" as const, context },
+        ],
+      },
+    };
   }
 
   async function invokeGitTab(value: any, input: { key?: unknown; action?: unknown; payload?: unknown; repo?: unknown }) {
@@ -1048,8 +1139,9 @@ async function bindWebExtensions(value: any) {
     if (slot === "header-action") return invokeHeaderAction(value, input.key);
     if (slot === "artifact-action" || slot === "artifact-preview") {
       const context = event.context && typeof event.context === "object" ? event.context as Record<string, unknown> : {};
-      return slot === "artifact-action"
-        ? invokeArtifactAction(value, { ...context, key: input.key })
+      if (slot === "artifact-action") return invokeArtifactAction(value, { ...context, key: input.key });
+      return typeof event.action === "string"
+        ? invokeArtifactPreviewInteraction(value, { ...context, key: input.key, registrationId: event.registrationId, action: event.action, payload: event.payload })
         : invokeArtifactPreview(value, { ...context, key: input.key });
     }
     if (slot === "git-tab") {

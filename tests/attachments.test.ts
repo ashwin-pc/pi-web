@@ -41,6 +41,26 @@ describe("attachment message markup", () => {
     expect(normalizeSubmittedAttachments(cwd, [reference])).toEqual([reference]);
   });
 
+  it("round trips bounded immutable artifact references", () => {
+    const artifact = {
+      type: "reference" as const, id: "artifact:source", label: "Selected source", title: "Revision seven",
+      reference: {
+        provider: "artifact" as const, path: "music/song.source", sha256: "a".repeat(64),
+        snapshot: { label: "Saved score", revision: "7" },
+        ranges: [{ start: 12, end: 30, unit: "utf16" as const, label: "passage" }],
+      },
+    };
+    const message = serializeAttachmentMarkup("Please edit this.", [artifact]);
+    expect(parseAttachmentMarkup(message, cwd)).toEqual({ text: "Please edit this.", attachments: [artifact] });
+    expect(normalizeSubmittedAttachments(cwd, [{ ...artifact, reference: { ...artifact.reference, path: "../secret" } }])).toEqual([]);
+    expect(normalizeSubmittedAttachments(cwd, [{ ...artifact, reference: { ...artifact.reference, sha256: "not-a-hash" } }])).toEqual([]);
+    expect(normalizeSubmittedAttachments(cwd, [{ ...artifact, reference: { ...artifact.reference, ranges: [{ start: 30, end: 12, unit: "utf16" }] } }])).toEqual([]);
+    expect(normalizeSubmittedAttachments(cwd, [{ ...artifact, extra: "rejected" }])).toEqual([]);
+    expect(normalizeSubmittedAttachments(cwd, [{ ...artifact, reference: { ...artifact.reference, extra: "rejected" } }])).toEqual([]);
+    expect(normalizeSubmittedAttachments(cwd, [{ ...artifact, reference: { ...artifact.reference, snapshot: { revision: "7", extra: "rejected" } } }])).toEqual([]);
+    expect(normalizeSubmittedAttachments(cwd, [{ ...artifact, reference: { ...artifact.reference, ranges: [{ start: 12, end: 30, unit: "utf16", extra: "rejected" }] } }])).toEqual([]);
+  });
+
   it("round trips quote replies as structured reference attachments", () => {
     const quoteReply = {
       type: "quote-reply" as const,

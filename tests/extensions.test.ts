@@ -130,9 +130,13 @@ describe("bundled extension path discovery", () => {
   it("serializes and securely invokes artifact actions through the web bridge", async () => {
     let ui: any;
     const emitted: any[] = [];
+    const cwd = await makeTempDir();
+    await mkdir(join(cwd, ".pi", "web", "artifacts"), { recursive: true });
+    await writeFile(join(cwd, ".pi", "web", "artifacts", "page.html"), "page");
+    await writeFile(join(cwd, ".pi", "web", "artifacts", "notes.md"), "notes");
     const bridge = createWebUiBridge({
       emit: (value) => emitted.push(value), clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
-      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+      createNewSession: async () => ({}), sessionCwd: () => cwd, state: () => ({}),
     });
     const session = {
       sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
@@ -150,7 +154,7 @@ describe("bundled extension path discovery", () => {
     }]);
     expect(emitted.at(-1)).toMatchObject({ type: "web_contributions_changed", sessionId: "session" });
     await expect(bridge.invokeArtifactAction(session, { key: "download", name: "page.html", path: "/api/artifacts/page.html", kind: "html" }))
-      .resolves.toMatchObject({ download: { path: "/api/artifacts/page.html", filename: "saved-page.html" } });
+      .resolves.toMatchObject({ download: { path: "/api/session-artifacts/session/page.html", filename: "saved-page.html" } });
     await expect(bridge.invokeContribution(session, {
       slot: "artifact-action", key: "download",
       event: { context: { key: "another-action", name: "page.html", path: "/api/artifacts/page.html", kind: "html" } },
@@ -170,9 +174,13 @@ describe("bundled extension path discovery", () => {
 
   it("serializes and invokes sandboxed artifact preview renderers", async () => {
     let ui: any;
+    const cwd = await makeTempDir();
+    await mkdir(join(cwd, ".pi", "web", "artifacts", "prints"), { recursive: true });
+    await writeFile(join(cwd, ".pi", "web", "artifacts", "prints", "part.gcode"), "gcode");
+    await writeFile(join(cwd, ".pi", "web", "artifacts", "part.stl"), "stl");
     const bridge = createWebUiBridge({
       emit: () => undefined, clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
-      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+      createNewSession: async () => ({}), sessionCwd: () => cwd, state: () => ({}),
     });
     const session = {
       sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
@@ -196,6 +204,25 @@ describe("bundled extension path discovery", () => {
       slot: "artifact-preview", key: "gcode",
       event: { context: { name: "part.stl", path: "/api/artifacts/part.stl", kind: "file" } },
     })).rejects.toThrow("does not match this artifact");
+
+    const etxHtml = `<!doctype html><script>const jazz="93\x03Vocal";window.parts=[jazz.indexOf("\x03"),jazz.split("\x03")];</script>`;
+    ui.web.setArtifactPreview("gcode", { title: "G-code viewer", extensions: [".gcode"], render: () => ({ html: etxHtml }) });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-preview", key: "gcode",
+      event: { context: { name: "part.gcode", path: "/api/artifacts/prints/part.gcode", kind: "file" } },
+    })).resolves.toMatchObject({ html: etxHtml });
+
+    const boundedUnicode = "界".repeat(333_333);
+    ui.web.setArtifactPreview("gcode", { title: "G-code viewer", extensions: [".gcode"], render: () => ({ html: boundedUnicode }) });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-preview", key: "gcode",
+      event: { context: { name: "part.gcode", path: "/api/artifacts/prints/part.gcode", kind: "file" } },
+    })).resolves.toMatchObject({ html: boundedUnicode });
+    ui.web.setArtifactPreview("gcode", { title: "G-code viewer", extensions: [".gcode"], render: () => ({ html: `${boundedUnicode}界` }) });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-preview", key: "gcode",
+      event: { context: { name: "part.gcode", path: "/api/artifacts/prints/part.gcode", kind: "file" } },
+    })).rejects.toThrow("byte limit");
   });
 
   it("keeps legacy surfaces isolated over one contribution registry", async () => {
@@ -290,7 +317,8 @@ describe("bundled extension path discovery", () => {
       apiVersion: 1,
       slots: ["footer", "header-action", "artifact-action", "artifact-preview", "git-tab", "panel", "system-info", "fab", "composer-input"],
       kinds: ["static", "rendered", "capture"],
-      effects: ["open-panel", "insert-composer-text"],
+      effects: ["open-panel", "insert-composer-text", "add-composer-context"],
+      artifactPreview: { assets: true, theme: true, interactions: true, viewport: true },
     });
     expect(Object.isFrozen(ui.web.capabilities)).toBe(true);
     expect(Object.isFrozen(ui.web.capabilities.slots)).toBe(true);
@@ -331,6 +359,97 @@ describe("bundled extension path discovery", () => {
     })).toThrow("conflicting or missing delivery fields");
     ui.web.contribute("status", undefined);
     expect(bridge.entries(session).webContributions).toEqual([]);
+  });
+
+  it("normalizes revision-bound artifact preview review interactions", async () => {
+    let ui: any;
+    const cwd = await makeTempDir();
+    await mkdir(join(cwd, ".pi", "web", "artifacts"), { recursive: true });
+    await writeFile(join(cwd, ".pi", "web", "artifacts", "song.song"), "song");
+    await writeFile(join(cwd, ".pi", "web", "artifacts", "song.source"), "source");
+    const bridge = createWebUiBridge({
+      emit: () => undefined, clientCount: () => 1,
+      withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
+      createNewSession: async () => ({}), sessionCwd: () => cwd, state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+    const invoke = vi.fn(({ action, payload, context }: any) => ({
+      status: "review",
+      review: {
+        title: "Review source edit",
+        summary: `${action}:${payload.selection}`,
+        effects: [
+          { type: "insert-composer-text", text: `Edit ${payload.selection}`, placement: "end" },
+          { type: "add-composer-context", context: {
+            type: "reference", id: "artifact:song", label: "Song source", title: "Frozen source",
+            reference: { provider: "artifact", path: "music/song.source", sha256: "a".repeat(64), snapshot: { revision: "7" }, ranges: [{ start: 2, end: 9, unit: "utf16", label: "passage" }] },
+          } },
+        ],
+      },
+    }));
+    ui.web.setArtifactPreview("score.viewer", {
+      title: "Score", extensions: [".song"], render: () => ({ html: "<p>score</p>" }),
+      interactions: { actions: ["review-edit"], invoke },
+    });
+    const descriptor = bridge.entries(session).webContributions[0] as any;
+    expect(descriptor.interaction.actions).toEqual(["review-edit"]);
+    expect(descriptor.interaction.registrationId).toMatch(/^[a-f0-9-]{36}$/);
+    const input = {
+      slot: "artifact-preview", key: "score.viewer",
+      event: {
+        context: { name: "song.song", path: "/api/artifacts/song.song", kind: "file" },
+        registrationId: descriptor.interaction.registrationId, action: "review-edit", payload: { selection: "bars 2-4" },
+      },
+    };
+    await expect(bridge.invokeContribution(session, input)).resolves.toEqual({
+      status: "review",
+      review: {
+        title: "Review source edit", summary: "review-edit:bars 2-4",
+        effects: [
+          { type: "insert-composer-text", text: "Edit bars 2-4", placement: "end" },
+          { type: "add-composer-context", context: expect.objectContaining({ reference: expect.objectContaining({ provider: "artifact", path: "music/song.source", sha256: "a".repeat(64) }) }) },
+        ],
+      },
+    });
+    expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ action: "review-edit", context: { name: "song.song", path: "/api/session-artifacts/session/song.song", kind: "file" } }));
+    await expect(bridge.invokeContribution(session, { ...input, event: { ...input.event, context: { ...input.event.context, path: "/api/artifacts/%73ong.song" } } }))
+      .resolves.toMatchObject({ status: "review" });
+    for (const path of [
+      "/api/session-artifacts/foreign/song.song",
+      "/api/artifacts/dir/../song.song",
+      "/api/artifacts/%2e%2e/song.song",
+      "/api/artifacts/dir%2Fsong.song",
+      "/api/artifacts/dir%5Csong.song",
+      "/api/artifacts/song.song?other=1",
+      "/api/artifacts/song.song#other",
+    ]) {
+      await expect(bridge.invokeContribution(session, { ...input, event: { ...input.event, context: { ...input.event.context, path } } })).rejects.toThrow("Invalid artifact context");
+    }
+    await expect(bridge.invokeContribution(session, { ...input, event: { ...input.event, registrationId: "stale" } })).resolves.toMatchObject({ status: "stale" });
+    await expect(bridge.invokeContribution(session, { ...input, event: { ...input.event, action: "undeclared" } })).resolves.toMatchObject({ status: "unsupported" });
+    await expect(bridge.invokeContribution(session, { ...input, event: { ...input.event, payload: { value: "x".repeat(40_000) } } })).rejects.toThrow("too large");
+    await expect(bridge.invokeContribution(session, { ...input, event: { ...input.event, payload: { value: "界".repeat(11_000) } } })).rejects.toThrow("too large");
+
+    const validResult: any = invoke({ action: "review-edit", payload: { selection: "x" }, context: input.event.context });
+    const malformed = [
+      { ...validResult, extra: "no" },
+      { ...validResult, review: { ...validResult.review, extra: "no" } },
+      { ...validResult, review: { ...validResult.review, effects: [{ ...validResult.review.effects[0], extra: "no" }, validResult.review.effects[1]] } },
+      { ...validResult, review: { ...validResult.review, effects: [{ ...validResult.review.effects[0], placement: "selection" }, validResult.review.effects[1]] } },
+      { ...validResult, review: { ...validResult.review, effects: [validResult.review.effects[0], { ...validResult.review.effects[1], context: { ...validResult.review.effects[1].context, extra: "no" } }] } },
+      { ...validResult, review: { ...validResult.review, effects: [validResult.review.effects[0], { ...validResult.review.effects[1], context: { ...validResult.review.effects[1].context, reference: { ...validResult.review.effects[1].context.reference, extra: "no" } } }] } },
+      { ...validResult, review: { ...validResult.review, effects: [validResult.review.effects[0], { ...validResult.review.effects[1], context: { ...validResult.review.effects[1].context, reference: { ...validResult.review.effects[1].context.reference, snapshot: { revision: "7", extra: "no" } } } }] } },
+      { ...validResult, review: { ...validResult.review, effects: [validResult.review.effects[0], { ...validResult.review.effects[1], context: { ...validResult.review.effects[1].context, reference: { ...validResult.review.effects[1].context.reference, ranges: [{ start: 2, end: 9, unit: "utf16", extra: "no" }] } } }] } },
+    ];
+    for (const result of malformed) {
+      ui.web.setArtifactPreview("score.viewer", { title: "Score", extensions: [".song"], render: () => ({ html: "<p>score</p>" }), interactions: { actions: ["review-edit"], invoke: () => result } });
+      const current = bridge.entries(session).webContributions[0] as any;
+      await expect(bridge.invokeContribution(session, { ...input, event: { ...input.event, registrationId: current.interaction.registrationId } })).rejects.toThrow(/unsupported|no supported/);
+    }
   });
 
   it("publishes and securely invokes generic composer audio capture contributions", async () => {

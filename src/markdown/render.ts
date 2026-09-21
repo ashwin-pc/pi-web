@@ -732,7 +732,9 @@ function enhanceArtifactLinks(root: ParentNode) {
           setArtifactFrameInteraction(card, true);
           iframe.focus();
         });
-        card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
+        card.addEventListener("pointerleave", (event) => {
+          if (event.pointerType === "mouse") setArtifactFrameInteraction(card, false);
+        });
         content.append(shield);
         ensureArtifactInteractionListener();
         refreshOverflow();
@@ -767,7 +769,9 @@ function enhanceArtifactLinks(root: ParentNode) {
         setArtifactFrameInteraction(card, true);
         iframe.focus();
       });
-      card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
+      card.addEventListener("pointerleave", (event) => {
+        if (event.pointerType === "mouse") setArtifactFrameInteraction(card, false);
+      });
       content.append(iframe, shield);
       ensureArtifactInteractionListener();
       refreshOverflow();

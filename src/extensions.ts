@@ -38,7 +38,8 @@ export type PiWebFooter =
 
 export type PiWebEffect =
   | { type: "open-panel"; key: string }
-  | { type: "insert-composer-text"; text: string; placement?: "selection" | "cursor" | "end" };
+  | { type: "insert-composer-text"; text: string; placement?: "selection" | "cursor" | "end" }
+  | { type: "add-composer-context"; context: PiWebComposerContext };
 
 export type PiWebCaptureResult = {
   path: string;
@@ -85,6 +86,7 @@ export type PiWebContribution =
       label?: string;
       match: { kinds?: PiWebArtifactContext["kind"][]; extensions?: string[] };
       render: (event?: PiWebContributionEvent) => PiWebArtifactPreviewView | Promise<PiWebArtifactPreviewView>;
+      interactions?: PiWebArtifactPreviewInteractions;
     }
   | {
       slot: "header-action" | "artifact-action" | "git-tab" | "panel" | "system-info";
@@ -116,9 +118,35 @@ export type PiWebArtifactContext = {
   kind: "image" | "markdown" | "html" | "video" | "audio" | "pdf" | "file";
 };
 
+export type PiWebArtifactPreviewAsset = {
+  /** Renderer-local identity used by iframe/host asset requests. */
+  id: string;
+  /** Artifact-relative path, or a local /api/artifacts/ or owning-session artifact URL. */
+  path: string;
+  /** Optional declarations are verified by core; returned metadata is canonical. */
+  mediaType?: string;
+  bytes?: number;
+  sha256?: string;
+};
+
 export type PiWebArtifactPreviewView = {
   /** Complete document rendered in an opaque-origin iframe with scripts allowed. */
   html: string;
+  /** Authenticated local audio made available through the host-mediated asset bridge. */
+  assets?: PiWebArtifactPreviewAsset[];
+};
+
+export type PiWebArtifactPreviewInteractionResult =
+  | { status: "review"; review: { title: string; summary?: string; effects: [
+      { type: "insert-composer-text"; text: string; placement: "end" },
+      { type: "add-composer-context"; context: PiWebComposerContext },
+    ] } }
+  | { status: "stale" | "unsupported"; message?: string };
+
+export type PiWebArtifactPreviewInteractions = {
+  /** Explicit allow-list for sandbox requests. */
+  actions: string[];
+  invoke: (event: { action: string; payload?: unknown; context: PiWebArtifactContext }) => PiWebArtifactPreviewInteractionResult | Promise<PiWebArtifactPreviewInteractionResult>;
 };
 
 export type PiWebArtifactPreview = {
@@ -128,6 +156,7 @@ export type PiWebArtifactPreview = {
   kinds?: PiWebArtifactContext["kind"][];
   extensions?: string[];
   render: (artifact: PiWebArtifactContext) => Promise<PiWebArtifactPreviewView> | PiWebArtifactPreviewView;
+  interactions?: PiWebArtifactPreviewInteractions;
 };
 
 export type PiWebArtifactAction = {
@@ -166,13 +195,16 @@ export type PiWebComposerContext = {
   /** Optional detail shown alongside the label, such as an issue title. */
   title?: string;
   /** Structured pointer included in the transcript; content is resolved by agent tools. */
-  reference: {
-    provider: "github";
-    repository: string;
-    resource: "issue" | "pull-request";
-    number: number;
-    url: string;
-  };
+  reference:
+    | { provider: "github"; repository: string; resource: "issue" | "pull-request"; number: number; url: string }
+    | {
+        provider: "artifact";
+        /** Relative to the owning session's .pi/web/artifacts root. */
+        path: string;
+        sha256: string;
+        snapshot?: { label?: string; revision?: string };
+        ranges?: Array<{ start: number; end: number; unit: "utf16"; label?: string }>;
+      };
 };
 
 export type PiWebGitTabView = {
@@ -293,6 +325,7 @@ export type PiWebCapabilities = Readonly<{
   slots: readonly string[];
   kinds: readonly string[];
   effects: readonly string[];
+  artifactPreview?: Readonly<{ assets: true; theme: true; interactions: true; viewport: true }>;
 }>;
 
 export interface PiWebSettlementDependencies {

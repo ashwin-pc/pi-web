@@ -1,4 +1,9 @@
 import { expect, test } from "@playwright/test";
+import { buildSync } from "esbuild";
+import { createHash } from "node:crypto";
+import { mkdir, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { ensurePreviewArtifact } from "./helpers/artifacts.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 
@@ -7,6 +12,15 @@ import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 
 const CORRECT_TOKEN = "test-secret";
 const WRONG_TOKEN = "wrong";
+
+const artifactBridgeBundle = buildSync({
+  entryPoints: [fileURLToPath(new URL("../../src/extensions/artifactPreviews.ts", import.meta.url))],
+  bundle: true,
+  format: "iife",
+  globalName: "ArtifactBridge",
+  platform: "browser",
+  write: false,
+}).outputFiles[0].text;
 
 test.beforeEach(async ({ page, context }) => {
   // Clear stored token before each test
@@ -223,6 +237,78 @@ test.describe("token overlay", () => {
     const frame = page.locator(".artifactPreview--html iframe.artifactPreviewFrame").last();
     await expect(frame).toHaveAttribute("srcdoc", /HTML artifact/);
     await expect(frame.contentFrame().locator("#script-status")).toHaveText("script ran");
+  });
+
+  test("artifact media bridge uses the real browser session cookie and is revoked by logout", async ({ page, browser }) => {
+    const relativePath = "auth-proof/cookie-tone.wav";
+    const file = join(process.cwd(), ".pi/web/artifacts", relativePath);
+    await mkdir(join(file, ".."), { recursive: true });
+    // PCM WAV: one silent mono 8-bit sample at 8 kHz.
+    const wav = Buffer.from("524946462500000057415645666d74201000000001000100401f0000401f000001000800646174610100000080", "hex");
+    await writeFile(file, wav);
+    try {
+      await page.goto("/api/auth/login");
+      const clientId = "cookie-media-proof";
+      const state = await page.evaluate(async ({ token, clientId }) => {
+        const response = await fetch("/api/state", { headers: { authorization: `Bearer ${token}`, "x-pi-web-client-id": clientId } });
+        return { status: response.status, body: await response.json() };
+      }, { token: CORRECT_TOKEN, clientId });
+      expect(state.status).toBe(200);
+      expect((await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
+      const sessionId = String((state.body as any).sessionId);
+      const assetPath = `/api/session-artifacts/${encodeURIComponent(sessionId)}/${relativePath}`;
+      const sha256 = createHash("sha256").update(wav).digest("hex");
+
+      const anonymous = await browser.newContext({ baseURL: page.url() });
+      expect((await anonymous.request.get(assetPath)).status()).toBe(401);
+      await anonymous.close();
+
+      const assetRequests: Array<Record<string, string>> = [];
+      const assetStatuses: number[] = [];
+      page.on("request", request => {
+        if (new URL(request.url()).pathname === assetPath) assetRequests.push(request.headers());
+      });
+      page.on("response", response => {
+        if (new URL(response.url()).pathname === assetPath) assetStatuses.push(response.status());
+      });
+      await page.route("**/api/web-contributions/invoke", route => route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          html: `<body><audio id=a></audio><script>async function load(mark){try{const b=await piWebPreview.loadAsset("tone");document.body.dataset[mark]=b.type+":"+b.size;const a=document.querySelector("#a");a.src=URL.createObjectURL(b);a.load();}catch(e){document.body.dataset[mark]="error:"+e.message}}load("first");window.loadAgain=()=>load("second")<\/script>`,
+          assets: [{ id: "tone", path: assetPath, mediaType: "audio/wav", bytes: wav.length, sha256 }],
+        }),
+      }));
+      await page.setContent("<!doctype html><div id=host></div>");
+      await page.addScriptTag({ content: artifactBridgeBundle });
+      await page.evaluate(({ sessionId }) => {
+        const w = window as any;
+        // Deliberately omit Authorization: both invoke and native asset GETs can
+        // authenticate only through the HttpOnly browser session cookie.
+        w.ArtifactBridge.configureArtifactPreviews({ headers: () => ({ "x-pi-web-client-id": "cookie-media-proof" }), getSessionId: () => sessionId });
+        w.ArtifactBridge.setArtifactPreviews([{ key: "cookie.viewer", match: { kinds: ["file"], extensions: [".secure"] } }]);
+        return w.ArtifactBridge.mountArtifactPreview(document.querySelector("#host"), { name: "proof.secure", path: `/api/session-artifacts/${sessionId}/proof.secure`, kind: "file" }, { title: "cookie proof" });
+      }, { sessionId });
+      const frame = page.locator("#host iframe").contentFrame();
+      await expect.poll(() => frame.locator("body").getAttribute("data-first")).toBe(`audio/wav:${wav.length}`);
+      expect(assetRequests).toHaveLength(1);
+      expect(assetRequests[0].authorization).toBeUndefined();
+
+      const logout = await page.evaluate(async (clientId) => fetch("/api/auth/logout", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-pi-web-client-id": clientId },
+        body: "{}",
+      }).then(response => response.status), clientId);
+      expect(logout).toBe(200);
+      await frame.locator("body").evaluate(() => (window as any).loadAgain());
+      await expect.poll(() => frame.locator("body").getAttribute("data-second")).toBe("error:Asset unavailable");
+      expect(assetRequests).toHaveLength(2);
+      expect(assetRequests[1].authorization).toBeUndefined();
+      expect(assetStatuses).toEqual([200, 401]);
+    } finally {
+      await rm(file, { force: true });
+    }
   });
 
   test("security inventory follows the normal gate while mutations are session-only", async ({ page }) => {

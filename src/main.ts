@@ -49,7 +49,7 @@ import { createActiveWorkerDock, type ActiveWorkerDockController } from "./compo
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
-import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/artifactPreviews.js";
+import { configureArtifactPreviews, disposeArtifactPreviews, setArtifactPreviews } from "./extensions/artifactPreviews.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
@@ -78,7 +78,17 @@ initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
 configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
-configureArtifactPreviews({ headers: api.headers, getSessionId: () => state.currentSessionId });
+configureArtifactPreviews({
+  headers: api.headers,
+  getSessionId: () => state.currentSessionId,
+  snapshotDraft: () => composer.snapshotDraft(),
+  applyReviewedEffects: (snapshot, effects) => composer.applyReviewedEffects(snapshot, effects),
+  getOcclusions: (frame) => {
+    if (!elements.messagesEl.contains(frame)) return [];
+    const jumpToLatest = document.querySelector<HTMLElement>(".jumpToLatestButton");
+    return [elements.attachmentsEl, elements.pendingMessagesEl, elements.formEl, ...(jumpToLatest ? [jumpToLatest] : [])];
+  },
+});
 
 let messages: MessageList;
 let composer: ComposerController;
@@ -441,6 +451,7 @@ function renderActiveSession(
 
 function activateSession(sessionId: string) {
   composer?.switchSession(sessionId);
+  if (sessionId !== state.currentSessionId) disposeArtifactPreviews();
   selectSession(state, sessionId);
   renderActiveSession();
 }
@@ -467,6 +478,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
   if (activatesSession) {
     composer?.switchSession(view.id);
+    if (view.id !== state.currentSessionId) disposeArtifactPreviews();
     selectSession(state, view.id);
   }
   if (data && "sessionUiState" in data) sessions?.applySessionUiState(data.sessionUiState);
