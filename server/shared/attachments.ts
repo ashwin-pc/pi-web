@@ -25,15 +25,13 @@ export type ReferenceMessageAttachment = {
   id: string;
   label: string;
   title?: string;
-  reference:
-    | { provider: "github"; repository: string; resource: "issue" | "pull-request"; number: number; url: string }
-    | {
-        provider: "artifact";
-        path: string;
-        sha256: string;
-        snapshot?: { label?: string; revision?: string };
-        ranges?: Array<{ start: number; end: number; unit: "utf16"; label?: string }>;
-      };
+  reference: {
+    provider: "github";
+    repository: string;
+    resource: "issue" | "pull-request";
+    number: number;
+    url: string;
+  };
 };
 
 export type QuoteReplyMessageAttachment = {
@@ -105,57 +103,14 @@ function validStoredAttachment(value: unknown, cwd?: string): StoredFileAttachme
   return { type: "file", id: String(item.id), name: String(item.name), mediaType: item.mediaType, bytes: Number(item.bytes), path: item.path };
 }
 
-function validArtifactPath(value: unknown) {
-  if (typeof value !== "string" || !value || value.length > 1_000 || value.startsWith("/") || value.includes("\\") || /[%?#\0]/.test(value)) return undefined;
-  const parts = value.split("/");
-  return parts.every((part) => part && part !== "." && part !== ".." && !/%2f|%5c/i.test(part)) ? value : undefined;
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, allowed: readonly string[]) {
-  const keys = Object.keys(value);
-  return keys.length <= allowed.length && keys.every((key) => allowed.includes(key));
-}
-
 function validReferenceAttachment(value: unknown): ReferenceMessageAttachment | undefined {
   if (!value || typeof value !== "object") return undefined;
   const item = value as Record<string, unknown>;
   const reference = item.reference && typeof item.reference === "object" ? item.reference as Record<string, unknown> : undefined;
-  if (!hasOnlyKeys(item, ["type", "id", "label", "title", "reference"])) return undefined;
   if (item.type !== "reference" || typeof item.id !== "string" || !item.id || item.id.length > 500) return undefined;
   if (typeof item.label !== "string" || !item.label || item.label.length > 200) return undefined;
   if (item.title !== undefined && (typeof item.title !== "string" || item.title.length > 500)) return undefined;
-  if (!reference) return undefined;
-  if (reference.provider === "artifact") {
-    if (!hasOnlyKeys(reference, ["provider", "path", "sha256", "snapshot", "ranges"])) return undefined;
-    const path = validArtifactPath(reference.path);
-    if (!path || typeof reference.sha256 !== "string" || !/^[a-f\d]{64}$/.test(reference.sha256)) return undefined;
-    const rawSnapshot = reference.snapshot && typeof reference.snapshot === "object" && !Array.isArray(reference.snapshot) ? reference.snapshot as Record<string, unknown> : undefined;
-    if (reference.snapshot !== undefined && !rawSnapshot) return undefined;
-    if (rawSnapshot && !hasOnlyKeys(rawSnapshot, ["label", "revision"])) return undefined;
-    if (rawSnapshot?.label !== undefined && (typeof rawSnapshot.label !== "string" || rawSnapshot.label.length > 200)) return undefined;
-    if (rawSnapshot?.revision !== undefined && (typeof rawSnapshot.revision !== "string" || rawSnapshot.revision.length > 200)) return undefined;
-    if (reference.ranges !== undefined && (!Array.isArray(reference.ranges) || reference.ranges.length > 32)) return undefined;
-    const ranges = Array.isArray(reference.ranges) ? reference.ranges.flatMap((raw) => {
-      if (!raw || typeof raw !== "object") return [];
-      const range = raw as Record<string, unknown>;
-      if (!hasOnlyKeys(range, ["start", "end", "unit", "label"])) return [];
-      if (!Number.isSafeInteger(range.start) || Number(range.start) < 0 || !Number.isSafeInteger(range.end) || Number(range.end) <= Number(range.start) || range.unit !== "utf16") return [];
-      if (range.label !== undefined && (typeof range.label !== "string" || range.label.length > 200)) return [];
-      return [{ start: Number(range.start), end: Number(range.end), unit: "utf16" as const, ...(typeof range.label === "string" ? { label: range.label } : {}) }];
-    }) : undefined;
-    if (Array.isArray(reference.ranges) && ranges?.length !== reference.ranges.length) return undefined;
-    return {
-      type: "reference", id: item.id, label: item.label,
-      ...(typeof item.title === "string" ? { title: item.title } : {}),
-      reference: {
-        provider: "artifact", path, sha256: reference.sha256,
-        ...(rawSnapshot ? { snapshot: { ...(typeof rawSnapshot.label === "string" ? { label: rawSnapshot.label } : {}), ...(typeof rawSnapshot.revision === "string" ? { revision: rawSnapshot.revision } : {}) } } : {}),
-        ...(ranges ? { ranges } : {}),
-      },
-    };
-  }
-  if (!hasOnlyKeys(reference, ["provider", "repository", "resource", "number", "url"])) return undefined;
-  if (reference.provider !== "github" || !githubRepositoryPattern.test(String(reference.repository || ""))) return undefined;
+  if (!reference || reference.provider !== "github" || !githubRepositoryPattern.test(String(reference.repository || ""))) return undefined;
   if (reference.resource !== "issue" && reference.resource !== "pull-request") return undefined;
   if (!Number.isSafeInteger(reference.number) || Number(reference.number) <= 0) return undefined;
   const expectedUrl = `https://github.com/${reference.repository}/${reference.resource === "issue" ? "issues" : "pull"}/${reference.number}`;

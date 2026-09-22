@@ -33,10 +33,6 @@ test("Wavy renders safe Unicode and derives multi-voice score timing/highlights 
   await expect(page.locator("#title")).toHaveText("Café 世界 🎶");
   await expect(page.locator("#lyrics")).toContainText("Héllo 世界 🎵");
   expect(await page.evaluate(() => (window as any).xss)).toBeUndefined();
-  await expect(page.locator("#mediaNotice")).toContainText("Selected but not loaded");
-  await expect(page.locator("#recording")).toBeHidden();
-  await expect(page.locator("#takeSelect")).toHaveValue("1");
-  await expect(page.locator("#selectedTakeMeta")).toHaveText("Revision 2 · complete");
   await expect(page.locator(".take-history")).not.toHaveAttribute("open", "");
   await page.locator(".take-history summary").click();
   await expect(page.locator(".take").last()).toContainText("latest");
@@ -201,49 +197,13 @@ test("phone multi-touch pinches around its focal point, pans, suppresses activat
   expect(await page.evaluate(()=>(window as any).__wavyTest.player.playing)).toBe(false);
 });
 
-test("cancelled score review keeps the inline draft and sends bounded snapshot context", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop", "desktop covers the bridge payload; mobile layout is covered separately");
-  await page.evaluate(() => {
-    (window as any).__reviewRequests = [];
-    (window as any).piWebPreview = { version: 1, theme: { tokens: {} }, onThemeChange() {}, requestReview(request: any) { (window as any).__reviewRequests.push(request); return Promise.resolve({ status: "cancelled" }); } };
-  });
-  const project = fixture();
-  project.index.revisions = [{ id: 2, createdAt: "2025-01-01T00:00:00Z", summary: "score", origin: "agent", files: { lyrics: ref("l"), style: ref("s"), settings: ref("j"), score: ref("score.abc") } }];
-  await page.setContent(await renderWavyPreview(project));
-  const notes = page.locator("#notation [selectable]");
-  await notes.first().click({ force: true }); await page.locator("#selectMode").click(); await notes.nth(1).click({ force: true });
-  await page.locator("#commentSelection").click();
-  await page.locator("#commentText").fill("Make this phrase lighter");
-  await page.locator("#commentStage").click();
-  await expect(page.locator("#commentStatus")).toContainText("cancelled");
-  await expect(page.locator("#commentText")).toHaveValue("Make this phrase lighter");
-  const request = await page.evaluate(() => (window as any).__reviewRequests[0]);
-  expect(request.action).toBe("review-score-edit");
-  expect(request.payload.snapshot).toEqual({ compositionRevision: 2, scoreSha256: "b".repeat(64) });
-  expect(request.payload.selection.kind).toBe("abc-source-ranges");
-  expect(request.payload.selection.ranges.every((range: any) => range.end > range.start && range.excerpt)).toBe(true);
-});
-
-test("roll and notation share one passage comment draft, layout, and review payload", async ({page},info)=>{
-  test.skip(info.project.name!=="desktop","one test switches views and exercises both phone widths");await page.evaluate(()=>{(window as any).__reviewRequests=[];(window as any).piWebPreview={version:1,theme:{tokens:{}},onThemeChange(){},requestReview(request:any){(window as any).__reviewRequests.push(request);return Promise.resolve({status:"cancelled"});}};});
-  const project=fixture();project.index.revisions=[{id:2,createdAt:"2025-01-01T00:00:00Z",summary:"score",origin:"agent",files:{lyrics:ref("l"),style:ref("s"),settings:ref("j"),score:ref("score.abc")}}];await page.setContent(await renderWavyPreview(project));await page.locator("#rollButton").click();const rollNotes=page.locator("#roll .roll-note");await rollNotes.first().click();await page.locator("#selectMode").click();await rollNotes.nth(1).click();const original=await page.evaluate(()=>(window as any).__wavyTest.selection());expect(original.ranges.length).toBeGreaterThan(0);await page.locator("#commentSelection").click();await page.locator("#commentText").fill("Keep this shared passage draft.");
-  await page.locator("#notationButton").click();await expect(page.locator("#commentPanel")).toBeVisible();await expect(page.locator("#commentText")).toHaveValue("Keep this shared passage draft.");expect(await page.evaluate(()=>(window as any).__wavyTest.selection())).toEqual(original);await expect(page.locator("#notation .wavy-selected")).not.toHaveCount(0);
-  await page.locator("#rollButton").click();await expect(page.locator("#commentPanel")).toBeVisible();await expect(page.locator("#commentText")).toHaveValue("Keep this shared passage draft.");await expect(page.locator("#roll .wavy-selected")).not.toHaveCount(0);
-  for(const width of [390,320]){await page.setViewportSize({width,height:700});await expect(page.locator("#commentPanel")).toHaveClass(/phone-drawer/);await expect.poll(()=>page.evaluate(()=>{const panel=document.querySelector("#commentPanel")!.getBoundingClientRect(),paper=document.querySelector("#scorePaper")!.getBoundingClientRect(),selected=[...document.querySelectorAll("#roll .wavy-selected")].map(e=>e.getBoundingClientRect());return panel.bottom<=innerHeight+1&&selected.some(r=>r.left>=paper.left+41&&r.right<=paper.right&&r.top>=paper.top&&r.bottom<=paper.bottom);})).toBe(true);}
-  await page.locator("#commentStage").click();await expect(page.locator("#commentStatus")).toContainText("cancelled");await expect(page.locator("#commentText")).toHaveValue("Keep this shared passage draft.");const request=await page.evaluate(()=>(window as any).__reviewRequests[0]);expect(request.payload.selection.ranges.map((r:any)=>({start:r.start,end:r.end,voiceId:r.voiceId}))).toEqual(original.ranges);await page.locator("#notationButton").click();await page.locator("#commentStage").click();await expect.poll(()=>page.evaluate(()=>(window as any).__reviewRequests.length)).toBe(2);const requests=await page.evaluate(()=>(window as any).__reviewRequests);expect(requests[1].payload.selection).toEqual(requests[0].payload.selection);
-});
-
-test("an accepted delayed review never clears newer inline comment text", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop", "one browser run is sufficient");
-  await page.evaluate(() => {
-    (window as any).piWebPreview={version:1,theme:{tokens:{}},onThemeChange(){},requestReview(){return new Promise(resolve=>{(window as any).__resolveReview=resolve;});}};
-  });
-  const project=fixture();project.index.revisions=[{id:2,createdAt:"2025-01-01T00:00:00Z",summary:"score",origin:"agent",files:{lyrics:ref("l"),style:ref("s"),settings:ref("j"),score:ref("score.abc")}}];
-  await page.setContent(await renderWavyPreview(project));const notes=page.locator("#notation [selectable]");
-  await notes.first().click({force:true});await page.locator("#selectMode").click();await notes.nth(1).click({force:true});await page.locator("#commentSelection").click();
-  await page.locator("#commentText").fill("Submitted draft");await page.locator("#commentStage").click();await expect(page.locator("#commentStage")).toBeDisabled();
-  await page.locator("#commentText").fill("Newer draft while review is open");await page.evaluate(()=>(window as any).__resolveReview({status:"added"}));
-  await expect(page.locator("#commentText")).toHaveValue("Newer draft while review is open");await expect(page.locator("#commentStage")).toBeEnabled();
+test("roll and notation share a local manually copyable passage draft", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "desktop covers local draft behavior");
+  const project=fixture(); project.index.revisions=[{id:2,createdAt:"2025-01-01T00:00:00Z",summary:"score",origin:"agent",files:{lyrics:ref("l"),style:ref("s"),settings:ref("j"),score:ref("score.abc")}}];
+  await page.setContent(await renderWavyPreview(project)); await page.locator("#rollButton").click(); const notes=page.locator("#roll .roll-note"); await notes.first().click(); await page.locator("#selectMode").click(); await notes.nth(1).click();
+  const original=await page.evaluate(()=>(window as any).__wavyTest.selection()); await page.locator("#commentSelection").click(); await page.locator("#commentText").fill("Keep this shared passage draft.");
+  await page.locator("#notationButton").click(); await expect(page.locator("#commentText")).toHaveValue("Keep this shared passage draft."); await page.locator("#rollButton").click(); expect(await page.evaluate(()=>(window as any).__wavyTest.selection())).toEqual(original);
+  await page.locator("#commentStage").click(); const fallback=page.locator("#commentFallback"); await expect(fallback).toBeVisible(); await expect(fallback).toContainText("Composition revision: 2"); await expect(fallback).toContainText("Score SHA-256:"); await expect(fallback).toContainText("UTF-16"); await expect(fallback).toContainText("Keep this shared passage draft.");
 });
 
 test("open passage comments survive desktop-to-phone resizing without overflow", async ({ page }, info) => {
@@ -345,92 +305,4 @@ test("canonical bar labels count multimeasure rests instead of ABCJS visual meas
   expect(note.measure).toBe(19);
   const selectable=page.locator("#notation .abcjs-note").last();await selectable.click({force:true});await page.locator("#selectMode").click();
   expect((await page.evaluate(()=>(window as any).__wavyTest.selection())).label).toContain("Bar 20");
-});
-
-test("pending piano loading is immediately stoppable and cancelled by recording selection", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop", "one Chromium browser run is sufficient");
-  await page.evaluate(() => {
-    (window as any).__loads = [];
-    (window as any).piWebPreview = { version: 1, hosted: true, assets: [], theme: { tokens: {}, colorScheme: "dark", density: "comfortable" }, onThemeChange() {}, loadAsset(id: string, options: any = {}) {
-      const item: any = { id, aborted: false }; (window as any).__loads.push(item);
-      return new Promise((_resolve, reject) => options.signal?.addEventListener("abort", () => { item.aborted = true; reject(new DOMException("Aborted", "AbortError")); }, { once: true }));
-    } };
-  });
-  await page.setContent(await renderWavyPreview(fixture()));
-  await page.locator("#scorePlay").click();
-  await expect(page.locator("#scorePlay")).toHaveText("Pause");
-  await page.locator("#takeSelect").selectOption("0");
-  await page.locator("#loadRecording").click();
-  await expect(page.locator("#scorePlay")).toHaveText("Play");
-  await expect.poll(() => page.evaluate(() => (window as any).__loads.filter((x: any) => x.id.startsWith("piano-")).every((x: any) => x.aborted))).toBe(true);
-  expect(await page.evaluate(() => (window as any).__loads.filter((x: any) => x.id.startsWith("recording-")).length)).toBe(1);
-});
-
-test("recording selection is local, lazy, switchable, and disabled without audio", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop", "one Chromium browser run is sufficient");
-  const project = fixture();
-  project.index.takes.push({ id: "failed", revision: 2, createdAt: "2025-01-03T00:00:00Z", status: "error", seed: 3, precision: "4bit", request: ref("unicode.wavy.d/failed.json"), error: "Generation failed" });
-  await page.evaluate(() => {
-    (window as any).__loads = [];
-    (window as any).piWebPreview = { version: 1, theme: { tokens: {} }, onThemeChange() {}, async loadAsset(id: string) {
-      (window as any).__loads.push(id); return new Blob(["audio"]);
-    } };
-  });
-  await page.setContent(await renderWavyPreview(project));
-  await expect(page.locator("#takeSelect")).toHaveValue("1");
-  expect(await page.evaluate(() => (window as any).__loads)).toEqual([]);
-  await page.locator("#loadRecording").click();
-  await expect.poll(() => page.evaluate(() => (window as any).__loads)).toEqual(["recording-1"]);
-  await page.locator("#takeSelect").selectOption("0");
-  await expect(page.locator("#selectedTakeWarnings")).toContainText("Older revision");
-  await expect(page.locator("#recording")).toBeHidden();
-  await page.locator("#takeSelect").selectOption("2");
-  await expect(page.locator("#loadRecording")).toBeDisabled();
-  await expect(page.locator("#selectedTakeMeta")).toHaveText("Revision 2 · error");
-  await expect(page.locator("#selectedTakeWarnings")).toContainText("Generation failed");
-  expect(await page.evaluate(() => (window as any).__loads)).toEqual(["recording-1"]);
-});
-
-test("authenticated core rejects native audio in opaque inline and expanded sandboxes", async ({ page }, info) => {
-  test.skip(process.env.PI_WEB_E2E_AUTH !== "1" || info.project.name !== "desktop", "run with PI_WEB_E2E_AUTH=1 on Chromium");
-  const dir = join(process.cwd(), ".pi/web/artifacts/wavy-e2e");
-  await mkdir(dir, { recursive: true });
-  const wav = Buffer.alloc(8044, 128); wav.write("RIFF"); wav.writeUInt32LE(8036, 4); wav.write("WAVEfmt ", 8); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(8000, 28); wav.writeUInt16LE(1, 32); wav.writeUInt16LE(8, 34); wav.write("data", 36); wav.writeUInt32LE(8000, 40);
-  await writeFile(join(dir, "tone.wav"), wav);
-  await page.goto("/?token=test-secret");
-  await expect(page.locator("#statusTitle")).toBeVisible();
-  const statuses: number[] = [];
-  page.on("response", response => { if (response.url().endsWith("/wavy-e2e/tone.wav")) statuses.push(response.status()); });
-  await page.evaluate(() => {
-    for (const id of ["inline", "expanded"]) {
-      const frame = document.createElement("iframe"); frame.id = id; frame.sandbox.add("allow-scripts");
-      frame.srcdoc = `<button id="play">Play</button><audio id="audio" preload="none" src="/api/artifacts/wavy-e2e/tone.wav"></audio>`;
-      document.body.append(frame);
-    }
-  });
-  for (const id of ["inline", "expanded"]) {
-    const frame = page.frameLocator(`#${id}`);
-    await frame.locator("#play").evaluate((button) => button.addEventListener("click", () => { const audio = document.querySelector("audio")!; audio.load(); void audio.play().catch(() => {}); }));
-    await frame.locator("#play").click();
-  }
-  await expect.poll(async () => Promise.all(["inline", "expanded"].map(id => page.frameLocator(`#${id}`).locator("audio").evaluate((audio: HTMLAudioElement) => audio.error?.code || 0)))).toEqual([4, 4]);
-  // Chromium blocks these opaque srcdoc media loads before an HTTP response;
-  // a fresh request to the same real core route confirms the auth rejection.
-  expect(statuses).toEqual([]);
-  expect(await page.locator("iframe").evaluateAll(frames => frames.every(frame => frame.getAttribute("sandbox") === "allow-scripts"))).toBe(true);
-  const anonymousContext = await request.newContext({ baseURL: info.project.use.baseURL as string });
-  const anonymous = await anonymousContext.get("/api/artifacts/wavy-e2e/tone.wav");
-  expect(anonymous.status()).toBe(401);
-  await anonymousContext.dispose();
-});
-
-test("Wavy playback modes are mutually exclusive and standalone fallback is explicit", async ({ page }, info) => {
-  test.skip(info.project.name !== "desktop", "one Chromium browser run is sufficient");
-  await page.route("**/*.wav", route => route.fulfill({ status: 200, contentType: "audio/wav", body: Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(100)]) }));
-  await page.setContent(await renderWavyPreview(fixture()));
-  await page.locator("#scorePlay").click();
-  await expect(page.locator("#scorePlay")).toHaveText("Pause");
-  await page.evaluate(() => (window as any).__wavyTest.selectTake(0));
-  await expect(page.locator("#scorePlay")).toHaveText("Play");
-  expect(await page.locator("#recording").evaluate((el: HTMLAudioElement) => el.paused)).toBe(true);
 });

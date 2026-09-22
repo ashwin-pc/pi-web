@@ -124,27 +124,6 @@ describe("Wavy extension entrypoint", () => {
     expect(rendered.content[0].text).toContain(`](${rendered.details.audio})`);
   });
 
-  it("revalidates score review snapshots and returns a deterministic frozen artifact proposal", async () => {
-    const h = harness(cwd); await create(h, { score: "X:1\nK:C\nC D|" }); await h.emit("session_start");
-    const spec = h.contributions.at(-1)![1];
-    const project = await loadProject(cwd, "songs/demo.wavy");
-    const scoreRef = project.index.revisions.at(-1)!.files.score!;
-    const start = project.head.score!.lastIndexOf("C D");
-    const event = { action: "review-score-edit", context: { path: "/api/session-artifacts/session-123/songs/demo.wavy", name: "demo.wavy", kind: "file" }, payload: {
-      snapshot: { compositionRevision: 1, scoreSha256: scoreRef.sha256 }, path: project.artifactPath,
-      selection: { kind: "abc-source-ranges", unit: "utf16", label: "Bar 1", ranges: [{ start, end: start + 3, voiceId: "voice-1", excerpt: "C D" }], playback: { startMs: 0, endMs: 1000, repeatPasses: [1] } },
-      comment: "Make this gentler",
-    } };
-    const first = await spec.interactions.invoke(event); const second = await spec.interactions.invoke(event);
-    expect(second).toEqual(first);
-    expect(first.status).toBe("review");
-    expect(first.review.effects[0].text).toContain("Composition revision: 1");
-    expect(first.review.effects[0].text).toContain(project.artifactPath);
-    expect(first.review.effects[1].context.reference).toMatchObject({ provider: "artifact", sha256: scoreRef.sha256, ranges: [{ start, end: start + 3, unit: "utf16", label: "voice-1" }] });
-    await h.call("wavy", { action: "revise", path: project.artifactPath, expected_revision: 1, summary: "advance", score: "X:1\nK:C\nE|" });
-    await expect(spec.interactions.invoke(event)).resolves.toMatchObject({ status: "stale" });
-  });
-
   it("commits compose only at the captured revision and preserves the raw planning receipt", async () => {
     const h = harness(cwd); await create(h);
     let release!: () => void;

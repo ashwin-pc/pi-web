@@ -2,7 +2,7 @@ import { access, stat } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { CaptureUploadLimiter, EphemeralCaptureStore } from "../server/extensions/captureStore.js";
 import { HttpError } from "../server/shared/httpError.js";
-import { capturedTextInsertion, reviewedTextInsertion } from "../src/composer/composerCapture.js";
+import { capturedTextInsertion } from "../src/composer/composerCapture.js";
 
 const policy = { media: "audio" as const, maxSeconds: 120, maxBytes: 1024, mimeTypes: ["audio/webm"] };
 const owner = { sessionId: "session-a", contributionKey: "voice.input", registrationId: "registration-a" };
@@ -83,12 +83,5 @@ describe("browser-scoped composer insertion", () => {
     expect(capturedTextInsertion({ text: "pi", placement: "selection", snapshot, current: { ...current, revision: 5 } })).toBeUndefined();
     expect(capturedTextInsertion({ text: "pi", placement: "selection", snapshot, current: { ...current, selectionEnd: 6 } })).toBeUndefined();
     expect(capturedTextInsertion({ text: "pi", placement: "selection", snapshot, current: { ...current, sessionId: "s2" } })).toBeUndefined();
-  });
-
-  it("appends a reviewed request without replacing an existing draft", () => {
-    expect(reviewedTextInsertion({ text: "edit passage", placement: "end", snapshot, current })).toEqual({
-      value: "hello world\n\nedit passage", cursor: 25,
-    });
-    expect(reviewedTextInsertion({ text: "edit passage", placement: "end", snapshot, current: { ...current, revision: 5 } })).toBeUndefined();
   });
 });

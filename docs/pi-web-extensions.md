@@ -80,7 +80,7 @@ ctx.ui.web.contribute("worker-status", {
 
 Rendered contributions receive the shared `{ action, payload, fields, context }` event envelope. Static contributions currently support the `footer` and `fab` slots; rendered contributions support `header-action`, `artifact-action`, `artifact-preview`, `git-tab`, and `panel`.
 
-Independently distributed extensions should inspect `ctx.ui.web.capabilities` before using newer facilities. It reports the additive runtime contract: `apiVersion`, `slots`, `kinds`, `effects`, and optional `artifactPreview` asset/theme support.
+Independently distributed extensions should inspect `ctx.ui.web.capabilities` before using newer facilities. It reports the additive runtime contract: `apiVersion`, `slots`, `kinds`, and `effects`.
 
 When backing data changes without a browser interaction, call `ctx.ui.web.update(key)`. pi-web emits a lightweight invalidation and an active panel or Git tab pulls a fresh render. Updates for hidden surfaces do no work; they render when next opened.
 
@@ -274,11 +274,13 @@ ctx.ui.web.contribute("gcode.viewer", {
 });
 ```
 
-The context is `{ name, path, kind }`. Results contain `html`, capped at 1 MB, and may declare bounded, read-only audio `assets`. The browser loads the document through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. Extensions should parse large source files server-side and return compact visualization data rather than embedding the entire source.
-
-The optional [artifact preview asset, theme, and review bridge](artifact-preview-bridge.md) exposes `window.piWebPreview` inside registered previews. Renderers declare allowed local audio files server-side; `loadAsset(id)` asks the parent to fetch one using its existing authentication and resolves a Blob inside the iframe. A renderer may also declare bounded interaction actions; `requestReview({ action, payload })` can only open a host-owned Review dialog, and an explicit **Add to chat** click stages normalized text plus a removable artifact reference through the ordinary composer pipeline. The iframe's claimed gesture is untrusted, approval re-invokes the handler and rejects a changed proposal, and the bridge never submits a prompt or mutates the artifact. There are no file grants, bearer URLs, new artifact endpoints, credentials, or arbitrary fetch in the child. Core also supplies live `--pi-web-*` appearance tokens so previews can match the host without duplicating its outer card framing. Check `ctx.ui.web.capabilities.artifactPreview?.assets`, `.theme`, `.interactions`, and `.viewport` when supporting older hosts. HTML-only renderers remain valid.
+The context is `{ name, path, kind }`. The only accepted result field is `html`, capped at 1 MB. The browser loads it through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. Extensions should parse large source files server-side and return compact visualization data rather than embedding the entire source.
 
 The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. Clear either form with `undefined` under the same key.
+
+### Example: Wavy music projects
+
+[`examples/pi-web-extensions/wavy/`](../examples/pi-web-extensions/wavy/) is an opt-in music-project extension. Its self-contained HTML preview embeds pinned ABCjs for notation and provides a piano roll, zoom/pan, passage selection, and explicitly labelled oscillator audition. Passage comments stay local and become selectable text with revision, hash, and source ranges for manual copying; the preview has no host callbacks, preview assets, authenticated audio fetching, or generated-recording playback. Tools preserve immutable revisions and takes, and return ordinary audio artifact links when recordings exist. Engines remain explicit local, non-commercial-weight integrations and never download or load models during registration or preview.
 
 ### Example: 3D modeling workflow
 
@@ -292,19 +294,6 @@ ln -sfn "$PWD/examples/pi-web-extensions/3d-modeling" ~/.pi/web/extensions/3d-mo
 ```
 
 Run `/reload` or restart pi-web after installing it.
-
-### Example: Wavy music projects
-
-[`examples/pi-web-extensions/wavy/`](../examples/pi-web-extensions/wavy/) is an opt-in, artifact-first music extension. A `.wavy` index references native lyrics, ABC scores, settings, source audio, and immutable takes. Its read-only preview provides notation, piano roll, and synthesized score audition; agent tools handle local YuE2 composition/rendering, optional SheetSage2 transcription, revisions, and portable export.
-
-It uses the generic preview asset/theme bridge for authenticated recording playback, host-matched appearance, and local sampled-piano score audition. Mounted previews remain snapshots (reopen after changes), and playback handoff is not provided. Older hosts retain the ordinary audio artifact links as a fallback. The extension does not expose credentials, weaken the sandbox, embed recordings into preview HTML, or download models at startup. Model prerequisites, piano attribution, and non-commercial model licensing are documented in its README.
-
-```sh
-mkdir -p ~/.pi/web/extensions
-ln -s "$PWD/examples/pi-web-extensions/wavy" ~/.pi/web/extensions/wavy
-```
-
-Reload existing sessions with `/reload`; new sessions discover the global example automatically.
 
 ## Artifact preview action API
 

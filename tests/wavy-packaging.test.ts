@@ -16,7 +16,7 @@ async function packageFixture(change?: (wavy: string) => Promise<void>) {
   const fixture = await mkdtemp(join(tmpdir(), "wavy-package-fixture-"));
   const wavy = join(fixture, "package/examples/pi-web-extensions/wavy");
   await mkdir(wavy, { recursive: true });
-  for (const path of ["README.md", "browser.js", "index.ts", "player.ts", "player-model.ts", "preview.ts", "preview-assets.ts", "styles.css", "store.ts", "types.ts", "settings.ts", "engines.ts", "engine/README.md", "engine/sheetsage.py", "engine/yue.py", "skill/SKILL.md"]) {
+  for (const path of ["README.md", "browser.js", "index.ts", "player.ts", "player-model.ts", "preview.ts", "styles.css", "store.ts", "types.ts", "settings.ts", "engines.ts", "engine/README.md", "engine/sheetsage.py", "engine/yue.py", "skill/SKILL.md"]) {
     await mkdir(dirname(join(wavy, path)), { recursive: true });
     await cp(join(wavyRoot, path), join(wavy, path));
   }
@@ -51,9 +51,8 @@ describe("Wavy build and package contract", () => {
       index: { format: "wavy", version: 1, title: "Draft", createdAt: "2026-09-19T00:00:00Z", updatedAt: "2026-09-19T00:00:00Z", revision: 0, revisions: [], sources: [], takes: [] },
     };
     try {
-      const view = await renderWavyView(project, { cwd });
-      expect(view.assets).toEqual([]);
-      expect(view.html).not.toContain("abcjs_basic v6.4.4");
+      const view = await renderWavyView(project);
+      expect(view).not.toContain("abcjs_basic v6.4.4");
       await expect(access(join(cwd, ".pi"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await rm(cwd, { recursive: true, force: true }); }
   });
@@ -66,9 +65,8 @@ describe("Wavy build and package contract", () => {
       index: { format: "wavy", version: 1, title: "Draft", createdAt: "2026-09-19T00:00:00Z", updatedAt: "2026-09-19T00:00:00Z", revision: 0, revisions: [], sources: [], takes: [] },
     };
     try {
-      const view = await renderWavyView(project, { cwd });
-      expect(view.html).toContain("abcjs_basic v6.4.4");
-      expect(view.assets).toEqual([]);
+      const view = await renderWavyView(project);
+      expect(view).toContain("abcjs_basic v6.4.4");
       await expect(access(join(cwd, ".pi"))).rejects.toMatchObject({ code: "ENOENT" });
     } finally { await rm(cwd, { recursive: true, force: true }); }
   });
@@ -80,7 +78,7 @@ describe("Wavy build and package contract", () => {
       upstreams: Array<{ notice: string; shippedFiles: Array<{ path: string; bytes: number; sha256: string }> }>;
     };
     expect(manifest.schemaVersion).toBe(1);
-    expect(manifest.upstreams.flatMap(item => item.shippedFiles)).toHaveLength(16);
+    expect(manifest.upstreams.flatMap(item => item.shippedFiles)).toHaveLength(1);
     for (const upstream of manifest.upstreams) {
       await expect(access(join(vendor, upstream.notice))).resolves.toBeUndefined();
       for (const file of upstream.shippedFiles) {

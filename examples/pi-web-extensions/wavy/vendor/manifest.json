@@ -8,33 +8,11 @@
       "license": "MIT",
       "notice": "LICENSE.md",
       "shippedFiles": [
-        { "path": "abcjs-basic-min.js", "bytes": 483417, "sha256": "1f060d3568b8f49c0f22b7eaa98f8eb9e34a0e83c2dc14bc730d572a320e4c69" }
-      ]
-    },
-    {
-      "name": "@audio-samples/piano-mp3-velocity3",
-      "version": "1.0.5",
-      "source": "https://registry.npmjs.org/@audio-samples/piano-mp3-velocity3/-/piano-mp3-velocity3-1.0.5.tgz",
-      "integrity": "sha512-HPacRGf2T9xkOcu2YZv8+uMgXQ1qI1G+UEkMWL31eK3a+gCNJC4CnQgNrmJl+dRO7jLL4HvDoy2N+DB9g2rSKw==",
-      "receiptRecorded": "2026-09-19",
-      "license": "CC-BY-3.0",
-      "notice": "piano/README.md",
-      "shippedFiles": [
-        { "path": "piano/C1v3.mp3", "bytes": 289022, "sha256": "6195ee67e80c59b1bbd87870e3dd597dd2db71580bb7c0c01ba5096582213f28" },
-        { "path": "piano/C2v3.mp3", "bytes": 275141, "sha256": "ce701bd0931c672af8f46ae1d294231138093931b0e237c09b90c5259a8e439e" },
-        { "path": "piano/C3v3.mp3", "bytes": 211120, "sha256": "8d930b15d9b801ba51e3289e54b662d5d12d4a5ef02cb74d59552bb6a5824821" },
-        { "path": "piano/C4v3.mp3", "bytes": 213009, "sha256": "992cd1d7768d392147596144b0c64b378e9d065dbeba909949bd580ee1ea5775" },
-        { "path": "piano/C5v3.mp3", "bytes": 161813, "sha256": "59332a11d5c33c7b602fc995ebbaffaa3d92fd83d8a0e82a3e4df0c0ac6bdf9a" },
-        { "path": "piano/C6v3.mp3", "bytes": 76256, "sha256": "45c537f3a77714cc65461c7bfe2319c75cc3176a3c9e212f7d284588ab23e5cf" },
-        { "path": "piano/C7v3.mp3", "bytes": 52162, "sha256": "221a514a29c271451292f7764fcd8ce577cec1703ef8f4c5be5f88eb6902b415" },
-        { "path": "piano/C8v3.mp3", "bytes": 41035, "sha256": "7037871b3c69f7ce2ccc55a12cd30fe3d23084f1ec159457f7800650c51b9937" },
-        { "path": "piano/F#1v3.mp3", "bytes": 255764, "sha256": "a3d42a99a48d03a2578845c1e82b6802ae78ac500019cc682228df1333b40e7b" },
-        { "path": "piano/F#2v3.mp3", "bytes": 277072, "sha256": "4267ec832a3dc92a9aa79a4c8b6c0db2d82b800e9dfc73fcd6591a6dc7e93c91" },
-        { "path": "piano/F#3v3.mp3", "bytes": 220401, "sha256": "57510ae483c64655277e60aec7e21ba49999c48abba48e38aa533555550a29dc" },
-        { "path": "piano/F#4v3.mp3", "bytes": 159399, "sha256": "6a2473720d6222eae045554bfce1abfbd584a8e93e875230b793de74dd2cd5da" },
-        { "path": "piano/F#5v3.mp3", "bytes": 124422, "sha256": "23194bf27d92b2ed69fff42f2022a5720d6bfaa6e667392f85da39bc53867e49" },
-        { "path": "piano/F#6v3.mp3", "bytes": 76365, "sha256": "173f080562c950191d035084219ce9ea5485faeb41c14175349964938315d3e4" },
-        { "path": "piano/F#7v3.mp3", "bytes": 81771, "sha256": "ea9a580141317ac2be41433d2e4bf7bff14055f6e7c52cbbcc5b177131a008c3" }
+        {
+          "path": "abcjs-basic-min.js",
+          "bytes": 483417,
+          "sha256": "1f060d3568b8f49c0f22b7eaa98f8eb9e34a0e83c2dc14bc730d572a320e4c69"
+        }
       ]
     }
   ]

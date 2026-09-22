@@ -12,9 +12,13 @@
   font-family: var(--pi-web-font-family, system-ui, sans-serif);
   font-size: var(--pi-web-font-size, 13px);
 }
+
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #151617; --panel: #1d1f21; --panel2: #292c2f; --line: #41454a; --muted: #a7adb4; --text: #f1f3f5; --play: #8fb3ff; --danger: #ff8a80; }
+}
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: inherit; line-height: 1.5; }
-main { width: 100%; background: var(--panel); }
+main { width: min(100%, 1120px); margin: 0 auto; background: var(--panel); }
 header, .section, .transport, details, footer { padding: 14px 16px; border-bottom: 1px solid var(--line); }
 header, .score-heading, .transport-row, .selection-actions, .comment-actions { display: flex; align-items: center; gap: 8px; }
 h1 { margin: 0; font-size: 19px; line-height: 1.2; }

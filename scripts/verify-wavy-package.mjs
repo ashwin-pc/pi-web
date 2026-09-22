@@ -9,9 +9,9 @@ import process from "node:process";
 const prefix = "package/examples/pi-web-extensions/wavy/";
 const required = [
   "README.md", "browser.js", "index.ts", "player.ts", "player-model.ts", "preview.ts",
-  "preview-assets.ts", "styles.css", "store.ts", "types.ts", "settings.ts", "engines.ts",
+"styles.css", "store.ts", "types.ts", "settings.ts", "engines.ts",
   "engine/README.md", "engine/sheetsage.py", "engine/yue.py", "skill/SKILL.md",
-  "vendor/LICENSE.md", "vendor/abcjs-basic-min.js", "vendor/manifest.json", "vendor/piano/README.md",
+  "vendor/LICENSE.md", "vendor/abcjs-basic-min.js", "vendor/manifest.json",
 ];
 
 function tar(archive, args, encoding = "utf8") {
@@ -53,8 +53,8 @@ export async function verifyWavyPackage(archivePath, options = {}) {
       if (data.byteLength !== file.bytes || hash !== file.sha256) throw new Error(`Vendored file does not match manifest: ${file.path}`);
     }
   }
-  const allowedVendor = new Set(["LICENSE.md", "manifest.json", "piano/README.md", ...shipped]);
-  const unexpectedVendor = members.filter(path => path.startsWith(prefix + "vendor/") && path !== prefix + "vendor/piano" && !allowedVendor.has(path.slice((prefix + "vendor/").length)));
+  const allowedVendor = new Set(["LICENSE.md", "manifest.json", ...shipped]);
+  const unexpectedVendor = members.filter(path => path.startsWith(prefix + "vendor/") && !allowedVendor.has(path.slice((prefix + "vendor/").length)));
   if (unexpectedVendor.length) throw new Error(`Undeclared vendored files in package: ${unexpectedVendor.join(", ")}`);
 
   const localBrowserPath = options.localBrowserPath ?? resolve(import.meta.dirname, "../examples/pi-web-extensions/wavy/browser.js");

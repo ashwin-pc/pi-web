@@ -1,7 +1,7 @@
 import { buildTimeline, chooseOccurrence, selectTimelineRange, validateReviewRequest, type SourceSelection, type TimelineNote } from "./player-model.js";
 
 declare const ABCJS: any;
-declare global { interface Window { piWebPreview?: any; __wavyTest?: any } }
+declare global { interface Window { __wavyTest?: any } }
 
 interface PreviewData {
   title: string; revision: number; artifactPath: string; scoreSha256?: string; score?: string;
@@ -23,32 +23,9 @@ const appendText = (root: string | Element, tag: string, value: unknown, classNa
   (typeof root === "string" ? one(root) : root).append(element);
   return element;
 };
-const bridge = window.piWebPreview?.version === 1 ? window.piWebPreview : undefined;
 let previewDisposed = false;
 const previewLifetime = new AbortController();
-interface PreviewViewport { width: number; height: number; visible: { left: number; top: number; right: number; bottom: number } }
-let hostViewport: PreviewViewport | undefined = bridge?.viewport;
-function visibleFrameBounds() {
-  const v = bridge?.viewport || hostViewport;
-  if (!v || !v.visible || ![v.width, v.height, v.visible.left, v.visible.top, v.visible.right, v.visible.bottom].every(Number.isFinite) || v.width <= 0 || v.height <= 0) {
-    return { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
-  }
-  return {
-    left: Math.max(0, Math.min(innerWidth, v.visible.left)),
-    top: Math.max(0, Math.min(innerHeight, v.visible.top)),
-    right: Math.max(0, Math.min(innerWidth, v.visible.right)),
-    bottom: Math.max(0, Math.min(innerHeight, v.visible.bottom)),
-  };
-}
-
-function applyTheme(theme: any) {
-  if (previewDisposed || !theme || typeof theme !== "object") return;
-  for (const [key, value] of Object.entries(theme.tokens || {})) if (typeof value === "string" && key.startsWith("--pi-web-")) document.documentElement.style.setProperty(key, value);
-  if (theme.colorScheme === "light" || theme.colorScheme === "dark") document.documentElement.style.colorScheme = theme.colorScheme;
-  if (["comfortable", "compact", "minimal"].includes(theme.density)) document.documentElement.dataset.density = theme.density;
-}
-applyTheme(bridge?.theme);
-const unsubscribeTheme = bridge?.onThemeChange?.(applyTheme);
+function visibleFrameBounds() { return { left: 0, top: 0, right: innerWidth, bottom: innerHeight }; }
 
 function formatTime(seconds: number) { return `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`; }
 function formatDuration(milliseconds: number) {
@@ -69,59 +46,15 @@ data.revisions.slice().reverse().forEach(revision => { const item = appendText("
 if (!data.revisions.length) appendText("#history", "div", "No saved revision history.", "empty");
 data.sources.forEach(source => { const item = appendText("#sources", "div", source.label, "item"); appendText(item, "div", `${source.audio.path} · ${new Date(source.createdAt).toLocaleString()}`, "meta"); appendText(item, "div", `${source.transcription ? "Transcription retained" : "Not transcribed"}${source.score ? " · derived score retained" : ""}`, "meta"); });
 if (!data.sources.length) appendText("#sources", "div", "No source recordings.", "empty");
-
-let selectedTake = (() => { const index = data.takes.findLastIndex(take => take.audio); return index >= 0 ? index : data.takes.length - 1; })();
-let recordingUrl: string | undefined;
-let recordingLoadGeneration = 0;
-let recordingAbort: AbortController | undefined;
-const recording = one<HTMLAudioElement>("#recording");
-const mediaNotice = one<HTMLElement>("#mediaNotice");
-const takeSelect = one<HTMLSelectElement>("#takeSelect");
-const loadRecordingButton = one<HTMLButtonElement>("#loadRecording");
-
-function stopRecording() { recording.pause(); }
-function clearRecording() {
-  recordingAbort?.abort(); recordingAbort = undefined;
-  if (recordingUrl) URL.revokeObjectURL(recordingUrl);
-  recordingUrl = undefined; recording.removeAttribute("src"); recording.load(); recording.hidden = true;
-}
-function showTake(index: number) {
-  selectedTake = index; takeSelect.value = String(index); clearRecording(); recordingLoadGeneration++;
-  const take = data.takes[index];
-  if (!take) { setText("#selectedTakeMeta", "No generated takes."); setText("#selectedTakeWarnings", ""); loadRecordingButton.disabled = true; mediaNotice.textContent = "No generated takes yet."; return; }
-  setText("#selectedTakeMeta", `Revision ${take.revision} · ${take.status}`);
-  const root = one("#selectedTakeWarnings"); root.replaceChildren();
-  if (take.revision !== data.revision) appendText(root, "div", "Older revision: recording does not contain current written changes.", "warn");
-  if (take.truncated === true) appendText(root, "div", "Truncated at generation safety ceiling.", "warn");
-  if (take.error) appendText(root, "div", take.error, "danger");
-  loadRecordingButton.disabled = !take.audio; mediaNotice.className = "meta";
-  mediaNotice.textContent = take.audio ? "Selected but not loaded. Press Load recording to fetch it." : "This take has no playable audio.";
-}
-async function loadRecording(index = selectedTake) {
-  if (previewDisposed) return;
-  const take = data.takes[index]; if (!take?.audio) return showTake(index);
-  player.stop(); stopRecording(); showTake(index); const generation = ++recordingLoadGeneration;
-  if (!bridge || !take.audio.assetId) { mediaNotice.textContent = "Recording playback needs a supported host asset. Use the ordinary recording link in the parent chat."; return; }
-  mediaNotice.className = "meta"; mediaNotice.textContent = "Loading recording…";
-  const controller = new AbortController(); recordingAbort = controller;
-  try {
-    const blob = await bridge.loadAsset(take.audio.assetId, { signal: controller.signal });
-    if (generation !== recordingLoadGeneration || controller.signal.aborted) return;
-    recordingUrl = URL.createObjectURL(blob); recording.src = recordingUrl; recording.hidden = false; recording.load();
-    mediaNotice.textContent = "Ready. Generated audio is not synchronized to the written score.";
-  } catch (error: any) {
-    if (!controller.signal.aborted) { mediaNotice.className = "warn"; mediaNotice.textContent = `Recording unavailable: ${error?.message || error}.`; }
-  } finally { if (recordingAbort === controller) recordingAbort = undefined; }
-}
 data.takes.forEach((take, index) => {
-  const option = document.createElement("option"); option.value = String(index); option.textContent = `Take ${index + 1} · revision ${take.revision} · ${take.status}${take.audio ? "" : " · no audio"}`; takeSelect.append(option);
-  const wrap = appendText("#takes", "div", "", "take"); appendText(wrap, "div", `Take ${index + 1} of ${data.takes.length}`, "take-title"); appendText(wrap, "div", `${take.status} · ${take.id}`, "meta");
+  const wrap = appendText("#takes", "div", "", "take");
+  appendText(wrap, "div", `Take ${index + 1} of ${data.takes.length}${index === data.takes.length - 1 ? " · latest" : ""}`, "take-title");
+  appendText(wrap, "div", `${take.status} · ${take.id}`, "meta");
   appendText(wrap, "div", `revision ${take.revision} · seed ${take.seed} · ${take.precision}${take.durationSeconds != null ? ` · ${formatTime(take.durationSeconds)}` : ""}`, "meta");
   if (take.revision !== data.revision) appendText(wrap, "div", "Older revision: recording does not contain current written changes.", "warn");
-  if (take.truncated === true) appendText(wrap, "div", "Truncated at generation safety ceiling.", "warn"); if (take.error) appendText(wrap, "div", take.error, "danger");
+  if (take.truncated === true) appendText(wrap, "div", "Truncated at generation safety ceiling.", "warn");
+  if (take.error) appendText(wrap, "div", take.error, "danger");
 });
-takeSelect.disabled = !data.takes.length; takeSelect.onchange = () => showTake(Number(takeSelect.value)); loadRecordingButton.onclick = () => void loadRecording(); showTake(selectedTake);
-recording.addEventListener("play", () => player.stop()); recording.addEventListener("error", () => { mediaNotice.className = "warn"; mediaNotice.textContent = "This recording could not be decoded. Try the host-player link on its take."; });
 
 let tune: any;
 let notes: PlayerNote[] = [];
@@ -284,27 +217,9 @@ one("#notation").addEventListener("keydown", event => {
 one<HTMLButtonElement>("#selectMode").onclick = () => { selecting = !selecting; one<HTMLButtonElement>("#selectMode").setAttribute("aria-pressed", String(selecting)); if (selecting && cursorId) { selectionAnchorId = cursorId; selection = selectTimelineRange(notes, cursorId, cursorId); } paintState(); };
 one<HTMLButtonElement>("#clearSelection").onclick = clearSelection;
 
-const sampleMidi: Record<string, number> = { C1:24,"F#1":30,C2:36,"F#2":42,C3:48,"F#3":54,C4:60,"F#4":66,C5:72,"F#5":78,C6:84,"F#6":90,C7:96,"F#7":102,C8:108 };
 class ScorePlayer {
-  context?: AudioContext; nodes = new Set<AudioScheduledSourceNode>(); buffers = new Map<string, AudioBuffer>(); timer = 0; generation = 0; abort?: AbortController;
+  context?: AudioContext; nodes = new Set<AudioScheduledSourceNode>(); timer = 0; generation = 0; abort?: AbortController;
   playing = false; looping = false; playheadMs = 0; originPlayheadMs = 0; windowStart = 0; windowEnd = 0; contextStart = 0; cycleDurationMs = 0; nextCycleContext = 0;
-  async loadSamples(signal: AbortSignal) {
-    if (!bridge) return false; const needed = [...new Set(notes.flatMap(note => note.pitches).map(pitch => Object.entries(sampleMidi).reduce((a,b) => Math.abs(b[1]-pitch)<Math.abs(a[1]-pitch)?b:a)[0]))].filter(name => !this.buffers.has(name));
-    let cursor = 0;
-    await Promise.all(Array.from({ length: Math.min(3, needed.length) }, async () => {
-      while (cursor < needed.length && !signal.aborted && !previewDisposed) {
-        const name = needed[cursor++];
-        const blob = await bridge.loadAsset(`piano-${name.replace("#", "s")}`, { signal });
-        if (signal.aborted || previewDisposed) return;
-        const bytes = await blob.arrayBuffer();
-        if (signal.aborted || previewDisposed) return;
-        const decoded = await this.context!.decodeAudioData(bytes);
-        if (signal.aborted || previewDisposed) return;
-        this.buffers.set(name, decoded);
-      }
-    }));
-    return !signal.aborted && !previewDisposed;
-  }
   stop(reset = false) {
     this.generation++; this.abort?.abort(); this.abort = undefined; this.nodes.forEach(node => { try { node.stop(); } catch {} }); this.nodes.clear(); clearInterval(this.timer); this.timer = 0; this.playing = false;
     many(".active-note").forEach(element => element.classList.remove("active-note")); one<HTMLButtonElement>("#scorePlay").textContent = "Play"; one<HTMLButtonElement>("#scorePlay").setAttribute("aria-label", "Play written music");
@@ -314,11 +229,10 @@ class ScorePlayer {
   positionAt(contextTime:number){const elapsed=Math.max(0,(contextTime-this.contextStart)*1000);if(this.looping&&this.cycleDurationMs>0)return this.windowStart+((this.originPlayheadMs-this.windowStart+elapsed)%this.cycleDurationMs);return Math.min(this.windowEnd,this.originPlayheadMs+elapsed);}
   disableLoop(){if(!this.looping)return;const position=this.playing&&this.contextStart>0?this.positionAt(this.context!.currentTime):this.playheadMs,wasPlaying=this.playing;this.stop();this.looping=false;one<HTMLButtonElement>("#loopSelection").setAttribute("aria-pressed","false");this.playheadMs=position;if(wasPlaying)void this.startPlayback(position).catch(error=>setText("#scoreError",`Score audio unavailable: ${error.message}`));}
   seek(ms: number, resume: boolean) { const wasPlaying = this.playing, inside=ms>=this.windowStart&&ms<this.windowEnd; this.stop(); this.playheadMs = Math.max(0, Math.min(totalMs, ms)); if(!inside){this.windowStart=0;this.windowEnd=totalMs;this.looping=false;} this.updateUi(); if (resume && wasPlaying) void this.startPlayback(this.playheadMs); }
-  schedule(note: PlayerNote, pitch: number, sampled: boolean, at: number, duration: number) {
-    const context = this.context!; let source: AudioScheduledSourceNode; const gain = context.createGain(); const release = Math.min(.5, Math.max(.08, duration * .25));
-    if (sampled) { const nearest = [...this.buffers.entries()].reduce((a,b) => Math.abs(sampleMidi[b[0]]-pitch)<Math.abs(sampleMidi[a[0]]-pitch)?b:a); const sample = context.createBufferSource(); sample.buffer = nearest[1]; sample.playbackRate.value = 2 ** ((pitch-sampleMidi[nearest[0]])/12); source = sample; }
-    else { const oscillator = context.createOscillator(); oscillator.type = "triangle"; oscillator.frequency.value = 440 * 2 ** ((pitch-69)/12); source = oscillator; }
-    gain.gain.setValueAtTime(.0001, at); gain.gain.exponentialRampToValueAtTime(sampled ? .16*note.velocity : .025, at+.012); gain.gain.setValueAtTime(sampled ? .16*note.velocity : .025, at+Math.max(.015,duration-release)); gain.gain.exponentialRampToValueAtTime(.0001,at+duration);
+  schedule(note: PlayerNote, pitch: number, at: number, duration: number) {
+    const context = this.context!; const source = context.createOscillator(); const gain = context.createGain(); const release = Math.min(.5, Math.max(.08, duration * .25));
+    source.type = "triangle"; source.frequency.value = 440 * 2 ** ((pitch-69)/12);
+    gain.gain.setValueAtTime(.0001, at); gain.gain.exponentialRampToValueAtTime(.025, at+.012); gain.gain.setValueAtTime(.025, at+Math.max(.015,duration-release)); gain.gain.exponentialRampToValueAtTime(.0001,at+duration);
     source.connect(gain).connect(context.destination); source.addEventListener("ended", () => this.nodes.delete(source)); source.start(at); source.stop(at+duration+.03); this.nodes.add(source);
   }
   async playWindow(fromMs: number, toMs: number, loop: boolean) {
@@ -326,7 +240,7 @@ class ScorePlayer {
   }
   async startPlayback(startAt:number) {
     if (previewDisposed) return;
-    stopRecording(); const generation = ++this.generation; const controller = new AbortController(); this.abort = controller; this.playing = true; this.playheadMs=startAt;this.originPlayheadMs=startAt;this.contextStart=0;
+    const generation = ++this.generation; const controller = new AbortController(); this.abort = controller; this.playing = true; this.playheadMs=startAt;this.originPlayheadMs=startAt;this.contextStart=0;
     one<HTMLButtonElement>("#scorePlay").textContent = "Pause"; one<HTMLButtonElement>("#scorePlay").setAttribute("aria-label", "Pause written music");
     try {
       this.context ||= new AudioContext();
@@ -336,11 +250,10 @@ class ScorePlayer {
       this.stop(); throw error;
     }
     if (previewDisposed || controller.signal.aborted || generation !== this.generation) return;
-    setText("#scoreError", bridge ? "Loading local piano samples…" : "Host samples unavailable; using oscillator preview.");
-    let sampled = false; try { sampled = await this.loadSamples(controller.signal); } catch (error: any) { if (controller.signal.aborted || generation !== this.generation) return; setText("#scoreError", `Piano samples unavailable; using oscillator preview (${error?.message || error}).`); }
-    if (controller.signal.aborted || generation !== this.generation) return; this.abort = undefined; if (sampled) setText("#scoreError", ""); this.contextStart = this.context.currentTime + .04;this.cycleDurationMs=this.windowEnd-this.windowStart;
+    setText("#scoreError", "Oscillator audition · written notes only.");
+    if (controller.signal.aborted || generation !== this.generation) return; this.abort = undefined; this.contextStart = this.context.currentTime + .04;this.cycleDurationMs=this.windowEnd-this.windowStart;
     const selectedIds = selection && this.windowStart === selection.playback.startMs && this.windowEnd === selection.playback.endMs ? new Set(selection.playback.occurrenceIds) : undefined;
-    const scheduleCycle=(fromMs:number,atContext:number)=>{for(const note of notes)if((!selectedIds||selectedIds.has(note.id))&&note.startMs<this.windowEnd&&note.endMs>fromMs){const clippedStart=Math.max(note.startMs,fromMs),clippedEnd=Math.min(note.endMs,this.windowEnd),at=atContext+(clippedStart-fromMs)/1000;note.pitches.forEach(pitch=>this.schedule(note,pitch,sampled,at,Math.max(.04,(clippedEnd-clippedStart)/1000)));}};
+    const scheduleCycle=(fromMs:number,atContext:number)=>{for(const note of notes)if((!selectedIds||selectedIds.has(note.id))&&note.startMs<this.windowEnd&&note.endMs>fromMs){const clippedStart=Math.max(note.startMs,fromMs),clippedEnd=Math.min(note.endMs,this.windowEnd),at=atContext+(clippedStart-fromMs)/1000;note.pitches.forEach(pitch=>this.schedule(note,pitch,at,Math.max(.04,(clippedEnd-clippedStart)/1000)));}};
     try{scheduleCycle(startAt,this.contextStart);this.nextCycleContext=this.contextStart+(this.windowEnd-startAt)/1000;
     const scheduleAhead=()=>{if(!this.looping)return;while(this.nextCycleContext<this.context!.currentTime+1){scheduleCycle(this.windowStart,this.nextCycleContext);this.nextCycleContext+=this.cycleDurationMs/1000;}};scheduleAhead();
     this.timer = window.setInterval(() => { if (generation !== this.generation) return;try{scheduleAhead();this.playheadMs=this.positionAt(this.context!.currentTime);this.paintPlayback();if(!this.looping&&this.playheadMs>=this.windowEnd)this.stop();}catch(error:any){this.stop();setText("#scoreError",`Score audio unavailable: ${error.message}`);} }, 40);}catch(error){this.stop();throw error;}
@@ -359,7 +272,7 @@ progressInput.addEventListener("input",()=>player.seek(Number(progressInput.valu
 
 const ROLL_GUTTER=46,ROLL_BASE_ROW=18,ROLL_MIN_ROW=5,ROLL_MAX_ROW=40,ROLL_MIN_ZOOM=.55,ROLL_MAX_ZOOM=4,ROLL_BASE_PX_PER_MS=.035;
 let rollZoom=1,rollPitchZoom=1,rollLow=48,rollHigh=72,rollSuppressClickUntil=0;
-let rollGestures:{state:()=>GestureState},rollPitchInitialized=false,rollPitchFitMode=true,rollHostSize="";
+let rollGestures:{state:()=>GestureState},rollPitchInitialized=false,rollPitchFitMode=true;
 function midiName(midi:number){const names=["C","C♯","D","E♭","E","F","F♯","G","A♭","A","B♭","B"];return `${names[midi%12]}${Math.floor(midi/12)-1}`;}
 function rollContent(){return document.querySelector<HTMLElement>("#rollContent");}
 function rollRowHeight(){return ROLL_BASE_ROW*rollPitchZoom;}
@@ -375,7 +288,7 @@ const reflowCommentAfterControl=()=>{const reflow=()=>{if(!commentPanel.hidden)p
 if(pitchOut)pitchOut.onclick=()=>{rollPitchFitMode=false;applyRollScale(rollZoom,rollPitchZoom/1.2);reflowCommentAfterControl();};if(pitchIn)pitchIn.onclick=()=>{rollPitchFitMode=false;applyRollScale(rollZoom,rollPitchZoom*1.2);reflowCommentAfterControl();};if(pitchFit)pitchFit.onclick=()=>{fitRollPitches();rollPitchInitialized=true;reflowCommentAfterControl();};
 function updateRollPlayhead(ms:number){const cursor=document.querySelector<HTMLElement>("#rollPlayhead");if(cursor)cursor.style.left=`${ROLL_GUTTER+ms*ROLL_BASE_PX_PER_MS*rollZoom}px`;}
 function revealRollOnSwitch(){
-  rollHostSize=hostViewport?`${hostViewport.width}x${hostViewport.height}:${hostViewport.visible.left},${hostViewport.visible.top},${hostViewport.visible.right},${hostViewport.visible.bottom}`:`${innerWidth}x${innerHeight}:0,0,${innerWidth},${innerHeight}`;const viewport=visibleFrameBounds(),desiredTop=viewport.top+118,safeHeight=Math.max(160,viewport.bottom-desiredTop-8);scorePaper.style.height=`${safeHeight}px`;
+  const viewport=visibleFrameBounds(),desiredTop=viewport.top+118,safeHeight=Math.max(160,viewport.bottom-desiredTop-8);scorePaper.style.height=`${safeHeight}px`;
   const selectedIds=new Set(selection?.playback.occurrenceIds||[]),target=notes.find(note=>note.id===cursorId)||notes.find(note=>selectedIds.has(note.id))||notes.reduce((best,note)=>Math.abs(note.startMs-player.playheadMs)<Math.abs(best.startMs-player.playheadMs)?note:best,notes[0]);
   const pitch=target?.pitches[Math.floor(target.pitches.length/2)]??Math.round((rollLow+rollHigh)/2),time=target?.startMs??player.playheadMs;
   scorePaper.scrollTop=Math.max(0,28+(rollHigh-pitch)*rollRowHeight()-scorePaper.clientHeight/2+rollRowHeight()/2);scorePaper.scrollLeft=Math.max(0,ROLL_GUTTER+time*ROLL_BASE_PX_PER_MS*rollZoom-scorePaper.clientWidth*.2);
@@ -390,7 +303,7 @@ function drawRoll(){if(!notes.length)return;const roll=one<HTMLElement>("#roll")
 rollGestures=attachViewportGestures({root:content,scale:()=>rollZoom,scaleY:()=>rollPitchZoom,contentAt:(x,y)=>({x:Math.max(0,(scorePaper.scrollLeft+x-ROLL_GUTTER)/(ROLL_BASE_PX_PER_MS*rollZoom)),y:Math.max(0,(scorePaper.scrollTop+y-28)/rollRowHeight())}),applyScale:(scale,scaleY,anchor)=>{rollPitchFitMode=false;applyRollScale(scale,scaleY,anchor);},tap:event=>{const target=document.elementFromPoint(event.clientX,event.clientY)?.closest<HTMLElement>(".roll-note");target?.click();},suppress:milliseconds=>{rollSuppressClickUntil=performance.now()+milliseconds;}});}
 
 const commentPanel = one<HTMLElement>("#commentPanel"), commentText = one<HTMLTextAreaElement>("#commentText"), commentStatus = one<HTMLElement>("#commentStatus"), fallback = one<HTMLElement>("#commentFallback"),commentStage=one<HTMLButtonElement>("#commentStage");
-const commentDrafts=new Map<string,{text:string;version:number}>();let activeDraftKey="",reviewPending=false;
+const commentDrafts=new Map<string,{text:string;version:number}>();let activeDraftKey="";
 function currentSelectionKey(){return selection?`${data.revision}:${selection.ranges.map(range=>`${range.voiceId}:${range.start}-${range.end}`).join("|")}`:"";}
 function saveActiveDraft(){if(activeDraftKey)commentDrafts.set(activeDraftKey,{text:commentText.value,version:(commentDrafts.get(activeDraftKey)?.version||0)+1});}
 function syncCommentSelection(){if(commentPanel.hidden)return;if(!selection?.ranges.length){closeComment(false);return;}const next=currentSelectionKey();if(!next||next===activeDraftKey)return;saveActiveDraft();activeDraftKey=next;commentText.value=commentDrafts.get(next)?.text||"";setText("#commentContext",`${selection.label} · revision ${data.revision}`);placeComment();}
@@ -423,28 +336,25 @@ function closeComment(clearDraft: boolean) { if(clearDraft&&activeDraftKey)comme
 const onPreviewResize = () => { if (!previewDisposed) { placeComment(); updateHandles(); } };
 window.visualViewport?.addEventListener("resize", onPreviewResize, { signal: previewLifetime.signal });
 window.addEventListener("resize", onPreviewResize, { signal: previewLifetime.signal });
-const unsubscribeViewport = bridge?.onViewportChange?.((viewport: PreviewViewport) => {
-  if (previewDisposed) return;
-  hostViewport = viewport;
-  if (!commentPanel.hidden) {placeComment();setTimeout(()=>{if(!commentPanel.hidden)placeComment();},60);}
-  const nextSize=`${viewport.width}x${viewport.height}:${viewport.visible.left},${viewport.visible.top},${viewport.visible.right},${viewport.visible.bottom}`;if(activeScoreView==="roll"&&nextSize!==rollHostSize&&commentPanel.hidden)requestAnimationFrame(revealRollOnSwitch);
-  updateHandles();
-});
 one<HTMLButtonElement>("#commentSelection").onclick=openComment; one<HTMLButtonElement>("#commentCancel").onclick=()=>closeComment(false);
 commentStage.onclick=async()=>{
-  if(previewDisposed||!selection||reviewPending)return; const frozenSelection=structuredClone(selection),submittedKey=currentSelectionKey(),draft=commentDrafts.get(submittedKey)||{text:commentText.value,version:0},comment=commentText.value,submittedVersion=draft.version,score=data.score||"";
-  try { validateReviewRequest({score,compositionRevision:data.revision,scoreSha256:data.scoreSha256||"",selection:frozenSelection,comment});
-    const request={action:"review-score-edit",payload:{snapshot:{compositionRevision:data.revision,scoreSha256:data.scoreSha256},selection:{...frozenSelection,ranges:frozenSelection.ranges.map(range=>({...range,excerpt:score.slice(range.start,range.end)}))},comment,path:data.artifactPath}};
-    const json=JSON.stringify(request); if(new TextEncoder().encode(json).length>32768)throw new Error("Review request exceeds 32 KiB. Select a smaller passage or shorten the comment.");
-    commentStatus.textContent="Adding to chat for review…"; fallback.hidden=true;reviewPending=true;commentStage.disabled=true;
-    if(typeof bridge?.requestReview!=="function")throw new Error("This host does not support score review yet.");
-    const outcome=await bridge.requestReview(request);
-    if (previewDisposed) return;
-    if(outcome?.status==="added"){const current=commentDrafts.get(submittedKey);if(current?.version===submittedVersion&&current.text===comment)commentDrafts.delete(submittedKey);commentStatus.textContent="Added to chat for review. Your score is unchanged.";if(activeDraftKey===submittedKey&&commentText.value===comment)closeComment(true);else commentStatus.textContent="Added the submitted draft to chat. Your newer passage draft is still here.";}
-    else if(outcome?.status==="cancelled")commentStatus.textContent="Review cancelled. Your comment is still here.";
-    else if(outcome?.status==="stale")commentStatus.textContent=outcome.message||"The composition changed. Reopen it and select the passage again; your comment is still here.";
-    else {commentStatus.textContent=outcome?.message||"Score review is not supported by this host yet.";fallback.hidden=false;fallback.textContent=json;}
-  }catch(error:any){if(previewDisposed)return;commentStatus.textContent=error?.message||String(error); fallback.hidden=false; fallback.textContent=JSON.stringify({selection:frozenSelection,comment},null,2);}finally{reviewPending=false;if(!previewDisposed)commentStage.disabled=false;}
+  if(previewDisposed||!selection)return;
+  const score=data.score||"", frozenSelection=structuredClone(selection), comment=commentText.value;
+  try {
+    validateReviewRequest({score,compositionRevision:data.revision,scoreSha256:data.scoreSha256||"",selection:frozenSelection,comment});
+    const draft=[
+      `Wavy score comment (copy into chat manually)`,
+      `Project: ${data.artifactPath}`,
+      `Composition revision: ${data.revision}`,
+      `Score SHA-256: ${data.scoreSha256}`,
+      `Passage: ${frozenSelection.label}`,
+      ...frozenSelection.ranges.map((range,index)=>`${index+1}. ${range.voiceId}, UTF-16 ${range.start}-${range.end}: ${JSON.stringify(score.slice(range.start,range.end))}`),
+      `Comment: ${comment}`,
+    ].join("\n");
+    fallback.textContent=draft; fallback.hidden=false; fallback.focus();
+    try { await navigator.clipboard.writeText(draft); commentStatus.textContent="Copied. Paste this comment into chat; the score is unchanged."; }
+    catch { const range=document.createRange(); range.selectNodeContents(fallback); const selected=window.getSelection(); selected?.removeAllRanges(); selected?.addRange(range); commentStatus.textContent="Clipboard unavailable. The draft is selected below; copy it manually."; }
+  } catch(error:any) { commentStatus.textContent=error?.message||String(error); }
 };
 
 if (data.score && safeScore(data.score)) {
@@ -461,24 +371,12 @@ function setScoreView(next:"notation"|"roll"){
   activeScoreView=next;const isRoll=next==="roll";scorePaper.classList.toggle("roll-view",isRoll);if(!isRoll)scorePaper.style.removeProperty("height");const pitchControls=document.querySelector<HTMLElement>("#pitchZoomControls");if(pitchControls)pitchControls.hidden=!isRoll;one<HTMLElement>("#notation").hidden=isRoll;one<HTMLElement>("#roll").hidden=!isRoll;notationButton.setAttribute("aria-pressed",String(!isRoll));rollButton.setAttribute("aria-pressed",String(isRoll));if(zoomReset)zoomReset.textContent=`${Math.round((isRoll?rollZoom:scoreScale)*100)}%`;paintState();const settleView=()=>{if(commentPanel.hidden){if(isRoll)revealRollOnSwitch();}else placeComment();};requestAnimationFrame(settleView);setTimeout(settleView,60);
 }
 notationButton.onclick=()=>setScoreView("notation");rollButton.onclick=()=>setScoreView("roll");setScoreView("notation");
-window.__wavyTest={data,notes:()=>notes.map(({elements,...note})=>({...note,elements:elements.map(element=>element.getAttribute("class"))})),events:()=>notes.map(note=>({ms:note.startMs,dur:note.endMs-note.startMs,p:note.pitches,measure:note.measure,startChar:note.start,elements:note.elements.map(element=>element.getAttribute("class"))})),bars:()=>structuredClone(rollBars),selection:()=>selection,zoom:()=>scoreScale,rollZoom:()=>rollZoom,rollPitchZoom:()=>rollPitchZoom,rowHeight:()=>rollRowHeight(),view:()=>activeScoreView,gesture:()=>notationGestures.state(),rollGesture:()=>rollGestures?.state(),selectTake:loadRecording,recordingUrl:()=>recordingUrl,player};
-let unsubscribeDispose: (() => void) | undefined;
+window.__wavyTest={data,notes:()=>notes.map(({elements,...note})=>({...note,elements:elements.map(element=>element.getAttribute("class"))})),events:()=>notes.map(note=>({ms:note.startMs,dur:note.endMs-note.startMs,p:note.pitches,measure:note.measure,startChar:note.start,elements:note.elements.map(element=>element.getAttribute("class"))})),bars:()=>structuredClone(rollBars),selection:()=>selection,zoom:()=>scoreScale,rollZoom:()=>rollZoom,rollPitchZoom:()=>rollPitchZoom,rowHeight:()=>rollRowHeight(),view:()=>activeScoreView,gesture:()=>notationGestures.state(),rollGesture:()=>rollGestures?.state(),player};
 function disposePreview() {
   if (previewDisposed) return;
   previewDisposed = true;
   previewLifetime.abort();
-  unsubscribeTheme?.();
-  unsubscribeViewport?.();
-  unsubscribeDispose?.();
-  recordingLoadGeneration++;
   player.stop();
-  stopRecording();
-  clearRecording();
-  player.buffers.clear();
   if (player.context && player.context.state !== "closed") void player.context.close().catch(() => {});
-  // A host may revoke a still-connected frame before replacing its document.
-  // Leave it readable, but no longer interactive or capable of restarting audio.
-  document.body.inert = true;
 }
 window.addEventListener("pagehide", disposePreview, { once: true, signal: previewLifetime.signal });
-unsubscribeDispose = bridge?.onDispose?.(disposePreview);

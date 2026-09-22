@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 
-const SCORE = `X:1\nT:Registered fixture\nM:4/4\nL:1/8\nQ:1/4=100\nV:Lead\nK:C\n[V:Lead] C2 D2 E2 F2|G4 E4|`;
+const SCORE = `X:1\nT:Registered fixture\nM:4/4\nL:1/8\nQ:1/4=100\nV:Lead\nK:C\n[V:Lead] C2 D2 \\\nE2 F2|G4 E4|`;
 
 export interface RegisteredWavyServer {
   origin: string;

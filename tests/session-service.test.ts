@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -231,14 +231,12 @@ describe("LocalSessionService contract", () => {
   });
 
   it("delegates artifact actions for the implicitly resolved current session", async () => {
-    const { service, fixture, cwd } = await fixtureService();
-    await mkdir(join(cwd, ".pi", "web", "artifacts"), { recursive: true });
-    await writeFile(join(cwd, ".pi", "web", "artifacts", "report.md"), "report");
+    const { service, fixture } = await fixtureService();
     const invoke = vi.fn(() => ({ message: "downloaded" }));
     fixture.extensionOptions.uiContext.web.setArtifactAction("download", { invoke });
     const input = { key: "download", name: "report.md", path: "/api/artifacts/report.md", kind: "markdown" };
     await expect(service.invokeArtifactAction(undefined, input)).resolves.toEqual({ label: "download", message: "downloaded" });
-    expect(invoke).toHaveBeenCalledWith({ name: "report.md", path: "/api/session-artifacts/current/report.md", kind: "markdown" });
+    expect(invoke).toHaveBeenCalledWith({ name: "report.md", path: "/api/artifacts/report.md", kind: "markdown" });
   });
 
   it("preserves duplicate session IDs returned by different cwd listings", async () => {

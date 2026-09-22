@@ -69,30 +69,6 @@ function required<T>(value: T | undefined, name: string): T {
 }
 function errorText(error: unknown) { return error instanceof Error ? error.message : String(error); }
 
-type ReviewRange = { start: number; end: number; voiceId: string; excerpt: string };
-type ScoreReviewPayload = {
-  snapshot: { compositionRevision: number; scoreSha256: string };
-  selection: { kind: "abc-source-ranges"; unit: "utf16"; ranges: ReviewRange[]; label: string; playback?: { startMs?: number; endMs?: number; occurrenceIds?: string[]; repeatPasses?: number[] } };
-  comment: string;
-  path: string;
-};
-function reviewPayload(value: unknown): ScoreReviewPayload {
-  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid score review payload.");
-  const payload = value as Partial<ScoreReviewPayload>;
-  if (!payload.snapshot || !Number.isInteger(payload.snapshot.compositionRevision) || !/^[a-f0-9]{64}$/.test(payload.snapshot.scoreSha256 || "")) throw new Error("Invalid score snapshot.");
-  if (!payload.selection || payload.selection.kind !== "abc-source-ranges" || payload.selection.unit !== "utf16" || !Array.isArray(payload.selection.ranges)) throw new Error("Invalid score selection.");
-  if (payload.selection.ranges.length < 1 || payload.selection.ranges.length > 32) throw new Error("A score review requires 1–32 source ranges.");
-  if (typeof payload.selection.label !== "string" || payload.selection.label.length > 200) throw new Error("Invalid passage label.");
-  if (typeof payload.comment !== "string" || !payload.comment.trim() || payload.comment.length > 4000) throw new Error("Comment must contain 1–4000 characters.");
-  if (typeof payload.path !== "string" || payload.path.length > 1000) throw new Error("Invalid Wavy project path.");
-  for (const range of payload.selection.ranges) {
-    if (!range || !Number.isInteger(range.start) || !Number.isInteger(range.end) || range.start < 0 || range.end <= range.start || typeof range.voiceId !== "string" || !/^voice-[1-9][0-9]*$/.test(range.voiceId) || typeof range.excerpt !== "string" || range.excerpt.length > 1000) throw new Error("Invalid score source range.");
-    if (/[\r\n]/.test(range.excerpt) || !/(?:[\^_=]*[A-Ga-gzZxX]|\||\[[^\]]*[A-Ga-g])/.test(range.excerpt)) throw new Error("A selected range must identify written music, not a header or directive.");
-  }
-  const ordered = [...payload.selection.ranges].sort((a, b) => a.voiceId.localeCompare(b.voiceId) || a.start - b.start);
-  for (let i = 1; i < ordered.length; i++) if (ordered[i].voiceId === ordered[i - 1].voiceId && ordered[i].start < ordered[i - 1].end) throw new Error("Score source ranges must not overlap within a voice.");
-  return payload as ScoreReviewPayload;
-}
 
 export default function wavy(pi: PiWebExtensionAPI) {
   // Session-scoped cancellation; the engine layer owns cross-session inference
@@ -124,55 +100,7 @@ export default function wavy(pi: PiWebExtensionAPI) {
         const path = event?.context?.path;
         if (typeof path !== "string") throw new Error("Missing Wavy artifact path.");
         const [{ loadProject }, { renderWavyView }] = await Promise.all([loadStore(), loadPreview()]);
-        return renderWavyView(await loadProject(cwd, path), { cwd });
-      },
-      interactions: {
-        actions: ["review-score-edit"],
-        async invoke(event) {
-          if (event.action !== "review-score-edit") return { status: "unsupported" as const, message: "Unsupported Wavy preview action." };
-          let payload: ScoreReviewPayload;
-          try { payload = reviewPayload(event.payload); }
-          catch (error) { return { status: "unsupported" as const, message: errorText(error) }; }
-          const { loadProject } = await loadStore();
-          const project = await loadProject(cwd, event.context.path);
-          const score = project.head.score;
-          const scoreRef = project.index.revisions.at(-1)?.files.score;
-          if (!score || !scoreRef || project.index.revision !== payload.snapshot.compositionRevision || scoreRef.sha256 !== payload.snapshot.scoreSha256 || project.artifactPath !== payload.path) return { status: "stale" as const, message: "The Wavy composition changed. Reopen it and select the passage again." };
-          for (const range of payload.selection.ranges) {
-            if (range.end > score.length || score.slice(range.start, range.end) !== range.excerpt) return { status: "stale" as const, message: "The selected score source no longer matches this revision." };
-          }
-          const projectParts = project.artifactPath.slice("/api/artifacts/".length).split("/").map(decodeURIComponent);
-          projectParts.pop();
-          const scorePath = [...projectParts, ...scoreRef.path.split("/")].join("/");
-          const rangeLines = payload.selection.ranges.map((range, index) => `- ${index + 1}. ${range.voiceId}, UTF-16 ${range.start}–${range.end}: \`${range.excerpt.replace(/`/g, "\\`")}\``);
-          const passes = payload.selection.playback?.repeatPasses?.join(", ");
-          const text = [
-            `Please review an edit to the written score in ${project.artifactPath}.`,
-            `Composition revision: ${project.index.revision}`,
-            `Immutable score: ${scorePath}`,
-            `Score SHA-256: ${scoreRef.sha256}`,
-            `Passage: ${payload.selection.label}${passes ? `; unfolded repeat pass(es): ${passes}` : ""}`,
-            "Selected canonical ABC ranges:", ...rangeLines,
-            "", `Requested change: ${payload.comment}`,
-            "", "Inspect the frozen score source and the latest Wavy project before editing. Never apply stale offsets to a newer score. Use a guarded Wavy revision; do not render audio automatically.",
-          ].join("\n");
-          return {
-            status: "review" as const,
-            review: {
-              title: `Review score edit · ${payload.selection.label}`,
-              summary: `${payload.selection.ranges.length} canonical source range${payload.selection.ranges.length === 1 ? "" : "s"} in composition revision ${project.index.revision}.`,
-              effects: [
-                { type: "insert-composer-text" as const, text, placement: "end" as const },
-                { type: "add-composer-context" as const, context: {
-                  type: "reference" as const,
-                  id: `wavy-score-${scoreRef.sha256}-${payload.selection.ranges.map(range => `${range.start}-${range.end}`).join("_")}`,
-                  label: "Wavy score passage", title: `${project.index.title} · ${payload.selection.label}`,
-                  reference: { provider: "artifact" as const, path: scorePath, sha256: scoreRef.sha256, snapshot: { label: payload.selection.label, revision: String(project.index.revision) }, ranges: payload.selection.ranges.map(range => ({ start: range.start, end: range.end, unit: "utf16" as const, label: range.voiceId })) },
-                } },
-              ],
-            },
-          };
-        },
+        return { html: await renderWavyView(await loadProject(cwd, path)) };
       },
     });
   });

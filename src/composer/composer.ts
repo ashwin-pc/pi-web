@@ -11,7 +11,7 @@ import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
 import type { QuoteRepliesController, QuoteReplySubmission } from "../quotes/quoteReplies.js";
 import type { SessionDraftStore } from "../drafts/sessionDraftStore.js";
-import { capturedTextInsertion, createComposerCapture, reviewedTextInsertion, type ComposerCaptureDescriptor, type EditorSnapshot } from "./composerCapture.js";
+import { capturedTextInsertion, createComposerCapture, type ComposerCaptureDescriptor } from "./composerCapture.js";
 
 type BarcodeDetectorLike = {
   detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
@@ -21,28 +21,9 @@ type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => Barc
 
 const restoreFocusStorageKey = "pi-web-composer-restore-focus";
 
-export type ComposerReviewEffects = {
-  text: { text: string; placement: "end" };
-  context: ComposerContextAttachment;
-};
-export type ComposerReviewSnapshot = EditorSnapshot & { contextRevision: number };
-
-export function sameComposerReviewSnapshot(left: ComposerReviewSnapshot, right: ComposerReviewSnapshot) {
-  return left.sessionId === right.sessionId && left.revision === right.revision && left.contextRevision === right.contextRevision
-    && left.selectionStart === right.selectionStart && left.selectionEnd === right.selectionEnd;
-}
-
-export function reviewedContextAddition(existing: ComposerContextAttachment[], incoming: ComposerContextAttachment) {
-  const colliding = incoming.id ? existing.find((context) => context.id === incoming.id) : undefined;
-  if (colliding && JSON.stringify(colliding) !== JSON.stringify(incoming)) return undefined;
-  return colliding ? existing : [...existing, incoming];
-}
-
 export type ComposerController = {
   init: () => void;
   addContextAttachment: (context: ComposerContextAttachment) => void;
-  snapshotDraft: () => ComposerReviewSnapshot;
-  applyReviewedEffects: (snapshot: ComposerReviewSnapshot, effects: ComposerReviewEffects) => boolean;
   renderAttachments: () => void;
   switchSession: (sessionId: string) => void;
   setPromptText: (text: string) => void;
@@ -92,7 +73,6 @@ export function createComposer(options: {
   const optimisticUserMessages = new Set<string>();
   let ownedSessionId = "";
   let promptRevision = 0;
-  let contextRevision = 0;
   const composerCapture = createComposerCapture({
     container: elements.composerExtensionInputs,
     prompt: elements.promptEl,
@@ -426,52 +406,17 @@ export function createComposer(options: {
     else sessionContextAttachments.delete(sessionId);
   }
 
-  function upsertContextAttachment(context: ComposerContextAttachment) {
-    const existingIndex = context.id ? contextAttachments.findIndex((attachment) => attachment.id === context.id) : -1;
+  function addContextAttachment(context: ComposerContextAttachment) {
+    const existingIndex = context.id
+      ? contextAttachments.findIndex((attachment) => attachment.id === context.id)
+      : -1;
     if (existingIndex >= 0) contextAttachments[existingIndex] = context;
     else contextAttachments.push(context);
-  }
-
-  function addContextAttachment(context: ComposerContextAttachment) {
-    upsertContextAttachment(context);
-    contextRevision += 1;
     rememberContextAttachments();
     renderAttachments();
     updatePrimaryAction();
     hideSlashCommands();
     focusIfKeyboardFriendly(elements.promptEl);
-  }
-
-  function snapshotDraft(): ComposerReviewSnapshot {
-    return { sessionId: ownedSessionId, revision: promptRevision, selectionStart: elements.promptEl.selectionStart, selectionEnd: elements.promptEl.selectionEnd, contextRevision };
-  }
-
-  function applyReviewedEffects(snapshot: ComposerReviewSnapshot, effects: ComposerReviewEffects) {
-    if (snapshot.contextRevision !== contextRevision) return false;
-    const nextContexts = reviewedContextAddition(contextAttachments, effects.context);
-    if (!nextContexts) return false;
-    const insertion = reviewedTextInsertion({ text: effects.text.text, placement: effects.text.placement, snapshot, current: {
-      sessionId: ownedSessionId, revision: promptRevision, value: elements.promptEl.value,
-      selectionStart: elements.promptEl.selectionStart, selectionEnd: elements.promptEl.selectionEnd,
-    } });
-    if (!insertion) return false;
-    // Both reviewed effects are committed synchronously after every stale guard;
-    // no observable partial state is produced before the context is available.
-    elements.promptEl.value = insertion.value;
-    elements.promptEl.setSelectionRange(insertion.cursor, insertion.cursor);
-    if (nextContexts !== contextAttachments) {
-      contextAttachments = nextContexts;
-      contextRevision += 1;
-    }
-    promptRevision += 1;
-    persistDraft();
-    rememberContextAttachments();
-    renderAttachments();
-    updatePrimaryAction();
-    updateCompactInactive();
-    hideSlashCommands();
-    focusIfKeyboardFriendly(elements.promptEl);
-    return true;
   }
 
   function persistAttachmentDraft() {
@@ -495,7 +440,6 @@ export function createComposer(options: {
     elements.promptEl.value = draft.text;
     state.attachedImages = draft.attachments;
     contextAttachments = [...(sessionContextAttachments.get(sessionId) || [])];
-    contextRevision += 1;
     recordDebugEvent("composer-draft-restored", { sessionId, attachmentCount: draft.attachments.length });
     if (draft.attachments.length) recordDebugEvent("attachment-draft-restored", { sessionId, count: draft.attachments.length });
     renderAttachments();
@@ -514,7 +458,7 @@ export function createComposer(options: {
 
       const sourceIcon = document.createElement("span");
       sourceIcon.className = "contextAttachmentIcon";
-      sourceIcon.append(iconElement(context.reference.provider === "artifact" ? "paperclip" : "git-branch"));
+      sourceIcon.append(iconElement("git-branch"));
 
       const text = document.createElement("span");
       text.className = "contextAttachmentText";
@@ -534,7 +478,6 @@ export function createComposer(options: {
       remove.setAttribute("aria-label", remove.title);
       remove.addEventListener("click", () => {
         contextAttachments.splice(index, 1);
-        contextRevision += 1;
         rememberContextAttachments();
         renderAttachments();
         updatePrimaryAction();
@@ -850,7 +793,6 @@ export function createComposer(options: {
       hideSlashCommands();
       state.attachedImages = [];
       contextAttachments = [];
-      contextRevision += 1;
       rememberContextAttachments(sessionId);
       renderAttachments();
       const submittedWhileRunning = activeRuntime.isStreaming || activeRuntime.isRetrying;
@@ -894,10 +836,7 @@ export function createComposer(options: {
             elements.promptEl.value = rawMessage;
             promptRevision += 1;
           }
-          if (contextAttachments.length === 0) {
-            contextAttachments = contexts;
-            contextRevision += 1;
-          }
+          if (contextAttachments.length === 0) contextAttachments = contexts;
           rememberContextAttachments(sessionId);
           renderAttachments();
           updatePrimaryAction();
@@ -1071,8 +1010,6 @@ export function createComposer(options: {
   return {
     init,
     addContextAttachment,
-    snapshotDraft,
-    applyReviewedEffects,
     setCaptureContributions: (contributions) => composerCapture.setContributions(contributions, ownedSessionId),
     syncCompactState: updateCompactInactive,
     renderAttachments,

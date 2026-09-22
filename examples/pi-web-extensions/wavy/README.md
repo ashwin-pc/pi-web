@@ -1,6 +1,6 @@
 # Wavy
 
-An opt-in **pi-web example extension** for composing, auditioning, recording, and transcribing music with local models. Wavy uses the generic artifact-preview, read-only asset/theme bridge, and agent-tool APIs; it adds no Wavy-specific routes, authentication scheme, studio, or navigation surface.
+An opt-in **pi-web example extension** for composing, auditioning, recording, and transcribing music with local models. Wavy uses the existing HTML-only artifact-preview and agent-tool APIs; it adds no Wavy-specific route, bridge, authentication scheme, studio, or navigation surface.
 
 A song is a `.wavy` JSON index plus a companion `.wavy.d/` directory. Lyrics, ABC notation, requested style, settings, sources, and recordings remain native files. The browser is **view-only**: create and edit through the agent; listen and inspect in the artifact preview.
 
@@ -28,7 +28,7 @@ Ask the agent, for example:
 - “Attach this humming clip and transcribe it for review.”
 - “Export the complete Wavy project.”
 
-The agent should return the `.wavy` artifact link after each operation. Reopen the preview after edits: existing mounted previews are snapshots, not live job dashboards. The inline score stays visible during synthesized audition and highlights the notes actually being played. Tap a note to position the silent play cursor; use Select, Shift-click, keyboard extension, or the passage handles to audition/loop a range. A passage comment opens host-owned review and, only after approval, stages a frozen score reference plus editable request in the composer. It never edits the score, submits chat, runs inference, or renders audio by itself. Notation and piano roll are projections of the saved ABC, not a separately editable browser document. See the [real in-chat preview](/api/artifacts/wavy-preview-in-chat.png) and [expanded Artifacts-panel preview](/api/artifacts/wavy-preview-expanded.png) from final-build validation.
+The agent should return the `.wavy` artifact link after each operation. Reopen the preview after edits: mounted previews are snapshots, not live job dashboards. The inline score stays visible during optional oscillator audition and highlights the written notes being played. Tap a note to position the cursor; use Select, Shift-click, keyboard extension, or the passage handles to audition or loop a range. Passage comments remain local to the iframe and produce selectable text containing the composition revision, score hash, and UTF-16 source ranges; copy that text into chat manually. Clipboard attempts gracefully fall back to selecting the draft. The preview never edits the score, submits chat, fetches generated recordings, runs inference, or renders a recording. Notation and piano roll are projections of the saved ABC, not a separately editable browser document.
 
 ### Tools
 
@@ -64,11 +64,9 @@ SheetSage2 does **not** transcribe lyrics. Melody, chord, beat, meter, and relat
 
 ## Playback and authentication
 
-Score audition uses a small local subset of Salamander Grand Piano samples through WebAudio. It makes no remote soundfont/model requests and preserves the pitches and timing parsed from the saved ABC; it is not a preview of the final singer or production. An explicitly labelled oscillator is used only when the host asset bridge or piano samples are unavailable. Generated singing is **not** assumed to align exactly with the notation.
+Score audition uses an explicitly labelled WebAudio oscillator. It makes no soundfont, model, recording, or network request and preserves the pitches and timing parsed from the saved ABC; it is not a preview of the final singer or production. Generated singing is **not** assumed to align exactly with the notation.
 
-pi-web renders custom artifacts in `sandbox="allow-scripts"` without `allow-same-origin`. Its generic preview bridge provides authenticated assets as `Blob`s without exposing credentials or weakening the sandbox. Wavy creates and revokes its own blob URLs, loads only a recording selected by the user, and cancels stale loads. A normal host-player link remains available in the parent chat if the bridge or decoder is unavailable; `wavy inspect` also accepts `take_id` to return a selected take's host-player link. The iframe receives audio bytes, not login credentials or transferable server-access URLs. Already downloaded bytes remain available until the preview closes; a logout cannot retract a completed download.
-
-Piano samples are copied on demand into a bounded, content-addressed `.pi/web/artifacts/wavy-preview-cache/` under the current project. This derived cache does not modify the Wavy project. The HTML stays under the host's 1 MB response limit, including its pinned ABCjs library; recordings and samples are never embedded in it.
+pi-web renders the self-contained document in `sandbox="allow-scripts"` without `allow-same-origin`. Wavy declares no preview assets or host callbacks. Generated recordings are available only through ordinary tool-returned host-player links; `wavy inspect` accepts `take_id` to return a selected take's link. The HTML stays under the host's 1 MB response limit, including its pinned ABCjs library.
 
 ## Files and integrity
 
@@ -100,7 +98,7 @@ Export returns a `.tar.gz` containing the index and companion files, not just th
 
 ## Licensing
 
-Extension code follows pi-web's MIT license. Vendored ABCjs retains its [MIT notice](vendor/LICENSE.md). The piano subset is Salamander Grand Piano V3 by Alexander Holm, CC BY 3.0; exact source, package version, and attribution are retained in [`vendor/piano/README.md`](vendor/piano/README.md). The machine-verifiable [`vendor/manifest.json`](vendor/manifest.json) records the exact shipped subset, byte lengths, and SHA-256 hashes. YuE2, SheetSage2, and the MERT parent model use **CC BY-NC 4.0** weights; Wavy is intended for non-commercial model use unless you separately obtain appropriate permission. A successful render is not a commercial-rights clearance.
+Extension code follows pi-web's MIT license. Vendored ABCjs retains its [MIT notice](vendor/LICENSE.md). The machine-verifiable [`vendor/manifest.json`](vendor/manifest.json) records the exact shipped file, byte length, and SHA-256 hash. YuE2, SheetSage2, and the MERT parent model use **CC BY-NC 4.0** weights; Wavy is intended for non-commercial model use unless you separately obtain appropriate permission. A successful render is not a commercial-rights clearance.
 
 ## Development
 
