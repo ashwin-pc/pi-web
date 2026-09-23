@@ -10,15 +10,15 @@ const engines = vi.hoisted(() => ({
   transcribe: vi.fn(),
 }));
 
-vi.mock("../examples/pi-web-extensions/wavy/engines.js", () => ({
+vi.mock("../../engines.js", () => ({
   engineStatus: engines.status,
   planComposition: engines.plan,
   renderComposition: engines.render,
   transcribeSource: engines.transcribe,
 }));
 
-import wavy from "../examples/pi-web-extensions/wavy/index.js";
-import { loadProject } from "../examples/pi-web-extensions/wavy/store.js";
+import wavy from "../../index.js";
+import { loadProject } from "../../store.js";
 
 type Tool = { name: string; execute: (...args: any[]) => Promise<any> };
 type Handler = (...args: any[]) => any;

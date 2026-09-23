@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { rm } from "node:fs/promises";
-import { attachTranscription, beginTake, createProject, exportProject, finishTake, importSource, loadProject, newOperationDir, resolveFile, reviseProject } from "../examples/pi-web-extensions/wavy/store.js";
+import { attachTranscription, beginTake, createProject, exportProject, finishTake, importSource, loadProject, newOperationDir, resolveFile, reviseProject } from "../../store.js";
 
 const roots: string[] = [];
 afterEach(async () => Promise.all(roots.splice(0).map(p => rm(p, { recursive: true, force: true }))));

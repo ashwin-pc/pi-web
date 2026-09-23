@@ -6,8 +6,8 @@ import process from "node:process";
 import * as esbuild from "esbuild";
 
 const root = resolve(import.meta.dirname, "..");
-const entry = resolve(root, "examples/pi-web-extensions/wavy/player.ts");
-const output = resolve(root, "examples/pi-web-extensions/wavy/browser.js");
+const entry = resolve(root, "player.ts");
+const output = resolve(root, "browser.js");
 const watching = process.argv.includes("--watch");
 const checking = process.argv.includes("--check");
 if (watching && checking) throw new Error("Use either --watch or --check, not both.");
@@ -62,10 +62,10 @@ if (watching) {
     let current;
     try { current = await readFile(output); }
     catch (error) {
-      if (error?.code === "ENOENT") throw new Error("Wavy browser bundle is missing; run npm run build:wavy-browser first.");
+      if (error?.code === "ENOENT") throw new Error("Wavy browser bundle is missing; run npm run build first.");
       throw error;
     }
-    if (!current.equals(Buffer.from(generated.contents))) throw new Error("Wavy browser bundle is stale or non-deterministic; run npm run build:wavy-browser.");
+    if (!current.equals(Buffer.from(generated.contents))) throw new Error("Wavy browser bundle is stale or non-deterministic; run npm run build.");
     console.log("Wavy browser bundle matches its canonical TypeScript sources.");
   } else {
     await atomicWrite(output, generated.contents);

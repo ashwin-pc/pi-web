@@ -1,0 +1,58 @@
+{
+  "name": "@ashwin-pc/pi-web-wavy-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Optional Wavy music-project extension for pi-web",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["pi-package", "pi-web", "music"],
+  "files": [
+    "README.md",
+    "browser.js",
+    "engine/README.md",
+    "engine/sheetsage.py",
+    "engine/yue.py",
+    "engines.ts",
+    "index.ts",
+    "player-model.ts",
+    "player.ts",
+    "preview.ts",
+    "settings.ts",
+    "skill/SKILL.md",
+    "store.ts",
+    "styles.css",
+    "types.ts",
+    "vendor/"
+  ],
+  "pi": {
+    "extensions": ["./index.ts"],
+    "skills": ["./skill"]
+  },
+  "scripts": {
+    "build": "node scripts/build-browser.mjs",
+    "build:check": "node scripts/build-browser.mjs --check",
+    "dev": "node scripts/build-browser.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "npm run test:unit && npm run test:e2e",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "test:e2e": "playwright test --config playwright.config.ts",
+    "verify:package": "node scripts/pack-and-verify.mjs",
+    "prepack": "npm run build && npm run verify:package:contents",
+    "verify:package:contents": "node scripts/verify-source-package.mjs"
+  },
+  "peerDependencies": {
+    "@ashwin-pc/pi-web": ">=0.6.0 <0.7.0",
+    "@earendil-works/pi-ai": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
+    "typebox": ">=1.0.0 <2.0.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.59.1",
+    "@types/node": "24.10.1",
+    "esbuild": "0.27.7",
+    "tsx": "4.20.6",
+    "typescript": "5.9.3",
+    "vitest": "4.1.5"
+  },
+  "engines": { "node": ">=24" }
+}

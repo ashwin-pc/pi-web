@@ -5,18 +5,17 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { readWavyPreviewAssets, renderWavyView } from "../examples/pi-web-extensions/wavy/preview.js";
-import type { LoadedProject } from "../examples/pi-web-extensions/wavy/types.js";
-import { verifyWavyPackage } from "../scripts/verify-wavy-package.mjs";
+import { readWavyPreviewAssets, renderWavyView } from "../../preview.js";
+import type { LoadedProject } from "../../types.js";
+import { verifyWavyPackage } from "../../scripts/verify-package.mjs";
 
-const root = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
-const wavyRoot = join(root, "examples/pi-web-extensions/wavy");
+const wavyRoot = dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
 
 async function packageFixture(change?: (wavy: string) => Promise<void>) {
   const fixture = await mkdtemp(join(tmpdir(), "wavy-package-fixture-"));
-  const wavy = join(fixture, "package/examples/pi-web-extensions/wavy");
+  const wavy = join(fixture, "package");
   await mkdir(wavy, { recursive: true });
-  for (const path of ["README.md", "browser.js", "index.ts", "player.ts", "player-model.ts", "preview.ts", "styles.css", "store.ts", "types.ts", "settings.ts", "engines.ts", "engine/README.md", "engine/sheetsage.py", "engine/yue.py", "skill/SKILL.md"]) {
+  for (const path of ["README.md", "package.json", "browser.js", "index.ts", "player.ts", "player-model.ts", "preview.ts", "styles.css", "store.ts", "types.ts", "settings.ts", "engines.ts", "engine/README.md", "engine/sheetsage.py", "engine/yue.py", "skill/SKILL.md"]) {
     await mkdir(dirname(join(wavy, path)), { recursive: true });
     await cp(join(wavyRoot, path), join(wavy, path));
   }
@@ -33,7 +32,7 @@ describe("Wavy build and package contract", () => {
     const fixture = await mkdtemp(join(tmpdir(), "wavy-missing-browser-"));
     try {
       await writeFile(join(fixture, "styles.css"), "body{}");
-      await expect(readWavyPreviewAssets(fixture)).rejects.toThrow(/npm run build:wavy-browser/);
+      await expect(readWavyPreviewAssets(fixture)).rejects.toThrow(/npm run build/);
     } finally { await rm(fixture, { recursive: true, force: true }); }
   });
 
@@ -72,7 +71,7 @@ describe("Wavy build and package contract", () => {
   });
 
   it("matches every vendored byte length and hash in the shipped-subset manifest", async () => {
-    const vendor = join(root, "examples/pi-web-extensions/wavy/vendor");
+    const vendor = join(wavyRoot, "vendor");
     const manifest = JSON.parse(await readFile(join(vendor, "manifest.json"), "utf8")) as {
       schemaVersion: number;
       upstreams: Array<{ notice: string; shippedFiles: Array<{ path: string; bytes: number; sha256: string }> }>;
@@ -103,12 +102,17 @@ describe("Wavy build and package contract", () => {
     }
   });
 
-  it("keeps Wavy generation opt-in for development and mandatory for builds", async () => {
-    const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
-    expect(pkg.scripts.dev).not.toMatch(/wavy/i);
-    expect(pkg.scripts["watch:wavy-browser"]).toContain("--watch");
-    expect(pkg.scripts.build).toMatch(/^npm run build:wavy-browser/);
+  it("keeps build, tests, and packaging extension-owned", async () => {
+    const pkg = JSON.parse(await readFile(join(wavyRoot, "package.json"), "utf8"));
+    expect(pkg.scripts.build).toBe("node scripts/build-browser.mjs");
+    expect(pkg.scripts.dev).toContain("--watch");
+    expect(pkg.scripts.prepack).toMatch(/^npm run build/);
     expect(pkg.devDependencies.esbuild).toMatch(/^\d+\.\d+\.\d+$/);
-    expect(pkg.files).toContain("examples/pi-web-extensions/wavy/browser.js");
+    expect(Object.keys(pkg.peerDependencies).sort()).toEqual([
+      "@ashwin-pc/pi-web", "@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox",
+    ]);
+    expect(pkg.devDependencies).not.toHaveProperty("@earendil-works/pi-coding-agent");
+    expect(pkg.files).toContain("browser.js");
+    expect(pkg.files).not.toContain("tests/");
   });
 });

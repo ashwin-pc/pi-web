@@ -6,9 +6,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
-const prefix = "package/examples/pi-web-extensions/wavy/";
+const prefix = "package/";
 const required = [
-  "README.md", "browser.js", "index.ts", "player.ts", "player-model.ts", "preview.ts",
+  "README.md", "package.json", "browser.js", "index.ts", "player.ts", "player-model.ts", "preview.ts",
 "styles.css", "store.ts", "types.ts", "settings.ts", "engines.ts",
   "engine/README.md", "engine/sheetsage.py", "engine/yue.py", "skill/SKILL.md",
   "vendor/LICENSE.md", "vendor/abcjs-basic-min.js", "vendor/manifest.json",
@@ -37,7 +37,7 @@ export async function verifyWavyPackage(archivePath, options = {}) {
 
   const verbose = String(tar(archive, ["-tvzf"])).split(/\r?\n/).filter(Boolean);
   if (verbose.some(line => !line.startsWith("-") && !line.startsWith("d"))) throw new Error("Package contains a link or special archive member.");
-  const forbidden = members.filter(path => /(?:^|\/)(__pycache__|test-results|playwright-report)(?:\/|$)|\.py[co]$|\/\.pi\/web\/artifacts(?:\/|$)|\/browser\.js\.tmp-/i.test(path));
+  const forbidden = members.filter(path => /^package\/(?:tests|scripts)(?:\/|$)|^package\/engine\/test_/.test(path) || /(?:^|\/)(__pycache__|test-results|playwright-report)(?:\/|$)|\.py[co]$|\/\.pi\/web\/artifacts(?:\/|$)|\/browser\.js\.tmp-/i.test(path));
   if (forbidden.length) throw new Error(`Package contains generated cache/test artifacts: ${forbidden.join(", ")}`);
 
   for (const path of required) if (!unique.has(prefix + path)) throw new Error(`Packaged Wavy runtime is missing ${path}.`);
@@ -57,7 +57,7 @@ export async function verifyWavyPackage(archivePath, options = {}) {
   const unexpectedVendor = members.filter(path => path.startsWith(prefix + "vendor/") && !allowedVendor.has(path.slice((prefix + "vendor/").length)));
   if (unexpectedVendor.length) throw new Error(`Undeclared vendored files in package: ${unexpectedVendor.join(", ")}`);
 
-  const localBrowserPath = options.localBrowserPath ?? resolve(import.meta.dirname, "../examples/pi-web-extensions/wavy/browser.js");
+  const localBrowserPath = options.localBrowserPath ?? resolve(import.meta.dirname, "../browser.js");
   const [localBrowser, packagedBrowser] = await Promise.all([readFile(localBrowserPath), Promise.resolve(memberData(archive, prefix + "browser.js"))]);
   if (!localBrowser.equals(packagedBrowser)) throw new Error("Packaged Wavy browser bundle differs from the canonical locally generated bundle.");
 
@@ -66,6 +66,6 @@ export async function verifyWavyPackage(archivePath, options = {}) {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const archive = process.argv[2];
-  if (!archive) throw new Error("Usage: node scripts/verify-wavy-package.mjs <package.tgz>");
+  if (!archive) throw new Error("Usage: node scripts/verify-package.mjs <package.tgz>");
   await verifyWavyPackage(archive);
 }

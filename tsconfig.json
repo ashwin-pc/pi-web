@@ -22,5 +22,8 @@
     "src/**/*.ts",
     ".pi/extensions/**/*.ts",
     "examples/**/*.ts"
+  ],
+  "exclude": [
+    "examples/pi-web-extensions/wavy/**"
   ]
 }

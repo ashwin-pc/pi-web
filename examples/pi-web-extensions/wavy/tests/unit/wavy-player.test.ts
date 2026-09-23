@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTimeline, chooseOccurrence, normalizeRanges, selectTimelineRange, validateReviewRequest } from "../examples/pi-web-extensions/wavy/player-model.js";
+import { buildTimeline, chooseOccurrence, normalizeRanges, selectTimelineRange, validateReviewRequest } from "../../player-model.js";
 
 describe("Wavy canonical player model", () => {
   const notes = buildTimeline([

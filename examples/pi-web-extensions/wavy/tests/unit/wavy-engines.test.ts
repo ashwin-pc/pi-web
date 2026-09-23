@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { engineStatus, planComposition, renderComposition, transcribeSource } from "../examples/pi-web-extensions/wavy/engines.js";
-import { DEFAULT_SETTINGS } from "../examples/pi-web-extensions/wavy/types.js";
+import { engineStatus, planComposition, renderComposition, transcribeSource } from "../../engines.js";
+import { DEFAULT_SETTINGS } from "../../types.js";
 
 const oldSheet = process.env.WAVY_SHEETSAGE_PYTHON, oldRoot=process.env.WAVY_YUE_ROOT;
 afterEach(() => { if (oldSheet === undefined) delete process.env.WAVY_SHEETSAGE_PYTHON; else process.env.WAVY_SHEETSAGE_PYTHON=oldSheet; if(oldRoot===undefined)delete process.env.WAVY_YUE_ROOT;else process.env.WAVY_YUE_ROOT=oldRoot; });

@@ -30,7 +30,7 @@ describe("Wavy extension isolation", () => {
 
   it("loads registration through the real SDK loader and a global-style symlink without evaluating lazy modules", async () => {
     const root = await mkdtemp(join(tmpdir(), "wavy-sdk-isolation-")); roots.push(root);
-    const source = resolve("examples/pi-web-extensions/wavy");
+    const source = resolve(import.meta.dirname, "../..");
     const fixture = join(root, "fixture", "wavy");
     const installed = join(root, "agent", "web-extensions", "wavy");
     await mkdir(fixture, { recursive: true });
@@ -56,7 +56,7 @@ describe("Wavy extension isolation", () => {
     const root = await mkdtemp(join(tmpdir(), "wavy-sdk-dynamic-")); roots.push(root);
     const installed = join(root, "agent", "web-extensions", "wavy");
     await mkdir(join(root, "agent", "web-extensions"), { recursive: true });
-    await symlink(resolve("examples/pi-web-extensions/wavy"), installed, process.platform === "win32" ? "junction" : "dir");
+    await symlink(resolve(import.meta.dirname, "../.."), installed, process.platform === "win32" ? "junction" : "dir");
     const sdk = loader(root, join(root, "agent"), join(installed, "index.ts"));
     await sdk.reload();
     const result = sdk.getExtensions();
@@ -67,8 +67,11 @@ describe("Wavy extension isolation", () => {
     delete process.env.WAVY_SHEETSAGE_PYTHON; delete process.env.WAVY_SHEETSAGE_MODEL;
     try {
       const output = await status.execute("isolation", {}, undefined, undefined, { cwd: root } as any);
-      expect(output.content[0].text).toContain('"inferenceValidated": false');
-      expect(output.content[0].text).toContain("No downloads are performed");
+      const content = output.content[0];
+      expect(content.type).toBe("text");
+      if (content.type !== "text") throw new Error("expected text status output");
+      expect(content.text).toContain('"inferenceValidated": false');
+      expect(content.text).toContain("No downloads are performed");
     } finally {
       if (oldPython === undefined) delete process.env.WAVY_SHEETSAGE_PYTHON; else process.env.WAVY_SHEETSAGE_PYTHON = oldPython;
       if (oldModel === undefined) delete process.env.WAVY_SHEETSAGE_MODEL; else process.env.WAVY_SHEETSAGE_MODEL = oldModel;

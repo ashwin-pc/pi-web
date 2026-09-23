@@ -1,7 +1,7 @@
 import { expect, request, test } from "@playwright/test";
 import { startRegisteredWavyServer, type RegisteredWavyServer } from "./helpers/registeredWavy.js";
-import { loadProject } from "../../examples/pi-web-extensions/wavy/store.js";
-import { renderWavyPreview } from "../../examples/pi-web-extensions/wavy/preview.js";
+import { loadProject } from "../../store.js";
+import { renderWavyPreview } from "../../preview.js";
 let server: RegisteredWavyServer;
 test.beforeEach(async ({}, info) => { test.skip(info.project.name !== "desktop", "one registered runtime path is sufficient"); server = await startRegisteredWavyServer(); });
 test.afterEach(async () => { await server?.stop(); });

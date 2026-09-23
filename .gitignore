@@ -8,12 +8,6 @@ release/
 site-dist/
 website/.astro/
 website/public/generated/
-/examples/pi-web-extensions/wavy/browser.js
-/examples/pi-web-extensions/wavy/browser.js.tmp-*
-
-# Language caches
-__pycache__/
-*.py[cod]
 
 # Local uploads / screenshots
 .pi-web-uploads/

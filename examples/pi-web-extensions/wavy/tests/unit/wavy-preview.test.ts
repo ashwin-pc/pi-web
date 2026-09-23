@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFile } from "node:fs/promises";
-import { normalizationStableScript, renderWavyPreview, renderWavyView, wavyPreviewTest } from "../examples/pi-web-extensions/wavy/preview.js";
-import type { LoadedProject } from "../examples/pi-web-extensions/wavy/types.js";
+import { normalizationStableScript, renderWavyPreview, renderWavyView, wavyPreviewTest } from "../../preview.js";
+import type { LoadedProject } from "../../types.js";
 
 const ref = (path: string) => ({ path, sha256: "a".repeat(64), bytes: 12 });
 function project(overrides: Partial<LoadedProject> = {}): LoadedProject {
@@ -17,7 +17,7 @@ function project(overrides: Partial<LoadedProject> = {}): LoadedProject {
 
 describe("Wavy artifact preview", () => {
   it("escapes trusted ABCjs control sentinels before exact host normalization", async () => {
-    const source = await readFile(new URL("../examples/pi-web-extensions/wavy/vendor/abcjs-basic-min.js", import.meta.url), "utf8");
+    const source = await readFile(new URL("../../vendor/abcjs-basic-min.js", import.meta.url), "utf8");
     expect(source).toMatch(/[\u0003\u0012]/);
     const stable = normalizationStableScript(source);
     const hostNormalized = stable.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "").trimEnd();

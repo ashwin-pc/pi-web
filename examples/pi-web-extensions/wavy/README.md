@@ -6,14 +6,35 @@ A song is a `.wavy` JSON index plus a companion `.wavy.d/` directory. Lyrics, AB
 
 ## Install for all pi-web sessions
 
-From the pi-web checkout:
+Build the extension from a pi-web source checkout, then link that extension directory:
 
 ```sh
+cd examples/pi-web-extensions/wavy
+npm ci
+npm run build
 mkdir -p ~/.pi/web/extensions
-ln -s "$PWD/examples/pi-web-extensions/wavy" ~/.pi/web/extensions/wavy
+ln -sfn "$PWD" ~/.pi/web/extensions/wavy
 ```
 
-If a Wavy installation already exists, inspect it before replacing it. The symlink makes this example directory the single implementation, not a copied installation. New sessions discover it automatically; use `/reload` in already-open sessions. Its companion skill is contributed automatically—no second skill symlink is required.
+The extension has its own lockfile and pinned build/test dependencies. `npm ci` installs only its local `node_modules`; it does not modify or remove the checkout's root dependencies. The symlink keeps this directory canonical. New sessions discover it automatically; use `/reload` in already-open sessions. Its companion skill is contributed automatically—no second skill symlink is required.
+
+For a built archive, run `npm run verify:package`, then `npm pack`. Extract the resulting `.tgz`, install its production peer dependencies without running excluded development lifecycle scripts, and link the extracted directory:
+
+```sh
+tar -xzf ashwin-pc-pi-web-wavy-example-*.tgz
+cd package
+npm install --omit=dev --ignore-scripts --no-save \
+  @ashwin-pc/pi-web@0.6.0 \
+  @earendil-works/pi-ai@0.84.1 \
+  @earendil-works/pi-coding-agent@0.84.1 \
+  typebox@1.0.64
+mkdir -p ~/.pi/web/extensions
+ln -sfn "$PWD" ~/.pi/web/extensions/wavy
+```
+
+Wavy imports pi coding-agent, pi-ai, and typebox at runtime and imports the pi-web SDK contract for typing, so all four are declared as peers rather than bundling a second host SDK runtime. Because this is an extracted private package rather than a registry-installed dependency, the command above explicitly installs the tested compatible peer set locally; `--no-save` leaves the archived manifest unchanged, and `--ignore-scripts` avoids invoking development scripts that are intentionally absent from the archive. Incompatible host/SDK versions fail dependency resolution instead of being silently borrowed from an unrelated checkout. `npm run verify:package` repeats this exact install in a temporary directory with no ancestor `node_modules`, then performs real SDK discovery and checks every Wavy tool registration.
+
+The archive includes `browser.js`, runtime TypeScript, native engine bridges, the skill, and vendor provenance; it excludes tests, build scripts, caches, and engine test files. The normal `@ashwin-pc/pi-web` package explicitly excludes this optional extension.
 
 These are **pi-web** extension locations, not `~/.pi/agent/extensions`: the preview depends on browser APIs. To remove it, remove only the symlink and reload. Songs and recordings are not deleted.
 
@@ -102,26 +123,18 @@ Extension code follows pi-web's MIT license. Vendored ABCjs retains its [MIT not
 
 ## Development
 
-`player.ts` and `player-model.ts` are the readable canonical browser sources. `browser.js` is deterministic generated output: it is ignored by Git but included in built npm packages. Preview rendering performs no compilation, install, download, or global lookup. Generate or verify it with the repository's exact development-time esbuild pin:
+`player.ts` and `player-model.ts` are the readable canonical browser sources. `browser.js` is deterministic generated output: it is ignored by Git but included in built npm packages. Preview rendering performs no compilation, install, download, or global lookup. Install and run its canonical extension-owned commands from this directory:
 
 ```sh
-npm run build:wavy-browser
-npm run build:wavy-browser -- --check
-```
-
-Normal `npm run dev` remains Wavy-free. When actively changing Wavy's browser sources, run the opt-in watcher in a second terminal:
-
-```sh
-npm run watch:wavy-browser
-```
-
-A source checkout without the generated bundle reports a rebuild instruction when a Wavy preview is opened; published packages ship the bundle. From the repository root:
-
-```sh
-npm run typecheck
-npx vitest run tests/wavy-player.test.ts tests/wavy-store.test.ts tests/wavy-preview.test.ts tests/wavy-engines.test.ts tests/wavy-extension.test.ts
+npm ci
 npm run build
-npm test
+npm run build:check
+npm run typecheck
+npm run test:unit
+npm run test:e2e
+npm run verify:package
 ```
 
-Model tests are separate from the normal suite. Unit tests must not download weights or launch inference. Keep Wavy-specific functionality inside this example and its tests; changes to the core contribution API require a separate, generic design decision.
+`npm run dev` is the opt-in browser-bundle watcher. E2E reuses the host's generic server and Playwright infrastructure, so build the host (`npm run build` at the repository root) first. The root unit runner, E2E discovery, release workflow, and test orchestrator contain no Wavy hooks; root TypeScript explicitly excludes this independently typechecked package. A source checkout without the generated bundle reports `npm run build`; independently packed archives always ship it.
+
+Model tests are separate from the normal suite. Unit/E2E tests and package verification never download weights or launch inference. Keep Wavy-specific functionality inside this example and its tests; changes to the core contribution API require a separate, generic design decision.

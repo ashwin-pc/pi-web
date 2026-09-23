@@ -19,7 +19,7 @@ export async function readWavyPreviewAssets(root = here, includeNotation = true)
   } catch (error) {
     const failure = error as NodeJS.ErrnoException;
     if (failure.code === "ENOENT" && failure.path === join(root, "browser.js")) {
-      throw new Error("Wavy browser bundle is missing. In a source checkout run `npm run build:wavy-browser`; in an installed package reinstall or update @ashwin-pc/pi-web.", { cause: error });
+      throw new Error("Wavy browser bundle is missing. In a source checkout run `npm run build` from the Wavy extension directory; for an archive, reinstall or rebuild the Wavy package.", { cause: error });
     }
     throw error;
   }

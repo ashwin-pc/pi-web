@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createServer } from "node:net";
 
 const SCORE = `X:1\nT:Registered fixture\nM:4/4\nL:1/8\nQ:1/4=100\nV:Lead\nK:C\n[V:Lead] C2 D2 \\\nE2 F2|G4 E4|`;
@@ -72,7 +72,7 @@ async function waitForServer(origin: string, token: string, child: ChildProcess)
 
 /** Starts a real SDK extension runtime in an owned workspace. It never invokes a model or Wavy tool. */
 export async function startRegisteredWavyServer(port?: number): Promise<RegisteredWavyServer> {
-  const repo = process.cwd();
+  const repo = resolve(import.meta.dirname, "../../../../../..");
   port ??= await freePort();
   const root = await mkdtemp(join(tmpdir(), "pi-web-wavy-registered-"));
   const workspace = join(root, "workspace");

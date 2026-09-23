@@ -1,6 +1,6 @@
 import { expect, request, test } from "@playwright/test";
-import { renderWavyPreview } from "../../examples/pi-web-extensions/wavy/preview.js";
-import type { LoadedProject } from "../../examples/pi-web-extensions/wavy/types.js";
+import { renderWavyPreview } from "../../preview.js";
+import type { LoadedProject } from "../../types.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
