@@ -214,6 +214,7 @@ export function createSessions(options: {
   let transcriptLoading = true;
   let transcriptLoadGeneration = 0;
   let lastReplayedGeneration = -1;
+  const newChatAnimationPlaybackRate = 1.2;
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let sessionListRenderFrame: number | undefined;
@@ -342,6 +343,7 @@ export function createSessions(options: {
 
     video.classList.add("resetting");
     video.pause();
+    video.playbackRate = newChatAnimationPlaybackRate;
     video.currentTime = 0;
     if (video.seeking) {
       await new Promise<void>((resolve) => {
