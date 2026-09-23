@@ -278,6 +278,10 @@ The context is `{ name, path, kind }`. The only accepted result field is `html`,
 
 The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. Clear either form with `undefined` under the same key.
 
+### Example: Wavy music projects
+
+[`examples/pi-web-extensions/wavy/`](../examples/pi-web-extensions/wavy/) is an opt-in music-project extension. Its self-contained HTML preview embeds pinned ABCjs for notation and provides a piano roll, zoom/pan, passage selection, and explicitly labelled oscillator audition. Passage comments stay local and become selectable text with revision, hash, and source ranges for manual copying; the preview has no host callbacks, preview assets, authenticated audio fetching, or generated-recording playback. Tools preserve immutable revisions and takes, and return ordinary audio artifact links when recordings exist. Engines remain explicit local, non-commercial-weight integrations and never download or load models during registration or preview.
+
 ### Example: 3D modeling workflow
 
 [`examples/pi-web-extensions/3d-modeling/`](../examples/pi-web-extensions/3d-modeling/) is a complete Fusion 360 → STL → PrusaSlicer → G-code example. It contributes sandboxed interactive STL and G-code previews, Fusion MCP status/screenshot/script tools, a typed PrusaSlicer tool, and a **Slice** action for STL artifacts. Its README documents local dependencies, profile overrides, artifact-path protections, size limits, and the fact that Fusion Python executes unsandboxed with the user's permissions.

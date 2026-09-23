@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "upstreams": [
+    {
+      "name": "abcjs",
+      "version": "6.4.4",
+      "source": "https://www.npmjs.com/package/abcjs/v/6.4.4",
+      "license": "MIT",
+      "notice": "LICENSE.md",
+      "shippedFiles": [
+        {
+          "path": "abcjs-basic-min.js",
+          "bytes": 483417,
+          "sha256": "1f060d3568b8f49c0f22b7eaa98f8eb9e34a0e83c2dc14bc730d572a320e4c69"
+        }
+      ]
+    }
+  ]
+}
