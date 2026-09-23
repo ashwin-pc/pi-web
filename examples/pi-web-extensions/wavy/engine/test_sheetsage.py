@@ -1,4 +1,4 @@
-import importlib.util, json, subprocess, sys, tempfile, unittest, wave
+import importlib.util, json, shutil, subprocess, sys, tempfile, unittest, wave
 from pathlib import Path
 
 SCRIPT=Path(__file__).with_name("sheetsage.py")
@@ -9,6 +9,7 @@ class SheetSageBridgeTests(unittest.TestCase):
         value=json.loads(p.stdout)
         self.assertFalse(value['available'])
         self.assertIn('NC',value['license'])
+    @unittest.skipUnless(shutil.which('ffprobe'), 'ffprobe is required for media validation integration')
     def test_media_preflight_accepts_bounded_wav_and_rejects_invalid_container(self):
         with tempfile.TemporaryDirectory() as d:
             wav=Path(d)/'ok.wav'
