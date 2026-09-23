@@ -25,7 +25,7 @@ function memberData(archive, member) {
   return Buffer.from(result.stdout);
 }
 function canonicalMember(path) {
-  return (path === "package" || path.startsWith("package/")) && !path.startsWith("/") && !path.includes("\\") && !path.split("/").some(part => part === ".." || part === "");
+  return (path === "package" || path.startsWith("package/")) && !path.startsWith("/") && !path.includes("\\") && !path.split("/").some(part => part === "." || part === ".." || part === "");
 }
 
 export async function verifyWavyPackage(archivePath, options = {}) {
@@ -36,11 +36,17 @@ export async function verifyWavyPackage(archivePath, options = {}) {
   if (unique.size !== members.length) throw new Error("Package contains duplicate archive member paths.");
 
   const verbose = String(tar(archive, ["-tvzf"])).split(/\r?\n/).filter(Boolean);
-  if (verbose.some(line => !line.startsWith("-") && !line.startsWith("d"))) throw new Error("Package contains a link or special archive member.");
+  if (verbose.length !== members.length) throw new Error("Package archive metadata is inconsistent.");
+  const memberTypes = new Map(members.map((path, index) => [path, verbose[index]?.[0]]));
+  if ([...memberTypes.values()].some(type => type !== "-" && type !== "d")) throw new Error("Package contains a link or special archive member.");
   const forbidden = members.filter(path => /^package\/(?:tests|scripts)(?:\/|$)|^package\/engine\/test_/.test(path) || /(?:^|\/)(__pycache__|test-results|playwright-report)(?:\/|$)|\.py[co]$|\/\.pi\/web\/artifacts(?:\/|$)|\/browser\.js\.tmp-/i.test(path));
   if (forbidden.length) throw new Error(`Package contains generated cache/test artifacts: ${forbidden.join(", ")}`);
 
-  for (const path of required) if (!unique.has(prefix + path)) throw new Error(`Packaged Wavy runtime is missing ${path}.`);
+  for (const path of required) {
+    const member = prefix + path;
+    if (!unique.has(member)) throw new Error(`Packaged Wavy runtime is missing ${path}.`);
+    if (memberTypes.get(member) !== "-") throw new Error(`Packaged Wavy runtime member must be a regular file: ${path}.`);
+  }
   const manifest = JSON.parse(memberData(archive, prefix + "vendor/manifest.json").toString("utf8"));
   const shipped = manifest.upstreams.flatMap(upstream => upstream.shippedFiles.map(file => file.path));
   for (const upstream of manifest.upstreams) {

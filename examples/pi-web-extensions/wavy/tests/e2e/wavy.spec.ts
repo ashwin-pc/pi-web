@@ -266,6 +266,39 @@ test("block voice IDs, tie fragments, and exact multivoice SVG ownership share o
   const ins=notes.find((note:any)=>note.voiceLabel==="Ins"),insSvg=ins.elements.filter((classes:string)=>classes.includes("abcjs-"));expect(insSvg.every((classes:string)=>classes.includes("abcjs-v1"))).toBe(true);
 });
 
+test("shared-staff voices keep ties, drag endpoints, and source ownership canonical", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "one real browser adapter run is sufficient");
+  const abc=`X:1\nM:4/4\nL:1/8\nQ:1/4=120\nV:Lead\nV:Bass\n%%score (Lead Bass)\nK:C\n[V:Lead] C D E F|\n[V:Bass] C,2-C,2 z4|`;
+  await page.setContent(await renderWavyPreview(fixture(abc)));
+  const adapted=await page.evaluate(()=>(window as any).__wavyTest.notes());
+  const lead=adapted.filter((note:any)=>note.voiceLabel==="Lead"),bass=adapted.filter((note:any)=>note.voiceLabel==="Bass");
+  expect(lead).toHaveLength(4);expect(lead.every((note:any)=>note.sourceRanges.every((range:any)=>range.voiceId==="voice-1"))).toBe(true);
+  expect(bass).toHaveLength(1);expect(bass[0].sourceRanges).toHaveLength(2);expect(bass[0].sourceRanges.every((range:any)=>range.voiceId==="voice-2")).toBe(true);
+  expect(lead.flatMap((note:any)=>note.sourceRanges).some((range:any)=>bass[0].sourceRanges.some((other:any)=>range.start===other.start&&range.end===other.end))).toBe(false);
+  await page.locator("#rollButton").click();
+  const roll=(id:string)=>page.locator(`.roll-note[data-note-id="${id}"]`).first();
+  await roll(lead[0].id).click();await page.locator("#selectMode").click();await roll(lead[2].id).click();
+  const before=await page.evaluate(()=>(window as any).__wavyTest.selection());expect(before.sourceVoiceId).toBe("voice-1");expect(before.label).toContain("Lead");expect(before.playback.occurrenceIds).toContain(bass[0].id);
+  const handle=await page.locator("#selectionStart").boundingBox(),inside=await roll(lead[1].id).boundingBox(),crossed=await roll(lead[3].id).boundingBox();expect(handle).toBeTruthy();expect(inside).toBeTruthy();expect(crossed).toBeTruthy();
+  await page.mouse.move(handle!.x+22,handle!.y+22);await page.mouse.down();
+  await page.mouse.move(inside!.x+inside!.width/2,inside!.y+inside!.height/2,{steps:3});
+  await page.mouse.move(crossed!.x+crossed!.width/2,crossed!.y+crossed!.height/2,{steps:3});
+  const afterCross=await page.evaluate(()=>(window as any).__wavyTest.selection());expect(afterCross.endpoints).toEqual({startOccurrenceId:lead[2].id,endOccurrenceId:lead[3].id});
+  const reverseTarget=await roll(lead[1].id).boundingBox();expect(reverseTarget).toBeTruthy();await page.mouse.move(reverseTarget!.x+reverseTarget!.width/2,reverseTarget!.y+reverseTarget!.height/2,{steps:5});await page.mouse.up();
+  const adjusted=await page.evaluate(()=>(window as any).__wavyTest.selection());expect(adjusted.sourceVoiceId).toBe("voice-1");expect(adjusted.label).toContain("Lead");expect(adjusted.endpoints).toEqual({startOccurrenceId:lead[1].id,endOccurrenceId:lead[2].id});expect(adjusted.ranges.every((range:any)=>range.voiceId==="voice-1")).toBe(true);
+});
+
+test("repeat selection keeps first-pass occurrence endpoints across notation projection", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "one real browser adapter run is sufficient");
+  const abc=`X:1\nM:4/4\nL:1/8\nQ:1/4=120\nK:C\n|: C D E F :|`;
+  await page.setContent(await renderWavyPreview(fixture(abc)));await page.locator("#rollButton").click();
+  const adapted=await page.evaluate(()=>(window as any).__wavyTest.notes()),firstC=adapted.find((note:any)=>note.pitches.includes(60)&&note.repeatPass===1),secondC=adapted.find((note:any)=>note.pitches.includes(60)&&note.repeatPass===2);expect(firstC).toBeTruthy();expect(secondC).toBeTruthy();
+  await page.locator(`.roll-note[data-note-id="${firstC.id}"]`).first().click();await page.locator("#selectMode").click();
+  let selected=await page.evaluate(()=>(window as any).__wavyTest.selection());expect(selected.playback.occurrenceIds).toEqual([firstC.id]);expect(selected.playback.occurrenceIds).not.toContain(secondC.id);expect(selected.endpoints).toEqual({startOccurrenceId:firstC.id,endOccurrenceId:firstC.id});
+  await page.locator("#notationButton").click();await expect(page.locator("#selectionStart")).toBeVisible();await expect(page.locator("#selectionEnd")).toBeVisible();
+  selected=await page.evaluate(()=>(window as any).__wavyTest.selection());expect(selected.playback.occurrenceIds).toEqual([firstC.id]);expect(selected.endpoints.endOccurrenceId).toBe(firstC.id);
+});
+
 test("piano roll uses canonical empty-bar boundaries and keeps source selection across views", async ({ page }, info) => {
   test.skip(info.project.name !== "desktop", "desktop covers canonical geometry and shared selection");
   const abc=`X:1\nM:4/4\nL:1/8\nQ:1/4=120\nV:Vocal\nK:C\n[V:Vocal] Z2|C2 D2 E4|`;

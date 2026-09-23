@@ -28,6 +28,8 @@ export interface SelectionPlayback {
 export interface SourceSelection {
   kind: "abc-source-ranges";
   unit: "utf16";
+  sourceVoiceId: string;
+  endpoints: { startOccurrenceId: string; endOccurrenceId: string };
   ranges: SourceRange[];
   label: string;
   playback: SelectionPlayback;
@@ -35,6 +37,9 @@ export interface SourceSelection {
 
 export interface RawAudioNote {
   track: number;
+  /** Canonical ABC voice identity. Omit it for audition-only/unmapped tracks. */
+  voiceId?: string;
+  voiceLabel?: string;
   start: number;
   duration: number;
   pitch: number;
@@ -56,23 +61,24 @@ export function buildTimeline(notes: RawAudioNote[], options: TimelineOptions): 
   const groups = new Map<string, { notes: RawAudioNote[]; firstIndex: number }>();
   notes.forEach((note, index) => {
     if (note.duration <= 0) return;
-    const sourceBound = Number.isFinite(note.startChar) && note.startChar! >= 0;
+    const sourceBound = !!note.voiceId && Number.isFinite(note.startChar) && note.startChar! >= 0;
     const start = sourceBound ? note.startChar! : -1, end = sourceBound ? Math.max(start + 1, note.endChar ?? start + 1) : -1;
-    const key = sourceBound ? `${note.track}:${start}:${end}:${note.start}` : `${note.track}:generated:${note.start}`;
+    const identity = note.voiceId ?? `track-${note.track}`;
+    const key = sourceBound ? `${identity}:${start}:${end}:${note.start}` : `${identity}:generated:${note.start}`;
     const group = groups.get(key);
     if (group) group.notes.push(note); else groups.set(key, { notes: [note], firstIndex: index });
   });
   const occurrences = [...groups.values()].map(group => {
-    const first = group.notes[0], sourceBound = Number.isFinite(first.startChar) && first.startChar! >= 0;
+    const first = group.notes[0], sourceBound = !!first.voiceId && Number.isFinite(first.startChar) && first.startChar! >= 0;
     const start = sourceBound ? first.startChar! : -1, end = sourceBound ? Math.max(start + 1, first.endChar ?? start + 1) : -1;
-    const voiceId = `voice-${first.track + 1}`, startMs = toMs(first.start);
+    const voiceId = first.voiceId ?? `track-${first.track + 1}`, startMs = toMs(first.start);
     return {
       id: "", start, end, voiceId, startMs,
       endMs: startMs + Math.max(40, ...group.notes.map(note => toMs(note.duration))),
       pitches: [...new Set(group.notes.map(note => note.pitch))].sort((a, b) => a - b),
       velocity: Math.max(.15, Math.min(1, Math.max(...group.notes.map(note => note.volume ?? 80)) / 127)),
       measure: options.measureFor?.(first.track, start, startMs) ?? 0, repeatPass: 0,
-      voiceLabel: options.voiceLabelFor?.(first.track) || `Voice ${first.track + 1}`,
+      voiceLabel: first.voiceLabel || options.voiceLabelFor?.(first.track) || `Voice ${first.track + 1}`,
       sourceRanges: sourceBound ? [{ start, end, voiceId }] : [], firstIndex: group.firstIndex,
     };
   }).sort((a, b) => a.startMs - b.startMs || a.firstIndex - b.firstIndex);
@@ -100,27 +106,59 @@ export function normalizeRanges(ranges: SourceRange[]): SourceRange[] {
   return result;
 }
 
-export function selectTimelineRange(notes: TimelineNote[], anchorId: string, focusId: string): SourceSelection | undefined {
+export function selectTimelineRange(notes: TimelineNote[], anchorId: string, focusId: string, sourceVoiceId?: string): SourceSelection | undefined {
   const anchor = notes.find(note => note.id === anchorId);
   const focus = notes.find(note => note.id === focusId);
   if (!anchor || !focus) return undefined;
-  const startMs = Math.min(anchor.startMs, focus.startMs);
-  const endMs = Math.max(anchor.endMs, focus.endMs);
+  const voiceId = sourceVoiceId ?? anchor.voiceId;
+  const voiceAnchor = anchor.voiceId === voiceId ? anchor : undefined;
+  const voiceFocus = focus.voiceId === voiceId ? focus : undefined;
+  if (!voiceAnchor || !voiceFocus) return undefined;
+  const startEndpoint = voiceAnchor.startMs <= voiceFocus.startMs ? voiceAnchor : voiceFocus;
+  const endEndpoint = startEndpoint === voiceAnchor ? voiceFocus : voiceAnchor;
+  const startMs = startEndpoint.startMs;
+  const endMs = Math.max(startEndpoint.endMs, endEndpoint.endMs);
   const selected = notes.filter(note => note.startMs < endMs && note.endMs > startMs);
-  const anchorVoice = anchor.voiceId;
-  const sourceSelected = selected.filter(note => note.voiceId === anchorVoice && note.sourceRanges.length);
+  const sourceSelected = selected.filter(note => note.voiceId === voiceId && note.sourceRanges.length);
   const ranges = normalizeRanges(sourceSelected.flatMap(note => note.sourceRanges));
   const measures = [...new Set(sourceSelected.map(note => note.measure + 1))].sort((a, b) => a - b);
   const bars = measures.length === 1 ? `Bar ${measures[0]}` : `Bars ${measures[0]}–${measures.at(-1)}`;
-  const label = `${bars} · ${anchor.voiceLabel}`;
+  const label = `${bars} · ${voiceAnchor.voiceLabel}`;
   return {
-    kind: "abc-source-ranges", unit: "utf16", ranges, label,
+    kind: "abc-source-ranges", unit: "utf16", sourceVoiceId: voiceId,
+    endpoints: { startOccurrenceId: startEndpoint.id, endOccurrenceId: endEndpoint.id },
+    ranges, label,
     playback: {
       startMs, endMs,
       occurrenceIds: selected.map(note => note.id),
       repeatPasses: [...new Set(selected.map(note => note.repeatPass))].sort((a, b) => a - b),
     },
   };
+}
+
+export interface SelectionBoundaryGesture {
+  boundary: "start" | "end";
+  sourceVoiceId: string;
+  oppositeOccurrenceId: string;
+}
+
+/** Freeze the physical handle's opposite endpoint for the entire pointer gesture. */
+export function beginSelectionBoundaryMove(selection: SourceSelection, boundary: "start" | "end"): SelectionBoundaryGesture {
+  return {
+    boundary,
+    sourceVoiceId: selection.sourceVoiceId,
+    oppositeOccurrenceId: boundary === "start" ? selection.endpoints.endOccurrenceId : selection.endpoints.startOccurrenceId,
+  };
+}
+
+/** Replace one visual boundary while retaining the gesture's immutable opposite endpoint. */
+export function moveSelectionBoundary(notes: TimelineNote[], gesture: SelectionBoundaryGesture, occurrenceId: string): SourceSelection | undefined {
+  const target = notes.find(note => note.id === occurrenceId);
+  const opposite = notes.find(note => note.id === gesture.oppositeOccurrenceId);
+  if (!target || !opposite || target.voiceId !== gesture.sourceVoiceId || opposite.voiceId !== gesture.sourceVoiceId) return undefined;
+  return gesture.boundary === "start"
+    ? selectTimelineRange(notes, target.id, opposite.id, gesture.sourceVoiceId)
+    : selectTimelineRange(notes, opposite.id, target.id, gesture.sourceVoiceId);
 }
 
 export function chooseOccurrence(notes: TimelineNote[], start: number, end: number, playheadMs: number, voiceId?: string): TimelineNote | undefined {

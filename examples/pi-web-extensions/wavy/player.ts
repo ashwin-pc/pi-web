@@ -1,4 +1,4 @@
-import { buildTimeline, chooseOccurrence, selectTimelineRange, validateReviewRequest, type SourceSelection, type TimelineNote } from "./player-model.js";
+import { beginSelectionBoundaryMove, buildTimeline, chooseOccurrence, moveSelectionBoundary, selectTimelineRange, validateReviewRequest, type SelectionBoundaryGesture, type SourceSelection, type TimelineNote } from "./player-model.js";
 
 declare const ABCJS: any;
 declare global { interface Window { __wavyTest?: any } }
@@ -120,26 +120,31 @@ scorePaper.addEventListener("click",event=>{if(performance.now()<suppressScoreAc
 function timingFor(visual: any[], startChar: number) { return visual.find(item => item.type === "event" && (item.startCharArray || [item.startChar]).includes(startChar)); }
 function buildPlayerTimeline(renderedTune: any): PlayerNote[] {
   renderedTune.setTiming();
-  const visual = renderedTune.noteTimings || [], flattened = renderedTune.setUpAudio({}), raw: any[] = [];
-  (flattened.tracks || []).forEach((track: any[], trackIndex: number) => track.forEach(note => { if (note.cmd === "note") raw.push({ track: trackIndex, start: note.start, duration: note.duration, pitch: note.pitch, startChar: note.startChar, endChar: note.endChar, volume: note.volume }); }));
+  const visual = renderedTune.noteTimings || [], flattened = renderedTune.setUpAudio({});
   const voiceDeclarations=[...String(data.score||"").matchAll(/(?:^|\n)\s*V:\s*([^\s%]+)|\[V:([^\]\s]+)/g)].map(match=>match[1]||match[2]);
   const declaredVoices=[...new Set(voiceDeclarations)];
+  const layoutLine=(renderedTune.lines||[]).find((line:any)=>(line.staff||[]).some((staff:any)=>(staff.voices||[]).length));
+  const voices:Array<{id:string;label:string;track:number;staffIndex:number;staffVoiceIndex:number}>=[];
+  for(let staffIndex=0;staffIndex<(layoutLine?.staff||[]).length;staffIndex++)for(let staffVoiceIndex=0;staffVoiceIndex<(layoutLine.staff[staffIndex].voices||[]).length;staffVoiceIndex++){const track=voices.length;voices.push({id:`voice-${track+1}`,label:declaredVoices[track]||`Voice ${track+1}`,track,staffIndex,staffVoiceIndex});}
+  const voiceAt=(staffIndex:number,staffVoiceIndex:number)=>voices.find(voice=>voice.staffIndex===staffIndex&&voice.staffVoiceIndex===staffVoiceIndex);
+  // Source editing fails closed for audio tracks that cannot be mapped uniquely to an ABC voice.
+  const raw:any[]=[];(flattened.tracks||[]).forEach((track:any[],trackIndex:number)=>track.forEach(note=>{if(note.cmd!=="note")return;const voice=voices[trackIndex];raw.push({track:trackIndex,voiceId:voice?.id,voiceLabel:voice?.label,start:note.start,duration:note.duration,pitch:note.pitch,startChar:voice?note.startChar:undefined,endChar:voice?note.endChar:undefined,volume:note.volume});}));
   const meterLength=(meter:any)=>{if(meter?.type==="specified"&&meter.value?.[0])return Number(meter.value[0].num)/Number(meter.value[0].den);if(meter?.type==="cut_time")return 1;if(meter?.type==="common_time")return 1;return undefined;};
   const initialBarLength=renderedTune.getBarLength?.()||1, meterSegments=new Map<number,Array<{start:number;length:number;baseBar:number}>>();
   for(const line of renderedTune.lines||[])for(let staffIndex=0;staffIndex<(line.staff||[]).length;staffIndex++){const staff=line.staff[staffIndex],elements=(staff.voices||[]).flat(),start=Math.min(...elements.map((element:any)=>element.currentTrackWholeNotes).filter(Number.isFinite));if(!Number.isFinite(start))continue;const length=meterLength(staff.meter);if(!length)continue;const segments=meterSegments.get(staffIndex)||[],previous=segments.at(-1);if(!previous||previous.length!==length){const baseBar=previous?previous.baseBar+Math.floor((start-previous.start+1e-8)/previous.length):0;segments.push({start,length,baseBar});meterSegments.set(staffIndex,segments);}}
-  const canonicalMeasure=(track:number,startMs:number)=>{const whole=startMs*(flattened.tempo||120)/(4*60000),segments=meterSegments.get(track)||[{start:0,length:initialBarLength,baseBar:0}],segment=[...segments].reverse().find(item=>item.start<=whole+1e-8)||segments[0];return segment.baseBar+Math.floor((whole-segment.start+1e-8)/segment.length);};
-  const maxWhole=Math.max(0,...raw.map(item=>item.start+item.duration)),tempo=flattened.tempo||120,segments=meterSegments.get(0)||[{start:0,length:initialBarLength,baseBar:0}];rollBars=[];for(let segmentIndex=0;segmentIndex<segments.length;segmentIndex++){const segment=segments[segmentIndex],end=Math.min(maxWhole,segments[segmentIndex+1]?.start??maxWhole);for(let whole=segment.start;whole<end+1e-8;whole+=segment.length){const ms=whole*4*60000/tempo;if(ms<=maxWhole*4*60000/tempo+1)rollBars.push({measure:canonicalMeasure(0,ms),ms});}}rollBars=[...new Map(rollBars.map(bar=>[Math.round(bar.ms),bar])).values()].sort((a,b)=>a.ms-b.ms);
-  const base = buildTimeline(raw, { tempo, measureFor: (track,_startChar,startMs) => canonicalMeasure(track,startMs),voiceLabelFor:track=>declaredVoices[track]||`Voice ${track+1}` });
+  const canonicalMeasure=(track:number,startMs:number)=>{const whole=startMs*(flattened.tempo||120)/(4*60000),staffIndex=voices[track]?.staffIndex,segments=(staffIndex==null?undefined:meterSegments.get(staffIndex))||[{start:0,length:initialBarLength,baseBar:0}],segment=[...segments].reverse().find(item=>item.start<=whole+1e-8)||segments[0];return segment.baseBar+Math.floor((whole-segment.start+1e-8)/segment.length);};
+  const maxWhole=Math.max(0,...raw.map(item=>item.start+item.duration)),tempo=flattened.tempo||120,segments=meterSegments.get(voices[0]?.staffIndex??0)||[{start:0,length:initialBarLength,baseBar:0}];rollBars=[];for(let segmentIndex=0;segmentIndex<segments.length;segmentIndex++){const segment=segments[segmentIndex],end=Math.min(maxWhole,segments[segmentIndex+1]?.start??maxWhole);for(let whole=segment.start;whole<end+1e-8;whole+=segment.length){const ms=whole*4*60000/tempo;if(ms<=maxWhole*4*60000/tempo+1)rollBars.push({measure:canonicalMeasure(0,ms),ms});}}rollBars=[...new Map(rollBars.map(bar=>[Math.round(bar.ms),bar])).values()].sort((a,b)=>a.ms-b.ms);
+  const base = buildTimeline(raw, { tempo, measureFor: (track,_startChar,startMs) => canonicalMeasure(track,startMs) });
   const selectable = (renderedTune.getSelectableArray?.() || []).map((item: any) => {
     const abc = item.absEl?.abcelem, match = String(item.svgEl?.getAttribute?.("class") || "").match(/(?:^|\s)abcjs-v(\d+)(?:\s|$)/);
     if (!abc || !match || !Number.isInteger(abc.startChar) || abc.startChar < 0) return undefined;
     const pitches = abc.pitches || [], startsTie = pitches.some((pitch: any) => pitch.startTie), endsTie = pitches.some((pitch: any) => pitch.endTie);
     return { start: abc.startChar, end: Math.max(abc.startChar + 1, abc.endChar ?? abc.startChar + 1), voiceId: `voice-${Number(match[1]) + 1}`, element: item.svgEl as Element, startsTie, endsTie };
   }).filter(Boolean) as Array<{start:number;end:number;voiceId:string;element:Element;startsTie:boolean;endsTie:boolean}>;
-  const fragments = (renderedTune.lines || []).flatMap((line:any)=>(line.staff||[]).flatMap((staff:any,staffIndex:number)=>(staff.voices||[]).flatMap((voice:any)=>voice.filter((element:any)=>element.el_type==="note"&&!element.rest).map((element:any)=>({track:staffIndex,start:element.currentTrackWholeNotes,end:element.currentTrackWholeNotes+element.duration,startChar:element.startChar,endChar:element.endChar,tied:(element.pitches||[]).some((pitch:any)=>pitch.startTie||pitch.endTie)})))));
+  const fragments = (renderedTune.lines || []).flatMap((line:any)=>(line.staff||[]).flatMap((staff:any,staffIndex:number)=>(staff.voices||[]).flatMap((voice:any,staffVoiceIndex:number)=>{const canonical=voiceAt(staffIndex,staffVoiceIndex);if(!canonical)return[];return voice.filter((element:any)=>element.el_type==="note"&&!element.rest).map((element:any)=>({voiceId:canonical.id,start:element.currentTrackWholeNotes,end:element.currentTrackWholeNotes+element.duration,startChar:element.startChar,endChar:element.endChar,tied:(element.pitches||[]).some((pitch:any)=>pitch.startTie||pitch.endTie)}));})));
   return base.map(note=>{
-    const track=Number(note.voiceId.slice(6))-1, attack=raw.find(item=>item.track===track&&item.startChar===note.start&&Math.abs((item.start*4*60000/(flattened.tempo||120))-note.startMs)<.5);
-    const tied=attack?fragments.filter((fragment:any)=>fragment.track===track&&(fragment.startChar===note.start||(fragment.tied&&fragment.start<attack.start+attack.duration-1e-8&&fragment.end>attack.start+1e-8))):[];
+    const attack=raw.find(item=>item.voiceId===note.voiceId&&item.startChar===note.start&&Math.abs((item.start*4*60000/(flattened.tempo||120))-note.startMs)<.5);
+    const tied=attack?fragments.filter((fragment:any)=>fragment.voiceId===note.voiceId&&(fragment.startChar===note.start||(fragment.tied&&fragment.start<attack.start+attack.duration-1e-8&&fragment.end>attack.start+1e-8))):[];
     const ranges=(tied.length?tied.map((fragment:any)=>({start:fragment.startChar,end:fragment.endChar,voiceId:note.voiceId})):note.sourceRanges);
     const elements=selectable.filter(item=>item.voiceId===note.voiceId&&ranges.some((range:{start:number;end:number})=>range.start===item.start&&range.end===item.end)).map(item=>item.element);
     return {...note,sourceRanges:ranges,elements};
@@ -157,7 +162,8 @@ function noteFromPoint(target: EventTarget | null, x: number, y: number): Player
 }
 function selectedVisualNotes(value: SourceSelection | undefined) {
   if(!value)return [];
-  return notes.filter(note=>note.sourceRanges.some(source=>value.ranges.some(range=>range.voiceId===source.voiceId&&range.start<source.end&&range.end>source.start)));
+  const selectedIds=new Set(value.playback.occurrenceIds);
+  return notes.filter(note=>selectedIds.has(note.id)&&note.voiceId===value.sourceVoiceId&&note.sourceRanges.length);
 }
 function elementsForSelection(value: SourceSelection | undefined) {
   const selected = new Set<Element>();
@@ -194,18 +200,19 @@ function positionHandle(handle: HTMLElement, note: PlayerNote | undefined) {
 }
 function updateHandles() {
   if (!selection) { handleStart.hidden = handleEnd.hidden = true; return; }
-  const selected = selectedVisualNotes(selection).filter(note=>note.elements.some(element=>(element as SVGGraphicsElement).getClientRects().length)); positionHandle(handleStart, selected[0]); positionHandle(handleEnd, selected.at(-1));
+  const start=notes.find(note=>note.id===selection!.endpoints.startOccurrenceId),end=notes.find(note=>note.id===selection!.endpoints.endOccurrenceId);positionHandle(handleStart,start);positionHandle(handleEnd,end);
 }
 function attachHandle(handle: HTMLButtonElement, boundary: "start" | "end") {
-  handle.addEventListener("pointerdown", event => { event.preventDefault(); handle.setPointerCapture(event.pointerId); scorePaper.dataset.adjusting = boundary; });
+  let gesture:SelectionBoundaryGesture|undefined;
+  handle.addEventListener("pointerdown", event => { if(!selection)return;event.preventDefault();gesture=beginSelectionBoundaryMove(selection,boundary);handle.setPointerCapture(event.pointerId);scorePaper.dataset.adjusting=boundary; });
   handle.addEventListener("pointermove", event => {
-    if (!handle.hasPointerCapture(event.pointerId) || !selectionAnchorId) return;
-    const target = document.elementFromPoint(event.clientX, event.clientY); const note = noteFromPoint(target,event.clientX,event.clientY); if (!note) return;
-    const current = selection!; const otherId = boundary === "start" ? current.playback.occurrenceIds.at(-1)! : current.playback.occurrenceIds[0];
-    selection = selectTimelineRange(notes, otherId, note.id); cursorId = note.id; paintState();
+    if (!handle.hasPointerCapture(event.pointerId) || !gesture) return;
+    const target=document.elementsFromPoint(event.clientX,event.clientY).find(element=>!element.closest(".selection-handle,.comment-panel,.selection-actions"));const note=noteFromPoint(target??null,event.clientX,event.clientY);if(!note)return;
+    const adjusted=moveSelectionBoundary(notes,gesture,note.id);if(!adjusted)return;
+    selection=adjusted;cursorId=note.id;paintState();
   });
-  const finish = (event: PointerEvent) => { if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId); delete scorePaper.dataset.adjusting; };
-  handle.addEventListener("pointerup", finish); handle.addEventListener("pointercancel", finish);
+  const finish = (event: PointerEvent) => { gesture=undefined;if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);delete scorePaper.dataset.adjusting; };
+  handle.addEventListener("pointerup", finish);handle.addEventListener("pointercancel", finish);handle.addEventListener("lostpointercapture",finish);
 }
 attachHandle(handleStart, "start"); attachHandle(handleEnd, "end");
 scorePaper.addEventListener("scroll", updateHandles, { passive: true });

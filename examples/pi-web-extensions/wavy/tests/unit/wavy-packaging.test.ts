@@ -11,7 +11,11 @@ import { verifyWavyPackage } from "../../scripts/verify-package.mjs";
 
 const wavyRoot = dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
 
-async function packageFixture(change?: (wavy: string) => Promise<void>) {
+type ArchiveMutation =
+  | { kind: "alias"; archivePath: string; contents: string }
+  | { kind: "directory"; archivePath: string };
+
+async function packageFixture(change?: (wavy: string) => Promise<void>, archiveMutations: ArchiveMutation[] = []) {
   const fixture = await mkdtemp(join(tmpdir(), "wavy-package-fixture-"));
   const wavy = join(fixture, "package");
   await mkdir(wavy, { recursive: true });
@@ -22,8 +26,27 @@ async function packageFixture(change?: (wavy: string) => Promise<void>) {
   await cp(join(wavyRoot, "vendor"), join(wavy, "vendor"), { recursive: true });
   await change?.(wavy);
   const archive = join(fixture, "fixture.tgz");
-  const packed = spawnSync("tar", ["-czf", archive, "package"], { cwd: fixture, encoding: "utf8" });
-  if (packed.status !== 0) throw new Error(packed.stderr);
+  if (archiveMutations.length) {
+    const script = [
+      "import io,json,sys,tarfile",
+      "root,archive,mutations=sys.argv[1],sys.argv[2],json.loads(sys.argv[3])",
+      "replaced={m['archivePath'] for m in mutations if m['kind']=='directory'}",
+      "def keep(info): return None if info.name in replaced else info",
+      "with tarfile.open(archive,'w:gz') as out:",
+      " out.add(root,arcname='package',filter=keep)",
+      " for mutation in mutations:",
+      "  name=mutation['archivePath']",
+      "  if mutation['kind']=='directory':",
+      "   info=tarfile.TarInfo(name.rstrip('/')+'/');info.type=tarfile.DIRTYPE;info.mode=0o755;out.addfile(info)",
+      "  else:",
+      "   data=mutation['contents'].encode();info=tarfile.TarInfo(name);info.size=len(data);info.mode=0o644;out.addfile(info,io.BytesIO(data))",
+    ].join("\n");
+    const packed = spawnSync("python3", ["-c", script, wavy, archive, JSON.stringify(archiveMutations)], { encoding: "utf8" });
+    if (packed.status !== 0) throw new Error(packed.stderr);
+  } else {
+    const packed = spawnSync("tar", ["-czf", archive, "package"], { cwd: fixture, encoding: "utf8" });
+    if (packed.status !== 0) throw new Error(packed.stderr);
+  }
   return { fixture, archive };
 }
 
@@ -100,6 +123,28 @@ describe("Wavy build and package contract", () => {
       try { await expect(verifyWavyPackage(archive)).rejects.toThrow(message); }
       finally { await rm(fixture, { recursive: true, force: true }); }
     }
+  });
+
+  it.each([
+    {
+      name: "dot-segment aliases",
+      mutations: [{ kind: "alias", archivePath: "package/./browser.js", contents: 'alert("tampered")' }] satisfies ArchiveMutation[],
+      message: /non-canonical archive member path/,
+    },
+    {
+      name: "directories in place of required files",
+      mutations: [{ kind: "directory", archivePath: "package/index.ts" }] satisfies ArchiveMutation[],
+      message: /must be a regular file: index\.ts/,
+    },
+  ])("rejects $name from archive metadata", async ({ mutations, message }) => {
+    const { fixture, archive } = await packageFixture(undefined, mutations);
+    try {
+      const listed = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" });
+      expect(listed.status).toBe(0);
+      if (mutations[0].kind === "alias") expect(listed.stdout).toContain("package/./browser.js");
+      else expect(listed.stdout).toMatch(/package\/index\.ts\/?(?:\r?\n|$)/);
+      await expect(verifyWavyPackage(archive)).rejects.toThrow(message);
+    } finally { await rm(fixture, { recursive: true, force: true }); }
   });
 
   it("keeps build, tests, and packaging extension-owned", async () => {

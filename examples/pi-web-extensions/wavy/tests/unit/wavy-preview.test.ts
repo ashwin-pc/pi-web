@@ -34,6 +34,8 @@ describe("Wavy artifact preview", () => {
     expect(html).not.toContain("</script><img");
     expect(html).not.toContain("Héllo 世界");
     expect(html).toContain("abcjs_basic v6.4.4");
+    expect(html).toContain('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:">');
+    expect(html).not.toMatch(/(?:connect|media)-src/);
     expect(html).toContain("Optional oscillator audition");
     expect(html).not.toContain("piWebPreview");
     expect(html).not.toContain('id="recording"');
