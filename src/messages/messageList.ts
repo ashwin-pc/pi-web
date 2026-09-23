@@ -12,10 +12,11 @@ import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 import type { PiWebPanelEvent } from "../extensions.js";
+import type { RuntimeErrorPresentation } from "../tools/toolCards.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
-export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => HTMLDivElement;
+export type AddRuntimeErrorCard = (presentation: RuntimeErrorPresentation) => HTMLDivElement;
 export type MessageActionKind = "edit" | "rerun" | "continue";
 export type MessageActionContext = {
   action: MessageActionKind;
@@ -1360,7 +1361,7 @@ export function createMessageList(options: {
 
     if (message.isError) {
       const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
-      addRuntimeErrorCard("assistant error", text, distinctAssistantErrorBody(rawError, text));
+      addRuntimeErrorCard({ title: "assistant error", subtitle: text, technicalDetails: distinctAssistantErrorBody(rawError, text) });
       return;
     }
 
@@ -1531,7 +1532,7 @@ export function createMessageList(options: {
           index += retryGroup.length - 1;
           if (index === allMessages.length - 1) continue;
           const lastError = retryGroup[retryGroup.length - 1];
-          addRuntimeErrorCard("assistant error", `${lastError.text} · retried ${retryGroup.length} attempts`, retryErrorGroupBody(retryGroup));
+          addRuntimeErrorCard({ title: "assistant error", subtitle: `${lastError.text} · retried ${retryGroup.length} attempts`, technicalDetails: retryErrorGroupBody(retryGroup) });
           continue;
         }
 

@@ -6,12 +6,15 @@ import { playToolCardEntry, playToolCardStateTransition } from "../messages/entr
 import type { ApiHeaders } from "../app/api.js";
 import { isCompactDensity } from "../app/appearance.js";
 import { setActivityCardMetadata } from "../messages/activitySummary.js";
+import { normalizeErrorPresentation } from "../errors/errorPresentation.js";
+
+export type RuntimeErrorPresentation = { title: string; subtitle?: string; technicalDetails?: string };
 
 export type ToolCards = {
   addToolCard: (toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => HTMLDivElement;
   updateToolCard: (card: HTMLDivElement, toolName: string, isError: boolean, result?: unknown) => void;
   addToolHistoryCard: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
-  addRuntimeErrorCard: (title: string, subtitle: string, body: string) => HTMLDivElement;
+  addRuntimeErrorCard: (presentation: RuntimeErrorPresentation) => HTMLDivElement;
   startTool: (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
   updateToolProgress: (toolCallId: string | undefined, toolName: string, partialResult?: unknown, args?: Record<string, unknown>, startedAt?: string | number | Date) => void;
   endTool: (toolCallId: string | undefined, toolName: string, isError: boolean, result?: unknown) => void;
@@ -154,7 +157,7 @@ function addCardHeader(card: HTMLDivElement, title: string, subtitleText = "") {
 
   header.addEventListener("click", (event) => {
     const target = event.target instanceof HTMLElement ? event.target : undefined;
-    if (!isCompactDensity() || target?.closest("button, a, input, summary")) return;
+    if ((!isCompactDensity() && !card.classList.contains("toolCard--error")) || target?.closest("button, a, input, summary")) return;
     setCompactCollapsed(card, !card.classList.contains("toolCard--compactCollapsed"));
   });
 
@@ -186,6 +189,33 @@ function highlightToolResult(pre: HTMLPreElement, text: string) {
 
 function shouldCollapseToolResult(text: string) {
   return text.length > 600 || text.split("\n").length > 10;
+}
+
+function setCardPresentation(card: HTMLDivElement, titleText: string, subtitleText: string) {
+  const label = card.querySelector<HTMLElement>(".toolCardLabel");
+  if (!label) return;
+  let subtitle = label.querySelector<HTMLElement>(".toolCardSubtitle");
+  if (!subtitle) {
+    subtitle = document.createElement("span");
+    subtitle.className = "toolCardSubtitle";
+    label.append(subtitle);
+  }
+  const name = label.querySelector<HTMLElement>(".toolCardName");
+  if (name) name.textContent = titleText;
+  subtitle.textContent = subtitleText;
+  subtitle.hidden = !subtitleText;
+}
+
+export function errorRowPresentation(result: unknown) {
+  const presentation = normalizeErrorPresentation(result);
+  const type = [presentation.type, presentation.code].filter(Boolean).join(" · ");
+  return { title: presentation.message, subtitle: presentation.suggestion || type, technicalDetails: presentation.technicalDetails };
+}
+
+function addErrorResult(card: HTMLDivElement, result: unknown) {
+  const presentation = errorRowPresentation(result);
+  setCardPresentation(card, presentation.title, presentation.subtitle);
+  addToolResultBody(card, presentation.technicalDetails);
 }
 
 function addToolResultBody(card: HTMLDivElement, result: string) {
@@ -460,7 +490,10 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
 
     if (toolName === "edit" && !isError) renderEditDiff(card, {}, result);
     const resultStr = textFromToolResult(result);
-    if (resultStr && (isError || card.dataset.toolName !== "edit")) {
+    if (isError) {
+      removePartialToolOutput(card);
+      addErrorResult(card, result);
+    } else if (resultStr && card.dataset.toolName !== "edit") {
       removePartialToolOutput(card);
       addToolResultBody(card, resultStr);
     } else {
@@ -479,7 +512,8 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     if (toolName === "bash") addBashHeader(card, result, args);
     else addToolHeader(card, toolName, args);
     const resultStr = textFromToolResult(result);
-    if (toolName === "edit" && args) renderEditDiff(card, args, result);
+    if (isError) addErrorResult(card, result);
+    else if (toolName === "edit" && args) renderEditDiff(card, args, result);
     else if (resultStr) addToolResultBody(card, resultStr);
     addToolImagePreviews(card, result, apiHeaders);
     addToolSessionChips(card, result, openSession);
@@ -492,11 +526,11 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     onTranscriptChanged();
   }
 
-  function addRuntimeErrorCard(title: string, subtitle: string, body: string) {
+  function addRuntimeErrorCard(presentation: RuntimeErrorPresentation) {
     const card = document.createElement("div");
     card.className = "toolCard toolCard--error runtimeErrorCard";
-    addCardHeader(card, title, subtitle);
-    if (body) addToolResultBody(card, body);
+    addCardHeader(card, presentation.title, presentation.subtitle);
+    if (presentation.technicalDetails) addToolResultBody(card, presentation.technicalDetails);
     messagesEl.append(card);
     onTranscriptChanged();
     return card;

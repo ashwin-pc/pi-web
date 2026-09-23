@@ -197,6 +197,13 @@ describe("tool card expand chevrons", () => {
     expect(toolCardsTs).toContain('toggle.textContent = "";');
     expect(messagesTs).toContain('toggle.textContent = "";');
   });
+
+  it("keeps error disclosure operable outside compact density", () => {
+    expect(css).toContain(".toolCard--error:not(.runtimeErrorCard) .toolCardExpandToggle");
+    expect(css).toContain("display: inline-flex;");
+    expect(toolCardsTs).toContain('!card.classList.contains("toolCard--error")');
+    expect(toolCardsTs).toContain('expandToggle.type = "button"');
+  });
 });
 
 describe("connected transcript and header styling", () => {

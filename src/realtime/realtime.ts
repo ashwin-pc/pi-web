@@ -362,7 +362,7 @@ export function createRealtime(options: {
   function ensureRetryErrorCard(info: AssistantErrorInfo) {
     if (!retryErrorCard?.isConnected) {
       messages.invalidateRefreshes();
-      retryErrorCard = tools.addRuntimeErrorCard("assistant error", info.text, info.body);
+      retryErrorCard = tools.addRuntimeErrorCard({ title: "assistant error", subtitle: info.text, technicalDetails: info.body });
     }
     return retryErrorCard;
   }
@@ -487,7 +487,7 @@ export function createRealtime(options: {
       failedAfter ? "The model request failed after pi exhausted automatic retries." : "The model request failed.",
       "Retry the failed model request from the last good context without adding a new user message, or switch models if this provider remains rate-limited or overloaded.",
     ].join("\n");
-    terminalFailureCard = tools.addRuntimeErrorCard("response failed", subtitle, body);
+    terminalFailureCard = tools.addRuntimeErrorCard({ title: "response failed", subtitle, technicalDetails: body });
     expandRuntimeErrorCard(terminalFailureCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
@@ -499,10 +499,10 @@ export function createRealtime(options: {
 
   function addIncompleteResponseCard(info: TranscriptIncomplete) {
     incompleteResponseCard?.remove();
-    incompleteResponseCard = tools.addRuntimeErrorCard("response incomplete", info.text, [
+    incompleteResponseCard = tools.addRuntimeErrorCard({ title: "response incomplete", subtitle: info.text, technicalDetails: [
       info.body,
       "Continue from the current context without adding a new user message, or switch models if this provider remains unreliable.",
-    ].filter(Boolean).join("\n"));
+    ].filter(Boolean).join("\n") });
     expandRuntimeErrorCard(incompleteResponseCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
