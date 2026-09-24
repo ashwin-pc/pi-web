@@ -758,6 +758,9 @@
   cursor: grabbing;
   transition: none;
 }
+@media (prefers-reduced-motion: reduce) {
+  .sessionBarTab { transition: none; }
+}
 .sessionBarTab:hover {
   background: color-mix(in srgb, var(--text) 6%, transparent);
   color: var(--muted);

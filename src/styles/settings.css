@@ -367,18 +367,20 @@
   border: 1px solid transparent;
   border-radius: 9px;
   font-size: 13px;
-  transition: background .12s ease, border-color .12s ease, opacity .12s ease;
+  transition: background .12s ease, border-color .12s ease, opacity .12s ease, transform .18s cubic-bezier(.2, 0, 0, 1);
+  will-change: transform;
 }
 .settingsBucketNameRow.isDragging {
-  z-index: 1;
-  opacity: .72;
+  z-index: 2;
+  opacity: .88;
+  transition: none;
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 10%, var(--panel));
   box-shadow: 0 3px 12px color-mix(in srgb, black 18%, transparent);
 }
-.settingsBucketNames.isReordering .settingsBucketNameRow.isDropTarget {
-  border-top-color: var(--accent);
-  box-shadow: 0 -2px 0 var(--accent);
+.settingsBucketNameRow.isSettling { z-index: 2; }
+@media (prefers-reduced-motion: reduce) {
+  .settingsBucketNameRow { transition: none; }
 }
 .settingsBucketOrderInstructions { margin: 0 0 2px; color: var(--muted); font-size: 12px; line-height: 1.35; }
 .settingsBucketDragHandle {

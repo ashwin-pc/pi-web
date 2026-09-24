@@ -512,50 +512,111 @@ export function createSettings(options: {
       let pointerIndex = 0;
       let originalOrder: SessionMarkerColorId[] = [];
       let keyboardGrabbed = false;
+      let dragStartY = 0;
+      let dragClientY = 0;
+      let dragScrollTop = 0;
+      let dragRows: HTMLElement[] = [];
+      let dragRects: DOMRect[] = [];
+      let dragFrame: number | undefined;
+      let autoScrollFrame: number | undefined;
+      let scrollport: HTMLElement | undefined;
+      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
       const announcePosition = () => {
         const position = Array.from(container.querySelectorAll(".settingsBucketNameRow")).indexOf(row) + 1;
         live.textContent = `${input.value.trim() || color.label} bucket, position ${position} of ${colors.length}.`;
       };
+      const clearDragFrames = () => {
+        if (dragFrame !== undefined) cancelAnimationFrame(dragFrame);
+        if (autoScrollFrame !== undefined) cancelAnimationFrame(autoScrollFrame);
+        dragFrame = autoScrollFrame = undefined;
+      };
+      const clearDragStyles = () => {
+        clearDragFrames();
+        dragRows.forEach((item) => { item.style.transform = ""; });
+        row.classList.remove("isDragging", "isSettling");
+        container.classList.remove("isReordering");
+      };
+      const paintDrag = () => {
+        dragFrame = undefined;
+        if (pointerId === undefined) return;
+        const originalIndex = dragRows.indexOf(row);
+        const scrollDelta = (scrollport?.scrollTop || 0) - dragScrollTop;
+        const rawDy = dragClientY - dragStartY + scrollDelta;
+        const minDy = dragRects[0].top - dragRects[originalIndex].top;
+        const maxDy = dragRects.at(-1)!.bottom - dragRects[originalIndex].bottom;
+        const dy = Math.max(minDy, Math.min(maxDy, rawDy));
+        const center = dragRects[originalIndex].top + dragRects[originalIndex].height / 2 + dy;
+        pointerIndex = dragRects.reduce((count, rect, index) => index !== originalIndex && rect.top + rect.height / 2 < center ? count + 1 : count, 0);
+        row.style.transform = `translateY(${dy}px)${reducedMotion ? "" : " scale(1.015)"}`;
+        dragRows.forEach((item, index) => {
+          if (item === row) return;
+          let shift = 0;
+          if (index > originalIndex && index <= pointerIndex) shift = dragRects[index - 1].top - dragRects[index].top;
+          else if (index < originalIndex && index >= pointerIndex) shift = dragRects[index + 1].top - dragRects[index].top;
+          item.style.transform = shift ? `translateY(${shift}px)` : "";
+        });
+        live.textContent = `${input.value.trim() || color.label} bucket, position ${pointerIndex + 1} of ${colors.length}.`;
+      };
+      const schedulePaint = () => { if (dragFrame === undefined) dragFrame = requestAnimationFrame(paintDrag); };
+      const autoScroll = () => {
+        if (pointerId === undefined || !scrollport) return;
+        const rect = scrollport.getBoundingClientRect();
+        const edge = Math.min(56, rect.height / 4);
+        let velocity = 0;
+        if (dragClientY < rect.top + edge) velocity = -12 * (1 - Math.max(0, dragClientY - rect.top) / edge);
+        else if (dragClientY > rect.bottom - edge) velocity = 12 * (1 - Math.max(0, rect.bottom - dragClientY) / edge);
+        if (velocity) { scrollport.scrollTop += velocity; schedulePaint(); }
+        autoScrollFrame = requestAnimationFrame(autoScroll);
+      };
       const cancelDrag = () => {
         if (pointerId === undefined) return;
         pointerId = undefined;
-        row.classList.remove("isDragging");
-        container.classList.remove("isReordering");
-        state.bucketOrder = originalOrder;
-        renderBucketNames();
+        clearDragStyles();
+        live.textContent = "Reordering cancelled.";
       };
       handle.addEventListener("pointerdown", (event) => {
         if (event.button !== 0 || pointerId !== undefined) return;
         pointerId = event.pointerId;
         originalOrder = [...state.bucketOrder];
         pointerIndex = originalOrder.indexOf(color.id);
+        dragStartY = dragClientY = event.clientY;
+        dragRows = Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow"));
+        dragRects = dragRows.map((item) => item.getBoundingClientRect());
+        scrollport = Array.from(container.parentElement ? [container.parentElement, ...Array.from(container.parentElement.closest(".settingsContent") ? [container.parentElement.closest(".settingsContent")!] : [])] : [])
+          .find((item): item is HTMLElement => item instanceof HTMLElement && item.scrollHeight > item.clientHeight) || elements.settingsPanel;
+        dragScrollTop = scrollport.scrollTop;
         handle.setPointerCapture(event.pointerId);
         row.classList.add("isDragging");
         container.classList.add("isReordering");
+        autoScrollFrame = requestAnimationFrame(autoScroll);
         event.preventDefault();
       });
       handle.addEventListener("pointermove", (event) => {
         if (event.pointerId !== pointerId) return;
-        const siblings = Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow:not(.isDragging)"));
-        pointerIndex = siblings.filter((item) => event.clientY >= item.getBoundingClientRect().top + item.getBoundingClientRect().height / 2).length;
-        siblings.forEach((item, index) => item.classList.toggle("isDropTarget", index === Math.min(pointerIndex, siblings.length - 1)));
-        live.textContent = `${input.value.trim() || color.label} bucket, position ${pointerIndex + 1} of ${colors.length}.`;
+        dragClientY = event.clientY;
+        schedulePaint();
+        event.preventDefault();
       });
       handle.addEventListener("pointerup", (event) => {
         if (event.pointerId !== pointerId) return;
         pointerId = undefined;
+        clearDragFrames();
+        const originalIndex = dragRows.indexOf(row);
         row.classList.remove("isDragging");
-        container.classList.remove("isReordering");
-        container.querySelectorAll(".isDropTarget").forEach((item) => item.classList.remove("isDropTarget"));
-        handle.releasePointerCapture(event.pointerId);
+        row.classList.add("isSettling");
+        row.style.transform = `translateY(${dragRects[pointerIndex].top - dragRects[originalIndex].top}px)`;
+        try { handle.releasePointerCapture(event.pointerId); } catch { /* capture may already be gone */ }
         const next = [...originalOrder];
         next.splice(next.indexOf(color.id), 1);
         next.splice(pointerIndex, 0, color.id);
         live.textContent = `${input.value.trim() || color.label} bucket dropped.`;
-        void commitOrder(next, originalOrder);
+        window.setTimeout(() => {
+          clearDragStyles();
+          void commitOrder(next, originalOrder);
+        }, reducedMotion ? 0 : 180);
       });
       handle.addEventListener("pointercancel", cancelDrag);
-      handle.addEventListener("lostpointercapture", cancelDrag);
+      handle.addEventListener("lostpointercapture", () => { if (pointerId !== undefined) cancelDrag(); });
       handle.addEventListener("keydown", (event) => {
         if (event.key === " " || event.key === "Enter") {
           event.preventDefault();

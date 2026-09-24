@@ -156,6 +156,16 @@ test("bucket handles reorder with mouse and touch pointers, persist, and cancel 
   await expect(page.locator(".settingsBucketNameDefault")).toHaveText(["Purple", "Yellow", "Red", "Green", "Blue", "Orange", "Cyan", "Pink"]);
 });
 
+test("reorder motion honors reduced-motion preferences", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavBuckets").click();
+  await expect(page.locator(".settingsBucketNameRow").first()).toHaveCSS("transition-duration", "0s");
+  await page.locator("#settingsCloseButton").click();
+  await expect(page.locator(".sessionBarTab").first()).toHaveCSS("transition-duration", "0s");
+});
+
 test("mobile settings drills into one page and Escape returns before closing", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "mobile");
   await page.goto("/");

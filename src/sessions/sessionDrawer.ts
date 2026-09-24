@@ -1513,7 +1513,8 @@ export function createSessions(options: {
     const mouseLiftDistancePx = 6;
     const edgeZonePx = 48;
     const maxScrollPerFrame = 14;
-    const settleDurationMs = 220;
+    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const settleDurationMs = reducedMotion ? 0 : 180;
 
     tab.addEventListener("pointerdown", (downEvent) => {
       if (sessionBarGestureInFlight || !downEvent.isPrimary) return;
@@ -1530,6 +1531,7 @@ export function createSessions(options: {
       let pressActive = true;
       let holdTimer: number | undefined;
       let autoScrollFrame: number | undefined;
+      let dragFrame: number | undefined;
       let tabs: HTMLElement[] = [];
       let rects: DOMRect[] = [];
       let others: Array<{ tab: HTMLElement; domIndex: number }> = [];
@@ -1547,10 +1549,12 @@ export function createSessions(options: {
       const clearListeners = () => {
         if (holdTimer !== undefined) window.clearTimeout(holdTimer);
         if (autoScrollFrame !== undefined) cancelAnimationFrame(autoScrollFrame);
+        if (dragFrame !== undefined) cancelAnimationFrame(dragFrame);
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
         window.removeEventListener("pointercancel", onPointerCancel);
         tab.removeEventListener("session-inspector-open", onInspectorOpen);
+        tab.removeEventListener("lostpointercapture", onLostPointerCapture);
       };
 
       const finishPress = (delay = 0) => {
@@ -1563,6 +1567,7 @@ export function createSessions(options: {
       };
 
       const updateDrag = () => {
+        dragFrame = undefined;
         if (!lifted) return;
         const previousIndex = newIndex;
         const rawDx = (lastClientX - startX) + (bar.scrollLeft - scrollLeft0);
@@ -1583,6 +1588,10 @@ export function createSessions(options: {
         }
       };
 
+      const scheduleDragUpdate = () => {
+        if (dragFrame === undefined) dragFrame = requestAnimationFrame(updateDrag);
+      };
+
       const runAutoScroll = () => {
         if (!lifted || !barRect) return;
         let velocity = 0;
@@ -1595,7 +1604,7 @@ export function createSessions(options: {
           const nextScrollLeft = Math.min(maxScrollLeft, Math.max(0, bar.scrollLeft + velocity));
           if (nextScrollLeft !== bar.scrollLeft) {
             bar.scrollLeft = nextScrollLeft;
-            updateDrag();
+            scheduleDragUpdate();
           }
         }
         autoScrollFrame = requestAnimationFrame(runAutoScroll);
@@ -1630,7 +1639,8 @@ export function createSessions(options: {
         bar.classList.add("reordering");
         tab.classList.add("dragging");
         navigator.vibrate?.(10);
-        updateDrag();
+        scheduleDragUpdate();
+        tab.addEventListener("lostpointercapture", onLostPointerCapture);
         if (maxScrollLeft > 0) autoScrollFrame = requestAnimationFrame(runAutoScroll);
       };
 
@@ -1649,6 +1659,7 @@ export function createSessions(options: {
         } else if (commit && newIndex < originalIndex) {
           for (let index = newIndex; index < originalIndex; index += 1) targetOffset -= rects[index].width;
         }
+        if (commit && newIndex !== originalIndex) targetOffset = rects[newIndex].left - rects[originalIndex].left;
         tab.style.transform = `translateX(${targetOffset}px) scale(1)`;
         if (!commit) {
           for (const item of others) item.tab.style.transform = "";
@@ -1704,7 +1715,7 @@ export function createSessions(options: {
         }
         if (lifted) {
           event.preventDefault();
-          updateDrag();
+          scheduleDragUpdate();
         }
       }
 
@@ -1731,6 +1742,11 @@ export function createSessions(options: {
         else finishPress();
       }
 
+      function onLostPointerCapture() {
+        if (!pressActive) return;
+        if (lifted) settle(false);
+        else finishPress();
+      }
       function onInspectorOpen() { finishPress(); }
       tab.addEventListener("session-inspector-open", onInspectorOpen);
       window.addEventListener("pointermove", onPointerMove, { passive: false });
