@@ -1545,6 +1545,7 @@ export function createSessions(options: {
       let barRect: DOMRect | undefined;
 
       sessionBarGestureInFlight = true;
+      if (downEvent.pointerType !== "mouse") tab.classList.add("touch-gesture-active");
 
       const clearListeners = () => {
         if (holdTimer !== undefined) window.clearTimeout(holdTimer);
@@ -1559,7 +1560,7 @@ export function createSessions(options: {
       const finishPress = (delay = 0) => {
         if (!pressActive) return;
         pressActive = false;
-        tab.classList.remove("reorder-ready");
+        tab.classList.remove("reorder-ready", "touch-gesture-active");
         clearListeners();
         if (delay > 0) window.setTimeout(() => flushQueuedSessionBarRender(), delay);
         else flushQueuedSessionBarRender();
@@ -1648,7 +1649,7 @@ export function createSessions(options: {
         clearListeners();
         suppressTabClickUntil = performance.now() + 400;
         bar.classList.remove("reordering");
-        tab.classList.remove("reorder-ready", "dragging");
+        tab.classList.remove("reorder-ready", "dragging", "touch-gesture-active");
         tab.classList.add("settling");
 
         let targetOffset = 0;
@@ -1694,14 +1695,10 @@ export function createSessions(options: {
           } else if (downEvent.pointerType !== "mouse") {
             const dx = event.clientX - startX;
             const dy = event.clientY - startY;
-            if (Math.abs(dx) > Math.abs(dy) && distance >= touchMoveTolerancePx) {
-              // A real touch browser decides whether to pan as soon as this
-              // first deliberate move arrives. Claim horizontal movement as a
-              // reorder immediately; making it a scroll first left no later
-              // transition into dragging unless the finger had stayed almost
-              // perfectly still through the hold timer.
-              lift();
-            } else if (distance >= touchMoveTolerancePx) {
+            if (!longPressReady && distance >= touchMoveTolerancePx) {
+              // Movement before the hold belongs to the browser. Do not capture
+              // it: the overflowing bar must retain native horizontal panning
+              // and inertia, and this gesture must not select or reorder a tab.
               finishPress();
             } else if (longPressReady && distance > liftDistancePx) {
               lift();
@@ -1724,6 +1721,7 @@ export function createSessions(options: {
           settle(true);
         } else if (longPressReady) {
           suppressTabClickUntil = performance.now() + 400;
+          sessionInspector.openAt(tab, tab.dataset.sessionId!, "tab");
           finishPress();
         } else {
           // Keep the old tab alive until the synthetic click following pointerup.
@@ -1754,7 +1752,10 @@ export function createSessions(options: {
     });
 
     tab.addEventListener("touchmove", (event) => {
-      if (tab.classList.contains("dragging")) event.preventDefault();
+      // Once a stationary hold has armed, claim subsequent movement before the
+      // browser turns it into a native pan/pointercancel. Before that point this
+      // listener deliberately does nothing so the strip scrolls normally.
+      if (tab.classList.contains("reorder-ready") || tab.classList.contains("dragging")) event.preventDefault();
     }, { passive: false });
     tab.addEventListener("contextmenu", (event) => {
       if (sessionBarGestureInFlight || tab.classList.contains("dragging")) event.preventDefault();

@@ -223,7 +223,50 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab.pinned").nth(1)).toContainText("Current mock session");
   });
 
-  test("real touch movement immediately lifts, reorders, and persists a pinned tab", async ({ page }) => {
+  test("trusted touch swipe scrolls natively without reorder or inspector", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
+    await page.goto("/");
+    const bar = page.locator("#sessionBar");
+    const tabs = page.locator(".sessionBarTab.pinned");
+    await expect(tabs).toHaveCount(2);
+    await bar.evaluate((element) => {
+      element.style.width = "280px";
+      for (const tab of element.querySelectorAll<HTMLElement>(".sessionBarTab")) tab.style.flex = "0 0 220px";
+    });
+    await expect.poll(() => bar.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    const box = await tabs.nth(0).boundingBox(); expect(box).toBeTruthy();
+    const cdp = await page.context().newCDPSession(page);
+    const start = { x: box!.x + box!.width * 0.75, y: box!.y + box!.height / 2 };
+    const before = await bar.evaluate((element) => element.scrollLeft);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...start, id: 8 }] });
+    for (const dx of [-20, -45, -75]) {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + dx, y: start.y, id: 8 }] });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect.poll(() => bar.evaluate((element) => element.scrollLeft)).toBeGreaterThan(before);
+    await expect(tabs.nth(0)).toContainText("Current mock session");
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await expect(page.locator(".sessionBarTab.dragging, .sessionBarTab.reorder-ready")).toHaveCount(0);
+  });
+
+  test("trusted stationary touch hold opens inspector only on release", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
+    await page.goto("/");
+    const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
+    const box = await tab.boundingBox(); expect(box).toBeTruthy();
+    const cdp = await page.context().newCDPSession(page);
+    const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...point, id: 9 }] });
+    await page.waitForTimeout(320);
+    await expect(tab).toHaveClass(/\breorder-ready\b/);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(page.locator(".sessionInspector")).toBeVisible();
+    await expect(tab).not.toHaveClass(/dragging|reorder-ready|touch-gesture-active/);
+  });
+
+  test("trusted touch hold arms, then drags, persists, and cancels cleanly", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     await page.goto("/");
 
@@ -242,6 +285,10 @@ test.describe("session quick bar", () => {
     const start = { x: firstBox!.x + firstBox!.width / 2, y: firstBox!.y + firstBox!.height / 2 };
     const end = { x: secondBox!.x + secondBox!.width * 0.75, y: start.y };
     await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...start, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + 3, y: start.y + 2, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+    await page.waitForTimeout(320);
+    await expect(draggedTab).toHaveClass(/\breorder-ready\b/);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
     await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + 14, y: start.y, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
     await expect(draggedTab).toHaveClass(/\bdragging\b/);
     await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
@@ -266,6 +313,8 @@ test.describe("session quick bar", () => {
     const cancelBox = await cancelTab.boundingBox(); expect(cancelBox).toBeTruthy();
     const cancelStart = { x: cancelBox!.x + cancelBox!.width / 2, y: cancelBox!.y + cancelBox!.height / 2 };
     await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...cancelStart, id: 2 }] });
+    await page.waitForTimeout(320);
+    await expect(cancelTab).toHaveClass(/\breorder-ready\b/);
     await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: cancelStart.x + 16, y: cancelStart.y, id: 2 }] });
     await expect(cancelTab).toHaveClass(/\bdragging\b/);
     await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
