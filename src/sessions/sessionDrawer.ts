@@ -1511,7 +1511,7 @@ export function createSessions(options: {
     const bar = elements.sessionBarEl;
     const holdDelayMs = 300;
     const touchMoveTolerancePx = 10;
-    const mouseLiftDistancePx = 6;
+    const liftDistancePx = 6;
     const edgeZonePx = 48;
     const maxScrollPerFrame = 14;
     const reducedMotion = prefersReducedReorderMotion();
@@ -1527,7 +1527,6 @@ export function createSessions(options: {
       const startY = downEvent.clientY;
       let lastClientX = startX;
       let lifted = false;
-      let scrolling = false;
       let longPressReady = false;
       let pressActive = true;
       let holdTimer: number | undefined;
@@ -1555,7 +1554,6 @@ export function createSessions(options: {
         window.removeEventListener("pointerup", onPointerUp);
         window.removeEventListener("pointercancel", onPointerCancel);
         tab.removeEventListener("session-inspector-open", onInspectorOpen);
-        tab.removeEventListener("lostpointercapture", onLostPointerCapture);
       };
 
       const finishPress = (delay = 0) => {
@@ -1641,7 +1639,6 @@ export function createSessions(options: {
         tab.classList.add("dragging");
         navigator.vibrate?.(10);
         scheduleDragUpdate();
-        tab.addEventListener("lostpointercapture", onLostPointerCapture);
         if (maxScrollLeft > 0) autoScrollFrame = requestAnimationFrame(runAutoScroll);
       };
 
@@ -1682,6 +1679,7 @@ export function createSessions(options: {
             syncPinnedProjection();
             persistSessionUiState({ lanes: state.lanes });
           }
+          tab.classList.remove("settling");
           flushQueuedSessionBarRender(true);
         }, settleDurationMs);
       };
@@ -1691,26 +1689,22 @@ export function createSessions(options: {
         lastClientX = event.clientX;
         const distance = Math.hypot(event.clientX - startX, event.clientY - startY);
         if (!lifted) {
-          if (downEvent.pointerType === "mouse" && distance > mouseLiftDistancePx) {
+          if (downEvent.pointerType === "mouse" && distance > liftDistancePx) {
             lift();
           } else if (downEvent.pointerType !== "mouse") {
             const dx = event.clientX - startX;
             const dy = event.clientY - startY;
-            if (longPressReady && distance > mouseLiftDistancePx) {
+            if (Math.abs(dx) > Math.abs(dy) && distance >= touchMoveTolerancePx) {
+              // A real touch browser decides whether to pan as soon as this
+              // first deliberate move arrives. Claim horizontal movement as a
+              // reorder immediately; making it a scroll first left no later
+              // transition into dragging unless the finger had stayed almost
+              // perfectly still through the hold timer.
               lift();
-            } else if (scrolling) {
-              event.preventDefault();
-              bar.scrollLeft = scrollLeft0 - dx;
             } else if (distance >= touchMoveTolerancePx) {
-              if (Math.abs(dx) > Math.abs(dy)) {
-                scrolling = true;
-                scrollLeft0 = bar.scrollLeft;
-                if (holdTimer !== undefined) window.clearTimeout(holdTimer);
-                suppressTabClickUntil = performance.now() + 400;
-                event.preventDefault();
-              } else {
-                finishPress();
-              }
+              finishPress();
+            } else if (longPressReady && distance > liftDistancePx) {
+              lift();
             }
           }
         }
@@ -1722,14 +1716,14 @@ export function createSessions(options: {
 
       function onPointerUp(event: PointerEvent) {
         if (!pressActive || event.pointerId !== pointerId) return;
-        lastClientX = event.clientX;
+        // Keep the last move coordinate. Chromium's trusted touchEnd can expose
+        // clientX=0 after its contact list becomes empty, which otherwise snaps
+        // a successfully lifted tab back to the first slot at drop time.
         if (lifted) {
           updateDrag();
           settle(true);
         } else if (longPressReady) {
           suppressTabClickUntil = performance.now() + 400;
-          finishPress();
-        } else if (scrolling) {
           finishPress();
         } else {
           // Keep the old tab alive until the synthetic click following pointerup.
@@ -1743,11 +1737,6 @@ export function createSessions(options: {
         else finishPress();
       }
 
-      function onLostPointerCapture() {
-        if (!pressActive) return;
-        if (lifted) settle(false);
-        else finishPress();
-      }
       function onInspectorOpen() { finishPress(); }
       tab.addEventListener("session-inspector-open", onInspectorOpen);
       window.addEventListener("pointermove", onPointerMove, { passive: false });

@@ -223,43 +223,55 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionBarTab.pinned").nth(1)).toContainText("Current mock session");
   });
 
-  test("touch hold and drag reorders pinned tabs", async ({ page }) => {
-    await seedServerPinned(
-      page,
-      { id: "mock-current" },
-      { id: "mock-older" },
-    );
+  test("real touch movement immediately lifts, reorders, and persists a pinned tab", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     await page.goto("/");
 
     const tabs = page.locator(".sessionBarTab.pinned");
     const draggedTab = tabs.filter({ hasText: "Current mock session" });
     const targetTab = tabs.filter({ hasText: "Older mock session" });
     await expect(draggedTab).toBeVisible();
-    await expect(targetTab).toBeVisible();
-    let firstBox = await draggedTab.boundingBox();
-    let secondBox = await targetTab.boundingBox();
-    await expect.poll(async () => {
-      firstBox = await draggedTab.boundingBox();
-      secondBox = await targetTab.boundingBox();
-      return Boolean(firstBox && secondBox);
-    }).toBe(true);
+    const firstBox = await draggedTab.boundingBox();
+    const secondBox = await targetTab.boundingBox();
+    expect(firstBox).toBeTruthy(); expect(secondBox).toBeTruthy();
 
-    const start = { clientX: firstBox!.x + firstBox!.width / 2, clientY: firstBox!.y + firstBox!.height / 2 };
-    const end = { clientX: secondBox!.x + secondBox!.width * 0.75, clientY: start.clientY };
-    // Run the timed gesture in one browser task sequence. Crossing the
-    // Playwright boundary between hold and move lets a loaded CI worker delay
-    // the move until the Inspector's later long-press timer has won.
-    await draggedTab.evaluate(async (tab, points) => {
-      const pointer = { pointerId: 7, pointerType: "touch", isPrimary: true, bubbles: true };
-      tab.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, ...points.start, button: 0 }));
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
-      tab.dispatchEvent(new PointerEvent("pointermove", { ...pointer, ...points.end }));
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      tab.dispatchEvent(new PointerEvent("pointerup", { ...pointer, ...points.end }));
-    }, { start, end });
+    // CDP touch dispatch follows Chromium's trusted touch -> pointer event path,
+    // including touch-action arbitration. Synthetic PointerEvent dispatch does
+    // not expose the browser cancellation that made this fail on phones.
+    const cdp = await page.context().newCDPSession(page);
+    const start = { x: firstBox!.x + firstBox!.width / 2, y: firstBox!.y + firstBox!.height / 2 };
+    const end = { x: secondBox!.x + secondBox!.width * 0.75, y: start.y };
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...start, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + 14, y: start.y, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+    await expect(draggedTab).toHaveClass(/\bdragging\b/);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    for (let step = 1; step <= 5; step += 1) {
+      const progress = step / 5;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + (end.x - start.x) * progress, y: end.y, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    }
+    await expect(draggedTab).toHaveClass(/\bdragging\b/);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 
     await expect(tabs.nth(0)).toContainText("Older mock session");
-    await expect(tabs.nth(1)).toContainText("Current mock session");
+    await expect.poll(async () => {
+      const uiState = await (await page.request.get("/api/session-ui-state")).json();
+      return uiState.sessionUiState.lanes.filter((entry: { lane: string }) => entry.lane === "pinned").map((entry: { sessionId: string }) => entry.sessionId);
+    }).toEqual(["mock-older", "mock-current"]);
+    await page.reload();
+    const reorderedTabs = page.locator(".sessionBarTab.pinned");
+    await expect(reorderedTabs.nth(0)).toContainText("Older mock session");
+
+    const cancelTab = reorderedTabs.nth(0);
+    const cancelBox = await cancelTab.boundingBox(); expect(cancelBox).toBeTruthy();
+    const cancelStart = { x: cancelBox!.x + cancelBox!.width / 2, y: cancelBox!.y + cancelBox!.height / 2 };
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...cancelStart, id: 2 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: cancelStart.x + 16, y: cancelStart.y, id: 2 }] });
+    await expect(cancelTab).toHaveClass(/\bdragging\b/);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+    await expect(cancelTab).not.toHaveClass(/dragging|settling|reorder-ready/);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await expect(reorderedTabs.nth(0)).toContainText("Older mock session");
   });
 
   test("shows unread indicators in tabs and session drawer rows", async ({ page }) => {
