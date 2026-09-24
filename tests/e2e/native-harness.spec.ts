@@ -9,11 +9,12 @@ import { test as base, expect, type Page, type Response, type TestInfo } from "@
 import type { HarnessCatalogDto, InteractionRequestDto, SessionSnapshotDto } from "../../server/session/dto.js";
 import { acceptedTurn, controlPeer, findPeer, peerForThread, readObserved, waitObserved } from "../fixtures/codex-peer-control.js";
 import { codexFixturePng, mcpImageEvents } from "../fixtures/codex-native-events.js";
+import { controlPeer as controlKiro, peerForSession as kiroPeer, prompted as kiroPrompted, readObserved as kiroObserved, waitObserved as waitKiro } from "../fixtures/kiro-peer-control.js";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
 
 const repository = resolve(import.meta.dirname, "../..");
 
-type NativeServer = { root: string; workspace: string; peerDir: string; claudePeerDir: string; baseURL: string; restart: () => Promise<void> };
+type NativeServer = { root: string; workspace: string; peerDir: string; claudePeerDir: string; kiroPeerDir: string; baseURL: string; restart: () => Promise<void> };
 
 async function unusedPort() {
   const socket = createServer();
@@ -29,6 +30,7 @@ async function isolatedServer(testInfo: TestInfo, claudeEnabled: boolean) {
   const home = join(root, "home");
   const peerDir = join(root, "codex-peer");
   const claudePeerDir = join(root, "claude-peer");
+  const kiroPeerDir = join(root, "kiro-peer");
   const port = await unusedPort();
   const baseURL = `http://127.0.0.1:${port}`;
   await mkdir(join(home, ".pi", "agent"), { recursive: true });
@@ -51,6 +53,7 @@ async function isolatedServer(testInfo: TestInfo, claudeEnabled: boolean) {
     PI_WEB_CODEX_PEER_DIR: peerDir,
     PI_WEB_CLAUDE_EXECUTABLE: claudeEnabled ? join(repository, "tests/fixtures/claude-native-cli.mjs") : join(root, "not-installed-claude"),
     PI_WEB_CLAUDE_PEER_DIR: claudePeerDir,
+    PI_WEB_KIRO_COMMAND: join(repository, "tests/fixtures/kiro-acp-peer.mjs"), PI_WEB_KIRO_PEER_DIR: kiroPeerDir,
   };
   let child: ChildProcess | undefined;
   let output = "";
@@ -101,7 +104,7 @@ async function isolatedServer(testInfo: TestInfo, claudeEnabled: boolean) {
     await writeFile(serverLog, output);
     await testInfo.attach("native-server.log", { path: serverLog, contentType: "text/plain" });
     if (testInfo.status !== testInfo.expectedStatus) {
-      for (const [harness, directory] of [["codex", peerDir], ["claude", claudePeerDir]]) {
+      for (const [harness, directory] of [["codex", peerDir], ["claude", claudePeerDir], ["kiro", kiroPeerDir]]) {
         for (const pid of await readdir(join(directory, "peers")).catch(() => [])) {
           const observed = await readFile(join(directory, "peers", pid, "observed.jsonl"), "utf8").catch(() => "");
           if (observed) {
@@ -115,7 +118,7 @@ async function isolatedServer(testInfo: TestInfo, claudeEnabled: boolean) {
     }
     await rm(root, { recursive: true, force: true });
   }
-  return { value: { root, workspace, peerDir, claudePeerDir, baseURL, restart: async () => { await stop(); await start(); } } satisfies NativeServer, start, cleanup };
+  return { value: { root, workspace, peerDir, claudePeerDir, kiroPeerDir, baseURL, restart: async () => { await stop(); await start(); } } satisfies NativeServer, start, cleanup };
 }
 
 const test = base.extend<{ nativeServer: NativeServer; claudeEnabled: boolean }>({
@@ -834,3 +837,82 @@ test.describe("Claude native", () => {
     expect(await readdir(join(nativeServer.claudePeerDir, "peers"))).toEqual(peers);
   });
 });
+
+// ACP peer enters the same production server, selectors, HTTP and WebSocket relay.
+for (const flow of ["landing", "drawer"] as const) {
+  test(`Kiro ${flow}: stream, once decisions, guarded stop, reload and explicit reopen`, async ({ page, context, nativeServer }) => {
+    await page.goto("/");
+    await expect(page.locator('[data-harness-selector="landing"] select')).toHaveValue("pi");
+    const initial = await stateOf(page);
+    const readyState = flow === "drawer" ? postCreateState(page, initial.sessionId) : undefined;
+    const creating = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/sessions/new" && r.request().method() === "POST");
+    if (flow === "landing") {
+      await page.locator('[data-harness-selector="landing"] select').selectOption("kiro");
+      await page.locator("#prompt").fill("Inspect this Kiro workspace."); await submitNativePrompt(page);
+    } else {
+      await page.locator("#sessionButton").click(); await page.locator("#sessionNewButton").click();
+      const dialog = page.getByRole("dialog", { name: "New session", exact: true });
+      await dialog.locator('[data-harness-selector="dialog"] select').selectOption("kiro");
+      await dialog.getByRole("button", { name: "Start session" }).click();
+    }
+    const created = await (await creating).json() as SessionSnapshotDto;
+    expect(created.harnessId).toBe("kiro"); expect(created.sessionFile).toBeUndefined();
+    expect(created.sessionId).not.toBe(initial.sessionId); expect(created.sessionId).not.toBe(created.nativeSession.sessionId);
+    if (readyState) await nativeComposerReady(page, await readyState, created.sessionId);
+    if (flow === "drawer") { await page.locator("#prompt").fill("Inspect this Kiro workspace."); await submitNativePrompt(page); }
+    const peer = await kiroPeer(nativeServer.kiroPeerDir, created.nativeSession.sessionId!);
+    await kiroPrompted(peer);
+    await controlKiro(peer, { action: "text", delta: "Kiro introduction." });
+    await controlKiro(peer, { action: "thinking", delta: "Exposed Kiro thought." });
+    await controlKiro(peer, { action: "tool", itemId: "edit" });
+    await expect(page.locator(".toolCard--running")).toHaveCount(1);
+    await controlKiro(peer, { action: "tool", itemId: "edit", update: true, fields: { status: "completed", content: [
+      { type: "content", content: { type: "text", text: "Native Kiro output." } },
+      { type: "content", content: { type: "image", mimeType: "image/png", data: codexFixturePng } },
+      { type: "diff", path: "owned.txt", oldText: "before", newText: "after" },
+    ] } });
+    await expect(page.locator(".toolCard--thinking")).toContainText("Exposed Kiro thought.");
+    await revealNativeImage(page);
+    await expect(page.locator(".nativeToolDiff")).toContainText("after");
+    await expect(page.locator("#stopButton")).toBeVisible();
+    // Last-viewer disconnect intentionally cancels pending native decisions. Keep
+    // another viewer connected while testing reload hydration, as Codex does.
+    const second = await context.newPage();
+    await second.goto(`/?sessionId=${created.sessionId}`);
+    await expect(second.locator("#messages")).toContainText("Kiro introduction.");
+    await controlKiro(peer, { action: "approval", requestId: "deny" });
+    let pending = (await pendingRequest(page, created.sessionId))!;
+    await page.reload(); await expect(page.locator(".interactionRequest")).toHaveCount(1);
+    await choiceButton(page, pending, "decline").click();
+    expect((await waitKiro(peer, (r) => r.direction === "client" && r.message.id === "deny")).message.result).toEqual({ outcome: { outcome: "selected", optionId: "native-deny" } });
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await controlKiro(peer, { action: "approval", requestId: "allow" });
+    pending = (await pendingRequest(page, created.sessionId))!;
+    expect(pending.choices?.filter((c) => c.meaning === "accept")).toHaveLength(1);
+    await choiceButton(page, pending, "accept", "once").click();
+    expect((await waitKiro(peer, (r) => r.direction === "client" && r.message.id === "allow")).message.result).toEqual({ outcome: { outcome: "selected", optionId: "native-once" } });
+    await controlKiro(peer, { action: "text", delta: "Kiro retained partial." });
+    await controlKiro(peer, { action: "configure", interrupt: "defer" });
+    const state = await stateOf(page, created.sessionId);
+    await page.locator("#stopButton").click();
+    const cancel = await waitKiro(peer, (r) => r.direction === "client" && r.message.method === "session/cancel");
+    expect(cancel.message.id).toBeUndefined();
+    expect((await stateOf(page, created.sessionId)).activeExecution?.id).toBe(state.activeExecution?.id);
+    await expect(page.locator("#stopButton")).toBeVisible();
+    await controlKiro(peer, { action: "complete", reason: "cancelled" });
+    await expect(page.locator("#stopButton")).toBeHidden();
+    await expect(page.locator("#messages")).toContainText("Kiro retained partial.");
+    await page.reload(); await expect(page.locator("#messages")).toContainText("Kiro retained partial.");
+    await expect(page.locator("#attachButton")).toBeHidden(); await expect(page.locator("#conversationTreeButton")).toBeHidden();
+    await controlKiro(peer, { action: "exit" });
+    await expect.poll(async () => (await stateOf(page, created.sessionId)).phase).toBe("unavailable");
+    if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
+    await expect(page.locator(`.sessionItem[data-session-id="${created.sessionId}"] .sessionHarnessBadge`)).toHaveText("Kiro");
+    await page.locator(`.sessionItem[data-session-id="${created.sessionId}"] .sessionItemNavBtn`).click();
+    await expect.poll(async () => (await stateOf(page, created.sessionId)).phase).toBe("idle");
+    const recovered = await kiroPeer(nativeServer.kiroPeerDir, created.nativeSession.sessionId!);
+    expect(recovered.pid).not.toBe(peer.pid);
+    expect((await kiroObserved(recovered)).some((r) => r.message.method === "session/prompt")).toBe(false);
+    await expect(page.locator("#messages")).toContainText("Kiro retained partial.");
+  });
+}
