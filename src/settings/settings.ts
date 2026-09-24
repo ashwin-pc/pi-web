@@ -427,7 +427,31 @@ export function createSettings(options: {
     settingsShell?.setSummary("buckets", [customLabelCount ? `${customLabelCount} custom` : "", reordered ? "Custom order" : ""].filter(Boolean).join(" · ") || "Names and display order");
     settingsShell?.setSearchTerms("buckets", Object.values(state.bucketLabels).filter((label): label is string => Boolean(label)));
     const colors = orderedSessionMarkerColors(state.bucketOrder);
-    colors.forEach((color, index) => {
+    const instructions = document.createElement("p");
+    instructions.className = "settingsBucketOrderInstructions";
+    instructions.textContent = "Drag the grip to reorder. Keyboard: Space to pick up, arrow keys to move, Space to drop, Escape to cancel.";
+    const live = document.createElement("span");
+    live.className = "srOnly";
+    live.setAttribute("aria-live", "polite");
+    live.setAttribute("aria-atomic", "true");
+    container.append(instructions, live);
+
+    const orderFromRows = () => Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow"))
+      .map((item) => item.dataset.bucketColor as SessionMarkerColorId);
+    const commitOrder = async (next: SessionMarkerColorId[], previous: SessionMarkerColorId[]) => {
+      state.bucketOrder = next;
+      try {
+        await saveBucketOrder(next);
+        renderBucketNames();
+        setSettingsStatus("Bucket order saved");
+      } catch (error) {
+        state.bucketOrder = previous;
+        renderBucketNames();
+        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+      }
+    };
+
+    colors.forEach((color) => {
       const row = document.createElement("div");
       row.className = `settingsBucketNameRow marker-${color.id}`;
       row.dataset.bucketColor = color.id;
@@ -466,48 +490,103 @@ export function createSettings(options: {
         }
       });
 
-      const controls = document.createElement("span");
-      controls.className = "settingsBucketOrderControls";
-      controls.setAttribute("role", "group");
-      const bucketLabel = state.bucketLabels[color.id] || color.label;
-      const addMoveButton = (direction: -1 | 1, symbol: string) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "settingsBucketOrderButton";
-        const action = direction < 0 ? "up" : "down";
-        button.setAttribute("aria-label", `Move ${bucketLabel} bucket ${action}`);
-        button.title = button.getAttribute("aria-label")!;
-        button.textContent = symbol;
-        button.disabled = direction < 0 ? index === 0 : index === colors.length - 1;
-        button.addEventListener("click", async () => {
-          const liveLabel = input.value.trim().slice(0, 40);
-          if (liveLabel && liveLabel !== color.label) state.bucketLabels = { ...state.bucketLabels, [color.id]: liveLabel };
-          const next = colors.map((item) => item.id);
-          [next[index], next[index + direction]] = [next[index + direction], next[index]];
-          state.bucketOrder = next;
-          renderBucketNames();
-          try {
-            await saveBucketOrder(next);
-            renderBucketNames();
-            setSettingsStatus("Bucket order saved");
-          } catch (error) {
-            setSettingsStatus(error instanceof Error ? error.message : String(error), true);
-            const response = await fetch("/api/session-ui-state", { headers: api.headers() }).then((value) => value.json()).catch(() => ({}));
-            if (response.sessionUiState?.bucketOrder) state.bucketOrder = response.sessionUiState.bucketOrder;
-            renderBucketNames();
-          }
-        });
-        controls.append(button);
+      const handle = document.createElement("button");
+      handle.type = "button";
+      handle.className = "settingsBucketDragHandle";
+      handle.textContent = "⠿";
+      handle.setAttribute("aria-describedby", instructions.id ||= "bucketOrderInstructions");
+      const updateHandleLabel = () => {
+        const bucketLabel = input.value.trim() || color.label;
+        handle.setAttribute("aria-label", `Reorder ${bucketLabel} bucket`);
+        handle.title = `Drag to reorder ${bucketLabel}`;
       };
-      addMoveButton(-1, "↑");
-      addMoveButton(1, "↓");
-      input.addEventListener("input", () => {
-        const liveLabel = input.value.trim() || color.label;
-        const [up, down] = Array.from(controls.querySelectorAll<HTMLButtonElement>("button"));
-        if (up) { up.setAttribute("aria-label", `Move ${liveLabel} bucket up`); up.title = up.getAttribute("aria-label")!; }
-        if (down) { down.setAttribute("aria-label", `Move ${liveLabel} bucket down`); down.title = down.getAttribute("aria-label")!; }
+      updateHandleLabel();
+      input.addEventListener("input", updateHandleLabel);
+
+      let pointerId: number | undefined;
+      let pointerIndex = 0;
+      let originalOrder: SessionMarkerColorId[] = [];
+      let keyboardGrabbed = false;
+      const announcePosition = () => {
+        const position = Array.from(container.querySelectorAll(".settingsBucketNameRow")).indexOf(row) + 1;
+        live.textContent = `${input.value.trim() || color.label} bucket, position ${position} of ${colors.length}.`;
+      };
+      const cancelDrag = () => {
+        if (pointerId === undefined) return;
+        pointerId = undefined;
+        row.classList.remove("isDragging");
+        container.classList.remove("isReordering");
+        state.bucketOrder = originalOrder;
+        renderBucketNames();
+      };
+      handle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || pointerId !== undefined) return;
+        pointerId = event.pointerId;
+        originalOrder = [...state.bucketOrder];
+        pointerIndex = originalOrder.indexOf(color.id);
+        handle.setPointerCapture(event.pointerId);
+        row.classList.add("isDragging");
+        container.classList.add("isReordering");
+        event.preventDefault();
       });
-      row.append(swatch, copy, input, controls);
+      handle.addEventListener("pointermove", (event) => {
+        if (event.pointerId !== pointerId) return;
+        const siblings = Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow:not(.isDragging)"));
+        pointerIndex = siblings.filter((item) => event.clientY >= item.getBoundingClientRect().top + item.getBoundingClientRect().height / 2).length;
+        siblings.forEach((item, index) => item.classList.toggle("isDropTarget", index === Math.min(pointerIndex, siblings.length - 1)));
+        live.textContent = `${input.value.trim() || color.label} bucket, position ${pointerIndex + 1} of ${colors.length}.`;
+      });
+      handle.addEventListener("pointerup", (event) => {
+        if (event.pointerId !== pointerId) return;
+        pointerId = undefined;
+        row.classList.remove("isDragging");
+        container.classList.remove("isReordering");
+        container.querySelectorAll(".isDropTarget").forEach((item) => item.classList.remove("isDropTarget"));
+        handle.releasePointerCapture(event.pointerId);
+        const next = [...originalOrder];
+        next.splice(next.indexOf(color.id), 1);
+        next.splice(pointerIndex, 0, color.id);
+        live.textContent = `${input.value.trim() || color.label} bucket dropped.`;
+        void commitOrder(next, originalOrder);
+      });
+      handle.addEventListener("pointercancel", cancelDrag);
+      handle.addEventListener("lostpointercapture", cancelDrag);
+      handle.addEventListener("keydown", (event) => {
+        if (event.key === " " || event.key === "Enter") {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!keyboardGrabbed) {
+            keyboardGrabbed = true;
+            originalOrder = [...state.bucketOrder];
+            row.classList.add("isDragging");
+            handle.setAttribute("aria-pressed", "true");
+            live.textContent = `${input.value.trim() || color.label} bucket picked up.`;
+          } else {
+            keyboardGrabbed = false;
+            row.classList.remove("isDragging");
+            handle.removeAttribute("aria-pressed");
+            live.textContent = `${input.value.trim() || color.label} bucket dropped.`;
+            void commitOrder(orderFromRows(), originalOrder);
+          }
+        } else if (keyboardGrabbed && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+          event.preventDefault();
+          event.stopPropagation();
+          const sibling = event.key === "ArrowUp" ? row.previousElementSibling : row.nextElementSibling;
+          if (sibling?.classList.contains("settingsBucketNameRow")) {
+            if (event.key === "ArrowUp") container.insertBefore(row, sibling);
+            else container.insertBefore(sibling, row);
+            announcePosition();
+          } else live.textContent = "Already at the boundary.";
+        } else if (keyboardGrabbed && event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          keyboardGrabbed = false;
+          state.bucketOrder = originalOrder;
+          live.textContent = "Reordering cancelled.";
+          renderBucketNames();
+        }
+      });
+      row.append(handle, swatch, copy, input);
       container.append(row);
     });
   }

@@ -81,12 +81,12 @@ test("global Buckets page reorders, renames, persists, and propagates to bucket 
   await expect.poll(async () => (await (await page.request.get("/api/session-ui-state")).json()).sessionUiState.bucketLabels).toEqual({ cyan: "Builds" });
   await expect(cyan).toHaveValue("Builds");
 
-  // Reordering is keyboard/mobile-friendly, uses the custom label, and keeps stable color IDs.
-  for (let index = 0; index < 6; index += 1) {
-    await page.locator('[data-bucket-color="cyan"] .settingsBucketOrderButton').first().click();
-  }
-  await expect(page.locator('[data-bucket-color="cyan"] .settingsBucketOrderButton').first()).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Move Pink bucket down" })).toBeDisabled();
+  // The focusable handle supports complete keyboard reordering and custom accessible labels.
+  const cyanHandle = page.getByRole("button", { name: "Reorder Builds bucket" });
+  await cyanHandle.focus();
+  await cyanHandle.press("Space");
+  for (let index = 0; index < 6; index += 1) await cyanHandle.press("ArrowUp");
+  await cyanHandle.press("Space");
   await expect(rows.locator(".settingsBucketNameDefault")).toHaveText(["Cyan", "Blue", "Purple", "Yellow", "Red", "Green", "Orange", "Pink"]);
   await selectSettingsPage("#settingsNavNewSessions");
   await expect(page.locator("#settingsPageNewSessions #settingBucketNames")).toHaveCount(0);
@@ -105,7 +105,8 @@ test("global Buckets page reorders, renames, persists, and propagates to bucket 
   await page.locator("#settingsNavBuckets").click();
   await expect(page.getByRole("textbox", { name: "Cyan bucket name" })).toHaveValue("Builds");
   await expect(rows.locator(".settingsBucketNameDefault").first()).toHaveText("Cyan");
-  await expect(page.getByRole("button", { name: "Move Builds bucket up" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Reorder Builds bucket" })).toBeVisible();
+  await expect(page.locator(".settingsBucketOrderButton")).toHaveCount(0);
 
   await page.getByRole("textbox", { name: "Cyan bucket name" }).fill("");
   await page.getByRole("textbox", { name: "Cyan bucket name" }).press("Tab");
@@ -113,6 +114,46 @@ test("global Buckets page reorders, renames, persists, and propagates to bucket 
   await page.locator("#settingsCloseButton").click();
   await page.locator("#sessionButton").click();
   await expect(page.getByRole("button", { name: "Mark multiple sessions Cyan" })).toBeVisible();
+});
+
+test("bucket handles reorder with mouse and touch pointers, persist, and cancel safely", async ({ page, context }, testInfo) => {
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavBuckets").click();
+  const blueHandle = page.getByRole("button", { name: "Reorder Blue bucket" });
+  const orangeRow = page.locator('[data-bucket-color="orange"]');
+
+  // Escape restores the pre-pickup order.
+  await blueHandle.focus();
+  await blueHandle.press("Space");
+  await blueHandle.press("ArrowDown");
+  await blueHandle.press("Escape");
+  await expect(page.locator(".settingsBucketNameDefault").first()).toHaveText("Blue");
+
+  const start = await blueHandle.boundingBox();
+  const target = await orangeRow.boundingBox();
+  expect(start).not.toBeNull();
+  expect(target).not.toBeNull();
+  const x = start!.x + start!.width / 2;
+  const y = start!.y + start!.height / 2;
+  const endY = target!.y + 2;
+  if (testInfo.project.name === "mobile") {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y, id: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x, y: endY, id: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+  } else {
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, endY, { steps: 8 });
+    await page.mouse.up();
+  }
+  await expect.poll(async () => (await (await page.request.get("/api/session-ui-state")).json()).sessionUiState.bucketOrder)
+    .toEqual(["purple", "yellow", "red", "green", "blue", "orange", "cyan", "pink"]);
+  await page.reload();
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavBuckets").click();
+  await expect(page.locator(".settingsBucketNameDefault")).toHaveText(["Purple", "Yellow", "Red", "Green", "Blue", "Orange", "Cyan", "Pink"]);
 });
 
 test("mobile settings drills into one page and Escape returns before closing", async ({ page }, testInfo) => {
