@@ -76,6 +76,8 @@ describe("Kiro production ACP handle", () => {
     expect((await tools(handle))[1].result).toBeUndefined();
     await controlPeer(peer, { action: "tool", itemId: "unsafe", fields: { status: "completed", rawOutput: { items: [{ Text: "Authorization: Bearer synthetic-private-value" }] } } });
     expect(JSON.stringify(await handle.messages())).not.toContain("synthetic-private-value");
+    await controlPeer(peer, { action: "tool", itemId: "standard", fields: { status: "completed", content: [{ type: "content", content: { type: "text", text: "ACP content wins" } }], rawOutput: { items: [{ Text: "Do not duplicate" }] } } });
+    expect((await tools(handle))[3].result?.parts).toMatchObject([{ type: "text", text: "ACP content wins" }]);
   });
   it.each(["end_turn", "cancelled", "max_tokens", "max_turn_requests", "refusal"])("preserves terminal reason %s and partial content", async (reason) => {
     const { handle, peer } = await fixture(); await prompt(handle);
@@ -113,6 +115,40 @@ describe("Kiro production ACP handle", () => {
     const result = await waitObserved(peer, (r) => r.direction === "client" && r.message.id === 0 && r.message.result);
     expect(result.message.result).toEqual({ outcome: { outcome: "selected", optionId: meaning === "accept" ? "native-once" : "native-deny" } });
     expect(handle.state().phase).toBe("running");
+  });
+  it("maps the captured sparse write permission and does not expose native remembered trust metadata", async () => {
+    const { handle, peer } = await fixture(); await prompt(handle);
+    const rawInput = { command: "create", path: "approved.txt", content: "Synthetic write\n" };
+    await controlPeer(peer, { action: "tool", itemId: "write", fields: { title: "Creating approved.txt", kind: "edit", rawInput } });
+    await controlPeer(peer, { action: "emit", message: { id: "write-decision", method: "session/request_permission", params: {
+      sessionId: handle.state().nativeSession.sessionId,
+      toolCall: { toolCallId: "write", title: "Creating approved.txt", rawInput },
+      options: [{ optionId: "allow_once", name: "Yes", kind: "allow_once" }, { optionId: "allow_always", name: "Always", kind: "allow_always" }, { optionId: "reject_once", name: "No", kind: "reject_once" }],
+      _meta: { trustOptions: [{ label: "Specific paths", display: "approved.txt", setting_key: "runtime_write_paths", patterns: ["/synthetic/workspace/approved.txt"] }] },
+    } } });
+    const pending = handle.state().pendingInteractions[0];
+    expect(pending.choices?.map((c) => c.meaning)).toEqual(["accept", "decline", "cancel"]);
+    expect(pending.choices?.filter((c) => c.meaning !== "cancel").every((c) => c.scope === "once")).toBe(true);
+    expect(JSON.parse(pending.body!).toolCall).toMatchObject({ kind: "edit", rawInput });
+    expect(handle.respondInteraction({ id: pending.id, sessionId: handle.sessionId, choiceID: "option-2" })).toBe(true);
+    expect((await waitObserved(peer, (r) => r.direction === "client" && r.message.id === "write-decision")).message.result).toEqual({ outcome: { outcome: "selected", optionId: "reject_once" } });
+    expect(handle.state().phase).toBe("running");
+  });
+  it("preserves the native interrupted replay placeholder without manufacturing lost partial prose", async () => {
+    const { handle, peer, adapter, root, handles } = await fixture(); await prompt(handle);
+    await controlPeer(peer, { action: "text", delta: "Synthetic live partial" });
+    await controlPeer(peer, { action: "complete", reason: "cancelled" });
+    await expect.poll(() => handle.state().phase).toBe("idle");
+    expect((await handle.messages()).some((m) => m.text === "Synthetic live partial")).toBe(true);
+    await handle.dispose();
+    await writeFile(join(root, "config.json"), JSON.stringify({ replayUpdates: [
+      { sessionUpdate: "user_message_chunk", content: { type: "text", text: "Ordinary input" } },
+      { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Response was interrupted by the user" } },
+    ] }));
+    const loaded = await adapter.open({ sessionId: handle.sessionId, cwd: root, nativeSession: handle.state().nativeSession }); handles.push(loaded);
+    expect((await loaded.messages()).filter((m) => m.role === "assistant").map((m) => m.text)).toEqual(["Response was interrupted by the user"]);
+    const next = await peerForSession(root, handle.state().nativeSession.sessionId!);
+    expect((await readObserved(next)).some((r) => r.message.method === "session/prompt")).toBe(false);
   });
   it("invalidates a conflicting live request ID instead of retaining its old grant choices", async () => {
     const { handle, peer } = await fixture(); await prompt(handle);

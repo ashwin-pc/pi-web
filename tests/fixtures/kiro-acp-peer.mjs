@@ -69,7 +69,7 @@ async function client(message) {
     session = read(file(params.sessionId));
     if (!session) return reject(id, "Internal error", -32603, `Failed to start session: Session not found: ${params.sessionId}`);
     startup(true);
-    for (const update of session.history) send({ method: "session/update", params: { sessionId: session.id, update } });
+    for (const update of config.replayUpdates ?? session.history) send({ method: "session/update", params: { sessionId: session.id, update } });
     reply(id, settings()); startup(false); return;
   }
   if (method === "session/prompt") {
