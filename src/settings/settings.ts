@@ -481,7 +481,12 @@ export function createSettings(options: {
           if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
           state.bucketLabels = data.sessionUiState?.bucketLabels || bucketLabels;
           document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
-          renderBucketNames();
+          populateBucketColorSelect(elements.settingDefaultBucketColorSelect, state);
+          const customCount = Object.keys(state.bucketLabels).length;
+          const hasCustomOrder = state.bucketOrder.some((id, index) => id !== defaultColors[index]?.id);
+          settingsShell?.setSummary("buckets", [customCount ? `${customCount} custom` : "", hasCustomOrder ? "Custom order" : ""].filter(Boolean).join(" · ") || "Names and display order");
+          settingsShell?.setSearchTerms("buckets", Object.values(state.bucketLabels).filter((value): value is string => Boolean(value)));
+          updateHandleLabel();
           setSettingsStatus("Bucket names saved");
         } catch (error) {
           state.bucketLabels = previousBucketLabels;
