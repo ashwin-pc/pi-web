@@ -629,17 +629,39 @@ test.describe("session quick bar", () => {
 
   test("lane drawer drag previews motion and pointer cancellation restores order without persistence", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
-    await page.goto("/"); await page.locator(".sessionLayersButton").click();
+    await page.goto("/"); await page.locator(".sessionLayersButton").click(); await page.waitForTimeout(200);
     const card = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
-    const handle = card.locator(".sessionLaneDragHandle"); const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
-    const startBox = await handle.boundingBox(); const endBox = await destination.boundingBox(); expect(startBox).not.toBeNull(); expect(endBox).not.toBeNull();
+    const handle = card.locator(".sessionLaneDragHandle"); const destination = page.locator('.sessionLaneDrawerSection[data-lane="pinned"]');
+    const destinationCard = destination.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]');
+    const startBox = await handle.boundingBox(); const cardBox = await card.boundingBox(); const endBox = await destination.boundingBox(); const destinationCardBox = await destinationCard.boundingBox(); expect(startBox).not.toBeNull(); expect(cardBox).not.toBeNull(); expect(endBox).not.toBeNull(); expect(destinationCardBox).not.toBeNull();
     const originalLane = await card.locator("xpath=..").getAttribute("data-lane");
     const pointer = { pointerId: 37, pointerType: "mouse", isPrimary: true, button: 0 };
-    await handle.dispatchEvent("pointerdown", { ...pointer, clientX: startBox!.x + 4, clientY: startBox!.y + 4 });
-    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: endBox!.y + endBox!.height / 2 });
-    await expect(card).toHaveClass(/dragging/); await expect(card).not.toHaveCSS("transform", "none");
+    const startX = startBox!.x + 4; const startY = startBox!.y + 4;
+    await card.evaluate((node) => { (node as HTMLElement).dataset.dragIdentity = "same-row"; });
+    const tapPointer = { ...pointer, pointerId: 36 };
+    await handle.dispatchEvent("pointerdown", { ...tapPointer, clientX: startX, clientY: startY });
+    await page.locator("body").dispatchEvent("pointerup", { ...tapPointer, clientX: startX, clientY: startY });
+    await expect(card).not.toHaveClass(/dragging|reorder-pressed/); await expect(page.locator(".sessionLaneDrawerDropSlot")).toHaveCount(0);
+    await handle.dispatchEvent("pointerdown", { ...pointer, clientX: startX, clientY: startY });
+    await expect(card).toHaveClass(/reorder-pressed/); await expect(card).not.toHaveClass(/dragging/);
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: startX, clientY: startY + 4 });
+    await expect(page.locator(".sessionLaneDrawerDropSlot")).toHaveCount(0);
+    const destinationY = destinationCardBox!.y + destinationCardBox!.height / 2 + 4;
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: destinationY });
+    await expect(card).toHaveClass(/dragging/); await expect(card).toHaveCSS("position", "fixed"); await expect(card).not.toHaveCSS("transform", "none");
+    await expect(card).toHaveAttribute("data-drag-identity", "same-row"); await expect(page.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
+    await expect(destination.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
+    const liftedStyle = await card.evaluate((node) => { const style = getComputedStyle(node); return { border: style.borderTopColor, background: style.backgroundColor, opacity: style.opacity, z: style.zIndex }; });
+    expect(liftedStyle.border).not.toBe("rgba(0, 0, 0, 0)"); expect(liftedStyle.background).not.toBe("rgba(0, 0, 0, 0)"); expect(Number(liftedStyle.opacity)).toBeLessThan(1); expect(Number(liftedStyle.z)).toBeGreaterThan(2);
+    await expect.poll(async () => (await destinationCard.boundingBox())!.y).toBeLessThan(destinationCardBox!.y - cardBox!.height / 2);
+    const followedY = await card.evaluate((node) => node.getBoundingClientRect().top);
+    expect(Math.abs(followedY - (cardBox!.y + destinationY - startY))).toBeLessThan(4);
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: startX, clientY: startY + 12 });
+    await expect(page.locator(`.sessionLaneDrawerSection[data-lane="${originalLane}"] .sessionLaneDrawerDropSlot`)).toHaveCount(1);
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: destinationY });
+    await expect(destination.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
     await page.evaluate((id) => window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: id, pointerType: "mouse", isPrimary: true, bubbles: true })), pointer.pointerId);
-    await expect(card).not.toHaveClass(/dragging/); expect(await card.locator("xpath=..").getAttribute("data-lane")).toBe(originalLane);
+    await expect(card).not.toHaveClass(/dragging|reorder-pressed/); await expect(page.locator(".sessionLaneDrawerDropSlot")).toHaveCount(0); expect(await card.locator("xpath=..").getAttribute("data-lane")).toBe(originalLane);
   });
 
   test("dragging a background session clears stale source focus without replacing destination focus", async ({ page }) => {

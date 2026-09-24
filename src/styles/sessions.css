@@ -1276,9 +1276,12 @@ body.hasPinnedSessions .app {
 .sessionLaneDrawerEmpty{margin:0 4px 7px;padding:9px 11px;border:1px dashed var(--border);border-radius:10px}
 .sessionLaneDrawer>footer { flex:0 0 auto;border-top:1px solid var(--border);padding:9px 16px 14px;display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:10.5px }.sessionLaneDrawer>footer button{min-height:0!important;padding:0;border:0;background:transparent;color:var(--accent,#d8a657);font:600 10.5px inherit}
 /* Lane drawer interaction fixes */
-.sessionLaneDrawerCard { touch-action:pan-y;transition:transform .12s ease,opacity .12s ease }
-.sessionLaneDrawerCard.dragging { z-index:2;opacity:.88;box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;will-change:transform }
-.sessionLaneDrawerCard.settling { transition:transform .18s cubic-bezier(.2,.8,.2,1),opacity .18s ease }
+.sessionLaneDrawerCard { touch-action:pan-y;transition:transform .12s ease,opacity .12s ease,background .12s ease,border-color .12s ease }
+.sessionLaneDrawerCard.reorder-pressed .sessionLaneDragHandle { color:var(--accent,#d8a657);cursor:grabbing }
+.sessionLaneDrawerCard.dragging { z-index:10;opacity:.88;border:1px solid var(--accent,#d8a657);border-radius:9px;background:color-mix(in srgb,var(--accent,#d8a657) 10%,var(--panel,#111));box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;pointer-events:none;will-change:transform;transition:none }
+.sessionLaneDrawerCard.dragging .sessionLaneDragHandle { color:var(--accent,#d8a657);cursor:grabbing }
+.sessionLaneDrawerDropSlot { box-sizing:border-box;flex:0 0 auto;border-bottom:1px solid transparent }
+.sessionLaneDrawerCard.settling { z-index:2;transition:transform .18s cubic-bezier(.2,.8,.2,1),opacity .18s ease }
 @media (prefers-reduced-motion:reduce){.sessionLaneDrawerCard{transition:none!important}}
 .sessionLaneDrawerItem,.sessionLaneDrawerItemCopy { min-width:0;overflow:visible }
 .sessionLaneDrawerItemTitle,.sessionLaneDrawerItemNote { white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;line-height:1.3 }

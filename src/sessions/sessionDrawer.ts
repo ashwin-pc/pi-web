@@ -1833,13 +1833,28 @@ export function createSessions(options: {
         open.addEventListener("click", () => { if (performance.now() < suppressOpenUntil) return; closeLaneDrawer?.(); void openSessionTab(entry.sessionId, live?.cwd || entry.cwd || state.currentCwd); });
         card.append(open);
         const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter); dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
-        let dragPointer: number | undefined; let dragStartY = 0; let dragGrabOffsetY = 0; let dragging = false; let originParent: HTMLElement | undefined; let originNext: Element | null = null; let originLane: SessionLaneId = lane;
+        let dragPointer: number | undefined; let dragStartY = 0; let dragClientY = 0; let dragScrollTop = 0; let dragging = false; let originLane: SessionLaneId = lane;
+        let dragRect: DOMRect | undefined; let destinationSlot: HTMLElement | undefined; let dragFrame: number | undefined;
         const reducedReorderMotion = prefersReducedReorderMotion();
+        const clearDragFrame = () => { if (dragFrame !== undefined) cancelAnimationFrame(dragFrame); dragFrame = undefined; };
+        const clearFloatingStyles = () => {
+          Object.assign(card.style, { position: "", left: "", top: "", width: "", height: "", margin: "", transform: "" });
+        };
         const finishDrag = () => {
           if (dragPointer === undefined) return;
-          if (dragging) {
-            suppressOpenUntil = performance.now() + 350; card.classList.remove("dragging"); card.classList.add("settling");
-            card.style.transform = "";
+          clearDragFrame();
+          if (dragging && destinationSlot) {
+            suppressOpenUntil = performance.now() + 350;
+            const painted = card.getBoundingClientRect();
+            destinationSlot.replaceWith(card); destinationSlot = undefined;
+            clearFloatingStyles();
+            if (!reducedReorderMotion) {
+              const natural = card.getBoundingClientRect();
+              card.style.transition = "none";
+              card.style.transform = `translate(${painted.left - natural.left}px, ${painted.top - natural.top}px)`;
+              requestAnimationFrame(() => { card.style.transition = ""; card.style.transform = ""; });
+            }
+            card.classList.remove("dragging"); card.classList.add("settling");
             window.setTimeout(() => card.classList.remove("settling"), reducedReorderMotion ? 0 : 180);
             const byId = new Map(state.lanes.map((item) => [item.sessionId, item]));
             const orderedIds = (["pinned", "parked", "bookmarks"] as SessionLaneId[]).flatMap((laneId) =>
@@ -1860,46 +1875,66 @@ export function createSessions(options: {
             state.lanes = nextLanes; commitLanes();
             if (moved?.lane === "parked" && entry.lane !== "parked" && !noteForSession(entry.sessionId)) requestAnimationFrame(() => promptForParkedNote(entry.sessionId));
           }
-          dragPointer = undefined; dragging = false;
+          card.classList.remove("reorder-pressed");
+          dragPointer = undefined; dragging = false; dragRect = undefined;
+        };
+        const paintDrag = () => {
+          dragFrame = undefined;
+          if (!dragging || !dragRect || !destinationSlot) return;
+          const bodyRect = body.getBoundingClientRect();
+          if (dragClientY < bodyRect.top + 48) body.scrollTop -= 18;
+          else if (dragClientY > bodyRect.bottom - 48) body.scrollTop += 18;
+          const sections = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerSection"));
+          const targetSection = sections.reduce((target, candidate) => candidate.querySelector<HTMLElement>(".sessionLaneDrawerHeading")!.getBoundingClientRect().top <= dragClientY ? candidate : target, sections[0]);
+          const siblings = Array.from(targetSection.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard"));
+          const before = siblings.find((node) => dragClientY < node.getBoundingClientRect().top + node.offsetHeight / 2);
+          if (destinationSlot.parentElement !== targetSection || destinationSlot.nextElementSibling !== (before || null)) {
+            const cards = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard"));
+            animateReorderLayout(cards, () => targetSection.insertBefore(destinationSlot!, before || null), { exclude: card, reducedMotion: reducedReorderMotion });
+          }
+          card.dataset.lane = targetSection.dataset.lane as SessionLaneId;
+          const scrollDelta = body.scrollTop - dragScrollTop;
+          let translateY = dragClientY - dragStartY + scrollDelta;
+          const scale = reducedReorderMotion ? "" : " scale(1.015)";
+          card.style.transform = `translateY(${translateY}px)${scale}`;
+          translateY += dragRect.top + dragClientY - dragStartY - card.getBoundingClientRect().top;
+          card.style.transform = `translateY(${translateY}px)${scale}`;
         };
         const moveDrag = (event: PointerEvent) => {
           if (dragPointer !== event.pointerId) return;
-          if (!dragging && Math.abs(event.clientY - dragStartY) < 8) return;
+          dragClientY = event.clientY;
+          if (!dragging && Math.abs(dragClientY - dragStartY) < 8) return;
           if (!dragging) {
-            dragging = true; suppressOpenUntil = performance.now() + 350; dragGrabOffsetY = event.clientY - card.getBoundingClientRect().top; originParent = card.parentElement || undefined; originNext = card.nextElementSibling; originLane = card.dataset.lane as SessionLaneId || lane; card.classList.add("dragging");
-            try { dragHandle.setPointerCapture(event.pointerId); } catch { /* synthetic pointer */ }
+            dragRect = card.getBoundingClientRect(); dragScrollTop = body.scrollTop; originLane = card.dataset.lane as SessionLaneId || lane;
+            destinationSlot = document.createElement("div"); destinationSlot.className = "sessionLaneDrawerDropSlot"; destinationSlot.style.height = `${dragRect.height}px`;
+            dragging = true; card.after(destinationSlot); backdrop.append(card);
+            Object.assign(card.style, { position: "fixed", left: `${dragRect.left}px`, top: `${dragRect.top}px`, width: `${dragRect.width}px`, height: `${dragRect.height}px`, margin: "0" });
+            const fixedRect = card.getBoundingClientRect();
+            card.style.left = `${dragRect.left + dragRect.left - fixedRect.left}px`; card.style.top = `${dragRect.top + dragRect.top - fixedRect.top}px`;
+            suppressOpenUntil = performance.now() + 350; card.classList.add("dragging"); card.classList.remove("reorder-pressed");
           }
           event.preventDefault();
-          const bodyRect = body.getBoundingClientRect();
-          if (event.clientY < bodyRect.top + 48) body.scrollTop -= 18;
-          else if (event.clientY > bodyRect.bottom - 48) body.scrollTop += 18;
-          const sections = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerSection"));
-          const targetSection = sections.find((candidate) => { const rect = candidate.getBoundingClientRect(); return event.clientY >= rect.top && event.clientY <= rect.bottom; })
-            || sections.reduce((closest, candidate) => Math.abs(candidate.getBoundingClientRect().top - event.clientY) < Math.abs(closest.getBoundingClientRect().top - event.clientY) ? candidate : closest);
-          const targetLane = targetSection.dataset.lane as SessionLaneId; card.dataset.lane = targetLane;
-          card.style.transform = "";
-          const siblings = Array.from(targetSection.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard")).filter((node) => node !== card);
-          const before = siblings.find((node) => event.clientY < node.getBoundingClientRect().top + node.offsetHeight / 2);
-          const cards = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard"));
-          if (card.parentElement !== targetSection || card.nextElementSibling !== (before || null)) {
-            animateReorderLayout(cards, () => targetSection.insertBefore(card, before || null), { exclude: card, reducedMotion: reducedReorderMotion });
-          }
-          const natural = card.getBoundingClientRect();
-          card.style.transform = `translateY(${event.clientY - dragGrabOffsetY - natural.top}px) scale(${reducedReorderMotion ? 1 : 1.015})`;
+          if (dragFrame === undefined) dragFrame = requestAnimationFrame(paintDrag);
         };
         const removeDragListeners = () => { window.removeEventListener("pointermove", moveDrag); window.removeEventListener("pointerup", endDrag); window.removeEventListener("pointercancel", cancelDrag); };
-        const endDrag = (event: PointerEvent) => { if (dragPointer !== event.pointerId) return; removeDragListeners(); finishDrag(); };
+        const endDrag = (event: PointerEvent) => { if (dragPointer !== event.pointerId) return; removeDragListeners(); paintDrag(); finishDrag(); };
         const cancelDrag = (event?: PointerEvent) => {
           if (event && dragPointer !== event.pointerId) return;
-          removeDragListeners();
-          if (dragging && originParent) originParent.insertBefore(card, originNext);
-          card.dataset.lane = originLane; card.style.transform = ""; card.classList.remove("dragging", "settling");
-          dragPointer = undefined; dragging = false; originParent = undefined; originNext = null;
+          removeDragListeners(); clearDragFrame(); destinationSlot?.remove(); destinationSlot = undefined;
+          const originSection = drawer.querySelector<HTMLElement>(`.sessionLaneDrawerSection[data-lane="${originLane}"]`);
+          if (originSection) {
+            const originIds = state.lanes.filter((item) => item.lane === originLane).map((item) => item.sessionId);
+            const originIndex = originIds.indexOf(entry.sessionId);
+            const nextCard = originIds.slice(originIndex + 1).map((id) => originSection.querySelector<HTMLElement>(`.sessionLaneDrawerCard[data-session-id="${CSS.escape(id)}"]`)).find(Boolean) || null;
+            originSection.insertBefore(card, nextCard);
+          }
+          card.dataset.lane = originLane; clearFloatingStyles(); card.classList.remove("dragging", "settling", "reorder-pressed");
+          dragPointer = undefined; dragging = false; dragRect = undefined;
         };
         card.addEventListener("session-inspector-open", () => cancelDrag());
         dragHandle.addEventListener("pointerdown", (event) => {
           if (dragPointer !== undefined || (event.pointerType === "mouse" && event.button !== 0)) return;
-          dragPointer = event.pointerId; dragStartY = event.clientY;
+          dragPointer = event.pointerId; dragStartY = dragClientY = event.clientY; originLane = card.dataset.lane as SessionLaneId || lane; card.classList.add("reorder-pressed");
           window.addEventListener("pointermove", moveDrag, { passive: false }); window.addEventListener("pointerup", endDrag); window.addEventListener("pointercancel", cancelDrag);
         });
         sessionInspector.attach(card, entry.sessionId, "lane");
