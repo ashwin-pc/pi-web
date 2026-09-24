@@ -11,6 +11,7 @@ import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfo
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
 import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
+import { edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -1513,7 +1514,7 @@ export function createSessions(options: {
     const mouseLiftDistancePx = 6;
     const edgeZonePx = 48;
     const maxScrollPerFrame = 14;
-    const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reducedMotion = prefersReducedReorderMotion();
     const settleDurationMs = reducedMotion ? 0 : 180;
 
     tab.addEventListener("pointerdown", (downEvent) => {
@@ -1575,7 +1576,7 @@ export function createSessions(options: {
         const center = rects[originalIndex].left + draggedWidth / 2 + dx;
         if (dx <= minDx + 0.5) newIndex = 0;
         else if (dx >= maxDx - 0.5) newIndex = tabs.length - 1;
-        else newIndex = others.filter((item) => rects[item.domIndex].left + rects[item.domIndex].width / 2 < center).length;
+        else newIndex = insertionIndex(rects, center, "x", originalIndex);
         if (newIndex !== previousIndex) navigator.vibrate?.(5);
 
         tab.style.transform = `translateX(${dx}px) scale(1.06)`;
@@ -1594,12 +1595,7 @@ export function createSessions(options: {
 
       const runAutoScroll = () => {
         if (!lifted || !barRect) return;
-        let velocity = 0;
-        if (lastClientX < barRect.left + edgeZonePx) {
-          velocity = -maxScrollPerFrame * Math.min(1, (barRect.left + edgeZonePx - lastClientX) / edgeZonePx);
-        } else if (lastClientX > barRect.right - edgeZonePx) {
-          velocity = maxScrollPerFrame * Math.min(1, (lastClientX - (barRect.right - edgeZonePx)) / edgeZonePx);
-        }
+        const velocity = edgeScrollVelocity(lastClientX, barRect.left, barRect.right, edgeZonePx, maxScrollPerFrame);
         if (velocity !== 0) {
           const nextScrollLeft = Math.min(maxScrollLeft, Math.max(0, bar.scrollLeft + velocity));
           if (nextScrollLeft !== bar.scrollLeft) {

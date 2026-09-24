@@ -8,6 +8,7 @@ import { createExtensionSettings, type ExtensionSettingsController } from "./ext
 import { createRunNotifications } from "./runNotifications.js";
 import { createRestartSettings } from "./restartSettings.js";
 import { createSettingsShell, type SettingsShellController } from "./settingsShell.js";
+import { edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 import { createSecuritySettings, type AuthMode } from "./securitySettings.js";
 
 export type SettingsController = {
@@ -520,7 +521,7 @@ export function createSettings(options: {
       let dragFrame: number | undefined;
       let autoScrollFrame: number | undefined;
       let scrollport: HTMLElement | undefined;
-      const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const reducedMotion = prefersReducedReorderMotion();
       const announcePosition = () => {
         const position = Array.from(container.querySelectorAll(".settingsBucketNameRow")).indexOf(row) + 1;
         live.textContent = `${input.value.trim() || color.label} bucket, position ${position} of ${colors.length}.`;
@@ -546,7 +547,7 @@ export function createSettings(options: {
         const maxDy = dragRects.at(-1)!.bottom - dragRects[originalIndex].bottom;
         const dy = Math.max(minDy, Math.min(maxDy, rawDy));
         const center = dragRects[originalIndex].top + dragRects[originalIndex].height / 2 + dy;
-        pointerIndex = dragRects.reduce((count, rect, index) => index !== originalIndex && rect.top + rect.height / 2 < center ? count + 1 : count, 0);
+        pointerIndex = insertionIndex(dragRects, center, "y", originalIndex);
         row.style.transform = `translateY(${dy}px)${reducedMotion ? "" : " scale(1.015)"}`;
         dragRows.forEach((item, index) => {
           if (item === row) return;
@@ -561,10 +562,7 @@ export function createSettings(options: {
       const autoScroll = () => {
         if (pointerId === undefined || !scrollport) return;
         const rect = scrollport.getBoundingClientRect();
-        const edge = Math.min(56, rect.height / 4);
-        let velocity = 0;
-        if (dragClientY < rect.top + edge) velocity = -12 * (1 - Math.max(0, dragClientY - rect.top) / edge);
-        else if (dragClientY > rect.bottom - edge) velocity = 12 * (1 - Math.max(0, rect.bottom - dragClientY) / edge);
+        const velocity = edgeScrollVelocity(dragClientY, rect.top, rect.bottom, Math.min(56, rect.height / 4), 12);
         if (velocity) { scrollport.scrollTop += velocity; schedulePaint(); }
         autoScrollFrame = requestAnimationFrame(autoScroll);
       };
