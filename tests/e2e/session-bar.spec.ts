@@ -206,7 +206,9 @@ test.describe("session quick bar", () => {
     await page.mouse.down();
     await page.mouse.move(firstBox!.x + firstBox!.width / 2 + 12, firstBox!.y + firstBox!.height / 2, { steps: 2 });
     await expect(draggedTab).toHaveClass(/\bdragging\b/);
-    await page.mouse.move(secondBox!.x + secondBox!.width * 0.75, secondBox!.y + secondBox!.height / 2, { steps: 6 });
+    // A natural tab-on-tab gesture ends at the target center. This used to be
+    // directionally asymmetric: dragging right to the exact center did nothing.
+    await page.mouse.move(secondBox!.x + secondBox!.width / 2 - 0.25, secondBox!.y + secondBox!.height / 2, { steps: 6 });
     await page.mouse.up();
 
     await expect(tabs.nth(0)).toContainText("Older mock session");
@@ -215,6 +217,10 @@ test.describe("session quick bar", () => {
       const uiState = await (await page.request.get("/api/session-ui-state")).json();
       return uiState.sessionUiState.lanes.filter((entry: { lane: string }) => entry.lane === "pinned").map((entry: { sessionId: string }) => entry.sessionId);
     }).toEqual(["mock-older", "mock-current"]);
+
+    await page.reload();
+    await expect(page.locator(".sessionBarTab.pinned").nth(0)).toContainText("Older mock session");
+    await expect(page.locator(".sessionBarTab.pinned").nth(1)).toContainText("Current mock session");
   });
 
   test("touch hold and drag reorders pinned tabs", async ({ page }) => {

@@ -1576,7 +1576,12 @@ export function createSessions(options: {
         const center = rects[originalIndex].left + draggedWidth / 2 + dx;
         if (dx <= minDx + 0.5) newIndex = 0;
         else if (dx >= maxDx - 0.5) newIndex = tabs.length - 1;
-        else newIndex = insertionIndex(rects, center, "x", originalIndex);
+        else {
+          // Resolve an exact center-to-center drop in the drag direction. Without
+          // the nudge, moving right stopped on the target's center while moving
+          // left reordered, making a natural tab-on-tab drop asymmetric.
+          newIndex = insertionIndex(rects, center + Math.sign(rawDx) * 0.5, "x", originalIndex);
+        }
         if (newIndex !== previousIndex) navigator.vibrate?.(5);
 
         tab.style.transform = `translateX(${dx}px) scale(1.06)`;
