@@ -107,6 +107,7 @@ async function submit(name,text,first=false) {
   // Reserve and fsync before the first UI action capable of dispatching input.
   budget.submitted++; budget.reservations.push({number:budget.submitted,name,at:new Date().toISOString()});
   const fd=openSync(budgetFile+'.tmp','w',0o600);writeFileSync(fd,JSON.stringify(budget,null,2)+'\n');fsyncSync(fd);closeSync(fd);renameSync(budgetFile+'.tmp',budgetFile);
+  const directory=openSync(output,'r');fsyncSync(directory);closeSync(directory);
   save(); authorizedPrompt=text;
   watchdog=setTimeout(() => {timedOut=true;entry.status='FAIL';entry.failure='120-second watchdog';void stop();},120000);
   const creation = first ? page.waitForResponse(r=>new URL(r.url()).pathname==='/api/sessions/new'&&r.request().method()==='POST',{timeout:60000}) : undefined;
@@ -121,9 +122,14 @@ async function tick() {
   for(const pending of s.pendingInteractions??[]) {
     const meaning=phase==='approval'&&entry.permissionRequests.length===0?'decline':'accept';
     const context=JSON.parse(pending.body);
-    const input=JSON.stringify(context.toolCall.rawInput);
-    assert(input.includes(cwd)||input.includes('canary.txt')||input.includes('approved.txt'),'Only owned scratch action may be decided');
-    assert(['read','edit','execute'].includes(context.toolCall.kind),'Unexpected tool kind');
+    const input=context.toolCall.rawInput;
+    const ownedRead=context.toolCall.kind==='read' && JSON.stringify(Object.keys(input))===JSON.stringify(['operations'])
+      && Array.isArray(input.operations) && input.operations.length===1
+      && Object.keys(input.operations[0]).every(k=>['mode','path'].includes(k)) && input.operations[0].mode==='Line'
+      && ['canary.txt',join(cwd,'canary.txt')].includes(input.operations[0].path);
+    const ownedWrite=context.toolCall.kind==='edit' && Object.keys(input).every(k=>['command','path','content'].includes(k))
+      && input.command==='create' && ['approved.txt',join(cwd,'approved.txt')].includes(input.path) && input.content==='HARMLESS_WRITE\n';
+    assert(phase==='generation-read'?ownedRead:phase==='approval'&&ownedWrite,'Only the exact harmless owned file action may be decided');
     if(meaning==='accept') assert(phase==='generation-read'||phase==='approval','Unexpected permission outside owned actions');
     const choice=pending.choices.find(c=>c.meaning===meaning&&c.scope==='once'); assert(choice,`No exact ${meaning} once choice`);
     await screenshot(`turn-${entry.number}-permission-${entry.permissionRequests.length+1}`);
