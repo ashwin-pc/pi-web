@@ -200,6 +200,7 @@ export type SessionUiState = {
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
+  bucketOrder: SessionMarkerColorId[];
 };
 
 export const sessionMarkerColors: SessionMarkerColor[] = [
@@ -225,6 +226,7 @@ export const defaultSessionUiState: SessionUiState = {
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
   bucketLabels: {},
+  bucketOrder: sessionMarkerColors.map((color) => color.id),
 };
 
 const markerColorIds = new Set<SessionMarkerColorId>(sessionMarkerColors.map((color) => color.id));
@@ -355,6 +357,18 @@ export function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
   return result;
 }
 
+/** Normalize a persisted bucket order into a complete stable-ID permutation. */
+export function normalizeBucketOrder(value: unknown): SessionMarkerColorId[] {
+  const ordered = normalizeMarkerColors(value);
+  const seen = new Set(ordered);
+  return [...ordered, ...sessionMarkerColors.map((color) => color.id).filter((color) => !seen.has(color))];
+}
+
+export function orderedSessionMarkerColors(order: unknown): SessionMarkerColor[] {
+  const byId = new Map(sessionMarkerColors.map((color) => [color.id, color]));
+  return normalizeBucketOrder(order).map((id) => byId.get(id)!);
+}
+
 export function normalizeSessionOrigins(value: unknown): SessionOrigin[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -389,6 +403,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
     allowedMarkerColors: normalizeMarkerColors(raw.allowedMarkerColors),
     bucketLabels: normalizeBucketLabels(raw.bucketLabels),
+    bucketOrder: normalizeBucketOrder(raw.bucketOrder),
   };
 }
 
@@ -497,6 +512,7 @@ export type AppState = {
   settlementDependencies: Record<string, string[]>;
   selectedMarkerColor: SessionMarkerColorId;
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
+  bucketOrder: SessionMarkerColorId[];
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   expandedWorkerBranches: Set<string>;
@@ -652,6 +668,7 @@ export function createAppState(): AppState {
     settlementDependencies: {},
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     bucketLabels: {},
+    bucketOrder: [...defaultSessionUiState.bucketOrder],
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     expandedWorkerBranches: new Set(readExpandedWorkerBranches()),

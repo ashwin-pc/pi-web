@@ -25,31 +25,23 @@
 .sessionDrawer[hidden], .sessionBackdrop[hidden] { display: none; }
 .sessionDrawerHeader {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  height: 40px;
+  min-width: 0;
   flex-shrink: 0;
-  padding: 0 8px 0 16px;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 6px 12px;
   border-bottom: 1px solid var(--border);
 }
-.sessionDrawerHeader h2 {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.sessionDrawerHeaderActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
 }
 .sessionDrawerFilters {
-  flex: 1 1 auto;
-  min-width: 0;
   display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
   gap: 6px;
 }
@@ -125,35 +117,41 @@
   height: 6px;
 }
 @media (max-width: 420px) {
-  .sessionDrawerHeader {
-    padding-left: 10px;
-  }
-  .sessionColorFilterButton {
-    max-width: 58px;
-  }
+  .sessionDrawerHeader { padding: 4px 4px 4px 12px; }
+  .sessionColorFilterButton { max-width: 58px; }
 }
 .sessionDrawerSearch:focus {
   outline: none;
   border-color: var(--accent);
 }
-.sessionDrawerHeader .iconButton {
-  width: 24px;
-  min-width: 24px;
-  height: 24px;
-  min-height: 24px;
+.sessionDrawerHeader .sessionDrawerHeaderAction {
+  display: inline-grid;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  place-items: center;
+  margin: 0;
+  padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
+  line-height: 1;
 }
-.sessionDrawerHeader .iconButton svg {
+.sessionDrawerHeader .sessionDrawerHeaderAction svg {
   width: 15px;
   height: 15px;
 }
-.sessionDrawerHeader .iconButton:hover {
+.sessionDrawerHeader .sessionDrawerHeaderAction:hover,
+.sessionDrawerHeader .sessionDrawerHeaderAction:focus-visible {
   border: 0;
+  outline: none;
   background: var(--panel-2);
   color: var(--text);
+}
+.sessionDrawerHeader .sessionDrawerHeaderAction:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .sessionDrawerFooter {
   display: flex;
@@ -180,10 +178,23 @@
   font-size: 12px;
   white-space: nowrap;
 }
-.sessionDrawerFooter .sessionDrawerFooterButton svg {
-  width: 15px;
-  height: 15px;
+.sessionDrawerFooter .sessionDrawerFooterButton svg { width: 15px; height: 15px; }
+@media (max-width: 420px) {
+  .sessionDrawerHeader .sessionDrawerHeaderAction,
+  .sessionDrawerHeader .sessionDrawerSearch,
+  .sessionDrawerHeader .sessionWorkerCollapseAllButton {
+    height: 44px;
+    min-height: 44px;
+  }
+  .sessionDrawerHeader .sessionDrawerHeaderAction {
+    width: 44px;
+    min-width: 44px;
+  }
 }
+.systemStatusButton .systemStatusIcon { display: grid; place-items: center; }
+.systemStatusButton[data-status="extension-issue"] .systemStatusIcon { color: var(--warning, #e2b15f); }
+.systemStatusButton[data-status="disconnected"] .systemStatusIcon { color: var(--danger, #ef767a); }
+.systemStatusButton[data-status="checking"] .systemStatusIcon svg { animation: spin .9s linear infinite; }
 .sessionList {
   display: flex;
   min-height: 0;
@@ -1197,7 +1208,7 @@ body.hasPinnedSessions .app {
 .sessionStaleBadge { color:#f07b72;border:1px solid color-mix(in srgb,#f07b72 50%,transparent);border-radius:999px;padding:1px 5px;font-size:9px;text-transform:uppercase;letter-spacing:.04em }
 .sessionFolderMatchCount { color:var(--muted);font-size:10px;margin-left:6px }
 @media(max-width:640px){.sessionLayersButton{flex-basis:34px}.sessionLaneFilters{overflow:visible}}
-.sessionDrawerFilters .sessionDrawerSearch { flex:1; width:100% }
+.sessionDrawerFilters .sessionDrawerSearch { flex:1 1 auto; width:auto; min-width:0 }
 .sessionWorkerCollapseAllButton {
   flex: 0 0 auto;
   box-sizing: border-box;

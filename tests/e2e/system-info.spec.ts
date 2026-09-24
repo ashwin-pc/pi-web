@@ -25,10 +25,19 @@ test("system information is available from the session drawer", async ({ page })
     },
   });
 
-  await openSessionDrawerFooterAction(page, "System info");
+  await page.locator("#sessionButton").click();
+  const systemEntry = page.locator("#sessionDrawerInfoButton");
+  await expect(systemEntry).toHaveAccessibleName(/^System: (Connected|Extension issue)$/);
+  await expect(systemEntry).toHaveAttribute("title", /^System: (Connected|Extension issue)$/);
+  await expect(systemEntry).toHaveAttribute("data-status", /^(connected|extension-issue)$/);
+  await expect(systemEntry.locator(".systemStatusIcon svg")).toHaveCount(1);
+  await systemEntry.click();
+  await expect(systemEntry).toHaveAttribute("aria-expanded", "true");
   const panel = page.locator("#systemInfoPanel");
+  if (!await panel.isVisible()) await page.locator("#settingsNavOverview").click();
   await expect(panel).toBeVisible();
   await expect(page.locator("#sessionDrawer")).toBeHidden();
+  await expect(page.locator("#settingsPanel")).toHaveAttribute("data-scope", "system");
   await expect(panel.getByRole("heading", { name: "System information" })).toBeVisible();
   await expect(panel.getByRole("heading", { name: "pi", exact: true })).toBeVisible();
   await expect(panel.getByRole("heading", { name: "pi-web runtime" })).toBeVisible();
@@ -36,6 +45,20 @@ test("system information is available from the session drawer", async ({ page })
   await expect(panel).toContainText("Agent directory");
   await expect(panel).toContainText("Operating system");
   await expect(panel.getByRole("button", { name: "Copy system report" })).toBeVisible();
+  await page.locator("#settingsCloseButton").click();
+  await expect(systemEntry).toHaveAttribute("aria-expanded", "false");
+});
+
+test("system entry exposes extension failures with icon and text", async ({ page }) => {
+  await page.route("**/api/extensions/status?*", route => route.fulfill({ json: { ok: true, status: { state: "degraded", attempt: 1, extensionCount: 1, errors: [{ path: "broken.ts", error: "boom" }], message: "Extension failed" } } }));
+  await page.goto("/");
+  await page.locator("#sessionButton").click();
+  const systemEntry = page.locator("#sessionDrawerInfoButton");
+  await expect(systemEntry).toHaveText("System");
+  await expect(systemEntry).toHaveAccessibleName("System: Extension issue");
+  await expect(systemEntry).toHaveAttribute("title", "System: Extension issue");
+  await expect(systemEntry).toHaveAttribute("data-status", "extension-issue");
+  await expect(systemEntry.locator(".systemStatusIcon svg")).toHaveCount(1);
 });
 
 test("renders an interactive system-info contribution and reports invocation failures", async ({ page }) => {
@@ -58,8 +81,9 @@ test("renders an interactive system-info contribution and reports invocation fai
   });
 
   await page.goto("/");
-  await openSessionDrawerFooterAction(page, "System info");
+  await openSessionDrawerFooterAction(page, "System");
   const panel = page.locator("#systemInfoPanel");
+  if (!await panel.isVisible()) await page.locator("#settingsNavOverview").click();
   await expect(panel.getByRole("heading", { name: "Runtime tools" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Run probe" })).toBeVisible();
   expect(invocations[0]).toMatchObject({ sessionId: "mock-current", slot: "system-info", key: "runtime-tools" });
@@ -94,7 +118,7 @@ test("settings lives in the drawer and the FAB contains session actions only", a
   await expect(page.locator(".actionLauncherToggle")).toHaveAttribute("aria-label", "Close session actions");
   await page.locator(".actionLauncherToggle").click();
 
-  await openSessionDrawerFooterAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "Preferences");
   await expect(page.locator("#settingsPanel")).toBeVisible();
   await expect(page.locator("#sessionDrawer")).toBeHidden();
 });

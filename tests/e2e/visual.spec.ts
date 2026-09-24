@@ -492,7 +492,7 @@ test.describe("visual regression", () => {
   test("focused completion notifications", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "Preferences");
     await page.locator("#settingsNavNotifications").click();
     await expect(page.locator("#settingRunNotificationsCheckbox")).toBeVisible();
     await expect(page).toHaveScreenshot(`capability-notifications-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
@@ -507,7 +507,7 @@ test.describe("visual regression", () => {
       json: { id: "visual-grant", secret: "single-use-visual-grant", expiresAt: Date.now() + 120_000, url: "https://demo.pi-web.dev/api/auth/device?grant=single-use-visual-grant" },
     }));
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     await page.getByRole("button", { name: "＋ Connect a device", exact: true }).click();
     await page.getByRole("button", { name: "Create add-device link" }).click();
@@ -775,7 +775,8 @@ test.describe("visual regression", () => {
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 1000 });
 
     await page.goto("/");
-    await openSessionDrawerFooterAction(page, "System info");
+    await openSessionDrawerFooterAction(page, "System");
+    if (!await page.locator("#systemInfoPanel").isVisible()) await page.locator("#settingsNavOverview").click();
     await expect(page.locator("#systemInfoPanel")).toBeVisible();
     await expect(page.locator("#systemInfoPanel").getByRole("heading", { name: "Host machine" })).toBeVisible();
 

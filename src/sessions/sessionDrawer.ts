@@ -6,7 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { panelOverlayModeQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import { defaultSessionUiState, normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
@@ -288,6 +288,7 @@ export function createSessions(options: {
     item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: noteForSession(sessionId), unread: Boolean(unreadStateForSession(sessionId)) }; },
     moveToLane: (sessionId, lane) => moveToLane(sessionId, lane, { cwd: cachedSessions.find((entry) => entry.id === sessionId)?.cwd || laneEntry(sessionId)?.cwd || state.currentCwd }),
     setBucket: (sessionId, color) => setSessionMarker(sessionId, color),
+    bucketColors: () => bucketColors().map((color) => ({ id: color.id, label: markerColorLabel(color.id) })),
     editNote: editSessionNote,
     removeFromLanes,
     openSession: (sessionId) => { void openSessionById(sessionId); },
@@ -669,6 +670,7 @@ export function createSessions(options: {
     syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
     state.bucketLabels = next.bucketLabels;
+    state.bucketOrder = next.bucketOrder;
     allowedMarkerColors.clear();
     for (const color of next.allowedMarkerColors) allowedMarkerColors.add(color);
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
@@ -698,6 +700,7 @@ export function createSessions(options: {
       || (value.sessionOrigins?.length ?? 0) > 0
       || value.allowedMarkerColors.length > 0
       || Object.keys(value.bucketLabels).length > 0
+      || value.bucketOrder.some((color, index) => color !== defaultSessionUiState.bucketOrder[index])
       || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
   }
 
@@ -758,6 +761,7 @@ export function createSessions(options: {
       selectedMarkerColor: state.selectedMarkerColor,
       allowedMarkerColors: Array.from(allowedMarkerColors),
       bucketLabels: state.bucketLabels,
+      bucketOrder: state.bucketOrder,
     });
     if (!hasAnySessionUiState(serverState) && hasAnySessionUiState(localState)) {
       await patchSessionUiState(localState);
@@ -938,8 +942,12 @@ export function createSessions(options: {
     return sessionMarkerColors.find((color) => color.id === colorId);
   }
 
+  function bucketColors() {
+    return orderedSessionMarkerColors(state.bucketOrder);
+  }
+
   function selectedMarkerColor() {
-    return colorForMarker(state.selectedMarkerColor) || sessionMarkerColors[0];
+    return colorForMarker(state.selectedMarkerColor) || bucketColors()[0];
   }
 
   function markerColorLabel(color: SessionMarkerColorId) {
@@ -947,7 +955,7 @@ export function createSessions(options: {
   }
 
   function sortedAllowedMarkerColors() {
-    return sessionMarkerColors
+    return bucketColors()
       .map((color) => color.id)
       .filter((color) => allowedMarkerColors.has(color));
   }
@@ -1067,7 +1075,7 @@ export function createSessions(options: {
     });
     menu.append(clearButton);
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = marker?.color === color.id;
       const item = document.createElement("button");
       item.type = "button";
@@ -1248,7 +1256,7 @@ export function createSessions(options: {
       updateMenuState();
     });
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `sessionColorFilterMenuItem marker-${color.id}`;
@@ -1773,7 +1781,7 @@ export function createSessions(options: {
 
     const filters = document.createElement("div"); filters.className = "sessionLaneDrawerBucketFilters"; filters.setAttribute("role", "group"); filters.setAttribute("aria-label", "Filter lanes by bucket");
     const allBuckets = document.createElement("button"); allBuckets.type = "button"; allBuckets.className = `sessionLaneDrawerBucketFilterAll${laneDrawerBucketFilter ? "" : " selected"}`; allBuckets.textContent = "All"; allBuckets.setAttribute("aria-pressed", String(!laneDrawerBucketFilter)); allBuckets.addEventListener("click", () => { laneDrawerBucketFilter = undefined; openLaneDrawer(); }); filters.append(allBuckets);
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = laneDrawerBucketFilter === color.id;
       const button = document.createElement("button"); button.type = "button"; button.className = `sessionLaneDrawerBucketFilter marker-${color.id}${selected ? " selected" : ""}`;
       const label = markerColorLabel(color.id); button.title = label; button.setAttribute("aria-label", `Show ${label} bucket`); button.setAttribute("aria-pressed", String(selected));
@@ -2171,7 +2179,7 @@ export function createSessions(options: {
     });
     row.append(clear);
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = marker?.color === color.id;
       const button = document.createElement("button");
       button.type = "button";
@@ -2333,7 +2341,7 @@ export function createSessions(options: {
     laneFilters.setAttribute("aria-label", "Filter sessions");
     if (sessionColorFilterButton) laneFilters.append(sessionColorFilterButton);
     const bucketFilters = document.createElement("span"); bucketFilters.className = "sessionBucketFilters"; bucketFilters.setAttribute("role", "group"); bucketFilters.setAttribute("aria-label", "Quick bucket selection");
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = quickBucketColor === color.id;
       const dot = document.createElement("button"); dot.type = "button"; dot.className = `sessionBucketFilter marker-${color.id}${selected ? " selected" : ""}`;
       dot.title = selected ? `Stop marking ${markerColorLabel(color.id)}` : `Mark multiple sessions ${markerColorLabel(color.id)}`;
@@ -2747,8 +2755,8 @@ export function createSessions(options: {
     });
     new MutationObserver(updateEmptyCwdChooser).observe(elements.messagesEl, { childList: true });
     elements.emptyCwdButton.addEventListener("click", () => openFolderPicker(state.currentCwd));
-    const headerTitle = elements.sessionDrawer.querySelector(".sessionDrawerHeader h2");
-    if (headerTitle) {
+    const drawerHeader = elements.sessionDrawer.querySelector(".sessionDrawerHeader");
+    if (drawerHeader) {
       const filterWrap = document.createElement("div");
       filterWrap.className = "sessionDrawerFilters";
       sessionSearchInput = document.createElement("input");
@@ -2774,21 +2782,19 @@ export function createSessions(options: {
       sessionColorFilterButton.addEventListener("click", () => openSessionColorFilterMenu(sessionColorFilterButton!));
       renderSessionColorFilterButton();
       filterWrap.append(sessionSearchInput, sessionWorkerCollapseAllButton);
-      headerTitle.replaceWith(filterWrap);
+      drawerHeader.prepend(filterWrap);
     }
 
-    setIcon(elements.sessionDrawerSettingsButton, "settings");
-    elements.sessionDrawerSettingsButton.append(document.createTextNode("Settings"));
-    setIcon(elements.sessionDrawerInfoButton, "info");
-    elements.sessionDrawerInfoButton.append(document.createTextNode("Info"));
-    elements.sessionNewButton.textContent = "+ New session";
+    setIcon(elements.sessionNewButton, "square-pen");
+    setIcon(elements.sessionCloseButton, "x");
     elements.sessionDrawerSettingsButton.addEventListener("click", () => {
       setSessionDrawerOpen(false);
-      elements.settingsButton.click();
+      document.dispatchEvent(new CustomEvent("pi-web-open-settings", { detail: { scope: "preferences" } }));
     });
-    // The system-info panel owns this button's open handler. Closing the drawer
-    // first keeps the transition consistent on both split-pane and mobile layouts.
-    elements.sessionDrawerInfoButton.addEventListener("click", () => setSessionDrawerOpen(false));
+    elements.sessionDrawerInfoButton.addEventListener("click", () => {
+      setSessionDrawerOpen(false);
+      document.dispatchEvent(new CustomEvent("pi-web-open-settings", { detail: { scope: "system" } }));
+    });
 
     sessionPanelHandle = rightPanels?.register({
       id: "sessions",

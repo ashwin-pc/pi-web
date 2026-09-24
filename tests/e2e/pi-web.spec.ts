@@ -501,7 +501,7 @@ test.describe("composer layout", () => {
       if (!await page.locator("#settingsPanel").isVisible()) {
         await page.locator("#prompt").blur();
         if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
-        await openSessionDrawerFooterAction(page, "Settings");
+        await openSessionDrawerFooterAction(page, "Preferences");
         await expect(page.locator("#settingsPanel")).toBeVisible();
       }
       if (!await page.locator("#settingAccentMenuButton").isVisible()) await page.locator("#settingsNavAppearance").click();
@@ -567,7 +567,7 @@ test.describe("composer layout", () => {
       if (!await page.locator("#settingsPanel").isVisible()) {
         await page.locator("#prompt").blur();
         if (await page.locator("#sessionDrawer").isVisible()) await page.locator("#sessionCloseButton").click();
-        await openSessionDrawerFooterAction(page, "Settings");
+        await openSessionDrawerFooterAction(page, "Preferences");
         await expect(page.locator("#settingsPanel")).toBeVisible();
       }
       if (!await page.locator("#settingLoadingAnimationSelect").isVisible()) await page.locator("#settingsNavAppearance").click();
@@ -1094,7 +1094,7 @@ test.describe("attachments and prompt", () => {
     await page.locator("#imageInput").setInputFiles({ name: "debug.png", mimeType: "image/png", buffer: VALID_PNG });
     await expect(page.locator(".attachmentChip")).toContainText("debug.png");
     await page.reload();
-    await page.locator("#settingsButton").evaluate((button: HTMLButtonElement) => button.click());
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavDiagnostics").click();
     await page.locator("#openDebugDiagnosticsButton").click();
 

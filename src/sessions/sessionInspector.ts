@@ -16,13 +16,12 @@ type InspectorOptions = {
   item: (sessionId: string) => SessionInspectorItem;
   moveToLane: (sessionId: string, lane: SessionLaneId) => void;
   setBucket: (sessionId: string, color: SessionMarkerColorId) => void;
+  bucketColors: () => { id: SessionMarkerColorId; label: string }[];
   editNote: (sessionId: string) => void;
   removeFromLanes: (sessionId: string) => void;
   openSession: (sessionId: string) => void;
   setUnread: (sessionId: string, unread: boolean) => void;
 };
-
-const colors: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
 
 export function buildSessionInspector(options: InspectorOptions) {
   let backdrop: HTMLDivElement | undefined;
@@ -45,7 +44,7 @@ export function buildSessionInspector(options: InspectorOptions) {
 
     const bucketRow = document.createElement("div"); bucketRow.className = "sessionInspectorRow"; const bucketLabel = document.createElement("span"); bucketLabel.textContent = "Bucket"; bucketRow.append(bucketLabel);
     const buckets = document.createElement("div"); buckets.className = "sessionInspectorBuckets";
-    for (const color of colors) { const button = document.createElement("button"); button.type = "button"; button.className = `marker-${color}${item.bucket === color ? " selected" : ""}`; button.title = `${color} bucket`; button.setAttribute("aria-label", button.title); button.addEventListener("click", () => { options.setBucket(item.sessionId, color); close(); }); buckets.append(button); }
+    for (const color of options.bucketColors()) { const button = document.createElement("button"); button.type = "button"; button.className = `marker-${color.id}${item.bucket === color.id ? " selected" : ""}`; button.title = `${color.label} bucket`; button.setAttribute("aria-label", button.title); button.addEventListener("click", () => { options.setBucket(item.sessionId, color.id); close(); }); buckets.append(button); }
     bucketRow.append(buckets); card.append(bucketRow);
 
     const noteSection = document.createElement("div"); noteSection.className = "sessionInspectorNoteSection";

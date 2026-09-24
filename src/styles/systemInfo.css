@@ -259,3 +259,16 @@
     padding: 10px 13px;
   }
 }
+.systemInfoPanel--inline {
+  position: static;
+  width: auto;
+  max-width: none;
+  height: auto;
+  max-height: none;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+.systemInfoPanel--inline .systemInfoHeader { padding: 0 0 14px; }
+.systemInfoPanel--inline .systemInfoIdentity h2 { font-size: 15px; }
+.systemInfoPanel--inline .systemInfoBody { padding: 0; overflow: visible; }

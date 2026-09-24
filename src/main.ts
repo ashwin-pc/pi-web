@@ -61,8 +61,8 @@ import { createRealtime, type RealtimeController } from "./realtime/realtime.js"
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { createSettlementDependencyStore } from "./sessions/settlementDependencies.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
-import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
+import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSessionInfo, type SessionInfoController } from "./sessionInfo/sessionInfo.js";
 import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
@@ -416,8 +416,8 @@ function renderActiveSessionMetadata() {
   setArtifactPreviews(inSlot("artifact-preview"));
   gitPanel?.setExtensionTabs(inSlot("git-tab"));
   webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
-  systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   actionLauncher?.setExtensionActions(inSlot("fab"));
+  systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   const captureContributions = inSlot("composer-input").filter((entry): entry is ComposerCaptureDescriptor =>
     entry.kind === "capture" && entry.capture?.media === "audio" && typeof entry.capture.registrationId === "string" && typeof entry.key === "string",
   );
@@ -640,14 +640,16 @@ settings = createSettings({
   },
 });
 
+const systemInfoInline = document.querySelector<HTMLElement>("#systemInfoInline");
+if (!systemInfoInline) throw new Error("Missing inline system information container");
 systemInfo = createSystemInfo({
   api,
-  rightPanels,
   trigger: elements.sessionDrawerInfoButton,
-  focusOnClose: elements.sessionButton,
+  focusOnClose: elements.sessionDrawerInfoButton,
   apiHeaders: api.headers,
   getSessionId: () => state.currentSessionId,
   onError: (message) => messages.addMessage("system", message, "error"),
+  inlineContainer: systemInfoInline,
 });
 
 contextMeter = createContextMeter({ elements });
@@ -756,12 +758,12 @@ actionLauncher = initActionLauncher(elements, {
 statusBar.init();
 sessions.init();
 sessionInfo.init();
-systemInfo.init();
 contextMeter.init();
 composer.init();
 conversationTree.init();
 modelSettings.init();
 settings.init();
+systemInfo.init();
 const hasBlockingShortcutOverlay = () => Boolean(document.fullscreenElement
   || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop, .imageOverlay'));
 const canCyclePinnedSessions = () => sessions.focusedLaneSessionCount() > 1
