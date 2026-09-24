@@ -632,12 +632,21 @@ test.describe("session quick bar", () => {
     await page.goto("/"); await page.locator(".sessionLayersButton").click();
     const card = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
     const handle = card.locator(".sessionLaneDragHandle"); const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
-    const startBox = await handle.boundingBox(); const endBox = await destination.boundingBox(); expect(startBox).not.toBeNull(); expect(endBox).not.toBeNull();
+    const startBox = await handle.boundingBox(); const cardBox = await card.boundingBox(); const endBox = await destination.boundingBox(); expect(startBox).not.toBeNull(); expect(cardBox).not.toBeNull(); expect(endBox).not.toBeNull();
     const originalLane = await card.locator("xpath=..").getAttribute("data-lane");
     const pointer = { pointerId: 37, pointerType: "mouse", isPrimary: true, button: 0 };
     await handle.dispatchEvent("pointerdown", { ...pointer, clientX: startBox!.x + 4, clientY: startBox!.y + 4 });
-    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: endBox!.y + endBox!.height / 2 });
+    const destinationY = endBox!.y + endBox!.height / 2;
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: destinationY });
     await expect(card).toHaveClass(/dragging/); await expect(card).not.toHaveCSS("transform", "none");
+    await expect(page.locator(".sessionLaneDrawerPlaceholder")).toHaveCount(1);
+    const followedY = await card.evaluate((node) => node.getBoundingClientRect().top);
+    expect(Math.abs(followedY - (cardBox!.y + destinationY - (startBox!.y + 4)))).toBeLessThan(3);
+    expect(await page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]').evaluate((node) => node.getAnimations().some((animation) => animation.playState === "running"))).toBe(true);
+    // Reverse twice while neighbor motion is still active. Hit testing must use
+    // layout geometry rather than the animated card's painted rectangle.
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: startBox!.x + 4, clientY: startBox!.y + 14 });
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: destinationY });
     await page.evaluate((id) => window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: id, pointerType: "mouse", isPrimary: true, bubbles: true })), pointer.pointerId);
     await expect(card).not.toHaveClass(/dragging/); expect(await card.locator("xpath=..").getAttribute("data-lane")).toBe(originalLane);
   });
