@@ -79,6 +79,11 @@ class KiroHandle implements SessionHandle {
     for (const event of this.observations) { try { listener(structuredClone(event)); } catch { /* isolate clients */ } }
     return () => { this.listeners.delete(listener); };
   }
+  private correlation() {
+    const input = this.execution;
+    return input ? { executionId: input.executionId, ...(input.clientMessageId ? { clientMessageId: input.clientMessageId } : {}),
+      ...(input.sourceClientId ? { sourceClientId: input.sourceClientId } : {}) } : {};
+  }
   private emit(event: SessionServiceEvent) { for (const listener of this.listeners) { try { listener(structuredClone(event)); } catch { /* isolate clients */ } } }
   private publish() {
     this.snapshot.activity = this.controls.size ? "waiting-approval" : this.execution ? "working" : "idle";
@@ -93,7 +98,7 @@ class KiroHandle implements SessionHandle {
     this.execution = input;
     this.snapshot.activeExecution = { id: input.executionId, owner: "host" };
     this.snapshot.phase = "running"; delete this.snapshot.error;
-    this.transcript.begin(input.message, input); this.publish();
+    this.transcript.begin(input.message, this.correlation()); this.publish();
     const params = { sessionId: this.snapshot.nativeSession.sessionId!, prompt: [{ type: "text", text: input.message }] } satisfies PromptRequest;
     // ACP prompt responses end the turn. A short uniform RPC timeout is incorrect.
     void this.rpc.request("session/prompt", params, null).then((value) => {
@@ -143,7 +148,7 @@ class KiroHandle implements SessionHandle {
   private project(frame: SessionNotification) {
     if (frame.sessionId !== this.snapshot.nativeSession.sessionId || !this.replay && !this.execution) { this.observe("unbound-update"); return; }
     this.updateBytes = Buffer.byteLength(JSON.stringify(frame.update));
-    try { this.transcript.update(frame.update as SessionUpdate, this.execution ?? {}, this.replay); }
+    try { this.transcript.update(frame.update as SessionUpdate, this.correlation(), this.replay); }
     finally { this.updateBytes = 0; }
   }
   private requiredControl(native: NativeRequest) {
@@ -252,7 +257,10 @@ export function createKiroAdapter(options: KiroAdapterOptions = {}): SessionAdap
     async list(cwd): Promise<AdapterSessionInfo[]> {
       if (!available) return [];
       await preflight({ ...options, cwd });
-      const output: unknown = JSON.parse(await metadata({ ...options, cwd }, ["chat", "--agent-engine", "v2", "--list-sessions", "--format", "json"]));
+      const text = await metadata({ ...options, cwd }, ["chat", "--agent-engine", "v2", "--list-sessions", "--format", "json"]);
+      let output: unknown;
+      try { output = JSON.parse(text); }
+      catch { throw new KiroRpcError("Invalid Kiro catalog JSON; check native setup", "protocol"); }
       if (!Array.isArray(output)) throw new KiroRpcError("Invalid Kiro catalog", "protocol");
       const rows: AdapterSessionInfo[] = [];
       for (const envelope of output) {

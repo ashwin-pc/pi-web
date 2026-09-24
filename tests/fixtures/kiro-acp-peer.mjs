@@ -21,7 +21,7 @@ const stored = join(root, "synthetic-sessions"); mkdirSync(stored, { recursive: 
 if (stage === "catalog") {
   if (JSON.stringify(args) !== JSON.stringify(["chat", "--agent-engine", "v2", "--list-sessions", "--format", "json"])) process.exit(2);
   const sessions = readdirSync(stored).map((file) => read(join(stored, file), {})).filter((s) => s.cwd === process.cwd()).map((s) => ({ sessionId: s.id, source: "v2", title: s.title, updatedAt: s.updatedAt, messageCount: s.history.length, status: "idle" }));
-  process.stdout.write(JSON.stringify(configuration.catalog ?? [{ cwd: process.cwd(), sessions, complete: true }])); process.exit(0);
+  process.stdout.write(configuration.catalogRaw ?? JSON.stringify(configuration.catalog ?? [{ cwd: process.cwd(), sessions, complete: true }])); process.exit(0);
 }
 if (JSON.stringify(args) !== JSON.stringify(["acp", "--agent-engine", "v2"])) process.exit(2);
 const directory = join(root, "peers", String(process.pid)); const commands = join(directory, "commands");

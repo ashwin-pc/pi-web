@@ -199,6 +199,7 @@ describe("Kiro production ACP handle", () => {
       const { handle, peer, events } = await fixture(); await prompt(handle);
       for (let i = 0; i < chunks; i++) await controlPeer(peer, { action: "text", delta: "x".repeat(256) });
       expect(events.filter((e) => e.type === "message_delta" && e.delta === "x".repeat(256))).toHaveLength(chunks);
+      expect(events.filter((e) => e.type === "message_delta").every((e) => !Object.hasOwn(e, "message") && !Object.hasOwn(e, "mode") && !Object.hasOwn(e, "attachments"))).toBe(true);
       await handle.dispose(); return Buffer.byteLength(JSON.stringify(events));
     };
     expect((await run(40)) / (await run(20))).toBeLessThan(2.1);
@@ -224,6 +225,11 @@ describe("Kiro production ACP handle", () => {
     const list = await adapter.list(root); expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ nativeSession: { sessionId: item.sessionId }, modified: item.updatedAt, messageCount: 0 });
     expect(list[0].created).toBeUndefined();
+  });
+  it("does not reflect malformed catalog output into native setup diagnostics", async () => {
+    const { root, adapter } = await fixture();
+    await writeFile(join(root, "config.json"), JSON.stringify({ catalogRaw: "catalog-private-marker is not JSON" }));
+    await expect(adapter.list(root)).rejects.toMatchObject({ message: "Invalid Kiro catalog JSON; check native setup" });
   });
   it("loads an immediately persisted empty session with captured modes/models and startup observations", async () => {
     const { root, adapter, handle, handles, events } = await fixture();
