@@ -115,6 +115,14 @@ export class KiroTranscript {
     const status = native.status === "completed" ? "completed" : native.status === "failed" ? "error" : "running";
     const part: ToolCallPartDto = { id: `${id}:tool`, type: "toolCall", nativeItemId: native.toolCallId, toolCallId: native.toolCallId,
       toolName: typeof native.title === "string" && approvalContext(native.title) ? native.title : "Native tool", args: safeJson(native.rawInput), status };
+    // Kiro 2.24.0 emits native read results as rawOutput.items[].Text, with
+    // no ACP content array. Project only this captured shape, never stringify
+    // arbitrary rawOutput or replace an explicitly supplied content array.
+    const rawItems = object(native.rawOutput)?.items;
+    if (native.content == null && Array.isArray(rawItems) && approvalContext(native.rawOutput)
+      && rawItems.every((item) => object(item) && Object.keys(item).length === 1 && typeof item.Text === "string")) {
+      part.result = { parts: rawItems.map((item, index) => ({ type: "text", id: `${id}:result:${index}`, text: item.Text as string })), isError: status === "error" };
+    }
     if (Array.isArray(native.content)) {
       const parts: Array<TextPartDto | ImagePartDto> = [];
       const diffs: string[] = [];

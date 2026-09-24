@@ -67,6 +67,16 @@ describe("Kiro production ACP handle", () => {
     expect((await handle.messages()).flatMap((m) => m.parts?.map((p) => p.type) ?? [])).toEqual(["text", "text", "thinking", "toolCall", "text"]);
     expect(events.filter((e) => e.type === "message_delta").map((e) => e.delta)).toContain("Native thought");
   });
+  it("projects captured Kiro rawOutput Text items without inventing arbitrary JSON results", async () => {
+    const { handle, peer } = await fixture(); await prompt(handle);
+    await controlPeer(peer, { action: "tool", fields: { rawInput: { operations: [{ mode: "Line", path: "owned.txt" }] } } });
+    await controlPeer(peer, { action: "tool", update: true, fields: { status: "completed", rawOutput: { items: [{ Text: "Synthetic owned file result" }] } } });
+    expect((await tools(handle))[0]).toMatchObject({ status: "completed", result: { parts: [{ type: "text", text: "Synthetic owned file result" }], isError: false } });
+    await controlPeer(peer, { action: "tool", itemId: "unknown", fields: { status: "completed", rawOutput: { arbitrary: "Not a supported content shape" } } });
+    expect((await tools(handle))[1].result).toBeUndefined();
+    await controlPeer(peer, { action: "tool", itemId: "unsafe", fields: { status: "completed", rawOutput: { items: [{ Text: "Authorization: Bearer synthetic-private-value" }] } } });
+    expect(JSON.stringify(await handle.messages())).not.toContain("synthetic-private-value");
+  });
   it.each(["end_turn", "cancelled", "max_tokens", "max_turn_requests", "refusal"])("preserves terminal reason %s and partial content", async (reason) => {
     const { handle, peer } = await fixture(); await prompt(handle);
     await controlPeer(peer, { action: "text", delta: "Partial" }); await controlPeer(peer, { action: "tool" });

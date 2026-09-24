@@ -2,7 +2,8 @@
 /** Synthetic ACP v1 / Kiro 2.24.0 executable. No model, native config or native
  * private store. Commands and synthetic persistence live only in the owned root.
  * Startup, settings, catalog and error shapes follow the real 2026-09-24 zero-model
- * probe. Prompt/permission frames remain ACP-v1-spec fixtures, not real captures. */
+ * probe. Prompt/permission controls remain synthetic. Tests may supply the real
+ * canary's rawOutput.items[].Text shape with synthetic content through fields. */
 import { mkdirSync, readFileSync, writeFileSync, appendFileSync, readdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
