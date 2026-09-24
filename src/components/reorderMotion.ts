@@ -33,24 +33,36 @@ export function nextAnimationFrame(callback: () => void) {
   requestAnimationFrame(() => requestAnimationFrame(callback));
 }
 
-/** Animate a DOM reorder without changing the adapter's ordering semantics. */
+const reorderAnimations = new WeakMap<HTMLElement, Animation>();
+
+/** Animate a DOM reorder without changing the adapter's ordering semantics.
+ *
+ * Measurements are taken from the currently painted position. Replacing an
+ * in-flight Web Animation from that position makes repeated reversals
+ * continuous; queued style/RAF FLIP callbacks otherwise snap an element back
+ * to an obsolete transform before starting the next transition.
+ */
 export function animateReorderLayout(elements: HTMLElement[], mutate: () => void, options: { exclude?: HTMLElement; reducedMotion?: boolean } = {}) {
   const before = new Map(elements.map((element) => [element, element.getBoundingClientRect()]));
   mutate();
-  if (options.reducedMotion) return;
   for (const element of elements) {
     if (element === options.exclude) continue;
     const previous = before.get(element);
     if (!previous || !element.isConnected) continue;
+    reorderAnimations.get(element)?.cancel();
+    reorderAnimations.delete(element);
+    if (options.reducedMotion) continue;
     const current = element.getBoundingClientRect();
     const dx = previous.left - current.left;
     const dy = previous.top - current.top;
-    if (!dx && !dy) continue;
-    element.style.transition = "none";
-    element.style.transform = `translate(${dx}px, ${dy}px)`;
-    requestAnimationFrame(() => {
-      element.style.transition = "transform 160ms cubic-bezier(.2,.8,.2,1)";
-      element.style.transform = "";
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+    const animation = element.animate(
+      [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "translate(0, 0)" }],
+      { duration: 160, easing: "cubic-bezier(.2,.8,.2,1)" },
+    );
+    reorderAnimations.set(element, animation);
+    animation.addEventListener("finish", () => {
+      if (reorderAnimations.get(element) === animation) reorderAnimations.delete(element);
     });
   }
 }
