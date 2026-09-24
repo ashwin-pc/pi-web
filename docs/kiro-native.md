@@ -1,6 +1,6 @@
 # Kiro native integration
 
-**Supported (deterministic peers): Kiro is the fourth opt-in local harness behind the existing `LocalSessionService` and `SessionHandle`. Unverified: real canary pending.** Implementation validation made no real Kiro calls. Separately authorized zero-model probes captured real new/load responses, startup notifications and catalog source shapes; those captures inform this slice's synthetic peer. Prompt, permission and nonempty replay frames remain spec-based until the real canary.
+**Kiro is the fourth opt-in local harness behind the existing `LocalSessionService` and `SessionHandle`; a bounded real browser canary now verifies generation, native read, permission decline, guarded Stop and resumed recall. Exact cold-history parity is not supported for interrupted prose.** The 2026-09-24 canary consumed its complete four-prompt authorization and confirmed ACP v1 prompt/permission frames. Native cold load replaces stopped prose with an interruption placeholder. Allow-once was offered but not exercised; remembered scopes, broad historical replay and platform parity remain unverified. Deterministic-peer evidence is separate from these real observations.
 
 ## Pins and native ownership
 
@@ -47,7 +47,7 @@ flowchart LR
 | --- | --- |
 | Create | Version preflight, initialize with protocol 1 and empty client capabilities, then `session/new {cwd,mcpServers:[]}`. Web UUID and native ID differ. The pinned real probe showed immediate persistence before any prompt, public source `v2` and successful fresh-child empty load; the handle reports resumable. |
 | Open | Fresh child and `session/load {sessionId,cwd,mcpServers:[]}`. Buffer updates until load completes, validate identity, project replay before returning. Never send the previous prompt again. |
-| List | Public CLI cwd envelopes, not unadvertised `session/list`. Filter strictly to `source === "v2"`: the real engine-v2 catalog also returned incompatible `classic` rows. Cold web bindings remain listed by the existing service. Historical and nonempty v2 replay remain real-canary gates. |
+| List | Public CLI cwd envelopes, not unadvertised `session/list`. Filter strictly to `source === "v2"`: the real engine-v2 catalog also returned incompatible `classic` rows. Cold web bindings remain listed by the existing service. This canary verified completed nonempty history for its new source-v2 session. Arbitrary historical sessions and compaction remain unverified; native cold replay does not preserve interrupted prose. |
 | Prompt | Idle, nonempty text only. `session/prompt {sessionId,prompt:[{type:"text",text}]}` returns a dispatch receipt with `acknowledgement:"not-exposed"`. The outstanding RPC response is the end of the turn, not immediate admission. No native execution ID is invented. |
 | Stop | Required matching host guard, then `session/cancel` **notification**. Receipt acknowledges host dispatch, not native acknowledgement. Keep the guard and busy state until the prompt response arrives. |
 | Decisions | Exact pending `session/request_permission` → server-owned opaque web choices → exact offered native `optionId`, or `{outcome:{outcome:"cancelled"}}`. |
@@ -68,7 +68,7 @@ Control requests retain at most 4,096 seen native IDs per child; crossing the li
 | `agent_thought_chunk` | Thinking parts only when native content is exposed |
 | `user_message_chunk` | User history during load replay; live dispatched input is correlated by the host |
 | `tool_call`, `tool_call_update` | Exact `toolCallId` correlation, sparse absent/null optional updates, supplied raw input only, running/completed/error status |
-| Tool text and inline image content | Existing tool result parts; no local file reads or terminal execution to fill content |
+| Tool text and inline image content | Existing tool result parts; the real read result's bounded `rawOutput.items[].Text` shape is also projected when ACP content is absent. No arbitrary JSON rendering, local file reads or terminal execution to fill content |
 | Diff `{path,oldText,newText}` | Existing `details.diff`, with full old/new text and path when safe to display |
 | `plan` | One contextual system message replaced by each plan update |
 | Commands and additive unknown variants | At most 32 metadata-only observations containing bounded method/variant names and byte counts; no arbitrary native envelope persistence |
@@ -86,13 +86,13 @@ Consent context uses the existing complete, reversible JSON review principles fr
 
 All optional capabilities are false: queues, steering, follow-up, thinking-level control, tree, compaction, retry, shell, extensions, models, context, attachments and history fork. Interactions are true. Unsupported operations reject at the service and adapter boundaries. Effective `models.currentModelId` and `modes.currentModeId` returned by new/load are read-only display values, never Pi defaults or native mutation requests. Captured v2 responses have no `configOptions`; the adapter does not infer effort from the startup metadata's list of supported levels.
 
-**Supported (deterministic peers)** means the production adapter, LocalSessionService, HTTP/WS and real browser exercised a synthetic executable. Real zero-model captures establish the new/load/settings/startup shapes, but do not establish prompt-turn or permission frames. The audit found public Kiro documentation using `session/notification`, `TurnEnd` and prompt `content`, whereas the pinned ACP v1 schema uses `session/update`, a prompt response with `stopReason`, and prompt `prompt`. Only the pinned dialect is implemented; a real canary must resolve this drift.
+**Supported (deterministic peers)** means the production adapter, LocalSessionService, HTTP/WS and real browser exercised a synthetic executable. Real zero-model captures establish the new/load/settings/startup shapes. The separately authorized actual canary below establishes a bounded set of prompt-turn, permission and nonempty replay observations. The audit found public Kiro documentation using `session/notification`, `TurnEnd` and prompt `content`, whereas the pinned ACP v1 schema uses `session/update`, a prompt response with `stopReason`, and prompt `prompt`. The real canary confirmed the pinned dialect. Additive `_kiro.dev/session/update` notifications with `tool_call_chunk` precede canonical tool calls and remain observations, not a second transcript dialect.
 
-Still **Unverified: real canary pending**:
+Still **unverified or limited after the real canary**:
 
-- Actual once-option payloads and remembered permission scopes.
-- Nonempty or historical v2 history replay and compaction identity changes. One new empty session's source-to-load bridge is proven separately.
-- Real prompt/cancel sequencing, authentication refresh and inference entitlement.
+- Allow-once execution: the option was offered but not selected. Remembered permission scopes remain unverified and hidden.
+- Historical v2 sessions and compaction identity changes. Completed history replayed for this newly created session; native cold replay replaced stopped prose with `Response was interrupted by the user`, so it cannot recover the live partial text.
+- Authentication refresh, long-running entitlement changes, limit/refusal endings and broader prompt/cancel races. Actual `end_turn` and `cancelled` settlement were observed.
 - Native agent, hook, tool and MCP inheritance with the exact startup inputs.
 - Canonical macOS and Windows launch/cleanup behavior.
 - Usage scope, cost/currency and context occupancy; no guessed accounting is shown.
@@ -139,12 +139,35 @@ The frozen tested code is **`9dcc6f3b3f27360d682f36499b3cb8bdf13fffa2`**, on the
 | Scroll regression matrix, three repeats across three viewports | **27 passed**, zero skips/failures/retries |
 | Complete parallel `npm test`, two shards and concurrency four | **853 unit passes / 2 skips; 897 browser passes / 55 skips; zero failures/retries**, 443.5 seconds |
 | Existing snapshots | Unchanged |
-| Native model canary | Unverified: real canary pending |
+| Native model canary | Not part of this producer gate; subsequently run under the separate four-prompt authorization below |
 
 The two unit skips are the existing opt-in Claude configuration and synthetic-SSE actual-CLI cases. Browser skips are the same 55 existing conditional cases: 49 viewport-specific and six opt-in diagnostics. The full browser breakdown is mobile 302/9 skipped, tablet 271/40, desktop 305/6, and auth 19/0. Exact names are retained in the producer skip inventory; passing counts are per checkpoint, not additive.
 
 The full gate exposed a **pre-existing** shared scroll race: explicit wheel intent was discarded while the programmatic-scroll reset was pending. Both the original renderer and original failing test were unchanged from the base. A deterministic browser probe reproduced it red, and `9dcc6f3` removes only that input-handler guard while preserving the separate guard on actual programmatic scroll events. The original selection assertion is unchanged. This repair is independently reviewable from the Kiro leaf and explains the three additional browser cases.
 
 Producer receipts live under `.pi/web/artifacts/kiro-implementation/`: exact commands, source hashes, red/green evidence, full logs, skip inventory and cleanup. These are supplementary evidence, not required runtime/test inputs. Earlier setup failures and the inherited failing full run remain recorded; they are not counted as acceptance. All owned validation processes finished, owned ports were checked free, and scratch validation homes were removed. No live restart, push, native-home change or real model call was performed by this worker.
+
+## Bounded actual browser canary — 2026-09-24
+
+**Result: verified core paths with a native cold-replay limitation, not full parity. All four authorized prompt turns are consumed.** Linux CLI 2.24.0 ran through the production application (`PI_WEB_MOCK=0`, multi-harness enabled), real Playwright Chromium, authenticated token/setup flow and landing Kiro selector. The app used loopback port 21941 and isolated web/Pi stores; the workspace was under `/tmp` with no `artifact` component. Native HOME, authentication, agent, model, effort and permission configuration were inherited unchanged by the launcher. No trust flags or native configuration edits were made.
+
+| Turn | Actual observation | Result |
+| --- | --- | --- |
+| 1: read and generation | Native read obtained a random marker absent from the prompt; streamed answer, tool card, read-only model `auto` / mode `amzn-builder`, `end_turn`, Stop hidden and public catalog source `v2` verified. No read permission request occurred. | PASS; read permission NOT ENCOUNTERED |
+| 2: harmless write | A sparse `session/request_permission` joined its exact live edit tool. Options were `allow_once`/Yes, `allow_always`/Always and `reject_once`/No. UI decline selected exact `reject_once`; no file was written. Native did not re-ask. | Decline PASS; allow-once NOT ENCOUNTERED |
+| 3: streamed Stop | Browser Stop carried the matching host guard; adapter sent the `session/cancel` notification; prompt response returned `stopReason: cancelled`. Partial text remained after settlement and page reload, with no running tool cards. | PASS |
+| 4: cold load and recall | Owned app restarted with the same isolated stores. Drawer open invoked fresh-child `session/load`; completed text/tools and native identity replayed without resending input. A fourth explicit prompt recalled the marker. Native replay replaced interrupted prose with its own placeholder rather than the original partial answer. | Recall PASS; exact cold-history parity FAIL (native replay limit) |
+
+The actual permission request has `toolCall.{toolCallId,title,rawInput}` without kind/status, and `_meta.trustOptions` describes native path/directory trust candidates. The existing exact live-tool join supplies kind; the web exposes only once choices and does not mutate native trust settings. No allow-always choice was sent. Live canonical updates included `tool_call`, `tool_call_update` and `agent_message_chunk`; replay also emitted user chunks and empty thought chunks (not evidence of nonempty reasoning). Prompt requests use `prompt`, canonical notifications use `session/update`, and responses carry `stopReason`, resolving the documentation drift for this pin.
+
+The canary exposed one adapter defect: the native read result supplied `rawOutput: {items: [{Text: "…"}]}` without ACP `content`, leaving a completed card with no result. **`33f00db`** adds a bounded, shape-specific fallback; explicit ACP content retains precedence and arbitrary or unsafe raw output is not rendered. A deterministic executable-peer regression first failed on the missing result, then passed; replay of the original real read after the fix displayed the captured result without repeating its prompt. Additional synthetic tests cover the actual sparse permission/options shape and native interrupted replay placeholder. They use synthetic content, not real captured transcript data.
+
+The first runner attempt also timed out while dismissing the native settings popover after successful turn 1. Only that UI helper was corrected; the remaining zero-model assertions were completed during an explicit continuation. The immutable budget reservations were not reset. The runner initially labeled its four turn statuses PASS despite recording `coldHistoryExact: false`; the final assessment and runner now correctly distinguish successful recall from failed exact cold replay. No extra model call was spent to improve the label.
+
+Evidence is in `.pi/web/artifacts/kiro-actual-canary/`: `report.md`, `report.json`, `frames-redacted.jsonl` (106 actual frames), `budget.json` (four reservations and four actual prompt frames), screenshots, redacted logs, red/green proof and final validation receipts. The runner is `tests/kiro-actual-canary.mjs`; its executable wrapper is a real CLI pass-through with exact argument and reserved-budget guards, not a response peer. It is opt-in and excluded from `npm test`. The exhausted ledger intentionally prevents another run.
+
+**Final deterministic gate on code `46dddfa710993aa0e7a00e5c9bb4858a3a411839`:** project and strict standalone leaf typechecks, complete build and **57 focused passes** succeeded. Full parallel `npm test`, using disposable HOME/state, explicit browser cache, two shards and concurrency four, finished in **445.8 seconds**: **856 unit passes / 2 existing skips; 897 browser passes / 55 existing skips; zero failures/retries**. Browser breakdown: mobile 302/9 skipped, tablet 271/40, desktop 305/6, auth 19/0. No snapshots changed. The opt-in runner's final guard tightening was syntax-checked but not given another native turn; the full suite never executes real canaries. Documentation-only commits after this source pin do not change the tested code.
+
+Normal native startup wrote log/session files. Before/after native inventory records names and mtimes only, not content; concurrent native activity prevents exclusive attribution of all changes. The owned app and all 12 captured wrapper process groups were absent after cleanup; scratch workspace, isolated stores and private raw captures were removed. Native sessions/logs were left to Kiro, not manually deleted. Allow-once enforcement, remembered scopes, auth refresh, arbitrary historical sessions, compaction, images/diffs in a real turn, usage accounting and macOS/Windows remain unrun.
 
 Primary protocol references: [ACP initialization](https://agentclientprotocol.com/protocol/v1/initialization), [session setup](https://agentclientprotocol.com/protocol/v1/session-setup), [prompt turn](https://agentclientprotocol.com/protocol/v1/prompt-turn), [tool calls](https://agentclientprotocol.com/protocol/v1/tool-calls), [Kiro ACP](https://kiro.dev/docs/cli/acp.md), [Kiro v3 migration](https://kiro.dev/docs/cli/v3.md). Live documentation is not immutable evidence of the pinned binary's post-initialize behavior.
