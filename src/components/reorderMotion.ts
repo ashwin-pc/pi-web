@@ -32,3 +32,25 @@ export function prefersReducedReorderMotion() {
 export function nextAnimationFrame(callback: () => void) {
   requestAnimationFrame(() => requestAnimationFrame(callback));
 }
+
+/** Animate a DOM reorder without changing the adapter's ordering semantics. */
+export function animateReorderLayout(elements: HTMLElement[], mutate: () => void, options: { exclude?: HTMLElement; reducedMotion?: boolean } = {}) {
+  const before = new Map(elements.map((element) => [element, element.getBoundingClientRect()]));
+  mutate();
+  if (options.reducedMotion) return;
+  for (const element of elements) {
+    if (element === options.exclude) continue;
+    const previous = before.get(element);
+    if (!previous || !element.isConnected) continue;
+    const current = element.getBoundingClientRect();
+    const dx = previous.left - current.left;
+    const dy = previous.top - current.top;
+    if (!dx && !dy) continue;
+    element.style.transition = "none";
+    element.style.transform = `translate(${dx}px, ${dy}px)`;
+    requestAnimationFrame(() => {
+      element.style.transition = "transform 160ms cubic-bezier(.2,.8,.2,1)";
+      element.style.transform = "";
+    });
+  }
+}

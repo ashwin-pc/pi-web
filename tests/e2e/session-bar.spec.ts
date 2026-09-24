@@ -627,6 +627,21 @@ test.describe("session quick bar", () => {
     }).toBe("bookmarks");
   });
 
+  test("lane drawer drag previews motion and pointer cancellation restores order without persistence", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
+    await page.goto("/"); await page.locator(".sessionLayersButton").click();
+    const card = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    const handle = card.locator(".sessionLaneDragHandle"); const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
+    const startBox = await handle.boundingBox(); const endBox = await destination.boundingBox(); expect(startBox).not.toBeNull(); expect(endBox).not.toBeNull();
+    const originalLane = await card.locator("xpath=..").getAttribute("data-lane");
+    const pointer = { pointerId: 37, pointerType: "mouse", isPrimary: true, button: 0 };
+    await handle.dispatchEvent("pointerdown", { ...pointer, clientX: startBox!.x + 4, clientY: startBox!.y + 4 });
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: endBox!.y + endBox!.height / 2 });
+    await expect(card).toHaveClass(/dragging/); await expect(card).not.toHaveCSS("transform", "none");
+    await page.evaluate((id) => window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: id, pointerType: "mouse", isPrimary: true, bubbles: true })), pointer.pointerId);
+    await expect(card).not.toHaveClass(/dragging/); expect(await card.locator("xpath=..").getAttribute("data-lane")).toBe(originalLane);
+  });
+
   test("dragging a background session clears stale source focus without replacing destination focus", async ({ page }) => {
     await seedServerSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
