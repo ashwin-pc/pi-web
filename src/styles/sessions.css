@@ -1277,8 +1277,7 @@ body.hasPinnedSessions .app {
 .sessionLaneDrawer>footer { flex:0 0 auto;border-top:1px solid var(--border);padding:9px 16px 14px;display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:10.5px }.sessionLaneDrawer>footer button{min-height:0!important;padding:0;border:0;background:transparent;color:var(--accent,#d8a657);font:600 10.5px inherit}
 /* Lane drawer interaction fixes */
 .sessionLaneDrawerCard { touch-action:pan-y;transition:transform .12s ease,opacity .12s ease }
-.sessionLaneDrawerCard.dragging { z-index:2;opacity:.94;box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;will-change:transform;pointer-events:none;transition:none }
-.sessionLaneDrawerPlaceholder { flex:0 0 auto;border-bottom:1px solid transparent }
+.sessionLaneDrawerCard.dragging { z-index:2;opacity:.88;box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;will-change:transform }
 .sessionLaneDrawerCard.settling { transition:transform .18s cubic-bezier(.2,.8,.2,1),opacity .18s ease }
 @media (prefers-reduced-motion:reduce){.sessionLaneDrawerCard{transition:none!important}}
 .sessionLaneDrawerItem,.sessionLaneDrawerItemCopy { min-width:0;overflow:visible }
