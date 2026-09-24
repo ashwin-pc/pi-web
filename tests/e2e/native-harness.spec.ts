@@ -509,6 +509,7 @@ test("native configuration stays separate, unsupported controls reject, host art
   page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/models") modelCatalogRequests += 1; });
   const state = await stateOf(page, sessionId);
   expect(state.nativeSettings?.reasoningEffort).toBe("medium"); // Native effective value, not catalog default low.
+  expect(state.stats).not.toHaveProperty("tokens");
   expect(state.stats.cost).toBeUndefined();
   await page.locator("#modelSettingsButton").click();
   await expect(page.locator(".modelSettingsNative")).toContainText("Reasoning: medium");
@@ -545,6 +546,15 @@ test("native configuration stays separate, unsupported controls reject, host art
   await expect(page.locator("#sessionInfoPanel")).toContainText(`Native session: ${state.nativeSession.sessionId}`);
   await expect(page.locator("#sessionInfoInspectPrompt")).toBeHidden();
   await expect(page.locator("#sessionInfoCostValue")).toHaveText("—");
+  await expect(page.locator("#sessionInfoTokensValue")).toHaveText("—");
+  // A native measurement of zero must render as zero, unlike an absent measurement.
+  const zeroUsage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0, reasoningOutputTokens: 0 };
+  await controlPeer(peer, { action: "emit", message: { method: "thread/tokenUsage/updated", params: {
+    threadId: state.nativeSession.sessionId, turnId: state.activeExecution?.nativeExecutionId,
+    tokenUsage: { total: zeroUsage, last: zeroUsage },
+  } } });
+  await expect(page.locator("#sessionInfoTokensValue")).toHaveText("0");
+  expect((await stateOf(page, sessionId)).stats.tokens?.total).toBe(0);
   await page.locator("#sessionInfoCloseButton").click();
   if (await page.locator("#sessionDrawer").isHidden()) await page.locator("#sessionButton").click();
   await page.locator("#sessionDrawerSettingsButton").click();
@@ -836,6 +846,50 @@ test.describe("Claude native", () => {
     expect(await reopened.text()).toContain("no resumable native history");
     expect(await readdir(join(nativeServer.claudePeerDir, "peers"))).toEqual(peers);
   });
+});
+
+test("Kiro unknown usage stays unknown through completion, reload and cold reopen", async ({ page, nativeServer }) => {
+  await page.goto("/");
+  await expect(page.locator('[data-harness-selector="landing"] select')).toHaveValue("pi");
+  const creating = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/sessions/new" && response.request().method() === "POST");
+  await page.locator('[data-harness-selector="landing"] select').selectOption("kiro");
+  await page.locator("#prompt").fill("Synthetic input without native usage reporting");
+  await submitNativePrompt(page);
+  const created = await (await creating).json() as SessionSnapshotDto;
+  expect(created.stats).not.toHaveProperty("tokens");
+  const peer = await kiroPeer(nativeServer.kiroPeerDir, created.nativeSession.sessionId!);
+  await kiroPrompted(peer);
+  await controlKiro(peer, { action: "text", delta: "Synthetic assistant output without native usage reporting" });
+  await controlKiro(peer, { action: "complete" });
+  await expect(page.locator("#stopButton")).toBeHidden();
+
+  const expectUnknownUsage = async () => {
+    await expect(page.locator("#messages")).toContainText("Synthetic assistant output without native usage reporting");
+    const state = await stateOf(page, created.sessionId);
+    expect(state.phase).toBe("idle");
+    expect(state.stats).toMatchObject({ userMessages: 1, assistantMessages: 1, totalMessages: 2 });
+    expect(state.stats).not.toHaveProperty("tokens");
+    expect(state.stats).not.toHaveProperty("cost");
+    expect(state.stats).not.toHaveProperty("contextUsage");
+    if (await page.locator("#sessionInfoPanel").isHidden()) await openLauncherAction(page, "Session details");
+    await expect(page.locator("#sessionInfoTokensValue")).toHaveText("—");
+    await expect(page.locator("#sessionInfoCostValue")).toHaveText("—");
+  };
+  await expectUnknownUsage();
+  await page.reload();
+  await expectUnknownUsage();
+
+  await nativeServer.restart();
+  const response = await page.request.post("/api/sessions/open", { data: { sessionId: created.sessionId } });
+  expect(response.ok(), await response.text()).toBe(true);
+  const reopened = await response.json() as SessionSnapshotDto;
+  expect(reopened.nativeSession.sessionId).toBe(created.nativeSession.sessionId);
+  expect(reopened.stats).not.toHaveProperty("tokens");
+  await page.goto(`/?sessionId=${created.sessionId}`);
+  await expectUnknownUsage();
+  const recovered = await kiroPeer(nativeServer.kiroPeerDir, created.nativeSession.sessionId!);
+  expect(recovered.pid).not.toBe(peer.pid);
+  expect((await kiroObserved(recovered)).some((record) => record.message.method === "session/prompt")).toBe(false);
 });
 
 // ACP peer enters the same production server, selectors, HTTP and WebSocket relay.

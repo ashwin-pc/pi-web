@@ -51,6 +51,7 @@ it("uses the actual Pi SDK for startup, extension commands, identity and disposa
   const handle = await service.initialize();
   const state = handle.state();
   expect(state.harnessId).toBe("pi");
+  expect(state.stats.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
   expect(state.nativeSession.sessionId).toBe(state.sessionId);
   expect(state.sessionId).toMatch(/^[a-f\d-]{36}$/i);
   expect(events).toContainEqual(expect.objectContaining({ type: "wire", value: expect.objectContaining({ payload: { message: `SDK identity: ${state.sessionId}`, notifyType: "info" } }) }));
@@ -63,6 +64,7 @@ it("uses the actual Pi SDK for startup, extension commands, identity and disposa
   expect(events).toContainEqual(expect.objectContaining({ type: "wire", value: expect.objectContaining({ payload: { message: "SDK host token available: true", notifyType: "info" } }) }));
   expect(process.env.PI_WEB_TOKEN === hostToken).toBe(true); // Never log the value, even on failure.
   expect(events.some((event) => event.type === "agent" && event.event.type === "agent_start")).toBe(false);
+  expect(handle.state().stats.tokens).toEqual(state.stats.tokens);
   expect(receipt).not.toHaveProperty("nativeExecutionId");
   await service.disposeAll();
   expect(events).toContainEqual(expect.objectContaining({ type: "wire", value: expect.objectContaining({ payload: { message: "SDK shutdown", notifyType: "info" } }) }));

@@ -17,8 +17,7 @@ type Turn = { executionId?: string; status: "inProgress" | "completed" | "interr
 type Item = { native: NativeObject; timestamp?: string; completed: boolean };
 type PendingControl = { native: NativeRequest; turnId: string; approval: CodexApproval; request: InteractionRequestDto; timer: ReturnType<typeof setTimeout> };
 const requestKey = (id: RpcId): string => `${typeof id}:${id}`;
-const emptyStats = (): SessionSnapshotDto["stats"] => ({ userMessages: 0, assistantMessages: 0, toolResults: 0, totalMessages: 0,
-  tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+const emptyStats = (): SessionSnapshotDto["stats"] => ({ userMessages: 0, assistantMessages: 0, toolResults: 0, totalMessages: 0 });
 
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== "string" || !value || value.length > 4_096) throw new CodexRpcError(`Invalid Codex ${field}`, "protocol");
@@ -559,8 +558,12 @@ class CodexHandle implements SessionHandle {
   private usage(usage: NativeObject | undefined): void {
     const total = object(usage?.total);
     if (!total) return;
-    const number = (name: string): number => typeof total[name] === "number" && Number.isFinite(total[name]) ? Number(total[name]) : 0;
-    this.snapshot.stats.tokens = { input: number("inputTokens"), output: number("outputTokens"), cacheRead: number("cachedInputTokens"), cacheWrite: number("cacheWriteInputTokens"), total: number("totalTokens") };
+    const number = (name: string): number | undefined => typeof total[name] === "number" && Number.isFinite(total[name]) && total[name] >= 0 ? total[name] : undefined;
+    const input = number("inputTokens"), output = number("outputTokens"), cacheRead = number("cachedInputTokens"), reportedTotal = number("totalTokens");
+    // Only this field has an explicit zero default in the pinned native schema.
+    const cacheWrite = total.cacheWriteInputTokens === undefined ? 0 : number("cacheWriteInputTokens");
+    if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite === undefined || reportedTotal === undefined) return;
+    this.snapshot.stats.tokens = { input, output, cacheRead, cacheWrite, total: reportedTotal };
     const contextWindow = usage?.modelContextWindow;
     if (typeof contextWindow === "number" && contextWindow > 0 && this.snapshot.model) this.snapshot.model.contextWindow = contextWindow;
     // Native token usage is not measured context occupancy. Do not invent a context percentage.

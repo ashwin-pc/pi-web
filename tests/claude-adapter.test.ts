@@ -71,6 +71,7 @@ describe("Claude production adapter", () => {
     expect(state.nativeSession.sessionId).not.toBe(state.sessionId);
     expect(state).not.toHaveProperty("sessionFile");
     expect(state).not.toHaveProperty("model");
+    expect(state.stats).not.toHaveProperty("tokens");
     expect(state.stats).not.toHaveProperty("cost");
     for (const capability of ["queue", "steering", "followUp", "models", "context", "attachments", "historyFork", "extensions", "tree"]) expect(state.capabilities[capability as keyof typeof state.capabilities]).toBe(false);
     for (const mode of ["steer", "followUp"]) await expect(handle.prompt({ ...input(), mode })).rejects.toThrow("does not support");
@@ -111,6 +112,48 @@ describe("Claude production adapter", () => {
     await flush();
     expect(f.handle.state()).toMatchObject({ phase: "idle", isStreaming: false, stats: { cost: 0.02, tokens: { input: 10, output: 5, cacheRead: 2, cacheWrite: 1, total: 18 } } });
     expect(f.handle.state().activeExecution).toBeUndefined();
+  });
+
+  it.each([
+    { label: "missing model usage", modelUsage: undefined },
+    { label: "empty model usage", modelUsage: {} },
+    { label: "missing model counters", modelUsage: { "claude-fixture": {} } },
+    { label: "null model counters", modelUsage: { "claude-fixture": null } },
+    { label: "partial model counters", modelUsage: { "claude-fixture": { inputTokens: 10, outputTokens: 5 } } },
+    { label: "invalid model counters", modelUsage: { "claude-fixture": { inputTokens: -1, outputTokens: 5, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } } },
+  ])("does not invent Query token totals for $label", async ({ modelUsage }) => {
+    const f = await running();
+    f.ack(); f.result({ modelUsage }); f.idle(); await flush();
+    expect(f.handle.state().phase).toBe("idle");
+    expect(f.handle.state().stats).not.toHaveProperty("tokens");
+    expect(f.handle.state().stats.cost).toBe(0.02); // Independently reported money remains known.
+    for (const event of f.events) if (event.type === "state") expect(event.state.stats).not.toHaveProperty("tokens");
+  });
+
+  it("publishes a measured zero rather than treating every zero as unknown", async () => {
+    const f = await running();
+    f.ack();
+    f.result({ modelUsage: { "claude-fixture": { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } }, total_cost_usd: 0 });
+    f.idle(); await flush();
+    expect(f.handle.state().stats.tokens).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 });
+    expect(f.handle.state().stats.cost).toBe(0);
+  });
+
+  it("retains observed Query totals when a later result omits or zeroes accounting", async () => {
+    const f = await running();
+    f.ack(); f.result(); f.idle(); await flush();
+    const expected = f.handle.state().stats.tokens;
+    expect(expected?.total).toBe(18);
+    for (const [index, modelUsage] of [{}, { "claude-fixture": { inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0 } }].entries()) {
+      await f.handle.prompt(input(`later-${index}`));
+      await vi.waitFor(() => expect(f.peer.received.filter((message) => message.type === "user")).toHaveLength(index + 2));
+      const user = f.peer.received.filter((message) => message.type === "user").at(-1)!;
+      f.result({ user_message_uuid: user.uuid, result_index: index + 1, modelUsage, total_cost_usd: 0,
+        subtype: "error_during_execution", is_error: true, errors: ["Synthetic terminal error"] });
+      f.idle(); await flush();
+      expect(f.handle.state().stats.tokens).toEqual(expected);
+      expect(f.handle.state().stats.cost).toBe(0.02);
+    }
   });
 
   it("reports a native rejection before acknowledgement without inventing acceptance or a persisted user message", async () => {
@@ -276,9 +319,11 @@ describe("Claude production adapter", () => {
     expect(sessionApi.getSessionInfo).toHaveBeenCalledWith(nativeId, { dir: "/workspace" });
     expect(sessionApi.getSessionMessages).toHaveBeenCalledWith(nativeId, { dir: "/workspace", includeSystemMessages: true });
     expect(handle.state().nativeSession.status).toBe("resumable");
+    expect(handle.state().stats).not.toHaveProperty("tokens");
     expect((await handle.messages())[0]).toMatchObject({ text: "Persisted before host crash" });
     expect(f.peers).toHaveLength(0);
     await handle.prompt(input());
+    expect(handle.state().stats).not.toHaveProperty("tokens");
     expect(f.invocations[0]!.args).toContain(`--resume=${nativeId}`);
     expect(f.invocations[0]!.args.some((arg) => arg.startsWith("--session-id"))).toBe(false);
     await f.peers[0]!.nextInput((message) => message.type === "user");

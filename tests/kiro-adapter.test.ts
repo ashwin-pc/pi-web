@@ -28,12 +28,30 @@ describe("Kiro production ACP handle", () => {
     const { handle, peer, root } = await fixture();
     expect(handle.state()).toMatchObject({ sessionId: "web-kiro", harnessId: "kiro", phase: "idle", nativeSettings: { model: "native-fixture-model", mode: "native-fixture-mode" }, nativeSession: { persistence: "persistent", status: "resumable" } });
     expect(handle.state().nativeSession.sessionId).not.toBe("web-kiro"); expect(handle.state().sessionFile).toBeUndefined();
+    expect(handle.state().stats).not.toHaveProperty("tokens");
     expect(handle.state().stats.cost).toBeUndefined();
     const client = (await readObserved(peer)).filter((r) => r.direction === "client");
     expect(client.map((r) => r.message.method)).toEqual(["initialize", "session/new"]);
     expect(client[0].message).toMatchObject({ jsonrpc: "2.0", id: 0, params: { protocolVersion: 1, clientCapabilities: {} } });
     expect(client[1].message.params).toEqual({ cwd: root, mcpServers: [] });
     expect(Object.entries(handle.state().capabilities).filter(([key, value]) => key !== "harness" && value)).toEqual([["interactions", true]]);
+  });
+  it("keeps unreported token usage absent through completion, state events and native reopen", async () => {
+    const { handle, peer, adapter, root, handles, events } = await fixture();
+    await prompt(handle);
+    await controlPeer(peer, { action: "text", delta: "Reply without a native usage measurement" });
+    await controlPeer(peer, { action: "complete" });
+    await expect.poll(() => handle.state().phase).toBe("idle");
+    expect(handle.state().stats).toEqual({ userMessages: 1, assistantMessages: 1, toolResults: 0, totalMessages: 2 });
+    const states = events.filter((event) => event.type === "state");
+    expect(states.length).toBeGreaterThan(0);
+    for (const event of states) expect(event.state.stats).not.toHaveProperty("tokens");
+    const ref = handle.state().nativeSession;
+    await handle.dispose();
+    const reopened = await adapter.open({ cwd: root, sessionId: handle.sessionId, nativeSession: ref });
+    handles.push(reopened);
+    expect((await reopened.messages()).some((message) => message.text === "Reply without a native usage measurement")).toBe(true);
+    expect(reopened.state().stats).toEqual({ userMessages: 1, assistantMessages: 1, toolResults: 0, totalMessages: 2 });
   });
   it("rejects ephemeral, foreign identity and unsupported input without native dispatch", async () => {
     const { handle, adapter, root, peer } = await fixture();

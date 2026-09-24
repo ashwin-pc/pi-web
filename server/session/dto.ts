@@ -17,7 +17,8 @@ export interface SessionStatsDto {
   assistantMessages: number;
   toolResults: number;
   totalMessages: number;
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  /** Omitted until token usage is observed; zero is a known zero, not missing usage. */
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
   /** Omitted when the harness does not expose monetary usage; zero is a known zero. */
   cost?: number;
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };

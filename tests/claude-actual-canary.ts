@@ -259,7 +259,7 @@ try {
   await expect(page.locator("#stopButton")).toBeHidden();
   // Capture only the exact known answer; not arbitrary native hooks/errors/auth UI.
   await page.locator(".message.assistant", { hasText: marker }).last().screenshot({ path: join(output, "native-answer.png") });
-  note("native_generation_verified", { assistantIds: modelStarts.size, reportedTokens: first.stats?.tokens.total, reportedCost: first.stats?.cost,
+  note("native_generation_verified", { assistantIds: modelStarts.size, reportedTokens: first.stats?.tokens?.total, reportedCost: first.stats?.cost,
     permissionMode: first.nativeSettings?.permissionMode, model: typeof first.nativeSettings?.model === "string" && !first.nativeSettings.model.startsWith("arn:") ? first.nativeSettings.model : "native-configured" });
   durableIds = messageIds(content);
   }

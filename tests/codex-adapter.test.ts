@@ -38,6 +38,7 @@ describe("Codex production adapter through native process ingress", () => {
       nativeSettings: { model: "native-fixture-model", reasoningEffort: "medium", permissionMode: "on-request (user)", sandboxMode: "readOnly" } });
     expect(state.nativeSession.sessionId).not.toBe(state.sessionId);
     expect(state.sessionFile).toBeUndefined();
+    expect(state.stats).not.toHaveProperty("tokens");
     expect(state.stats.cost).toBeUndefined();
     expect(adapter.harness.capabilities).toMatchObject({ steering: false, queue: false, attachments: false, models: false, extensions: false, tree: false });
     expect((await clientRequests(peer, "thread/start"))[0]?.message.params).toEqual({ cwd: root });
@@ -136,6 +137,48 @@ describe("Codex production adapter through native process ingress", () => {
     expect(handle.state().stats.cost).toBeUndefined();
     expect(handle.state().stats.contextUsage).toBeUndefined();
     expect(handle.state().model?.contextWindow).toBe(1_000);
+  });
+
+  it("keeps tokens unknown after a turn without usage and after native reopen", async () => {
+    const { handle, peer, adapter, root, handles, events } = await fixture();
+    await prompt(handle);
+    await controlPeer(peer, { action: "text", delta: "No measured usage", done: true });
+    await controlPeer(peer, { action: "complete" });
+    expect(handle.state().phase).toBe("idle");
+    expect(handle.state().stats).not.toHaveProperty("tokens");
+    for (const event of events) if (event.type === "state") expect(event.state.stats).not.toHaveProperty("tokens");
+    const ref = handle.state().nativeSession;
+    await handle.dispose();
+    const reopened = await adapter.open({ cwd: root, sessionId: handle.sessionId, nativeSession: ref });
+    handles.push(reopened);
+    expect((await reopened.messages()).some((message) => message.text === "No measured usage")).toBe(true);
+    expect(reopened.state().stats).not.toHaveProperty("tokens");
+  });
+
+  it("distinguishes an observed zero from absent, partial or invalid usage updates", async () => {
+    const { handle, peer } = await fixture();
+    const receipt = await prompt(handle);
+    const send = (tokenUsage: unknown) => controlPeer(peer, { action: "emit", message: { method: "thread/tokenUsage/updated", params: {
+      threadId: handle.state().nativeSession.sessionId, turnId: receipt.nativeExecutionId, tokenUsage,
+    } } });
+    // cacheWriteInputTokens is optional with a zero default in the pinned native schema.
+    const zero = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, totalTokens: 0, reasoningOutputTokens: 0 };
+    for (const usage of [undefined, null, {}, { total: {} }, { total: { inputTokens: 0 } },
+      { total: { ...zero, inputTokens: -1 } }, { total: { ...zero, outputTokens: null } },
+      { total: { ...zero, cacheWriteInputTokens: null } }]) {
+      await send(usage);
+      expect(handle.state().stats).not.toHaveProperty("tokens");
+    }
+    await send({ total: zero, last: zero });
+    const expected = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+    expect(handle.state().stats.tokens).toEqual(expected);
+    await send({ total: {} });
+    expect(handle.state().stats.tokens).toEqual(expected);
+    const measured = { ...zero, inputTokens: 20, outputTokens: 10, totalTokens: 30 };
+    await send({ total: measured, last: measured });
+    expect(handle.state().stats.tokens).toEqual({ ...expected, input: 20, output: 10, total: 30 });
+    await send({ total: { ...zero, inputTokens: null } });
+    expect(handle.state().stats.tokens?.total).toBe(30);
   });
 
   it("rejects unsupported modes/attachments and concurrent input at the adapter boundary", async () => {

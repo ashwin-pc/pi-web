@@ -37,7 +37,7 @@ class KiroHandle implements SessionHandle {
     this.transcript = new KiroTranscript(sessionId, (event) => this.emit(event), (kind) => this.observe(kind, this.updateBytes));
     this.snapshot = { sessionId, cwd, sessionTitle: "Kiro session", harnessId: "kiro", nativeSession: { harnessId: "kiro", persistence: "persistent", status: "unmaterialized" },
       phase: "starting", activity: "idle", pendingInteractions: [], capabilities: { ...capabilities }, isStreaming: false, isRetrying: false, isCompacting: false,
-      stats: { ...this.transcript.counts(), tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
+      stats: this.transcript.counts() };
   }
   async start(input: AdapterCreateInput | AdapterOpenInput): Promise<this> {
     const opening = "nativeSession" in input;

@@ -24,6 +24,7 @@ function fixtureSession(): PiWebSession {
     sessionId: "session-1",
     sessionFile: "/tmp/session-1.jsonl",
     sessionName: "Projection fixture",
+    systemPrompt: "Synthetic Pi system prompt",
     isStreaming: false,
     isCompacting: false,
     model: { provider: "test", id: "model", name: "Test Model", reasoning: true, contextWindow: 1000, maxTokens: 100 },
@@ -117,6 +118,20 @@ describe("pure session projections", () => {
       decorateContent: (content) => (content as Array<Record<string, unknown>>).map((part) => ({ ...part, startedAt: "then" })),
     });
     expect(projected).toMatchObject({ entryId: "entry-1", role: "assistant", toolCalls: [{ id: "tool-1", toolName: "read", startedAt: "then" }] });
+  });
+
+  it("preserves Pi branch accounting and its known empty-session zero", () => {
+    const session = fixtureSession();
+    expect(sessionStats(session)).toMatchObject({
+      userMessages: 1, assistantMessages: 1, totalMessages: 2,
+      tokens: { input: 2, output: 3, cacheRead: 0, cacheWrite: 0, total: 5 }, cost: 0.01,
+    });
+    session.sessionManager.getBranch = () => [];
+    session.messages = [];
+    expect(sessionStats(session)).toMatchObject({
+      userMessages: 0, assistantMessages: 0, toolResults: 0, totalMessages: 0,
+      tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, cost: 0,
+    });
   });
 
   it("returns wire-stable state, stats, tree, and command DTOs", () => {

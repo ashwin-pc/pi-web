@@ -115,7 +115,7 @@ class ClaudeHandle implements SessionHandle {
   private disposed = false;
   private resume: boolean;
   private lastResultIndex = -1;
-  private observedUsage: SessionStatsDto["tokens"] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+  private observedUsage: SessionStatsDto["tokens"];
   private cost?: number;
   private executableChecked = false;
 
@@ -125,7 +125,7 @@ class ClaudeHandle implements SessionHandle {
     this.approvals = new ClaudeApprovals(sessionId, options.interactionTimeoutMs ?? 60_000, (event) => this.emit(event), () => this.publishState());
     this.stateValue = { sessionId, cwd, harnessId: "claude", nativeSession, phase: "idle", activity: "idle", pendingInteractions: [],
       sessionTitle: "Claude session", capabilities: { ...capabilities }, isStreaming: false, isRetrying: false, isCompacting: false,
-      stats: { ...this.transcript.counts(), tokens: this.observedUsage }, nativeSettings: {} };
+      stats: this.transcript.counts(), nativeSettings: {} };
   }
 
   load(history: Awaited<ReturnType<typeof getSessionMessages>>, title?: string): void {
@@ -137,7 +137,7 @@ class ClaudeHandle implements SessionHandle {
     const pending = this.approvals.requests();
     const activity = pending.length ? pending.some((request) => request.source === "clarify") ? "waiting-input" : "waiting-approval" : this.stateValue.activity;
     return structuredClone({ ...this.stateValue, activity, pendingInteractions: pending,
-      stats: { ...this.transcript.counts(), tokens: this.observedUsage, ...(this.cost === undefined ? {} : { cost: this.cost }) } });
+      stats: { ...this.transcript.counts(), ...(this.observedUsage === undefined ? {} : { tokens: this.observedUsage }), ...(this.cost === undefined ? {} : { cost: this.cost }) } });
   }
   async messages() { return this.transcript.messages(); }
   subscribe(listener: (event: SessionServiceEvent) => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
@@ -250,7 +250,7 @@ class ClaudeHandle implements SessionHandle {
     this.resume = true;
     this.lastResultIndex = -1;
     // Native accounting is query-cumulative, not a fabricated lifetime bill.
-    this.observedUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+    this.observedUsage = undefined;
     this.cost = undefined;
     this.reading = (async () => {
       try {
@@ -344,14 +344,19 @@ class ClaudeHandle implements SessionHandle {
 
   private recordUsage(message: Extract<SDKMessage, { type: "result" }>): void {
     const models = Object.values(message.modelUsage ?? {});
-    const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-    for (const model of models) {
-      tokens.input += finite(model.inputTokens); tokens.output += finite(model.outputTokens);
-      tokens.cacheRead += finite(model.cacheReadInputTokens); tokens.cacheWrite += finite(model.cacheCreationInputTokens);
+    const measured = models.length > 0 && models.every((model) => model &&
+      [model.inputTokens, model.outputTokens, model.cacheReadInputTokens, model.cacheCreationInputTokens]
+        .every((value) => typeof value === "number" && Number.isFinite(value) && value >= 0));
+    if (measured) {
+      const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
+      for (const model of models) {
+        tokens.input += model.inputTokens; tokens.output += model.outputTokens;
+        tokens.cacheRead += model.cacheReadInputTokens; tokens.cacheWrite += model.cacheCreationInputTokens;
+      }
+      tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite;
+      // Fatal startup/crash results can zero running totals. Never erase known use.
+      if (Number.isFinite(tokens.total) && (tokens.total || !this.observedUsage?.total)) this.observedUsage = tokens;
     }
-    tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite;
-    // Fatal startup/crash results can zero running totals. Never erase known use.
-    if (tokens.total || !this.observedUsage.total) this.observedUsage = tokens;
     if (typeof message.total_cost_usd === "number" && (message.total_cost_usd > 0 || this.cost === undefined || message.subtype === "success" && message.local_command === "clear")) this.cost = finite(message.total_cost_usd);
   }
 

@@ -77,6 +77,7 @@ it("routes native create, stream, approval, settlement and explicit recovery thr
     expect(id).not.toBe(nativeId);
     expect(created.body).not.toHaveProperty("sessionFile");
     expect(created.body.nativeSettings).toMatchObject({ model: "native-fixture-model" });
+    expect(created.body.stats).not.toHaveProperty("tokens");
     expect(created.body.stats).not.toHaveProperty("cost");
     expect((await request("/api/shell", { sessionId: id, command: "pwd" })).status).toBe(400);
     const ticket = (await request("/api/ws-ticket", {})).body.ticket;
@@ -105,11 +106,16 @@ it("routes native create, stream, approval, settlement and explicit recovery thr
     expect(messages.some((m: any) => m.text === "Retained partial" && m.stopReason === "cancelled")).toBe(true);
     await expect.poll(() => events.some((e) => e.type === "message_delta" && e.delta === "Retained partial")).toBe(true);
     expect(events.some((e) => e.type === "interaction_resolved")).toBe(true);
+    expect((await stateFor(id)).stats).not.toHaveProperty("tokens");
+    const states = events.filter((event) => event.type === "state_changed");
+    expect(states.length).toBeGreaterThan(0);
+    for (const event of states) expect(event.stats).not.toHaveProperty("tokens");
     await controlPeer(peer, { action: "exit" });
     await expect.poll(async () => (await stateFor(id)).phase).toBe("unavailable");
     const opened = await request("/api/sessions/open", { sessionId: id });
     expect(opened.status, JSON.stringify(opened.body)).toBe(200);
     expect(opened.body).toMatchObject({ sessionId: id, nativeSession: { sessionId: nativeId }, phase: "idle" });
+    expect(opened.body.stats).not.toHaveProperty("tokens");
     const next = await peerForSession(peers, nativeId);
     expect(next.pid).not.toBe(peer.pid);
     expect((await readObserved(next)).some((r) => r.message.method === "session/prompt")).toBe(false);
