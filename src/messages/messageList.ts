@@ -496,7 +496,7 @@ export function createMessageList(options: {
   }
 
   function pauseStreamFollow(event: Event) {
-    if (programmaticScroll) return;
+    // Explicit user input remains meaningful while a programmatic reset is pending.
     const direction = userScrollDirection(event);
     const canScroll = messagesEl.scrollHeight > messagesEl.clientHeight + 1;
     const atPhysicalBottom = distanceFromBottom() <= 1;

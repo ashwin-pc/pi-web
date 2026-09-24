@@ -96,3 +96,32 @@ test("non-stream scrolling away and back settles pointer intent from position", 
   });
   await expect(page.locator(".jumpToLatestButton")).toBeHidden();
 });
+
+test("explicit wheel intent wins during a programmatic scroll's pending reset", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#prompt").fill("streaming markdown benchmark paced");
+  await page.locator("#primaryButton").click();
+  await expect(page.locator(".message.assistant p", { hasText: "This deliberately long response" })).toContainText("avoid executing unsafe markup");
+  // Deliver input after the next real autoscroll write, but before its zero-delay
+  // reset timer. This pins the race without waiting for a lucky event-loop order.
+  await page.locator("#messages").evaluate((element) => {
+    const native = Object.getOwnPropertyDescriptor(Element.prototype, "scrollTop")!;
+    let sent = false;
+    Object.defineProperty(element, "scrollTop", {
+      configurable: true,
+      get: () => native.get!.call(element),
+      set: (value: number) => {
+        native.set!.call(element, value);
+        if (sent) return;
+        sent = true;
+        queueMicrotask(() => {
+          element.dispatchEvent(new WheelEvent("wheel", { deltaY: -600 }));
+          element.dataset.wheelDuringAutoscroll = "sent";
+        });
+      },
+    });
+  });
+  await expect(page.locator("#messages")).toHaveAttribute("data-wheel-during-autoscroll", "sent");
+  await expect(page.locator("#stopButton")).toBeHidden({ timeout: 20_000 });
+  await expect(page.locator(".jumpToLatestButton")).toBeVisible();
+});
