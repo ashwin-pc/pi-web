@@ -99,7 +99,7 @@ export class LocalSessionService implements SessionService {
       }) });
   }
   private adapter(id: string): SessionAdapter {
-    if (!["pi", "codex", "claude"].includes(id)) throw new SessionServiceError(`Unknown harness: ${id}`, 400);
+    if (!["pi", "codex", "claude", "kiro"].includes(id)) throw new SessionServiceError(`Unknown harness: ${id}`, 400);
     const description = this.catalog().harnesses.find((item) => item.id === id);
     const adapter = this.adapters.get(id as HarnessId);
     if (!adapter || !description?.enabled || !description.available) throw new SessionServiceError(description?.unavailableReason || `Harness ${id} is unavailable`, 503);
@@ -175,7 +175,7 @@ export class LocalSessionService implements SessionService {
       const now = new Date().toISOString();
       return { id: sessionId, cwd, nativeSession,
         name: name ?? previous?.name ?? sessionName, firstMessage: previous?.firstMessage || firstMessage,
-        created: previous?.created || now, modified: now };
+        created: previous ? previous.created : now, modified: now };
     });
   }
   async initialize(path?: string) {

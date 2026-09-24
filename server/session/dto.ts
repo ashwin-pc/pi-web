@@ -23,7 +23,7 @@ export interface SessionStatsDto {
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
 }
 
-export type HarnessId = "pi" | "codex" | "claude";
+export type HarnessId = "pi" | "codex" | "claude" | "kiro";
 
 /** Native identity is not a web ID, execution ID, item ID, or storage path. */
 export interface NativeSessionRefDto {
@@ -48,6 +48,8 @@ export interface ActiveExecutionDto {
 export interface NativeSettingsDto {
   /** Observed native settings, not Pi model/default-setting overrides. */
   model?: string;
+  /** Observed native agent mode, not a permission grant or editable selector. */
+  mode?: string;
   reasoningEffort?: string;
   permissionMode?: string;
   sandboxMode?: string;
@@ -277,7 +279,8 @@ export interface SessionInfoDto {
   nativeSession?: NativeSessionRefDto;
   name?: string;
   firstMessage?: string;
-  created: string;
+  /** Omitted when native discovery does not expose a creation timestamp. */
+  created?: string;
   modified: string;
   /** Exact for live sessions; omitted for cold sessions because deriving it requires a transcript parse. */
   messageCount?: number;

@@ -439,7 +439,7 @@ const mockPeer = mockMode ? {
 const multiHarnessEnabled = process.env.PI_WEB_MULTI_HARNESS === "1";
 const nativeAdapters: SessionAdapter[] = [];
 const unavailableHarnesses: HarnessDescriptorDto[] = [];
-for (const id of ["codex", "claude"] as const) {
+for (const id of ["codex", "claude", "kiro"] as const) {
   try {
     const moduleUrl = new URL(`./server/session/adapters/${id}/index.js`, import.meta.url);
     // Dynamic load keeps Pi usable when an optional native installation is absent.
@@ -449,10 +449,14 @@ for (const id of ["codex", "claude"] as const) {
       const args: unknown = process.env.PI_WEB_CODEX_ARGS ? JSON.parse(process.env.PI_WEB_CODEX_ARGS) : undefined;
       if (args !== undefined && (!Array.isArray(args) || !args.every((arg) => typeof arg === "string"))) throw new Error("PI_WEB_CODEX_ARGS must be a JSON string array");
       adapter = native.createCodexAdapter({ command: process.env.PI_WEB_CODEX_COMMAND, args });
+    } else if (id === "kiro") {
+      const args: unknown = process.env.PI_WEB_KIRO_ARGS ? JSON.parse(process.env.PI_WEB_KIRO_ARGS) : undefined;
+      if (args !== undefined && (!Array.isArray(args) || !args.every((arg) => typeof arg === "string"))) throw new Error("PI_WEB_KIRO_ARGS must be a JSON string array");
+      adapter = native.createKiroAdapter({ command: process.env.PI_WEB_KIRO_COMMAND, args });
     } else adapter = native.createClaudeAdapter({ pathToClaudeCodeExecutable: process.env.PI_WEB_CLAUDE_EXECUTABLE });
     nativeAdapters.push(adapter);
   } catch (error) {
-    unavailableHarnesses.push({ id, name: id === "codex" ? "Codex" : "Claude", enabled: multiHarnessEnabled, available: false,
+    unavailableHarnesses.push({ id, name: id === "codex" ? "Codex" : id === "kiro" ? "Kiro" : "Claude", enabled: multiHarnessEnabled, available: false,
       unavailableReason: `Native ${id} adapter unavailable: ${error instanceof Error ? error.message : "installation failed"}`,
       capabilities: { harness: id, queue: false, steering: false, followUp: false, thinkingLevel: false, tree: false,
         compaction: false, retry: false, bash: false, extensions: false, interactions: false, models: false, context: false, attachments: false, historyFork: false } });

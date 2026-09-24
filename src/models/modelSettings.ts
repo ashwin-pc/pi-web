@@ -170,7 +170,7 @@ export function createModelSettings(options: {
     const heading = document.createElement("strong"); heading.textContent = `${label} configuration`;
     const note = document.createElement("p"); note.textContent = "Managed by the native harness. Changes are not supported here.";
     summary.append(heading, note);
-    for (const [name, value] of [["Model", settings?.model], ["Reasoning", settings?.reasoningEffort], ["Permissions", settings?.permissionMode], ["Sandbox", settings?.sandboxMode]]) {
+    for (const [name, value] of [["Model", settings?.model], ["Mode", settings?.mode], ["Reasoning", settings?.reasoningEffort], ["Permissions", settings?.permissionMode], ["Sandbox", settings?.sandboxMode]]) {
       if (!value) continue;
       const row = document.createElement("p"); row.textContent = `${name}: ${value}`; summary.append(row);
     }

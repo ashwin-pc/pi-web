@@ -9,7 +9,7 @@ export interface NativeBinding {
   cwd: string;
   name?: string;
   firstMessage?: string;
-  created: string;
+  created?: string;
   modified: string;
   /** Native removal forgets the web binding, not the native transcript. Keep a tombstone. */
   deleted?: boolean;
@@ -19,8 +19,8 @@ const copy = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 function validate(row: NativeBinding, rows: ReadonlyMap<string, NativeBinding>) {
   const ref = row?.nativeSession;
   if (!row || typeof row.id !== "string" || !row.id || typeof row.cwd !== "string" || !row.cwd
-    || typeof row.created !== "string" || typeof row.modified !== "string"
-    || !ref || !["codex", "claude"].includes(ref.harnessId)
+    || (row.created !== undefined && typeof row.created !== "string") || typeof row.modified !== "string"
+    || !ref || !["codex", "claude", "kiro"].includes(ref.harnessId)
     || !["persistent", "ephemeral"].includes(ref.persistence)
     || !["unmaterialized", "resumable", "live-only", "unavailable"].includes(ref.status)
     || (ref.sessionId !== undefined && (typeof ref.sessionId !== "string" || !ref.sessionId))) {

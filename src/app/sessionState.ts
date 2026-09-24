@@ -104,11 +104,11 @@ export function activeSessionState(state: AppState): SessionViewState | undefine
 }
 
 export function isNativeSession(view: SessionViewState | undefined): boolean {
-  return view?.harnessId === "codex" || view?.harnessId === "claude";
+  return view?.harnessId === "codex" || view?.harnessId === "claude" || view?.harnessId === "kiro";
 }
 
 export function harnessName(view: Pick<SessionViewState, "harnessId"> | undefined): string {
-  return view?.harnessId === "codex" ? "Codex" : view?.harnessId === "claude" ? "Claude Code" : "Pi";
+  return view?.harnessId === "codex" ? "Codex" : view?.harnessId === "claude" ? "Claude Code" : view?.harnessId === "kiro" ? "Kiro" : "Pi";
 }
 
 function authoritativeRuntime(view: SessionViewState | undefined, runtime: SessionRuntimeState): SessionRuntimeState {
@@ -173,7 +173,7 @@ export function reduceSessionSnapshot(state: AppState, value: unknown, fallbackS
     .every((key) => hasOwn(data, key));
 
   if (hasOwn(data, "sessionFile")) next.sessionFile = optionalString(data.sessionFile);
-  if (data.harnessId === "pi" || data.harnessId === "codex" || data.harnessId === "claude") next.harnessId = data.harnessId;
+  if (data.harnessId === "pi" || data.harnessId === "codex" || data.harnessId === "claude" || data.harnessId === "kiro") next.harnessId = data.harnessId;
   if (hasOwn(data, "nativeSession")) next.nativeSession = recordValue(data.nativeSession) as SessionViewState["nativeSession"];
   if (hasOwn(data, "phase")) next.phase = optionalString(data.phase) as SessionViewState["phase"];
   if (hasOwn(data, "activity")) next.activity = optionalString(data.activity) as SessionViewState["activity"];

@@ -58,7 +58,7 @@ export interface AdapterSessionInfo {
   sessionFile?: string;
   name?: string;
   firstMessage?: string;
-  created: string;
+  created?: string;
   modified: string;
   messageCount?: number;
 }
