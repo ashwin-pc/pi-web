@@ -1,6 +1,6 @@
 import type { RequestPermissionRequest, RequestPermissionResponse, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import type { InteractionChoiceDto } from "../../dto.js";
-import { approvalContext } from "../codex/approval-context.js";
+import { kiroContext as approvalContext } from "./approval-context.js";
 import { mergeTool } from "./projection.js";
 import { object } from "./transport.js";
 
@@ -17,6 +17,7 @@ export function approval(value: unknown, previous?: ToolCallUpdate): KiroApprova
   const request = value as RequestPermissionRequest;
   const merged = mergeTool(previous, request.toolCall);
   if (typeof merged.title !== "string" || !merged.title.trim() || !["read", "edit", "delete", "move", "search", "execute", "fetch", "other"].includes(merged.kind ?? "")
+    || (merged.status != null && !["pending", "in_progress"].includes(merged.status))
     || !object(merged.rawInput) || !Object.keys(merged.rawInput as object).length) return;
   const ids = new Set<string>();
   for (const option of request.options) {

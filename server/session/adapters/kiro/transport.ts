@@ -50,7 +50,7 @@ export interface KiroTransportCallbacks {
   notification(message: NativeNotification): void;
   request(message: NativeRequest): void;
   closed(error: KiroRpcError): void;
-  observation(kind: "orphan-response" | "invalid-frame", bytes?: number): void;
+  observation(kind: "orphan-response" | "invalid-frame" | "uncorrelated-parse-error", bytes?: number): void;
 }
 
 type Pending = {
@@ -153,6 +153,14 @@ export class KiroTransport {
           const notification = { method: message.method, params: message.params };
           if (!this.deliver(() => this.callbacks.notification(notification))) return;
         }
+        continue;
+      }
+      // The real 2.24.0 CLI omits id entirely for parse errors. Do not expose
+      // error.data (it contains the rejected line), or assign it to an arbitrary
+      // request. Idle connections may continue; pending dispatch is ambiguous.
+      if (!Object.hasOwn(message, "id") && object(message.error)?.code === -32700 && !Object.hasOwn(message, "result")) {
+        if (!this.deliver(() => this.callbacks.observation("uncorrelated-parse-error", Buffer.byteLength(line)))) return;
+        if (this.pending.size) this.fail(new KiroRpcError("Kiro could not parse an uncorrelated request; no input was retried", "protocol", true));
         continue;
       }
       if (!rpcId(message.id) || (Object.hasOwn(message, "result") === Object.hasOwn(message, "error")) || (Object.hasOwn(message, "error") && !object(message.error))) {

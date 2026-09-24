@@ -43,7 +43,7 @@ it("routes native create, stream, approval, settlement and explicit recovery thr
       PI_WEB_SESSION_UI_STATE_FILE: join(root, "ui.json"), PI_WEB_PUSH_FILE: join(root, "push.json"),
       PI_WEB_NATIVE_BINDINGS_FILE: join(root, "bindings.json"), PI_WEB_MULTI_HARNESS: "1",
       PI_WEB_CODEX_COMMAND: process.execPath, PI_WEB_CODEX_ARGS: JSON.stringify([resolve("tests/fixtures/codex-app-server-peer.mjs")]),
-      PI_WEB_CODEX_PEER_DIR: peers },
+      PI_WEB_CODEX_PEER_DIR: peers, PI_WEB_KIRO_COMMAND: join(root, "kiro-not-installed") },
   });
   let output = "";
   child.stdout!.on("data", (chunk) => { output = `${output}${chunk}`.slice(-6000); });

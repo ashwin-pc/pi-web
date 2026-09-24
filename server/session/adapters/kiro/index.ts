@@ -31,7 +31,7 @@ class KiroHandle implements SessionHandle {
   private replay = true;
   private buffered: SessionNotification[] = [];
   private bufferedBytes = 0;
-  private observations = 0;
+  private readonly observations: SessionServiceEvent[] = [];
   private updateBytes = 0;
   constructor(readonly sessionId: string, private readonly cwd: string, private readonly options: KiroAdapterOptions) {
     this.transcript = new KiroTranscript(sessionId, (event) => this.emit(event), (kind) => this.observe(kind, this.updateBytes));
@@ -57,14 +57,12 @@ class KiroHandle implements SessionHandle {
       if (!result) throw new KiroRpcError("Invalid Kiro session response", "protocol");
       const nativeId = opening ? requiredId(input.nativeSession.sessionId) : requiredId(result.sessionId);
       if (opening && result.sessionId != null && result.sessionId !== nativeId) throw new KiroRpcError("Kiro loaded a different session", "protocol");
-      this.snapshot.nativeSession = { harnessId: "kiro", sessionId: nativeId, persistence: "persistent", status: opening ? "resumable" : "unmaterialized" };
-      const model = object(result.models)?.currentModelId ?? result.model;
-      const config = Array.isArray(result.configOptions) ? result.configOptions.map(object) : [];
-      const configured = config.find((item) => item?.category === "model")?.currentValue;
-      const effort = config.find((item) => item?.category === "thought_level")?.currentValue;
-      const mode = object(result.modes)?.currentModeId ?? config.find((item) => item?.category === "mode")?.currentValue;
-      this.snapshot.nativeSettings = { ...(typeof model === "string" ? { model } : typeof configured === "string" ? { model: configured } : {}),
-        ...(typeof effort === "string" ? { reasoningEffort: effort } : {}), ...(typeof mode === "string" ? { mode } : {}) };
+      this.snapshot.nativeSession = { harnessId: "kiro", sessionId: nativeId, persistence: "persistent", status: "resumable" };
+      // Captured 2.24.0 v2 new/load responses expose these legacy settings fields,
+      // not configOptions. Native mode descriptions and welcome text stay native.
+      const model = object(result.models)?.currentModelId;
+      const mode = object(result.modes)?.currentModeId;
+      this.snapshot.nativeSettings = { ...(typeof model === "string" ? { model } : {}), ...(typeof mode === "string" ? { mode } : {}) };
       for (const frame of this.buffered) this.project(frame);
       this.buffered = []; this.bufferedBytes = 0;
       this.transcript.finish(); this.replay = false;
@@ -76,7 +74,11 @@ class KiroHandle implements SessionHandle {
       stats: { ...this.snapshot.stats, ...this.transcript.counts() } });
   }
   async messages() { return this.transcript.messages(); }
-  subscribe(listener: (event: SessionServiceEvent) => void) { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  subscribe(listener: (event: SessionServiceEvent) => void) {
+    this.listeners.add(listener);
+    for (const event of this.observations) { try { listener(structuredClone(event)); } catch { /* isolate clients */ } }
+    return () => { this.listeners.delete(listener); };
+  }
   private emit(event: SessionServiceEvent) { for (const listener of this.listeners) { try { listener(structuredClone(event)); } catch { /* isolate clients */ } } }
   private publish() {
     this.snapshot.activity = this.controls.size ? "waiting-approval" : this.execution ? "working" : "idle";
@@ -151,7 +153,11 @@ class KiroHandle implements SessionHandle {
     if (this.requestIds.has(key)) {
       const pending = [...this.controls.values()].find((c) => `${typeof c.native.id}:${c.native.id}` === key);
       if (pending && JSON.stringify(pending.native) === JSON.stringify(native)) return;
-      this.rpc?.reject(native.id, "Reused Kiro request identity", -32600); return;
+      this.rpc?.reject(native.id, "Reused Kiro request identity", -32600);
+      // A changed callback cannot leave the original grant buttons usable.
+      // Resolved/stale IDs only get an error; conflicting live IDs lose the child.
+      if (pending) void this.rpc?.dispose();
+      return;
     }
     this.requestIds.add(key);
     if (this.requestIds.size > 4096) { this.rpc?.reject(native.id, "Kiro control request limit exceeded"); void this.rpc?.dispose(); return; }
@@ -215,9 +221,10 @@ class KiroHandle implements SessionHandle {
     this.clearControls("disposed"); this.publish();
   }
   private observe(method: string, bytes = 0) {
-    if (this.observations++ >= 32) return;
-    this.emit({ type: "wire", value: { type: "harness_observation", harnessId: "kiro", sessionId: this.sessionId,
-      method: /^[\w/.: -]{1,96}$/.test(method) ? method : "[unknown]", bytes, payloadOmitted: true } });
+    if (this.observations.length >= 32) return;
+    const event: SessionServiceEvent = { type: "wire", value: { type: "harness_observation", harnessId: "kiro", sessionId: this.sessionId,
+      method: /^[\w/.: -]{1,96}$/.test(method) ? method : "[unknown]", bytes, payloadOmitted: true } };
+    this.observations.push(event); this.emit(event);
   }
   async dispose() {
     if (this.disposed) return this.rpc?.dispose();
@@ -227,24 +234,23 @@ class KiroHandle implements SessionHandle {
   }
 }
 
-/** Lazy catalog, and only publicly validated bindings until real source-routing
- * canaries establish which CLI source values belong to the selected v2 engine. */
+/** Lazy factory. Public listing is filtered to the observed v2 source; the engine
+ * argument alone also returns incompatible classic sessions on the pinned CLI. */
 export function createKiroAdapter(options: KiroAdapterOptions = {}): SessionAdapter {
   const available = installed(options);
-  const validated = new Set<string>();
   async function start(input: AdapterCreateInput | AdapterOpenInput) {
     const opening = "nativeSession" in input;
     if (opening && input.nativeSession.harnessId !== "kiro") throw new SessionServiceError("Cannot open another harness with Kiro", 400);
     if ((opening ? input.nativeSession.persistence : input.persistence) === "ephemeral") throw new SessionServiceError("Kiro ephemeral sessions are unsupported", opening ? 410 : 400);
     if (!available) throw new SessionServiceError("Kiro executable is unavailable", 503);
     const handle = await new KiroHandle(input.sessionId ?? randomUUID(), input.cwd, options).start(input);
-    validated.add(`${input.cwd}\0${handle.state().nativeSession.sessionId}`); return handle;
+    return handle;
   }
   return {
     harness: { id: "kiro", name: "Kiro", enabled: true, available, capabilities: { ...capabilities }, ...(!available ? { unavailableReason: "Kiro CLI is not available on PATH" } : {}) },
     create: start, open: start,
     async list(cwd): Promise<AdapterSessionInfo[]> {
-      if (![...validated].some((key) => key.startsWith(`${cwd}\0`))) return [];
+      if (!available) return [];
       await preflight({ ...options, cwd });
       const output: unknown = JSON.parse(await metadata({ ...options, cwd }, ["chat", "--agent-engine", "v2", "--list-sessions", "--format", "json"]));
       if (!Array.isArray(output)) throw new KiroRpcError("Invalid Kiro catalog", "protocol");
@@ -254,8 +260,8 @@ export function createKiroAdapter(options: KiroAdapterOptions = {}): SessionAdap
         if (!group || group.cwd !== cwd || !Array.isArray(group.sessions)) continue;
         for (const entry of group.sessions) {
           const value = object(entry);
-          if (!value || typeof value.sessionId !== "string" || !validated.has(`${cwd}\0${value.sessionId}`)) continue;
-          if (typeof value.source !== "string" || typeof value.updatedAt !== "string" || !Number.isFinite(Date.parse(value.updatedAt))) continue;
+          if (!value || typeof value.sessionId !== "string" || !value.sessionId || value.source !== "v2") continue;
+          if (typeof value.updatedAt !== "string" || !Number.isFinite(Date.parse(value.updatedAt))) continue;
           rows.push({ nativeSession: { harnessId: "kiro", sessionId: value.sessionId, persistence: "persistent", status: "resumable" }, cwd,
             modified: value.updatedAt, ...(typeof value.title === "string" ? { name: value.title } : {}),
             ...(Number.isSafeInteger(value.messageCount) && Number(value.messageCount) >= 0 ? { messageCount: Number(value.messageCount) } : {}) });

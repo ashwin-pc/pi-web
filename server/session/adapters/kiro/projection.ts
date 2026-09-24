@@ -1,6 +1,6 @@
 import type { ContentBlock, SessionUpdate, StopReason, ToolCallUpdate } from "@agentclientprotocol/sdk";
 import type { ImagePartDto, JsonValue, MessageDto, TextPartDto, ToolCallPartDto, TranscriptEventDto, TranscriptMessageDto } from "../../dto.js";
-import { approvalContext } from "../codex/approval-context.js";
+import { kiroContext as approvalContext } from "./approval-context.js";
 import { object } from "./transport.js";
 
 type Correlation = { executionId?: string; clientMessageId?: string; sourceClientId?: string };

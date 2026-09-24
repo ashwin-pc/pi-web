@@ -26,7 +26,7 @@ const tools = async (h: SessionHandle) => (await h.messages()).flatMap((m) => m.
 describe("Kiro production ACP handle", () => {
   it("pins initialization, preserves native config and returns independent pathless identity", async () => {
     const { handle, peer, root } = await fixture();
-    expect(handle.state()).toMatchObject({ sessionId: "web-kiro", harnessId: "kiro", phase: "idle", nativeSettings: { model: "native-fixture-model" }, nativeSession: { persistence: "persistent", status: "unmaterialized" } });
+    expect(handle.state()).toMatchObject({ sessionId: "web-kiro", harnessId: "kiro", phase: "idle", nativeSettings: { model: "native-fixture-model", mode: "native-fixture-mode" }, nativeSession: { persistence: "persistent", status: "resumable" } });
     expect(handle.state().nativeSession.sessionId).not.toBe("web-kiro"); expect(handle.state().sessionFile).toBeUndefined();
     expect(handle.state().stats.cost).toBeUndefined();
     const client = (await readObserved(peer)).filter((r) => r.direction === "client");
@@ -104,6 +104,21 @@ describe("Kiro production ACP handle", () => {
     expect(result.message.result).toEqual({ outcome: { outcome: "selected", optionId: meaning === "accept" ? "native-once" : "native-deny" } });
     expect(handle.state().phase).toBe("running");
   });
+  it("invalidates a conflicting live request ID instead of retaining its old grant choices", async () => {
+    const { handle, peer } = await fixture(); await prompt(handle);
+    await controlPeer(peer, { action: "approval", requestId: "conflict" });
+    const previous = handle.state().pendingInteractions[0];
+    await controlPeer(peer, { action: "approval", requestId: "conflict", toolCall: { toolCallId: "different", title: "Different action", kind: "execute", rawInput: { command: "pwd" } } });
+    await expect.poll(() => handle.state().phase).toBe("unavailable");
+    expect(handle.state().pendingInteractions).toEqual([]);
+    expect(handle.respondInteraction({ id: previous.id, sessionId: handle.sessionId, choiceID: "option-0" })).toBe(false);
+  });
+  it("withholds credential-bearing structured tool input from the alternate transcript surface", async () => {
+    const { handle, peer, events } = await fixture(); await prompt(handle);
+    await controlPeer(peer, { action: "tool", fields: { rawInput: { api_key: "synthetic-private-value" } } });
+    expect(JSON.stringify(await handle.messages())).not.toContain("synthetic-private-value");
+    expect(JSON.stringify(events)).not.toContain("synthetic-private-value");
+  });
   it.each(["timeout", "disconnect", "disposed", "cancel"])("cancels owning permission and turn on %s", async (reason) => {
     const { handle, peer } = await fixture({ interactionTimeoutMs: reason === "timeout" ? 100 : 10000 }); await prompt(handle);
     await controlPeer(peer, { action: "approval", requestId: "pending" });
@@ -117,9 +132,11 @@ describe("Kiro production ACP handle", () => {
   });
   it.each([
     { title: "Unsafe", kind: "execute", rawInput: { command: "printf Authorization: Bearer secret-marker" } },
+    { title: "Credential field", kind: "execute", rawInput: { api_key: "secret-marker" } },
     { title: "Oversized", kind: "execute", rawInput: { command: "x".repeat(33000) } },
     { title: "Missing input", kind: "execute" },
     { title: "Unknown kind", kind: "future", rawInput: { command: "pwd" } },
+    { title: "Terminal tool", kind: "execute", status: "completed", rawInput: { command: "pwd" } },
   ])("never grants ambiguous or unsafe permission: $title", async (fields) => {
     const { handle, peer, events } = await fixture(); await prompt(handle);
     await controlPeer(peer, { action: "approval", requestId: "unsafe", toolCall: { toolCallId: "unsafe", ...fields } });
@@ -162,13 +179,62 @@ describe("Kiro production ACP handle", () => {
     expect((await readObserved(next)).filter((r) => r.message.method === "session/prompt")).toHaveLength(0);
     const listed = await adapter.list(root); expect(listed).toHaveLength(1); expect(listed[0].created).toBeUndefined();
     const fresh = createKiroAdapter({ command: resolve("tests/fixtures/kiro-acp-peer.mjs"), env: { ...process.env, PI_WEB_KIRO_PEER_DIR: root } });
-    expect(await fresh.list(root)).toEqual([]); // Unverified source cannot authorize broad native discovery.
+    expect((await fresh.list(root))[0].nativeSession.sessionId).toBe(handle.state().nativeSession.sessionId); // Only the observed v2 source is discoverable.
+  });
+  it("replaces contextual plans and observes unsupported update bytes without discarding text", async () => {
+    const { handle, peer, events } = await fixture(); await prompt(handle);
+    await controlPeer(peer, { action: "text", delta: "Retained" });
+    const send = (update: unknown) => controlPeer(peer, { action: "emit", message: { method: "session/update", params: { sessionId: handle.state().nativeSession.sessionId, update } } });
+    for (const content of ["Initial plan", "Replacement plan"]) await send({ sessionUpdate: "plan", entries: [{ content, priority: "medium", status: "pending" }] });
+    await send({ sessionUpdate: "available_commands_update", availableCommands: [] });
+    await send({ sessionUpdate: "future_update", private: "not-forwarded" });
+    const plans = (await handle.messages()).filter((m) => m.role === "system");
+    expect(plans).toHaveLength(1); expect(plans[0].text).toContain("Replacement plan");
+    expect(events.filter((e) => e.type === "wire").every((e) => e.type === "wire" && typeof e.value === "object" && e.value !== null && !Array.isArray(e.value) && Number(e.value.bytes) > 0)).toBe(true);
+    expect(JSON.stringify(events)).not.toContain("not-forwarded");
+    expect((await handle.messages()).some((m) => m.text === "Retained")).toBe(true);
+  });
+  it("keeps incremental prose wire bytes linear rather than resending growing prefixes", async () => {
+    const run = async (chunks: number) => {
+      const { handle, peer, events } = await fixture(); await prompt(handle);
+      for (let i = 0; i < chunks; i++) await controlPeer(peer, { action: "text", delta: "x".repeat(256) });
+      expect(events.filter((e) => e.type === "message_delta" && e.delta === "x".repeat(256))).toHaveLength(chunks);
+      await handle.dispose(); return Buffer.byteLength(JSON.stringify(events));
+    };
+    expect((await run(40)) / (await run(20))).toBeLessThan(2.1);
+  });
+  it("rejects a foreign permission callback without cancelling current work", async () => {
+    const { handle, peer } = await fixture(); await prompt(handle);
+    await controlPeer(peer, { action: "emit", message: { id: "foreign", method: "session/request_permission", params: { sessionId: "other-session", toolCall: { toolCallId: "other" }, options: [] } } });
+    expect((await waitObserved(peer, (r) => r.direction === "client" && r.message.id === "foreign")).message.error.code).toBe(-32600);
+    expect(handle.state()).toMatchObject({ phase: "running", activeExecution: { id: "guard-1" }, pendingInteractions: [] });
+    expect((await readObserved(peer)).some((r) => r.direction === "client" && r.message.method === "session/cancel")).toBe(false);
   });
   it("retains a terminal stop reason even when the native turn emits no assistant content", async () => {
     const { handle, peer } = await fixture(); await prompt(handle);
     await controlPeer(peer, { action: "complete", reason: "refusal" });
     await expect.poll(() => handle.state().phase).toBe("idle");
     expect((await handle.messages()).some((m) => m.role === "assistant" && m.stopReason === "refusal")).toBe(true);
+  });
+  it("filters mixed catalog sources even when the command selects v2 and omits creation time", async () => {
+    const { root, adapter, handle } = await fixture();
+    const item = { sessionId: handle.state().nativeSession.sessionId, source: "v2", title: "Native title", updatedAt: "2025-01-01T00:00:00Z", messageCount: 0, status: "idle" };
+    await writeFile(join(root, "config.json"), JSON.stringify({ catalog: [{ cwd: root, complete: false, sessions: [item,
+      { ...item, sessionId: "classic", source: "classic" }, { ...item, sessionId: "future", source: "v3" }] }] }));
+    const list = await adapter.list(root); expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ nativeSession: { sessionId: item.sessionId }, modified: item.updatedAt, messageCount: 0 });
+    expect(list[0].created).toBeUndefined();
+  });
+  it("loads an immediately persisted empty session with captured modes/models and startup observations", async () => {
+    const { root, adapter, handle, handles, events } = await fixture();
+    const ref = handle.state().nativeSession;
+    expect((await adapter.list(root))[0].messageCount).toBe(0);
+    await handle.dispose();
+    const loaded = await adapter.open({ sessionId: handle.sessionId, cwd: root, nativeSession: ref }); handles.push(loaded);
+    expect(await loaded.messages()).toEqual([]);
+    expect(loaded.state().nativeSettings).toEqual({ model: "native-fixture-model", mode: "native-fixture-mode" });
+    expect(events.some((e) => e.type === "wire" && typeof e.value === "object" && e.value !== null && !Array.isArray(e.value) && e.value.method === "_kiro.dev/subagent/list_update")).toBe(true);
+    expect(events.some((e) => e.type === "wire" && typeof e.value === "object" && e.value !== null && !Array.isArray(e.value) && Number(e.value.bytes) > 79000)).toBe(true);
   });
   it("fails closed on version mismatch without launching ACP", async () => {
     const { root, adapter } = await fixture(); await writeFile(join(root, "config.json"), JSON.stringify({ version: "2.99.0" }));

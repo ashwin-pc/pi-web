@@ -863,6 +863,11 @@ for (const flow of ["landing", "drawer"] as const) {
     const peer = await kiroPeer(nativeServer.kiroPeerDir, created.nativeSession.sessionId!);
     await kiroPrompted(peer);
     await controlKiro(peer, { action: "text", delta: "Kiro introduction." });
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator(".modelSettingsNative")).toContainText("Model: native-fixture-model");
+    await expect(page.locator(".modelSettingsNative")).toContainText("Mode: native-fixture-mode");
+    await expect(page.locator("#modelSelect")).toBeHidden();
+    await page.locator("#messages").click({ position: { x: 4, y: 4 } });
     await controlKiro(peer, { action: "thinking", delta: "Exposed Kiro thought." });
     await controlKiro(peer, { action: "tool", itemId: "edit" });
     await expect(page.locator(".toolCard--running")).toHaveCount(1);

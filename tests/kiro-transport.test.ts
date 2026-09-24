@@ -59,6 +59,24 @@ describe("Kiro bounded stdio transport", () => {
     expect(await pending).toMatchObject({ code: "protocol" }); await broken.transport.dispose();
     expect(broken.errors).toHaveLength(1); expect(broken.errors[0].message).not.toContain("private details"); expect(healthy.transport.closed).toBe(false);
   });
+  it("tolerates the captured id-less parse error when idle without retaining rejected input", async () => {
+    const { transport, peer, observations, root } = await connection();
+    await controlPeer(peer, { action: "emit", message: { error: { code: -32700, message: "Parse error", data: { line: "private-rejected-line" } } } });
+    expect(observations).toContain("uncorrelated-parse-error"); expect(transport.closed).toBe(false);
+    await expect(transport.request("session/load", { sessionId: "missing", cwd: root, mcpServers: [] })).rejects.toMatchObject({ code: -32603, message: "Internal error" });
+    await expect(transport.request("pi-web/unknown")).rejects.toMatchObject({ code: -32601, message: "Method not found" });
+    await expect(transport.request("session/new", { cwd: root, mcpServers: [] })).resolves.toHaveProperty("sessionId");
+  });
+  it("fails ambiguous pending dispatch safely on an id-less parse error without replay", async () => {
+    const { transport, peer, root } = await connection();
+    const { sessionId } = await transport.request("session/new", { cwd: root, mcpServers: [] }) as { sessionId: string };
+    const pending = transport.request("session/prompt", { sessionId, prompt: [{ type: "text", text: "ordinary" }] }, null).catch((e) => e);
+    await waitObserved(peer, (r) => r.message.method === "session/prompt");
+    await controlPeer(peer, { action: "emit", message: { error: { code: -32700, message: "Parse error", data: { line: "private-rejected-line" } } } });
+    const error = await pending; expect(error).toMatchObject({ code: "protocol", ambiguous: true });
+    expect(error.message).not.toContain("private-rejected-line");
+    expect((await readObserved(peer)).filter((r) => r.direction === "client" && r.message.method === "session/prompt")).toHaveLength(1);
+  });
   it("drains stderr and cleans up with one reentrant disposal promise", async () => {
     const { transport, peer, faults, errors } = await connection();
     await controlPeer(peer, { action: "stderr", bytes: 2000000 }); faults.add("dispose");
