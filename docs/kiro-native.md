@@ -2,6 +2,8 @@
 
 **Kiro is the fourth opt-in local harness behind the existing `LocalSessionService` and `SessionHandle`; a bounded real browser canary now verifies generation, native read, permission decline, guarded Stop and resumed recall. Exact cold-history parity is not supported for interrupted prose.** The 2026-09-24 canary consumed its complete four-prompt authorization and confirmed ACP v1 prompt/permission frames. Native cold load replaces stopped prose with an interruption placeholder. Allow-once was offered but not exercised; remembered scopes, broad historical replay and platform parity remain unverified. Deterministic-peer evidence is separate from these real observations.
 
+**Latest independent Kiro verdict: FAIL on `95564ac` for B2, unreported token usage displayed as zero.** Repair `2ff92f9` removes that fabricated accounting and has producer red→green evidence; fresh independent acceptance is still pending. The earlier Pi/Codex/Claude acceptance at `2f007fc` remains a separate historical result.
+
 ## Pins and native ownership
 
 | Component | Exact target |
@@ -95,7 +97,7 @@ Still **unverified or limited after the real canary**:
 - Authentication refresh, long-running entitlement changes, limit/refusal endings and broader prompt/cancel races. Actual `end_turn` and `cancelled` settlement were observed.
 - Native agent, hook, tool and MCP inheritance with the exact startup inputs.
 - Canonical macOS and Windows launch/cleanup behavior.
-- Usage scope, cost/currency and context occupancy; no guessed accounting is shown.
+- The adapter does not expose token usage, cost/currency or context occupancy. `stats.tokens`, `stats.cost` and `stats.contextUsage` remain absent, including after completed turns and cold load; Session details displays `—`, not a measured zero. Projected message counts are not token estimates.
 
 Ephemeral creation rejects with 400 and expired ephemeral open with 410. Output images do not enable uploads. Native filesystem access is distinct from host Files/Git features. Pi extensions, worker tools and settings remain Pi-only.
 
@@ -146,6 +148,16 @@ The two unit skips are the existing opt-in Claude configuration and synthetic-SS
 The full gate exposed a **pre-existing** shared scroll race: explicit wheel intent was discarded while the programmatic-scroll reset was pending. Both the original renderer and original failing test were unchanged from the base. A deterministic browser probe reproduced it red, and `9dcc6f3` removes only that input-handler guard while preserving the separate guard on actual programmatic scroll events. The original selection assertion is unchanged. This repair is independently reviewable from the Kiro leaf and explains the three additional browser cases.
 
 Producer receipts live under `.pi/web/artifacts/kiro-implementation/`: exact commands, source hashes, red/green evidence, full logs, skip inventory and cleanup. These are supplementary evidence, not required runtime/test inputs. Earlier setup failures and the inherited failing full run remain recorded; they are not counted as acceptance. All owned validation processes finished, owned ports were checked free, and scratch validation homes were removed. No live restart, push, native-home change or real model call was performed by this worker.
+
+## Unknown-usage repair — B2
+
+The independent audit of `95564ac` passed its full regression suite (**856 unit passes / 2 skips; 897 browser passes / 55 skips; zero failures/retries**) but returned **FAIL** after an additional production-server/browser probe showed “0 tokens” following a completed turn with no native usage measurement. That counterexample takes precedence over the green suite. Its historical verdict is not rewritten by a producer repair.
+
+**`2ff92f9`** makes `SessionStatsDto.tokens` optional and removes unobserved initial zeros from Kiro, Codex and Claude. Kiro has no supported usage mapping and continues to omit the field. Codex populates valid native totals; Claude populates valid, nonempty current-Query `modelUsage`. Reported zero is still a known zero. Pi's production accounting is unchanged. Existing Session details and context-meter consumers already handle absence; the typed Claude canary reader now uses optional chaining without executing the canary.
+
+The unchanged auditor probe failed on the old production code and passed twice on repaired production bytes: API token fields absent, visible tokens `—`, and message counts still one user, one assistant and two total. New adapter, HTTP/WS and [native browser regressions](../tests/e2e/native-harness.spec.ts) cover completion, page reload and cold reopen; a Codex browser control requires a subsequent native zero measurement to display `0`. Project/strict checks, 146 focused tests, the Claude suite (50 passes / 2 opt-in skips) and 24 repeated browser cases passed. These suites overlap and their counts are not additive. No model calls or actual Kiro executions were made for this repair; all real-canary budgets remain exhausted. A fresh independent verdict remains required.
+
+**Full producer gate on `2ff92f9aaeb3528c2e8064832a72978fd20c0555`:** all 587 tracked validation files matched the committed repair. Complete build and strict checks passed. The parallel `npm test`, with two shards and concurrency four, finished in **465.0 seconds**: **868 unit passes / 2 existing skips; 900 browser passes / 55 existing skips; zero failures/flakes/retries**. Browser results: mobile passed 303 with 9 skips; tablet passed 272 with 40 skips; desktop passed 306 with 6 skips; auth passed 19 with no skips. No snapshots changed. Subsequent documentation-only changes do not alter the validated runtime or tests; this producer result does not close the independent B2 gate.
 
 ## Bounded actual browser canary — 2026-09-24
 

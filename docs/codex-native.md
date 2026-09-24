@@ -114,7 +114,7 @@ These classifications distinguish native availability from the first adapter sur
 | Native instructions/skills/hooks | Inherited | No second loader or automatic Pi command/skill compatibility claim. |
 | MCP/plugin configuration | Native, no administration UI | Native tools stay configured/authenticated in Codex. |
 | Subagents | Native observed activity only | No claim that pi-web worker spawning/completion relations are ported. |
-| Usage | Native token values; deterministic tests | Monetary cost is omitted. Token usage is not treated as measured context occupancy. |
+| Usage | Native token values; deterministic tests | Token counters are omitted until a valid native usage report, including after create or reopen. Missing or invalid required counters do not become zero; the pinned schema's explicit zero default for `cacheWriteInputTokens` is preserved. A reported zero remains zero. Monetary cost is omitted, and token usage is not treated as measured context occupancy. |
 | Host/browser Pi extensions | Pi-only unless separately audited | Dialogs/renderers/resources/artifacts/worker tools require explicit compatibility. |
 | Remote/realtime/process/filesystem admin | Not in initial surface | `thread/shellCommand` and `process/*` bypass native sandbox; never use them as tool shortcuts. |
 
