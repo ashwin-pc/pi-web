@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -102,10 +102,38 @@ async function fixture(options: { enabled?: boolean; cwd?: string; ephemeral?: b
     nativeBindingsFile: join(cwd, "native.json"), globalCwd: () => cwd, finalizeCreatedSession: async () => undefined });
   services.push(service);
   await service.initialize();
-  return { service, cwd, handles, open, adapter };
+  return { service, cwd, handles, open, adapter, pi };
 }
 
 describe("single-handle core routing", () => {
+  it("retains Pi capture ownership, cancellation signals and invocation leases", async () => {
+    const { service, pi } = await fixture();
+    const state = await service.create(undefined);
+    const policy = { media: "audio" as const, maxSeconds: 10, maxBytes: 1024, mimeTypes: ["audio/webm"] };
+    const owner = { sessionId: state.sessionId, contributionKey: "voice", registrationId: "registration" };
+    const registration = vi.spyOn(pi.webUiBridge, "captureRegistration").mockReturnValue({ key: owner.contributionKey, registrationId: owner.registrationId, policy });
+    const stored = await service.storeCapture(state.sessionId, "voice", "registration", { mimeType: "audio/webm", durationMs: 250, bytes: new Uint8Array([1, 2, 3]) });
+    expect(registration).toHaveBeenCalledWith(expect.objectContaining({ sessionId: state.sessionId }), "voice", "registration");
+    await expect(pi.host.captureStore.consume(stored.id, { ...owner, sessionId: "foreign" }, policy)).rejects.toThrow("does not belong");
+    const capture = await pi.host.captureStore.consume(stored.id, owner, policy);
+    await expect(access(capture.path)).resolves.toBeUndefined();
+
+    const controller = new AbortController();
+    const invoke = vi.spyOn(pi.webUiBridge, "invokeContribution").mockImplementation(async (_raw, _input, signal) => {
+      expect(signal).toBe(controller.signal);
+      return new Promise((_resolve, reject) => signal!.addEventListener("abort", () => reject(new Error("capture cancelled")), { once: true }));
+    });
+    const pending = service.invokeContribution(state.sessionId, { slot: "composer-input", key: "voice" }, controller.signal);
+    const rejected = expect(pending).rejects.toThrow("capture cancelled");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    expect(service.lifecycleSnapshot().liveSessions.find((entry) => entry.sessionId === state.sessionId)?.workLeases).toBe(1);
+    controller.abort();
+    await rejected;
+    expect(service.lifecycleSnapshot().liveSessions.find((entry) => entry.sessionId === state.sessionId)?.workLeases).toBe(0);
+    await service.disposeAll();
+    await expect(access(capture.path)).rejects.toThrow();
+  });
+
   it("reads canonical native citations without prompting and rejects Pi-only capture operations", async () => {
     const { service, handles, open } = await fixture();
     const state = await service.create(undefined, undefined, "codex");

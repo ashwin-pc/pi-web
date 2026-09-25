@@ -453,7 +453,7 @@ export interface SessionService {
   navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
   respondInteraction(response: InteractionResponseDto): boolean;
   cancelInteractions(): void;
-  invokeContribution(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  invokeContribution(sessionId: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>>;
   invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
   invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokeGitTab(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
