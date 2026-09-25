@@ -103,6 +103,8 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
     if (focus) entriesById.get(selectedId)?.button.focus({ preventScroll: true });
   }
 
+  const isEntryVisible = (entry: PageEntry) => !entry.button.hidden;
+
   function filterNavigation() {
     const query = normalizedSearchText(elements.searchInput.value);
     let visibleCount = 0;
@@ -110,7 +112,8 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
       const dynamicTerms = entry.button.dataset.settingsDynamicSearch || "";
       const searchText = normalizedSearchText(`${entry.button.dataset.settingsSearch || ""} ${dynamicTerms} ${entry.button.textContent || ""}`);
       const entryScope = entry.button.dataset.settingsScope || entry.button.closest<HTMLElement>("[data-settings-scope]")?.dataset.settingsScope || "preferences";
-      const visible = entryScope === activeScope && (!query || searchText.includes(query));
+      const available = entry.button.dataset.settingsAvailable !== "false";
+      const visible = available && entryScope === activeScope && (!query || searchText.includes(query));
       entry.button.hidden = !visible;
       if (visible) visibleCount += 1;
     }
@@ -121,7 +124,7 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
   }
 
   function moveSearchSelection(direction: 1 | -1) {
-    const visible = entries.map((entry) => entry.button).filter((button) => !button.hidden);
+    const visible = entries.filter(isEntryVisible).map((entry) => entry.button);
     if (visible.length === 0) return;
     const activeIndex = visible.indexOf(document.activeElement as HTMLButtonElement);
     const nextIndex = activeIndex < 0
@@ -145,7 +148,7 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
         return;
       }
       if (event.key !== "Enter") return;
-      const first = entries.find((entry) => !entry.button.hidden);
+      const first = entries.find(isEntryVisible);
       if (!first) return;
       event.preventDefault();
       applySelection(first.id, true);
@@ -162,6 +165,7 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
     applySelection(selectedId, false);
     if (mobile.matches) showNavigation(false);
     filterNavigation();
+    new MutationObserver(filterNavigation).observe(elements.navigation, { attributes: true, subtree: true, attributeFilter: ["data-settings-available"] });
   }
 
   function prepareOpen() {
@@ -213,7 +217,7 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
     if (closeButton) closeButton.title = `Close ${scopeLabel.toLocaleLowerCase()}`;
     elements.searchInput.value = "";
     filterNavigation();
-    const first = entries.find((entry) => !entry.button.hidden);
+    const first = entries.find(isEntryVisible);
     if (first) applySelection(first.id);
   }
 

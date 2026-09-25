@@ -84,9 +84,10 @@ test("global Buckets page reorders, renames, persists, and propagates to bucket 
   // The focusable handle supports complete keyboard reordering and custom accessible labels.
   const cyanHandle = page.getByRole("button", { name: "Reorder Builds bucket" });
   await cyanHandle.focus();
-  await cyanHandle.press("Space");
-  for (let index = 0; index < 6; index += 1) await cyanHandle.press("ArrowUp");
-  await cyanHandle.press("Space");
+  await page.keyboard.press("Space");
+  for (let index = 0; index < 6; index += 1) await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("Space");
+  await expect(cyanHandle).toBeFocused();
   await expect(rows.locator(".settingsBucketNameDefault")).toHaveText(["Cyan", "Blue", "Purple", "Yellow", "Red", "Green", "Orange", "Pink"]);
   await selectSettingsPage("#settingsNavNewSessions");
   await expect(page.locator("#settingsPageNewSessions #settingBucketNames")).toHaveCount(0);
@@ -125,10 +126,11 @@ test("bucket handles reorder with mouse and touch pointers, persist, and cancel 
 
   // Escape restores the pre-pickup order.
   await blueHandle.focus();
-  await blueHandle.press("Space");
-  await blueHandle.press("ArrowDown");
-  await blueHandle.press("Escape");
+  await page.keyboard.press("Space");
+  await page.keyboard.press("ArrowDown");
+  await page.keyboard.press("Escape");
   await expect(page.locator(".settingsBucketNameDefault").first()).toHaveText("Blue");
+  await expect(blueHandle).toBeFocused();
 
   const start = await blueHandle.boundingBox();
   const target = await orangeRow.boundingBox();
@@ -164,6 +166,16 @@ test("reorder motion honors reduced-motion preferences", async ({ page }) => {
   await expect(page.locator(".settingsBucketNameRow").first()).toHaveCSS("transition-duration", "0s");
   await page.locator("#settingsCloseButton").click();
   await expect(page.locator(".sessionBarTab").first()).toHaveCSS("transition-duration", "0s");
+});
+
+test("mobile header Preferences opens the category list", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "mobile");
+  await page.goto("/");
+  await page.locator("#settingsButton").evaluate((button: HTMLButtonElement) => button.click());
+  await expect(page.locator("#settingsPanel")).toBeVisible();
+  await expect(page.locator("#settingsNavigation")).toBeVisible();
+  await expect(page.locator("#settingsContent")).toBeHidden();
+  await expect(page.locator("#settingsBackButton")).toBeHidden();
 });
 
 test("mobile settings drills into one page and Escape returns before closing", async ({ page }, testInfo) => {

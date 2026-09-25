@@ -266,6 +266,20 @@ test.describe("session quick bar", () => {
     await expect(tab).not.toHaveClass(/dragging|reorder-ready|touch-gesture-active/);
   });
 
+  test("trusted stationary touch hold opens the temporary-tab inspector only on release", async ({ page }) => {
+    await page.goto("/");
+    const tab = page.locator('.sessionBarTab.temporary[data-session-id="mock-current"]');
+    await expect(tab).toBeVisible();
+    const box = await tab.boundingBox(); expect(box).toBeTruthy();
+    const cdp = await page.context().newCDPSession(page);
+    const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...point, id: 10 }] });
+    await page.waitForTimeout(700);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(page.locator(".sessionInspector")).toBeVisible();
+  });
+
   test("trusted touch hold arms, then drags, persists, and cancels cleanly", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     await page.goto("/");

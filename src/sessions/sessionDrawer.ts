@@ -2032,7 +2032,7 @@ export function createSessions(options: {
       tab.dataset.sessionId = sessionId;
       // Give the reorder gesture a clear head start; a stationary hold still
       // opens the Inspector, while hold-and-move reliably becomes a drag.
-      sessionInspector.attach(tab, sessionId, "tab", 650);
+      sessionInspector.attach(tab, sessionId, "tab", 650, options.laned ? "external" : "inspector");
       if (options.laned) attachLaneTabReorder(tab);
       if (isActive) activeTab = tab;
       if (options.running) {

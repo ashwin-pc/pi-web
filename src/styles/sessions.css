@@ -194,7 +194,10 @@
 .systemStatusButton .systemStatusIcon { display: grid; place-items: center; }
 .systemStatusButton[data-status="extension-issue"] .systemStatusIcon { color: var(--warning, #e2b15f); }
 .systemStatusButton[data-status="disconnected"] .systemStatusIcon { color: var(--danger, #ef767a); }
-.systemStatusButton[data-status="checking"] .systemStatusIcon svg { animation: spin .9s linear infinite; }
+.systemStatusButton[data-status="checking"] .systemStatusIcon svg { animation: sessionSpin .9s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .systemStatusButton[data-status="checking"] .systemStatusIcon svg { animation: none; }
+}
 .sessionList {
   display: flex;
   min-height: 0;

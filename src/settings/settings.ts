@@ -407,6 +407,7 @@ export function createSettings(options: {
     const data = await res.json();
     if (Array.isArray(data.webSettingsSchemas)) state.webSettingsSchemas = data.webSettingsSchemas;
     applySettings(data.settings);
+    await refreshExtensionStatus().catch(renderExtensionStatusError);
   }
 
   async function saveBucketOrder(bucketOrder: SessionMarkerColorId[]) {
@@ -439,15 +440,19 @@ export function createSettings(options: {
 
     const orderFromRows = () => Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow"))
       .map((item) => item.dataset.bucketColor as SessionMarkerColorId);
-    const commitOrder = async (next: SessionMarkerColorId[], previous: SessionMarkerColorId[]) => {
+    const commitOrder = async (next: SessionMarkerColorId[], previous: SessionMarkerColorId[], focusColor?: SessionMarkerColorId, focusOwner?: HTMLElement) => {
       state.bucketOrder = next;
       try {
         await saveBucketOrder(next);
+        const restoreFocus = Boolean(focusColor && focusOwner && document.activeElement === focusOwner);
         renderBucketNames();
+        if (restoreFocus) container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${focusColor}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
         setSettingsStatus("Bucket order saved");
       } catch (error) {
         state.bucketOrder = previous;
+        const restoreFocus = Boolean(focusColor && focusOwner && document.activeElement === focusOwner);
         renderBucketNames();
+        if (restoreFocus) container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${focusColor}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
         setSettingsStatus(error instanceof Error ? error.message : String(error), true);
       }
     };
@@ -630,7 +635,7 @@ export function createSettings(options: {
             row.classList.remove("isDragging");
             handle.removeAttribute("aria-pressed");
             live.textContent = `${input.value.trim() || color.label} bucket dropped.`;
-            void commitOrder(orderFromRows(), originalOrder);
+            void commitOrder(orderFromRows(), originalOrder, color.id, handle);
           }
         } else if (keyboardGrabbed && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
           event.preventDefault();
@@ -639,6 +644,7 @@ export function createSettings(options: {
           if (sibling?.classList.contains("settingsBucketNameRow")) {
             if (event.key === "ArrowUp") container.insertBefore(row, sibling);
             else container.insertBefore(sibling, row);
+            handle.focus({ preventScroll: true });
             announcePosition();
           } else live.textContent = "Already at the boundary.";
         } else if (keyboardGrabbed && event.key === "Escape") {
@@ -648,6 +654,7 @@ export function createSettings(options: {
           state.bucketOrder = originalOrder;
           live.textContent = "Reordering cancelled.";
           renderBucketNames();
+          container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${color.id}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
         }
       });
       row.append(handle, swatch, copy, input);
@@ -754,19 +761,21 @@ export function createSettings(options: {
       id: "settings",
       side: "right",
       panel: elements.settingsPanel,
-      trigger: elements.settingsButton,
       backdrop: elements.settingsBackdrop,
       closeButton: elements.settingsCloseButton,
       width: "820px",
       minWidth: 680,
       maxWidth: 980,
       closeOnEscape: false,
-      onBeforeOpen: prepareOpenSettings,
+      onBeforeOpen: () => {
+        setPanelScope(elements.settingsPanel.dataset.scope === "system" ? "system" : "preferences");
+        prepareOpenSettings();
+      },
       onOpen: afterOpenSettings,
       onBeforeClose: prepareCloseSettings,
       focusOnClose: elements.sessionButton,
     });
-    if (!settingsPanelHandle) elements.settingsButton.addEventListener("click", () => openSettings("preferences"));
+    elements.settingsButton.addEventListener("click", () => openSettings("preferences"));
     document.addEventListener("pi-web-open-settings", (event) => openSettings((event as CustomEvent<{ scope?: "preferences" | "system" }>).detail?.scope || "preferences"));
     if (!settingsPanelHandle) {
       elements.settingsCloseButton.addEventListener("click", closeSettings);
@@ -861,10 +870,8 @@ export function createSettings(options: {
     elements.extensionReloadButton.addEventListener("click", () => {
       void reloadExtensions();
     });
-    elements.settingsButton.addEventListener("click", () => setPanelScope("preferences"));
     new MutationObserver(updateSystemStatus).observe(elements.connectionStatusEl, { attributes: true, attributeFilter: ["class", "hidden"] });
     updateSystemStatus();
-    void refreshExtensionStatus().catch(renderExtensionStatusError);
     runNotifications.init();
   }
 
