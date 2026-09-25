@@ -8,7 +8,7 @@ import { createPiAdapter } from "../server/session/adapters/pi/index.js";
 import { LocalSessionService } from "../server/session/service.js";
 import { NativeBindings, type NativeBinding } from "../server/session/nativeBindings.js";
 import type { AdapterPromptInput, SessionAdapter, SessionHandle } from "../server/session/adapter.js";
-import type { HarnessDescriptorDto, InteractionResponseDto, SessionServiceEvent, SessionSnapshotDto } from "../server/session/dto.js";
+import type { HarnessDescriptorDto, InteractionResponseDto, MessageDto, SessionServiceEvent, SessionSnapshotDto } from "../server/session/dto.js";
 import { SessionActivity } from "../server/session/activity.js";
 import { createHostSessionEventHandler } from "../server/session/hostEvents.js";
 
@@ -59,7 +59,8 @@ class Handle implements SessionHandle {
       stats: { userMessages: 0, assistantMessages: 0, toolResults: 0, totalMessages: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } };
   }
   state() { return structuredClone(this.snapshot); }
-  async messages() { return []; }
+  transcript: MessageDto[] = [];
+  async messages() { return structuredClone(this.transcript); }
   emit(event: SessionServiceEvent) { for (const listener of this.listeners) listener(event); }
   update(patch: Partial<SessionSnapshotDto>) { Object.assign(this.snapshot, patch); this.emit({ type: "state", state: this.state() }); }
   async prompt(input: AdapterPromptInput) {
@@ -105,6 +106,25 @@ async function fixture(options: { enabled?: boolean; cwd?: string; ephemeral?: b
 }
 
 describe("single-handle core routing", () => {
+  it("reads canonical native citations without prompting and rejects Pi-only capture operations", async () => {
+    const { service, handles, open } = await fixture();
+    const state = await service.create(undefined, undefined, "codex");
+    const handle = handles[0]!;
+    handle.transcript = [{ id: "native-answer", role: "assistant", isError: false, parts: [
+      { id: "prose", type: "text", text: "Native retained answer" },
+      { id: "tool", type: "toolCall", toolCallId: "call", toolName: "read", args: { path: "example.txt" }, status: "completed", result: { isError: false, parts: [{ id: "result", type: "text", text: "native result" }] } },
+    ] }];
+    const result = await service.readSession({ sessionId: state.sessionId, entryId: "native-answer" }, 20);
+    expect(result).toMatchObject({ source: "active branch", truncated: false, entries: [{ entryId: "native-answer", text: expect.stringContaining("Native retained answer") }] });
+    expect(result.entries[0]?.text).toContain("→ read(path: example.txt)");
+    expect(result.entries[0]?.text).toContain("✓ read: native result");
+    expect(handle.prompts).toEqual([]);
+    expect(open).not.toHaveBeenCalled();
+    await expect(service.readSession({ sessionId: state.sessionId, entryId: "missing" }, 20)).rejects.toMatchObject({ status: 404 });
+    await expect(service.storeCapture(state.sessionId, "capture", "registration", { mimeType: "audio/webm", durationMs: 1, bytes: new Uint8Array() })).rejects.toMatchObject({ status: 400 });
+    await expect(service.invokeContribution(state.sessionId, { slot: "composer-input" }, new AbortController().signal)).rejects.toMatchObject({ status: 400 });
+  });
+
   it("keeps Pi identity, requires native opt-in, and never falls back on invalid selection", async () => {
     const { service } = await fixture({ enabled: false });
     const pi = await service.create(undefined);

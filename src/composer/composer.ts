@@ -759,7 +759,8 @@ export function createComposer(options: {
       if ((activeRuntime.isStreaming || activeRuntime.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0 && !quoteReplies.hasDrafts()) return;
 
       const rawMessage = elements.promptEl.value;
-      const sessionId = ownedSessionId;
+      const sourceSessionId = ownedSessionId;
+      let sessionId = sourceSessionId;
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
       let quoteSubmission: QuoteReplySubmission | undefined;
@@ -827,6 +828,7 @@ export function createComposer(options: {
       try {
         preparingInput = true; updatePrimaryAction();
         await prepareLandingSession?.();
+        sessionId = state.currentSessionId;
         activeRuntime = sessionRuntime(state);
         const view = activeSessionState(state);
         if (attachments.length && view?.capabilities?.attachments === false) throw new Error("Attachments are not supported by this harness. Remove them before sending.");
@@ -871,6 +873,7 @@ export function createComposer(options: {
         });
         if (!res.ok) throw new Error(await res.text());
         if (quoteSubmission) quoteReplies.commitSubmission(quoteSubmission);
+        if (sessionId !== sourceSessionId && drafts.get(sourceSessionId).text === rawMessage) drafts.update(sourceSessionId, { text: "" }, true);
         updatePrimaryAction();
       } catch (error) {
         optimisticUserMessages.delete(clientMessageId);
