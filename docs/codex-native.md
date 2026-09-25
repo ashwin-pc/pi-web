@@ -9,8 +9,7 @@ This document records the native contract, setup and compatibility evidence for 
 | Component | Audited value |
 |---|---|
 | Native binary/protocol | `codex-cli 0.154.0` |
-| Managed wrapper on the audit machine | Toolbox `0.154.0.469 (stable)` |
-| Actual model provider | Amazon Bedrock, managed credentials |
+| Actual model provider | The configured native provider and credentials |
 | Checked-in exact generated schema | [`tests/fixtures/codex-0.154.0/schema.json`](../tests/fixtures/codex-0.154.0/schema.json) |
 | Schema hash, regeneration command and source reference | [`pin.json`](../tests/fixtures/codex-0.154.0/pin.json) |
 | Primary API documentation | <https://developers.openai.com/codex/app-server.md> |
@@ -25,9 +24,9 @@ codex app-server --help
 codex app-server generate-json-schema --experimental --out /tmp/codex-schema
 ```
 
-The exact installed schema is authoritative when current online documentation differs. On the audit machine, PATH `codex` is a Toolbox shim invoking its managed wrapper and bundled native executable. The wrapper's `codex login status` says login is **not required** because Bedrock credentials are managed; that response is not a missing-login blocker.
+The exact installed schema is authoritative when current online documentation differs. Preserve the configured native launch and authentication path; installation-specific wrappers may differ from a direct binary invocation.
 
-Do not override `HOME`/`CODEX_HOME` for a real-wrapper canary: a disposable HOME can prevent Toolbox association resolution, which is a setup-isolation error, not evidence that Codex is missing. Direct invocation of a pinned native binary is acceptable for credential-free version/schema/protocol-syntax checks, but is **not** equivalent to validating the production wrapper/authentication path.
+Do not override `HOME`/`CODEX_HOME` for a real-model canary: a disposable HOME can prevent native configuration resolution. Direct invocation of a pinned native binary is acceptable for credential-free version/schema/protocol-syntax checks, but is **not** equivalent to validating the configured production authentication path.
 
 The shared service enables the optional native harness chooser with `PI_WEB_MULTI_HARNESS=1`; Pi remains the default. Use the normal documented pi-web launch procedure rather than creating another serving path.
 

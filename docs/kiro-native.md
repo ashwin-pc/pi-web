@@ -109,9 +109,6 @@ Implementation commands executed without real model calls:
 
 ```sh
 npm ci
-# Internal registry credentials expired during dependency install. Refresh only npm auth:
-harmony npm
-npm install --save-exact @agentclientprotocol/sdk@1.5.0 zod@4.4.3
 npm run typecheck
 node node_modules/typescript/bin/tsc --noEmit --target ES2022 --module NodeNext \
   --moduleResolution NodeNext --strict --skipLibCheck server/session/adapters/kiro/index.ts
