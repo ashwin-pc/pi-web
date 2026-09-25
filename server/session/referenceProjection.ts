@@ -1,6 +1,6 @@
 import { isSessionReferenceId } from "../shared/sessionReference.js";
 import { textFromContent, toolCallName } from "./projection.js";
-import type { MessageDto } from "./dto.js";
+import type { MessageDto, ToolCallPartDto } from "./dto.js";
 import { sessionsReadTail, truncateSessionText, type SessionReadText } from "./referenceTools.js";
 const MAX_SESSION_READ_ENTRY_TEXT = 6_000;
 const MAX_SESSION_READ_TEXT = 12_000;
@@ -42,7 +42,8 @@ export function canonicalTextReference(message: MessageDto, compact: boolean): S
     const calls = parts ? parts.filter((part) => part.type === "toolCall") : message.toolCalls || [];
     for (const call of calls) {
       content.push({ type: "toolCall", name: call.toolName, arguments: call.args });
-      if ("result" in call && call.result) content.push({ type: "text", text: `  ${call.result.isError ? "✗" : "✓"} ${call.toolName}: ${call.result.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n")}` });
+      const result = (call as Partial<ToolCallPartDto>).result;
+      if (result) content.push({ type: "text", text: `  ${result.isError ? "✗" : "✓"} ${call.toolName}: ${result.parts.filter((part) => part.type === "text").map((part) => part.text).join("\n")}` });
     }
   }
   return textReference({ type: "message", id: message.entryId || message.id, message: { ...message, content } }, compact);

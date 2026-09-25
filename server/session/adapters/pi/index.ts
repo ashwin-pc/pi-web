@@ -149,7 +149,7 @@ export class PiSessionHandle implements SessionHandle {
   private projectState(_value: PiWebSession = this.raw): SessionSnapshotDto { return this.state(); }
   async messages() { return jsonSafe(projectMessages(this.raw)); }
   readHistoryEntry(entryId: string): MessageDto[] {
-    const entry = this.raw.sessionManager.getEntry?.(entryId);
+    const entry = this.raw.sessionManager.getEntry?.(entryId) as { type?: string; message?: unknown } | undefined;
     if (entry?.type !== "message") return [];
     const message = simplifyMessage(entry.message, { entryId });
     return message ? [message] : [];

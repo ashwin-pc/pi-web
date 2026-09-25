@@ -1515,7 +1515,7 @@ export function createMessageList(options: {
     if (wanted.has("$error") && !nodes.has("$error")) {
       const interrupted = message.status === "interrupted";
       const error = message.errorMessage || (interrupted ? "Response interrupted." : "Assistant error");
-      nodes.set("$error", render.addRuntimeErrorCard(interrupted ? "interrupted" : "assistant error", normalizeAssistantError(error), distinctAssistantErrorBody(error)));
+      nodes.set("$error", render.addRuntimeErrorCard({ title: interrupted ? "interrupted" : "assistant error", subtitle: normalizeAssistantError(error), technicalDetails: distinctAssistantErrorBody(error) }));
     }
     const order = message.role === "assistant" ? message.parts.map((part) => part.id) : ["$message"];
     for (const id of [...order, "$error"]) {
