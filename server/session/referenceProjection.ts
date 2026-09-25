@@ -90,4 +90,3 @@ export function boundReferenceText(entries: SessionReadText[], tail: number) {
   }
   return { entries: selected.reverse(), truncated };
 }
-

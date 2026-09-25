@@ -113,3 +113,29 @@ The initial Linux SHA-256 manifest remains
 
 macOS revalidation: **NOT RUN**. Full-suite and independent visual acceptance
 remain separate follow-up gates.
+
+
+## Upstream rebuild recording — 2026-09-25
+
+The Linux additions were reacquired on upstream `55e02e1` with the rebuilt
+multi-harness source at `f2849bbbc38e057982207a37c7d60116f43ca3b9`. The original recording predates upstream
+session citation controls, populated-draft layout, and the current notepad
+example. It is historical provenance, not the expectation for those changes.
+
+Only this branch's 78 Linux additions were reacquired with the documented
+`--update-snapshots=missing` procedure, using disposable HOME/state, the same
+Chromium cache, and an owned loopback test port. 66 PNGs changed from
+the earlier recording. All 80 macOS references are byte-identical to upstream;
+no comparison thresholds or test assertions were relaxed. Every acquired PNG
+matches its retained browser `actual` image byte-for-byte.
+
+Acquisition reported only missing-reference writes (63 cases and 27 existing
+skips); it is not a passing comparison. Ordinary full-suite comparison is a
+separate gate reported in the PR.
+
+Current Linux manifest SHA-256: `8a955f0375aec44568026317453efa26a3720412de5bb48ed9847039550a0603`.
+Current macOS manifest SHA-256: `bc5187c2a3fbca455a335bc194480ab18e6371e9f01d0ed97d99b8665663eed8`.
+
+Manifest input is sorted `sha256  repository-relative-path` lines with a final
+newline. These current manifests supersede the historical recording manifests
+above; they do not claim macOS execution.
