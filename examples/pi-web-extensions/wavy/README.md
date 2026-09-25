@@ -24,9 +24,9 @@ For a built archive, run `npm run verify:package`, then `npm pack`. Extract the 
 tar -xzf ashwin-pc-pi-web-wavy-example-*.tgz
 cd package
 npm install --omit=dev --ignore-scripts --no-save \
-  @ashwin-pc/pi-web@0.6.0 \
-  @earendil-works/pi-ai@0.84.1 \
-  @earendil-works/pi-coding-agent@0.84.1 \
+  @ashwin-pc/pi-web@0.6.1 \
+  @earendil-works/pi-ai@0.87.1 \
+  @earendil-works/pi-coding-agent@0.87.1 \
   typebox@1.0.64
 mkdir -p ~/.pi/web/extensions
 ln -sfn "$PWD" ~/.pi/web/extensions/wavy

@@ -37,9 +37,9 @@ async function verifyCleanConsumer(archive) {
   delete env.NODE_PATH;
   run("npm", [
     "install", "--omit=dev", "--ignore-scripts", "--no-save",
-    "@ashwin-pc/pi-web@0.6.0",
-    "@earendil-works/pi-ai@0.84.1",
-    "@earendil-works/pi-coding-agent@0.84.1",
+    "@ashwin-pc/pi-web@0.6.1",
+    "@earendil-works/pi-ai@0.87.1",
+    "@earendil-works/pi-coding-agent@0.87.1",
     "typebox@1.0.64",
   ], { cwd: packageRoot, env });
   const runner = join(packageRoot, "verify-discovery.mjs");

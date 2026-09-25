@@ -41,9 +41,9 @@
     "verify:package:contents": "node scripts/verify-source-package.mjs"
   },
   "peerDependencies": {
-    "@ashwin-pc/pi-web": ">=0.6.0 <0.7.0",
-    "@earendil-works/pi-ai": "0.84.1",
-    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@ashwin-pc/pi-web": ">=0.6.1 <0.7.0",
+    "@earendil-works/pi-ai": "0.87.1",
+    "@earendil-works/pi-coding-agent": "0.87.1",
     "typebox": ">=1.0.0 <2.0.0"
   },
   "devDependencies": {
