@@ -81,6 +81,14 @@ describe("session UI state store", () => {
     expect((await createSessionUiStateStore(file).read()).bucketOrder).toEqual(next.bucketOrder);
   });
 
+  it("keeps picker favorites independent from pinned drawer groups", async () => {
+    const store = createSessionUiStateStore(await tempFile());
+    const patched = await store.patch({ pinnedFolders: ["/drawer"], favoriteFolders: [" /picker ", "/picker", ""] });
+    expect(patched.pinnedFolders).toEqual(["/drawer"]);
+    expect(patched.favoriteFolders).toEqual(["/picker"]);
+    expect((await store.patch({ favoriteFolders: "wrong" })).favoriteFolders).toEqual(["/picker"]);
+  });
+
   it("preserves since for unchanged pins sent through the legacy alias", async () => {
     const file = await tempFile();
     const store = createSessionUiStateStore(file);

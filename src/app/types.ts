@@ -194,6 +194,7 @@ export type SessionUiState = {
   lanes: SessionLaneEntry[];
   sessionNotes: SessionNote[];
   pinnedFolders: string[];
+  favoriteFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
@@ -220,6 +221,7 @@ export const defaultSessionUiState: SessionUiState = {
   lanes: [],
   sessionNotes: [],
   pinnedFolders: [],
+  favoriteFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
   sessionOrigins: [],
@@ -397,6 +399,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     lanes: lanes.length ? lanes : legacy.map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     sessionNotes: [...sessionNotes, ...migratedLaneNotes.filter((item) => !noteIds.has(item.sessionId))],
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
+    favoriteFolders: normalizePinnedFolders(raw.favoriteFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
     sessionOrigins: normalizeSessionOrigins(raw.sessionOrigins),
@@ -505,6 +508,7 @@ export type AppState = {
   sessionNotes: SessionNote[];
   sessionsById: Record<string, SessionViewState>;
   pinnedFolders: string[];
+  favoriteFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
@@ -662,6 +666,7 @@ export function createAppState(): AppState {
     sessionNotes: [],
     sessionsById: {},
     pinnedFolders: [],
+    favoriteFolders: [],
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
     sessionOrigins: [],

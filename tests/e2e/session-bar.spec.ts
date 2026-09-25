@@ -444,7 +444,12 @@ test.describe("session quick bar", () => {
     const folderButton = emptyState.getByRole("button", { name: "Change working directory" });
     await expect(folderButton.locator(".emptyCwdPath")).toHaveText(currentCwd);
     await folderButton.click();
-    await expect(page.locator(".folderPickerInput")).toHaveValue(currentCwd);
+    await expect(page.getByRole("dialog", { name: "Folder" })).toBeVisible();
+    const savedFolderSearch = page.getByRole("searchbox", { name: "Search saved folders" });
+    if ((page.viewportSize()?.width || 0) > 640) await expect(savedFolderSearch).toBeFocused();
+    else await expect(savedFolderSearch).not.toBeFocused();
+    await page.getByRole("button", { name: "Browse folders" }).click();
+    await expect(page.getByRole("button", { name: `Use ${currentCwd}` })).toBeVisible();
   });
 
   test("/clear reuses the current tab pin and marker while releasing the old session", async ({ page }) => {

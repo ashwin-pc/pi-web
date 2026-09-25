@@ -42,6 +42,7 @@ export type SessionUiState = {
   lanes: SessionLaneEntry[];
   sessionNotes: SessionNote[];
   pinnedFolders: string[];
+  favoriteFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
@@ -56,6 +57,7 @@ export type SessionUiStatePatch = Partial<{
   pinnedSessions: unknown; // legacy v1 patch alias
   sessionNotes: unknown;
   pinnedFolders: unknown;
+  favoriteFolders: unknown;
   sessionMarkers: unknown;
   sessionUnreadStates: unknown;
   sessionOrigins: unknown;
@@ -81,6 +83,7 @@ export const defaultSessionUiState: SessionUiState = {
   lanes: [],
   sessionNotes: [],
   pinnedFolders: [],
+  favoriteFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
   sessionOrigins: [],
@@ -246,6 +249,9 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   if (Array.isArray(value.pinnedFolders)) {
     state.pinnedFolders = uniqueBy(value.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
   }
+  if (Array.isArray(value.favoriteFolders)) {
+    state.favoriteFolders = uniqueBy(value.favoriteFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+  }
 
   if (Array.isArray(value.sessionMarkers)) {
     state.sessionMarkers = uniqueBy(value.sessionMarkers.map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId);
@@ -283,6 +289,9 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   if ("pinnedFolders" in patch && Array.isArray(patch.pinnedFolders)) {
     next.pinnedFolders = uniqueBy(patch.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+  }
+  if ("favoriteFolders" in patch && Array.isArray(patch.favoriteFolders)) {
+    next.favoriteFolders = uniqueBy(patch.favoriteFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
   }
 
   if ("sessionMarkers" in patch && Array.isArray(patch.sessionMarkers)) {

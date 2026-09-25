@@ -12,6 +12,7 @@ import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView }
 import { buildSessionInspector } from "./sessionInspector.js";
 import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
 import { animateReorderLayout, edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
+import { openFolderPicker as showFolderPicker, type FolderListing } from "../files/folderPicker.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -383,102 +384,31 @@ export function createSessions(options: {
     refreshSessionTitle();
   }
 
-  async function openFolderPicker(startPath: string) {
+  function openFolderPicker(startPath: string) {
     blurActiveEditableOnMobile();
-    const backdrop = document.createElement("div");
-    backdrop.className = "folderPickerBackdrop";
-    const modal = document.createElement("div");
-    modal.className = "folderPicker";
-    const title = document.createElement("h2");
-    title.textContent = "Select working directory";
-    const input = document.createElement("input");
-    input.className = "folderPickerInput";
-    input.value = startPath;
-    const list = document.createElement("div");
-    list.className = "folderPickerList";
-    const error = document.createElement("div");
-    error.className = "folderPickerError";
-    const actions = document.createElement("div");
-    actions.className = "folderPickerActions";
-    const create = document.createElement("button");
-    create.type = "button";
-    create.textContent = "New folder";
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.textContent = "Cancel";
-    const select = document.createElement("button");
-    select.type = "button";
-    select.className = "primaryAction";
-    select.textContent = "Select folder";
-    actions.append(create, cancel, select);
-    modal.append(title, input, list, error, actions);
-    backdrop.append(modal);
-    document.body.append(backdrop);
-
-    async function load(path: string) {
-      error.textContent = "";
-      list.textContent = "Loading…";
-      const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}`, { headers: api.headers() });
-      const data = await res.json();
-      if (!res.ok || data.ok === false) throw new Error(data.error || "Could not list directory");
-      input.value = data.path;
-      list.textContent = "";
-      const up = document.createElement("button");
-      up.type = "button";
-      up.className = "folderPickerRow";
-      up.textContent = "..";
-      up.addEventListener("click", () => load(data.parent).catch((e) => { error.textContent = e.message; }));
-      list.append(up);
-      for (const dir of data.dirs || []) {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "folderPickerRow";
-        row.textContent = dir.name;
-        row.addEventListener("click", () => load(dir.path).catch((e) => { error.textContent = e.message; }));
-        list.append(row);
-      }
-    }
-
-    create.addEventListener("click", async () => {
-      const name = window.prompt("New folder name");
-      if (name === null) return;
-      try {
-        create.disabled = true;
-        error.textContent = "";
-        const res = await fetch("/api/fs/dirs", {
-          method: "POST",
-          headers: api.headers(),
-          body: JSON.stringify({ parent: input.value, name }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.ok === false) throw new Error(data.error || "Could not create folder");
-        input.value = data.path;
-        await load(data.path);
-      } catch (e) {
-        error.textContent = e instanceof Error ? e.message : String(e);
-      } finally {
-        create.disabled = false;
-      }
+    showFolderPicker({
+      startPath,
+      getBookmarks: () => state.favoriteFolders,
+      setBookmarks: (favoriteFolders) => {
+        state.favoriteFolders = favoriteFolders;
+        persistSessionUiState({ favoriteFolders });
+      },
+      api: {
+        list: async (path, signal): Promise<FolderListing> => {
+          const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}`, { headers: api.headers(), signal });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || "Could not list directory");
+          return { path: data.path, parent: data.parent, dirs: Array.isArray(data.dirs) ? data.dirs : [] };
+        },
+        create: async (parent, name) => {
+          const res = await fetch("/api/fs/dirs", { method: "POST", headers: api.headers(), body: JSON.stringify({ parent, name }) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || "Could not create folder");
+          return data.path;
+        },
+        select: selectSessionCwd,
+      },
     });
-    cancel.addEventListener("click", () => backdrop.remove());
-    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) backdrop.remove(); });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") load(input.value).catch((e) => { error.textContent = e.message; });
-    });
-    select.addEventListener("click", async () => {
-      try {
-        select.disabled = true;
-        await selectSessionCwd(input.value);
-        backdrop.remove();
-      } catch (e) {
-        error.textContent = e instanceof Error ? e.message : String(e);
-        select.disabled = false;
-      }
-    });
-    load(startPath).catch((e) => { error.textContent = e.message; list.textContent = ""; });
-    if (!("ontouchstart" in window) && navigator.maxTouchPoints === 0) {
-      input.focus();
-    }
   }
 
   async function startNewSession(cwd?: string) {
@@ -665,6 +595,7 @@ export function createSessions(options: {
     state.sessionNotes = next.sessionNotes;
     state.pinnedSessions = next.lanes.filter((entry) => entry.lane === "pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) }));
     state.pinnedFolders = next.pinnedFolders;
+    state.favoriteFolders = next.favoriteFolders;
     state.sessionMarkers = next.sessionMarkers;
     state.sessionUnreadStates = next.sessionUnreadStates;
     state.sessionOrigins = next.sessionOrigins;
@@ -694,6 +625,7 @@ export function createSessions(options: {
     return value.lanes.length > 0
       || value.sessionNotes.length > 0
       || value.pinnedFolders.length > 0
+      || value.favoriteFolders.length > 0
       || value.sessionMarkers.length > 0
       || value.sessionUnreadStates.length > 0
       // Lineage counts as state: without it, a server holding ONLY origins looks
@@ -757,6 +689,7 @@ export function createSessions(options: {
       lanes: state.lanes,
       sessionNotes: state.sessionNotes,
       pinnedFolders: state.pinnedFolders,
+      favoriteFolders: state.favoriteFolders,
       sessionMarkers: state.sessionMarkers,
       sessionUnreadStates: state.sessionUnreadStates,
       selectedMarkerColor: state.selectedMarkerColor,
