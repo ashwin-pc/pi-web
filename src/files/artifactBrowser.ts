@@ -8,8 +8,15 @@ export const artifactRootPath = ".pi/web/artifacts";
 const artifactHistoryStateKey = "piWebArtifactView";
 
 type ArtifactHistoryState =
-  | { view: "gallery" }
+  // The files panel was open in another scope before this artifact preview.
+  | { view: "inactive" }
+  | { view: "gallery"; directory: string }
   | { view: "preview"; entry: ArtifactEntry };
+
+type ArtifactPreviewNavigation = {
+  history: "push" | "replace";
+  origin: "current" | "inactive";
+};
 
 class ArtifactRequestError extends Error {
   constructor(message: string, readonly status: number) {
@@ -65,10 +72,20 @@ function parentArtifactPath(path: string) {
   return parent.startsWith(artifactRootPath) ? parent : artifactRootPath;
 }
 
+function isArtifactPath(path: string, allowRoot = false) {
+  if (path === artifactRootPath) return allowRoot;
+  if (!path.startsWith(`${artifactRootPath}/`)) return false;
+  const segments = path.slice(artifactRootPath.length + 1).split("/");
+  return segments.every((segment) => segment && segment !== "." && segment !== ".." && !segment.includes("\\") && !segment.includes("\0"));
+}
+
 export type ArtifactBrowserController = {
   refresh(): void;
   reset(): void;
-  openArtifact(url: string): boolean;
+  panelOpened(): void;
+  historyView(state: unknown): ArtifactHistoryState["view"] | undefined;
+  restoreHistory(state: unknown): void;
+  openArtifact(url: string, navigation?: ArtifactPreviewNavigation): boolean;
 };
 
 export function initArtifactBrowser(options: {
@@ -92,9 +109,12 @@ export function initArtifactBrowser(options: {
   let deferredLoads = new WeakMap<Element, () => void>();
   const directoryScrollPositions = new Map<string, number>();
   let currentDirectory = artifactRootPath;
+  let renderedGalleryDirectory: string | undefined;
   let activeEntry: ArtifactEntry | undefined;
   let loadGeneration = 0;
   let previewGeneration = 0;
+  // A retained preview can outlive the panel history entry that opened it.
+  let previewOwnsHistoryEntry = false;
 
   function historyRecord(value: unknown): Record<string, unknown> {
     return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -104,9 +124,13 @@ export function initArtifactBrowser(options: {
     const candidate = historyRecord(value)[artifactHistoryStateKey];
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
     const record = candidate as Record<string, unknown>;
-    if (record.view === "gallery") return { view: "gallery" };
+    if (record.view === "inactive") return { view: "inactive" };
+    if (record.view === "gallery") {
+      const directory = typeof record.directory === "string" && isArtifactPath(record.directory, true) ? record.directory : artifactRootPath;
+      return { view: "gallery", directory };
+    }
     const entry = record.entry as Partial<ArtifactEntry> | undefined;
-    if (record.view !== "preview" || !entry || typeof entry.name !== "string" || typeof entry.path !== "string" || !entry.path.startsWith(`${artifactRootPath}/`) || !["file", "symlink"].includes(entry.kind || "")) return undefined;
+    if (record.view !== "preview" || !entry || typeof entry.name !== "string" || typeof entry.path !== "string" || !isArtifactPath(entry.path) || !["file", "symlink"].includes(entry.kind || "")) return undefined;
     const url = typeof entry.url === "string" && /^\/api\/(?:artifacts|session-artifacts)\//.test(entry.url) ? entry.url : undefined;
     return { view: "preview", entry: { name: entry.name, path: entry.path, kind: entry.kind as ArtifactEntry["kind"], size: typeof entry.size === "number" ? entry.size : undefined, url } };
   }
@@ -115,9 +139,24 @@ export function initArtifactBrowser(options: {
     history.replaceState({ ...historyRecord(history.state), [artifactHistoryStateKey]: state }, "");
   }
 
-  function pushArtifactPreviewHistory(entry: ArtifactEntry) {
-    replaceArtifactHistory({ view: "gallery" });
-    history.pushState({ ...historyRecord(history.state), [artifactHistoryStateKey]: { view: "preview", entry } satisfies ArtifactHistoryState }, "");
+  function currentArtifactHistory(): ArtifactHistoryState {
+    return panel.dataset.artifactView === "preview" && activeEntry
+      ? { view: "preview", entry: activeEntry }
+      : { view: "gallery", directory: currentDirectory };
+  }
+
+  function updateArtifactPreviewHistory(entry: ArtifactEntry, navigation: ArtifactPreviewNavigation) {
+    const previewState = { view: "preview", entry } satisfies ArtifactHistoryState;
+    if (navigation.history === "replace") {
+      // The shared panel manager already pushed an entry when it opened a closed
+      // panel. Reuse that entry so its predecessor remains the closed layout.
+      replaceArtifactHistory(previewState);
+      return;
+    }
+    // An already-open panel needs a distinct preview entry and an exact return
+    // location (including the artifact directory or prior preview).
+    replaceArtifactHistory(navigation.origin === "inactive" ? { view: "inactive" } : currentArtifactHistory());
+    history.pushState({ ...historyRecord(history.state), [artifactHistoryStateKey]: previewState }, "");
   }
 
   function query(path = "") {
@@ -269,7 +308,9 @@ export function initArtifactBrowser(options: {
   async function loadDirectory(path: string) {
     directoryScrollPositions.set(currentDirectory, explorer.scrollTop);
     currentDirectory = path;
+    renderedGalleryDirectory = path;
     activeEntry = undefined;
+    previewOwnsHistoryEntry = false;
     panel.dataset.artifactView = "gallery";
     const generation = ++loadGeneration;
     clearDeferredPreviews(); renderBreadcrumb(); renderGalleryState("loading", "Loading artifacts…"); tree.setAttribute("aria-busy", "true");
@@ -372,9 +413,10 @@ export function initArtifactBrowser(options: {
     void renderTextPreview(entry, kind, generation);
   }
 
-  function showPreview(entry: ArtifactEntry, pushHistory = true) {
-    if (pushHistory && !panel.hidden) pushArtifactPreviewHistory(entry);
+  function showPreview(entry: ArtifactEntry, navigation: ArtifactPreviewNavigation | false = { history: "push", origin: "current" }) {
+    if (navigation && !panel.hidden) updateArtifactPreviewHistory(entry, navigation);
     activeEntry = entry;
+    previewOwnsHistoryEntry = Boolean(navigation);
     panel.dataset.artifactView = "preview";
     renderPreview(entry);
     requestAnimationFrame(() => previewBack.focus());
@@ -383,6 +425,7 @@ export function initArtifactBrowser(options: {
   function showGallery() {
     const previousPath = activeEntry?.path;
     activeEntry = undefined;
+    previewOwnsHistoryEntry = false;
     ++previewGeneration;
     panel.dataset.artifactView = "gallery";
     previewBody.className = "artifactBrowserPreviewBody";
@@ -394,7 +437,7 @@ export function initArtifactBrowser(options: {
     });
   }
 
-  function openArtifact(value: string) {
+  function openArtifact(value: string, navigation: ArtifactPreviewNavigation = { history: "push", origin: "current" }) {
     let pathname: string;
     try { pathname = new URL(value, window.location.origin).pathname; } catch { return false; }
     let encoded = "";
@@ -414,8 +457,8 @@ export function initArtifactBrowser(options: {
       kind: "file",
       url: pathname,
     };
+    showPreview(entry, navigation);
     currentDirectory = parentArtifactPath(entry.path);
-    showPreview(entry);
     return true;
   }
 
@@ -427,25 +470,57 @@ export function initArtifactBrowser(options: {
   function reset() {
     ++loadGeneration; ++previewGeneration; clearDeferredPreviews();
     directoryScrollPositions.clear();
-    currentDirectory = artifactRootPath; activeEntry = undefined; panel.dataset.artifactView = "gallery";
+    currentDirectory = artifactRootPath; renderedGalleryDirectory = undefined; activeEntry = undefined; previewOwnsHistoryEntry = false; panel.dataset.artifactView = "gallery";
     tree.className = "filesTree artifactGallery"; tree.textContent = ""; tree.removeAttribute("aria-busy");
     previewBody.className = "artifactBrowserPreviewBody"; previewBody.textContent = ""; renderBreadcrumb();
   }
 
-  galleryBack.addEventListener("click", () => { if (currentDirectory !== artifactRootPath) void loadDirectory(parentArtifactPath(currentDirectory)); });
-  previewBack.addEventListener("click", () => { showGallery(); replaceArtifactHistory({ view: "gallery" }); });
-  document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && panel.dataset.filesScope === "artifacts" && panel.dataset.artifactView === "preview") {
-      event.preventDefault(); showGallery(); replaceArtifactHistory({ view: "gallery" });
+  function showGalleryDirectory(path: string) {
+    if (path !== currentDirectory || renderedGalleryDirectory !== path || !tree.childElementCount) void loadDirectory(path);
+    else showGallery();
+  }
+
+  function leavePreview() {
+    const state = artifactHistoryState();
+    // Use the same traversal as browser Back. Only a preview retained across a
+    // manual panel close/reopen lacks a live navigation entry and needs fallback.
+    if (previewOwnsHistoryEntry && state?.view === "preview" && state.entry.path === activeEntry?.path) {
+      previewOwnsHistoryEntry = false;
+      history.back();
+      return;
     }
-  });
-  window.addEventListener("popstate", (event) => {
-    if (panel.hidden || panel.dataset.filesScope !== "artifacts") return;
-    const state = artifactHistoryState(event.state);
-    if (state?.view === "preview") showPreview(state.entry, false);
-    else if (panel.dataset.artifactView === "preview") showGallery();
+    showGalleryDirectory(currentDirectory);
+    replaceArtifactHistory({ view: "gallery", directory: currentDirectory });
+  }
+
+  function panelOpened() {
+    if (panel.dataset.artifactView === "preview" && activeEntry) previewOwnsHistoryEntry = false;
+  }
+
+  function historyView(state: unknown) {
+    return artifactHistoryState(state)?.view;
+  }
+
+  function restoreHistory(value: unknown) {
+    const state = artifactHistoryState(value);
+    if (!state || state.view === "inactive") return;
+    if (state.view === "preview") {
+      currentDirectory = parentArtifactPath(state.entry.path);
+      showPreview(state.entry, false);
+      previewOwnsHistoryEntry = true;
+      return;
+    }
+    showGalleryDirectory(state.directory);
+  }
+
+  galleryBack.addEventListener("click", () => { if (currentDirectory !== artifactRootPath) void loadDirectory(parentArtifactPath(currentDirectory)); });
+  previewBack.addEventListener("click", leavePreview);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !panel.hidden && panel.dataset.filesScope === "artifacts" && panel.dataset.artifactView === "preview") {
+      event.preventDefault(); leavePreview();
+    }
   });
   panel.dataset.artifactView = "gallery";
   renderBreadcrumb();
-  return { refresh, reset, openArtifact };
+  return { refresh, reset, panelOpened, historyView, restoreHistory, openArtifact };
 }

@@ -1753,10 +1753,11 @@ test.describe("image rendering", () => {
     await page.locator("#prompt").fill("show markdown artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
 
+    const panel = page.locator("#filesPanel");
     const open = page.locator(".artifactPreview--markdown").last().getByRole("button", { name: "Open in Artifacts panel" });
+    await expect(panel).toBeHidden();
     await open.click();
 
-    const panel = page.locator("#filesPanel");
     await expect(panel).toBeVisible();
     await expect(panel).toHaveAttribute("data-files-scope", "artifacts");
     await expect(panel).toHaveAttribute("data-artifact-view", "preview");
@@ -1766,6 +1767,34 @@ test.describe("image rendering", () => {
     const viewportWidth = page.viewportSize()?.width || 0;
     if (viewportWidth <= 1024) expect(Math.abs(width - viewportWidth)).toBeLessThanOrEqual(1);
     else expect(width).toBeLessThan(viewportWidth);
+
+    // A second open is a distinct preview navigation: Back returns to the
+    // previous preview before returning to the originally closed drawer.
+    await open.evaluate((button: HTMLButtonElement) => button.click());
+    await page.goBack();
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+    await page.goBack();
+    await expect(panel).toBeHidden();
+
+    await page.goForward();
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await expect(panel).toBeHidden();
+
+    // If the panel was already open elsewhere, the preview owns only one new
+    // entry and Back restores that prior panel location instead of closing it.
+    await page.locator("#filesButton").evaluate((button: HTMLButtonElement) => button.click());
+    await expect(panel).toBeVisible();
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await page.locator("#filesWorkspaceScope").evaluate((button: HTMLButtonElement) => button.click());
+    await expect(panel).toHaveAttribute("data-files-scope", "workspace");
+    await open.evaluate((button: HTMLButtonElement) => button.click());
+    await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+    await page.goBack();
+    await expect(panel).toBeVisible();
+    await expect(panel).toHaveAttribute("data-files-scope", "workspace");
   });
 
   test("renders html artifact links in a sandboxed iframe", async ({ page }) => {

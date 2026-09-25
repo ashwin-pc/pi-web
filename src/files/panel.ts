@@ -352,7 +352,9 @@ export function initFilesPanel(options: {
   updateTreeScope();
   const handle = rightPanels.register({
     id: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000,
+    canCloseOnEscape: () => treeScope !== "artifacts" || panel.dataset.artifactView !== "preview",
     onOpen: () => {
+      artifactBrowser.panelOpened();
       const sessionResult = sessionChanged();
       if (sessionResult === "cancelled") return;
       loadActiveScope();
@@ -435,16 +437,30 @@ export function initFilesPanel(options: {
   artifactsScopeButton.addEventListener("click", () => setTreeScope("artifacts"));
   refreshButton.addEventListener("click", refresh); saveButton.addEventListener("click", () => void save()); backButton.addEventListener("click", showWorkspaceTree);
   window.addEventListener("popstate", (event) => {
-    if (panel.hidden || treeScope !== "workspace") return;
+    if (panel.hidden) return;
+    const artifactView = artifactBrowser.historyView(event.state);
+    if (artifactView === "inactive") {
+      setTreeScope("workspace");
+      return;
+    }
+    if (artifactView === "gallery" || artifactView === "preview") {
+      scopeLoaded.artifacts = true;
+      setTreeScope("artifacts");
+      artifactBrowser.restoreHistory(event.state);
+      return;
+    }
+    if (treeScope !== "workspace") return;
     const view = workspaceHistoryState(event.state)?.view;
     if (view === "editor" && (activePath || errorHost)) setWorkspaceMobileView("editor");
     else if (workspaceMobileView === "editor") setWorkspaceMobileView("tree");
   });
   window.addEventListener("beforeunload", (event) => { if ([...documents.values()].some(dirty)) event.preventDefault(); });
   function openArtifact(url: string) {
+    const panelWasOpen = handle.isOpen();
+    const origin = panelWasOpen && treeScope === "artifacts" ? "current" : "inactive";
     handle.open();
     setTreeScope("artifacts");
-    artifactBrowser.openArtifact(url);
+    artifactBrowser.openArtifact(url, { history: panelWasOpen ? "push" : "replace", origin });
   }
   return { isOpen: handle.isOpen, sessionChanged, openFile, openArtifact };
 }
