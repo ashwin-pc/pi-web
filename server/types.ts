@@ -64,6 +64,7 @@ export interface PiWebSession {
   setModel(model: unknown): Promise<void>;
   setThinkingLevel(level: string): void;
   reload?(): Promise<void>;
+  refreshContext?(): void;
   navigateTree?(targetId: string, options?: { summarize?: boolean; customInstructions?: string; replaceInstructions?: boolean; label?: string }): Promise<{ editorText?: string; cancelled: boolean; aborted?: boolean; summaryEntry?: unknown }>;
   abortBranchSummary?(): void;
   compact?(customInstructions?: string): Promise<unknown>;

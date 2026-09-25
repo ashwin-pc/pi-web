@@ -6,7 +6,7 @@ import { jsonRoundTrip, type MessageDto, type SessionServiceEvent } from "../ser
 import { SessionActivity } from "../server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
 import { mapPiEvent } from "../server/session/piEventMap.js";
-import { pi084Events } from "./fixtures/pi-0.84-events.js";
+import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 
@@ -413,7 +413,7 @@ describe("LocalSessionService contract", () => {
       webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity,
       broadcast: (value) => wire.push(value), markSessionUnreadCompleted: () => undefined,
     });
-    const mapped = pi084Events.map(mapPiEvent).filter((item) => item.kind === "event");
+    const mapped = pi087Events.map(mapPiEvent).filter((item) => item.kind === "event");
     for (const item of mapped) {
       if (item.kind === "event") handler({ type: "agent", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: item.event });
     }

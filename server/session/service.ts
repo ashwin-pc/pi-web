@@ -1494,7 +1494,13 @@ export class LocalSessionService implements SessionService {
   }
 
   private syncAgentMessages(value: PiWebSession) {
-    if (!value.sessionManager.buildSessionContext) return false;
+    if (value.refreshContext) {
+      value.refreshContext();
+      return true;
+    }
+    // Mocks expose only the legacy agent state; production sessions must use
+    // refreshContext() so their SessionManager remains the canonical context.
+    if (!this.deps.sessionFactory?.isMock || !value.sessionManager.buildSessionContext) return false;
     value.agent.state.messages = value.sessionManager.buildSessionContext().messages;
     return true;
   }
