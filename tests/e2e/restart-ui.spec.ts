@@ -22,7 +22,16 @@ test.beforeEach(async ({ page }) => {
 test("restart settings is hidden without a supervisor", async ({ page }) => {
   await page.goto("/");
   await openSessionDrawerFooterAction(page, "System");
-  await expect(page.locator("#settingsNavServer")).toBeHidden();
+  const serverNav = page.locator("#settingsNavServer");
+  await expect(serverNav).toBeHidden();
+  await expect(serverNav).toHaveJSProperty("hidden", true);
+  await page.locator("#settingsSearchInput").fill("server");
+  await expect(serverNav).toHaveJSProperty("hidden", true);
+  await page.locator("#settingsCloseButton").click();
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsCloseButton").click();
+  await openSessionDrawerFooterAction(page, "System");
+  await expect(serverNav).toHaveJSProperty("hidden", true);
 });
 
 test("restart cancellation sends no request", async ({ page }) => {
