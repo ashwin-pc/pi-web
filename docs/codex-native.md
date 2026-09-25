@@ -37,7 +37,7 @@ Isolate pi-web metadata instead: use a scratch `PI_CODING_AGENT_DIR`, `PI_WEB_AU
 
 The metadata-only real-wrapper probe used only `{cwd, ephemeral:true}` on `thread/start`. It observed:
 
-- provider `amazon-bedrock`, model `openai.gpt-5.6-sol`;
+- the configured native provider and model;
 - effective reasoning effort **medium**, although `model/list` suggested **low**;
 - approval policy `on-request`, reviewer `auto_review`;
 - read-only sandbox with network access disabled.
@@ -174,7 +174,7 @@ Actual acceptance used the installed PATH wrapper, unchanged native HOME/auth/co
 | Owned-file native tool | A native command read a random marker present only in the scratch file, not the prompt. The canonical tool result contained it; the file stayed unchanged. |
 | Exact interrupt | Browser stop sent the observed host guard and received HTTP 202. A zero-generation **public native `thread/read`** subsequently confirmed that exact native turn was `interrupted`. |
 | Persistent app restart/resume | Reopened the same saved web/native identity through the browser. Three earlier user inputs remained without replay; the fourth native turn's reply recalled the earlier file contents. The check asserted reply content, not an empty native tool inventory. Unknown hydrated times were omitted. |
-| Effective native settings | `openai.gpt-5.6-sol`, reasoning `medium`, `on-request (auto_review)`, `readOnly`. |
+| Effective native settings | the configured provider model, reasoning `medium`, `on-request (auto_review)`, `readOnly`. |
 | Real approval prompt | **Not encountered.** No grant or policy change was made. Approval correctness remains deterministic protocol/browser evidence, not actual prompted-approval acceptance. |
 
 The phase submitted **four model turns total**, with a 120-second watchdog for each. Two canary-only assumptions were corrected: desktop may leave its drawer open, and native interrupt returns 202 rather than 200. The zero-turn setup attempt and original three-turn record were retained. An explicit resume-only continuation reused the same owned web state and spent only the fourth unused turn; it did not replay the first three or reset the budget. Thus these are verified observations across bounded invocations, not a claim that the initial canary script ran uninterrupted.
@@ -189,8 +189,8 @@ The `--resume` path is specifically for the retained three-turn record; it requi
 
 Bounded, non-secret evidence in the Codex worktree:
 
-- `.pi/web/artifacts/codex-review-phase3/`: deterministic test/build/typecheck logs; synthetic browser results.
-- `.pi/web/artifacts/codex-actual-phase3/`: actual report, retained setup/three-turn records, screenshots, budget and cleanup audit.
+- evidence retained by the author; summarized in the PR: deterministic test/build/typecheck logs; synthetic browser results.
+- evidence retained by the author; summarized in the PR: actual report, retained setup/three-turn records, screenshots, budget and cleanup audit.
 
 All three owned app processes exited, their ports had no listeners, and the cleanup audit found no process in either owned native workspace. No live-server restart/deployment occurred and no native session file was read or manually edited. This focused checkpoint does **not** replace the independently assigned full-suite acceptance gate.
 
@@ -198,7 +198,7 @@ All three owned app processes exited, their ports had no listeners, and the clea
 
 The independent verifier reproduced two unsafe review cases: `diagnostic()` hid a command tail after 2,048 characters and replaced a non-secret URL with `[url]`, while an Allow choice remained available. The correction separates diagnostic elision from full consent context and applies the same credential/bounds protection to correlated command/file tool details. It also covers working directories, environments, permission paths, native rule proposals and rename destinations—not just the original two strings.
 
-The unchanged verifier probe is retained under `.pi/web/artifacts/codex-approval-context/`: both cases reproduced RED before the fix, then GREEN twice with their complete context and unchanged native decision mappings. Its hard-coded `candidate` field still identifies the original verifier snapshot; local execution used the private tree based on integration `9d5a757` plus this correction. Additional adapter and visible-details desktop/mobile browser regressions exercise the real production ingress, decline every new reviewable request, and verify that unsafe requests expose neither Allow nor concealed credentials.
+The unchanged verifier probe is retained under evidence retained by the author; summarized in the PR: both cases reproduced RED before the fix, then GREEN twice with their complete context and unchanged native decision mappings. Its hard-coded `candidate` field still identifies the original verifier snapshot; local execution used the private tree based on integration `9d5a757` plus this correction. Additional adapter and visible-details desktop/mobile browser regressions exercise the real production ingress, decline every new reviewable request, and verify that unsafe requests expose neither Allow nor concealed credentials.
 
 This correction uses **no model calls**. The prior actual-canary budget and all captured evidence are fingerprint-checked and left unchanged; those prior observations are not being relabeled as real prompted-approval acceptance.
 
@@ -206,4 +206,4 @@ This correction uses **no model calls**. The prior actual-canary budget and all 
 
 The checked-in native JSON schema permits omitted or null `network.enabled`, `fileSystem.entries` and `fileSystem.globScanMaxDepth`. Their value checks run only when a value is supplied. The adapter preserves these nested null/omitted representations instead of manufacturing `false`, empty arrays or numeric defaults. Non-null validation, unknown-field rejection, existing bounds, native decision mappings and existing top-level null omission are unchanged.
 
-The corrected independent six-case schema/production-ingress probe is retained unchanged under `.pi/web/artifacts/codex-optional-permissions/`. Before the repair, all six requests passed exact-schema validation but only the two controls remained reviewable. After the repair, all six remain reviewable, with requests declined rather than executed. Unit/protocol regressions additionally verify unchanged representations, turn/session/command responses and rejection of malformed or out-of-bounds values. This narrow repair changes no spawn environment or actual-model budget.
+The corrected independent six-case schema/production-ingress probe is retained unchanged under evidence retained by the author; summarized in the PR. Before the repair, all six requests passed exact-schema validation but only the two controls remained reviewable. After the repair, all six remain reviewable, with requests declined rather than executed. Unit/protocol regressions additionally verify unchanged representations, turn/session/command responses and rejection of malformed or out-of-bounds values. This narrow repair changes no spawn environment or actual-model budget.

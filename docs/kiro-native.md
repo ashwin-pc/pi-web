@@ -118,7 +118,7 @@ node node_modules/typescript/bin/tsc --noEmit --target ES2022 --module NodeNext 
 npm run build
 npx vitest run tests/kiro-transport.test.ts tests/kiro-adapter.test.ts \
   tests/kiro-service.test.ts tests/session-kiro-http.test.ts
-PLAYWRIGHT_BROWSERS_PATH=/home/ashwinpc/.cache/ms-playwright PLAYWRIGHT_PORT=23896 \
+PLAYWRIGHT_BROWSERS_PATH="$HOME/.cache/ms-playwright" PLAYWRIGHT_PORT=23896 \
   npx playwright test tests/e2e/native-harness.spec.ts --grep Kiro \
   --project=mobile --project=tablet --project=desktop --retries=0 --repeat-each=2
 ```
@@ -147,7 +147,7 @@ The two unit skips are the existing opt-in Claude configuration and synthetic-SS
 
 The full gate exposed a **pre-existing** shared scroll race: explicit wheel intent was discarded while the programmatic-scroll reset was pending. Both the original renderer and original failing test were unchanged from the base. A deterministic browser probe reproduced it red, and `9dcc6f3` removes only that input-handler guard while preserving the separate guard on actual programmatic scroll events. The original selection assertion is unchanged. This repair is independently reviewable from the Kiro leaf and explains the three additional browser cases.
 
-Producer receipts live under `.pi/web/artifacts/kiro-implementation/`: exact commands, source hashes, red/green evidence, full logs, skip inventory and cleanup. These are supplementary evidence, not required runtime/test inputs. Earlier setup failures and the inherited failing full run remain recorded; they are not counted as acceptance. All owned validation processes finished, owned ports were checked free, and scratch validation homes were removed. No live restart, push, native-home change or real model call was performed by this worker.
+Producer receipts live under evidence retained by the author; summarized in the PR: exact commands, source hashes, red/green evidence, full logs, skip inventory and cleanup. These are supplementary evidence, not required runtime/test inputs. Earlier setup failures and the inherited failing full run remain recorded; they are not counted as acceptance. All owned validation processes finished, owned ports were checked free, and scratch validation homes were removed. No live restart, push, native-home change or real model call was performed by this worker.
 
 ## Unknown-usage repair — B2
 
@@ -165,7 +165,7 @@ The unchanged auditor probe failed on the old production code and passed twice o
 
 | Turn | Actual observation | Result |
 | --- | --- | --- |
-| 1: read and generation | Native read obtained a random marker absent from the prompt; streamed answer, tool card, read-only model `auto` / mode `amzn-builder`, `end_turn`, Stop hidden and public catalog source `v2` verified. No read permission request occurred. | PASS; read permission NOT ENCOUNTERED |
+| 1: read and generation | Native read obtained a random marker absent from the prompt; streamed answer, tool card, read-only model `auto` / the configured native agent mode, `end_turn`, Stop hidden and public catalog source `v2` verified. No read permission request occurred. | PASS; read permission NOT ENCOUNTERED |
 | 2: harmless write | A sparse `session/request_permission` joined its exact live edit tool. Options were `allow_once`/Yes, `allow_always`/Always and `reject_once`/No. UI decline selected exact `reject_once`; no file was written. Native did not re-ask. | Decline PASS; allow-once NOT ENCOUNTERED |
 | 3: streamed Stop | Browser Stop carried the matching host guard; adapter sent the `session/cancel` notification; prompt response returned `stopReason: cancelled`. Partial text remained after settlement and page reload, with no running tool cards. | PASS |
 | 4: cold load and recall | Owned app restarted with the same isolated stores. Drawer open invoked fresh-child `session/load`; completed text/tools and native identity replayed without resending input. A fourth explicit prompt recalled the marker. Native replay replaced interrupted prose with its own placeholder rather than the original partial answer. | Recall PASS; exact cold-history parity FAIL (native replay limit) |
@@ -176,7 +176,7 @@ The canary exposed one adapter defect: the native read result supplied `rawOutpu
 
 The first runner attempt also timed out while dismissing the native settings popover after successful turn 1. Only that UI helper was corrected; the remaining zero-model assertions were completed during an explicit continuation. The immutable budget reservations were not reset. The runner initially labeled its four turn statuses PASS despite recording `coldHistoryExact: false`; the final assessment and runner now correctly distinguish successful recall from failed exact cold replay. No extra model call was spent to improve the label.
 
-Evidence is in `.pi/web/artifacts/kiro-actual-canary/`: `report.md`, `report.json`, `frames-redacted.jsonl` (106 actual frames), `budget.json` (four reservations and four actual prompt frames), screenshots, redacted logs, red/green proof and final validation receipts. The runner is `tests/kiro-actual-canary.mjs`; its executable wrapper is a real CLI pass-through with exact argument and reserved-budget guards, not a response peer. It is opt-in and excluded from `npm test`. The exhausted ledger intentionally prevents another run.
+Evidence is in evidence retained by the author; summarized in the PR: `report.md`, `report.json`, `frames-redacted.jsonl` (106 actual frames), `budget.json` (four reservations and four actual prompt frames), screenshots, redacted logs, red/green proof and final validation receipts. The runner is `tests/kiro-actual-canary.mjs`; its executable wrapper is a real CLI pass-through with exact argument and reserved-budget guards, not a response peer. It is opt-in and excluded from `npm test`. The exhausted ledger intentionally prevents another run.
 
 **Final deterministic gate on code `46dddfa710993aa0e7a00e5c9bb4858a3a411839`:** project and strict standalone leaf typechecks, complete build and **57 focused passes** succeeded. Full parallel `npm test`, using disposable HOME/state, explicit browser cache, two shards and concurrency four, finished in **445.8 seconds**: **856 unit passes / 2 existing skips; 897 browser passes / 55 existing skips; zero failures/retries**. Browser breakdown: mobile 302/9 skipped, tablet 271/40, desktop 305/6, auth 19/0. No snapshots changed. The opt-in runner's final guard tightening was syntax-checked but not given another native turn; the full suite never executes real canaries. Documentation-only commits after this source pin do not change the tested code.
 

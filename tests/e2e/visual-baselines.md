@@ -23,7 +23,7 @@ No native-harness implementation was present in the recording source.
 | Input | Recorded value |
 | --- | --- |
 | Host | Linux ARM64, Amazon Linux 2 |
-| Kernel | `5.10.265-272.1078.amzn2int.aarch64` |
+| Kernel | Linux 5.10 (ARM64) |
 | Node | `v24.15.0` |
 | Playwright | `1.59.1` |
 | Browser | Default headless Chromium, cache revision `1217` |
