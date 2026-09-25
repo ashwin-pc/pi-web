@@ -46,12 +46,14 @@ test("user scroll intent pauses stream following before the next streamed update
 });
 
 test("an upward wheel gesture on short content does not disable following", async ({ page }) => {
-  await page.goto("/");
+  // Use genuinely empty SDK history. Deleting DOM nodes alone lets an
+  // authoritative prompt snapshot restore the old, scrollable transcript.
+  const created = await page.request.post("/api/sessions/new", { data: { sessionId: "mock-current" } });
+  expect(created.ok()).toBe(true);
+  const { sessionId } = await created.json();
+  await page.goto(`/?sessionId=${encodeURIComponent(sessionId)}`);
   await expect(page.locator("#prompt")).toBeVisible();
-  await page.locator("#messages").evaluate((el) => {
-    el.replaceChildren();
-    el.scrollTop = 0;
-  });
+  await expect.poll(() => page.locator("#messages").evaluate((el) => el.scrollHeight <= el.clientHeight + 1)).toBe(true);
 
   await page.locator("#prompt").fill("slow pending tool refresh");
   await page.locator("#primaryButton").click();

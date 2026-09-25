@@ -238,7 +238,9 @@ test("drawer: native prompt submission handles delayed creation focus restoratio
     if (overlay) {
       await expect(page.locator("#sessionDrawer")).toBeHidden();
       await expect(page.locator("#sessionButton")).toBeFocused();
-      await expect(page.locator("#primaryButton")).toBeHidden();
+      // Upstream retains an expanded composer for populated drafts even after
+      // focus restoration. Preserve that behavior while testing pointer recovery.
+      await expect(page.locator("#primaryButton")).toBeVisible();
     } else {
       // Desktop retains the side-by-side drawer, so there is no late close.
       await expect(page.locator("#sessionDrawer")).toBeVisible();

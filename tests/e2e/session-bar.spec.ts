@@ -254,6 +254,7 @@ test.describe("session quick bar", () => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     await page.goto("/");
     const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
+    await expect(tab).toBeVisible();
     const box = await tab.boundingBox(); expect(box).toBeTruthy();
     const cdp = await page.context().newCDPSession(page);
     const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };

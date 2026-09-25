@@ -124,11 +124,15 @@ export function createComposerCapture(options: {
   async function finish(op: CaptureOperation) {
     releaseMedia(op);
     if (stale(op)) return;
-    op.phase = "processing";
-    // The renderer owns a continuous handoff-to-processing clock; network work
-    // begins immediately and never waits for the visual transition.
-    visual.setPhase("handoff");
-    render();
+    // stopRecording already installed the processing controls. Keep those
+    // pointer targets stable when MediaRecorder delivers its asynchronous stop.
+    if (op.phase !== "processing") {
+      op.phase = "processing";
+      // The renderer owns a continuous handoff-to-processing clock; network work
+      // begins immediately and never waits for the visual transition.
+      visual.setPhase("handoff");
+      render();
+    }
     try {
       const durationMs = Math.max(1, Math.min(performance.now() - op.startedAt, op.descriptor.capture.maxSeconds * 1000));
       const blob = new Blob(op.chunks, { type: op.recorder?.mimeType || op.chunks[0]?.type || "audio/webm" });
