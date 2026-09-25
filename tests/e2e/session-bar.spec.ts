@@ -206,7 +206,9 @@ test.describe("session quick bar", () => {
     await page.mouse.down();
     await page.mouse.move(firstBox!.x + firstBox!.width / 2 + 12, firstBox!.y + firstBox!.height / 2, { steps: 2 });
     await expect(draggedTab).toHaveClass(/\bdragging\b/);
-    await page.mouse.move(secondBox!.x + secondBox!.width * 0.75, secondBox!.y + secondBox!.height / 2, { steps: 6 });
+    // A natural tab-on-tab gesture ends at the target center. This used to be
+    // directionally asymmetric: dragging right to the exact center did nothing.
+    await page.mouse.move(secondBox!.x + secondBox!.width / 2 - 0.25, secondBox!.y + secondBox!.height / 2, { steps: 6 });
     await page.mouse.up();
 
     await expect(tabs.nth(0)).toContainText("Older mock session");
@@ -215,45 +217,124 @@ test.describe("session quick bar", () => {
       const uiState = await (await page.request.get("/api/session-ui-state")).json();
       return uiState.sessionUiState.lanes.filter((entry: { lane: string }) => entry.lane === "pinned").map((entry: { sessionId: string }) => entry.sessionId);
     }).toEqual(["mock-older", "mock-current"]);
+
+    await page.reload();
+    await expect(page.locator(".sessionBarTab.pinned").nth(0)).toContainText("Older mock session");
+    await expect(page.locator(".sessionBarTab.pinned").nth(1)).toContainText("Current mock session");
   });
 
-  test("touch hold and drag reorders pinned tabs", async ({ page }) => {
-    await seedServerPinned(
-      page,
-      { id: "mock-current" },
-      { id: "mock-older" },
-    );
+  test("trusted touch swipe scrolls natively without reorder or inspector", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
+    await page.goto("/");
+    const bar = page.locator("#sessionBar");
+    const tabs = page.locator(".sessionBarTab.pinned");
+    await expect(tabs).toHaveCount(2);
+    await bar.evaluate((element) => {
+      element.style.width = "280px";
+      for (const tab of element.querySelectorAll<HTMLElement>(".sessionBarTab")) tab.style.flex = "0 0 220px";
+    });
+    await expect.poll(() => bar.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+    const box = await tabs.nth(0).boundingBox(); expect(box).toBeTruthy();
+    const cdp = await page.context().newCDPSession(page);
+    const start = { x: box!.x + box!.width * 0.75, y: box!.y + box!.height / 2 };
+    const before = await bar.evaluate((element) => element.scrollLeft);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...start, id: 8 }] });
+    for (const dx of [-20, -45, -75]) {
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + dx, y: start.y, id: 8 }] });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    }
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect.poll(() => bar.evaluate((element) => element.scrollLeft)).toBeGreaterThan(before);
+    await expect(tabs.nth(0)).toContainText("Current mock session");
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await expect(page.locator(".sessionBarTab.dragging, .sessionBarTab.reorder-ready")).toHaveCount(0);
+  });
+
+  test("trusted stationary touch hold opens inspector only on release", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
+    await page.goto("/");
+    const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
+    const box = await tab.boundingBox(); expect(box).toBeTruthy();
+    const cdp = await page.context().newCDPSession(page);
+    const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...point, id: 9 }] });
+    await page.waitForTimeout(320);
+    await expect(tab).toHaveClass(/\breorder-ready\b/);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(page.locator(".sessionInspector")).toBeVisible();
+    await expect(tab).not.toHaveClass(/dragging|reorder-ready|touch-gesture-active/);
+  });
+
+  test("trusted stationary touch hold opens the temporary-tab inspector only on release", async ({ page }) => {
+    await page.goto("/");
+    const tab = page.locator('.sessionBarTab.temporary[data-session-id="mock-current"]');
+    await expect(tab).toBeVisible();
+    const box = await tab.boundingBox(); expect(box).toBeTruthy();
+    const cdp = await page.context().newCDPSession(page);
+    const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...point, id: 10 }] });
+    await page.waitForTimeout(700);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await expect(page.locator(".sessionInspector")).toBeVisible();
+  });
+
+  test("trusted touch hold arms, then drags, persists, and cancels cleanly", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     await page.goto("/");
 
     const tabs = page.locator(".sessionBarTab.pinned");
     const draggedTab = tabs.filter({ hasText: "Current mock session" });
     const targetTab = tabs.filter({ hasText: "Older mock session" });
     await expect(draggedTab).toBeVisible();
-    await expect(targetTab).toBeVisible();
-    let firstBox = await draggedTab.boundingBox();
-    let secondBox = await targetTab.boundingBox();
-    await expect.poll(async () => {
-      firstBox = await draggedTab.boundingBox();
-      secondBox = await targetTab.boundingBox();
-      return Boolean(firstBox && secondBox);
-    }).toBe(true);
+    const firstBox = await draggedTab.boundingBox();
+    const secondBox = await targetTab.boundingBox();
+    expect(firstBox).toBeTruthy(); expect(secondBox).toBeTruthy();
 
-    const start = { clientX: firstBox!.x + firstBox!.width / 2, clientY: firstBox!.y + firstBox!.height / 2 };
-    const end = { clientX: secondBox!.x + secondBox!.width * 0.75, clientY: start.clientY };
-    // Run the timed gesture in one browser task sequence. Crossing the
-    // Playwright boundary between hold and move lets a loaded CI worker delay
-    // the move until the Inspector's later long-press timer has won.
-    await draggedTab.evaluate(async (tab, points) => {
-      const pointer = { pointerId: 7, pointerType: "touch", isPrimary: true, bubbles: true };
-      tab.dispatchEvent(new PointerEvent("pointerdown", { ...pointer, ...points.start, button: 0 }));
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
-      tab.dispatchEvent(new PointerEvent("pointermove", { ...pointer, ...points.end }));
-      await new Promise((resolve) => requestAnimationFrame(resolve));
-      tab.dispatchEvent(new PointerEvent("pointerup", { ...pointer, ...points.end }));
-    }, { start, end });
+    // CDP touch dispatch follows Chromium's trusted touch -> pointer event path,
+    // including touch-action arbitration. Synthetic PointerEvent dispatch does
+    // not expose the browser cancellation that made this fail on phones.
+    const cdp = await page.context().newCDPSession(page);
+    const start = { x: firstBox!.x + firstBox!.width / 2, y: firstBox!.y + firstBox!.height / 2 };
+    const end = { x: secondBox!.x + secondBox!.width * 0.75, y: start.y };
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...start, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + 3, y: start.y + 2, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+    await page.waitForTimeout(320);
+    await expect(draggedTab).toHaveClass(/\breorder-ready\b/);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + 14, y: start.y, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+    await expect(draggedTab).toHaveClass(/\bdragging\b/);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    for (let step = 1; step <= 5; step += 1) {
+      const progress = step / 5;
+      await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: start.x + (end.x - start.x) * progress, y: end.y, id: 1, radiusX: 5, radiusY: 5, force: 1 }] });
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+    }
+    await expect(draggedTab).toHaveClass(/\bdragging\b/);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 
     await expect(tabs.nth(0)).toContainText("Older mock session");
-    await expect(tabs.nth(1)).toContainText("Current mock session");
+    await expect.poll(async () => {
+      const uiState = await (await page.request.get("/api/session-ui-state")).json();
+      return uiState.sessionUiState.lanes.filter((entry: { lane: string }) => entry.lane === "pinned").map((entry: { sessionId: string }) => entry.sessionId);
+    }).toEqual(["mock-older", "mock-current"]);
+    await page.reload();
+    const reorderedTabs = page.locator(".sessionBarTab.pinned");
+    await expect(reorderedTabs.nth(0)).toContainText("Older mock session");
+
+    const cancelTab = reorderedTabs.nth(0);
+    const cancelBox = await cancelTab.boundingBox(); expect(cancelBox).toBeTruthy();
+    const cancelStart = { x: cancelBox!.x + cancelBox!.width / 2, y: cancelBox!.y + cancelBox!.height / 2 };
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ ...cancelStart, id: 2 }] });
+    await page.waitForTimeout(320);
+    await expect(cancelTab).toHaveClass(/\breorder-ready\b/);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: cancelStart.x + 16, y: cancelStart.y, id: 2 }] });
+    await expect(cancelTab).toHaveClass(/\bdragging\b/);
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
+    await expect(cancelTab).not.toHaveClass(/dragging|settling|reorder-ready/);
+    await expect(page.locator(".sessionInspectorBackdrop")).toHaveCount(0);
+    await expect(reorderedTabs.nth(0)).toContainText("Older mock session");
   });
 
   test("shows unread indicators in tabs and session drawer rows", async ({ page }) => {
@@ -625,6 +706,43 @@ test.describe("session quick bar", () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.find((entry: { sessionId: string; lane: string }) => entry.sessionId === "mock-current")?.lane;
     }).toBe("bookmarks");
+  });
+
+  test("lane drawer drag previews motion and pointer cancellation restores order without persistence", async ({ page }) => {
+    await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
+    await page.goto("/"); await page.locator(".sessionLayersButton").click(); await page.waitForTimeout(200);
+    const card = page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"]');
+    const handle = card.locator(".sessionLaneDragHandle"); const destination = page.locator('.sessionLaneDrawerSection[data-lane="pinned"]');
+    const destinationCard = destination.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]');
+    const startBox = await handle.boundingBox(); const cardBox = await card.boundingBox(); const endBox = await destination.boundingBox(); const destinationCardBox = await destinationCard.boundingBox(); expect(startBox).not.toBeNull(); expect(cardBox).not.toBeNull(); expect(endBox).not.toBeNull(); expect(destinationCardBox).not.toBeNull();
+    const originalLane = await card.locator("xpath=..").getAttribute("data-lane");
+    const pointer = { pointerId: 37, pointerType: "mouse", isPrimary: true, button: 0 };
+    const startX = startBox!.x + 4; const startY = startBox!.y + 4;
+    await card.evaluate((node) => { (node as HTMLElement).dataset.dragIdentity = "same-row"; });
+    const tapPointer = { ...pointer, pointerId: 36 };
+    await handle.dispatchEvent("pointerdown", { ...tapPointer, clientX: startX, clientY: startY });
+    await page.locator("body").dispatchEvent("pointerup", { ...tapPointer, clientX: startX, clientY: startY });
+    await expect(card).not.toHaveClass(/dragging|reorder-pressed/); await expect(page.locator(".sessionLaneDrawerDropSlot")).toHaveCount(0);
+    await handle.dispatchEvent("pointerdown", { ...pointer, clientX: startX, clientY: startY });
+    await expect(card).toHaveClass(/reorder-pressed/); await expect(card).not.toHaveClass(/dragging/);
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: startX, clientY: startY + 4 });
+    await expect(page.locator(".sessionLaneDrawerDropSlot")).toHaveCount(0);
+    const destinationY = destinationCardBox!.y + destinationCardBox!.height / 2 + 4;
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: destinationY });
+    await expect(card).toHaveClass(/dragging/); await expect(card).toHaveCSS("position", "fixed"); await expect(card).not.toHaveCSS("transform", "none");
+    await expect(card).toHaveAttribute("data-drag-identity", "same-row"); await expect(page.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
+    await expect(destination.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
+    const liftedStyle = await card.evaluate((node) => { const style = getComputedStyle(node); return { border: style.borderTopColor, background: style.backgroundColor, opacity: style.opacity, z: style.zIndex }; });
+    expect(liftedStyle.border).not.toBe("rgba(0, 0, 0, 0)"); expect(liftedStyle.background).not.toBe("rgba(0, 0, 0, 0)"); expect(Number(liftedStyle.opacity)).toBeLessThan(1); expect(Number(liftedStyle.z)).toBeGreaterThan(2);
+    await expect.poll(async () => (await destinationCard.boundingBox())!.y).toBeLessThan(destinationCardBox!.y - cardBox!.height / 2);
+    const followedY = await card.evaluate((node) => node.getBoundingClientRect().top);
+    expect(Math.abs(followedY - (cardBox!.y + destinationY - startY))).toBeLessThan(4);
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: startX, clientY: startY + 12 });
+    await expect(page.locator(`.sessionLaneDrawerSection[data-lane="${originalLane}"] .sessionLaneDrawerDropSlot`)).toHaveCount(1);
+    await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: endBox!.x + 20, clientY: destinationY });
+    await expect(destination.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
+    await page.evaluate((id) => window.dispatchEvent(new PointerEvent("pointercancel", { pointerId: id, pointerType: "mouse", isPrimary: true, bubbles: true })), pointer.pointerId);
+    await expect(card).not.toHaveClass(/dragging|reorder-pressed/); await expect(page.locator(".sessionLaneDrawerDropSlot")).toHaveCount(0); expect(await card.locator("xpath=..").getAttribute("data-lane")).toBe(originalLane);
   });
 
   test("dragging a background session clears stale source focus without replacing destination focus", async ({ page }) => {

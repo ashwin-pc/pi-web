@@ -16,13 +16,12 @@ type InspectorOptions = {
   item: (sessionId: string) => SessionInspectorItem;
   moveToLane: (sessionId: string, lane: SessionLaneId) => void;
   setBucket: (sessionId: string, color: SessionMarkerColorId) => void;
+  bucketColors: () => { id: SessionMarkerColorId; label: string }[];
   editNote: (sessionId: string) => void;
   removeFromLanes: (sessionId: string) => void;
   openSession: (sessionId: string) => void;
   setUnread: (sessionId: string, unread: boolean) => void;
 };
-
-const colors: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
 
 export function buildSessionInspector(options: InspectorOptions) {
   let backdrop: HTMLDivElement | undefined;
@@ -45,7 +44,7 @@ export function buildSessionInspector(options: InspectorOptions) {
 
     const bucketRow = document.createElement("div"); bucketRow.className = "sessionInspectorRow"; const bucketLabel = document.createElement("span"); bucketLabel.textContent = "Bucket"; bucketRow.append(bucketLabel);
     const buckets = document.createElement("div"); buckets.className = "sessionInspectorBuckets";
-    for (const color of colors) { const button = document.createElement("button"); button.type = "button"; button.className = `marker-${color}${item.bucket === color ? " selected" : ""}`; button.title = `${color} bucket`; button.setAttribute("aria-label", button.title); button.addEventListener("click", () => { options.setBucket(item.sessionId, color); close(); }); buckets.append(button); }
+    for (const color of options.bucketColors()) { const button = document.createElement("button"); button.type = "button"; button.className = `marker-${color.id}${item.bucket === color.id ? " selected" : ""}`; button.title = `${color.label} bucket`; button.setAttribute("aria-label", button.title); button.addEventListener("click", () => { options.setBucket(item.sessionId, color.id); close(); }); buckets.append(button); }
     bucketRow.append(buckets); card.append(bucketRow);
 
     const noteSection = document.createElement("div"); noteSection.className = "sessionInspectorNoteSection";
@@ -77,13 +76,22 @@ export function buildSessionInspector(options: InspectorOptions) {
   };
 
   window.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
-  const attach = (element: HTMLElement, sessionId: string, context: SessionInspectorInvocationContext, holdDelayMs = 280) => {
-    let timer: number | undefined; let startX = 0; let startY = 0;
-    const cancel = () => { if (timer !== undefined) window.clearTimeout(timer); timer = undefined; element.classList.remove("sessionInspectorPressing"); };
-    element.addEventListener("pointerdown", (event) => { if (event.button !== 0 || (event.target as Element | null)?.closest(".sessionLaneDragHandle,.sessionLaneDrawerActions,.sessionBarTabAction")) return; startX = event.clientX; startY = event.clientY; element.classList.add("sessionInspectorPressing"); timer = window.setTimeout(() => { timer = undefined; element.classList.remove("sessionInspectorPressing"); element.dispatchEvent(new CustomEvent("session-inspector-open", { bubbles: true })); suppressClickUntil = performance.now() + 350; show(startX, startY, options.item(sessionId), context); }, holdDelayMs); });
-    element.addEventListener("pointermove", (event) => { if (timer !== undefined && Math.hypot(event.clientX - startX, event.clientY - startY) > 10) cancel(); });
-    element.addEventListener("pointerup", cancel); element.addEventListener("pointercancel", cancel);
-    element.addEventListener("contextmenu", (event) => { if ((event.target as Element | null)?.closest(".sessionLaneDragHandle,.sessionLaneDrawerActions,.sessionBarTabAction")) return; event.preventDefault(); cancel(); show(event.clientX, event.clientY, options.item(sessionId), context); });
+  const attach = (element: HTMLElement, sessionId: string, context: SessionInspectorInvocationContext, holdDelayMs = 280, touchHoldOwner: "inspector" | "external" = "inspector") => {
+    let timer: number | undefined; let startX = 0; let startY = 0; let touchHoldReady = false;
+    const cancel = () => { if (timer !== undefined) window.clearTimeout(timer); timer = undefined; touchHoldReady = false; element.classList.remove("sessionInspectorPressing"); };
+    element.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 || (context === "tab" && event.pointerType !== "mouse" && touchHoldOwner === "external") || (event.target as Element | null)?.closest(".sessionLaneDragHandle,.sessionLaneDrawerActions,.sessionBarTabAction")) return;
+      startX = event.clientX; startY = event.clientY; element.classList.add("sessionInspectorPressing");
+      timer = window.setTimeout(() => {
+        timer = undefined; element.classList.remove("sessionInspectorPressing"); suppressClickUntil = performance.now() + 350;
+        if (context === "tab" && event.pointerType !== "mouse") touchHoldReady = true;
+        else { element.dispatchEvent(new CustomEvent("session-inspector-open", { bubbles: true })); show(startX, startY, options.item(sessionId), context); }
+      }, holdDelayMs);
+    });
+    element.addEventListener("pointermove", (event) => { if ((timer !== undefined || touchHoldReady) && Math.hypot(event.clientX - startX, event.clientY - startY) > 10) cancel(); });
+    element.addEventListener("pointerup", () => { if (touchHoldReady) show(startX, startY, options.item(sessionId), context); cancel(); });
+    element.addEventListener("pointercancel", cancel);
+    element.addEventListener("contextmenu", (event) => { if ((event.target as Element | null)?.closest(".sessionLaneDragHandle,.sessionLaneDrawerActions,.sessionBarTabAction")) return; event.preventDefault(); cancel(); if (context === "tab" && element.classList.contains("touch-gesture-active")) return; show(event.clientX, event.clientY, options.item(sessionId), context); });
     element.addEventListener("click", (event) => { if (performance.now() < suppressClickUntil) { event.preventDefault(); event.stopPropagation(); } }, true);
   };
   const openAt = (element: HTMLElement, sessionId: string, context: SessionInspectorInvocationContext) => { const rect = element.getBoundingClientRect(); show(rect.left + rect.width / 2, rect.bottom, options.item(sessionId), context); };

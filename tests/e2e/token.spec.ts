@@ -42,7 +42,7 @@ test.describe("token overlay", () => {
       await route.fulfill({ json: { ...await response.json(), policy: 'open' } });
     });
     await page.locator('#sessionButton').click();
-    await openSessionDrawerFooterAction(page, 'Settings');
+    await openSessionDrawerFooterAction(page, 'System');
     await page.locator('#settingsNavAccess').click();
     await expect(page.locator('.securityBanner')).toContainText('Authentication is off');
     await expect(page.locator('.securityBanner')).toContainText('This instance allows unauthenticated access.');
@@ -51,7 +51,7 @@ test.describe("token overlay", () => {
     await page.goto(`/?token=${CORRECT_TOKEN}`);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
     await expect(page.locator("#settingsPageAccessTitle")).toBeVisible();
@@ -94,7 +94,7 @@ test.describe("token overlay", () => {
       const response = await route.fetch(); const data = await response.json();
       await route.fulfill({ json: { ...data, mode: "none", policy: "authenticated", methods: ["password"], passwordConfigured: true, passkeys: [{ id: "disabled-one", name: "Disabled key", createdAt: Date.now() }, { id: "disabled-two", name: "Disabled backup", createdAt: Date.now() }] } });
     });
-    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
+    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "System"); await page.locator("#settingsNavAccess").click();
     await expect(page.getByRole("heading", { name: "Sign-in methods", exact: true })).toBeVisible();
     await expect(page.locator(".securityBanner")).toHaveCount(0);
     await page.getByRole("button", { name: "Change", exact: true }).click();
@@ -111,7 +111,7 @@ test.describe("token overlay", () => {
       expect(route.request().postDataJSON().password).toBe(CORRECT_TOKEN);
       await route.fulfill({ json: { ok: true } });
     });
-    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "Settings"); await page.locator("#settingsNavAccess").click();
+    await page.locator("#sessionButton").click(); await openSessionDrawerFooterAction(page, "System"); await page.locator("#settingsNavAccess").click();
     await page.getByRole("button", { name: "Authentication policy & reauthentication", exact: true }).click();
     const saved = page.getByRole("button", { name: "Re-authenticate with saved token", exact: true });
     await expect(saved).toBeVisible();
@@ -129,7 +129,7 @@ test.describe("token overlay", () => {
     await page.goto(`/?token=${CORRECT_TOKEN}`);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
     await expect(page.locator("#settingsMobileTitle")).toHaveText("Security");
@@ -282,7 +282,7 @@ test.describe("token overlay", () => {
     await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
 
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
     await expect(security.locator(".securityOverview")).toBeVisible();
@@ -326,7 +326,7 @@ test.describe("token overlay", () => {
 
     await page.locator("#settingsCloseButton").click();
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     await expect(security.locator(".securitySecret code")).toHaveCount(0);
     await security.locator(".securityRow", { hasText: "API tokens" }).getByRole("button", { name: "Manage" }).click();

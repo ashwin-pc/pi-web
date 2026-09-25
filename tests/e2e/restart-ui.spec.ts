@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 
 async function openServerSettings(page: Page) {
-  await openSessionDrawerFooterAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "System");
   await expect(page.locator("#settingsNavServer")).toBeVisible();
   await page.locator("#settingsNavServer").click();
 }
@@ -21,7 +21,7 @@ test.beforeEach(async ({ page }) => {
 
 test("restart settings is hidden without a supervisor", async ({ page }) => {
   await page.goto("/");
-  await openSessionDrawerFooterAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "System");
   await expect(page.locator("#settingsNavServer")).toBeHidden();
 });
 

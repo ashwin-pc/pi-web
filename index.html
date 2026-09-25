@@ -57,7 +57,7 @@
         <button id="currentSessionBucketButton" class="iconButton statusBarButton sessionBucketButton" type="button" aria-label="Set session bucket" title="Set session bucket" aria-haspopup="menu" hidden>
           <span data-icon="flag"></span>
         </button>
-        <button id="settingsButton" class="iconButton statusBarButton" type="button" aria-label="Settings" title="Settings">
+        <button id="settingsButton" class="iconButton statusBarButton" type="button" aria-label="Preferences" title="Preferences">
           <span data-icon="settings"></span>
         </button>
       </div>
@@ -173,26 +173,27 @@
       <div id="sessionBackdrop" class="sessionBackdrop" hidden></div>
       <aside id="sessionDrawer" class="sessionDrawer" aria-label="Sessions" hidden>
         <div class="sessionDrawerHeader">
-          <h2>Sessions</h2>
-          <button id="sessionCloseButton" class="iconButton" type="button" aria-label="Close sessions" title="Close sessions">×</button>
+          <div class="sessionDrawerHeaderActions">
+            <button id="sessionNewButton" class="sessionNewButton sessionNewButtonTop sessionDrawerHeaderAction" type="button" aria-label="New session" title="New session"><span data-icon="square-pen" aria-hidden="true"></span></button>
+            <button id="sessionCloseButton" class="iconButton sessionDrawerHeaderAction" type="button" aria-label="Close sessions" title="Close sessions">×</button>
+          </div>
         </div>
         <div id="sessionList" class="sessionList" aria-live="polite"></div>
         <div class="sessionDrawerFooter">
-          <button id="sessionDrawerSettingsButton" class="sessionDrawerFooterButton" type="button" aria-controls="settingsPanel" aria-expanded="false">Settings</button>
-          <button id="sessionDrawerInfoButton" class="sessionDrawerFooterButton" type="button" aria-label="System info" title="System info">Info</button>
-          <button id="sessionNewButton" class="sessionNewButton" type="button">+ New session</button>
+          <button id="sessionDrawerSettingsButton" class="sessionDrawerFooterButton" type="button" aria-controls="settingsPanel" aria-expanded="false"><span data-icon="settings" aria-hidden="true"></span><span>Preferences</span></button>
+          <button id="sessionDrawerInfoButton" class="sessionDrawerFooterButton systemStatusButton" type="button" aria-label="System: Disconnected" title="System: Disconnected" aria-controls="settingsPanel" aria-expanded="false" data-status="disconnected"><span class="systemStatusIcon" data-icon="wifi-off" aria-hidden="true"></span><span>System</span></button>
         </div>
       </aside>
 
       <div id="settingsBackdrop" class="settingsBackdrop" hidden></div>
-      <aside id="settingsPanel" class="settingsPanel" aria-label="Settings" hidden>
+      <aside id="settingsPanel" class="settingsPanel" aria-label="Preferences and system" hidden>
         <header class="settingsHeader">
           <div class="settingsHeaderPrimary">
             <button id="settingsBackButton" class="settingsBackButton" type="button" aria-label="Back to settings categories" title="Back to settings categories" hidden>‹</button>
             <div class="settingsHeaderTitles">
-              <h2 class="settingsDesktopTitle">Settings</h2>
-              <h2 id="settingsMobileTitle" class="settingsMobileTitle" tabindex="-1">Settings</h2>
-              <p class="settingsDesktopSubtitle">Preferences and system configuration</p>
+              <h2 class="settingsDesktopTitle">Preferences</h2>
+              <h2 id="settingsMobileTitle" class="settingsMobileTitle" tabindex="-1">Preferences</h2>
+              <p class="settingsDesktopSubtitle">Personalize pi-web</p>
             </div>
           </div>
           <div class="settingsHeaderActions">
@@ -201,13 +202,13 @@
           </div>
         </header>
         <div class="settingsShell">
-          <nav id="settingsNavigation" class="settingsNavigation" aria-label="Settings categories">
+          <nav id="settingsNavigation" class="settingsNavigation" aria-label="Preferences categories">
             <label class="settingsSearch">
               <span aria-hidden="true">⌕</span>
               <input id="settingsSearchInput" type="search" placeholder="Search settings" autocomplete="off" aria-label="Search settings" />
             </label>
             <div class="settingsNavGroups">
-              <section class="settingsNavGroup" data-settings-nav-group>
+              <section class="settingsNavGroup" data-settings-nav-group data-settings-scope="preferences">
                 <h3>Experience</h3>
                 <button id="settingsNavAppearance" class="settingsNavButton active" type="button" data-settings-page-target="appearance" data-settings-search="appearance interface density comfortable compact minimal loading animation fireworks glow pulse color accent theme" aria-current="page" aria-controls="settingsPageAppearance">
                   <span class="settingsNavIcon" data-settings-icon="star" aria-hidden="true"></span>
@@ -225,27 +226,37 @@
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
                 </button>
               </section>
-              <section class="settingsNavGroup" data-settings-nav-group>
+              <section class="settingsNavGroup" data-settings-nav-group data-settings-scope="preferences">
                 <h3>Workflow</h3>
-                <button id="settingsNavNewSessions" class="settingsNavButton" type="button" data-settings-page-target="new-sessions" data-settings-search="new sessions defaults model reasoning thinking bucket color" aria-controls="settingsPageNewSessions">
+                <button id="settingsNavBuckets" class="settingsNavButton" type="button" data-settings-page-target="buckets" data-settings-search="buckets colors names labels reorder order global sessions organization" aria-controls="settingsPageBuckets">
+                  <span class="settingsNavIcon" data-settings-icon="flag" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Buckets</span><span class="settingsNavSummary">Names and display order</span></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+                <button id="settingsNavNewSessions" class="settingsNavButton" type="button" data-settings-page-target="new-sessions" data-settings-search="new sessions defaults model reasoning thinking default bucket color" aria-controls="settingsPageNewSessions">
                   <span class="settingsNavIcon" data-settings-icon="square-pen" aria-hidden="true"></span>
                   <span class="settingsNavCopy"><span class="settingsNavTitle">New sessions</span><span class="settingsNavSummary">Model and bucket defaults</span></span>
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
                 </button>
               </section>
-              <section class="settingsNavGroup" data-settings-nav-group>
+              <section class="settingsNavGroup" data-settings-nav-group data-settings-scope="preferences">
+                <h3>Extensions</h3>
+                <button id="settingsNavExtensions" class="settingsNavButton" type="button" data-settings-page-target="extensions" data-settings-search="extensions plugins configuration contributed settings" aria-controls="settingsPageExtensions">
+                  <span class="settingsNavIcon" data-settings-icon="settings" aria-hidden="true"></span>
+                  <span class="settingsNavCopy"><span class="settingsNavTitle">Extensions</span><span class="settingsNavSummary">Contributed configuration</span></span>
+                  <span class="settingsNavBadge" data-tone="neutral" hidden></span>
+                  <span class="settingsNavChevron" aria-hidden="true">›</span>
+                </button>
+              </section>
+              <section class="settingsNavGroup" data-settings-nav-group data-settings-scope="system">
                 <h3>System</h3>
+                <button id="settingsNavOverview" class="settingsNavButton" type="button" data-settings-page-target="overview" data-settings-search="system information version runtime status" aria-controls="settingsPageOverview"><span class="settingsNavIcon" data-settings-icon="server" aria-hidden="true"></span><span class="settingsNavCopy"><span class="settingsNavTitle">Overview</span><span class="settingsNavSummary">Runtime information</span></span><span class="settingsNavChevron" aria-hidden="true">›</span></button>
                 <button id="settingsNavServer" class="settingsNavButton" type="button" data-settings-page-target="server" data-settings-search="server restart supervisor reconnect sessions" aria-controls="settingsPageServer" hidden>
                   <span class="settingsNavIcon" data-settings-icon="server" aria-hidden="true"></span>
                   <span class="settingsNavCopy"><span class="settingsNavTitle">Server</span><span class="settingsNavSummary">Supervised restart</span></span>
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
                 </button>
-                <button id="settingsNavExtensions" class="settingsNavButton" type="button" data-settings-page-target="extensions" data-settings-search="extensions plugins runtime health retry reload contributed settings" aria-controls="settingsPageExtensions">
-                  <span class="settingsNavIcon" data-settings-icon="settings" aria-hidden="true"></span>
-                  <span class="settingsNavCopy"><span class="settingsNavTitle">Extensions</span><span class="settingsNavSummary">Health and contributed settings</span></span>
-                  <span class="settingsNavBadge" data-tone="neutral" hidden></span>
-                  <span class="settingsNavChevron" aria-hidden="true">›</span>
-                </button>
+                <button id="settingsNavExtensionHealth" class="settingsNavButton" type="button" data-settings-page-target="extension-health" data-settings-search="extensions plugins runtime health retry recovery errors" aria-controls="settingsPageExtensionHealth"><span class="settingsNavIcon" data-settings-icon="triangle-alert" aria-hidden="true"></span><span class="settingsNavCopy"><span class="settingsNavTitle">Extension health</span><span class="settingsNavSummary">Runtime and recovery</span></span><span class="settingsNavBadge" data-tone="neutral" hidden></span><span class="settingsNavChevron" aria-hidden="true">›</span></button>
                 <button id="settingsNavAccess" class="settingsNavButton" type="button" data-settings-page-target="access" data-settings-search="security authentication passkey sessions devices api token grant qr identity mode" aria-controls="settingsPageAccess">
                   <span class="settingsNavIcon" data-settings-icon="key-round" aria-hidden="true"></span>
                   <span class="settingsNavCopy"><span class="settingsNavTitle">Security</span><span class="settingsNavSummary">Credentials and devices</span></span>
@@ -417,17 +428,31 @@
             <select id="settingDefaultBucketColorSelect" aria-label="Default session bucket color"></select>
           </label>
           <p class="settingsHint">Choose a bucket color and saved model defaults for sessions you start from now on. Existing sessions are unchanged.</p>
-          <div class="settingsBucketNamesField">
-            <span class="settingsBucketNamesTitle">Bucket names</span>
-            <p class="settingsHint">Customize bucket names across pi-web. Clear a name to restore its default.</p>
-            <div id="settingBucketNames" class="settingsBucketNames" aria-label="Bucket names"></div>
-          </div>
           <div class="settingsValue" id="settingModelDefaultsValue">No default model saved</div>
           <div class="settingsActions">
             <button id="settingSaveModelDefaultsButton" type="button">Use current model</button>
             <button id="settingClearModelDefaultsButton" type="button">Clear model</button>
           </div>
               </section>
+            </section>
+            <section id="settingsPageBuckets" class="settingsPage" data-settings-page="buckets" aria-labelledby="settingsPageBucketsTitle" hidden>
+              <header class="settingsPageHeader">
+                <span>Workflow</span>
+                <h3 id="settingsPageBucketsTitle" class="settingsPageTitle" tabindex="-1">Buckets</h3>
+                <p>Organize bucket names and display order across all sessions.</p>
+              </header>
+              <section class="settingsSection">
+                <h4>Session organization</h4>
+                <div class="settingsBucketNamesField">
+                  <span class="settingsBucketNamesTitle">Bucket names and order</span>
+                  <p class="settingsHint">Changes apply throughout pi-web. Clear a name to restore its color name.</p>
+                  <div id="settingBucketNames" class="settingsBucketNames" role="group" aria-label="Bucket names and display order"></div>
+                </div>
+              </section>
+            </section>
+            <section id="settingsPageOverview" class="settingsPage" data-settings-page="overview" aria-labelledby="settingsPageOverviewTitle" hidden>
+              <header class="settingsPageHeader"><span>System</span><h3 id="settingsPageOverviewTitle" class="settingsPageTitle" tabindex="-1">Overview</h3><p>Connection, pi-web, pi, host runtime, and extension information.</p></header>
+              <div id="systemInfoInline"></div>
             </section>
             <section id="settingsPageServer" class="settingsPage" data-settings-page="server" aria-labelledby="settingsPageServerTitle" hidden>
               <header class="settingsPageHeader">
@@ -460,10 +485,14 @@
             </section>
             <section id="settingsPageExtensions" class="settingsPage" data-settings-page="extensions" aria-labelledby="settingsPageExtensionsTitle" hidden>
               <header class="settingsPageHeader">
-                <span>System</span>
+                <span>Preferences</span>
                 <h3 id="settingsPageExtensionsTitle" class="settingsPageTitle" tabindex="-1">Extensions</h3>
-                <p>Review runtime health and configure settings contributed by extensions.</p>
+                <p>Configure settings contributed by extensions.</p>
               </header>
+
+              <div id="extensionSettingsContainer" class="extensionSettings"></div>
+            </section>
+            <section id="settingsPageExtensionHealth" class="settingsPage" data-settings-page="extension-health" aria-labelledby="settingsPageExtensionHealthTitle" hidden><header class="settingsPageHeader"><span>System</span><h3 id="settingsPageExtensionHealthTitle" class="settingsPageTitle" tabindex="-1">Extension health</h3><p>Review runtime failures and retry extension loading.</p></header>
               <section class="settingsSection settingsExtensions">
           <div class="settingsExtensionHeader">
             <h4>Runtime</h4>
@@ -475,7 +504,6 @@
             <button id="extensionReloadButton" type="button">Retry extensions</button>
           </div>
               </section>
-              <div id="extensionSettingsContainer" class="extensionSettings"></div>
             </section>
             <section id="settingsPageAccess" class="settingsPage" data-settings-page="access" aria-labelledby="settingsPageAccessTitle" hidden>
               <header class="settingsPageHeader">

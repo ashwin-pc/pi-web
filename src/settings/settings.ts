@@ -2,12 +2,13 @@ import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
-import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, sessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings, type WebSettingsSchema } from "../app/types.js";
+import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, orderedSessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings, type SessionMarkerColorId, type WebSettingsSchema } from "../app/types.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import { createExtensionSettings, type ExtensionSettingsController } from "./extensionSettings.js";
 import { createRunNotifications } from "./runNotifications.js";
 import { createRestartSettings } from "./restartSettings.js";
 import { createSettingsShell, type SettingsShellController } from "./settingsShell.js";
+import { edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 import { createSecuritySettings, type AuthMode } from "./securitySettings.js";
 
 export type SettingsController = {
@@ -95,10 +96,13 @@ function splitModelKey(key: string): PiWebModelSetting | undefined {
   return provider && id ? { provider, id } : undefined;
 }
 
-function populateBucketColorSelect(select: HTMLSelectElement) {
-  if (select.options.length > 0) return;
-  select.append(new Option("No default bucket", ""));
-  for (const color of sessionMarkerColors) select.append(new Option(color.label, color.id));
+function populateBucketColorSelect(select: HTMLSelectElement, state: AppState) {
+  const selected = select.value || state.settings.defaults.sessionBucketColor || "";
+  select.replaceChildren(new Option("No default bucket", ""));
+  for (const color of orderedSessionMarkerColors(state.bucketOrder)) {
+    select.append(new Option(state.bucketLabels[color.id] || color.label, color.id));
+  }
+  select.value = selected;
 }
 
 export function createSettings(options: {
@@ -118,6 +122,21 @@ export function createSettings(options: {
   let settingsShell: SettingsShellController | undefined;
   let securitySettings: ReturnType<typeof createSecuritySettings> | undefined;
   let restartSettings: ReturnType<typeof createRestartSettings> | undefined;
+  let extensionHealth: "loading" | "ready" | "degraded" = "loading";
+  const systemStatusButton = elements.sessionDrawerInfoButton;
+
+  function updateSystemStatus() {
+    const disconnected = !elements.connectionStatusEl.hidden && (elements.connectionStatusEl.classList.contains("offline") || elements.connectionStatusEl.classList.contains("reconnecting") || elements.connectionStatusEl.classList.contains("syncRequired"));
+    const status = disconnected ? "disconnected" : extensionHealth === "degraded" ? "extension-issue" : extensionHealth === "ready" ? "connected" : "checking";
+    const label = status === "disconnected" ? "Disconnected" : status === "extension-issue" ? "Extension issue" : status === "connected" ? "Connected" : "Checking extensions";
+    const accessibleName = `System: ${label}`;
+    systemStatusButton.dataset.status = status;
+    systemStatusButton.setAttribute("aria-label", accessibleName);
+    systemStatusButton.title = accessibleName;
+    const icon = systemStatusButton.querySelector<HTMLElement>(".systemStatusIcon");
+    if (icon) setIcon(icon, status === "disconnected" ? "wifi-off" : status === "extension-issue" ? "triangle-alert" : status === "connected" ? "circle-check" : "loader-circle");
+  }
+
   const runNotifications = createRunNotifications({
     elements,
     api,
@@ -276,6 +295,9 @@ export function createSettings(options: {
   }
 
   function renderExtensionStatus(status: ExtensionLoadStatus) {
+    extensionHealth = status.state;
+    updateSystemStatus();
+    document.dispatchEvent(new CustomEvent("pi-web-extension-health", { detail: { state: status.state } }));
     const badge = elements.extensionStatusBadge;
     badge.className = `extensionStatusBadge ${status.state}`;
     badge.textContent = status.state === "ready" ? "Ready" : status.state === "degraded" ? "Degraded" : "Loading…";
@@ -301,18 +323,21 @@ export function createSettings(options: {
       elements.extensionStatusDetails.append(row);
     }
     elements.extensionStatusDetails.hidden = status.state === "ready" && status.errors.length === 0 && !status.runtimeErrors?.length;
-    settingsShell?.setBadge("extensions", status.state === "loading" ? "…" : status.state === "ready" ? "Ready" : "Issue", status.state === "ready" ? "ready" : status.state === "degraded" ? "danger" : "neutral");
-    settingsShell?.setSummary("extensions", `${status.extensionCount} loaded · ${status.state === "ready" ? "Healthy" : status.state === "degraded" ? "Needs attention" : "Checking"}`);
+    settingsShell?.setBadge("extension-health", status.state === "loading" ? "…" : status.state === "ready" ? "Ready" : "Issue", status.state === "ready" ? "ready" : status.state === "degraded" ? "danger" : "neutral");
+    settingsShell?.setSummary("extension-health", `${status.extensionCount} loaded · ${status.state === "ready" ? "Healthy" : status.state === "degraded" ? "Needs attention" : "Checking"}`);
   }
 
   function renderExtensionStatusError(error: unknown) {
+    extensionHealth = "degraded";
+    updateSystemStatus();
+    document.dispatchEvent(new CustomEvent("pi-web-extension-health", { detail: { state: "degraded" } }));
     elements.extensionStatusBadge.className = "extensionStatusBadge degraded";
     elements.extensionStatusBadge.textContent = "Unavailable";
     elements.extensionStatusMessage.textContent = error instanceof Error ? error.message : String(error);
     elements.extensionStatusDetails.hidden = true;
     elements.extensionReloadButton.disabled = false;
-    settingsShell?.setBadge("extensions", "Issue", "danger");
-    settingsShell?.setSummary("extensions", "Status unavailable");
+    settingsShell?.setBadge("extension-health", "Issue", "danger");
+    settingsShell?.setSummary("extension-health", "Status unavailable");
   }
 
   async function refreshExtensionStatus() {
@@ -382,15 +407,60 @@ export function createSettings(options: {
     const data = await res.json();
     if (Array.isArray(data.webSettingsSchemas)) state.webSettingsSchemas = data.webSettingsSchemas;
     applySettings(data.settings);
+    await refreshExtensionStatus().catch(renderExtensionStatusError);
+  }
+
+  async function saveBucketOrder(bucketOrder: SessionMarkerColorId[]) {
+    const res = await fetch("/api/session-ui-state", { method: "PATCH", headers: api.headers(), body: JSON.stringify({ bucketOrder }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    state.bucketOrder = data.sessionUiState?.bucketOrder || bucketOrder;
+    document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
   }
 
   function renderBucketNames() {
     const container = elements.settingsPanel.querySelector<HTMLElement>("#settingBucketNames");
     if (!container) return;
+    populateBucketColorSelect(elements.settingDefaultBucketColorSelect, state);
     container.replaceChildren();
-    for (const color of sessionMarkerColors) {
-      const row = document.createElement("label");
+    const customLabelCount = Object.keys(state.bucketLabels).length;
+    const defaultColors = orderedSessionMarkerColors(undefined);
+    const reordered = state.bucketOrder.some((id, index) => id !== defaultColors[index]?.id);
+    settingsShell?.setSummary("buckets", [customLabelCount ? `${customLabelCount} custom` : "", reordered ? "Custom order" : ""].filter(Boolean).join(" · ") || "Names and display order");
+    settingsShell?.setSearchTerms("buckets", Object.values(state.bucketLabels).filter((label): label is string => Boolean(label)));
+    const colors = orderedSessionMarkerColors(state.bucketOrder);
+    const instructions = document.createElement("p");
+    instructions.className = "settingsBucketOrderInstructions";
+    instructions.textContent = "Drag the grip to reorder. Keyboard: Space to pick up, arrow keys to move, Space to drop, Escape to cancel.";
+    const live = document.createElement("span");
+    live.className = "srOnly";
+    live.setAttribute("aria-live", "polite");
+    live.setAttribute("aria-atomic", "true");
+    container.append(instructions, live);
+
+    const orderFromRows = () => Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow"))
+      .map((item) => item.dataset.bucketColor as SessionMarkerColorId);
+    const commitOrder = async (next: SessionMarkerColorId[], previous: SessionMarkerColorId[], focusColor?: SessionMarkerColorId, focusOwner?: HTMLElement) => {
+      state.bucketOrder = next;
+      try {
+        await saveBucketOrder(next);
+        const restoreFocus = Boolean(focusColor && focusOwner && document.activeElement === focusOwner);
+        renderBucketNames();
+        if (restoreFocus) container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${focusColor}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
+        setSettingsStatus("Bucket order saved");
+      } catch (error) {
+        state.bucketOrder = previous;
+        const restoreFocus = Boolean(focusColor && focusOwner && document.activeElement === focusOwner);
+        renderBucketNames();
+        if (restoreFocus) container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${focusColor}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
+        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+      }
+    };
+
+    colors.forEach((color) => {
+      const row = document.createElement("div");
       row.className = `settingsBucketNameRow marker-${color.id}`;
+      row.dataset.bucketColor = color.id;
       const swatch = document.createElement("span");
       swatch.className = "settingsBucketNameSwatch";
       swatch.setAttribute("aria-hidden", "true");
@@ -406,37 +476,204 @@ export function createSettings(options: {
       input.addEventListener("change", async () => {
         const label = input.value.trim().slice(0, 40);
         input.value = label;
-        const bucketLabels = { ...state.bucketLabels };
+        const previousBucketLabels = state.bucketLabels;
+        const bucketLabels = { ...previousBucketLabels };
         if (!label || label === color.label) delete bucketLabels[color.id];
         else bucketLabels[color.id] = label;
+        state.bucketLabels = bucketLabels;
         try {
           const res = await fetch("/api/session-ui-state", { method: "PATCH", headers: api.headers(), body: JSON.stringify({ bucketLabels }) });
           const data = await res.json().catch(() => ({}));
           if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
           state.bucketLabels = data.sessionUiState?.bucketLabels || bucketLabels;
           document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
+          populateBucketColorSelect(elements.settingDefaultBucketColorSelect, state);
+          const customCount = Object.keys(state.bucketLabels).length;
+          const hasCustomOrder = state.bucketOrder.some((id, index) => id !== defaultColors[index]?.id);
+          settingsShell?.setSummary("buckets", [customCount ? `${customCount} custom` : "", hasCustomOrder ? "Custom order" : ""].filter(Boolean).join(" · ") || "Names and display order");
+          settingsShell?.setSearchTerms("buckets", Object.values(state.bucketLabels).filter((value): value is string => Boolean(value)));
+          updateHandleLabel();
           setSettingsStatus("Bucket names saved");
         } catch (error) {
+          state.bucketLabels = previousBucketLabels;
           setSettingsStatus(error instanceof Error ? error.message : String(error), true);
           renderBucketNames();
         }
       });
-      row.append(swatch, copy, input);
+
+      const handle = document.createElement("button");
+      handle.type = "button";
+      handle.className = "settingsBucketDragHandle";
+      handle.textContent = "⠿";
+      handle.setAttribute("aria-describedby", instructions.id ||= "bucketOrderInstructions");
+      const updateHandleLabel = () => {
+        const bucketLabel = input.value.trim() || color.label;
+        handle.setAttribute("aria-label", `Reorder ${bucketLabel} bucket`);
+        handle.title = `Drag to reorder ${bucketLabel}`;
+      };
+      updateHandleLabel();
+      input.addEventListener("input", updateHandleLabel);
+
+      let pointerId: number | undefined;
+      let pointerIndex = 0;
+      let originalOrder: SessionMarkerColorId[] = [];
+      let keyboardGrabbed = false;
+      let dragStartY = 0;
+      let dragClientY = 0;
+      let dragScrollTop = 0;
+      let dragRows: HTMLElement[] = [];
+      let dragRects: DOMRect[] = [];
+      let dragFrame: number | undefined;
+      let autoScrollFrame: number | undefined;
+      let scrollport: HTMLElement | undefined;
+      const reducedMotion = prefersReducedReorderMotion();
+      const announcePosition = () => {
+        const position = Array.from(container.querySelectorAll(".settingsBucketNameRow")).indexOf(row) + 1;
+        live.textContent = `${input.value.trim() || color.label} bucket, position ${position} of ${colors.length}.`;
+      };
+      const clearDragFrames = () => {
+        if (dragFrame !== undefined) cancelAnimationFrame(dragFrame);
+        if (autoScrollFrame !== undefined) cancelAnimationFrame(autoScrollFrame);
+        dragFrame = autoScrollFrame = undefined;
+      };
+      const clearDragStyles = () => {
+        clearDragFrames();
+        dragRows.forEach((item) => { item.style.transform = ""; });
+        row.classList.remove("isDragging", "isSettling");
+        container.classList.remove("isReordering");
+      };
+      const paintDrag = () => {
+        dragFrame = undefined;
+        if (pointerId === undefined) return;
+        const originalIndex = dragRows.indexOf(row);
+        const scrollDelta = (scrollport?.scrollTop || 0) - dragScrollTop;
+        const rawDy = dragClientY - dragStartY + scrollDelta;
+        const minDy = dragRects[0].top - dragRects[originalIndex].top;
+        const maxDy = dragRects.at(-1)!.bottom - dragRects[originalIndex].bottom;
+        const dy = Math.max(minDy, Math.min(maxDy, rawDy));
+        const center = dragRects[originalIndex].top + dragRects[originalIndex].height / 2 + dy;
+        pointerIndex = insertionIndex(dragRects, center, "y", originalIndex);
+        row.style.transform = `translateY(${dy}px)${reducedMotion ? "" : " scale(1.015)"}`;
+        dragRows.forEach((item, index) => {
+          if (item === row) return;
+          let shift = 0;
+          if (index > originalIndex && index <= pointerIndex) shift = dragRects[index - 1].top - dragRects[index].top;
+          else if (index < originalIndex && index >= pointerIndex) shift = dragRects[index + 1].top - dragRects[index].top;
+          item.style.transform = shift ? `translateY(${shift}px)` : "";
+        });
+        live.textContent = `${input.value.trim() || color.label} bucket, position ${pointerIndex + 1} of ${colors.length}.`;
+      };
+      const schedulePaint = () => { if (dragFrame === undefined) dragFrame = requestAnimationFrame(paintDrag); };
+      const autoScroll = () => {
+        if (pointerId === undefined || !scrollport) return;
+        const rect = scrollport.getBoundingClientRect();
+        const velocity = edgeScrollVelocity(dragClientY, rect.top, rect.bottom, Math.min(56, rect.height / 4), 12);
+        if (velocity) { scrollport.scrollTop += velocity; schedulePaint(); }
+        autoScrollFrame = requestAnimationFrame(autoScroll);
+      };
+      const cancelDrag = () => {
+        if (pointerId === undefined) return;
+        pointerId = undefined;
+        clearDragStyles();
+        live.textContent = "Reordering cancelled.";
+      };
+      handle.addEventListener("pointerdown", (event) => {
+        if (event.button !== 0 || pointerId !== undefined) return;
+        pointerId = event.pointerId;
+        originalOrder = [...state.bucketOrder];
+        pointerIndex = originalOrder.indexOf(color.id);
+        dragStartY = dragClientY = event.clientY;
+        dragRows = Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow"));
+        dragRects = dragRows.map((item) => item.getBoundingClientRect());
+        scrollport = Array.from(container.parentElement ? [container.parentElement, ...Array.from(container.parentElement.closest(".settingsContent") ? [container.parentElement.closest(".settingsContent")!] : [])] : [])
+          .find((item): item is HTMLElement => item instanceof HTMLElement && item.scrollHeight > item.clientHeight) || elements.settingsPanel;
+        dragScrollTop = scrollport.scrollTop;
+        handle.setPointerCapture(event.pointerId);
+        row.classList.add("isDragging");
+        container.classList.add("isReordering");
+        autoScrollFrame = requestAnimationFrame(autoScroll);
+        event.preventDefault();
+      });
+      handle.addEventListener("pointermove", (event) => {
+        if (event.pointerId !== pointerId) return;
+        dragClientY = event.clientY;
+        schedulePaint();
+        event.preventDefault();
+      });
+      handle.addEventListener("pointerup", (event) => {
+        if (event.pointerId !== pointerId) return;
+        pointerId = undefined;
+        clearDragFrames();
+        const originalIndex = dragRows.indexOf(row);
+        row.classList.remove("isDragging");
+        row.classList.add("isSettling");
+        row.style.transform = `translateY(${dragRects[pointerIndex].top - dragRects[originalIndex].top}px)`;
+        try { handle.releasePointerCapture(event.pointerId); } catch { /* capture may already be gone */ }
+        const next = [...originalOrder];
+        next.splice(next.indexOf(color.id), 1);
+        next.splice(pointerIndex, 0, color.id);
+        live.textContent = `${input.value.trim() || color.label} bucket dropped.`;
+        window.setTimeout(() => {
+          clearDragStyles();
+          void commitOrder(next, originalOrder);
+        }, reducedMotion ? 0 : 180);
+      });
+      handle.addEventListener("pointercancel", cancelDrag);
+      handle.addEventListener("lostpointercapture", () => { if (pointerId !== undefined) cancelDrag(); });
+      handle.addEventListener("keydown", (event) => {
+        if (event.key === " " || event.key === "Enter") {
+          event.preventDefault();
+          event.stopPropagation();
+          if (!keyboardGrabbed) {
+            keyboardGrabbed = true;
+            originalOrder = [...state.bucketOrder];
+            row.classList.add("isDragging");
+            handle.setAttribute("aria-pressed", "true");
+            live.textContent = `${input.value.trim() || color.label} bucket picked up.`;
+          } else {
+            keyboardGrabbed = false;
+            row.classList.remove("isDragging");
+            handle.removeAttribute("aria-pressed");
+            live.textContent = `${input.value.trim() || color.label} bucket dropped.`;
+            void commitOrder(orderFromRows(), originalOrder, color.id, handle);
+          }
+        } else if (keyboardGrabbed && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+          event.preventDefault();
+          event.stopPropagation();
+          const sibling = event.key === "ArrowUp" ? row.previousElementSibling : row.nextElementSibling;
+          if (sibling?.classList.contains("settingsBucketNameRow")) {
+            if (event.key === "ArrowUp") container.insertBefore(row, sibling);
+            else container.insertBefore(sibling, row);
+            handle.focus({ preventScroll: true });
+            announcePosition();
+          } else live.textContent = "Already at the boundary.";
+        } else if (keyboardGrabbed && event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          keyboardGrabbed = false;
+          state.bucketOrder = originalOrder;
+          live.textContent = "Reordering cancelled.";
+          renderBucketNames();
+          container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${color.id}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
+        }
+      });
+      row.append(handle, swatch, copy, input);
       container.append(row);
-    }
+    });
   }
 
   function prepareOpenSettings() {
     renderBucketNames();
-    elements.sessionDrawerSettingsButton.setAttribute("aria-expanded", "true");
-    elements.sessionDrawerSettingsButton.classList.add("active");
+    const activeTrigger = elements.settingsPanel.dataset.scope === "system" ? elements.sessionDrawerInfoButton : elements.sessionDrawerSettingsButton;
+    activeTrigger.setAttribute("aria-expanded", "true");
+    activeTrigger.classList.add("active");
     settingsShell?.prepareOpen();
     setSettingsStatus("");
     elements.extensionStatusBadge.className = "extensionStatusBadge loading";
     elements.extensionStatusBadge.textContent = "Checking…";
     elements.extensionStatusMessage.textContent = "Checking extension status…";
     elements.extensionStatusDetails.hidden = true;
-    settingsShell?.setBadge("extensions", "…", "neutral");
+    settingsShell?.setBadge("extension-health", "…", "neutral");
     void restartSettings?.refreshCapability();
     void fetch("/api/auth/info", { headers: api.headers(), credentials: "same-origin" }).then(async response => {
       if (!response.ok) throw new Error(`Security info unavailable (${response.status})`);
@@ -454,13 +691,26 @@ export function createSettings(options: {
   }
 
   function prepareCloseSettings() {
-    elements.sessionDrawerSettingsButton.setAttribute("aria-expanded", "false");
-    elements.sessionDrawerSettingsButton.classList.remove("active");
+    for (const trigger of [elements.sessionDrawerSettingsButton, elements.sessionDrawerInfoButton]) {
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.classList.remove("active");
+    }
     closeAccentPopover({ restorePreview: true, focusButton: false });
     settingsShell?.prepareClose();
   }
 
-  function openSettings() {
+  function setPanelScope(scope: "preferences" | "system") {
+    settingsShell?.setScope(scope);
+    elements.settingsPanel.dataset.scope = scope;
+    elements.settingsPanel.querySelector<HTMLElement>(".settingsDesktopTitle")!.textContent = scope === "system" ? "System" : "Preferences";
+    elements.settingsPanel.querySelector<HTMLElement>(".settingsDesktopSubtitle")!.textContent = scope === "system" ? "Status, security, and diagnostics" : "Personalize pi-web";
+    elements.settingsPanel.setAttribute("aria-label", scope === "system" ? "System" : "Preferences");
+    const search = elements.settingsPanel.querySelector<HTMLInputElement>("#settingsSearchInput");
+    if (search) search.placeholder = scope === "system" ? "Search system" : "Search preferences";
+  }
+
+  function openSettings(scope: "preferences" | "system" = "preferences") {
+    setPanelScope(scope);
     if (settingsPanelHandle) {
       settingsPanelHandle.open();
       return;
@@ -484,7 +734,7 @@ export function createSettings(options: {
   }
 
   function init() {
-    populateBucketColorSelect(elements.settingDefaultBucketColorSelect);
+    populateBucketColorSelect(elements.settingDefaultBucketColorSelect, state);
     settingsShell = createSettingsShell(elements.settingsPanel);
     settingsShell.init();
     securitySettings = createSecuritySettings({ container: elements.securitySettings, api, setStatus: setSettingsStatus });
@@ -511,19 +761,22 @@ export function createSettings(options: {
       id: "settings",
       side: "right",
       panel: elements.settingsPanel,
-      trigger: elements.settingsButton,
       backdrop: elements.settingsBackdrop,
       closeButton: elements.settingsCloseButton,
       width: "820px",
       minWidth: 680,
       maxWidth: 980,
       closeOnEscape: false,
-      onBeforeOpen: prepareOpenSettings,
+      onBeforeOpen: () => {
+        setPanelScope(elements.settingsPanel.dataset.scope === "system" ? "system" : "preferences");
+        prepareOpenSettings();
+      },
       onOpen: afterOpenSettings,
       onBeforeClose: prepareCloseSettings,
       focusOnClose: elements.sessionButton,
     });
-    if (!settingsPanelHandle) elements.settingsButton.addEventListener("click", openSettings);
+    elements.settingsButton.addEventListener("click", () => openSettings("preferences"));
+    document.addEventListener("pi-web-open-settings", (event) => openSettings((event as CustomEvent<{ scope?: "preferences" | "system" }>).detail?.scope || "preferences"));
     if (!settingsPanelHandle) {
       elements.settingsCloseButton.addEventListener("click", closeSettings);
       elements.settingsBackdrop.addEventListener("click", closeSettings);
@@ -617,6 +870,8 @@ export function createSettings(options: {
     elements.extensionReloadButton.addEventListener("click", () => {
       void reloadExtensions();
     });
+    new MutationObserver(updateSystemStatus).observe(elements.connectionStatusEl, { attributes: true, attributeFilter: ["class", "hidden"] });
+    updateSystemStatus();
     runNotifications.init();
   }
 

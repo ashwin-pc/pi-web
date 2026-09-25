@@ -13,7 +13,7 @@ test("every declared settings icon resolves, including supervised server", async
     body: JSON.stringify({ ok: true, childGeneration: 1, childPid: 1234 }),
   }));
   await page.goto("/");
-  await openSessionDrawerFooterAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "Preferences");
 
   const icons = page.locator("[data-settings-icon]");
   await expect.poll(async () => icons.count()).toBeGreaterThan(0);
@@ -21,6 +21,8 @@ test("every declared settings icon resolves, including supervised server", async
     .filter(element => element.querySelectorAll(":scope > svg").length !== 1)
     .map(element => element.getAttribute("data-settings-icon")))).toEqual([]);
 
+  await page.locator("#settingsCloseButton").click();
+  await openSessionDrawerFooterAction(page, "System");
   await expect(page.locator("#settingsNavServer")).toBeVisible();
   await expect(page.locator("#settingsNavServer [data-settings-icon='server'] > svg")).toHaveCount(1);
 });
@@ -31,8 +33,8 @@ test("mobile nav aligns every chevron with or without an optional badge", async 
 
   for (const width of [320, 390]) {
     await page.setViewportSize({ width, height: 800 });
-    await openSessionDrawerFooterAction(page, "Settings");
-    const extensionButton = page.locator("#settingsNavExtensions");
+    await openSessionDrawerFooterAction(page, "System");
+    const extensionButton = page.locator("#settingsNavExtensionHealth");
     const badge = extensionButton.locator(".settingsNavBadge");
     await expect(badge).toBeVisible();
 
@@ -65,13 +67,17 @@ test("standalone controls keep four borders while composer footer keeps its seam
     body: JSON.stringify({ ok: true, childGeneration: 1, childPid: 1234 }),
   }));
   await page.goto("/");
-  await openSessionDrawerFooterAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "Preferences");
 
   for (const selector of ["#settingRunNotificationsTestButton", "#settingSaveModelDefaultsButton", "#restartServerButton"]) {
     const target = page.locator(selector);
     if (selector.includes("Notifications")) await page.locator("#settingsNavNotifications").click();
     if (selector.includes("ModelDefaults")) await page.locator("#settingsNavNewSessions").click();
-    if (selector.includes("restart")) await page.locator("#settingsNavServer").click();
+    if (selector.includes("restart")) {
+      await page.locator("#settingsCloseButton").click();
+      await openSessionDrawerFooterAction(page, "System");
+      await page.locator("#settingsNavServer").click();
+    }
     await expect(target).toBeVisible();
     expect(await target.evaluate(element => {
       const style = getComputedStyle(element);

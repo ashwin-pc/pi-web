@@ -48,6 +48,7 @@ export type SessionUiState = {
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
+  bucketOrder: SessionMarkerColorId[];
 };
 
 export type SessionUiStatePatch = Partial<{
@@ -61,9 +62,11 @@ export type SessionUiStatePatch = Partial<{
   selectedMarkerColor: unknown;
   allowedMarkerColors: unknown;
   bucketLabels: unknown;
+  bucketOrder: unknown;
 }>;
 
-const markerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"]);
+const defaultBucketOrder: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
+const markerColors = new Set<SessionMarkerColorId>(defaultBucketOrder);
 const legacyBucketToColor: Record<string, SessionMarkerColorId> = {
   later: "blue",
   review: "purple",
@@ -84,6 +87,7 @@ export const defaultSessionUiState: SessionUiState = {
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
   bucketLabels: {},
+  bucketOrder: [...defaultBucketOrder],
 };
 
 function cloneState(value: SessionUiState): SessionUiState {
@@ -122,6 +126,12 @@ function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
     result.push(color);
   }
   return result;
+}
+
+function normalizeBucketOrder(value: unknown): SessionMarkerColorId[] {
+  const ordered = normalizeMarkerColors(value);
+  const seen = new Set(ordered);
+  return [...ordered, ...defaultBucketOrder.filter((color) => !seen.has(color))];
 }
 
 function normalizeLaneEntry(value: unknown): SessionLaneEntry | undefined {
@@ -252,6 +262,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;
   state.allowedMarkerColors = normalizeMarkerColors(value.allowedMarkerColors);
   state.bucketLabels = normalizeBucketLabels(value.bucketLabels);
+  state.bucketOrder = normalizeBucketOrder(value.bucketOrder);
   return state;
 }
 
@@ -294,6 +305,9 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
   }
   if ("bucketLabels" in patch && isRecord(patch.bucketLabels)) {
     next.bucketLabels = normalizeBucketLabels(patch.bucketLabels);
+  }
+  if ("bucketOrder" in patch && Array.isArray(patch.bucketOrder)) {
+    next.bucketOrder = normalizeBucketOrder(patch.bucketOrder);
   }
 
   return normalizeSessionUiState(next);

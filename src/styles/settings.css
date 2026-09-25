@@ -280,6 +280,10 @@
   margin: 0 auto;
 }
 .settingsPage[hidden] { display: none; }
+.systemOverviewDetails { margin: 0; }
+.systemOverviewDetails > div { display: grid; grid-template-columns: minmax(100px, .4fr) 1fr; gap: 12px; padding: 9px 0; border-top: 1px solid var(--border); }
+.systemOverviewDetails dt { color: var(--muted); }
+.systemOverviewDetails dd { margin: 0; overflow-wrap: anywhere; }
 .settingsPageHeader {
   display: grid;
   gap: 5px;
@@ -354,12 +358,50 @@
   gap: 8px;
 }
 .settingsBucketNameRow {
+  position: relative;
   display: grid;
-  grid-template-columns: 14px minmax(60px, 1fr) minmax(120px, 2fr);
+  grid-template-columns: 28px 14px minmax(52px, .8fr) minmax(100px, 2fr);
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  padding: 3px 4px;
+  border: 1px solid transparent;
+  border-radius: 9px;
   font-size: 13px;
+  transition: background .12s ease, border-color .12s ease, opacity .12s ease, transform .18s cubic-bezier(.2, 0, 0, 1);
+  will-change: transform;
 }
+.settingsBucketNameRow.isDragging {
+  z-index: 2;
+  opacity: .88;
+  transition: none;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--panel));
+  box-shadow: 0 3px 12px color-mix(in srgb, black 18%, transparent);
+}
+.settingsBucketNameRow.isSettling { z-index: 2; }
+@media (prefers-reduced-motion: reduce) {
+  .settingsBucketNameRow { transition: none; }
+}
+.settingsBucketOrderInstructions { margin: 0 0 2px; color: var(--muted); font-size: 12px; line-height: 1.35; }
+.settingsBucketDragHandle {
+  width: 28px;
+  min-width: 28px !important;
+  height: 34px;
+  min-height: 34px !important;
+  padding: 0 !important;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: color-mix(in srgb, var(--muted) 78%, transparent);
+  font: 600 19px/1 system-ui;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.settingsBucketDragHandle:hover,
+.settingsBucketDragHandle:focus-visible { color: var(--text); background: var(--hover); outline: 1px solid var(--border); }
+.settingsBucketDragHandle:active,
+.settingsBucketNameRow.isDragging .settingsBucketDragHandle { cursor: grabbing; color: var(--accent); }
 .settingsBucketNameSwatch {
   width: 12px;
   height: 12px;
@@ -381,6 +423,10 @@
 .settingsBucketNameRow input:focus {
   outline: none;
   border-color: var(--accent);
+}
+@media (max-width: 520px) {
+  .settingsBucketNameRow { grid-template-columns: 30px 12px minmax(42px, .65fr) minmax(88px, 1.5fr); gap: 6px; }
+  .settingsBucketDragHandle { width: 30px; min-width: 30px !important; height: 40px; min-height: 40px !important; }
 }
 .settingsAccentField {
   position: relative;

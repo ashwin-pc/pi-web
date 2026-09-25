@@ -61,10 +61,12 @@ describe("session UI state store", () => {
     expect((await store.removeSession("a")).sessionNotes).toEqual([]);
   });
 
-  it("persists renamed buckets and accepts the three additional bucket colors", async () => {
-    const store = createSessionUiStateStore(await tempFile());
+  it("persists renamed buckets, normalized bucket order, and additional colors", async () => {
+    const file = await tempFile();
+    const store = createSessionUiStateStore(file);
     const next = await store.patch({
       bucketLabels: { cyan: "Builds", orange: "  Urgent  ", pink: "", invalid: "Nope" },
+      bucketOrder: ["cyan", "cyan", "invalid", "blue"],
       sessionMarkers: [
         { sessionId: "a", color: "cyan" },
         { sessionId: "b", color: "orange" },
@@ -73,7 +75,10 @@ describe("session UI state store", () => {
     });
 
     expect(next.bucketLabels).toEqual({ cyan: "Builds", orange: "Urgent" });
+    expect(next.bucketOrder).toEqual(["cyan", "blue", "purple", "yellow", "red", "green", "orange", "pink"]);
     expect(next.sessionMarkers.map(({ color }) => color)).toEqual(["cyan", "orange", "pink"]);
+
+    expect((await createSessionUiStateStore(file).read()).bucketOrder).toEqual(next.bucketOrder);
   });
 
   it("preserves since for unchanged pins sent through the legacy alias", async () => {

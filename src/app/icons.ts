@@ -1,4 +1,4 @@
-import { ArrowLeft, Bell, Bookmark, Brain, Check, ChevronRight, Copy, CornerDownRight, createElement, Flag, FolderTree, Funnel, GitBranch, GitFork, Hourglass, Info, KeyRound, Maximize2, Mic, Minimize2, Menu, MessageCircle, MoreVertical, NotebookPen, Paperclip, Pin, RotateCcw, Route, ScrollText, SendHorizontal, Server, Settings, Square, SquarePen, Star, Trash2, X } from "lucide";
+import { ArrowLeft, Bell, Bookmark, Brain, Check, CheckCircle, ChevronRight, Copy, CornerDownRight, createElement, Flag, FolderTree, Funnel, GitBranch, GitFork, Hourglass, Info, KeyRound, LoaderCircle, Maximize2, Mic, Minimize2, Menu, MessageCircle, MoreVertical, NotebookPen, Paperclip, Pin, RotateCcw, Route, ScrollText, SendHorizontal, Server, Settings, Square, SquarePen, Star, Trash2, TriangleAlert, WifiOff, X } from "lucide";
 
 const iconNodes = {
   "arrow-left": ArrowLeft,
@@ -6,6 +6,7 @@ const iconNodes = {
   bookmark: Bookmark,
   brain: Brain,
   check: Check,
+  "circle-check": CheckCircle,
   "chevron-right": ChevronRight,
   copy: Copy,
   "corner-down-right": CornerDownRight,
@@ -17,6 +18,7 @@ const iconNodes = {
   info: Info,
   hourglass: Hourglass,
   "key-round": KeyRound,
+  "loader-circle": LoaderCircle,
   menu: Menu,
   mic: Mic,
   "message-circle": MessageCircle,
@@ -34,6 +36,8 @@ const iconNodes = {
   "square-pen": SquarePen,
   star: Star,
   "trash-2": Trash2,
+  "triangle-alert": TriangleAlert,
+  "wifi-off": WifiOff,
   "maximize-2": Maximize2,
   "minimize-2": Minimize2,
   x: X,
@@ -49,7 +53,7 @@ export function iconElement(name: IconName) {
   return createElement(iconNodes[name], { "aria-hidden": "true" });
 }
 
-export function setIcon(button: HTMLButtonElement, name: IconName) {
-  button.textContent = "";
-  button.append(iconElement(name));
+export function setIcon(element: HTMLElement, name: IconName) {
+  element.textContent = "";
+  element.append(iconElement(name));
 }
