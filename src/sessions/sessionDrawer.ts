@@ -27,7 +27,7 @@ export type SessionsController = {
   init: () => void;
   refreshSessions: () => Promise<void>;
   refreshHarnesses: () => Promise<void>;
-  prepareLandingSession: () => Promise<void>;
+  prepareLandingSession: () => Promise<string | undefined>;
   setSessionDrawerOpen: (open: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
   toggleCurrentSessionPin: () => void;
@@ -199,7 +199,7 @@ export function createSessions(options: {
   let harnessCatalogRequest: Promise<void> | undefined;
   let landingHarnessId: HarnessId | undefined;
   let landingHarnessControl: ReturnType<typeof harnessChoice> | undefined;
-  let preparingLanding: Promise<void> | undefined;
+  let preparingLanding: Promise<string> | undefined;
   const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
   // TTL dedupe (issue #112): a message_end-driven refetch arriving within a short
@@ -473,6 +473,7 @@ export function createSessions(options: {
       writeActiveSessionIdToUrl(data.sessionId);
       clearMessages();
       await refreshModels();
+      return data.sessionId as string;
     })().finally(() => { preparingLanding = undefined; });
     return preparingLanding;
   }

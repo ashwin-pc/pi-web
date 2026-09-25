@@ -52,7 +52,7 @@ export function createComposer(options: {
   beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
-  prepareLandingSession?: () => Promise<void>;
+  prepareLandingSession?: () => Promise<string | undefined>;
   quoteReplies: QuoteRepliesController;
   drafts: SessionDraftStore;
 }): ComposerController {
@@ -827,8 +827,11 @@ export function createComposer(options: {
 
       try {
         preparingInput = true; updatePrimaryAction();
-        await prepareLandingSession?.();
-        sessionId = state.currentSessionId;
+        const preparedSessionId = await prepareLandingSession?.();
+        sessionId = preparedSessionId || sourceSessionId;
+        // Only an intentional landing creation may transfer this submission.
+        // A user switching tabs during preparation keeps the original draft.
+        if (state.currentSessionId !== sessionId) return;
         activeRuntime = sessionRuntime(state);
         const view = activeSessionState(state);
         if (attachments.length && view?.capabilities?.attachments === false) throw new Error("Attachments are not supported by this harness. Remove them before sending.");
