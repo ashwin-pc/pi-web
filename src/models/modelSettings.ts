@@ -3,7 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import { iconElement } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppState } from "../app/types.js";
-import { activeSessionState, type SessionStateController } from "../app/sessionState.js";
+import { activeSessionState, harnessName, isNativeSession, type SessionStateController } from "../app/sessionState.js";
 import { bindCompactInactiveAction } from "../composer/compactInteractions.js";
 
 export type ModelSettings = {
@@ -154,7 +154,40 @@ export function createModelSettings(options: {
     }
   }
 
+  function updateNativeSummary() {
+    const view = activeSessionState(state);
+    const native = isNativeSession(view);
+    const popover = elements.modelSettingsPopover;
+    for (const field of popover.querySelectorAll<HTMLElement>(".modelSettingsField, .modelSettingsCurrent, .modelSettingsHint")) field.hidden = native;
+    let summary = popover.querySelector<HTMLElement>(".modelSettingsNative");
+    if (!native) { summary?.remove(); return false; }
+    if (!summary) {
+      summary = document.createElement("div"); summary.className = "modelSettingsNative"; popover.append(summary);
+    }
+    const settings = view?.nativeSettings;
+    const label = harnessName(view);
+    summary.replaceChildren();
+    const heading = document.createElement("strong"); heading.textContent = `${label} configuration`;
+    const note = document.createElement("p"); note.textContent = "Managed by the native harness. Changes are not supported here.";
+    summary.append(heading, note);
+    for (const [name, value] of [["Model", settings?.model], ["Mode", settings?.mode], ["Reasoning", settings?.reasoningEffort], ["Permissions", settings?.permissionMode], ["Sandbox", settings?.sandboxMode]]) {
+      if (!value) continue;
+      const row = document.createElement("p"); row.textContent = `${name}: ${value}`; summary.append(row);
+    }
+    elements.modelSelectEl.disabled = true;
+    elements.thinkingSelectEl.hidden = true;
+    elements.modelSettingsThinking.hidden = true;
+    elements.modelSettingsLabel.textContent = settings?.model || label;
+    elements.modelSettingsLabel.title = settings?.model ? `${label}: ${settings.model}` : label;
+    delete elements.modelSettingsButton.dataset.thinkingLevel;
+    elements.modelSettingsButton.title = `${label} configuration (read-only)`;
+    elements.modelSettingsButton.setAttribute("aria-label", elements.modelSettingsButton.title);
+    return true;
+  }
+
   function updateSummary() {
+    if (updateNativeSummary()) return;
+    elements.modelSelectEl.disabled = activeSessionState(state)?.capabilities?.models === false;
     const supportsThinking = activeSessionState(state)?.capabilities?.thinkingLevel !== false;
     elements.thinkingSelectEl.hidden = !supportsThinking;
     elements.thinkingSelectEl.closest?.<HTMLElement>("label")?.toggleAttribute("hidden", !supportsThinking);
@@ -235,6 +268,7 @@ export function createModelSettings(options: {
 
   async function refreshModels() {
     const sessionId = state.currentSessionId;
+    if (isNativeSession(activeSessionState(state))) { updateSummary(); return; }
     const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
     const res = await fetch(`/api/models${query}`, { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
@@ -246,6 +280,7 @@ export function createModelSettings(options: {
   }
 
   async function setModelFromControls() {
+    if (isNativeSession(activeSessionState(state)) || activeSessionState(state)?.capabilities?.models === false) return;
     const [provider, ...idParts] = elements.modelSelectEl.value.split("/");
     const id = idParts.join("/");
     if (!provider || !id) return;

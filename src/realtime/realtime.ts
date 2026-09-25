@@ -1,8 +1,9 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
-import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import type { MessageDto } from "../../server/session/dto.js";
+import { activeSessionState, isNativeSession, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
+import type { InteractionRequestDto, MessageDto, TranscriptEventDto } from "../../server/session/dto.js";
+import type { Interactions } from "./interactions.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
 import { messageText } from "../messages/content.js";
@@ -48,6 +49,7 @@ export function createRealtime(options: {
   composer: ComposerController;
   messages: MessageList;
   models: ModelSettings;
+  interactions: Interactions;
   sessions: SessionsController;
   settings: SettingsController;
   status: StatusBar;
@@ -61,7 +63,7 @@ export function createRealtime(options: {
   onSettlementDependenciesChanged?: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, applySettlementDependencies, onSettlementDependenciesChanged, addMessage } = options;
+  const { state, elements, api, composer, messages, models, interactions, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, applySettlementDependencies, onSettlementDependenciesChanged, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -95,6 +97,9 @@ export function createRealtime(options: {
         break;
       case "agent_end":
         if (!eventWillRetry(event)) terminalRuntimeSessions.add(sessionKey);
+        break;
+      case "agent_settled":
+        terminalRuntimeSessions.add(sessionKey);
         break;
       case "compaction_end":
         if (!eventWillRetry(event)) terminalRuntimeSessions.add(sessionKey);
@@ -195,6 +200,10 @@ export function createRealtime(options: {
   }
 
   function handleInteractionRequest(envelope: any) {
+    if (envelope.source && envelope.source !== "extension") {
+      interactions.request(envelope as InteractionRequestDto);
+      return;
+    }
     if (envelope.sessionId && envelope.sessionId !== state.currentSessionId) return;
     const id = String(envelope.id || "");
     const data = { ...(envelope.payload || {}), method: envelope.kind };
@@ -285,6 +294,7 @@ export function createRealtime(options: {
     const raw = String(message?.raw?.errorMessage || message?.errorMessage || "").trim();
     const stopReason = String(message?.raw?.stopReason || message?.stopReason || "").trim();
     if (role && role !== "assistant") return null;
+    if (stopReason === "aborted") return null;
     if (!raw && stopReason !== "error") return null;
     const text = normalizeAssistantError(raw || stopReason) || "Assistant error";
     return {
@@ -731,10 +741,12 @@ export function createRealtime(options: {
     ws.addEventListener("open", () => {
       ticketRetryMs = 500;
       status.markWebSocketOpen();
+      interactions.render();
       composer.updatePrimaryAction();
     });
     ws.addEventListener("message", (message) => {
       const data = JSON.parse(String(message.data));
+      const duplicate = typeof data.seq === "number" && data.seq <= state.lastRealtimeSeq;
       if (typeof data.seq === "number" && Number.isFinite(data.seq) && data.seq > state.lastRealtimeSeq) {
         state.lastRealtimeSeq = data.seq;
       }
@@ -743,16 +755,53 @@ export function createRealtime(options: {
           state.lastRealtimeSeq = data.latestSeq;
         }
         status.markSyncRequired();
+        if (isNativeSession(activeSessionState(state))) void refreshState().then(() => status.markWebSocketOpen()).catch(() => undefined);
         return;
       }
       const isReplay = data.replay === true;
+      if (["message_start", "message_part", "message_delta", "message_replace"].includes(data.type)) {
+        if (data.sessionId !== state.currentSessionId) return;
+        if (duplicate && !isReplay) return;
+        const applied = !isReplay && messages.applyTranscriptEvent(data as TranscriptEventDto, {
+          addToolHistoryCard: tools.addToolHistoryCard,
+          addPendingToolCard: tools.startTool,
+          addRuntimeErrorCard: tools.addRuntimeErrorCard,
+          isStreaming: sessionRuntime(state).isRunning,
+        });
+        if (!applied) {
+          if (replayTranscriptRefreshTimer !== undefined) window.clearTimeout(replayTranscriptRefreshTimer);
+          replayTranscriptRefreshTimer = window.setTimeout(() => {
+            replayTranscriptRefreshTimer = undefined;
+            void refreshMessages().catch(() => undefined);
+          }, 100);
+        }
+        sessions.updateEmptyCwdChooser();
+        return;
+      }
+      if (data.type === "interaction_resolved") { interactions.resolved(data.sessionId, data.id); return; }
       if (data.type === "hello" || data.type === "state_changed") {
         const appliesToCurrentSession = !data.sessionId || !state.currentSessionId || data.sessionId === state.currentSessionId;
+        const previousRuntime = sessionRuntime(state, data.sessionId || state.currentSessionId);
         sessionState.applySnapshot(data, { activate: data.type === "hello" && !state.currentSessionId });
         if (!appliesToCurrentSession) return;
+        if (isNativeSession(activeSessionState(state))) {
+          const runtime = sessionRuntime(state);
+          if (runtime.isRunning && !previousRuntime.isRunning) messages.beginStreamFollow();
+          if (!runtime.isRunning && previousRuntime.isRunning) {
+            messages.resetStreamingAssistant(); messages.endStreamFollow(); tools.clearActiveToolCards();
+            // Native idle can follow success, denial or interruption. Completion
+            // notifications stay Pi-only until an explicit outcome is exposed.
+          }
+          if (data.type === "hello" || (!isReplay && !runtime.isRunning)) void refreshMessages().catch(() => undefined);
+          if (!runtime.isRunning) scheduleSessionRefresh();
+          return;
+        }
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
-        if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
+        // Durable history cannot restore a live retry's attempt/backoff metadata.
+        // Preserve it until settlement. Other Pi snapshots still reconcile newly
+        // committed cross-client attachments and existing streaming behavior.
+        if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId && !sessionRuntime(state).isRetrying) {
           refreshMessages()
             .then(() => {
               restoreTerminalFailureCard();
@@ -771,7 +820,10 @@ export function createRealtime(options: {
       if (data.type === "session_runtime_changed") {
         const key = String(data.sessionId || data.sessionFile || "");
         if (isStaleRunningRuntimeAfterTerminal(key, data.runtime)) return;
-        if (key && (!data.runtime?.isRunning || typeof data.runtime?.startedAt === "string")) terminalRuntimeSessions.delete(key);
+        // An idle snapshot confirms the terminal guard; it must not erase it.
+        // Only a genuine new start (above) or a timestamped running snapshot
+        // can admit a new run after settlement.
+        if (key && data.runtime?.isRunning && typeof data.runtime?.startedAt === "string" && data.runtime.startedAt.trim()) terminalRuntimeSessions.delete(key);
         if (!data.sessionId) return;
         const transition = sessionState.replaceRuntime(String(data.sessionId), data.runtime);
         // Any dependency runtime change can update linked-session pill status.
@@ -851,6 +903,7 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "agent_event") {
+        if (isNativeSession(state.sessionsById[data.sessionId || state.currentSessionId])) return;
         const eventSessionKey = String(data.sessionId || data.sessionFile || "");
         noteRuntimeEvent(eventSessionKey, data.event);
         if (data.event?.type === "agent_start") abortedRuns.set(eventSessionKey, false);
@@ -883,6 +936,7 @@ export function createRealtime(options: {
     });
     ws.addEventListener("close", () => {
       status.markWebSocketClosed();
+      interactions.render();
       composer.updatePrimaryAction();
       window.setTimeout(connect, reconnectDelayMs);
     });

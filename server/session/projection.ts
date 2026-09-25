@@ -151,7 +151,10 @@ export function simplifyMessage(
     }) as MessageDto;
   }
   const text = textFromContent(content);
-  const errorText = m.role === "assistant" && m.errorMessage ? assistantErrorPreview(m) : "";
+  // An explicit abort can carry a provider transport diagnostic as well as
+  // useful partial content. Interruption is not an assistant failure.
+  const aborted = isAssistantAbortedMessage(m);
+  const errorText = m.role === "assistant" && !aborted && m.errorMessage ? assistantErrorPreview(m) : "";
   const stopReasonText = m.role === "assistant" && !errorText ? assistantStopReasonPreview(m) : "";
   const displayText = errorText || (text && stopReasonText ? `${text}\n\n${stopReasonText}` : stopReasonText || text);
   const attachmentProjection = m.role === "user" ? parseAttachmentMarkup(displayText) : { text: displayText, attachments: [] };
@@ -169,7 +172,7 @@ export function simplifyMessage(
     text: attachmentProjection.text,
     ...(attachmentProjection.attachments.length ? { attachments: attachmentProjection.attachments } : {}),
     toolCalls,
-    isError: Boolean(m.errorMessage || m.stopReason === "error" || stopReasonText),
+    isError: !aborted && Boolean(m.errorMessage || m.stopReason === "error" || stopReasonText),
     timestamp: m.timestamp,
     raw: content === m.content ? m : { ...m, content },
   }) as MessageDto;
@@ -467,7 +470,8 @@ export function messageErrorText(message: any) {
 }
 
 export function isAssistantFailureMessage(message: any) {
-  return messageRole(message) === "assistant" && (messageStopReason(message) === "error" || Boolean(messageErrorText(message).trim()));
+  return messageRole(message) === "assistant" && !isAssistantAbortedMessage(message)
+    && (messageStopReason(message) === "error" || Boolean(messageErrorText(message).trim()));
 }
 
 export function isAssistantAbortedMessage(message: any) {

@@ -1,4 +1,5 @@
 import type { AttachedImage } from "../app/types.js";
+import type { MessageDto, MessagePartDto, TranscriptMessageDto } from "../../server/session/dto.js";
 
 export function shouldCollapseMessage(text: string) {
   return text.length > 1800 || text.split("\n").length > 28;
@@ -9,6 +10,30 @@ export function imagesFromRawContent(content: unknown): AttachedImage[] {
   return content
     .filter((part): part is Record<string, unknown> => !!part && typeof part === "object" && (part as any).type === "image")
     .map((part) => ({ data: part.data as string | undefined, mimeType: part.mimeType as string | undefined }));
+}
+
+export function imagesFromMessage(message: MessageDto): AttachedImage[] {
+  if (!message.parts) return imagesFromRawContent((message.raw as { content?: unknown } | undefined)?.content);
+  return message.parts.filter((part) => part.type === "image").map((part) => ({
+    data: part.data, mimeType: part.mediaType, contentUrl: part.url, name: part.alt,
+  }));
+}
+
+/** Resolve a delta to its rendered top-level part, including keyed tool-result text. */
+export function appendTranscriptDelta(message: TranscriptMessageDto, partId: string, delta: string): MessagePartDto | undefined {
+  for (const part of message.parts) {
+    if (part.id === partId && (part.type === "text" || part.type === "thinking")) {
+      part.text += delta;
+      return part;
+    }
+    if (part.type !== "toolCall") continue;
+    const result = part.result?.parts.find((value) => value.id === partId && value.type === "text");
+    if (result?.type === "text") {
+      result.text += delta;
+      return part;
+    }
+  }
+  return undefined;
 }
 
 export function stripImagePathNote(text: string) {
@@ -188,6 +213,7 @@ export function assistantErrorBody(rawError: unknown, fallback = "") {
 }
 
 function errorTextFromRaw(message: any) {
+  if ((message?.raw?.stopReason || message?.stopReason) === "aborted") return "";
   return normalizeAssistantError(message?.raw?.errorMessage || message?.errorMessage || "");
 }
 
@@ -207,10 +233,18 @@ export function messageText(message: any): string {
     return raw.summary ? `${header}\n\n${raw.summary}` : header;
   }
 
+  // Canonical ordered parts are authoritative; raw remains a Pi-only fallback.
+  if (Array.isArray(message?.parts)) {
+    const text = message.parts.filter((part: any) => part?.type === "text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
+    return text || errorTextFromRaw(message) || stopReasonTextFromRaw(message);
+  }
+
   // Prefer server-precomputed text, but fall back to raw content parsing.
   // Also reparse from raw if the precomputed text looks like a pure tool-call placeholder.
   const precomputed: string = message?.text || "";
-  if (precomputed && !/^(\[tool call: [^\]]+\]\n?)+$/.test(precomputed.trim())) {
+  const abortedWithContent = (message?.raw?.stopReason || message?.stopReason) === "aborted"
+    && (message?.raw?.content !== undefined || message?.content !== undefined);
+  if (precomputed && !abortedWithContent && !/^(\[tool call: [^\]]+\]\n?)+$/.test(precomputed.trim())) {
     return precomputed;
   }
   const text = textFromRawContent(message?.raw?.content || message?.content);

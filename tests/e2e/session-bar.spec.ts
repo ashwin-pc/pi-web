@@ -254,6 +254,7 @@ test.describe("session quick bar", () => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     await page.goto("/");
     const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
+    await expect(tab).toBeVisible();
     const box = await tab.boundingBox(); expect(box).toBeTruthy();
     const cdp = await page.context().newCDPSession(page);
     const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
@@ -755,12 +756,15 @@ test.describe("session quick bar", () => {
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
     ] });
+    // Seed before app initialization; an earlier page's delayed hydration must
+    // not overwrite the saved destination focus between evaluate() and reload().
+    await page.addInitScript(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
     await page.goto("/");
-    await page.evaluate(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
-    await page.reload();
     await page.locator(".sessionLayersButton").click();
     const handle = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"] .sessionLaneDragHandle');
     const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
+    await expect(handle).toBeVisible();
+    await expect(destination).toBeVisible();
     const handleBox = await handle.boundingBox(); const destinationBox = await destination.boundingBox();
     expect(handleBox).not.toBeNull(); expect(destinationBox).not.toBeNull();
     const pointer = { pointerId: 29, pointerType: "touch", isPrimary: true, button: 0 };
@@ -866,7 +870,9 @@ test.describe("session quick bar", () => {
       await route.continue();
     });
     await page.goto("/");
-    const tabBox = await page.locator('.sessionBarTab.laned[data-session-id="mock-current"]').boundingBox();
+    const tab = page.locator('.sessionBarTab.laned[data-session-id="mock-current"]');
+    await expect(tab).toBeVisible();
+    const tabBox = await tab.boundingBox();
     expect(tabBox).not.toBeNull();
     const x = tabBox!.x + tabBox!.width / 2;
     const viewportHeight = page.viewportSize()?.height;

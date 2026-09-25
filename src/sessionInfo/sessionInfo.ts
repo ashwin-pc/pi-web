@@ -1,4 +1,4 @@
-import { activeSessionState, sessionRuntime } from "../app/sessionState.js";
+import { activeSessionState, harnessName, isNativeSession, sessionRuntime } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import type { AppState } from "../app/types.js";
 import type { GitStatusResponse } from "../git/types.js";
@@ -380,7 +380,9 @@ export function createSessionInfo(options: {
 
   const cwdAction = copyAction("sessionInfoCwd", "Working directory");
   const idAction = copyAction("sessionInfoId", "Session ID");
-  metadataSection.append(details, cwdAction.button, idAction.button);
+  const nativeIdentity = el("p", "sessionInfoCardNote");
+  nativeIdentity.hidden = true;
+  metadataSection.append(details, cwdAction.button, idAction.button, nativeIdentity);
 
   mainView.append(sessionRow, statsLine, workspaceSection, toolsSection, contextSection, metadataSection);
 
@@ -424,6 +426,13 @@ export function createSessionInfo(options: {
   let lastRunning = false;
 
   function runtimePresentation() {
+    const view = activeSessionState(state);
+    if (isNativeSession(view)) {
+      if (view?.phase === "error") return { label: "Error", tone: "warning" };
+      if (view?.phase === "unavailable") return { label: "Unavailable", tone: "warning" };
+      if (view?.activity === "waiting-approval") return { label: "Needs approval", tone: "warning" };
+      if (view?.activity === "waiting-input") return { label: "Needs an answer", tone: "warning" };
+    }
     const runtime = sessionRuntime(state);
     if (runtime.isCompacting) return { label: "Compacting", tone: "warning" };
     if (runtime.isRetrying) return { label: "Retrying", tone: "warning" };
@@ -674,6 +683,12 @@ export function createSessionInfo(options: {
       }
     }
 
+    const supportsContext = isNativeSession(view) ? view?.capabilities?.context === true : view?.capabilities?.context !== false;
+    toolsSection.hidden = !supportsContext;
+    contextSection.hidden = !supportsContext;
+    if (!supportsContext) setPromptView(false);
+    nativeIdentity.hidden = !isNativeSession(view);
+    if (isNativeSession(view)) nativeIdentity.textContent = `${harnessName(view)} · Native session: ${view?.nativeSession?.sessionId || "not assigned"} · ${view?.nativeSession?.persistence || "unknown persistence"} · ${view?.nativeSession?.status || "unknown availability"}. Pi context and extensions do not apply.`;
     sessionTitle.textContent = view?.name?.trim() || view?.title?.trim() || "New session";
     runtimeBadge.textContent = runtime.label;
     runtimeBadge.dataset.tone = runtime.tone;
@@ -686,7 +701,7 @@ export function createSessionInfo(options: {
     const messages = finiteNumber(stats?.totalMessages) ?? finiteNumber(view?.messageCount);
     detailValues.get("conversation")!.textContent = messages === undefined ? "—" : `${Math.round(messages)} messages`;
     const queued = (view?.queue?.steering.length || 0) + (view?.queue?.followUp.length || 0);
-    detailValues.get("queue")!.textContent = queued ? `${queued} pending` : "Empty";
+    detailValues.get("queue")!.textContent = view?.capabilities?.queue === false ? "Not supported" : queued ? `${queued} pending` : "Empty";
     cwdAction.value.textContent = state.currentCwd || "Not set";
     idAction.value.textContent = sessionId || "Not started";
 
@@ -746,7 +761,7 @@ export function createSessionInfo(options: {
   async function refreshContext() {
     const sessionId = state.currentSessionId;
     const request = ++contextRequest;
-    if (!sessionId) return;
+    if (!sessionId || activeSessionState(state)?.capabilities?.context === false) return;
     try {
       const response = await fetch(`/api/session/context?sessionId=${encodeURIComponent(sessionId)}`, { headers: apiHeaders() });
       const body = await response.json().catch(() => ({})) as { ok?: boolean; error?: string; context?: SessionContextDto } & Partial<SessionContextDto>;

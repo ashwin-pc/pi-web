@@ -1,6 +1,7 @@
 import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
+import { activeSessionState, isNativeSession } from "../app/sessionState.js";
 import { setIcon } from "../app/icons.js";
 import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, orderedSessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings, type SessionMarkerColorId, type WebSettingsSchema } from "../app/types.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
@@ -14,6 +15,7 @@ import { createSecuritySettings, type AuthMode } from "./securitySettings.js";
 export type SettingsController = {
   init: () => void;
   refreshSettings: () => Promise<void>;
+  updateSessionScope: () => void;
   applySettings: (settings: PiWebSettings) => void;
   applyWebSettingsSchemas: (schemas: WebSettingsSchema[]) => void;
 };
@@ -274,6 +276,7 @@ export function createSettings(options: {
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
     elements.settingModelDefaultsValue.textContent = settingsLabel(settings);
+    updateSessionScope();
 
     const density = settings.appearance.density === "minimal" ? "Minimal" : settings.appearance.density === "compact" ? "Compact" : "Comfortable";
     const queueMode = settings.composer.queueMode === "steer" ? "Steer" : "Follow up";
@@ -340,16 +343,42 @@ export function createSettings(options: {
     settingsShell?.setSummary("extension-health", "Status unavailable");
   }
 
+  function updateSessionScope() {
+    const native = isNativeSession(activeSessionState(state));
+    elements.settingSaveModelDefaultsButton.disabled = native;
+    elements.settingSaveModelDefaultsButton.title = native ? "Pi defaults only: open a Pi session to save its model settings." : "";
+    elements.settingModelDefaultsValue.textContent = `${native ? "Pi only: " : ""}${settingsLabel(state.settings)}`;
+    elements.extensionReloadButton.hidden = native;
+    elements.extensionSettingsContainer.inert = native;
+    elements.extensionSettingsContainer.setAttribute("aria-disabled", String(native));
+    let note = elements.extensionSettingsContainer.parentElement?.querySelector<HTMLElement>(".piExtensionScope");
+    if (native) {
+      elements.extensionStatusBadge.textContent = "Pi only";
+      elements.extensionStatusBadge.className = "extensionStatusBadge";
+      elements.extensionStatusMessage.textContent = "Pi extensions do not run in this native session. Retained extension settings below apply only to Pi.";
+      elements.extensionStatusDetails.hidden = true;
+      if (!note) {
+        note = document.createElement("p"); note.className = "settingsHint piExtensionScope";
+        note.textContent = "These settings configure Pi extensions, not native tools or permissions. Open a Pi session to edit them.";
+        elements.extensionSettingsContainer.before(note);
+      }
+    } else note?.remove();
+  }
+
   async function refreshExtensionStatus() {
+    updateSessionScope();
+    if (isNativeSession(activeSessionState(state))) return;
+    const sessionId = state.currentSessionId;
     const params = new URLSearchParams();
     if (state.currentSessionId) params.set("sessionId", state.currentSessionId);
     const res = await fetch(`/api/extensions/status?${params}`, { headers: api.headers() });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || `Unable to read extension status (${res.status})`);
-    renderExtensionStatus(data.status as ExtensionLoadStatus);
+    if (sessionId === state.currentSessionId && !isNativeSession(activeSessionState(state))) renderExtensionStatus(data.status as ExtensionLoadStatus);
   }
 
   async function reloadExtensions() {
+    if (isNativeSession(activeSessionState(state))) return;
     elements.extensionStatusBadge.className = "extensionStatusBadge loading";
     elements.extensionStatusBadge.textContent = "Retrying…";
     elements.extensionStatusMessage.textContent = "Reloading extensions and models without restarting pi-web…";
@@ -747,7 +776,9 @@ export function createSettings(options: {
       api,
       state,
       fetchModels: async () => {
-        const res = await fetch("/api/models", { headers: api.headers() });
+        if (isNativeSession(activeSessionState(state))) return [];
+        const query = state.currentSessionId ? `?sessionId=${encodeURIComponent(state.currentSessionId)}` : "";
+        const res = await fetch(`/api/models${query}`, { headers: api.headers() });
         if (!res.ok) return [];
         const data = await res.json().catch(() => ({}));
         return Array.isArray(data.models) ? data.models : [];
@@ -850,6 +881,7 @@ export function createSettings(options: {
     });
 
     elements.settingSaveModelDefaultsButton.addEventListener("click", () => {
+      if (isNativeSession(activeSessionState(state))) return;
       const model = splitModelKey(state.currentModelKey);
       if (!model) {
         setSettingsStatus("No current model to save", true);
@@ -881,5 +913,5 @@ export function createSettings(options: {
     extSettings?.render();
   }
 
-  return { init, refreshSettings, applySettings, applyWebSettingsSchemas };
+  return { init, refreshSettings, updateSessionScope, applySettings, applyWebSettingsSchemas };
 }

@@ -17,9 +17,43 @@ export interface SessionStatsDto {
   assistantMessages: number;
   toolResults: number;
   totalMessages: number;
-  tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
-  cost: number;
+  /** Omitted until token usage is observed; zero is a known zero, not missing usage. */
+  tokens?: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
+  /** Omitted when the harness does not expose monetary usage; zero is a known zero. */
+  cost?: number;
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };
+}
+
+export type HarnessId = "pi" | "codex" | "claude" | "kiro";
+
+/** Native identity is not a web ID, execution ID, item ID, or storage path. */
+export interface NativeSessionRefDto {
+  harnessId: HarnessId;
+  sessionId?: string;
+  persistence: "persistent" | "ephemeral";
+  /** Persistent sessions can be unmaterialized; ephemeral sessions never become resumable. */
+  status: "unmaterialized" | "resumable" | "live-only" | "unavailable";
+}
+
+export type SessionPhaseDto = "idle" | "starting" | "running" | "settling" | "error" | "unavailable";
+export type SessionActivityDto = "idle" | "working" | "waiting-approval" | "waiting-input" | "retrying" | "compacting";
+
+export interface ActiveExecutionDto {
+  /** Host-owned stale-command guard, never presented as a native turn ID. */
+  id: string;
+  owner: "host";
+  /** Only when exposed by the native harness (e.g. Codex turn.id, not Pi/Claude). */
+  nativeExecutionId?: string;
+}
+
+export interface NativeSettingsDto {
+  /** Observed native settings, not Pi model/default-setting overrides. */
+  model?: string;
+  /** Observed native agent mode, not a permission grant or editable selector. */
+  mode?: string;
+  reasoningEffort?: string;
+  permissionMode?: string;
+  sandboxMode?: string;
 }
 
 export interface HarnessCapabilitiesDto {
@@ -34,14 +68,44 @@ export interface HarnessCapabilitiesDto {
   bash: boolean;
   extensions: boolean;
   interactions: boolean;
+  /** Absent on legacy Pi snapshots; native adapters set these explicitly. */
+  models?: boolean;
+  context?: boolean;
+  attachments?: boolean;
+  historyFork?: boolean;
+}
+
+export interface HarnessDescriptorDto {
+  id: HarnessId;
+  name: string;
+  enabled: boolean;
+  available: boolean;
+  unavailableReason?: string;
+  capabilities: HarnessCapabilitiesDto;
+}
+
+/** GET /api/harnesses returns { ok: true, ...catalog }. */
+export interface HarnessCatalogDto {
+  multiHarnessEnabled: boolean;
+  defaultHarnessId: "pi";
+  harnesses: HarnessDescriptorDto[];
 }
 
 export interface BaseSessionStateDto {
   cwd: string;
-  sessionFile: string;
+  /** Pi-only compatibility metadata. Never route native sessions through this field. */
+  sessionFile?: string;
   sessionId: string;
   sessionName?: string;
   sessionTitle: string;
+  harnessId?: HarnessId;
+  nativeSession?: NativeSessionRefDto;
+  phase?: SessionPhaseDto;
+  activity?: SessionActivityDto;
+  activeExecution?: ActiveExecutionDto;
+  pendingInteractions?: InteractionRequestDto[];
+  nativeSettings?: NativeSettingsDto;
+  error?: string;
   capabilities: HarnessCapabilitiesDto;
   isStreaming: boolean;
   isRetrying: boolean;
@@ -51,6 +115,15 @@ export interface BaseSessionStateDto {
   thinkingLevel?: string;
   thinkingLevels?: string[];
   stats: SessionStatsDto;
+}
+
+/** Complete adapter snapshot; optional base fields only support the legacy Pi transition. */
+export interface SessionSnapshotDto extends BaseSessionStateDto {
+  harnessId: HarnessId;
+  nativeSession: NativeSessionRefDto;
+  phase: SessionPhaseDto;
+  activity: SessionActivityDto;
+  pendingInteractions: InteractionRequestDto[];
 }
 
 /** Serializable, role-discriminated projection consumed by every transcript path. */
@@ -87,7 +160,43 @@ export type AttachmentDto = {
   };
 };
 
+interface MessagePartBaseDto {
+  id: string;
+  nativeItemId?: string;
+  nativeExecutionId?: string;
+}
+
+export interface TextPartDto extends MessagePartBaseDto { type: "text"; text: string }
+export interface ThinkingPartDto extends MessagePartBaseDto { type: "thinking"; text: string }
+export interface ImagePartDto extends MessagePartBaseDto {
+  type: "image";
+  mediaType: string;
+  data?: string;
+  url?: string;
+  alt?: string;
+}
+export interface ToolCallPartDto extends MessagePartBaseDto {
+  type: "toolCall";
+  toolCallId: string;
+  toolName: string;
+  args: JsonValue;
+  status: "running" | "completed" | "error" | "cancelled";
+  startedAt?: string;
+  result?: { parts: Array<TextPartDto | ImagePartDto>; isError: boolean; details?: JsonValue };
+}
+export type MessagePartDto = TextPartDto | ThinkingPartDto | ImagePartDto | ToolCallPartDto;
+
+/** Ordered parts are authoritative when present; raw is a Pi-only fidelity fallback. */
 type MessageDtoBase = {
+  id?: string;
+  parts?: MessagePartDto[];
+  executionId?: string;
+  nativeExecutionId?: string;
+  nativeItemId?: string;
+  status?: "streaming" | "completed" | "error" | "interrupted";
+  errorMessage?: string;
+  stopReason?: string;
+  details?: JsonValue;
   entryId?: string;
   parentEntryId?: string;
   text?: string;
@@ -106,6 +215,29 @@ export type MessageDto = MessageDtoBase & (
   | { role: "branchSummary"; isError?: boolean }
   | { role: "unknown"; originalRole: string; isError?: boolean }
   | { role: "custom"; customType: string; details?: JsonValue; display: true }
+);
+
+/** New adapter transcript events require stable message and ordered-part identities. */
+export type TranscriptMessageDto = MessageDto & { id: string; parts: MessagePartDto[] };
+
+type TranscriptEventBaseDto = {
+  sessionId: string;
+  executionId?: string;
+  nativeExecutionId?: string;
+  nativeItemId?: string;
+  clientMessageId?: string;
+  sourceClientId?: string;
+};
+
+/** Events relay unchanged to the browser. No final item/message event implies session idle. */
+export type TranscriptEventDto = TranscriptEventBaseDto & (
+  | { type: "message_start"; message: TranscriptMessageDto }
+  /** Upsert by part.id at index; use this for tool progress/results and non-text changes. */
+  | { type: "message_part"; messageId: string; index: number; part: MessagePartDto }
+  /** Append only to an existing text/thinking part, addressed by both stable keys. */
+  | { type: "message_delta"; messageId: string; partId: string; delta: string }
+  /** Authoritative replacement, not an append. final ends this message, not the execution. */
+  | { type: "message_replace"; message: TranscriptMessageDto; final: boolean }
 );
 
 export interface TreeNodeDto {
@@ -142,10 +274,14 @@ export interface SlashCommandDto {
 
 export interface SessionInfoDto {
   id: string;
-  path: string;
+  /** Pi-only history path; omitted for native sessions. */
+  path?: string;
+  harnessId?: HarnessId;
+  nativeSession?: NativeSessionRefDto;
   name?: string;
   firstMessage?: string;
-  created: string;
+  /** Omitted when native discovery does not expose a creation timestamp. */
+  created?: string;
   modified: string;
   /** Exact for live sessions; omitted for cold sessions because deriving it requires a transcript parse. */
   messageCount?: number;
@@ -198,20 +334,74 @@ export interface ModelsResultDto {
   models: ModelDto[];
 }
 
+export interface InteractionChoiceDto {
+  id: string;
+  label: string;
+  /** Display semantics only. The adapter maps the opaque ID to an exact native response. */
+  meaning: "accept" | "decline" | "cancel" | "submit";
+  scope?: string;
+}
+
+export interface InteractionQuestionDto {
+  id: string;
+  label: string;
+  description?: string;
+  options?: Array<{ id: string; label: string }>;
+  multiple?: boolean;
+  required?: boolean;
+  allowFreeText?: boolean;
+}
+
 export interface InteractionRequestDto {
   id: string;
   source: "extension" | "approval" | "clarify" | "sudo" | "secret";
   kind: string;
   payload: { [key: string]: JsonValue };
   sessionId: string;
-  sessionFile: string;
+  sessionFile?: string;
   timeout: number;
+  title?: string;
+  body?: string;
+  choices?: InteractionChoiceDto[];
+  questions?: InteractionQuestionDto[];
+  expiresAt?: string;
 }
 
 export interface InteractionResponseDto {
   id: string;
+  /** Required by native adapters; optional only for legacy Pi extension responses. */
+  sessionId?: string;
+  choiceID?: string;
+  answers?: Record<string, string | string[]>;
   cancelled?: boolean;
   [key: string]: JsonValue | undefined;
+}
+
+export interface PromptInputDto {
+  message: string;
+  mode: string;
+  /** Required for native steering when supported; the browser targets the observed host guard. */
+  expectedExecutionId?: string;
+  attachments: AttachmentDto[];
+  clientMessageId?: string;
+  sourceClientId?: string;
+}
+
+export interface PromptReceiptDto {
+  sessionId: string;
+  executionId: string;
+  /** A receipt records dispatch; only a native acknowledgement can say accepted. */
+  acknowledgement: "pending" | "accepted" | "not-exposed";
+  nativeExecutionId?: string;
+}
+
+export interface InterruptReceiptDto {
+  sessionId: string;
+  executionId: string;
+  nativeExecutionId?: string;
+  /** Command acknowledgement is not settlement or idle. */
+  acknowledged: true;
+  stillQueued?: boolean;
 }
 
 export interface DeleteSessionResultDto {
@@ -220,6 +410,9 @@ export interface DeleteSessionResultDto {
 }
 
 export type SessionServiceEvent =
+  | TranscriptEventDto
+  | { type: "interaction_resolved"; sessionId: string; id: string; reason: "responded" | "expired" | "cancelled" | "native" | "disposed" }
+  /** Legacy Pi events are retained for Pi-only presentation and extension fidelity. */
   | { type: "agent"; sessionId: string; sessionFile: string; event: HarnessEventDto; clientMessageId?: string; sourceClientId?: string }
   | { type: "interaction"; request: InteractionRequestDto }
   | { type: "settlement_dependencies"; sessionId: string; childIds: string[] }
@@ -229,7 +422,7 @@ export type SessionServiceEvent =
   | { type: "stats"; sessionId: string; sessionFile: string; stats: SessionStatsDto }
   | { type: "models"; sessionId: string; models: ModelDto[] }
   | { type: "error"; sessionId?: string; sessionFile?: string; error: string; clientMessageId?: string }
-  | { type: "shutdown"; sessionId: string; sessionFile: string; sessionKey: string }
+  | { type: "shutdown"; sessionId: string; sessionFile?: string; sessionKey: string }
   | { type: "runtime"; sessionId: string; sessionFile: string; activitySessionFile?: string; action: "ensure" | "clear" | "changed" | "completed"; aborted?: boolean }
   | { type: "wire"; value: JsonValue };
 
@@ -251,22 +444,22 @@ export interface SessionService {
   setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string): Promise<BaseSessionStateDto>;
   executeShell(sessionId: string, command: string, excludeFromContext: boolean): Promise<Record<string, JsonValue | undefined>>;
   executeCommand(sessionId: string, command: string): Promise<{ message: string; state: BaseSessionStateDto }>;
-  prompt(sessionId: string, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }): Promise<{ sessionId: string }>;
+  prompt(sessionId: string, input: PromptInputDto): Promise<{ sessionId: string } & Partial<PromptReceiptDto>>;
   retry(sessionId: string): Promise<{ sessionId: string }>;
-  abort(sessionId: string): Promise<{ sessionId: string }>;
+  abort(sessionId: string, expectedExecutionId?: string): Promise<{ sessionId: string } & Partial<InterruptReceiptDto>>;
   abortCompaction(sessionId: string): Promise<{ sessionId: string }>;
   abortBranchSummary(sessionId: string): Promise<{ sessionId: string }>;
   rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;
   navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult>;
   respondInteraction(response: InteractionResponseDto): boolean;
   cancelInteractions(): void;
-  invokeContribution(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
+  invokeContribution(sessionId: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>>;
   invokeHeaderAction(sessionId: string, key: unknown): Promise<Record<string, unknown>>;
   invokeArtifactAction(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokeGitTab(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokePanel(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   list(extraCwds?: string[]): Promise<SessionInfoDto[]>;
-  create(previousSessionId: string | undefined, cwd?: string): Promise<BaseSessionStateDto>;
+  create(previousSessionId: string | undefined, cwd?: string, harnessId?: HarnessId): Promise<BaseSessionStateDto>;
   open(sessionId: string, cwd?: string): Promise<BaseSessionStateDto>;
   delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto>;
   switchCwd(sessionId: string, cwd: string): Promise<BaseSessionStateDto>;

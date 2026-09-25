@@ -103,10 +103,29 @@ export function activeSessionState(state: AppState): SessionViewState | undefine
   return state.currentSessionId ? state.sessionsById[state.currentSessionId] : undefined;
 }
 
+export function isNativeSession(view: SessionViewState | undefined): boolean {
+  return view?.harnessId === "codex" || view?.harnessId === "claude" || view?.harnessId === "kiro";
+}
+
+export function harnessName(view: Pick<SessionViewState, "harnessId"> | undefined): string {
+  return view?.harnessId === "codex" ? "Codex" : view?.harnessId === "claude" ? "Claude Code" : view?.harnessId === "kiro" ? "Kiro" : "Pi";
+}
+
+function authoritativeRuntime(view: SessionViewState | undefined, runtime: SessionRuntimeState): SessionRuntimeState {
+  if (!isNativeSession(view) || !view?.phase) return runtime;
+  const running = ["starting", "running", "settling"].includes(view.phase);
+  return normalizeSessionRuntime({
+    ...runtime,
+    isRunning: running,
+    isStreaming: running && view.activity === "working",
+    isRetrying: running && view.activity === "retrying",
+    isCompacting: running && view.activity === "compacting",
+  });
+}
+
 export function sessionRuntime(state: AppState, sessionId = state.currentSessionId): SessionRuntimeState {
-  return sessionId && state.sessionsById[sessionId]?.runtime
-    ? state.sessionsById[sessionId].runtime
-    : stoppedSessionRuntime as SessionRuntimeState;
+  const view = sessionId ? state.sessionsById[sessionId] : undefined;
+  return authoritativeRuntime(view, view?.runtime || stoppedSessionRuntime as SessionRuntimeState);
 }
 
 export function activeSessionStats(state: AppState): SessionStats | undefined {
@@ -154,6 +173,17 @@ export function reduceSessionSnapshot(state: AppState, value: unknown, fallbackS
     .every((key) => hasOwn(data, key));
 
   if (hasOwn(data, "sessionFile")) next.sessionFile = optionalString(data.sessionFile);
+  if (data.harnessId === "pi" || data.harnessId === "codex" || data.harnessId === "claude" || data.harnessId === "kiro") next.harnessId = data.harnessId;
+  if (hasOwn(data, "nativeSession")) next.nativeSession = recordValue(data.nativeSession) as SessionViewState["nativeSession"];
+  if (hasOwn(data, "phase")) next.phase = optionalString(data.phase) as SessionViewState["phase"];
+  if (hasOwn(data, "activity")) next.activity = optionalString(data.activity) as SessionViewState["activity"];
+  for (const key of ["activeExecution", "nativeSettings"] as const) {
+    if (hasOwn(data, key)) Object.assign(next, { [key]: recordValue(data[key]) });
+    else if (completeSnapshot) delete next[key];
+  }
+  if (hasOwn(data, "pendingInteractions")) next.pendingInteractions = Array.isArray(data.pendingInteractions) ? data.pendingInteractions as SessionViewState["pendingInteractions"] : [];
+  if (hasOwn(data, "error")) next.error = optionalString(data.error);
+  else if (completeSnapshot) next.error = undefined;
   if (hasOwn(data, "sessionName")) next.name = optionalString(data.sessionName);
   else if (completeSnapshot && hasOwn(data, "sessionTitle")) next.name = undefined;
   if (hasOwn(data, "sessionTitle")) next.title = optionalString(data.sessionTitle) || "New session";
@@ -170,7 +200,7 @@ export function reduceSessionSnapshot(state: AppState, value: unknown, fallbackS
   } else if (completeSnapshot) {
     next.queue = { steering: [], followUp: [] };
   }
-  if (runtime) next.runtime = runtime;
+  if (runtime || next.phase) next.runtime = authoritativeRuntime(next, runtime || next.runtime || stoppedSessionRuntime as SessionRuntimeState);
   for (const key of ["webContributions"] as const) {
     if (hasOwn(data, key)) next[key] = data[key];
   }
@@ -193,16 +223,16 @@ export function mergeSessionInfo(state: AppState, session: SessionInfo): Session
 
 export function patchSessionRuntime(state: AppState, sessionId: string, patch: SessionRuntimePatch): SessionRuntimeTransition {
   const previous = sessionRuntime(state, sessionId);
-  const next = mergeSessionRuntime(previous, patch);
   const session = state.sessionsById[sessionId] || { id: sessionId };
+  const next = authoritativeRuntime(session, mergeSessionRuntime(previous, patch));
   state.sessionsById[sessionId] = { ...session, runtime: next };
   return { sessionId, previous, next, isActive: sessionId === state.currentSessionId };
 }
 
 export function replaceSessionRuntime(state: AppState, sessionId: string, runtime: SessionRuntimePatch): SessionRuntimeTransition {
   const previous = sessionRuntime(state, sessionId);
-  const next = normalizeSessionRuntime(runtime);
   const session = state.sessionsById[sessionId] || { id: sessionId };
+  const next = authoritativeRuntime(session, normalizeSessionRuntime(runtime));
   state.sessionsById[sessionId] = { ...session, runtime: next };
   return { sessionId, previous, next, isActive: sessionId === state.currentSessionId };
 }

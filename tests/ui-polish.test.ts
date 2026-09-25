@@ -21,6 +21,22 @@ class MockElement {
     this.textContent += nodes.map((node) => typeof node === "object" && node && "textContent" in node ? String(node.textContent || "") : String(node)).join("");
   }
   appendChild(node: unknown) { this.append(node); return node; }
+  insertBefore(node: unknown, before: unknown) {
+    const index = this.children.indexOf(before);
+    if (index < 0) this.append(node);
+    else this.children.splice(index, 0, node);
+    return node;
+  }
+  querySelectorAll(selector: string): MockElement[] {
+    const matches = (node: MockElement) => selector.split(",").some((value) => {
+      const part = value.trim();
+      if (part.startsWith(".")) return node.className.split(/\s+/).includes(part.slice(1));
+      const attribute = part.match(/^\[data-model-summary-value="([^"]+)"\]$/);
+      return attribute ? node.dataset.modelSummaryValue === attribute[1] : false;
+    });
+    return this.children.flatMap((node) => node instanceof MockElement ? [...(matches(node) ? [node] : []), ...node.querySelectorAll(selector)] : []);
+  }
+  querySelector(selector: string) { return this.querySelectorAll(selector)[0]; }
   replaceChildren(...nodes: unknown[]) {
     this.children = [];
     this.textContent = "";
@@ -104,6 +120,7 @@ describe("model settings summary", () => {
         modelSettingsLabel,
         modelSettingsThinking,
         modelSettingsButton,
+        modelSettingsPopover: new MockElement(),
         modelSelectEl,
         thinkingSelectEl: { value: "off" },
       } as unknown as AppElements,
@@ -128,6 +145,7 @@ describe("model settings summary", () => {
         modelSettingsLabel: new MockElement(),
         modelSettingsThinking,
         modelSettingsButton: new MockElement(),
+        modelSettingsPopover: new MockElement(),
         modelSelectEl: new MockElement(),
         thinkingSelectEl: {
           value: "balanced",
@@ -161,6 +179,7 @@ describe("model settings summary", () => {
         modelSettingsLabel,
         modelSettingsThinking: new MockElement(),
         modelSettingsButton: new MockElement(),
+        modelSettingsPopover: new MockElement(),
         modelSelectEl: new MockElement(),
         thinkingSelectEl: { value: "off" },
       } as unknown as AppElements,

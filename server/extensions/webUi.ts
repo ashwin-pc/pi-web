@@ -43,6 +43,7 @@ const plainExtensionTheme = {
 };
 
 type PendingInteractionRequest = {
+  sessionId: string;
   resolve: (response: Record<string, unknown>) => void;
   cleanup: () => void;
 };
@@ -670,6 +671,7 @@ function requestInteraction<T>(
   return deps.withWorkLease(value, `extension-interaction:${method}`, () => new Promise<T>((resolvePromise) => {
     const id = randomUUID();
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
+    let finished = false;
     const timeoutMs = opts?.timeout ?? 120_000;
 
     const cleanup = () => {
@@ -677,19 +679,23 @@ function requestInteraction<T>(
       opts?.signal?.removeEventListener("abort", onAbort);
       pendingInteractionRequests.delete(id);
     };
-    const finish = (result: T) => {
+    const finish = (result: T, reason: "responded" | "cancelled" | "expired" = "responded") => {
+      if (finished) return;
+      finished = true;
       cleanup();
+      deps.emit({ type: "interaction_resolved", sessionId: value.sessionId, id, reason });
       resolvePromise(result);
     };
-    const onAbort = () => finish(defaultValue);
+    const onAbort = () => finish(defaultValue, "cancelled");
 
     opts?.signal?.addEventListener("abort", onAbort, { once: true });
-    timeoutId = setTimeout(() => finish(defaultValue), timeoutMs);
+    timeoutId = setTimeout(() => finish(defaultValue, "expired"), timeoutMs);
     timeoutId.unref?.();
 
     pendingInteractionRequests.set(id, {
+      sessionId: value.sessionId,
       cleanup,
-      resolve: (response) => finish(parse(response)),
+      resolve: (response) => finish(parse(response), response.cancelled ? "cancelled" : "responded"),
     });
 
     deps.emit({
@@ -790,8 +796,7 @@ async function bindWebExtensions(value: any) {
     commandContextActions: {
       waitForIdle: () => value.agent.waitForIdle(),
       newSession: async () => {
-        const newSession = await deps.createNewSession(deps.sessionCwd(value), value.sessionFile);
-        const state = deps.state(newSession);
+        const state = await deps.createNewSession(deps.sessionCwd(value), value.sessionFile);
         deps.emit({ type: "state_changed", ...state });
         return { cancelled: false };
       },
@@ -1072,8 +1077,10 @@ async function bindWebExtensions(value: any) {
     return true;
   }
 
-  function cancelPendingInteractions() {
-    for (const pending of [...pendingInteractionRequests.values()]) pending.resolve({ cancelled: true });
+  function cancelPendingInteractions(sessionId?: string) {
+    for (const pending of [...pendingInteractionRequests.values()]) {
+      if (!sessionId || pending.sessionId === sessionId) pending.resolve({ cancelled: true });
+    }
   }
 
   return {

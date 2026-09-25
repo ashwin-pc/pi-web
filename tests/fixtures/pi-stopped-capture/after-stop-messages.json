@@ -1,0 +1,152 @@
+[
+  {
+    "entryId": "b26de8b8",
+    "parentEntryId": "fd1bb343",
+    "role": "user",
+    "text": "This is an explicitly authorized, bounded actual-Pi canary. First say exactly \"Pi canary starting.\" Then call only the read tool, exactly once, on this owned file: <private>/workspace/canary-marker.txt. After the tool returns, print the marker from its first line as plain text on a line by itself. Immediately continue with a long Markdown numbered discussion of 200 ways to organize a small personal library, with at least four sentences per item. Keep elaborating rather than summarizing early; the operator will click Stop during this long reply. Do not call other tools, modify files, read other paths, or do additional work.",
+    "isError": false,
+    "timestamp": 1789366765230,
+    "raw": {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "This is an explicitly authorized, bounded actual-Pi canary. First say exactly \"Pi canary starting.\" Then call only the read tool, exactly once, on this owned file: <private>/workspace/canary-marker.txt. After the tool returns, print the marker from its first line as plain text on a line by itself. Immediately continue with a long Markdown numbered discussion of 200 ways to organize a small personal library, with at least four sentences per item. Keep elaborating rather than summarizing early; the operator will click Stop during this long reply. Do not call other tools, modify files, read other paths, or do additional work."
+        }
+      ],
+      "timestamp": 1789366765230
+    }
+  },
+  {
+    "entryId": "3878e5ff",
+    "parentEntryId": "b26de8b8",
+    "role": "assistant",
+    "text": "Pi canary starting.",
+    "toolCalls": [
+      {
+        "id": "call_ea4499a2a88c50f1b2b0a4ccb8839c8d|fc_39031713c9585525a3ccec1e4a3ad0d0",
+        "toolName": "read",
+        "args": {
+          "path": "<private>/workspace/canary-marker.txt"
+        }
+      }
+    ],
+    "isError": false,
+    "timestamp": 1789366765363,
+    "raw": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "thinkingSignature": "[redacted provider signature]"
+        },
+        {
+          "type": "text",
+          "text": "Pi canary starting.",
+          "textSignature": "[redacted provider signature]"
+        },
+        {
+          "type": "toolCall",
+          "id": "call_ea4499a2a88c50f1b2b0a4ccb8839c8d|fc_39031713c9585525a3ccec1e4a3ad0d0",
+          "name": "read",
+          "arguments": {
+            "path": "<private>/workspace/canary-marker.txt"
+          }
+        }
+      ],
+      "api": "openai-responses",
+      "provider": "configured-provider",
+      "model": "the configured provider model",
+      "usage": {
+        "input": 2,
+        "output": 83,
+        "cacheRead": 0,
+        "cacheWrite": 7421,
+        "reasoning": 31,
+        "totalTokens": 7506,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "toolUse",
+      "timestamp": 1789366765363,
+      "responseId": "resp_aya6s6danigd2sms2lsvtoe3xczujopweowmlgg5h4xfi5vz3uqq",
+      "rawStopReason": "completed"
+    }
+  },
+  {
+    "entryId": "1f6a74e1",
+    "parentEntryId": "3878e5ff",
+    "role": "toolResult",
+    "toolCallId": "call_ea4499a2a88c50f1b2b0a4ccb8839c8d|fc_39031713c9585525a3ccec1e4a3ad0d0",
+    "toolName": "read",
+    "toolArgs": {
+      "path": "<private>/workspace/canary-marker.txt"
+    },
+    "isError": false,
+    "text": "PI92_ACTUAL_cf729ea61ce073b5\nThis file belongs only to the bounded issue-92 actual-Pi canary.\n",
+    "timestamp": 1789366767823,
+    "raw": {
+      "role": "toolResult",
+      "toolCallId": "call_ea4499a2a88c50f1b2b0a4ccb8839c8d|fc_39031713c9585525a3ccec1e4a3ad0d0",
+      "toolName": "read",
+      "content": [
+        {
+          "type": "text",
+          "text": "PI92_ACTUAL_cf729ea61ce073b5\nThis file belongs only to the bounded issue-92 actual-Pi canary.\n"
+        }
+      ],
+      "isError": false,
+      "timestamp": 1789366767823
+    }
+  },
+  {
+    "entryId": "ccc9d74c",
+    "parentEntryId": "1f6a74e1",
+    "role": "assistant",
+    "text": "OpenAI Responses stream ended before a terminal response event",
+    "toolCalls": [],
+    "isError": true,
+    "timestamp": 1789366767827,
+    "raw": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "thinking": "",
+          "thinkingSignature": "[redacted provider signature]"
+        },
+        {
+          "type": "text",
+          "text": "PI92_ACTUAL_cf729ea61ce073b5\n\n1. Sort books alphabetically by author surname. This makes a known author"
+        }
+      ],
+      "api": "openai-responses",
+      "provider": "configured-provider",
+      "model": "the configured provider model",
+      "usage": {
+        "input": 0,
+        "output": 0,
+        "cacheRead": 0,
+        "cacheWrite": 0,
+        "totalTokens": 0,
+        "cost": {
+          "input": 0,
+          "output": 0,
+          "cacheRead": 0,
+          "cacheWrite": 0,
+          "total": 0
+        }
+      },
+      "stopReason": "aborted",
+      "timestamp": 1789366767827,
+      "responseId": "resp_nin3qvbf5nzbjif3ogz4v7lpro6vxgxddbulyknnatevxednhmpq",
+      "errorMessage": "OpenAI Responses stream ended before a terminal response event"
+    }
+  }
+]

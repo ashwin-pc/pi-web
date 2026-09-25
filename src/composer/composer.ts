@@ -2,7 +2,7 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
-import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
+import { activeSessionState, harnessName, isNativeSession, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { recordDebugEvent } from "../app/debugDiagnostics.js";
@@ -52,16 +52,20 @@ export function createComposer(options: {
   beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
+  prepareLandingSession?: () => Promise<string | undefined>;
   quoteReplies: QuoteRepliesController;
   drafts: SessionDraftStore;
 }): ComposerController {
-  const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow, quoteReplies, drafts } = options;
+  const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow, prepareLandingSession, quoteReplies, drafts } = options;
 
   const webSlashCommandNames = new Set(["help", "?", "commands", "reload", "model", "models", "thinking", "new", "clear", "compact", "abort", "stop", "logout"]);
   const slashCommandCacheMs = 5_000;
   const expandedStorageKey = "pi-web-composer-expanded";
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
+  let slashCommandsSessionId = "";
+  let preparingInput = false;
+  let nativeSubmitting = false;
   let slashCommandSelectedIndex = 0;
   let tokenScanStream: MediaStream | undefined;
   let tokenScanFrame = 0;
@@ -149,15 +153,24 @@ export function createComposer(options: {
     const hasInput = !!elements.promptEl.value.trim() || state.attachedImages.length > 0 || contextAttachments.length > 0 || quoteReplies.hasDrafts();
     const initialRealtimeReady = state.initialSyncComplete && state.wsHasOpened;
     const runtime = sessionRuntime(state);
-    const canSendWhileRunning = activeSessionState(state)?.capabilities?.queue !== false;
-    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady || runtime.isRunning && !canSendWhileRunning;
-    elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
-    elements.stopButton.style.display = runtime.isStreaming || runtime.isRetrying ? "" : "none";
+    const view = activeSessionState(state);
+    const native = isNativeSession(view);
+    const canSendWhileRunning = native ? view?.capabilities?.steering === true && Boolean(view.activeExecution) : view?.capabilities?.queue !== false;
+    const unavailable = native && (view?.phase === "unavailable" || view?.nativeSession?.status === "unavailable" || state.wsDisconnected);
+    elements.primaryButton.disabled = !hasInput || !initialRealtimeReady || preparingInput || nativeSubmitting || unavailable || runtime.isRunning && !canSendWhileRunning;
+    elements.primaryButton.title = "Send";
+    if (!initialRealtimeReady) elements.primaryButton.title = "Connecting live updates…";
+    else if (unavailable) elements.primaryButton.title = "Reconnect or reopen this native session before sending.";
+    else if (native && runtime.isRunning) elements.primaryButton.title = canSendWhileRunning ? "Steer the active execution" : "This harness cannot accept input while running.";
+    elements.stopButton.style.display = (native ? runtime.isRunning : runtime.isStreaming || runtime.isRetrying) ? "" : "none";
+    elements.attachButton.hidden = native ? view?.capabilities?.attachments !== true : view?.capabilities?.attachments === false;
+    elements.imageInput.disabled = elements.attachButton.hidden;
+    elements.promptEl.placeholder = native ? `Ask ${harnessName(view)}…` : "Ask pi…";
   }
 
   function updateQueueToggle() {
     const capabilities = activeSessionState(state)?.capabilities;
-    elements.queueToggle.hidden = capabilities?.queue === false;
+    elements.queueToggle.hidden = isNativeSession(activeSessionState(state)) ? capabilities?.queue !== true : capabilities?.queue === false;
     const isSteer = state.queueMode === "steer";
     elements.queueToggle.setAttribute("aria-pressed", String(isSteer));
     elements.queueToggle.title = isSteer ? "Queue mode: steer while running" : "Queue mode: follow up after running";
@@ -176,8 +189,15 @@ export function createComposer(options: {
   }
 
   async function stopStreaming() {
-    if (!state.currentSessionId) return;
-    await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId: state.currentSessionId }) });
+    const sessionId = state.currentSessionId;
+    if (!sessionId) return;
+    const view = activeSessionState(state);
+    const expectedExecutionId = view?.activeExecution?.id;
+    if (isNativeSession(view) && !expectedExecutionId) throw new Error("Native execution identity is not available yet.");
+    const response = await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId, ...(expectedExecutionId ? { expectedExecutionId } : {}) }) });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body.ok === false) throw new Error(body.error || "Could not interrupt the execution.");
+    // An acknowledgement is not idle; only the authoritative activity snapshot settles the UI.
   }
 
   function persistDraft(immediate = false) {
@@ -238,11 +258,14 @@ export function createComposer(options: {
 
   async function refreshSlashCommands(force = false) {
     const now = Date.now();
-    if (!force && slashCommands.length > 0 && now - slashCommandsLoadedAt < slashCommandCacheMs) return slashCommands;
-    const res = await fetch(`/api/commands?sessionId=${encodeURIComponent(state.currentSessionId)}`, { headers: api.headers() });
+    const sessionId = state.currentSessionId;
+    if (!force && slashCommandsSessionId === sessionId && slashCommands.length > 0 && now - slashCommandsLoadedAt < slashCommandCacheMs) return slashCommands;
+    const res = await fetch(`/api/commands?sessionId=${encodeURIComponent(sessionId)}`, { headers: api.headers() });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
+    if (sessionId !== state.currentSessionId) return [];
     slashCommands = Array.isArray(data.commands) ? data.commands : [];
+    slashCommandsSessionId = sessionId;
     slashCommandsLoadedAt = now;
     return slashCommands;
   }
@@ -255,7 +278,7 @@ export function createComposer(options: {
       .filter((command) => {
         const name = command.name.toLowerCase();
         const description = command.description?.toLowerCase() || "";
-        if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) return false;
+        if (!supportsCommand(name, command.source)) return false;
         return !query || name.includes(query) || description.includes(query);
       })
       .sort((a, b) => {
@@ -294,7 +317,9 @@ export function createComposer(options: {
     if (commands.length === 0) {
       const empty = document.createElement("div");
       empty.className = "slashCommandsEmpty";
-      empty.textContent = slashCommands.length === 0 ? "Loading slash commands…" : "No matching slash commands";
+      empty.textContent = isNativeSession(activeSessionState(state)) && slashCommandsSessionId === state.currentSessionId && slashCommandsLoadedAt
+        ? "This harness has no supported web slash commands."
+        : slashCommands.length === 0 ? "Loading slash commands…" : "No matching slash commands";
       elements.slashCommandsEl.append(empty);
     } else {
       commands.forEach((command, index) => {
@@ -360,6 +385,7 @@ export function createComposer(options: {
     const uploadSessionId = ownedSessionId;
     recordDebugEvent("attachment-upload-start", { files: files.map(({ name, size, type }) => ({ name, size, type })) });
     try {
+      if (activeSessionState(state)?.capabilities?.attachments === false) throw new Error("Attachments are not supported by this harness.");
       const attachments = await Promise.all(files.map(async (file): Promise<FileAttachment> => {
         const params = new URLSearchParams({
           sessionId: uploadSessionId,
@@ -407,6 +433,7 @@ export function createComposer(options: {
   }
 
   function addContextAttachment(context: ComposerContextAttachment) {
+    if (activeSessionState(state)?.capabilities?.attachments === false) { addMessage("system", "Attachments are not supported by this harness.", "error"); return; }
     const existingIndex = context.id
       ? contextAttachments.findIndex((attachment) => attachment.id === context.id)
       : -1;
@@ -669,9 +696,19 @@ export function createComposer(options: {
     else addMessage("system", typeof data.output === "string" && data.output ? data.output : "(no output)", isShellError(data) ? "error" : "");
   }
 
+  function supportsCommand(name: string, source = "web") {
+    const capabilities = activeSessionState(state)?.capabilities;
+    if (source !== "web" && capabilities?.extensions === false) return false;
+    if (["reload"].includes(name) && capabilities?.extensions === false) return false;
+    if (["model", "models"].includes(name) && capabilities?.models === false) return false;
+    if (name === "thinking" && capabilities?.thinkingLevel === false) return false;
+    if (name === "compact" && capabilities?.compaction === false) return false;
+    return true;
+  }
+
   async function runSlashCommand(command: string) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
-    if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) throw new Error("Compaction is not supported by this harness.");
+    if (!supportsCommand(name)) throw new Error(`/${name} is not supported by this harness.`);
     if (name === "logout") {
       try {
         const response = await fetch("/api/auth/logout", { method: "POST", headers: api.headers(), credentials: "same-origin" });
@@ -717,11 +754,13 @@ export function createComposer(options: {
 
     elements.formEl.addEventListener("submit", async (event) => {
       event.preventDefault();
-      const activeRuntime = sessionRuntime(state);
+      if (preparingInput || nativeSubmitting) return;
+      let activeRuntime = sessionRuntime(state);
       if ((activeRuntime.isStreaming || activeRuntime.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0 && !quoteReplies.hasDrafts()) return;
 
       const rawMessage = elements.promptEl.value;
-      const sessionId = ownedSessionId;
+      const sourceSessionId = ownedSessionId;
+      let sessionId = sourceSessionId;
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
       let quoteSubmission: QuoteReplySubmission | undefined;
@@ -786,6 +825,22 @@ export function createComposer(options: {
         }
       }
 
+      try {
+        preparingInput = true; updatePrimaryAction();
+        const preparedSessionId = await prepareLandingSession?.();
+        sessionId = preparedSessionId || sourceSessionId;
+        // Only an intentional landing creation may transfer this submission.
+        // A user switching tabs during preparation keeps the original draft.
+        if (state.currentSessionId !== sessionId) return;
+        activeRuntime = sessionRuntime(state);
+        const view = activeSessionState(state);
+        if (attachments.length && view?.capabilities?.attachments === false) throw new Error("Attachments are not supported by this harness. Remove them before sending.");
+        if (isNativeSession(view) && activeRuntime.isRunning && (!view?.capabilities?.steering || !view.activeExecution)) throw new Error("Wait for the current native execution to finish before sending another prompt.");
+      } catch (error) {
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        return;
+      } finally { preparingInput = false; updatePrimaryAction(); }
+
       composerCapture.cancel();
       elements.promptEl.value = "";
       promptRevision += 1;
@@ -795,7 +850,9 @@ export function createComposer(options: {
       contextAttachments = [];
       rememberContextAttachments(sessionId);
       renderAttachments();
-      const submittedWhileRunning = activeRuntime.isStreaming || activeRuntime.isRetrying;
+      const view = activeSessionState(state);
+      const native = isNativeSession(view);
+      const submittedWhileRunning = native ? activeRuntime.isRunning : activeRuntime.isStreaming || activeRuntime.isRetrying;
       const runtimeTransition = sessionState.patchRuntime(sessionId, {
         loaded: true,
         isStreaming: true,
@@ -803,19 +860,23 @@ export function createComposer(options: {
       }, { kind: "start", label: "starting" });
       beginStreamFollow?.();
       const clientMessageId = crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      if (!submittedWhileRunning) {
+      if (!submittedWhileRunning && !native) {
         optimisticUserMessages.add(clientMessageId);
         addMessage("user", message || "", "", attachments);
       }
 
       try {
+        nativeSubmitting = native; updatePrimaryAction();
+        const mode = native ? submittedWhileRunning ? "steer" : "prompt" : state.queueMode;
+        const expectedExecutionId = native && submittedWhileRunning ? view?.activeExecution?.id : undefined;
         const res = await fetch("/api/prompt", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, attachments }),
+          body: JSON.stringify({ sessionId, clientMessageId, message, mode, attachments, ...(expectedExecutionId ? { expectedExecutionId } : {}) }),
         });
         if (!res.ok) throw new Error(await res.text());
         if (quoteSubmission) quoteReplies.commitSubmission(quoteSubmission);
+        if (sessionId !== sourceSessionId && drafts.get(sourceSessionId).text === rawMessage) drafts.update(sourceSessionId, { text: "" }, true);
         updatePrimaryAction();
       } catch (error) {
         optimisticUserMessages.delete(clientMessageId);
@@ -846,6 +907,7 @@ export function createComposer(options: {
         endStreamFollow?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       } finally {
+        nativeSubmitting = false; updatePrimaryAction();
         settlePromptFocusAfterSubmit();
       }
     });

@@ -7,7 +7,8 @@ import { SessionActivity } from "../server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
 import { mapPiEvent } from "../server/session/piEventMap.js";
 import { pi084Events } from "./fixtures/pi-0.84-events.js";
-import { LocalSessionService, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
+import { LocalSessionService, type LocalSessionServiceDependencies } from "../server/session/service.js";
+import { createPiAdapter, PiSessionHandle, type PiSessionPeer } from "../server/session/adapters/pi/index.js";
 import type { PiWebSession } from "../server/types.js";
 
 const tempDirs: string[] = [];
@@ -80,8 +81,10 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
 type FixtureServiceOptions = {
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
-  list?: LocalSessionFactory["list"];
+  list?: PiSessionPeer["list"];
   clientCount?: number | (() => number);
+  defaults?: { model?: { provider: string; id: string }; thinkingLevel?: string };
+  configure?: (fixture: ReturnType<typeof fixtureSession>, input: Parameters<PiSessionPeer["create"]>[0]) => void;
 };
 
 async function fixtureService(options: FixtureServiceOptions = {}) {
@@ -89,31 +92,33 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
   tempDirs.push(cwd);
   const sessions = new Map<string, ReturnType<typeof fixtureSession>>();
   const creates: Array<{ cwd: string; path?: string; reason?: string; previous?: string }> = [];
-  const factory: LocalSessionFactory = {
-    isMock: options.isMock,
+  const factory: PiSessionPeer = {
+    newSessionAfterCreate: options.isMock,
     async create(input) {
       creates.push({ cwd: input.cwd, path: input.path, reason: input.sessionStartEvent?.reason, previous: input.sessionStartEvent?.previousSessionFile });
       const id = input.path ? input.path.split("/").at(-1)?.replace(/\.jsonl$/, "") || "opened" : creates.length === 1 ? "current" : `factory-${creates.length}`;
       const value = fixtureSession(input.cwd, id, input.path);
+      options.configure?.(value, input);
       sessions.set(id, value);
       return { session: value.session };
     },
     list: options.list || (async () => []),
   };
-  const deps: LocalSessionServiceDependencies = {
-    modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
-    sessionFactory: factory,
-    additionalExtensionPaths: () => [],
-    sessionConfig: {
-      defaultsFor: async () => ({}),
-      finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined),
-    },
-    globalCwd: () => cwd,
+  vi.stubEnv("PI_WEB_SETTINGS_FILE", join(cwd, "settings.json"));
+  const piAdapter = createPiAdapter({
+    modelRuntime: {} as any, peer: factory, additionalExtensionPaths: () => [],
+    defaultsFor: async () => options.defaults || ({}), globalCwd: () => cwd,
     clientCount: () => typeof options.clientCount === "function" ? options.clientCount() : options.clientCount ?? 0,
+  });
+  const deps: LocalSessionServiceDependencies = {
+    pi: piAdapter, nativeBindingsFile: join(cwd, "bindings.json"),
+    finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined), globalCwd: () => cwd,
   };
   const service = new LocalSessionService(deps);
-  const initial = await service.initialize();
-  return { service, initial, fixture: sessions.get("current")!, creates, cwd };
+  const handle = await service.initialize();
+  const fixture = sessions.get("current")!;
+  return { service, initial: fixture.session, handle, piAdapter, fixture, creates, cwd };
+
 }
 
 describe("LocalSessionService contract", () => {
@@ -278,24 +283,82 @@ describe("LocalSessionService contract", () => {
       finalizeCreatedSession: async () => { order.push("session_ui_state_changed"); },
     });
     service.subscribe((event) => {
-      if (event.type === "wire" && (event.value as any).type === "state_changed") order.push("state_changed");
+      if (event.type === "state") order.push("state_changed");
     });
     await fixture.extensionOptions.commandContextActions.newSession();
     expect(order).toEqual(["session_ui_state_changed", "state_changed"]);
   });
 
-  it("keeps seven true externals including the optional scoped extension transport", async () => {
+  it("holds defaults and delayed-finalizer state events while startup interactions stay responsive", async () => {
+    let newborn: ReturnType<typeof fixtureSession> | undefined;
+    let finalizerEntered!: () => void;
+    let releaseFinalizer!: () => void;
+    const entered = new Promise<void>((resolve) => { finalizerEntered = resolve; });
+    const gate = new Promise<void>((resolve) => { releaseFinalizer = resolve; });
+    let finalized = false;
+    const { service } = await fixtureService({
+      clientCount: 1,
+      defaults: { model: { provider: "test", id: "model" }, thinkingLevel: "off" },
+      configure: (fixture, input) => {
+        if (input.sessionStartEvent?.reason !== "new") return;
+        newborn = fixture;
+        fixture.session.setModel = async (model) => {
+          fixture.session.model = model as PiWebSession["model"];
+          fixture.session.setSessionName!("Defaults applied");
+          fixture.emit({ type: "session_info_changed", name: "Defaults applied" });
+          expect(await fixture.extensionOptions.uiContext.confirm("Startup", "Confirm defaults", { timeout: 5_000 })).toBe(true);
+        };
+        fixture.session.setThinkingLevel = (level) => {
+          fixture.session.thinkingLevel = level;
+          fixture.emit({ type: "thinking_level_changed", level });
+        };
+      },
+      finalizeCreatedSession: async () => { finalizerEntered(); await gate; finalized = true; },
+    });
+    const events: SessionServiceEvent[] = [];
+    const premature: SessionServiceEvent[] = [];
+    const wire: any[] = [];
+    const activity = new SessionActivity((id) => service.sessionForPath(id)?.state());
+    service.subscribe((event) => {
+      if (!finalized && ["state", "agent", "runtime"].includes(event.type)) premature.push(event);
+      events.push(event);
+    });
+    service.subscribe(createHostSessionEventHandler({ sessionForId: (id) => service.sessionForId(id), projectState: (handle) => service.projectState(handle),
+      webUiEntries: (handle) => service.webUiEntries(handle), sessionActivity: activity, broadcast: (value) => wire.push(value), markSessionUnreadCompleted: () => undefined }));
+    const creating = service.create(undefined);
+    await vi.waitFor(() => expect(events.some((event) => event.type === "interaction")).toBe(true));
+    const request = events.find((event) => event.type === "interaction")! as Extract<SessionServiceEvent, { type: "interaction" }>;
+    expect(wire.some((event) => ["state_changed", "agent_event", "session_runtime_changed"].includes(event.type))).toBe(false);
+    expect(service.respondInteraction({ id: request.request.id, sessionId: request.request.sessionId, confirmed: true })).toBe(true);
+    await entered;
+    newborn!.session.setSessionName!("Changed during finalizer");
+    newborn!.emit({ type: "session_info_changed", name: "Changed during finalizer" });
+    await expect(service.state(newborn!.session.sessionId)).rejects.toMatchObject({ status: 409 });
+    expect(wire.some((event) => ["state_changed", "agent_event", "session_runtime_changed"].includes(event.type))).toBe(false);
+    releaseFinalizer();
+    const created = await creating;
+    expect(premature).toEqual([]);
+    expect(created).toMatchObject({ sessionName: "Changed during finalizer", thinkingLevel: "off" });
+    expect(wire).toContainEqual(expect.objectContaining({ type: "agent_event", event: { type: "thinking_level_changed", level: "off" } }));
+    expect(wire).toContainEqual(expect.objectContaining({ type: "state_changed", sessionName: "Changed during finalizer" }));
+  });
+
+  it("keeps lifecycle externals typed and raw Pi creation out of the service", async () => {
     const source = await readFile(new URL("../server/session/service.ts", import.meta.url), "utf8");
     const body = source.slice(source.indexOf("export interface LocalSessionServiceDependencies"), source.indexOf("}\n\ntype WorkLeaseKind"));
     expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(7);
-    expect(body).toContain("extensionHttp?");
+    expect(body).toContain("pi: PiAdapter");
+    expect(body).toContain("nativeBindingsFile");
+    expect(source).not.toContain("sessionFactory");
+    expect(source).not.toContain("PiWebSession");
+    expect(source).not.toContain("createAgentSession");
     expect(body).not.toContain("decorateState");
     expect(body).not.toContain("resolve(sessionId");
   });
 
   it("executes the synchronous service-to-host event pipeline with exact wire payloads", async () => {
     const { service, fixture, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.sessionForPath(path)?.state());
     const wire: any[] = [];
     service.subscribe(createHostSessionEventHandler({
       sessionForId: (id) => service.sessionForId(id),
@@ -310,14 +373,17 @@ describe("LocalSessionService contract", () => {
     const startedAt = "2026-02-01T00:00:00.000Z";
     const firstActivityAt = "2026-02-01T00:00:01.000Z";
     fixture.emit({ type: "agent_start", startedAt, lastActivityAt: firstActivityAt });
+    const { thinkingLevels: _levels, ...startedState } = service.projectState(service.sessionForId(initial.sessionId)!);
     expect(wire).toEqual([
       { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "agent_start", startedAt, lastActivityAt: firstActivityAt } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
+      { type: "state_changed", ...startedState, runtimeStartedAt: startedAt, runtimeLastActivityAt: firstActivityAt,
+        runtime: activity.runtimeForPath(initial.sessionFile), webContributions: [] },
     ]);
 
     wire.length = 0;
     fixture.emit({ type: "session_info_changed", name: "Renamed" });
-    const { thinkingLevels: _thinkingLevels, ...stateWithoutThinkingLevels } = service.projectState(initial);
+    const { thinkingLevels: _thinkingLevels, ...stateWithoutThinkingLevels } = service.projectState(service.sessionForId(initial.sessionId)!);
     expect(wire).toEqual([
       { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "session_info_changed", name: "Renamed" } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
@@ -383,7 +449,7 @@ describe("LocalSessionService contract", () => {
 
   it("carries unknown harness events through the service and host wire unchanged", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.sessionForPath(path)?.state());
     const wire: any[] = [];
     const handler = createHostSessionEventHandler({
       sessionForId: (id) => service.sessionForId(id),
@@ -406,7 +472,7 @@ describe("LocalSessionService contract", () => {
 
   it("replays the recorded pi 0.84 event fixture through the service/host wire boundary", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.sessionForPath(path)?.state());
     const wire: any[] = [];
     const handler = createHostSessionEventHandler({
       sessionForId: (id) => service.sessionForId(id), projectState: (value) => service.projectState(value),
@@ -426,7 +492,7 @@ describe("LocalSessionService contract", () => {
 
   it("marks unread and sends exactly one notification from the same final completion transition", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.sessionForPath(path)?.state());
     const transitions: string[] = [];
     const handler = createHostSessionEventHandler({
       sessionForId: (id) => service.sessionForId(id),
@@ -454,7 +520,7 @@ describe("LocalSessionService contract", () => {
 
   it("clears aborted work without marking unread or sending completion push", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.sessionForPath(path)?.state());
     const transitions: string[] = [];
     const handler = createHostSessionEventHandler({
       sessionForId: (id) => service.sessionForId(id), projectState: (value) => service.projectState(value),
@@ -467,10 +533,10 @@ describe("LocalSessionService contract", () => {
     expect(activity.hasStarted(initial.sessionFile)).toBe(false);
   });
 
-  it("propagates WebSocket open failures but keeps unknown-ID fallback eligible", async () => {
-    const { initial } = await fixtureService();
-    await expect(resolveWebSocketHelloSession("unknown", initial, async () => undefined)).resolves.toBeUndefined();
-    await expect(resolveWebSocketHelloSession("corrupt", initial, async () => { throw new Error("corrupt session"); })).rejects.toThrow("corrupt session");
+  it("rejects unknown WebSocket session IDs and propagates open failures without fallback", async () => {
+    const { handle } = await fixtureService();
+    await expect(resolveWebSocketHelloSession("unknown", handle, async () => undefined)).rejects.toMatchObject({ status: 404 });
+    await expect(resolveWebSocketHelloSession("corrupt", handle, async () => { throw new Error("corrupt session"); })).rejects.toThrow("corrupt session");
   });
 
   it("decorates ID-less tool calls by their matching content position", () => {
@@ -493,7 +559,7 @@ describe("LocalSessionService standalone lifecycle", () => {
   it("keeps agent_end running and uses agent_settled as the idle boundary", async () => {
     const { service, fixture, initial } = await fixtureService();
     const activity = new SessionActivity(
-      (path) => service.sessionForPath(path),
+      (path) => service.sessionForPath(path)?.state(),
       (path) => service.hasActiveWorkForPath(path),
       (path) => service.hasActiveRetryForPath(path),
     );
@@ -513,7 +579,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     const retryGate = new Promise<void>((resolve) => { releaseRetry = resolve; });
     initial.retryFromFailure = vi.fn(() => retryGate);
     const activity = new SessionActivity(
-      (path) => service.sessionForPath(path),
+      (path) => service.sessionForPath(path)?.state(),
       (path) => service.hasActiveWorkForPath(path),
       (path) => service.hasActiveRetryForPath(path),
     );
@@ -606,14 +672,14 @@ describe("LocalSessionService standalone lifecycle", () => {
   });
 
   it("does not let a stale socket release a replacement viewer lease", async () => {
-    const { service, cwd } = await fixtureService();
+    const { service, cwd, piAdapter } = await fixtureService();
     const first = await service.create(undefined);
     service.acquireViewer(first.sessionId, "client");
     const staleConnection = service.connectViewer("client")!;
 
     await service.disposeAll("reset");
     const replacement = fixtureSession(cwd, "replacement").session;
-    service.setCurrentSession(replacement);
+    service.setCurrentSession(new PiSessionHandle(replacement, piAdapter));
     service.acquireViewer(replacement.sessionId, "client");
     const activeConnection = service.connectViewer("client")!;
 
@@ -644,16 +710,17 @@ describe("LocalSessionService standalone lifecycle", () => {
   });
 
   it("resets mock lifecycle state, leases, and registrations standalone", async () => {
-    const { service, initial, fixture, cwd } = await fixtureService({ isMock: true });
+    const { service, initial, fixture, cwd, piAdapter } = await fixtureService({ isMock: true });
     service.acquireViewer(initial.sessionId, "mock-client");
     service.connectViewer("mock-client");
     const replacementFixture = fixtureSession(cwd, "mock-reset");
 
-    await service.resetWith(replacementFixture.session);
+    const replacementHandle = new PiSessionHandle(replacementFixture.session, piAdapter);
+    await service.resetWith(replacementHandle);
 
     expect(fixture.disposeCalls).toBe(1);
     expect(service.sessionForId(initial.sessionId)).toBeUndefined();
-    expect(service.sessionForId("mock-reset")).toBe(replacementFixture.session);
+    expect(service.sessionForId("mock-reset")).toBe(replacementHandle);
     expect(service.lifecycleSnapshot().viewerLeases).toEqual([]);
   });
 
@@ -698,7 +765,7 @@ describe("LocalSessionService standalone lifecycle", () => {
 
   it("captures operation paths and clears both registration and current paths on shutdown", async () => {
     const { service, initial } = await fixtureService();
-    const activity = new SessionActivity((path) => service.sessionForPath(path));
+    const activity = new SessionActivity((path) => service.sessionForPath(path)?.state());
     const wire: unknown[] = [];
     service.subscribe(createHostSessionEventHandler({
       sessionForId: (id) => service.sessionForId(id),

@@ -797,8 +797,12 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
 
     await page.getByText("Older mock session").click();
-    const isMobile = (page.viewportSize()?.width || 0) <= 700;
-    if (isMobile) {
+    await expect(page).toHaveURL((url) => url.searchParams.get("sessionId") === "mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    // Tablet panels are overlays too; do not pass against the old drawer before switch completion.
+    const viewport = page.viewportSize();
+    const isOverlay = (viewport?.width || 0) <= 1024 || (viewport?.height || 0) <= 520;
+    if (isOverlay) {
       await expect(page.locator("#sessionDrawer")).toBeHidden();
       await page.locator("#sessionButton").click();
     } else {
@@ -1074,6 +1078,27 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator(".message.user", { hasText: "slow image correlation" })).toHaveCount(1);
   });
 
+  test("a second client receives attachment previews before the active run settles", async ({ page, browser, baseURL }) => {
+    const other = await browser.newContext({ baseURL, viewport: page.viewportSize()! });
+    const observer = await other.newPage();
+    try {
+      await observer.goto("/");
+      await expect(observer.locator("#statusTitle")).toHaveText("Current mock session");
+      await page.locator("#imageInput").setInputFiles({ name: "shared.png", mimeType: "image/png", buffer: VALID_PNG });
+      await page.locator("#prompt").fill("quiet runtime with an attachment");
+      await page.locator("#primaryButton").click();
+      const message = observer.locator(".message.user", { hasText: "quiet runtime with an attachment" });
+      await expect(message).toHaveCount(1);
+      await expect(message.locator(".messageAttachmentImage")).toBeVisible();
+      await expect(message.locator(".messageAttachmentCount")).toHaveText("1 attached");
+      await expect(observer.locator("#messages")).not.toContainText("pi-web-attachments-v2");
+      await expect(observer.locator("#stopButton")).toBeVisible();
+    } finally {
+      await page.request.post("/api/abort", { data: { sessionId: "mock-current" } });
+      await other.close();
+    }
+  });
+
   test("restores uploaded attachment drafts after the page is reloaded", async ({ page }) => {
     const file = {
       name: "android-picker.png",
@@ -1230,9 +1255,12 @@ test.describe("tool cards", () => {
   });
 
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
+    // Persist the setting: late state/settings snapshots must not undo a DOM-only override.
+    const settings = await page.request.patch("/api/settings", { data: { appearance: { density: "compact" } } });
+    expect(settings.ok()).toBe(true);
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-    await page.evaluate(() => { document.documentElement.dataset.density = "compact"; });
+    await expect(page.locator("html")).toHaveAttribute("data-density", "compact");
     await page.locator("#prompt").fill("use tool");
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.assistant", { hasText: "Let me check that for you." }).last()).toBeVisible();

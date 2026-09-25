@@ -1,0 +1,10 @@
+{
+  "nativeVersion": "0.154.0",
+  "observedManagedWrapperVersion": "0.154.0.469 (stable)",
+  "schemaFile": "schema.json",
+  "sha256": "24df528acec2952e6b96c1c2b061f98e60177d059e12c90cf318621380c9de9e",
+  "generatedWith": "codex app-server generate-json-schema --experimental --out <output-directory>",
+  "primaryDocumentation": "https://developers.openai.com/codex/app-server.md",
+  "primaryReleaseSource": "https://github.com/openai/codex/tree/6b9826e3aa83b1a5947db50f4332cb9c65f1b340/codex-rs/app-server",
+  "notes": "Exact schema emitted by the installed native executable through the managed PATH wrapper. Generated data only, not a browser contract or runtime native-API framework. Synthetic peer data and actual native canary evidence remain separate."
+}

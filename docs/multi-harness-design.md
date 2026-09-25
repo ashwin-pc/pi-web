@@ -1,129 +1,154 @@
-# Multi-harness session design
+# Pi and native harness sessions
 
-Companion to [`runtime-binding-design.md`](./runtime-binding-design.md). Tracked by issue #92; event-contract spec in the [#92 Track-0 comment](https://github.com/ashwin-pc/pi-web/issues/92). Runtime and harness are orthogonal session attributes: the runtime is *which box* a session runs on; the harness is *which agent* runs it. One binding record, one router, one typed contract.
+Pi, native Codex, Claude and Kiro use **one local session service, one live-handle cache and the existing browser UI**. Kiro's [bounded actual canary](kiro-native.md#bounded-actual-browser-canary--2026-09-24) verified core paths with a native interrupted-replay limit. **The latest four-harness audit is FAIL on `95564ac` for B2, unreported token usage displayed as zero; repair `2ff92f9` awaits fresh independent acceptance.** This is an opt-in implementation under review, not a full-parity, release or deployment claim.
 
-## Product invariants
+**Accepted three-harness baseline: PASS with documented limits on `2f007fca7710729bb29fbc4af99eb8fd3ef32159`**, 2026-09-14. The preceding verdict on `47e14fb` was FAIL because the explicit Claude executable's `--version` child bypassed `8788bb0`'s runtime-token filtering; repair `3f3727c` applies the existing policy to that preflight, and the auditor re-ran both unchanged probes plus the full suite on `2f007fc`. The Pi abort/display (`b312d6d`), drawer-test readiness (`47e14fb`) and Codex optional/null (`2c5101c`) repairs retain their scoped evidence. The [compatibility matrix](native-compatibility.md) distinguishes the historical FAIL, the accepted repair and still-unrun actual/platform gates.
 
-- pi remains the in-process, full-capability reference harness. Adding harnesses never reduces pi's feature surface.
-- **Runtime axis:** transport never changes behavior. Parity by construction; no capability flag may excuse transport drift (unchanged from the runtime design).
-- **Harness axis:** harnesses genuinely differ, so per-session capability flags gate the UI. Capabilities come only from the harness, never from the transport. The Stage-3 parity ratchet asserts identical behavior *and identical capability set* for the same implementation in-process vs over stdio.
-- Nothing is silently dropped. Unmapped harness events cross the wire as opaque `harness_event` values; unknown union variants are tolerated by every consumer.
-- Harness session stores are never parsed as a persistence contract (`~/.codex/sessions`, `~/.claude/projects`, `~/.hermes/state.db` are all declared internal upstream). pi-web persists harness session IDs plus its own metadata, including fork lineage.
-- Credentials never reach the browser. Harness homes (`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, `HERMES_HOME`) are per-trust-domain.
+## The exercised path
 
-## The contract (Track 0)
+HTTP operations dispatch through `LocalSessionService` to an owned behavioral handle. Adapter events return through the same service subscription and host relay; native messages do not use the Pi mock broadcaster or require a second server.
 
-The `SessionService` boundary from the runtime design becomes agent-neutral through four amendments, made once, before the Stage-3 runner protocol freezes:
-
-1. **Typed event union** replacing verbatim `pi_event` payloads. All 21 pi `AgentSessionEvent` types map (full disposition table in the #92 comment). Rules: everything crosses the wire typed; heavy payloads slim to references (`turn_end`, `message_start`) because content flows once via deltas; persistence-shaped payloads translate to DTOs (`entry_appended` → `committed_message` with `{entryId, parentId?, kind}`); `message_update` carries deltas only (#79). Turns are deliberately first-class: they are the cross-harness lifecycle unit (codex `turn/*`, ACP prompt-turn, Claude per-turn results) and the boundary where steering lands.
-2. **`capabilities` block** in the session state DTO; harness-specific fields (`queue`, `thinkingLevel`, tree ops) become optional. pi reports the full set.
-3. **Generic interaction request/respond channel**, generalizing the extension-UI inversion: one pending-request map and wire shape for extension dialogs, tool approvals, and clarify/sudo/secret prompts. Deny on timeout and disconnect.
-4. **Binding store schema** `sessionId → { runtimeId, harnessId }` (Stage 4), even if harness routing lands after runtime routing.
-
-### Loss-prevention mechanics
-
-- The pi adapter maps events in one exhaustive `switch` over `AgentSessionEvent["type"]` ending in a `never` assertion (`server/session/piEventMap.ts`). A pi upgrade that adds an event type fails `typecheck` until explicitly mapped or opaque-wrapped.
-- Replay fixtures: recorded pi event logs run through the mapper and snapshot-compare, so payload drift inside `any`-typed fields (tool `args`/`result`) surfaces as a reviewable diff.
-- The union is additive-only; the `harness_event` escape hatch plus unknown-variant tolerance means "unsupported" degrades to *invisible but present*, never *lost*.
-
-## The `AgentAdapter` seam (Track H1)
-
-`PiWebSession` + `LocalSessionFactory` dissolve into a designed two-level interface. `SessionService` keeps everything generic — leases, idle cleanup, listing orchestration, realtime correlation — and delegates agent behavior:
-
-```ts
-interface HarnessAdapter {
-  id: HarnessId;
-  capabilities(): HarnessCapabilities;          // static per harness/version
-  list(cwd: string): Promise<SessionInfoDto[]>;
-  create(input: CreateInput): Promise<AgentSessionHandle>;
-  open(ref: SessionRef): Promise<AgentSessionHandle>;
-  remove(ref: SessionRef): Promise<RemovalDisposition>;
-}
-
-interface AgentSessionHandle {
-  state(): AgentStateDto;                        // includes capabilities
-  messages(): MessageDto[];
-  prompt(text: string, opts: { mode: "normal" | "steer" | "followUp"; images?: ImageDto[] }): Promise<void>;
-  abort(): Promise<void>;
-  respondInteraction(id: string, response: InteractionResponseDto): void;
-  subscribe(l: (e: AgentEvent) => void): () => void;
-  dispose(): Promise<void>;
-  // capability-gated optionals:
-  fork?(atEntryId?: string): Promise<SessionRef>;
-  compact?(instructions?: string): Promise<void>;
-  setModel?(ref: ModelRefDto): Promise<void>;
-  models?(): ModelDto[];
-  navigateTree?(...): Promise<...>;              // pi-only today
-}
+```mermaid
+flowchart LR
+  Browser --> API[HTTP API]
+  API --> Service[LocalSessionService]
+  Service --> Pi[Pi handle]
+  Service --> Codex[Codex handle]
+  Service --> Claude[Claude handle]
+  Service --> Kiro[Kiro handle]
+  Kiro --> ACP[Kiro v2 ACP child]
+  Kiro --> Relay
+  Pi --> SDK[Pi SDK]
+  Codex --> App[Codex app-server]
+  Claude --> Query[Claude SDK Query]
+  Pi --> Relay[Service event relay]
+  Codex --> Relay
+  Claude --> Relay
+  Relay --> WS[Host WebSocket]
+  WS --> Browser
+  Service --> Bindings[Web identity metadata]
 ```
 
-The pi adapter absorbs the pi-specific halves of `projection.ts`, the extension web-UI bridge, and the currently `any`-typed internals (`agent.state.messages`, retry-fallback privates, `getCwd`, `dispose`) so pi coupling is contained in one module. The mock harness becomes a `MockAdapter` through the same seam — fixing its current bypass of the event relay and making it the contract's first test double, used to build the approvals UI before any real harness lands.
+A **harness** chooses the agent; a **runtime** chooses where it runs. Here Pi runs in the host process, Codex owns an app-server child, and Claude's SDK owns its native child. The child processes are native implementation details, **not** the #119 pi-web NDJSON runner. Kiro's leaf uses ACP v1 over an owned stdio child. A general ACP binding, Docker, SSH, remote-runtime selection and cross-harness transcript migration are not implemented by this work. [Runtime binding constraints](runtime-binding-design.md) remain separate; no extra router or universal tool/session framework is reserved for them.
 
-## Harness bindings
+### Ownership in source
 
-Strategy: **ACP-first with selective native escalation** (evidence: Vibe Kanban ships ~4–5.5k LOC per native adapter vs 236 LOC for its ACP one over a shared ~1.9k client; Omnara deprecated PTY scraping as "unfeasible to maintain").
+| Owner | Current responsibility |
+| --- | --- |
+| [`server/session/adapter.ts`](../server/session/adapter.ts) | `SessionAdapter.create/open/list` and `SessionHandle.state/messages/prompt/interrupt/respondInteraction/cancelInteractions/subscribe/dispose`. Native SDK objects do not cross this contract. |
+| [`server/session/service.ts`](../server/session/service.ts) | Web-ID lookup, the live cache, coalesced opens, input admission, Pi-only operation gates, viewer/work leases, initialization publication and disposal. |
+| [`adapters/pi/adapter.ts`](../server/session/adapters/pi/adapter.ts), [`pi/index.ts`](../server/session/adapters/pi/index.ts) | Actual `createAgentSession`, resource/extension binding, Pi projection, model/command/tree/shell operations, queues, retry compatibility and SDK shutdown. Rich Pi methods stay explicit on `PiSessionHandle`. |
+| [`adapters/codex/index.ts`](../server/session/adapters/codex/index.ts), [`transport.ts`](../server/session/adapters/codex/transport.ts) | Native app-server handshake, thread/turn/item/request correlation, authoritative thread activity and owned JSONL transport. No Pi model/tool executor is substituted. |
+| [`adapters/claude/index.ts`](../server/session/adapters/claude/index.ts), [`native.ts`](../server/session/adapters/claude/native.ts) | Lazy `query()` input, native SDK readers/resume, query-generation guards and the documented native process seam. `transcript.ts` and `approvals.ts` project content and resolve native controls. |
+| [`adapters/kiro/index.ts`](../server/session/adapters/kiro/index.ts), [`transport.ts`](../server/session/adapters/kiro/transport.ts) | CLI 2.24.0 preflight, ACP v1 new/load/prompt/cancel, sparse content and once-only decisions. Public catalog discovery filters the observed v2 source; historical and interrupted-replay limits remain explicit. [Kiro evidence and limits](kiro-native.md). |
+| [`adapters/nativeEnvironment.ts`](../server/session/adapters/nativeEnvironment.ts) | One copy/filter policy for the Codex transport, Claude explicit-executable version preflight and final SDK callback, and Kiro version/catalog/ACP children. Excludes the case-insensitive exact `PI_WEB_TOKEN` key, preserving other native auth/configuration and input maps. Pi does not use it; it is not an OS sandbox or a general environment policy. |
+| [`nativeBindings.ts`](../server/session/nativeBindings.ts) | Atomic pi-web-owned web/native identity, cwd, display metadata and removal tombstones. It is not a native transcript store. |
+| [`dto.ts`](../server/session/dto.ts), [`hostEvents.ts`](../server/session/hostEvents.ts), [`activity.ts`](../server/session/activity.ts) | Serializable snapshots, ordered parts, interaction lifecycle, host activity decoration and browser wire events. Native protocol types remain in their adapters. |
+| [`server.ts`](../server.ts), [`server/realtime.ts`](../server/realtime.ts) | Authenticated HTTP/WS entry, lazy native factory registration, realtime sequencing/replay, host files/Git/UI metadata and completion plumbing. |
+| [`src/app/sessionState.ts`](../src/app/sessionState.ts), [`src/realtime/realtime.ts`](../src/realtime/realtime.ts) | Per-session browser state and event reconciliation. [`messageList.ts`](../src/messages/messageList.ts), [`content.ts`](../src/messages/content.ts) and [`toolCards.ts`](../src/tools/toolCards.ts) consume the shared transcript. |
+| [`server/mock.ts`](../server/mock.ts) | A controllable Pi SDK peer. It emits through SDK subscription ingress; it is not a second browser event path. Native tests have their own protocol/SDK peers. |
 
-| Harness | First binding | Escalation (per-feature, optional) |
-|---|---|---|
-| Hermes (Nous) | native `hermes acp` — sessions list/load/resume/fork, model switch, permissions | TUI gateway WS (`hermes serve`, the Desktop protocol): first-class `session.steer`/`session.redirect`, prefix branching + lineage, approval/clarify/sudo/secret, memory/skills surfaces |
-| Codex | `@agentclientprotocol/codex-acp` — no fork; steering via `_session/steering` | `codex app-server`: `thread/fork`, `turn/steer`, `model/list`; version-pinned binary + generated TS types |
-| Claude Code | `@agentclientprotocol/claude-agent-acp` — full-session fork; steering ext | `@anthropic-ai/claude-agent-sdk`: at-message `forkSession`, `canUseTool`, in-process MCP tools; SDK patch pins CLI patch |
+The Pi adapter's raw-session `WeakMap` only associates extension callbacks with their owning Pi handle. Its bridge sinks do not replace the service's live cache or introduce another operation dispatcher.
 
-First cut requires pre-authenticated CLIs (`hermes setup`, `codex login`, claude login); "not authenticated" is a typed error state, not a wedge. Claude subscription login is a local-dev convenience only — distributed deployments use API-key/Bedrock paths and avoid "Claude Code" branding (upstream ToS).
+## From operation to visible behavior
 
-## Differentiator features
+The full [matrix](native-compatibility.md#feature-matrix) adds native operation names and per-feature test provenance. These are the application entry points they share:
 
-Two-tier rule for features beyond core chat:
+| Application operation | Handle/contract | Actual consumer |
+| --- | --- | --- |
+| `GET /api/harnesses`; `POST /api/sessions/new` | Catalog plus `SessionAdapter.create` → `SessionSnapshotDto` | [`sessionDrawer.ts`](../src/sessions/sessionDrawer.ts) and [`harnessChoice.ts`](../src/sessions/harnessChoice.ts), in the landing and drawer flows |
+| `GET /api/sessions`; `POST /api/sessions/open` | Adapter `list/open`, web binding → `SessionInfoDto` / snapshot | Drawer identity badges, open/history loading and [`sessionInfo.ts`](../src/sessionInfo/sessionInfo.ts) |
+| `POST /api/prompt`; `POST /api/abort` | Handle `prompt/interrupt` → `PromptReceiptDto` / `InterruptReceiptDto`; later authoritative snapshots | [`composer.ts`](../src/composer/composer.ts), status and realtime state; HTTP 202 alone does not clear Stop |
+| `GET /api/messages`; transcript events | `MessageDto.parts` and keyed start/part/delta/replace events | Existing message list, thinking/tool cards, inline images and diff affordances |
+| `GET /api/session/stats`; state snapshots | `SessionStatsDto.tokens` is optional; native counts remain absent until reported, while Pi accounting is unchanged | Existing Session details displays `—` for missing usage and `0` for a reported zero. Context occupancy remains separate. |
+| `POST /api/interactions/respond` | `InteractionResponseDto` → owning handle's native validation | [`interactions.ts`](../src/realtime/interactions.ts), pending snapshots and request/resolved events |
+| `POST /api/session/name`; `POST /api/sessions/delete` | Pi SDK name/delete, or native web metadata update/tombstone | Status-bar name and drawer; native removal explicitly retains native history |
+| Pi context/tree/models/commands/shell/contributions | Explicit `PiSessionHandle` methods guarded by the service | Existing inspector, tree, model settings, composer and extension surfaces; not native API emulation |
 
-1. **Cross-harness semantics get union variants.** Plans/todos (codex plan items, Claude TodoWrite, Hermes plans) → one `plan_update` variant. Subagent lifecycle (Claude tasks + `parent_tool_use_id`, Hermes delegation/`subagent.*`, codex collaboration items) → `subagent_start/update/end` variants with a parent linkage field, rendered as a nested transcript/progress tree. Usage/cost → the existing stats DTO.
-2. **Harness-unique surfaces ride the contribution kernel, not the core contract.** Adapters may register panels/actions through the same contribution system extensions use (#82/#84/#86): a Hermes **Memory** panel, a Claude **Subagents** browser, a codex **Review** tab. The core union stays lean; `harness_event` + contributions carry the rest.
+Omitted `harnessId` means Pi. Selecting another harness creates another session; it never retags the landing Pi UUID. Unknown, disabled or unavailable selection fails without Pi fallback. Catalog availability describes an installation, not working authentication, model entitlement or completed native initialization.
 
-### Cross-harness union variants (tier 1)
+## Identity and persistence
 
-| Variant | pi | Codex | Claude Code | Hermes |
-|---|---|---|---|---|
-| `plan_update` (checklist + proposed-plan doc) | — | `turn/plan/updated` + plan items; standard ACP `plan`/`plan_update` | TodoWrite / TaskCreate-Update-List; standard ACP `plan` (adapter suppresses raw tool noise) | plan/todo updates via gateway events |
-| `subagent_start/update/end` (+ parent linkage, optional child session ref) | — | `collabAgentToolCall` + `subAgentActivity`; `_meta.codex.subagent/.collaboration` | Agent tool + `parent_tool_use_id`, task events; `subagent-transcript` `_meta` ext | `subagent.start/thinking/text/tool/complete` (gateway) |
-| interaction requests (approvals/clarify/secret) | extension dialogs | v2 approval flows incl. session-scoped grants, MCP elicitations (form/URL) | `canUseTool`, `ExitPlanMode` plan review | `approval/clarify/sudo/secret.request` |
-| compaction + usage (existing variants/stats) | native | `contextCompaction` item, `thread/tokenUsage/updated` | `compact_boundary`, `getContextUsage` | compression + lineage (`parent_session_id`), `session.usage` |
+| Field | Meaning and limits |
+| --- | --- |
+| `sessionId` | Public web identity. Pi retains its SDK UUID values for extensions, API references and existing history. Codex/Claude/Kiro receive independent web UUIDs. |
+| `nativeSession.sessionId` | Actual Codex thread / Claude session / Pi session identity. It may be absent before native assignment. Pi's equal UUID value does not merge the structural roles. |
+| `activeExecution.id`, `owner: "host"` | A live host stale-command guard, not a native turn or durable replay ID. |
+| `activeExecution.nativeExecutionId` | Only a real native execution ID: Codex `turn.id` when known. Pi/Claude omit it; Claude assistant API IDs and wrapper UUIDs are not turn IDs. |
+| Message/part IDs; `nativeItemId` | Stable rendering keys and separately exposed native item identity. They are not control-request IDs or new web sessions. |
+| Interaction `id` | Web request identity; the adapter retains exact native request/tool/process scope. Numeric native request ID `0` is valid and is not replaced by a truthiness test. |
+| `sessionFile` / listed `path` | Optional Pi compatibility metadata only. Native resume never uses a fabricated Pi path. |
+| Listed `created` / `modified` | Creation time is optional because Kiro's public catalog exposes only `updatedAt`; display ordering uses modified time, without inventing creation time. |
 
-Subagent **rendering** is tier-1 (all harnesses emit lifecycle + linkage); subagent **control** is capability-gated per adapter: Hermes has `subagent.steer`/`subagent.interrupt`; Claude has `stopTask`/`backgroundTasks` (no host-side steer — a "message agent" control must honestly relay via the parent); Codex exposes child threads to open, no direct control RPC.
+Persistent does not mean already materialized. Codex storage may appear only after native acceptance; Claude can allocate an ID before its first Query. A cached `unmaterialized` or `unavailable` label is an observation: supported native resume/read APIs determine whether persistent history now exists. Live ephemeral handles are reused; after loss they expire with 410, without recreation. There is no browser persistence-mode selector or HTTP `persistence` field in `/api/sessions/new` at this snapshot.
 
-### Harness-unique surfaces (tier 2 — contribution-kernel panels)
+Kiro uses public CLI listing and ACP load replay; no private store is parsed. Only source-v2 catalog rows are eligible for native discovery. A separate real zero-model probe proved immediate persistence and fresh-child load for one newly created empty session. The bounded actual canary subsequently replayed completed nonempty history from its new session, but native cold load replaced stopped prose with an interruption placeholder. Arbitrary historical sessions remain unverified. Kiro rejects ephemeral creation rather than deleting history afterward.
 
-| Harness | Panel/feature | Backing surface | Works on stock ACP? |
-|---|---|---|---|
-| Hermes | Memory activity toasts ("remembered/updated/forgot") | `memory` tool calls in the event stream | **Yes** |
-| Hermes | Memory drawer (raw `MEMORY.md`/`USER.md`, budgets 2,200/1,375 chars, pending approvals, learned-node graph, stale-snapshot warning) | gateway `learning.*` RPCs or dashboard REST `/api/memory*`, `/api/learning*` | No — side channel |
-| Hermes | Skills manager; **Automations** (cron jobs — invisible to ACP); SOUL/effective-context inspector | `skills.manage`/REST `/api/skills*`; `cron.manage`/REST `/api/cron*`; `project.facts` + `/api/profiles/{name}/soul` | No — side channel |
-| Claude | Background-task drawer + Stop; context meter breakdown; checkpoint dry-run + files-only rewind + branch-at-turn; workflows run cards; plugins/output-styles | `Query` methods: `backgroundTasks`/`stopTask`, `getContextUsage`, `rewindFiles` + `resumeSessionAt`+`forkSession`, Workflow tool + task events | No — `Query`-bound (see below) |
-| Codex | Review action (target picker); quota/account center; aggregate turn diff; goal chip | `review/start` (slash-command form works on ACP today); `account/rateLimits/*` (app-server only); `turn/diff/updated` (adapter ignores it); `_session/goal` extension (**version-negotiated, adoptable now**) | Partial |
+Pi keeps its existing SDK/session-format handling inside its adapter. Codex uses public thread operations; Claude uses `listSessions`, `getSessionInfo`, `getSessionMessages` and Query `resume`. The host does not parse Codex/Claude private JSONL or databases. Native handles keep an in-memory transcript for display; the binding file stores only identity and display metadata, including a first-prompt preview.
 
-"Dynamic workflows" (Claude 2.1.154+) and codex `dynamicTools` / Cloud Best-of-N are deliberately deferred: young, high-churn, experimental surfaces. Render launches generically; add management only when public contracts stabilize.
+Binding read/merge, validation, candidate construction, atomic rename and in-memory publication share one queue. State/discovery writes merge against the last successful row, preserving renames, previews and tombstones. Failed writes do not publish a candidate. Removing a native binding does not delete native history; Pi retains its existing trash/delete operation.
 
-### Side-channel shapes per harness
+A cold lookup can lazily open a saved binding. That is different from repeatedly recovering a dead cached handle: ordinary state/message polling neither replaces that unavailable handle nor retries a failed native open. Explicit open resumes the same native identity. No host prompt replay is used to repair a failed or ambiguous dispatch.
 
-The escalation path differs structurally, which matters for adapter design:
+## Initialization, acknowledgement and settlement
 
-- **Hermes — side server.** Gateway/REST share `state.db` with the ACP process, so the differentiator client attaches *alongside* stock `hermes acp` without touching the conversation transport.
-- **Claude — same-process object.** The imperative controls live on the live `Query`; a side channel cannot be bolted on from outside the subprocess. The moment tier-2 Claude features are wanted, the adapter flips to Agent-SDK-direct (or an extended fork of `claude-agent-acp`) — plan for this flip rather than accreting adapter patches.
-- **Codex — same server, more methods.** The extras live on the app-server the ACP adapter already drives. Preferred order: upstream small `codex-acp` enhancements (forward plan `explanation`, web-search `results`, aggregate diff, rate-limit snapshots), then app-server-direct only for host `dynamicTools`, background-terminal management, and account APIs.
+Creation registers early enough for startup interaction responses, but buffers ordinary state/agent/runtime/contribution publication through Pi defaults and the host post-create finalizer. The initial native binding must commit before publication. Native open also registers tentatively until its metadata refresh succeeds; a failure disposes/unsubscribes the handle and removes it from the usable cache. HTTP operations and WS hello use admission checks. These rules reuse the service's initialization state, not a second lifecycle manager.
 
-Full audit evidence: three differentiator reports under the #92 research set (claude/hermes/codex), each with per-feature programmatic surfaces, ACP availability, and maintenance-risk ratings.
+| Boundary | Pi | Codex | Claude |
+| --- | --- | --- | --- |
+| Prompt receipt | `not-exposed`: SDK dispatch has no equivalent native acceptance receipt | `turn/start` acceptance exposes real turn ID; ambiguous timeout stays pending and is not resent | Async input dispatch is pending until user replay/first-reply correlation provides acknowledgement |
+| Active input | Existing steer/follow-up queue behavior | Only ordinary idle `prompt`; no implicit active-turn steering | Only ordinary `prompt`; no hidden queue across a live execution |
+| Stop target | SDK abort, optional matching host guard | Required host guard → exact native `turn/interrupt` thread/turn | Required host guard → captured live Query/generation; delayed control failure cannot fail a newer execution |
+| Terminal versus idle | SDK `agent_settled`, including existing retry compatibility, not `agent_end` alone | Completed item/turn is not idle; thread activity remains authoritative | Result ends a turn, then native `session_state_changed: idle` settles it; the documented idle-event opt-in is requested |
+| Lost process versus model error | Existing error/retry behavior retained; explicit abort now takes precedence over a simultaneous transport diagnostic | Unavailable transport invalidates active work/requests | Lost Query is unavailable; a model-result error on a usable Query is a different state |
 
-## Delivery plan
+Kiro's producer gate is green on `9dcc6f3`: full parallel `npm test` has 853 unit passes with two existing skips, and 897 browser passes with 55 existing skips, with zero failures/retries. The same gate exposed and repaired an inherited shared scroll-input race without changing snapshots or weakening its original assertion. [Kiro validation](kiro-native.md#recorded-producer-gate--2026-09-24) separates deterministic evidence, real zero-model shape probes, the bounded actual canary and pending independent acceptance.
 
-Track 0 (contract) → R1 (Stage-3 shim + ratchet) → then in parallel:
+Kiro's distinct lifecycle is **Supported (deterministic peers)**: prompt dispatch reports `not-exposed`; the outstanding ACP prompt response supplies the exact terminal stop reason and ends the turn. Stop validates the host guard, sends a cancel notification, and remains busy until that response. It does not fabricate native acceptance or an execution ID. Once-only decisions are exact offered options; remembered scopes remain disabled. [Kiro native](kiro-native.md) documents replay, consent bounds, the bounded actual observations and remaining limits.
 
-- **Runtime track:** R2 Stage-4 fail-closed router with `{runtimeId, harnessId}` bindings → R3 Stage-5 providers (cherry-picked from PR #43's salvage list).
-- **Harness track:** H1 `AgentAdapter` seam (pi passes full E2E unchanged) → H2 approvals/interaction UI (built against `MockAdapter`) → H3 Hermes via ACP → H4 codex-acp + claude-agent-acp → H5 native escalations as separate issues.
+`phase`, `activity`, pending requests and the active guard travel in `SessionSnapshotDto`. No universal sequence requires every run to emit every phase. Native terminal failures close unfinished tool *presentation*, without inventing a tool result or claiming that filesystem effects were rolled back.
 
-Convergence is free: a harness-in-sandbox session is the runner shim hosting a harness adapter; the ratchet already proves the transport can't change its capability set.
+## Transcript and decisions
 
-## Validation plan
+`message_start`, `message_part`, `message_delta` and `message_replace` address stable message/part keys. Ordered text, exposed thinking, tool calls/results and inline images use the existing renderer. Codex command-output deltas can address text nested inside a tool result; authoritative final items replace the final aggregate, rather than resending every accumulated prefix. Claude reconciles partial events with separate per-block finals that can share one assistant API ID. Pi retains its legacy raw/event fidelity path; native messages do not impersonate it.
 
-Track 0 includes the type-coupled pi 0.84 event fixture, mapper snapshot, service/host traversal, unknown-variant tolerance, capability-gating checks, and interaction lifecycle tests. Later milestones add:
+Unknown native per-item history times are omitted, not replaced with reopen time. Incremental native text does not have a claimed exactly-once replay guarantee: native final items and supported history readers are authoritative. Browser sequence replay and pending-interaction hydration are separate from native transcript replay.
 
-- **R1:** `describeSessionService` runs in-process and over the runner, asserting JSON round-trip stability and capability-set equality across transports.
-- **H1+:** a black-box suite runs against every adapter in CI: prompt→stream→idle, tool ordering, approval allow/deny/cancel/timeout, abort mid-tool, resume after restart, unknown-enum tolerance, crash recovery, and two-session interaction isolation.
-- **Per adapter:** version pins and capability probes at initialization; upgrades gated on recorded-fixture diffs.
+**Pi abort presentation is repaired in `b312d6d`** (owned `5c2db66`). The inherited baseline defect preferred an `errorMessage` over retained parts even when `stopReason` was `aborted`. Projection, raw-text fallback and live/history rendering now preserve partial content, exclude aborts from failure/retry grouping, and retain the incomplete-response/Continue affordance. A tool without a recorded result is shown as interrupted, not successful or still running. [`pi-stopped-projection.test.ts`](../tests/pi-stopped-projection.test.ts) cold-opens a copy of captured JSONL through public SDK APIs; [`pi-stopped-replay.spec.ts`](../tests/e2e/pi-stopped-replay.spec.ts) supplies projected history and scripted WebSocket events to the real renderer. These are explicitly **captured-data/synthetic replay**, not a fresh provider run: the original actual canary's cold service restart remains **NOT RUN**.
+
+A request includes adapter-owned choices, context and expiry. The browser returns the web session/request IDs and an offered `choiceID` or validated answers; it cannot supply arbitrary native grant JSON. Decline/continue, cancel/interrupt, once/session grants and Claude permission suggestions remain distinct. Duplicate, expired, foreign or already-resolved replies cannot grant again. Disconnect/timeout/disposal take the adapter's documented no-grant path.
+
+**Decision fidelity remains a final review gate.** Codex `617ab3f` separates diagnostics from complete, reversible consent JSON, with a 32 KiB UTF-8 limit over the whole rendered context. Its original command-tail/URL probes independently passed twice, plus 24 controlled native browser cases, on that earlier pin. `2c5101c` (owned `ec3eade`) then repairs schema-valid omitted/null `network.enabled`, `fileSystem.entries` and `globScanMaxDepth`: no default grant is inserted, supplied nested representations and native choice/scope mappings survive, and existing top-level null omission stays unchanged. Its unchanged six-case probe is producer-green twice and passed independent rechecks at `47e14fb`; the later preflight omission, not this permission mapping, caused the overall FAIL.
+
+Credential-like, concealed, oversized or ambiguous context still cannot grant; URLs with userinfo, query strings or fragments are conservatively deferred. Exec/network policy amendments remain unavailable. `environmentId` is native context identity, not an environment-variable dump. Current request fields, not possibly shortened history, are authoritative. These conservative limits and **unobserved actual prompted approvals** remain explicit; the null repair is compatibility, not broader permission policy.
+
+## Extensions and host features are different layers
+
+Both regular Pi extensions and pi-web contributions are loaded by Pi's runtime, not a harness-neutral extension engine. Neutral browser components can be reused without claiming that a Pi extension's tools, callbacks or registration execute under Codex/Claude.
+
+| Surface | Current dependency and treatment | Provenance |
+| --- | --- | --- |
+| Pi tools, hooks, skills, prompts, instruction files and injected web context | Pi resource loader/SDK, preserved in Pi. Native loaders/configuration remain native; Pi's `contexts/web-ui.md` is not injected into them. | Pi `make/context/commands`; `context.test.ts`, `pi-adapter-sdk.test.ts` |
+| `select`, `confirm`, `input`, `editor`, notifications/status and editor effects | Existing Pi web bridge, with session-scoped pending/resolved lifecycle. Native approvals/questions use their own mappings, not Pi hook interception. | `server/extensions/webUi.ts`; `extensions.test.ts`, `session-service.test.ts` |
+| Terminal components, custom TUI, terminal input, theme/editor replacement | No browser terminal exists. Several existing bridge methods are no-ops; `custom()` returns no component. This is not full Pi TUI-renderer parity. | `createWebExtensionUiContext`; no positive browser claim for these methods |
+| Same-session tree navigation versus a new history fork | Pi `navigateTree` remains available. All `historyFork` flags are false; bridge-initiated fork/session switching reject. Provenance is not copied history or filesystem rewind. | Pi `navigate`, `bindWebExtensions`; `conversation-tree.spec.ts`, `message-actions.spec.ts` |
+| Footer, FAB, header action, panel, Git tab, artifact action/preview, composer input | Registration/invocation requires Pi. Native snapshots expose no Pi contributions; native UI hides them and service methods reject. Generic built-in renderer reuse is not a native contribution host. | `webUi.ts`, `src/main.ts`; `extensions.test.ts`, `web-panel.spec.ts`, composer-capture specs, `native-harness.spec.ts` |
+| Extension settings and system-info contributions | Registrations come from Pi; settings remain retained/global Pi extension data, not native configuration. Native settings UI disables Pi editing/reload. Built-in system information remains a host feature. | `webUi.ts`, `src/settings/extensionSettings.ts`; `web-ui-settings.test.ts`, `system-info.spec.ts`, native gate tests |
+| `sessions_*`, notepad | Pi tools/examples using scoped extension HTTP and existing UUIDs. No native tool registration or worker-spawn port is promised. | `examples/pi-web-extensions/session-orchestrator.ts`, `examples/pi-web-extensions/notepad.ts`; `session-orchestrator.test.ts` |
+| Worker obligations, lineage and reference chips | Host UI consumes explicit web-session metadata/dependency declarations. Native subagent items do not create host workers or settlement obligations. | `server/session/settlement.ts`, `src/sessions/settlementDependencies.ts`, `src/app/sessionRefs.ts`; settlement/lineage/reference tests |
+| Custom messages versus built-in tool rendering | Pi custom message text/details/display flags remain readable. Native ordered parts reuse generic cards; custom native/TUI renderer registration is not implemented. | `projection.ts`, `messageList.ts`, `toolCards.ts`; custom-message and native-part tests |
+| Files, Git and built-in artifacts | Host routes and cwd-scoped viewers operate independently of the agent. Their operator authority is not the native tool sandbox. Extension-specific artifact actions remain Pi-only. | `server/shared/workspaceFiles.ts`, `src/files/`, `src/git/`, `src/artifactPreview.ts`; workspace/files/Git and native-browser tests |
+
+See [pi-web extensions](pi-web-extensions.md) and [scoped extension HTTP](extension-http.md) for the existing APIs and trust model, not instructions to port them automatically.
+
+## Configuration and review boundary
+
+The server alone accepts executable/argument overrides. `PI_WEB_MULTI_HARNESS=1` enables selection; Pi remains the default. Native effective settings are read-only in `modelSettings.ts`; Pi's registry/defaults/credential configuration are not fallback native settings. Claude preserves its native prompt/settings sources, narrowly removes the pinned SDK's unsolicited default-permission argument, and opts into authoritative idle notifications. Details and pins are in [Codex](codex-native.md), [Claude](claude-native.md) and [Kiro](kiro-native.md). Kiro has no model or mode mutation API in the web UI. Its CLI preflight, catalog and ACP children all apply the same native environment exclusion.
+
+Browser authentication and native provider authentication are separate. No new native login UI is added. Unknown ingress diagnostics omit/redact payloads, and arbitrary auth output is not a transcript feature. **Runtime exclusion in `8788bb0` was incomplete:** its tests and original probe entered Claude through `createClaudeQuery()`, missing `ClaudeHandle.ensureQuery()`'s preceding `execFile(--version)`. The independent matching-version probe observed the token in that first child, despite exclusion from the second.
+
+**`3f3727c` repairs the missed preflight with the same helper**, without changing version validation, SDK configuration or explicit-env semantics. The production-`createClaudeAdapter` regression now checks both distinct children, exact native sentinels and unchanged parent/caller maps; matching/rejected-version audit probes are producer-green twice. Pi's environment remains unchanged. The fresh independent audit of `2f007fc` accepted this repair. This is narrow credential separation, not isolation of the host filesystem, every secret or arbitrary trusted custom spawn code.
+
+**Native browser-test readiness is repaired in `47e14fb`** (owned `5aafef8`, test-only). Drawer creation waits for its actual post-create state hydration and overlay closure, then uses normal pointer focus. Desktop keeps its side-by-side drawer; landing adopts the create snapshot and does not wait for a drawer-only GET. The regression delays a real request without replacing its content. It changes no production UI behavior and does not excuse the historical hidden-Send flake.
+
+Use the [setup and validation recipes](native-compatibility.md#setup-and-reproducible-validation) with an explicit Chromium cache, non-artifact validation cwd and free owned runner ports outside the platform's ephemeral range. The auditor verified the prior independent full `npm test` at `47e14fb` (797 units / 2 skips; 888 browser passes / 55 skips; zero retries), then added fresh focused checks and the blocking preflight counterexample. The architecture was judged acceptable for this local scope; **the `47e14fb` verdict was nevertheless FAIL, not superseded by green regression counts**. The repaired pin `2f007fc` then passed the independent audit: full parallel `npm test` 799 units / 2 skips; 888 browser passes / 55 skips; zero failures/retries, plus both unchanged B1 probes. Actual Pi cold restart, prompted Codex/Claude approvals and canonical macOS/Windows execution remain unrun; no paid budget or deployment authorization is implied.
