@@ -1950,6 +1950,20 @@ test.describe("image rendering", () => {
     await expect(overlay).toHaveCount(0);
   });
 
+  test("closing the image viewer restores focus to its opener", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#primaryButton").click();
+
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.hover();
+    const button = frame.locator("[title='Fullscreen']");
+    await button.click();
+    await expect(page.locator(".imageOverlay")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".imageOverlay")).toHaveCount(0);
+    await expect(button).toBeFocused();
+  });
+
   test("image is constrained and does not overflow the message", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();

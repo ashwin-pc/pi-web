@@ -15,6 +15,7 @@ export function openImageOverlay(img: HTMLImageElement) {
   let scale = 1;
   let panX = 0;
   let panY = 0;
+  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const overlay = document.createElement("div");
   overlay.className = "imageOverlay";
   overlay.setAttribute("role", "dialog");
@@ -39,6 +40,7 @@ export function openImageOverlay(img: HTMLImageElement) {
   const close = () => {
     overlay.remove();
     document.removeEventListener("keydown", onKeyDown);
+    if (previousFocus?.isConnected) previousFocus.focus();
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape") close();
@@ -63,6 +65,8 @@ export function openImageOverlay(img: HTMLImageElement) {
   let lastY = 0;
   let pinchDistance = 0;
   let pinchScale = 1;
+  let pinched = false;
+  let suppressClick = false;
   const transform = () => {
     const maxX = Math.max(0, (full.clientWidth * scale - overlay.clientWidth) / 2);
     const maxY = Math.max(0, (full.clientHeight * scale - overlay.clientHeight) / 2);
@@ -72,9 +76,13 @@ export function openImageOverlay(img: HTMLImageElement) {
   };
   overlay.addEventListener("touchstart", (event) => {
     if (event.touches.length === 2) {
+      pinched = true;
+      suppressClick = true;
       pinchDistance = Math.hypot(event.touches[0].clientX - event.touches[1].clientX, event.touches[0].clientY - event.touches[1].clientY);
       pinchScale = scale;
     } else if (event.touches.length === 1) {
+      pinched = false;
+      suppressClick = false;
       startX = lastX = event.touches[0].clientX;
       startY = lastY = event.touches[0].clientY;
     }
@@ -95,10 +103,14 @@ export function openImageOverlay(img: HTMLImageElement) {
     }
   }, { passive: false });
   overlay.addEventListener("touchend", (event) => {
-    if (event.touches.length === 0 && !pinchDistance && scale === 1 && event.changedTouches.length === 1) {
+    if (event.touches.length === 0 && !pinched && !pinchDistance && scale === 1 && event.changedTouches.length === 1) {
       const dx = event.changedTouches[0].clientX - startX;
       const dy = event.changedTouches[0].clientY - startY;
-      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1);
+      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
+        event.preventDefault();
+        suppressClick = true;
+        step(dx < 0 ? 1 : -1);
+      }
     }
     if (event.touches.length < 2) pinchDistance = 0;
     if (event.touches.length === 1) {
@@ -108,6 +120,7 @@ export function openImageOverlay(img: HTMLImageElement) {
   });
   let dragging = false;
   overlay.addEventListener("pointerdown", (event) => {
+    if (event.pointerType === "mouse") suppressClick = false;
     if (event.pointerType !== "mouse" || event.button !== 0 || scale <= 1 || event.target !== full) return;
     dragging = true;
     lastX = event.clientX;
@@ -116,6 +129,7 @@ export function openImageOverlay(img: HTMLImageElement) {
   });
   overlay.addEventListener("pointermove", (event) => {
     if (!dragging) return;
+    if (Math.abs(event.clientX - lastX) + Math.abs(event.clientY - lastY) > 2) suppressClick = true;
     panX += event.clientX - lastX;
     panY += event.clientY - lastY;
     lastX = event.clientX;
@@ -124,7 +138,10 @@ export function openImageOverlay(img: HTMLImageElement) {
   });
   overlay.addEventListener("pointerup", () => { dragging = false; });
   overlay.addEventListener("pointercancel", () => { dragging = false; });
-  overlay.addEventListener("click", (event) => { if (event.target === overlay) close(); });
+  overlay.addEventListener("click", (event) => {
+    if (suppressClick) { suppressClick = false; return; }
+    if (event.target === overlay || event.target === full) close();
+  });
   document.addEventListener("keydown", onKeyDown);
   show();
   document.body.append(overlay);
