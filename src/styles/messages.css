@@ -653,7 +653,14 @@ body.artifactPreviewDocument {
 .messageAttachmentPreview.missing { color: color-mix(in srgb, #d6a25d 82%, var(--muted)); border-color: color-mix(in srgb, #d6a25d 34%, var(--border)); }
 .messageAttachmentCount { white-space: nowrap; }
 .imageOverlay { position: fixed; inset: 0; z-index: 9999; background: rgba(0,0,0,.85); display: flex; align-items: center; justify-content: center; cursor: zoom-out; }
-.imageOverlay img { max-width: 92vw; max-height: 92vh; border-radius: 8px; object-fit: contain; }
+.imageOverlay { overflow: hidden; touch-action: none; outline: none; }
+.imageOverlay img { max-width: 92vw; max-height: 92vh; border: 0; border-radius: 8px; object-fit: contain; cursor: default; user-select: none; }
+.imageOverlayNav { position: absolute; top: 50%; transform: translateY(-50%); z-index: 1; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%; width: 44px; height: 44px; background: rgba(40,40,40,.8); color: white; cursor: pointer; }
+.imageOverlay img[style*="translate"] { cursor: grab; }
+.imageOverlay img:active[style*="translate"] { cursor: grabbing; }
+.imageOverlayNav svg { width: 24px; height: 24px; }
+.imageOverlayNav.previous { left: 12px; }
+.imageOverlayNav.next { right: 12px; }
 .message.assistant { --message-bg: var(--bg); align-self: stretch; background: transparent; border: none; max-width: 100%; width: 100%; }
 .messageActions {
   position: absolute;
