@@ -1026,6 +1026,7 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator(".imageOverlay img")).toBeVisible();
     await page.locator(".imageOverlay").click();
 
+    await page.locator("#prompt").focus();
     await page.locator("#prompt").blur();
     await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
     await expect(page.locator(".attachmentChip")).toBeVisible();

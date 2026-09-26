@@ -6,7 +6,7 @@ function imageActionIcon(name: "download" | "external-link" | "maximize-2") {
   return createElement(icon, { "aria-hidden": "true" });
 }
 
-export function openImageOverlay(img: HTMLImageElement) {
+export function openImageOverlay(img: HTMLImageElement, opener?: HTMLElement) {
   if (!img.currentSrc && !img.src) return;
   // Only images in the current session participate; composer previews remain standalone.
   const session = img.closest("#messages");
@@ -15,7 +15,6 @@ export function openImageOverlay(img: HTMLImageElement) {
   let scale = 1;
   let panX = 0;
   let panY = 0;
-  const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const overlay = document.createElement("div");
   overlay.className = "imageOverlay";
   overlay.setAttribute("role", "dialog");
@@ -40,7 +39,7 @@ export function openImageOverlay(img: HTMLImageElement) {
   const close = () => {
     overlay.remove();
     document.removeEventListener("keydown", onKeyDown);
-    if (previousFocus?.isConnected) previousFocus.focus();
+    if (opener?.isConnected) opener.focus();
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === "Escape") close();
@@ -163,8 +162,12 @@ export function attachImageActions(img: HTMLImageElement) {
   fullScreen.title = "Fullscreen";
   fullScreen.setAttribute("aria-label", fullScreen.title);
   fullScreen.append(imageActionIcon("maximize-2"));
-  fullScreen.addEventListener("click", () => openImageOverlay(img));
-  img.addEventListener("click", () => openImageOverlay(img));
+  fullScreen.addEventListener("click", () => openImageOverlay(img, fullScreen));
+  img.tabIndex = 0;
+  img.addEventListener("click", () => openImageOverlay(img, img));
+  img.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImageOverlay(img, img); }
+  });
 
   const download = document.createElement("a");
   download.className = "imageAction";
