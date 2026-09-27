@@ -383,7 +383,7 @@ export function createAppPanelManager(): AppPanelManager {
     const panelsToKeep = new Set(Array.isArray(state[panelHistoryStateKey]) ? state[panelHistoryStateKey] : []);
     for (const side of ["left", "right"] as const) {
       const registration = active[side];
-      if (registration && !panelsToKeep.has(registration.id)) closeRegistration(registration, false);
+      if (registration && !panelsToKeep.has(registration.id)) closeRegistration(registration);
     }
     for (const id of panelsToKeep) {
       const registration = registrations.get(id);

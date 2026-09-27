@@ -515,11 +515,43 @@ export function initArtifactBrowser(options: {
 
   galleryBack.addEventListener("click", () => { if (currentDirectory !== artifactRootPath) void loadDirectory(parentArtifactPath(currentDirectory)); });
   previewBack.addEventListener("click", leavePreview);
+  // Navigation is based on the live session DOM, not a second preview renderer.
+  // Every destination passes through openArtifact and its existing history/render pipeline.
+  const previous = document.createElement("button");
+  const next = document.createElement("button");
+  for (const [button, label] of [[previous, "Previous preview"], [next, "Next preview"]] as const) {
+    button.type = "button";
+    button.className = "artifactBrowserPreviewBack";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.textContent = button === previous ? "‹" : "›";
+  }
+  previewTitle.parentElement?.after(previous, next);
+  function sessionPreviews() {
+    const messages = document.querySelector("#messages");
+    if (!messages) return [];
+    const urls = Array.from(messages.querySelectorAll<HTMLElement>(".artifactPreview[data-artifact-path], .imageFrame > img"))
+      .map((element) => element instanceof HTMLImageElement ? element.currentSrc || element.src : element.dataset.artifactPath || "")
+      .filter((url) => { try { return new URL(url, location.href).pathname.startsWith("/api/artifacts/") || new URL(url, location.href).pathname.startsWith("/api/session-artifacts/"); } catch { return false; } });
+    return [...new Set(urls)];
+  }
+  function step(direction: number) {
+    const urls = sessionPreviews();
+    if (urls.length < 2 || !activeEntry) return;
+    const index = urls.findIndex((url) => new URL(url, location.href).pathname === new URL(artifactUrl(activeEntry!.path, activeEntry!.url), location.href).pathname);
+    if (index < 0) return;
+    openArtifact(urls[(index + direction + urls.length) % urls.length]);
+  }
+  previous.addEventListener("click", () => step(-1));
+  next.addEventListener("click", () => step(1));
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !panel.hidden && panel.dataset.filesScope === "artifacts" && panel.dataset.artifactView === "preview") {
-      event.preventDefault(); leavePreview();
+    if (panel.hidden || panel.dataset.filesScope !== "artifacts" || panel.dataset.artifactView !== "preview") return;
+    if (event.key === "Escape") {
+      event.preventDefault(); event.stopImmediatePropagation(); leavePreview();
+    } else if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !(event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable]"))) {
+      event.preventDefault(); step(event.key === "ArrowLeft" ? -1 : 1);
     }
-  });
+  }, true);
   panel.dataset.artifactView = "gallery";
   renderBreadcrumb();
   return { refresh, reset, panelOpened, historyView, restoreHistory, openArtifact };

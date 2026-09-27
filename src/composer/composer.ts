@@ -509,11 +509,11 @@ export function createComposer(options: {
         preview.tabIndex = 0;
         preview.setAttribute("role", "button");
         preview.setAttribute("aria-label", `Preview ${image.name}`);
-        preview.addEventListener("click", () => openImageOverlay(preview));
+        preview.addEventListener("click", () => openImageOverlay(preview, preview));
         preview.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            openImageOverlay(preview);
+            openImageOverlay(preview, preview);
           }
         });
       }

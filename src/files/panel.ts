@@ -36,7 +36,7 @@ export type FilesPanelController = {
   isOpen(): boolean;
   sessionChanged(): void;
   openFile(path: string): Promise<void>;
-  openArtifact(url: string): void;
+  openArtifact(url: string, opener?: HTMLElement): void;
 };
 
 export function initFilesPanel(options: {
@@ -350,9 +350,12 @@ export function initFilesPanel(options: {
     return "changed" as const;
   }
   updateTreeScope();
+  let previewOpener: HTMLElement | undefined;
   const handle = rightPanels.register({
     id: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000,
     canCloseOnEscape: () => treeScope !== "artifacts" || panel.dataset.artifactView !== "preview",
+    focusOnClose: () => previewOpener?.isConnected ? previewOpener : button,
+    onBeforeOpen: () => { if (!previewOpener?.isConnected) previewOpener = undefined; },
     onOpen: () => {
       artifactBrowser.panelOpened();
       const sessionResult = sessionChanged();
@@ -437,7 +440,10 @@ export function initFilesPanel(options: {
   artifactsScopeButton.addEventListener("click", () => setTreeScope("artifacts"));
   refreshButton.addEventListener("click", refresh); saveButton.addEventListener("click", () => void save()); backButton.addEventListener("click", showWorkspaceTree);
   window.addEventListener("popstate", (event) => {
-    if (panel.hidden) return;
+    if (panel.hidden) {
+      if (previewOpener?.isConnected) requestAnimationFrame(() => { if (panel.hidden) previewOpener?.focus({ preventScroll: true }); });
+      return;
+    }
     const artifactView = artifactBrowser.historyView(event.state);
     if (artifactView === "inactive") {
       setTreeScope("workspace");
@@ -455,8 +461,9 @@ export function initFilesPanel(options: {
     else if (workspaceMobileView === "editor") setWorkspaceMobileView("tree");
   });
   window.addEventListener("beforeunload", (event) => { if ([...documents.values()].some(dirty)) event.preventDefault(); });
-  function openArtifact(url: string) {
+  function openArtifact(url: string, opener?: HTMLElement) {
     const panelWasOpen = handle.isOpen();
+    if (!panelWasOpen) previewOpener = opener || (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
     const origin = panelWasOpen && treeScope === "artifacts" ? "current" : "inactive";
     handle.open();
     setTreeScope("artifacts");

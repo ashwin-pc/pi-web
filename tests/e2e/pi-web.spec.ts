@@ -1922,7 +1922,7 @@ test.describe("image rendering", () => {
     await expect(frame.locator('[title="Open in new tab"]')).toBeVisible();
   });
 
-  test("fullscreen button opens overlay with image", async ({ page }) => {
+  test("fullscreen button opens shared preview with image", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
@@ -1931,12 +1931,12 @@ test.describe("image rendering", () => {
     await frame.hover();
     await frame.locator('[title="Fullscreen"]').click();
 
-    const overlay = page.locator(".imageOverlay");
-    await expect(overlay).toBeVisible();
-    await expect(overlay.locator("img")).toBeVisible();
+    const preview = page.locator("#artifactBrowserPreview");
+    await expect(preview).toBeVisible();
+    await expect(preview.locator(".artifactBrowserPreviewBody--image img")).toBeVisible();
   });
 
-  test("overlay closes when clicked", async ({ page }) => {
+  test("shared image preview closes with its back control", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
@@ -1945,10 +1945,10 @@ test.describe("image rendering", () => {
     await frame.hover();
     await frame.locator('[title="Fullscreen"]').click();
 
-    const overlay = page.locator(".imageOverlay");
-    await expect(overlay).toBeVisible();
-    await overlay.click();
-    await expect(overlay).toHaveCount(0);
+    const preview = page.locator("#artifactBrowserPreview");
+    await expect(preview).toBeVisible();
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await expect(preview).toBeHidden();
   });
 
   test("closing the image viewer restores focus to its opener", async ({ page }) => {
@@ -1959,9 +1959,9 @@ test.describe("image rendering", () => {
     await frame.hover();
     const button = frame.locator("[title='Fullscreen']");
     await button.click();
-    await expect(page.locator(".imageOverlay")).toBeFocused();
+    await expect(page.locator("#artifactBrowserPreviewBack")).toBeFocused();
     await page.keyboard.press("Escape");
-    await expect(page.locator(".imageOverlay")).toHaveCount(0);
+    await expect(page.locator("#artifactBrowserPreview")).toBeHidden();
     await expect(button).toBeFocused();
   });
 

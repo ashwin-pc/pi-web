@@ -6,8 +6,17 @@ function imageActionIcon(name: "download" | "external-link" | "maximize-2") {
   return createElement(icon, { "aria-hidden": "true" });
 }
 
-export function openImageOverlay(img: HTMLImageElement, opener?: HTMLElement) {
-  if (!img.currentSrc && !img.src) return;
+let openArtifactImage: ((url: string, opener: HTMLElement) => void) | undefined;
+export function configureImageArtifactOpener(open: (url: string, opener: HTMLElement) => void) { openArtifactImage = open; }
+
+export function openImageOverlay(img: HTMLImageElement, opener: HTMLElement = img) {
+  const source = img.currentSrc || img.src;
+  if (!source) return;
+  // Artifact images use the same panel, renderer and history as every other artifact.
+  if (img.closest("#messages") && /^\/api\/(?:session-)?artifacts\//.test(new URL(source, location.href).pathname) && openArtifactImage) {
+    openArtifactImage(source, opener);
+    return;
+  }
   // Only images in the current session participate; composer previews remain standalone.
   const session = img.closest("#messages");
   const images = session ? Array.from(session.querySelectorAll<HTMLImageElement>(".imageFrame > img")) : [img];
@@ -38,11 +47,11 @@ export function openImageOverlay(img: HTMLImageElement, opener?: HTMLElement) {
   };
   const close = () => {
     overlay.remove();
-    document.removeEventListener("keydown", onKeyDown);
+    document.removeEventListener("keydown", onKeyDown, true);
     if (opener?.isConnected) opener.focus();
   };
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "Escape") close();
+    if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); close(); }
     else if (event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
     else if (event.key === "ArrowRight") { event.preventDefault(); step(1); }
   };
@@ -118,17 +127,21 @@ export function openImageOverlay(img: HTMLImageElement, opener?: HTMLElement) {
     }
   });
   let dragging = false;
+  let dragStartX = 0;
+  let dragStartY = 0;
   overlay.addEventListener("pointerdown", (event) => {
     if (event.pointerType === "mouse") suppressClick = false;
     if (event.pointerType !== "mouse" || event.button !== 0 || scale <= 1 || event.target !== full) return;
     dragging = true;
+    dragStartX = event.clientX;
+    dragStartY = event.clientY;
     lastX = event.clientX;
     lastY = event.clientY;
     full.setPointerCapture(event.pointerId);
   });
   overlay.addEventListener("pointermove", (event) => {
     if (!dragging) return;
-    if (Math.abs(event.clientX - lastX) + Math.abs(event.clientY - lastY) > 2) suppressClick = true;
+    if (Math.hypot(event.clientX - dragStartX, event.clientY - dragStartY) > 2) suppressClick = true;
     panX += event.clientX - lastX;
     panY += event.clientY - lastY;
     lastX = event.clientX;
@@ -141,7 +154,7 @@ export function openImageOverlay(img: HTMLImageElement, opener?: HTMLElement) {
     if (suppressClick) { suppressClick = false; return; }
     if (event.target === overlay || event.target === full) close();
   });
-  document.addEventListener("keydown", onKeyDown);
+  document.addEventListener("keydown", onKeyDown, true);
   show();
   document.body.append(overlay);
   overlay.focus();

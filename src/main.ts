@@ -53,6 +53,7 @@ import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/art
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
+import { configureImageArtifactOpener } from "./components/imageActions.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createSessionDraftStore } from "./drafts/sessionDraftStore.js";
@@ -917,6 +918,7 @@ filesPanel = initFilesPanel({
   onError: showSystemError,
 });
 configureArtifactPanelOpener((url) => filesPanel.openArtifact(url));
+configureImageArtifactOpener((url, opener) => filesPanel.openArtifact(url, opener));
 gitPanel = initGitPanel({
   button: elements.gitButton,
   panel: elements.gitPanel,
