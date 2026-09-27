@@ -453,7 +453,7 @@ export function initFilesPanel(options: {
       setTreeScope("workspace");
       return;
     }
-    if (artifactView === "gallery" || artifactView === "preview") {
+    if (artifactView === "gallery" || artifactView === "preview" || artifactView === "image") {
       scopeLoaded.artifacts = true;
       setTreeScope("artifacts");
       artifactBrowser.restoreHistory(event.state);

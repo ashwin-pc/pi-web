@@ -1624,7 +1624,7 @@ test.describe("image rendering", () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
-    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n```ts\nconst preview = true;\n```\n");
+    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n[Open HTML](/api/artifacts/preview.html)\n\n[External docs](https://example.com/)\n\n```ts\nconst preview = true;\n```\n");
     await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
     await ensurePreviewArtifact();
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
@@ -2007,6 +2007,15 @@ test.describe("image rendering", () => {
     const previous = page.getByRole("button", { name: "Previous preview" });
     await next.click();
     await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    await page.locator("#filesCloseButton").focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("report.md"); // outside preview focus
+    expect(await page.locator("#prompt").evaluate((input) => {
+      const key = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+      input.dispatchEvent(key);
+      return key.defaultPrevented;
+    })).toBe(false); // composer retains native cursor movement, even behind a mobile pane
+    await next.focus();
     await page.keyboard.press("ArrowRight");
     const htmlFrame = page.locator("#artifactBrowserPreviewBody iframe");
     await expect(htmlFrame).toHaveAttribute("sandbox", "allow-scripts");
@@ -2045,8 +2054,32 @@ test.describe("image rendering", () => {
     await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
     await page.getByRole("button", { name: "Next preview" }).click();
     await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    await page.goBack();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
     await page.getByRole("button", { name: "Previous preview" }).click();
     await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
+  });
+
+  test("Markdown preview artifact links navigate the panel without recursive cards or hijacking other links", async ({ page }) => {
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await page.locator(".artifactPreview--markdown").getByRole("button", { name: "Open in Artifacts panel" }).click();
+    const body = page.locator("#artifactBrowserPreviewBody");
+    await expect(body.locator("h1")).toHaveText("Artifact report");
+    await expect(body.locator(".artifactPreview")).toHaveCount(0);
+    await expect(body.getByRole("link", { name: "External docs" })).toHaveAttribute("href", "https://example.com/");
+    const link = body.getByRole("link", { name: "Open HTML" });
+    await link.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("report.md");
+    await link.click();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview.html");
+    await expect(body.locator("iframe")).toHaveAttribute("sandbox", "allow-scripts");
+    await page.goBack();
+    await expect(body.locator("h1")).toHaveText("Artifact report");
+    await expect(body.locator(".artifactPreview")).toHaveCount(0);
   });
 
   test("Escape closes only the topmost layer and restores the image opener", async ({ page }) => {

@@ -596,6 +596,16 @@ export function initArtifactBrowser(options: {
 
   galleryBack.addEventListener("click", () => { if (currentDirectory !== artifactRootPath) void loadDirectory(parentArtifactPath(currentDirectory)); });
   previewBack.addEventListener("click", leavePreview);
+  // Markdown links keep their ordinary renderer and DOM; file links simply
+  // navigate this panel. Do not recursively embed artifact preview cards here.
+  previewBody.addEventListener("click", (event) => {
+    if (panel.hidden || !previewBody.classList.contains("artifactBrowserPreviewBody--markdown") || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+    const link = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>("a[href]") : null;
+    if (!link || link.hasAttribute("download")) return;
+    const url = new URL(link.href, location.href);
+    if (url.origin !== location.origin || !/^\/api\/(?:session-)?artifacts\//.test(url.pathname)) return;
+    if (openArtifact(url.href)) event.preventDefault();
+  });
   // Navigation is based on the live session DOM, not a second preview renderer.
   // Every destination passes through openArtifact and its existing history/render pipeline.
   const previous = document.createElement("button");
@@ -633,11 +643,12 @@ export function initArtifactBrowser(options: {
   }
   previous.addEventListener("click", () => step(-1));
   next.addEventListener("click", () => step(1));
-  document.addEventListener("keydown", (event) => {
-    if (panel.hidden || panel.dataset.filesScope !== "artifacts" || panel.dataset.artifactView !== "preview" || event.defaultPrevented) return;
+  // Only navigation focus owns the arrow shortcuts. Other controls, links,
+  // documents, and the composer retain their native keyboard behavior.
+  preview.addEventListener("keydown", (event) => {
+    if (panel.hidden || panel.dataset.artifactView !== "preview" || event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
-    if (document.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return;
-    if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable], video, audio")) return;
+    if (event.target !== preview && event.target !== previewBack && event.target !== previous && event.target !== next) return;
     event.preventDefault(); step(event.key === "ArrowLeft" ? -1 : 1);
   });
   panel.dataset.artifactView = "gallery";
