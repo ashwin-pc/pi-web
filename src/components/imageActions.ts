@@ -1,163 +1,22 @@
-import { createElement, ChevronLeft, ChevronRight, Download, ExternalLink, Maximize2 } from "lucide";
+import { createElement, Download, ExternalLink, Maximize2 } from "lucide";
 
-function imageActionIcon(name: "download" | "external-link" | "maximize-2") {
-  const icons = { Download, ExternalLink, Maximize2 } as const;
-  const icon = name === "download" ? icons.Download : name === "external-link" ? icons.ExternalLink : icons.Maximize2;
-  return createElement(icon, { "aria-hidden": "true" });
+// Image actions delegate presentation and lifecycle to the shared files panel.
+// The source remains the original image URL (including authenticated and blob URLs).
+let openImage: ((source: string, name: string, opener: HTMLElement) => void) | undefined;
+export function configureImagePreviewOpener(open: (source: string, name: string, opener: HTMLElement) => void) { openImage = open; }
+
+export function openImagePreview(img: HTMLImageElement, opener: HTMLElement = img) {
+  const source = img.currentSrc || img.src;
+  if (source) openImage?.(source, img.alt || "Image", opener);
 }
 
-let openArtifactImage: ((url: string, opener: HTMLElement) => void) | undefined;
-export function configureImageArtifactOpener(open: (url: string, opener: HTMLElement) => void) { openArtifactImage = open; }
-
-export function openImageOverlay(img: HTMLImageElement, opener: HTMLElement = img) {
-  const source = img.currentSrc || img.src;
-  if (!source) return;
-  // Artifact images use the same panel, renderer and history as every other artifact.
-  if (img.closest("#messages") && /^\/api\/(?:session-)?artifacts\//.test(new URL(source, location.href).pathname) && openArtifactImage) {
-    openArtifactImage(source, opener);
-    return;
+// The toolbar is visibility:hidden until its frame is focused. Reveal it by
+// focusing the tabbable image before the panel manager restores its button.
+export function revealImageOpener(opener: HTMLElement) {
+  if (getComputedStyle(opener).visibility === "hidden") {
+    opener.closest(".imageFrame")?.querySelector<HTMLElement>("img[tabindex]")?.focus({ preventScroll: true });
   }
-  // Only images in the current session participate; composer previews remain standalone.
-  const session = img.closest("#messages");
-  const images = session ? Array.from(session.querySelectorAll<HTMLImageElement>(".imageFrame > img")) : [img];
-  let index = Math.max(0, images.indexOf(img));
-  let scale = 1;
-  let panX = 0;
-  let panY = 0;
-  const overlay = document.createElement("div");
-  overlay.className = "imageOverlay";
-  overlay.setAttribute("role", "dialog");
-  overlay.setAttribute("aria-label", "Image viewer");
-  overlay.tabIndex = -1;
-  const full = document.createElement("img");
-  full.alt = img.alt || "image";
-  full.draggable = false;
-  const show = () => {
-    const selected = images[index];
-    full.src = selected.currentSrc || selected.src;
-    full.alt = selected.alt || "image";
-    scale = 1;
-    panX = panY = 0;
-    full.style.transform = "";
-  };
-  const step = (direction: number) => {
-    if (images.length < 2) return;
-    index = (index + direction + images.length) % images.length;
-    show();
-  };
-  const close = () => {
-    overlay.remove();
-    document.removeEventListener("keydown", onKeyDown, true);
-    if (opener?.isConnected) opener.focus();
-  };
-  const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === "Escape") { event.preventDefault(); event.stopImmediatePropagation(); close(); }
-    else if (event.key === "ArrowLeft") { event.preventDefault(); step(-1); }
-    else if (event.key === "ArrowRight") { event.preventDefault(); step(1); }
-  };
-  overlay.append(full);
-  if (images.length > 1) {
-    for (const [direction, label] of [[-1, "Previous image"], [1, "Next image"]] as const) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `imageOverlayNav ${direction < 0 ? "previous" : "next"}`;
-      button.setAttribute("aria-label", label);
-      button.append(createElement(direction < 0 ? ChevronLeft : ChevronRight, { "aria-hidden": "true" }));
-      button.addEventListener("click", () => step(direction));
-      overlay.append(button);
-    }
-  }
-  let startX = 0;
-  let startY = 0;
-  let lastX = 0;
-  let lastY = 0;
-  let pinchDistance = 0;
-  let pinchScale = 1;
-  let pinched = false;
-  let suppressClick = false;
-  const transform = () => {
-    const maxX = Math.max(0, (full.clientWidth * scale - overlay.clientWidth) / 2);
-    const maxY = Math.max(0, (full.clientHeight * scale - overlay.clientHeight) / 2);
-    panX = Math.max(-maxX, Math.min(maxX, panX));
-    panY = Math.max(-maxY, Math.min(maxY, panY));
-    full.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
-  };
-  overlay.addEventListener("touchstart", (event) => {
-    if (event.touches.length === 2) {
-      pinched = true;
-      suppressClick = true;
-      pinchDistance = Math.hypot(event.touches[0].clientX - event.touches[1].clientX, event.touches[0].clientY - event.touches[1].clientY);
-      pinchScale = scale;
-    } else if (event.touches.length === 1) {
-      pinched = false;
-      suppressClick = false;
-      startX = lastX = event.touches[0].clientX;
-      startY = lastY = event.touches[0].clientY;
-    }
-  }, { passive: true });
-  overlay.addEventListener("touchmove", (event) => {
-    if (event.touches.length === 2 && pinchDistance) {
-      event.preventDefault();
-      const distance = Math.hypot(event.touches[0].clientX - event.touches[1].clientX, event.touches[0].clientY - event.touches[1].clientY);
-      scale = Math.max(1, Math.min(6, pinchScale * distance / pinchDistance));
-      transform();
-    } else if (event.touches.length === 1 && scale > 1 && !pinchDistance) {
-      event.preventDefault();
-      panX += event.touches[0].clientX - lastX;
-      panY += event.touches[0].clientY - lastY;
-      lastX = event.touches[0].clientX;
-      lastY = event.touches[0].clientY;
-      transform();
-    }
-  }, { passive: false });
-  overlay.addEventListener("touchend", (event) => {
-    if (event.touches.length === 0 && !pinched && !pinchDistance && scale === 1 && event.changedTouches.length === 1) {
-      const dx = event.changedTouches[0].clientX - startX;
-      const dy = event.changedTouches[0].clientY - startY;
-      if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-        event.preventDefault();
-        suppressClick = true;
-        step(dx < 0 ? 1 : -1);
-      }
-    }
-    if (event.touches.length < 2) pinchDistance = 0;
-    if (event.touches.length === 1) {
-      lastX = event.touches[0].clientX;
-      lastY = event.touches[0].clientY;
-    }
-  });
-  let dragging = false;
-  let dragStartX = 0;
-  let dragStartY = 0;
-  overlay.addEventListener("pointerdown", (event) => {
-    if (event.pointerType === "mouse") suppressClick = false;
-    if (event.pointerType !== "mouse" || event.button !== 0 || scale <= 1 || event.target !== full) return;
-    dragging = true;
-    dragStartX = event.clientX;
-    dragStartY = event.clientY;
-    lastX = event.clientX;
-    lastY = event.clientY;
-    full.setPointerCapture(event.pointerId);
-  });
-  overlay.addEventListener("pointermove", (event) => {
-    if (!dragging) return;
-    if (Math.hypot(event.clientX - dragStartX, event.clientY - dragStartY) > 2) suppressClick = true;
-    panX += event.clientX - lastX;
-    panY += event.clientY - lastY;
-    lastX = event.clientX;
-    lastY = event.clientY;
-    transform();
-  });
-  overlay.addEventListener("pointerup", () => { dragging = false; });
-  overlay.addEventListener("pointercancel", () => { dragging = false; });
-  overlay.addEventListener("click", (event) => {
-    if (suppressClick) { suppressClick = false; return; }
-    if (event.target === overlay || event.target === full) close();
-  });
-  document.addEventListener("keydown", onKeyDown, true);
-  show();
-  document.body.append(overlay);
-  overlay.focus();
+  return opener;
 }
 
 export function attachImageActions(img: HTMLImageElement) {
@@ -165,21 +24,20 @@ export function attachImageActions(img: HTMLImageElement) {
 
   const frame = document.createElement("span");
   frame.className = "imageFrame";
-
   const toolbar = document.createElement("span");
   toolbar.className = "imageActions";
 
   const fullScreen = document.createElement("button");
   fullScreen.type = "button";
   fullScreen.className = "imageAction";
-  fullScreen.title = "Fullscreen";
-  fullScreen.setAttribute("aria-label", fullScreen.title);
-  fullScreen.append(imageActionIcon("maximize-2"));
-  fullScreen.addEventListener("click", () => openImageOverlay(img, fullScreen));
+  fullScreen.title = "Preview";
+  fullScreen.setAttribute("aria-label", "Preview image");
+  fullScreen.append(createElement(Maximize2, { "aria-hidden": "true" }));
+  fullScreen.addEventListener("click", () => openImagePreview(img, fullScreen));
   img.tabIndex = 0;
-  img.addEventListener("click", () => openImageOverlay(img, img));
+  img.addEventListener("click", () => openImagePreview(img));
   img.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImageOverlay(img, img); }
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImagePreview(img); }
   });
 
   const download = document.createElement("a");
@@ -188,18 +46,18 @@ export function attachImageActions(img: HTMLImageElement) {
   download.setAttribute("aria-label", download.title);
   download.href = img.currentSrc || img.src;
   download.download = img.alt || "image";
-  download.append(imageActionIcon("download"));
+  download.append(createElement(Download, { "aria-hidden": "true" }));
 
-  const open = document.createElement("a");
-  open.className = "imageAction";
-  open.title = "Open in new tab";
-  open.setAttribute("aria-label", open.title);
-  open.href = img.currentSrc || img.src;
-  open.target = "_blank";
-  open.rel = "noopener noreferrer";
-  open.append(imageActionIcon("external-link"));
+  const external = document.createElement("a");
+  external.className = "imageAction";
+  external.title = "Open in new tab";
+  external.setAttribute("aria-label", external.title);
+  external.href = img.currentSrc || img.src;
+  external.target = "_blank";
+  external.rel = "noopener noreferrer";
+  external.append(createElement(ExternalLink, { "aria-hidden": "true" }));
 
-  toolbar.append(fullScreen, download, open);
+  toolbar.append(fullScreen, download, external);
   img.before(frame);
   frame.append(img, toolbar);
 }

@@ -6,7 +6,7 @@ import { activeSessionState, sessionRuntime, type SessionStateController } from 
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { recordDebugEvent } from "../app/debugDiagnostics.js";
-import { openImageOverlay } from "../components/imageActions.js";
+import { openImagePreview } from "../components/imageActions.js";
 import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
 import type { QuoteRepliesController, QuoteReplySubmission } from "../quotes/quoteReplies.js";
@@ -509,11 +509,11 @@ export function createComposer(options: {
         preview.tabIndex = 0;
         preview.setAttribute("role", "button");
         preview.setAttribute("aria-label", `Preview ${image.name}`);
-        preview.addEventListener("click", () => openImageOverlay(preview, preview));
+        preview.addEventListener("click", () => openImagePreview(preview, preview));
         preview.addEventListener("keydown", (event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
-            openImageOverlay(preview, preview);
+            openImagePreview(preview, preview);
           }
         });
       }

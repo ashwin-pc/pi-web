@@ -1,8 +1,11 @@
 import { renderStandaloneMarkdown } from "../markdown/render.js";
 import { mountArtifactPreview } from "../extensions/artifactPreviews.js";
+import { mountImagePreview } from "./imagePreview.js";
 
 type ArtifactEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number; url?: string };
-type ArtifactKind = "image" | "html" | "markdown" | "video" | "pdf" | "file";
+// Transient view state only: src is the original DOM URL, never a virtual file.
+type StandaloneImage = { kind: "standalone"; src: string; name: string };
+type ArtifactKind = "image" | "html" | "markdown" | "video" | "audio" | "pdf" | "file";
 
 export const artifactRootPath = ".pi/web/artifacts";
 const artifactHistoryStateKey = "piWebArtifactView";
@@ -11,7 +14,8 @@ type ArtifactHistoryState =
   // The files panel was open in another scope before this artifact preview.
   | { view: "inactive" }
   | { view: "gallery"; directory: string }
-  | { view: "preview"; entry: ArtifactEntry };
+  | { view: "preview"; entry: ArtifactEntry }
+  | { view: "image"; image: StandaloneImage };
 
 type ArtifactPreviewNavigation = {
   history: "push" | "replace";
@@ -31,21 +35,27 @@ function artifactKind(path: string): ArtifactKind {
   if (/\.(?:html?|xhtml)$/.test(lower)) return "html";
   if (/\.(?:md|markdown)$/.test(lower)) return "markdown";
   if (/\.(?:mp4|webm|mov|ogv)$/.test(lower)) return "video";
+  if (/\.(?:mp3|m4a|wav|ogg|opus|flac)$/.test(lower)) return "audio";
   if (lower.endsWith(".pdf")) return "pdf";
   return "file";
 }
 
 function artifactKindLabel(kind: ArtifactKind) {
-  return ({ image: "Image", html: "Interactive HTML", markdown: "Markdown", video: "Video", pdf: "PDF", file: "File" } as const)[kind];
+  return ({ image: "Image", html: "Interactive HTML", markdown: "Markdown", video: "Video", audio: "Audio", pdf: "PDF", file: "File" } as const)[kind];
 }
 
-function videoMimeType(path: string) {
+function mediaMimeType(path: string) {
   const lower = path.toLowerCase();
   if (lower.endsWith(".mp4")) return "video/mp4";
   if (lower.endsWith(".webm")) return "video/webm";
   if (lower.endsWith(".mov")) return "video/quicktime";
   if (lower.endsWith(".ogv")) return "video/ogg";
-  return "video/*";
+  if (lower.endsWith(".mp3")) return "audio/mpeg";
+  if (lower.endsWith(".m4a")) return "audio/mp4";
+  if (lower.endsWith(".wav")) return "audio/wav";
+  if (lower.endsWith(".ogg") || lower.endsWith(".opus")) return "audio/ogg";
+  if (lower.endsWith(".flac")) return "audio/flac";
+  return "application/octet-stream";
 }
 
 function formatFileSize(size?: number) {
@@ -83,9 +93,12 @@ export type ArtifactBrowserController = {
   refresh(): void;
   reset(): void;
   panelOpened(): void;
+  panelClosed(): void;
+  leavePreview(): boolean;
   historyView(state: unknown): ArtifactHistoryState["view"] | undefined;
   restoreHistory(state: unknown): void;
   openArtifact(url: string, navigation?: ArtifactPreviewNavigation): boolean;
+  openImage(source: string, name: string, navigation?: ArtifactPreviewNavigation): void;
 };
 
 export function initArtifactBrowser(options: {
@@ -111,6 +124,12 @@ export function initArtifactBrowser(options: {
   let currentDirectory = artifactRootPath;
   let renderedGalleryDirectory: string | undefined;
   let activeEntry: ArtifactEntry | undefined;
+  let activeImage: StandaloneImage | undefined;
+  let disposeImage: (() => void) | undefined;
+  function stopPreviewMedia() {
+    disposeImage?.(); disposeImage = undefined;
+    previewBody.querySelectorAll("video, audio").forEach((media) => { if (media instanceof HTMLMediaElement) media.pause(); });
+  }
   let loadGeneration = 0;
   let previewGeneration = 0;
   // A retained preview can outlive the panel history entry that opened it.
@@ -125,6 +144,11 @@ export function initArtifactBrowser(options: {
     if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return undefined;
     const record = candidate as Record<string, unknown>;
     if (record.view === "inactive") return { view: "inactive" };
+    if (record.view === "image") {
+      const image = record.image as Partial<StandaloneImage> | undefined;
+      if (image?.kind === "standalone" && typeof image.src === "string" && typeof image.name === "string" && image.src.length < 2_000_000 && /^(?:blob:|data:image\/|https?:)/.test(image.src)) return { view: "image", image: { kind: "standalone", src: image.src, name: image.name } };
+      return undefined;
+    }
     if (record.view === "gallery") {
       const directory = typeof record.directory === "string" && isArtifactPath(record.directory, true) ? record.directory : artifactRootPath;
       return { view: "gallery", directory };
@@ -140,13 +164,14 @@ export function initArtifactBrowser(options: {
   }
 
   function currentArtifactHistory(): ArtifactHistoryState {
-    return panel.dataset.artifactView === "preview" && activeEntry
-      ? { view: "preview", entry: activeEntry }
-      : { view: "gallery", directory: currentDirectory };
+    if (panel.dataset.artifactView === "preview") {
+      if (activeImage) return { view: "image", image: activeImage };
+      if (activeEntry) return { view: "preview", entry: activeEntry };
+    }
+    return { view: "gallery", directory: currentDirectory };
   }
 
-  function updateArtifactPreviewHistory(entry: ArtifactEntry, navigation: ArtifactPreviewNavigation) {
-    const previewState = { view: "preview", entry } satisfies ArtifactHistoryState;
+  function updateArtifactPreviewHistory(previewState: ArtifactHistoryState, navigation: ArtifactPreviewNavigation) {
     if (navigation.history === "replace") {
       // The shared panel manager already pushed an entry when it opened a closed
       // panel. Reuse that entry so its predecessor remains the closed layout.
@@ -310,6 +335,8 @@ export function initArtifactBrowser(options: {
     currentDirectory = path;
     renderedGalleryDirectory = path;
     activeEntry = undefined;
+    activeImage = undefined;
+    stopPreviewMedia();
     previewOwnsHistoryEntry = false;
     panel.dataset.artifactView = "gallery";
     const generation = ++loadGeneration;
@@ -356,12 +383,22 @@ export function initArtifactBrowser(options: {
 
   async function renderTextPreview(entry: ArtifactEntry, kind: ArtifactKind, generation: number) {
     try {
-      const data = await responseJson(await fetch(`/api/files/read?${query(entry.path)}`, { headers: apiHeaders() }));
+      // A session artifact URL is the provenance of the file; do not silently
+      // substitute a same-named file in the currently selected workspace.
+      let text: string;
+      if (entry.url) {
+        const response = await fetch(entry.url, { headers: apiHeaders() });
+        if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+        text = await response.text();
+      } else {
+        const data = await responseJson(await fetch(`/api/files/read?${query(entry.path)}`, { headers: apiHeaders() }));
+        text = String(data.content || "");
+      }
       if (generation !== previewGeneration || activeEntry?.path !== entry.path) return;
       previewBody.className = `artifactBrowserPreviewBody artifactBrowserPreviewBody--${kind}`;
       previewBody.textContent = "";
-      if (kind === "markdown") renderStandaloneMarkdown(previewBody, String(data.content || ""));
-      else { const pre = document.createElement("pre"); pre.textContent = String(data.content || ""); previewBody.append(pre); }
+      if (kind === "markdown") renderStandaloneMarkdown(previewBody, text);
+      else { const pre = document.createElement("pre"); pre.textContent = text; previewBody.append(pre); }
     } catch (error) {
       if (generation !== previewGeneration) return;
       renderPreviewError(error instanceof Error ? error.message : String(error));
@@ -369,6 +406,7 @@ export function initArtifactBrowser(options: {
   }
 
   function renderPreview(entry: ArtifactEntry) {
+    stopPreviewMedia();
     const generation = ++previewGeneration;
     const kind = artifactKind(entry.path);
     const url = artifactUrl(entry.path, entry.url);
@@ -380,18 +418,19 @@ export function initArtifactBrowser(options: {
     renderPreviewLoading();
     if (kind === "image") {
       previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--image"; previewBody.textContent = "";
-      const image = document.createElement("img"); image.alt = entry.name; image.src = url;
-      image.addEventListener("error", () => { if (generation === previewGeneration) renderPreviewError("The image could not be loaded."); }, { once: true });
-      previewBody.append(image); return;
+      disposeImage = mountImagePreview(previewBody, url, entry.name, step, () => { if (generation === previewGeneration) renderPreviewError("The image could not be loaded."); });
+      return;
     }
     if (kind === "html") {
       previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--html"; previewBody.textContent = "";
       const frame = document.createElement("iframe"); frame.src = url; frame.title = `Interactive preview of ${entry.name}`; frame.setAttribute("sandbox", "allow-scripts"); previewBody.append(frame); return;
     }
-    if (kind === "video") {
-      previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--video"; previewBody.textContent = "";
-      const video = document.createElement("video"); video.controls = true; video.playsInline = true; video.preload = "metadata";
-      const source = document.createElement("source"); source.src = url; source.type = videoMimeType(entry.path); video.append(source); previewBody.append(video); return;
+    if (kind === "video" || kind === "audio") {
+      previewBody.className = `artifactBrowserPreviewBody artifactBrowserPreviewBody--${kind}`; previewBody.textContent = "";
+      const media = document.createElement(kind); media.controls = true; media.preload = "metadata";
+      if (media instanceof HTMLVideoElement) media.playsInline = true;
+      const source = document.createElement("source"); source.src = url; source.type = mediaMimeType(entry.path);
+      media.append(source); previewBody.append(media); return;
     }
     if (kind === "pdf") {
       previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--pdf"; previewBody.textContent = "";
@@ -413,24 +452,49 @@ export function initArtifactBrowser(options: {
     void renderTextPreview(entry, kind, generation);
   }
 
+  function showImage(image: StandaloneImage, navigation: ArtifactPreviewNavigation | false = { history: "push", origin: "current" }) {
+    if (navigation && !panel.hidden) updateArtifactPreviewHistory({ view: "image", image }, navigation);
+    activeEntry = undefined;
+    activeImage = image;
+    previewOwnsHistoryEntry = Boolean(navigation);
+    panel.dataset.artifactView = "preview";
+    const generation = ++previewGeneration;
+    stopPreviewMedia();
+    preview.dataset.artifactKind = "image";
+    previewTitle.textContent = image.name;
+    previewOpen.href = image.src;
+    previewDownload.href = image.src;
+    previewDownload.download = image.name;
+    disposeImage = mountImagePreview(previewBody, image.src, image.name, step, () => { if (generation === previewGeneration) renderPreviewError("The image could not be loaded."); });
+    requestAnimationFrame(() => { if (!panel.hidden && panel.dataset.artifactView === "preview") previewBack.focus(); });
+  }
+
+  function openImage(source: string, name: string, navigation: ArtifactPreviewNavigation = { history: "push", origin: "current" }) {
+    showImage({ kind: "standalone", src: source, name }, navigation);
+  }
+
   function showPreview(entry: ArtifactEntry, navigation: ArtifactPreviewNavigation | false = { history: "push", origin: "current" }) {
-    if (navigation && !panel.hidden) updateArtifactPreviewHistory(entry, navigation);
+    if (navigation && !panel.hidden) updateArtifactPreviewHistory({ view: "preview", entry }, navigation);
+    activeImage = undefined;
     activeEntry = entry;
     previewOwnsHistoryEntry = Boolean(navigation);
     panel.dataset.artifactView = "preview";
     renderPreview(entry);
-    requestAnimationFrame(() => previewBack.focus());
+    requestAnimationFrame(() => { if (!panel.hidden && panel.dataset.artifactView === "preview") previewBack.focus(); });
   }
 
   function showGallery() {
     const previousPath = activeEntry?.path;
     activeEntry = undefined;
+    activeImage = undefined;
+    stopPreviewMedia();
     previewOwnsHistoryEntry = false;
     ++previewGeneration;
     panel.dataset.artifactView = "gallery";
     previewBody.className = "artifactBrowserPreviewBody";
     previewBody.textContent = "";
     if (previousPath) requestAnimationFrame(() => {
+      if (panel.hidden || panel.dataset.artifactView !== "gallery") return;
       for (const card of tree.querySelectorAll<HTMLElement>(".artifactGalleryCard")) {
         if (card.dataset.artifactPath === previousPath) { card.querySelector<HTMLButtonElement>(".artifactGalleryCardOpen")?.focus(); break; }
       }
@@ -469,6 +533,7 @@ export function initArtifactBrowser(options: {
 
   function reset() {
     ++loadGeneration; ++previewGeneration; clearDeferredPreviews();
+    stopPreviewMedia(); activeImage = undefined;
     directoryScrollPositions.clear();
     currentDirectory = artifactRootPath; renderedGalleryDirectory = undefined; activeEntry = undefined; previewOwnsHistoryEntry = false; panel.dataset.artifactView = "gallery";
     tree.className = "filesTree artifactGallery"; tree.textContent = ""; tree.removeAttribute("aria-busy");
@@ -480,21 +545,32 @@ export function initArtifactBrowser(options: {
     else showGallery();
   }
 
-  function leavePreview() {
+  function leavePreview(): boolean {
+    if (panel.hidden || panel.dataset.filesScope !== "artifacts" || panel.dataset.artifactView !== "preview") return false;
     const state = artifactHistoryState();
     // Use the same traversal as browser Back. Only a preview retained across a
     // manual panel close/reopen lacks a live navigation entry and needs fallback.
-    if (previewOwnsHistoryEntry && state?.view === "preview" && state.entry.path === activeEntry?.path) {
+    if (previewOwnsHistoryEntry && ((state?.view === "preview" && state.entry.path === activeEntry?.path) || (state?.view === "image" && state.image.src === activeImage?.src))) {
       previewOwnsHistoryEntry = false;
       history.back();
-      return;
+      return true;
     }
     showGalleryDirectory(currentDirectory);
     replaceArtifactHistory({ view: "gallery", directory: currentDirectory });
+    return true;
   }
 
   function panelOpened() {
-    if (panel.dataset.artifactView === "preview" && activeEntry) previewOwnsHistoryEntry = false;
+    if (panel.dataset.artifactView !== "preview") return;
+    previewOwnsHistoryEntry = false;
+    if (activeEntry) renderPreview(activeEntry);
+    else if (activeImage) showImage(activeImage, false);
+  }
+
+  function panelClosed() {
+    stopPreviewMedia();
+    ++previewGeneration;
+    previewBody.textContent = ""; // unload sandboxed frames and media while hidden
   }
 
   function historyView(state: unknown) {
@@ -504,6 +580,11 @@ export function initArtifactBrowser(options: {
   function restoreHistory(value: unknown) {
     const state = artifactHistoryState(value);
     if (!state || state.view === "inactive") return;
+    if (state.view === "image") {
+      showImage(state.image, false);
+      previewOwnsHistoryEntry = true;
+      return;
+    }
     if (state.view === "preview") {
       currentDirectory = parentArtifactPath(state.entry.path);
       showPreview(state.entry, false);
@@ -530,29 +611,36 @@ export function initArtifactBrowser(options: {
   function sessionPreviews() {
     const messages = document.querySelector("#messages");
     if (!messages) return [];
-    const urls = Array.from(messages.querySelectorAll<HTMLElement>(".artifactPreview[data-artifact-path], .imageFrame > img"))
-      .map((element) => element instanceof HTMLImageElement ? element.currentSrc || element.src : element.dataset.artifactPath || "")
-      .filter((url) => { try { return new URL(url, location.href).pathname.startsWith("/api/artifacts/") || new URL(url, location.href).pathname.startsWith("/api/session-artifacts/"); } catch { return false; } });
-    return [...new Set(urls)];
+    const items = Array.from(messages.querySelectorAll<HTMLElement>(".artifactPreview[data-artifact-path], .imageFrame > img, a[href^='/api/artifacts/'], a[href^='/api/session-artifacts/']"))
+      .map((element) => ({
+        url: element instanceof HTMLImageElement ? element.currentSrc || element.src : element instanceof HTMLAnchorElement ? element.getAttribute("href") || "" : element.dataset.artifactPath || "",
+        name: element instanceof HTMLImageElement ? element.alt || "Image" : element instanceof HTMLAnchorElement ? element.textContent?.trim() || "Artifact" : element.dataset.artifactName || "Artifact",
+      })).filter((item) => Boolean(item.url));
+    const key = (url: string) => {
+      const parsed = new URL(url, location.href);
+      return /^\/api\/(?:session-)?artifacts\//.test(parsed.pathname) ? parsed.pathname + parsed.search : url;
+    };
+    return [...new Map(items.map((item) => [key(item.url), item])).values()];
   }
   function step(direction: number) {
-    const urls = sessionPreviews();
-    if (urls.length < 2 || !activeEntry) return;
-    const index = urls.findIndex((url) => new URL(url, location.href).pathname === new URL(artifactUrl(activeEntry!.path, activeEntry!.url), location.href).pathname);
+    const items = sessionPreviews();
+    if (items.length < 2) return;
+    const current = activeImage?.src || (activeEntry ? artifactUrl(activeEntry.path, activeEntry.url) : "");
+    const index = items.findIndex((item) => item.url === current || (new URL(item.url, location.href).pathname.startsWith("/api/") && new URL(item.url, location.href).pathname === new URL(current, location.href).pathname));
     if (index < 0) return;
-    openArtifact(urls[(index + direction + urls.length) % urls.length]);
+    const item = items[(index + direction + items.length) % items.length];
+    if (!openArtifact(item.url)) openImage(item.url, item.name);
   }
   previous.addEventListener("click", () => step(-1));
   next.addEventListener("click", () => step(1));
   document.addEventListener("keydown", (event) => {
-    if (panel.hidden || panel.dataset.filesScope !== "artifacts" || panel.dataset.artifactView !== "preview") return;
-    if (event.key === "Escape") {
-      event.preventDefault(); event.stopImmediatePropagation(); leavePreview();
-    } else if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && !(event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable]"))) {
-      event.preventDefault(); step(event.key === "ArrowLeft" ? -1 : 1);
-    }
-  }, true);
+    if (panel.hidden || panel.dataset.filesScope !== "artifacts" || panel.dataset.artifactView !== "preview" || event.defaultPrevented) return;
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (document.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return;
+    if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable], video, audio")) return;
+    event.preventDefault(); step(event.key === "ArrowLeft" ? -1 : 1);
+  });
   panel.dataset.artifactView = "gallery";
   renderBreadcrumb();
-  return { refresh, reset, panelOpened, historyView, restoreHistory, openArtifact };
+  return { refresh, reset, panelOpened, panelClosed, leavePreview, historyView, restoreHistory, openArtifact, openImage };
 }

@@ -7,6 +7,7 @@ import { vscodeDark } from "@uiw/codemirror-theme-vscode/esm/dark.js";
 import type { RightPanelManager } from "../layout/rightPanel.js";
 import { iconElement } from "../app/icons.js";
 import { initArtifactBrowser } from "./artifactBrowser.js";
+import { revealImageOpener } from "../components/imageActions.js";
 
 type FileEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number };
 type TextDocumentState = { kind: "text"; path: string; revision: string; saved: string; view: EditorView; language: string; wrap: Compartment; host: HTMLElement };
@@ -37,6 +38,7 @@ export type FilesPanelController = {
   sessionChanged(): void;
   openFile(path: string): Promise<void>;
   openArtifact(url: string, opener?: HTMLElement): void;
+  openImage(source: string, name: string, opener?: HTMLElement): void;
 };
 
 export function initFilesPanel(options: {
@@ -353,8 +355,13 @@ export function initFilesPanel(options: {
   let previewOpener: HTMLElement | undefined;
   const handle = rightPanels.register({
     id: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000,
-    canCloseOnEscape: () => treeScope !== "artifacts" || panel.dataset.artifactView !== "preview",
-    focusOnClose: () => previewOpener?.isConnected ? previewOpener : button,
+    onEscape: () => artifactBrowser.leavePreview(),
+    onClose: () => { artifactBrowser.panelClosed(); queueMicrotask(() => { previewOpener = undefined; }); },
+    focusOnClose: () => {
+      const target = previewOpener?.isConnected && !previewOpener.closest("[hidden]") ? previewOpener : button;
+      previewOpener = undefined;
+      return target === button ? button : revealImageOpener(target);
+    },
     onBeforeOpen: () => { if (!previewOpener?.isConnected) previewOpener = undefined; },
     onOpen: () => {
       artifactBrowser.panelOpened();
@@ -440,10 +447,7 @@ export function initFilesPanel(options: {
   artifactsScopeButton.addEventListener("click", () => setTreeScope("artifacts"));
   refreshButton.addEventListener("click", refresh); saveButton.addEventListener("click", () => void save()); backButton.addEventListener("click", showWorkspaceTree);
   window.addEventListener("popstate", (event) => {
-    if (panel.hidden) {
-      if (previewOpener?.isConnected) requestAnimationFrame(() => { if (panel.hidden) previewOpener?.focus({ preventScroll: true }); });
-      return;
-    }
+    if (panel.hidden) return;
     const artifactView = artifactBrowser.historyView(event.state);
     if (artifactView === "inactive") {
       setTreeScope("workspace");
@@ -461,13 +465,19 @@ export function initFilesPanel(options: {
     else if (workspaceMobileView === "editor") setWorkspaceMobileView("tree");
   });
   window.addEventListener("beforeunload", (event) => { if ([...documents.values()].some(dirty)) event.preventDefault(); });
-  function openArtifact(url: string, opener?: HTMLElement) {
+  function openPreview(opener: HTMLElement | undefined, show: (navigation: { history: "push" | "replace"; origin: "current" | "inactive" }) => void) {
     const panelWasOpen = handle.isOpen();
     if (!panelWasOpen) previewOpener = opener || (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
     const origin = panelWasOpen && treeScope === "artifacts" ? "current" : "inactive";
     handle.open();
     setTreeScope("artifacts");
-    artifactBrowser.openArtifact(url, { history: panelWasOpen ? "push" : "replace", origin });
+    show({ history: panelWasOpen ? "push" : "replace", origin });
   }
-  return { isOpen: handle.isOpen, sessionChanged, openFile, openArtifact };
+  function openArtifact(url: string, opener?: HTMLElement) {
+    openPreview(opener, (navigation) => { artifactBrowser.openArtifact(url, navigation); });
+  }
+  function openImage(source: string, name: string, opener?: HTMLElement) {
+    openPreview(opener, (navigation) => artifactBrowser.openImage(source, name, navigation));
+  }
+  return { isOpen: handle.isOpen, sessionChanged, openFile, openArtifact, openImage };
 }

@@ -16,6 +16,7 @@ export type AppPanelRegistration = {
   activeClass?: string;
   closeOnEscape?: boolean;
   canCloseOnEscape?: () => boolean;
+  onEscape?: () => boolean;
   onBeforeOpen?: () => void;
   onOpen?: () => void;
   onBeforeClose?: () => void;
@@ -76,7 +77,7 @@ function resolveElement(value?: HTMLElement | (() => HTMLElement | undefined)) {
 }
 
 function focusElement(element?: HTMLElement) {
-  if (!element || element.hidden) return;
+  if (!element || element.hidden || !element.isConnected) return;
   element.focus({ preventScroll: true });
 }
 
@@ -373,8 +374,15 @@ export function createAppPanelManager(): AppPanelManager {
 
   document.addEventListener("keydown", (event) => {
     const activePanel = (lastOpenedSide ? active[lastOpenedSide] : undefined) || active.right || active.left;
-    if (event.key !== "Escape" || !activePanel) return;
+    if (event.key !== "Escape" || !activePanel || event.defaultPrevented) return;
+    // A dialog opened over the panel owns its Escape; never close the pane below it.
+    if (document.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return;
+    if (activePanel.onEscape?.()) {
+      event.preventDefault(); event.stopImmediatePropagation();
+      return;
+    }
     if (activePanel.closeOnEscape === false || activePanel.canCloseOnEscape?.() === false) return;
+    event.preventDefault(); event.stopImmediatePropagation();
     closeRegistrationFromUi(activePanel);
   });
 
