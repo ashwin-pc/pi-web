@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { readdir, realpath, stat } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -139,9 +139,10 @@ export async function readGitImage(options: { cwd: string; path: string; oldPath
     return { data: await gitBuffer(["show", `:${filePath}`], 15_000, options.cwd), displayPath };
   }
 
-  const resolved = resolve(options.cwd, filePath);
-  const rel = relative(options.cwd, resolved);
-  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Image path is outside the repository");
+  const root = await realpath(options.cwd);
+  const resolved = await realpath(resolve(root, filePath));
+  const rel = relative(root, resolved);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Image path is outside the repository");
   const info = await stat(resolved);
   if (!info.isFile()) throw new Error("Image not found");
   return { file: resolved, displayPath };
@@ -150,9 +151,13 @@ export async function readGitImage(options: { cwd: string; path: string; oldPath
 export async function gitCwdFromRepoParam(repo: string | null, baseCwd: string) {
   if (!repo || repo === ".") return baseCwd;
   if (repo.includes("\0") || isAbsolute(repo)) throw new Error("Invalid repository path");
-  const resolved = resolve(baseCwd, repo);
-  const rel = relative(baseCwd, resolved);
-  if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Repository path is outside the workspace");
+  const root = await realpath(baseCwd);
+  const lexical = resolve(root, repo);
+  const lexicalRelative = relative(root, lexical);
+  if (lexicalRelative === ".." || lexicalRelative.startsWith(`..${sep}`) || isAbsolute(lexicalRelative)) throw new Error("Repository path is outside the workspace");
+  const resolved = await realpath(lexical);
+  const rel = relative(root, resolved);
+  if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Repository path is outside the workspace");
   const info = await stat(resolved);
   if (!info.isDirectory()) throw new Error("Repository path is not a directory");
   return resolved;
