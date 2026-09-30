@@ -258,3 +258,63 @@ mobile/tablet/desktop/auth. No retries or flaky results in the final run.
 allowlist check and Git containment regression pass. P0–P3 and the existing-runtime
 P5 probe meet their implemented exit tests; P4 remains an adapter architecture gap,
 and P6 remains explicitly behind it. No main merge or deployment is performed.
+
+## Workspace-first multitasking design probe — 2026-09-30
+
+The desktop scene variations exposed a more fundamental issue: choosing an
+arrangement around a conversation still makes Chat the organizing construct.
+The user works on several activities within several projects at once. The shell
+must let those contexts exist, resume, and remain visible independently of agents.
+
+The [interactive multitasking probe](prototypes/multitasking-shell/README.md) now
+starts with two workspaces and four activities, with no Chat open. A workspace
+rail selects projects; an activity list resumes work within a project; a grouped
+Ctrl/Cmd K switcher reaches any activity or keeps one alongside another. Two
+desktop contexts can belong to different workspaces. On mobile/tablet, one
+resource is primary and the same grouped switcher remains available. The narrated
+walkthrough follows one session across the contexts rather than presenting more
+disconnected layout alternatives.
+
+Each document buffer belongs to `(workspaceId, path)`. Activities reference
+resources; an agent session is an optional resource within an activity. Every
+mutation captures its source activity and workspace. The selected context is
+window-local URL state, not a global current-workspace variable. Background
+results update badges and become available under their original activity; opening
+their report is an explicit navigation choice. Closing Chat keeps a job running.
+Switching retains local drafts, cursor/scroll positions, filters, and selected
+resources. None of those local scene preferences should be confused with durable
+Activity content.
+
+Architectural findings for the integrated shell:
+
+- A project catalogue must exist without agent sessions. Current workspace
+  discovery draws from Pi's cwd, known cwds, and session-service roots; it still
+  needs a deliberate way to register or select a workspace before starting an
+  agent. The sample catalogue in this probe supplies that missing UI context.
+- Durable Activity owns resource references and optional harness bindings.
+  Scene/focus/layout stay per device or window. This probe's localStorage model
+  proves interactions only; P6 remains deferred behind P4.
+- Session-owned extension contributions from P5 need a workspace app catalogue
+  if apps are to remain available without a selected session. That ownership
+  change is separate from rendering an app as a peer surface.
+- Jobs need owner-qualified event/result routing. Their completion should not
+  select a workspace or open a surface. Another browser window must receive
+  progress without inheriting the other window's current context.
+- Activities sharing one workspace also share files and a Git checkout. Parallel
+  write isolation requires explicit worktrees or write coordination, not merely
+  different activity IDs. A live buffer needs revision checks and conflict
+  recovery. The probe demonstrates a visible choice for divergent tab drafts;
+  localStorage still cannot provide atomic multiwriter transactions.
+- Side-by-side activity contexts have explicit workspace headers and action
+  targets. Each shows its selected resource at this density; one desktop activity
+  can show several peer resources. Shrinking to mobile hides the companion
+  without deleting its state or stopping background work.
+
+Validation: `node scripts/check-multitasking-prototype.mjs` passes context ownership,
+same-name file isolation, state restoration, optional Chat, independent tabs,
+background completion with editor selection and focus preserved, explicit result
+review, history/reload, draft conflict recovery, mobile/tablet single-resource
+views, and 44px controls. The production build also passes. No production runtime
+code is changed by this probe; sample resources and simulated review are labeled
+in its UI and documentation. It does not claim a real second harness, durable
+Activity implementation, or real filesystem writes.
