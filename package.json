@@ -27,6 +27,7 @@
     "examples/",
     "!examples/pi-web-extensions/wavy/",
     "server/",
+    "shared/",
     "server.ts",
     "supervisor.ts",
     "README.md"

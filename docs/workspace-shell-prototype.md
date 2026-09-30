@@ -242,3 +242,9 @@ overlays through 1024px, so the test now reads that policy rather than using a
 second breakpoint. Resource/foreign-surface checkpoint tests pass on mobile and
 desktop, including Files → Run App → Back. Screenshot baselines have been updated
 for the persistent shell bar and reviewed for mobile editor and desktop Git layout.
+
+Packaging discovery: the new browser/server shared ResourceRef module lives outside
+both `src/` and `server/`. The npm package uses an explicit files allowlist, so
+`shared/` must be listed or installed server builds would lose the attachment
+codec dependency. `npm pack --dry-run --json --ignore-scripts` verifies that
+`shared/resourceRef.ts` is included; no package was published.
