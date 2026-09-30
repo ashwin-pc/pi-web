@@ -131,7 +131,10 @@ export function initArtifactBrowser(options: {
   function imageId(image: StandaloneImage) {
     let id = imageIds.get(image);
     if (!id) {
-      id = crypto.randomUUID(); imageIds.set(image, id); imageHistory.set(id, image);
+      id = crypto.randomUUID(); imageIds.set(image, id);
+    }
+    if (!imageHistory.has(id)) {
+      imageHistory.set(id, image);
       if (imageHistory.size > 32) imageHistory.delete(imageHistory.keys().next().value!);
     }
     return id;
@@ -598,7 +601,7 @@ export function initArtifactBrowser(options: {
       else {
         panel.dataset.artifactView = "preview"; activeImage = undefined; activeEntry = undefined;
         previewTitle.textContent = "Image"; previewOpen.removeAttribute("href"); previewDownload.removeAttribute("href");
-        stopPreviewMedia(); renderPreviewError("The image could not be loaded after reloading this page.");
+        stopPreviewMedia(); updateSteps(); renderPreviewError("The image could not be loaded after reloading this page.");
       }
       previewOwnsHistoryEntry = true;
       return;
@@ -661,7 +664,7 @@ export function initArtifactBrowser(options: {
     const items = sessionPreviews();
     const current = activeImage?.src || (activeEntry ? artifactUrl(activeEntry.path, activeEntry.url) : "");
     const index = items.findIndex((item) => current && samePreviewUrl(item.url, current));
-    previous.disabled = next.disabled = items.length < 2 || (!activeImage && index < 0);
+    previous.disabled = next.disabled = items.length < 2 || index < 0;
   }
   function step(direction: number) {
     const items = sessionPreviews();

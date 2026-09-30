@@ -2099,6 +2099,53 @@ test.describe("image rendering", () => {
     await expect(opener).toBeFocused();
   });
 
+  test("composer-only preview disables stepping even with session artifacts", async ({ page }) => {
+    await page.setViewportSize({ width: 411, height: 903 });
+    for (const prompt of ["show artifact", "show markdown artifact"]) {
+      await page.locator("#prompt").fill(prompt);
+      await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    }
+    await page.locator("#imageInput").setInputFiles({ name: "composer.png", mimeType: "image/png", buffer: VALID_PNG });
+    await page.locator("#prompt").focus();
+    await page.locator(".attachmentChip img").click();
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await expect(page.locator("button[aria-label='Previous preview']")).toBeDisabled();
+    await expect(page.locator("button[aria-label='Next preview']")).toBeDisabled();
+  });
+
+  test("reopening for a different preview never requests retained HTML", async ({ page }) => {
+    let htmlRequests = 0;
+    page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/artifacts/preview.html") htmlRequests++; });
+    for (const prompt of ["show html artifact", "show artifact"]) {
+      await page.locator("#prompt").fill(prompt);
+      await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    }
+    const html = page.locator(".artifactPreview--html").last();
+    await html.getByRole("button", { name: "Open in Artifacts panel" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody iframe")).toBeVisible();
+    await page.locator("#filesCloseButton").click();
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    const before = htmlRequests;
+    const image = page.locator(".message.assistant .imageFrame").last();
+    await image.hover(); await image.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    expect(htmlRequests).toBe(before);
+  });
+
+  test("Escape dismisses the session inspector above the preview panel first", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.hover(); await frame.locator("[title='Preview']").click();
+    await page.locator(".sessionBarTab").first().evaluate((tab) => tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await expect(page.locator(".sessionInspector")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sessionInspector")).toHaveCount(0);
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#filesPanel")).toBeHidden();
+  });
+
   test("external artifact-shaped image URLs remain external", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
