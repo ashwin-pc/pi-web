@@ -805,6 +805,46 @@ test.describe("session quick bar", () => {
     await expect.poll(() => openedCwd).toBe("/saved/workspace");
   });
 
+  test("keeps an explicit unlaned deep link despite remembered lane focus", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.addInitScript(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({
+      lane: "pinned", sessions: { pinned: "mock-current" },
+    })));
+    const opened: string[] = [];
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/sessions/open")) opened.push(request.postData() || "");
+    });
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#sessionBar")).toBeVisible();
+    await page.waitForTimeout(1_000);
+    expect(opened).toEqual([]);
+    await expect(page).toHaveURL(/sessionId=mock-older/);
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+  });
+
+  test("a laned deep link selects its lane instead of remembered focus", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "mock-older", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
+    ] });
+    await page.addInitScript(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({
+      lane: "pinned", sessions: { pinned: "mock-current" },
+    })));
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-older"]')).toHaveClass(/\bactive\b/);
+    await expect(page).toHaveURL(/sessionId=mock-older/);
+  });
+
+  test("opens an unlaned deep link when there is no remembered lane session", async ({ page }) => {
+    await seedServerSessionUiState(page, { lanes: [] });
+    await page.goto("/?sessionId=mock-older");
+    await expect(page.locator("#statusTitle")).toHaveText("Older mock session");
+    await expect(page).toHaveURL(/sessionId=mock-older/);
+  });
+
   test("lane focus persists across reload and switching restores each lane's session", async ({ page }) => {
     await seedServerSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
@@ -818,6 +858,7 @@ test.describe("session quick bar", () => {
     await page.locator(".sessionLayersButton").click();
     await page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerHeading').click();
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await expect(page).toHaveURL(/sessionId=mock-current/);
     await page.reload();
     await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toHaveClass(/\bactive\b/);
 

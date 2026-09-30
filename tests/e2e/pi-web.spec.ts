@@ -1642,6 +1642,19 @@ test.describe("image rendering", () => {
     await expect(preview.locator('.artifactPreviewContent a[href="/api/artifacts/report.md"]')).toHaveText("Self reference");
   });
 
+  test("renders html-preview fences inside inline markdown artifact cards", async ({ page }) => {
+    await page.route("**/api/artifacts/report.md", (route) => route.fulfill({
+      contentType: "text/markdown",
+      body: '# Preview reproduction\n\n```html-preview\n<div id="repro">Interactive artifact</div>\n```\n',
+    }));
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const content = page.locator(".artifactPreview--markdown").last().locator(".artifactPreviewContent");
+    await expect(content.locator("h1")).toHaveText("Preview reproduction");
+    await expect(content.locator("iframe.htmlPreviewFrame")).toHaveCount(1);
+    await expect(content.frameLocator("iframe.htmlPreviewFrame").locator("#repro")).toHaveText("Interactive artifact");
+  });
+
   test("expands long artifacts in the chat flow without trapping the wheel", async ({ page }) => {
     await page.locator("#prompt").fill("show long markdown artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());

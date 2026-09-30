@@ -800,6 +800,7 @@ function enhanceArtifactLinks(root: ParentNode) {
         content.classList.add("markdownBody");
         content.innerHTML = markdownHtml(text);
         enhanceMermaid(content);
+        enhanceInlineHtmlPreviews(content);
         enhanceCodeBlocks(content);
         enhanceImages(content);
         refreshOverflow();
