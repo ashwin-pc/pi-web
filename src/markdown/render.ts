@@ -33,7 +33,7 @@ type ArtifactPreviewAction = { key?: unknown; title?: unknown; label?: unknown; 
 let artifactPreviewActions: ArtifactPreviewAction[] = [];
 let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type": "application/json" });
 let artifactActionSessionId = () => "";
-let openArtifactInPanel: (url: string) => void = () => {};
+let openArtifactInPanel: (url: string, opener?: HTMLElement) => void = () => {};
 let artifactPreviewId = 0;
 const interactiveArtifactCards = new Set<HTMLElement>();
 let artifactInteractionListenerAttached = false;
@@ -43,7 +43,7 @@ export function configureArtifactPreviewActions(options: { headers: () => Record
   artifactActionSessionId = options.getSessionId;
 }
 
-export function configureArtifactPanelOpener(open: (url: string) => void) {
+export function configureArtifactPanelOpener(open: (url: string, opener?: HTMLElement) => void) {
   openArtifactInPanel = open;
 }
 
@@ -667,7 +667,7 @@ function enhanceArtifactLinks(root: ParentNode) {
     open.title = "Open in Artifacts panel";
     open.setAttribute("aria-label", open.title);
     open.append(createElement(PanelRightOpen, { "aria-hidden": "true" }));
-    open.addEventListener("click", () => openArtifactInPanel(url.pathname));
+    open.addEventListener("click", () => openArtifactInPanel(url.pathname, open));
     const download = document.createElement("button");
     download.type = "button";
     download.className = "artifactPreviewAction artifactPreviewAction--icon";

@@ -53,6 +53,7 @@ import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/art
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
+import { configureImagePreviewOpener } from "./components/imageActions.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createSessionDraftStore } from "./drafts/sessionDraftStore.js";
@@ -765,7 +766,7 @@ modelSettings.init();
 settings.init();
 systemInfo.init();
 const hasBlockingShortcutOverlay = () => Boolean(document.fullscreenElement
-  || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop, .imageOverlay'));
+  || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop'));
 const canCyclePinnedSessions = () => sessions.focusedLaneSessionCount() > 1
   && elements.tokenOverlay.hidden
   && !elements.formEl.classList.contains("expanded")
@@ -916,7 +917,12 @@ filesPanel = initFilesPanel({
   getSessionId: () => state.currentSessionId,
   onError: showSystemError,
 });
-configureArtifactPanelOpener((url) => filesPanel.openArtifact(url));
+configureArtifactPanelOpener((url, opener) => filesPanel.openArtifact(url, opener));
+configureImagePreviewOpener((source, name, opener) => {
+  const pathname = new URL(source, location.href).pathname;
+  if (new URL(source, location.href).origin === location.origin && /^\/api\/(?:session-)?artifacts\//.test(pathname)) filesPanel.openArtifact(source, opener);
+  else filesPanel.openImage(source, name, opener);
+});
 gitPanel = initGitPanel({
   button: elements.gitButton,
   panel: elements.gitPanel,

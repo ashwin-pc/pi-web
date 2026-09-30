@@ -7,6 +7,7 @@ import { vscodeDark } from "@uiw/codemirror-theme-vscode/esm/dark.js";
 import type { RightPanelManager } from "../layout/rightPanel.js";
 import { iconElement } from "../app/icons.js";
 import { initArtifactBrowser } from "./artifactBrowser.js";
+import { revealImageOpener } from "../components/imageActions.js";
 
 type FileEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number };
 type TextDocumentState = { kind: "text"; path: string; revision: string; saved: string; view: EditorView; language: string; wrap: Compartment; host: HTMLElement };
@@ -36,7 +37,8 @@ export type FilesPanelController = {
   isOpen(): boolean;
   sessionChanged(): void;
   openFile(path: string): Promise<void>;
-  openArtifact(url: string): void;
+  openArtifact(url: string, opener?: HTMLElement): void;
+  openImage(source: string, name: string, opener?: HTMLElement): void;
 };
 
 export function initFilesPanel(options: {
@@ -350,11 +352,20 @@ export function initFilesPanel(options: {
     return "changed" as const;
   }
   updateTreeScope();
+  let previewOpener: HTMLElement | undefined;
+  let replacingPreview = false;
   const handle = rightPanels.register({
     id: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000,
-    canCloseOnEscape: () => treeScope !== "artifacts" || panel.dataset.artifactView !== "preview",
+    onEscape: () => artifactBrowser.leavePreview(),
+    onClose: () => { artifactBrowser.panelClosed(); queueMicrotask(() => { previewOpener = undefined; }); },
+    focusOnClose: () => {
+      const target = previewOpener?.isConnected && !previewOpener.closest("[hidden]") ? previewOpener : button;
+      previewOpener = undefined;
+      return target === button ? button : revealImageOpener(target);
+    },
+    onBeforeOpen: () => { if (!previewOpener?.isConnected) previewOpener = undefined; },
     onOpen: () => {
-      artifactBrowser.panelOpened();
+      artifactBrowser.panelOpened(replacingPreview);
       const sessionResult = sessionChanged();
       if (sessionResult === "cancelled") return;
       loadActiveScope();
@@ -443,7 +454,7 @@ export function initFilesPanel(options: {
       setTreeScope("workspace");
       return;
     }
-    if (artifactView === "gallery" || artifactView === "preview") {
+    if (artifactView === "gallery" || artifactView === "preview" || artifactView === "image") {
       scopeLoaded.artifacts = true;
       setTreeScope("artifacts");
       artifactBrowser.restoreHistory(event.state);
@@ -455,12 +466,22 @@ export function initFilesPanel(options: {
     else if (workspaceMobileView === "editor") setWorkspaceMobileView("tree");
   });
   window.addEventListener("beforeunload", (event) => { if ([...documents.values()].some(dirty)) event.preventDefault(); });
-  function openArtifact(url: string) {
+  function openPreview(opener: HTMLElement | undefined, show: (navigation: { history: "push" | "replace"; origin: "current" | "inactive" }) => void) {
     const panelWasOpen = handle.isOpen();
+    if (!panelWasOpen) previewOpener = opener || (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
     const origin = panelWasOpen && treeScope === "artifacts" ? "current" : "inactive";
-    handle.open();
-    setTreeScope("artifacts");
-    artifactBrowser.openArtifact(url, { history: panelWasOpen ? "push" : "replace", origin });
+    replacingPreview = true;
+    try {
+      handle.open();
+      setTreeScope("artifacts");
+      show({ history: panelWasOpen ? "push" : "replace", origin });
+    } finally { replacingPreview = false; }
   }
-  return { isOpen: handle.isOpen, sessionChanged, openFile, openArtifact };
+  function openArtifact(url: string, opener?: HTMLElement) {
+    openPreview(opener, (navigation) => { artifactBrowser.openArtifact(url, navigation); });
+  }
+  function openImage(source: string, name: string, opener?: HTMLElement) {
+    openPreview(opener, (navigation) => artifactBrowser.openImage(source, name, navigation));
+  }
+  return { isOpen: handle.isOpen, sessionChanged, openFile, openArtifact, openImage };
 }

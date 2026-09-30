@@ -1022,10 +1022,19 @@ test.describe("attachments and prompt", () => {
     expect(pillBox.x + pillBox.width).toBeLessThanOrEqual(fabBox.x);
     await expect(page.locator(".removeAttachment")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 
-    await chip.locator("img").click();
-    await expect(page.locator(".imageOverlay img")).toBeVisible();
-    await page.locator(".imageOverlay").click();
+    const composerImage = chip.locator("img");
+    await composerImage.click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await expect(page.locator("#artifactBrowserPreviewOpen")).toHaveAttribute("href", /^blob:/);
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    await expect(composerImage).toBeFocused();
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await page.goBack();
+    await expect(page.locator("#filesPanel")).toBeHidden();
 
+    await page.locator("#prompt").focus();
     await page.locator("#prompt").blur();
     await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
     await expect(page.locator(".attachmentChip")).toBeVisible();
@@ -1127,8 +1136,8 @@ test.describe("attachments and prompt", () => {
     await expect(page.locator(".message.user .messageAttachmentImage")).toBeVisible();
     await expect(page.locator(".message.user .messageAttachmentCount")).toHaveText("1 attached");
     await page.locator(".message.user .messageAttachmentImage").click();
-    await expect(page.locator(".imageOverlay img")).toBeVisible();
-    await page.locator(".imageOverlay").click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await page.locator("#artifactBrowserPreviewBack").click();
     await expect(page.getByText("Mock response.").first()).toBeVisible();
   });
 });
@@ -1615,12 +1624,13 @@ test.describe("image rendering", () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
-    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n```ts\nconst preview = true;\n```\n");
+    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n[Open HTML](/api/artifacts/preview.html)\n\n[External docs](https://example.com/)\n\n```ts\nconst preview = true;\n```\n");
     await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
     await ensurePreviewArtifact();
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
     await writeFile(join(artifactDir, "e2e-audio-artifact.mp3"), Buffer.from("MP3"));
     await writeFile(join(artifactDir, "e2e-toolpath.gcode"), "G1 X0 Y0\nG1 X10 Y10 E1\n");
+    await writeFile(join(artifactDir, "preview-brief.pdf"), "%PDF-1.1\n1 0 obj<</Type/Catalog>>endobj\n%%EOF\n");
   });
 
   test.beforeEach(async ({ page }) => {
@@ -1901,7 +1911,7 @@ test.describe("image rendering", () => {
     expect((await downloadStarted).suggestedFilename()).toBe("e2e-audio-artifact.mp3");
   });
 
-  test("image actions appear on hover with fullscreen, download and open buttons", async ({ page }) => {
+  test("image actions appear on hover with preview, download and open buttons", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
@@ -1916,38 +1926,291 @@ test.describe("image rendering", () => {
     await frame.hover();
     await expect(actions).toBeVisible();
 
-    await expect(frame.locator('[title="Fullscreen"]')).toBeVisible();
+    await expect(frame.locator('[title="Preview"]')).toBeVisible();
     await expect(frame.locator('[title="Download"]')).toBeVisible();
     await expect(frame.locator('[title="Open in new tab"]')).toBeVisible();
   });
 
-  test("fullscreen button opens overlay with image", async ({ page }) => {
+  test("preview button opens shared preview with image", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
     const frame = page.locator(".message.assistant .imageFrame").last();
     await expect(frame).toBeVisible();
     await frame.hover();
-    await frame.locator('[title="Fullscreen"]').click();
+    await frame.locator('[title="Preview"]').click();
 
-    const overlay = page.locator(".imageOverlay");
-    await expect(overlay).toBeVisible();
-    await expect(overlay.locator("img")).toBeVisible();
+    const preview = page.locator("#artifactBrowserPreview");
+    await expect(preview).toBeVisible();
+    await expect(preview.locator(".artifactBrowserPreviewBody--image img")).toBeVisible();
   });
 
-  test("overlay closes when clicked", async ({ page }) => {
+  test("shared image preview closes with its back control", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#primaryButton").click();
 
     const frame = page.locator(".message.assistant .imageFrame").last();
     await expect(frame).toBeVisible();
     await frame.hover();
-    await frame.locator('[title="Fullscreen"]').click();
+    await frame.locator('[title="Preview"]').click();
 
-    const overlay = page.locator(".imageOverlay");
-    await expect(overlay).toBeVisible();
-    await overlay.click();
-    await expect(overlay).toHaveCount(0);
+    const preview = page.locator("#artifactBrowserPreview");
+    await expect(preview).toBeVisible();
+    await page.locator("#artifactBrowserPreviewBack").click();
+    await expect(preview).toBeHidden();
+  });
+
+  test("closing the image viewer restores focus to its opener", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#primaryButton").click();
+
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.hover();
+    const button = frame.locator("[title='Preview']");
+    await button.click();
+    await expect(page.locator("#artifactBrowserPreviewBack")).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#artifactBrowserPreview")).toBeHidden();
+    await expect(button).toBeFocused();
+  });
+
+  test("navigates session images, Markdown, HTML, video, PDF and extension previews in the same panel", async ({ page }) => {
+    await page.route("**/api/web-contributions/invoke", (route) => route.fulfill({ json: { ok: true, html: "<!doctype html><p id='toolpath'>Toolpath ready</p>" } }));
+    await page.request.post("/api/mock/state", { data: {
+      webContributions: [{ version: 1, key: "gcode-preview", slot: "artifact-preview", kind: "rendered", title: "G-code preview", match: { kinds: ["file"], extensions: [".gcode"] } }],
+    } });
+    await page.reload();
+    for (const [prompt, selector] of [
+      ["show artifact", ".message.assistant .imageFrame"],
+      ["show markdown artifact", ".artifactPreview--markdown"],
+      ["show html artifact", ".artifactPreview--html"],
+      ["show video artifact", ".artifactPreview--video"],
+      ["show gcode artifact", ".artifactPreview--file"],
+    ] as const) {
+      await page.locator("#prompt").fill(prompt);
+      await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+      await expect(page.locator(selector).last()).toBeVisible();
+    }
+    // A PDF is still an ordinary file link, not a virtual artifact object.
+    await page.locator("#messages").evaluate((messages) => {
+      const link = document.createElement("a");
+      link.href = "/api/artifacts/preview-brief.pdf";
+      link.textContent = "Preview PDF";
+      messages.append(link);
+    });
+    await page.locator(".message.assistant .imageFrame").first().hover();
+    await page.locator(".message.assistant .imageFrame [title='Preview']").first().click();
+    const panel = page.locator("#filesPanel");
+    await expect(panel).toBeVisible();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    const next = page.getByRole("button", { name: "Next preview" });
+    const previous = page.getByRole("button", { name: "Previous preview" });
+    await next.click();
+    await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    await page.locator("#filesCloseButton").focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("report.md"); // outside preview focus
+    expect(await page.locator("#prompt").evaluate((input) => {
+      const key = new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true });
+      input.dispatchEvent(key);
+      return key.defaultPrevented;
+    })).toBe(false); // composer retains native cursor movement, even behind a mobile pane
+    await next.focus();
+    await page.keyboard.press("ArrowRight");
+    const htmlFrame = page.locator("#artifactBrowserPreviewBody iframe");
+    await expect(htmlFrame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview.html");
+    await htmlFrame.contentFrame().locator("body").click({ position: { x: 5, y: 5 } });
+    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe("IFRAME");
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview.html"); // iframe owns its keys
+    await next.click();
+    const video = page.locator("#artifactBrowserPreviewBody video");
+    await expect(video).toHaveAttribute("controls", "");
+    expect(await video.evaluate((element) => !element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true })))).toBe(false);
+    await next.click();
+    await expect(page.locator("#artifactBrowserPreviewBody iframe")).toHaveAttribute("srcdoc", /Toolpath ready/);
+    await next.click();
+    await expect(page.locator("#artifactBrowserPreviewBody iframe")).toHaveAttribute("src", "/api/artifacts/preview-brief.pdf");
+    await next.click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await previous.click();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview-brief.pdf");
+    await page.goBack();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("e2e-test.png");
+  });
+
+  test("navigates a session attachment blob and a file-backed preview without substituting its source", async ({ page }) => {
+    await page.locator("#imageInput").setInputFiles({ name: "session-photo.png", mimeType: "image/png", buffer: VALID_PNG });
+    await page.locator("#prompt").fill("photo and report");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await expect(page.locator(".message.user .messageAttachmentImage")).toBeVisible();
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await expect(page.locator(".artifactPreview--markdown")).toBeVisible();
+    await page.locator(".message.user .messageAttachmentImage").click();
+    const source = await page.locator("#artifactBrowserPreviewOpen").getAttribute("href");
+    expect(source).toMatch(/^blob:/);
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
+    await page.getByRole("button", { name: "Next preview" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    await page.goBack();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewBody h1")).toHaveText("Artifact report");
+    await page.getByRole("button", { name: "Previous preview" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toHaveAttribute("src", source!);
+  });
+
+  test("Markdown preview artifact links navigate the panel without recursive cards or hijacking other links", async ({ page }) => {
+    await page.locator("#prompt").fill("show markdown artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await page.locator(".artifactPreview--markdown").getByRole("button", { name: "Open in Artifacts panel" }).click();
+    const body = page.locator("#artifactBrowserPreviewBody");
+    await expect(body.locator("h1")).toHaveText("Artifact report");
+    await expect(body.locator(".artifactPreview")).toHaveCount(0);
+    await expect(body.getByRole("link", { name: "External docs" })).toHaveAttribute("href", "https://example.com/");
+    const link = body.getByRole("link", { name: "Open HTML" });
+    await link.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("report.md");
+    await link.click();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("preview.html");
+    await expect(body.locator("iframe")).toHaveAttribute("sandbox", "allow-scripts");
+    await page.goBack();
+    await expect(body.locator("h1")).toHaveText("Artifact report");
+    await expect(body.locator(".artifactPreview")).toHaveCount(0);
+  });
+
+  test("Escape closes only the topmost layer and restores the image opener", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const opener = page.locator(".message.assistant .imageFrame [title='Preview']").last();
+    await page.locator(".message.assistant .imageFrame").last().hover();
+    await opener.click();
+    await expect(page.locator("#artifactBrowserPreviewBack")).toBeFocused();
+    await page.evaluate(() => { const dialog = document.createElement("dialog"); dialog.id = "nested-preview-dialog"; dialog.innerHTML = "<button>Close</button>"; document.body.append(dialog); dialog.showModal(); });
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#nested-preview-dialog")).not.toHaveAttribute("open", "");
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    await expect(opener).toBeFocused();
+  });
+
+  test("composer-only preview disables stepping even with session artifacts", async ({ page }) => {
+    await page.setViewportSize({ width: 411, height: 903 });
+    for (const prompt of ["show artifact", "show markdown artifact"]) {
+      await page.locator("#prompt").fill(prompt);
+      await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    }
+    await page.locator("#imageInput").setInputFiles({ name: "composer.png", mimeType: "image/png", buffer: VALID_PNG });
+    await page.locator("#prompt").focus();
+    await page.locator(".attachmentChip img").click();
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await expect(page.locator("button[aria-label='Previous preview']")).toBeDisabled();
+    await expect(page.locator("button[aria-label='Next preview']")).toBeDisabled();
+  });
+
+  test("reopening for a different preview never requests retained HTML", async ({ page }) => {
+    let htmlRequests = 0;
+    page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/artifacts/preview.html") htmlRequests++; });
+    for (const prompt of ["show html artifact", "show artifact"]) {
+      await page.locator("#prompt").fill(prompt);
+      await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    }
+    const html = page.locator(".artifactPreview--html").last();
+    await html.getByRole("button", { name: "Open in Artifacts panel" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody iframe")).toBeVisible();
+    await page.locator("#filesCloseButton").click();
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    const before = htmlRequests;
+    const image = page.locator(".message.assistant .imageFrame").last();
+    await image.hover(); await image.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    expect(htmlRequests).toBe(before);
+  });
+
+  test("Escape dismisses the session inspector above the preview panel first", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.hover(); await frame.locator("[title='Preview']").click();
+    await page.locator(".sessionBarTab").first().evaluate((tab) => tab.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await expect(page.locator(".sessionInspector")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sessionInspector")).toHaveCount(0);
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#filesPanel")).toBeHidden();
+  });
+
+  test("external artifact-shaped image URLs remain external", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement) => { img.src = "https://cdn.example/api/artifacts/photo.png"; });
+    await frame.hover();
+    await frame.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewOpen")).toHaveAttribute("href", "https://cdn.example/api/artifacts/photo.png");
+  });
+
+  test("image history works when crypto.randomUUID is unavailable", async ({ page }) => {
+    await page.evaluate(() => Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true }));
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement, data) => { img.src = data; }, `data:image/png;base64,${VALID_PNG.toString("base64")}`);
+    await frame.hover(); await frame.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    const id = await page.evaluate(() => history.state.piWebArtifactView.id as string);
+    expect(id).toMatch(/^img-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+$/);
+    await page.goBack();
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    expect(await page.evaluate(() => history.state.piWebArtifactView.id)).toBe(id);
+  });
+
+  test("transient image history stores only an ID and survives Back without serializing pixels", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement) => {
+      img.src = `data:image/png;base64,${"A".repeat(2_100_000)}`;
+    });
+    await frame.hover();
+    await frame.locator("[title='Preview']").click();
+    expect(await page.evaluate(() => JSON.stringify(history.state).length)).toBeLessThan(2000);
+    await page.goBack();
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toBeVisible();
+  });
+
+  test("mouse panning uses cumulative motion only on images; zoom resets when navigating", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await page.locator("#prompt").fill("show video artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    await page.locator(".message.assistant .imageFrame").last().hover();
+    await page.locator(".message.assistant .imageFrame [title='Preview']").last().click();
+    const image = page.locator("#artifactBrowserPreviewBody > img");
+    await image.evaluate((node) => { node.style.width = "100%"; node.style.height = "100%"; });
+    await page.getByRole("button", { name: "Zoom in" }).click();
+    await expect(page.getByRole("button", { name: "Reset zoom" })).toHaveText("125%");
+    const box = (await image.boundingBox())!;
+    await image.evaluate((node) => { node.addEventListener("click", (event) => { (window as any).__previewDragSuppressed = event.defaultPrevented; }, { once: true }); });
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    for (let i = 1; i <= 5; i++) await page.mouse.move(box.x + box.width / 2 + i, box.y + box.height / 2);
+    await page.mouse.up();
+    await expect.poll(() => page.evaluate(() => (window as any).__previewDragSuppressed)).toBe(true);
+    await page.getByRole("button", { name: "Next preview" }).click();
+    await expect(page.locator("#artifactBrowserPreviewBody video")).toBeVisible();
+    await expect(page.locator("#artifactBrowserPreviewBody img")).toHaveCount(0);
+    await page.getByRole("button", { name: "Previous preview" }).click();
+    await expect(page.getByRole("button", { name: "Reset zoom" })).toHaveText("100%");
   });
 
   test("image is constrained and does not overflow the message", async ({ page }) => {

@@ -75,7 +75,7 @@ export function buildSessionInspector(options: InspectorOptions) {
     backdrop.addEventListener("pointerdown", (event) => { if (event.target === backdrop) close(); });
   };
 
-  window.addEventListener("keydown", (event) => { if (event.key === "Escape") close(); });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape" && backdrop?.isConnected && !event.defaultPrevented) { event.preventDefault(); close(); } });
   const attach = (element: HTMLElement, sessionId: string, context: SessionInspectorInvocationContext, holdDelayMs = 280, touchHoldOwner: "inspector" | "external" = "inspector") => {
     let timer: number | undefined; let startX = 0; let startY = 0; let touchHoldReady = false;
     const cancel = () => { if (timer !== undefined) window.clearTimeout(timer); timer = undefined; touchHoldReady = false; element.classList.remove("sessionInspectorPressing"); };
