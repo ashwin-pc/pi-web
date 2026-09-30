@@ -2099,6 +2099,31 @@ test.describe("image rendering", () => {
     await expect(opener).toBeFocused();
   });
 
+  test("external artifact-shaped image URLs remain external", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement) => { img.src = "https://cdn.example/api/artifacts/photo.png"; });
+    await frame.hover();
+    await frame.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewOpen")).toHaveAttribute("href", "https://cdn.example/api/artifacts/photo.png");
+  });
+
+  test("transient image history stores only an ID and survives Back without serializing pixels", async ({ page }) => {
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement) => {
+      img.src = `data:image/png;base64,${"A".repeat(2_100_000)}`;
+    });
+    await frame.hover();
+    await frame.locator("[title='Preview']").click();
+    expect(await page.evaluate(() => JSON.stringify(history.state).length)).toBeLessThan(2000);
+    await page.goBack();
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewTitle")).toBeVisible();
+  });
+
   test("mouse panning uses cumulative motion only on images; zoom resets when navigating", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
