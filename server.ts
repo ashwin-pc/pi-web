@@ -9,6 +9,7 @@ import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { WorkspaceRegistry } from "./server/workspace/registry.js";
 import { HttpError } from "./server/shared/httpError.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
@@ -61,6 +62,8 @@ const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI
 if (setupLink) console.log(`First-install setup (single use, expires in 10 minutes): ${setupLink}`);
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
+const workspaces = new WorkspaceRegistry();
+workspaces.register(piCwd);
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
 const mockMode = process.env.PI_WEB_MOCK === "1";
@@ -235,6 +238,24 @@ async function setPiCwd(path: string) {
 async function requestCwdFromSessionId(sessionId: string | null) {
   if (!sessionId) return piCwd;
   return sessionService.cwdForSessionId(sessionId);
+}
+
+function refreshWorkspaces() {
+  for (const cwd of [piCwd, ...knownCwds, ...sessionService.knownCwds()]) workspaces.register(cwd);
+}
+
+async function resourceCwd(workspaceId: unknown, sessionId: string | null) {
+  if (workspaceId !== null && workspaceId !== undefined) {
+    refreshWorkspaces();
+    if (typeof workspaceId !== "string" || !workspaceId) throw new HttpError("workspaceId must be a non-empty string", 400);
+    const workspace = workspaces.get(workspaceId);
+    if (!workspace) throw new HttpError("Workspace not found", 404);
+    if (sessionId && workspaces.register(await requestCwdFromSessionId(sessionId)).id !== workspace.id) {
+      throw new HttpError("workspaceId and sessionId refer to different workspaces", 409);
+    }
+    return workspace.root;
+  }
+  return requestCwdFromSessionId(sessionId);
 }
 
 function sessionCwd(targetSession: PiWebSession | any = session) {
@@ -645,80 +666,86 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         }
       }
 
+      if (method === "GET" && url.pathname === "/api/workspaces") {
+        refreshWorkspaces();
+        const current = workspaces.register(await requestCwdFromSessionId(url.searchParams.get("sessionId")));
+        return sendJson(res, 200, { ok: true, current, workspaces: workspaces.list() });
+      }
+
       if (method === "GET" && url.pathname === "/api/files/tree") {
         try {
-          const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const cwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           return sendJson(res, 200, await listWorkspaceDirectory(cwd, url.searchParams.get("path") || "", url.searchParams.get("hidden") === "1"));
         } catch (error) {
-          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof WorkspaceFileError || error instanceof HttpError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/files/read") {
         try {
-          const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const cwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           return sendJson(res, 200, await readWorkspaceFile(cwd, url.searchParams.get("path") || ""));
         } catch (error) {
-          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof WorkspaceFileError || error instanceof HttpError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/files/image") {
         try {
-          const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const cwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           const image = await readWorkspaceImage(cwd, url.searchParams.get("path") || "");
           res.writeHead(200, { "content-type": image.mimeType, "content-length": image.data.length, "cache-control": "no-store" });
           res.end(image.data);
           return;
         } catch (error) {
-          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof WorkspaceFileError || error instanceof HttpError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "PUT" && url.pathname === "/api/files/write") {
-        const body = await readBody(req) as { sessionId?: unknown; path?: unknown; content?: unknown; expectedRevision?: unknown };
+        const body = await readBody(req) as { workspaceId?: unknown; sessionId?: unknown; path?: unknown; content?: unknown; expectedRevision?: unknown };
         try {
-          const cwd = await requestCwdFromSessionId(typeof body.sessionId === "string" ? body.sessionId : null);
+          const cwd = await resourceCwd(body.workspaceId, typeof body.sessionId === "string" ? body.sessionId : null);
           return sendJson(res, 200, await writeWorkspaceFile(cwd, body.path, body.content, body.expectedRevision));
         } catch (error) {
-          return sendJson(res, error instanceof WorkspaceFileError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof WorkspaceFileError || error instanceof HttpError ? error.status : 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/git/repos") {
-        return sendJson(res, 200, await listGitRepos(await requestCwdFromSessionId(url.searchParams.get("sessionId"))));
+        return sendJson(res, 200, await listGitRepos(await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"))));
       }
 
       if (method === "GET" && url.pathname === "/api/git/status") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const baseCwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           return sendJson(res, 200, await gitStatus(await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd), url.searchParams.get("fetch") === "1"));
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof HttpError ? error.status : 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/git/log") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const baseCwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           return sendJson(res, 200, await gitLog(await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd)));
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof HttpError ? error.status : 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/git/commit") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const baseCwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           return sendJson(res, 200, await gitCommitDetails(url.searchParams.get("hash") || "", await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd)));
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof HttpError ? error.status : 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/git/diff") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const baseCwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           return sendJson(res, 200, await gitDiff({
@@ -727,13 +754,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
             staged: url.searchParams.get("staged") === "1",
           }));
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof HttpError ? error.status : 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "GET" && url.pathname === "/api/git/image") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const baseCwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           const image = await readGitImage({
@@ -752,18 +779,18 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           else res.end(image.data);
           return;
         } catch (error) {
-          return sendJson(res, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof HttpError ? error.status : 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "POST" && url.pathname === "/api/git/sync") {
         try {
-          const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
+          const baseCwd = await resourceCwd(url.searchParams.get("workspaceId"), url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
           return sendJson(res, 200, await gitSync(cwd));
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          return sendJson(res, error instanceof HttpError ? error.status : 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 

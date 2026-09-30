@@ -83,3 +83,29 @@ prototype demonstrates a reason to persist them.
 Names and DTO shapes in this branch are not contracts. In particular, Workspace,
 App, Surface, ResourceRef, Focus, and Activity should be renamed or collapsed if
 the implementation does not justify them.
+
+## Implementation journal
+
+### P0 — Workspace identity (implemented)
+
+`GET /api/workspaces` exposes known local roots and a current descriptor without
+requiring a session ID. An optional `sessionId` resolves its workspace without
+making the descriptor session-owned. All built-in Files and Git routes now accept
+`workspaceId` (the file-write route accepts it in its body). Session-only and
+unqualified requests remain compatibility aliases. Unknown workspace IDs return
+404; contradictory workspace/session selectors return 409 instead of silently
+redirecting a write. Existing revision checks and file containment remain intact.
+
+Discovery: `server/workspace/registry.ts` existed but had no consumers. Its IDs
+are hashes of resolved absolute paths, not physical filesystem IDs: symlink aliases
+can still produce distinct workspaces. The registry is process-local and rebuilt
+from server/session roots; it is not an authorization boundary or a durable list.
+The server still creates its default Pi session at boot. Resource requests no
+longer need that session, but session-free server startup is a separate refactor.
+Git's repository selector currently checks lexical containment, unlike Files'
+realpath checks; this warrants a symlink containment regression test before any
+less-trusted runtime is connected.
+
+Validation: typecheck and production build pass. The workspace-only API exit test
+passes against the real HTTP routes: tree/read/write, revision conflicts, Git
+repos/status/log/diff, unknown IDs, traversal rejection, and the session alias.
