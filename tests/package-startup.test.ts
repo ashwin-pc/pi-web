@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -21,6 +21,7 @@ describe("npm package", () => {
       const pkg = join(dir, "package");
       await symlink(join(root, "node_modules"), join(pkg, "node_modules"), "dir");
       const port = 21000 + Math.floor(Math.random() * 30000);
+      await writeFile(join(dir, "settings.json"), JSON.stringify({ version: 1, identity: { name: "Backup Brand", shortName: "Backup", avatar: { type: "custom" }, revision: 3 } }));
       child = spawn(process.execPath, ["--import", join(root, "node_modules/tsx/dist/loader.mjs"), "server.ts"], {
         cwd: pkg,
         env: { ...process.env, PI_WEB_DEV: "0", NODE_ENV: "test", PI_WEB_MOCK: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "none", PI_WEB_TOKEN: "", PI_WEB_AUTH_STORE: join(dir, "auth.json"), PI_WEB_SETTINGS_FILE: join(dir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(dir, "sessions.json"), PI_WEB_CWD: dir },
@@ -35,7 +36,13 @@ describe("npm package", () => {
         catch { await delay(100); }
       }
       expect(response?.status, errors).toBe(200);
-      expect((await response!.json()).name).toBeTruthy();
+      expect((await response!.json()).name).toBe("Backup Brand");
+      const avatar = await fetch(`http://127.0.0.1:${port}/identity/avatar.png`, { redirect: "manual" });
+      expect(avatar.status).toBe(302);
+      expect(avatar.headers.get("location")).toBe("/avatars/current-pi/still.png");
+      const icon = await fetch(`http://127.0.0.1:${port}/identity/icon.png`, { redirect: "manual" });
+      expect(icon.headers.get("location")).toBe("/avatars/current-pi/icon.png");
+      expect((await fetch(`http://127.0.0.1:${port}/identity/avatar.png`)).status).toBe(200);
       expect((await readFile(join(pkg, "server/shared/appIdentity.ts"), "utf8"))).toContain("avatarPresetIds");
     } finally {
       child?.kill();

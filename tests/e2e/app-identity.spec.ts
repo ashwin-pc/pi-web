@@ -10,6 +10,56 @@ test.afterEach(async ({ page }) => {
   await page.request.patch("/api/settings", { data: { identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" } } } });
 });
 
+test("in-flight save rejects concurrent upload explicitly and allows retry", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "Upload concurrency regression");
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavIdentity").click();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  await page.route("**/api/settings", async route => {
+    if (route.request().method() === "PATCH") await held;
+    await route.continue();
+  });
+  let uploads = 0;
+  page.on("request", request => { if (request.url().endsWith("/api/identity/avatar")) uploads++; });
+  await page.locator("#identityName").fill("Pending Save");
+  await page.locator("#identitySave").click();
+  await expect(page.locator("#identityUpload")).toBeDisabled();
+  // A programmatic change must report the conflict, not silently lose the file.
+  await page.locator("#identityUpload").setInputFiles("public/avatars/current-pi/still.png");
+  await expect(page.locator("#settingsStatus")).toContainText("Wait for the current identity update");
+  expect(uploads).toBe(0);
+  release();
+  await expect(page.locator("#identityUpload")).toBeEnabled();
+  await page.locator("#identityUpload").setInputFiles("public/avatars/current-pi/still.png");
+  await expect.poll(() => uploads).toBe(1);
+  await expect(page.locator("button.identityChoiceCustom")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("upload preprocessing blocks concurrent saves without dropping the upload", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "Upload concurrency regression");
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavIdentity").click();
+  await page.evaluate(() => {
+    const original = HTMLCanvasElement.prototype.toBlob;
+    HTMLCanvasElement.prototype.toBlob = function (callback, ...args) {
+      return original.call(this, blob => setTimeout(() => callback(blob), 500), ...args);
+    };
+  });
+  let uploads = 0;
+  page.on("request", request => { if (request.url().endsWith("/api/identity/avatar")) uploads++; });
+  await page.locator("#identityName").fill("Unsent Draft");
+  await page.locator("#identityUpload").setInputFiles("public/avatars/current-pi/still.png");
+  await expect(page.locator("#identitySave")).toBeDisabled();
+  await expect(page.locator("#identityUpload")).toBeDisabled();
+  await expect.poll(() => uploads).toBe(1);
+  await expect(page.locator("#identitySave")).toBeEnabled();
+  await expect(page.locator("#identityName")).toHaveValue("Unsent Draft");
+  await expect(page.locator("button.identityChoiceCustom")).toHaveAttribute("aria-pressed", "true");
+});
+
 test("unsaved identity drafts survive settings broadcasts and custom upload", async ({ page }) => {
   await page.goto("/");
   await openSessionDrawerFooterAction(page, "Preferences");

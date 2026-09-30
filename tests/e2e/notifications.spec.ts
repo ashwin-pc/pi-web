@@ -53,6 +53,8 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("notification settings test notification, sound, vibration, and persistence", async ({ page }) => {
+  await page.request.patch("/api/settings", { data: { identity: { name: "Custom Alerts" } } });
+  try {
   await page.goto("/");
   await openSessionDrawerFooterAction(page, "Preferences");
   await page.locator("#settingsNavNotifications").click();
@@ -60,10 +62,11 @@ test("notification settings test notification, sound, vibration, and persistence
   await expect(page.locator("#settingRunNotificationsCheckbox")).toBeChecked();
   await page.locator("#settingCompletionSoundCheckbox").check();
   await expect(page.locator("#settingCompletionVibrationCheckbox")).toBeChecked();
+  await page.evaluate(() => { document.title = "Unrelated Session Title"; });
   await page.locator("#settingRunNotificationsTestButton").click();
 
   await expect.poll(() => page.evaluate(() => (window as any).__notificationTestCalls)).toMatchObject({
-    notifications: [{ title: "pi-web — Test notification", options: { silent: false, vibrate: [180, 90, 240] } }],
+    notifications: [{ title: "Custom Alerts — Test notification", options: { silent: false, vibrate: [180, 90, 240] } }],
     vibrations: [[180, 90, 240]],
     audioStarts: 2,
   });
@@ -73,4 +76,7 @@ test("notification settings test notification, sound, vibration, and persistence
   await page.locator("#settingsNavNotifications").click();
   await expect(page.locator("#settingCompletionSoundCheckbox")).toBeChecked();
   await expect(page.locator("#settingCompletionVibrationCheckbox")).toBeChecked();
+  } finally {
+    await page.request.patch("/api/settings", { data: { identity: { name: "Pi Web" } } });
+  }
 });

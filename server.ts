@@ -565,9 +565,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         res.setHeader("content-type", "image/png");
         res.end(png); return;
       }
-      if (url.pathname === "/identity/icon.png") {
+      if (url.pathname === "/identity/icon.png" || url.pathname === "/identity/avatar.png") {
         res.statusCode = 302;
-        res.setHeader("location", assets.icon);
+        res.setHeader("location", url.pathname === "/identity/icon.png" ? assets.icon : assets.still);
         res.end(); return;
       }
       return sendJson(res, 404, { error: "Avatar not found" });

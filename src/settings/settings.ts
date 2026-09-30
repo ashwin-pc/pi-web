@@ -143,6 +143,7 @@ export function createSettings(options: {
   const runNotifications = createRunNotifications({
     elements,
     api,
+    getAppName: () => state.settings.identity.name,
     onError: (error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"),
   });
 

@@ -32,8 +32,9 @@ export function createRunNotifications(options: {
   elements: AppElements;
   api: ApiClient;
   onError: (error: unknown) => void;
+  getAppName: () => string;
 }) {
-  const { elements, api, onError } = options;
+  const { elements, api, onError, getAppName } = options;
   const checkbox = elements.settingRunNotificationsCheckbox;
   const soundCheckbox = elements.settingCompletionSoundCheckbox;
   const vibrationCheckbox = elements.settingCompletionVibrationCheckbox;
@@ -143,7 +144,7 @@ export function createRunNotifications(options: {
         tag: `pi-web-local-test:${Date.now()}`,
         data: { url: window.location.href },
       };
-      await worker.showNotification("pi-web — Test notification", options);
+      await worker.showNotification(`${getAppName()} — Test notification`, options);
       playCompletionAlerts();
       setStatus("Test alert sent. Check the notification, completion sound, and vibration.");
     } catch (error) {

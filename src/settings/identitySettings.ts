@@ -103,6 +103,7 @@ export function createIdentitySettings(
   let selected: AvatarSelection = saved.avatar;
   let mode: "home" | "new" = "home";
   let busy = false;
+  let processingUpload = false;
   let dirtyName = false;
   let dirtyShortName = false;
   let dirtyAvatar = false;
@@ -235,9 +236,9 @@ export function createIdentitySettings(
   shortName.addEventListener("input", () => { dirtyShortName = true; render(); });
 
   async function request(method: "POST" | "PATCH", url: string, body: BodyInit, contentType?: string, action?: "save" | "reset" | "upload") {
-    if (busy) return;
+    if (busy) { onError("Wait for the current identity update to finish."); return; }
     busy = true;
-    save.disabled = reset.disabled = true;
+    save.disabled = reset.disabled = upload.disabled = true;
     try {
       const headers = api.headers();
       if (contentType) headers["content-type"] = contentType;
@@ -251,7 +252,7 @@ export function createIdentitySettings(
       onError(error instanceof Error ? error.message : String(error));
     } finally {
       busy = false;
-      save.disabled = reset.disabled = false;
+      save.disabled = reset.disabled = upload.disabled = processingUpload;
     }
   }
 
@@ -272,15 +273,21 @@ export function createIdentitySettings(
     const file = upload.files?.[0];
     upload.value = "";
     if (!file) return;
+    if (busy || processingUpload) { onError("Wait for the current identity update to finish."); return; }
     if (file.size > 5 * 1024 * 1024 || !["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
       onError("Choose a PNG, JPEG, or WebP image under 5 MB");
       return;
     }
+    processingUpload = true;
+    save.disabled = reset.disabled = upload.disabled = true;
     try {
       const blob = await normalizedAvatar(file);
       await request("POST", "/api/identity/avatar", blob, "image/png", "upload");
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      processingUpload = false;
+      save.disabled = reset.disabled = upload.disabled = busy;
     }
   });
 
