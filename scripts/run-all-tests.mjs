@@ -39,7 +39,7 @@ const e2eTasks = e2eProjects.flatMap((project) =>
 
 // Packaging requires completed dist assets. Running this beside Vite in the
 // preflight phase can pack a half-built tree (or no dist on a clean CI runner).
-const packedStartupTask = { name: "package-startup", command: process.execPath, args: ["scripts/test-packed-startup.mjs"], kind: "static" };
+const packedStartupTask = { name: "package-startup", command: isWin ? "npm.cmd" : "npm", args: ["run", "test:package"], kind: "static" };
 
 const preflightTasks = [
   { name: "typecheck", command: bin("tsc"), args: ["--noEmit"], kind: "static" },

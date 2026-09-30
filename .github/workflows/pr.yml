@@ -102,6 +102,9 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify packed server startup and assets
+        run: npm run test:package
+
       - name: Complete E2E matrix
         env:
           PI_WEB_E2E_SHARDS: 2

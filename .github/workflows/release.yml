@@ -26,6 +26,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:unit
       - run: npm run build
+      - name: Verify packed server startup and assets
+        run: npm run test:package
 
       - name: Verify tag matches package version
         run: |
