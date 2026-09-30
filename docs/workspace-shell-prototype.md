@@ -248,3 +248,13 @@ both `src/` and `server/`. The npm package uses an explicit files allowlist, so
 `shared/` must be listed or installed server builds would lose the attachment
 codec dependency. `npm pack --dry-run --json --ignore-scripts` verifies that
 `shared/resourceRef.ts` is included; no package was published.
+
+## Final validation — 2026-09-30
+
+`PI_WEB_E2E_SHARDS=3 PI_WEB_E2E_CONCURRENCY=4 npm test` passes completely:
+typecheck, production Vite build, 541 unit tests, and 969 browser tests across
+mobile/tablet/desktop/auth. No retries or flaky results in the final run.
+`npm run build` also passes the extension declaration build. The npm package
+allowlist check and Git containment regression pass. P0–P3 and the existing-runtime
+P5 probe meet their implemented exit tests; P4 remains an adapter architecture gap,
+and P6 remains explicitly behind it. No main merge or deployment is performed.
