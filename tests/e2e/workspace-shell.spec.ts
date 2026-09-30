@@ -167,3 +167,41 @@ test("trusted extension apps share shell navigation, reload and browser history"
   await page.reload();
   await expect(page.locator("#webExtensionPanel button[data-web-action]")).toHaveText("0");
 });
+
+test("resource identity keeps same-name files and saves isolated across workspaces", async ({ page }) => {
+  const alpha = { id: "local-0000000000000001", root: "/alpha", name: "alpha", runtime: "local" };
+  const beta = { id: "local-0000000000000002", root: "/beta", name: "beta", runtime: "local" };
+  await page.route("**/api/workspaces?**", (route) => route.fulfill({ json: { ok: true, current: alpha, workspaces: [alpha, beta] } }));
+  await page.route("**/api/files/tree?**", (route) => route.fulfill({ json: { ok: true, entries: [] } }));
+  await page.route("**/api/files/read?**", (route) => {
+    const workspaceId = new URL(route.request().url()).searchParams.get("workspaceId");
+    return route.fulfill({ json: { ok: true, content: workspaceId === alpha.id ? "alpha file" : "beta file", revision: "v1", language: "markdown" } });
+  });
+  await page.route("**/api/files/write", (route) => route.fulfill({ json: { ok: true, revision: "v2" } }));
+  await page.goto(`/?surface=files&workspaceId=${alpha.id}&path=README.md`);
+  await expect(page.locator(".cm-content")).toHaveText("alpha file");
+  await page.evaluate((resource) => window.dispatchEvent(new CustomEvent("pi-web-open-resource", { detail: resource })), { kind: "file", workspaceId: beta.id, path: "README.md" });
+  await expect(page.locator(".cm-content")).toHaveText("beta file");
+  await page.locator(".cm-content").click();
+  await page.locator(".cm-content").press("Control+a");
+  await page.locator(".cm-content").press("b");
+  const saveRequest = page.waitForRequest((request) => request.url().endsWith("/api/files/write"));
+  await page.locator("#fileSaveButton").click();
+  expect((await saveRequest).postDataJSON()).toMatchObject({ workspaceId: beta.id, path: "README.md", content: "b" });
+});
+
+test("an HTML file launches its saved app from Files and Back restores the editor", async ({ page, request }) => {
+  const { current } = await (await request.get("/api/workspaces")).json();
+  await page.route("**/api/files/read?**", (route) => route.fulfill({ json: {
+    ok: true, content: '<button id="hello">Hello</button>', revision: "v1", language: "html",
+  } }));
+  await page.goto(`/?surface=files&workspaceId=${current.id}&path=hello.html`);
+  await expect(page.locator(".cm-content")).toContainText("Hello");
+  await page.getByRole("button", { name: "Run app", exact: true }).click();
+  await expect(page.frameLocator('.generatedAppBody iframe').getByRole("button", { name: "Hello", exact: true })).toBeVisible();
+  await expect(page.locator("#filesPanel")).toBeHidden();
+  expect(new URL(page.url()).searchParams.get("appPath")).toBe("hello.html");
+  await page.goBack();
+  await expect(page.locator("#filesPanel")).toBeVisible();
+  await expect(page.locator('.fileTabLabel[title="hello.html"]')).toBeVisible();
+});

@@ -24,7 +24,7 @@ export function initGeneratedApp(options: {
       const query = new URLSearchParams({ workspaceId: workspace.id, path });
       const response = await fetch(`/api/files/read?${query}`, { headers: options.headers() });
       const data = await response.json();
-      if (!response.ok || !data.ok) throw new Error(data.error || "Could not load generated app");
+      if (!response.ok || !data.ok || typeof data.content !== "string") throw new Error(data.error || "Could not load generated app");
       if (serial !== generation) return;
       const frame = document.createElement("iframe"); frame.title = `Generated app: ${path}`;
       frame.setAttribute("sandbox", "allow-scripts"); frame.referrerPolicy = "no-referrer";

@@ -227,3 +227,18 @@ containment. Symlink escapes are rejected while a harmless `..valid` directory
 name is accepted. Existing Git helper regression tests continue to pass. Workspace
 IDs themselves are still derived from resolved path spelling; symlink aliases of
 a workspace root remain a registry identity question, separate from containment.
+
+Cross-workspace follow-up: an explicit open-resource event for another workspace
+now invalidates same-name file tabs before reuse. Saves capture the source
+workspace ID, and late file/image/language loads cannot repopulate a switched
+workspace. A browser regression test opens `README.md` in two different roots and
+asserts both displayed content and write routing remain isolated. Git's Ask Agent
+button is disabled while showing a commit/extension view because the minimal
+ResourceRef intentionally covers only working-tree/staged diffs.
+
+Validation follow-up: the full matrix found an existing tablet test assuming that
+session drawers remain panes above 700px. The shared responsive policy has used
+overlays through 1024px, so the test now reads that policy rather than using a
+second breakpoint. Resource/foreign-surface checkpoint tests pass on mobile and
+desktop, including Files → Run App → Back. Screenshot baselines have been updated
+for the persistent shell bar and reviewed for mobile editor and desktop Git layout.

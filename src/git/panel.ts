@@ -434,6 +434,7 @@ export function initGitPanel(options: {
   }
 
   function render() {
+    askButton.disabled = !selectedResource() || state.primaryView !== "status" || state.mobileView === "commit";
     panel.dataset.view = state.mobileView;
     panel.dataset.primaryView = state.primaryView;
     const extensionKey = extensionKeyFromView();
@@ -542,6 +543,7 @@ export function initGitPanel(options: {
     const repo = state.repos.find((item) => item.path === ref.repo);
     if (!repo) throw new Error("Repository not found in workspace");
     const file = state.statusesByRepo[repo.path]?.files.find((item) => item.path === ref.path);
+    state.primaryView = "status";
     await selectFile({ ...(file || { path: ref.path, label: "modified" as const, indexStatus: " ", worktreeStatus: "M" }),
       staged: ref.staged, worktreeStatus: ref.staged ? " " : (file?.worktreeStatus || "M") }, repo);
   }

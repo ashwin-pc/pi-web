@@ -1,3 +1,4 @@
+import { panelOverlayModeQuery } from "../../src/layout/responsive.js";
 import { expect, test } from "@playwright/test";
 import { ensurePreviewArtifact } from "./helpers/artifacts.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
@@ -797,8 +798,8 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
 
     await page.getByText("Older mock session").click();
-    const isMobile = (page.viewportSize()?.width || 0) <= 700;
-    if (isMobile) {
+    const isOverlay = await page.evaluate((query) => window.matchMedia(query).matches, panelOverlayModeQuery);
+    if (isOverlay) {
       await expect(page.locator("#sessionDrawer")).toBeHidden();
       await page.locator("#sessionButton").click();
     } else {

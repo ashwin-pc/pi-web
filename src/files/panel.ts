@@ -76,6 +76,7 @@ export function initFilesPanel(options: {
   let loadedSession = "";
   let treeScope: ExplorerScope = "workspace";
   let treeLoadGeneration = 0;
+  let workspaceGeneration = 0;
   let workspaceMobileView: "tree" | "editor" = "tree";
   let scopeLoaded: Record<ExplorerScope, boolean> = { workspace: false, artifacts: false };
   const scopeScrollPositions: Record<ExplorerScope, number> = { workspace: 0, artifacts: 0 };
@@ -163,27 +164,36 @@ export function initFilesPanel(options: {
       language.of([]), wrap.of(editorLineWrap ? EditorView.lineWrapping : []), EditorView.updateListener.of((update) => { if (update.selectionSet && docRef.current?.path === activePath && workspaceId) onFocus?.({ kind: "file", workspaceId, path: activePath }, currentSelection()); if (!update.docChanged || !docRef.current) return; saveButton.disabled = !dirty(docRef.current); renderTabs(); })];
   }
   async function openFile(path: string) {
-    if (documents.has(path)) { activate(path); return; }
     status.textContent = "Opening…";
+    let generation = workspaceGeneration;
     try {
-      workspaceId = (await getWorkspace()).id;
+      const workspace = await getWorkspace();
+      if (workspaceId && workspaceId !== workspace.id && sessionChanged() === "cancelled") return;
+      workspaceId = workspace.id;
+      if (documents.has(path)) { activate(path); return; }
+      generation = workspaceGeneration;
       const host = document.createElement("div"); host.className = "fileEditorHost"; editor.append(host);
       if (isImagePath(path)) {
         host.classList.add("fileImagePreview");
         const response = await fetch(`/api/files/image?${await query(path)}`, { headers: apiHeaders() });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || response.statusText);
-        const objectUrl = URL.createObjectURL(await response.blob());
+        const bytes = await response.blob();
+        if (generation !== workspaceGeneration) { host.remove(); return; }
+        const objectUrl = URL.createObjectURL(bytes);
         const image = document.createElement("img"); image.alt = path.split("/").pop() || path; image.src = objectUrl;
         try { await image.decode(); } catch { URL.revokeObjectURL(objectUrl); throw new Error("Browser could not decode this image"); }
+        if (generation !== workspaceGeneration) { URL.revokeObjectURL(objectUrl); host.remove(); return; }
         host.append(image); documents.set(path, { kind: "image", path, host, objectUrl }); activate(path); return;
       }
       const data = await responseJson(await fetch(`/api/files/read?${await query(path)}`, { headers: apiHeaders() }));
+      if (generation !== workspaceGeneration) { host.remove(); return; }
       const language = new Compartment(); const wrap = new Compartment(); const ref: { current?: DocumentState } = {};
       const view = new EditorView({ state: EditorState.create({ doc: data.content, extensions: editorExtensions(ref, language, wrap) }), parent: host });
       const doc: TextDocumentState = { kind: "text", path, revision: data.revision, saved: data.content, view, language: data.language, wrap, host };
       ref.current = doc; documents.set(path, doc); activate(path);
-      const extension = await languageExtension(data.language); view.dispatch({ effects: language.reconfigure(extension) });
+      const extension = await languageExtension(data.language); if (documents.get(path) !== doc) return; view.dispatch({ effects: language.reconfigure(extension) });
     } catch (error) {
+      if (generation !== workspaceGeneration) return;
       editor.querySelector<HTMLElement>(".fileEditorHost:empty")?.remove();
       for (const doc of documents.values()) doc.host.hidden = true;
       errorHost?.remove();
@@ -199,7 +209,8 @@ export function initFilesPanel(options: {
     saveButton.disabled = true; status.textContent = "Saving…";
     try {
       const content = doc.view.state.doc.toString();
-      const data = await responseJson(await fetch("/api/files/write", { method: "PUT", headers: apiHeaders(), body: JSON.stringify({ workspaceId: (await getWorkspace()).id, path: doc.path, content, expectedRevision: doc.revision }) }));
+      const targetWorkspaceId = workspaceId;
+      const data = await responseJson(await fetch("/api/files/write", { method: "PUT", headers: apiHeaders(), body: JSON.stringify({ workspaceId: targetWorkspaceId, path: doc.path, content, expectedRevision: doc.revision }) }));
       doc.saved = content; doc.revision = data.revision; status.textContent = "Saved"; renderTabs();
     } catch (error) { status.textContent = error instanceof Error ? error.message : String(error); onError(error); }
     finally { saveButton.disabled = !dirty(doc); }
@@ -375,6 +386,7 @@ export function initFilesPanel(options: {
     const next = explicit || getWorkspaceKey(); if (next === loadedSession) return "unchanged" as const;
     if ([...documents.values()].some(dirty) && !confirm("Discard unsaved file changes from the previous workspace?")) return "cancelled" as const;
     loadedSession = next;
+    workspaceGeneration++;
     scopeLoaded = { workspace: false, artifacts: false };
     scopeScrollPositions.workspace = 0; scopeScrollPositions.artifacts = 0;
     ++treeLoadGeneration;
