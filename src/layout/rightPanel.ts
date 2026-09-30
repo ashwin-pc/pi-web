@@ -198,6 +198,9 @@ export function createAppPanelManager(): AppPanelManager {
   function surfaceUrl() {
     const url = new URL(location.href);
     const surface = active.right?.surface || "chat";
+    if (url.searchParams.get("surface") !== surface) {
+      for (const key of ["path", "repo", "staged"]) url.searchParams.delete(key);
+    }
     url.searchParams.set("surface", surface);
     document.body.dataset.surface = surface;
     document.querySelectorAll<HTMLElement>("[data-workspace-surface]").forEach((button) => {

@@ -66,3 +66,14 @@ describe("attachment message markup", () => {
     expect(parseAttachmentMarkup(serializeAttachmentMarkup("hello", [{ ...attachment, path: "/etc/passwd" }]), cwd).attachments).toEqual([]);
   });
 });
+
+it("round trips structured workspace resources and bounded selections", () => {
+  const context = { type: "resource" as const, id: "resource:readme", label: "README.md",
+    resource: { kind: "file" as const, workspaceId: "local-0123456789abcdef", path: "README.md" },
+    selection: { text: "selected text", fromLine: 2, toLine: 3 } };
+  expect(normalizeSubmittedAttachments(cwd, [context])).toEqual([context]);
+  expect(parseAttachmentMarkup(serializeAttachmentMarkup("Explain this", [context]), cwd)).toEqual({ text: "Explain this", attachments: [context] });
+  expect(normalizeSubmittedAttachments(cwd, [{ ...context, resource: { ...context.resource, path: "../secret" } }])).toEqual([]);
+  expect(normalizeSubmittedAttachments(cwd, [{ ...context, selection: { ...context.selection, text: "x".repeat(16001) } }])).toEqual([]);
+  expect(normalizeSubmittedAttachments(cwd, [{ ...context, selection: { ...context.selection, fromLine: 4 } }])).toEqual([]);
+});

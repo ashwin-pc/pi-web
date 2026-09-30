@@ -1,3 +1,4 @@
+import { resourceUrl, type ResourceRef } from "../../shared/resourceRef.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import { fetchGitCommit, fetchGitDiff, fetchGitLog, fetchGitRepos, fetchGitStatus, syncGit } from "./api.js";
 import { renderCommitView } from "./commitView.js";
@@ -16,6 +17,7 @@ export type GitPanelController = {
   setExtensionTabs(tabs: unknown): void;
   updateExtensionTab(key: string): void;
   isOpen(): boolean;
+  openResource(ref: Extract<ResourceRef, { kind: "diff" }>): Promise<void>;
 };
 
 export function initGitPanel(options: {
@@ -25,9 +27,11 @@ export function initGitPanel(options: {
   apiHeaders: () => HeadersInit;
   getSessionId?: () => string;
   getWorkspace: () => Promise<{ id: string }>;
+  onFocus?: (ref: ResourceRef) => void;
+  onAskAgent?: (ref: ResourceRef) => void;
   onComposerContext?: (context: ComposerContextAttachment) => void;
 }): GitPanelController {
-  const { button, panel, rightPanels, apiHeaders, getSessionId, getWorkspace, onComposerContext } = options;
+  const { button, panel, rightPanels, apiHeaders, getSessionId, getWorkspace, onFocus, onAskAgent, onComposerContext } = options;
   let workspaceScope: { workspaceId: string } | undefined;
   const primary = panel.querySelector<HTMLElement>("#gitPrimaryPane")!;
   const detail = panel.querySelector<HTMLElement>("#gitDetailPane")!;
@@ -161,7 +165,7 @@ export function initGitPanel(options: {
     const preservedRepo = state.selectedFileRepo ? state.repos.find((item) => item.path === state.selectedFileRepo) : undefined;
     const preservedFile = preservedRepo && state.selectedFile ? statuses[preservedRepo.path]?.files.find((file) => file.path === state.selectedFile?.path) : undefined;
     const initial = preservedRepo && preservedFile ? { repo: preservedRepo, file: preservedFile } : firstChangedFile(statuses);
-    if (initial) await selectFile(initial.file, initial.repo, false);
+    if (initial?.repo) await selectFile(initial.file, initial.repo, false);
     else {
       state.selectedFile = undefined;
       state.selectedFileRepo = undefined;
@@ -220,9 +224,15 @@ export function initGitPanel(options: {
     state.status = state.statusesByRepo[repo.path];
     state.selectedFile = file;
     state.selectedFileRepo = repo.path;
+    const resource = selectedResource();
+    if (resource) onFocus?.(resource);
     state.diffLoading = true;
     state.diff = undefined;
-    if (navigate) state.mobileView = "diff";
+    if (navigate) {
+      state.mobileView = "diff";
+      if (workspaceScope) history.replaceState(history.state, "", resourceUrl({ kind: "diff", workspaceId: workspaceScope.workspaceId,
+        repo: repo.path, path: file.path, staged: file.staged && file.worktreeStatus === " " }, location.href));
+    }
     render();
     try {
       const diff = await fetchGitDiff(apiHeaders(), file.path, file.staged && file.worktreeStatus === " ", repo.path, workspaceScope);
@@ -234,6 +244,15 @@ export function initGitPanel(options: {
     }
   }
 
+  function selectedResource(): Extract<ResourceRef, { kind: "diff" }> | undefined {
+    if (!workspaceScope || !state.selectedFile || !state.selectedFileRepo) return;
+    return { kind: "diff", workspaceId: workspaceScope.workspaceId, repo: state.selectedFileRepo,
+      path: state.selectedFile.path, staged: state.selectedFile.staged && state.selectedFile.worktreeStatus === " " };
+  }
+  const askButton = document.createElement("button"); askButton.type = "button";
+  askButton.textContent = "Ask agent"; askButton.className = "resourceAskButton";
+  askButton.addEventListener("click", () => { const resource = selectedResource(); if (resource) onAskAgent?.(resource); });
+  close.parentElement!.insertBefore(askButton, close);
   async function selectCommit(commit: GitCommit, navigate = true) {
     state.selectedCommit = commit;
     state.commitLoading = true;
@@ -512,7 +531,17 @@ export function initGitPanel(options: {
   graphTab.addEventListener("click", () => setPrimary("graph"));
   render();
 
+  async function openResource(ref: Extract<ResourceRef, { kind: "diff" }>) {
+    await refresh();
+    const repo = state.repos.find((item) => item.path === ref.repo);
+    if (!repo) throw new Error("Repository not found in workspace");
+    const file = state.statusesByRepo[repo.path]?.files.find((item) => item.path === ref.path);
+    await selectFile({ ...(file || { path: ref.path, label: "modified" as const, indexStatus: " ", worktreeStatus: "M" }),
+      staged: ref.staged, worktreeStatus: ref.staged ? " " : (file?.worktreeStatus || "M") }, repo);
+  }
+
   return {
+    openResource,
     setExtensionTabs,
     updateExtensionTab: (key) => {
       if (extensionKeyFromView() === key && (panelHandle?.isOpen() ?? state.isOpen)) void loadExtensionTab(key);

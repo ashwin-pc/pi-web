@@ -1,3 +1,4 @@
+import type { ResourceContextAttachment, ResourceRef, ResourceSelection } from "../../shared/resourceRef.js";
 import { parseSessionReference, sessionReferenceHref, type SessionReference } from "../../server/shared/sessionReference.js";
 
 export type Role = "user" | "assistant" | "tool" | "system";
@@ -49,7 +50,7 @@ export type ReferenceAttachment = {
 };
 
 /** @deprecated Compatibility name for extension-provided reference attachments. */
-export type ComposerContextAttachment = ReferenceAttachment;
+export type ComposerContextAttachment = ReferenceAttachment | ResourceContextAttachment;
 export type QuoteReplyAttachment = {
   type: "quote-reply";
   id: string;
@@ -63,7 +64,7 @@ export type QuoteReplyAttachment = {
   };
 };
 
-export type MessageAttachment = FileAttachment | ReferenceAttachment | QuoteReplyAttachment;
+export type MessageAttachment = FileAttachment | ReferenceAttachment | QuoteReplyAttachment | ResourceContextAttachment;
 
 export type PiWebModelSetting = {
   provider: string;
@@ -162,12 +163,14 @@ export type StoredExtensionSettings = {
 export type WebSettingsValidationError = { path: string; message: string };
 
 export type AttachedImage = {
-  type?: "file" | "reference" | "quote-reply";
+  type?: "file" | "reference" | "quote-reply" | "resource";
   id?: string;
   name?: string;
   label?: string;
   title?: string;
   reference?: ReferenceAttachment["reference"];
+  resource?: ResourceRef;
+  selection?: ResourceSelection;
   quote?: string;
   question?: string;
   source?: QuoteReplyAttachment["source"];

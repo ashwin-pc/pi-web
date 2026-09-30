@@ -1,3 +1,4 @@
+import { resourceUrl } from "../../shared/resourceRef.js";
 import type { ApiHeaders } from "../app/api.js";
 import { iconElement, type IconName } from "../app/icons.js";
 import { sessionCitationFromHref, type AttachedImage, type Role, type SessionCitation } from "../app/types.js";
@@ -868,7 +869,7 @@ export function createMessageList(options: {
     body.className = "body";
 
     const renderedQuoteReplies = role === "user" && quoteReplies?.renderSubmittedMessage(body, text, images);
-    const standardAttachments = images.filter((attachment) => attachment.type !== "quote-reply");
+    const standardAttachments = images.filter((attachment) => attachment.type !== "quote-reply" && attachment.type !== "resource");
     const renderUserText = (container: HTMLElement, value: string) => {
       container.textContent = value;
       if (/\]\(\s*#panel:/i.test(value)) markdown.renderAssistantMarkdown(container, value);
@@ -893,6 +894,14 @@ export function createMessageList(options: {
       body.textContent = text || "";
     }
 
+    for (const attachment of images) {
+      if (attachment.type !== "resource" || !attachment.resource) continue;
+      const link = document.createElement("a");
+      link.className = "resourceMessageLink";
+      link.href = resourceUrl(attachment.resource, location.href).href;
+      link.textContent = `Open ${attachment.label || attachment.resource.path}`;
+      body.append(link);
+    }
     div.append(body);
 
     if (role === "user") {

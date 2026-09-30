@@ -1,3 +1,4 @@
+import { resourceUrl, type ResourceRef, type ResourceSelection } from "../../shared/resourceRef.js";
 import { EditorState, Compartment } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
@@ -41,9 +42,9 @@ export type FilesPanelController = {
 
 export function initFilesPanel(options: {
   button: HTMLButtonElement; panel: HTMLElement; rightPanels: RightPanelManager;
-  apiHeaders: () => HeadersInit; getSessionId: () => string; getWorkspace: () => Promise<{ id: string }>; getWorkspaceKey: () => string; onError: (error: unknown) => void;
+  apiHeaders: () => HeadersInit; getSessionId: () => string; getWorkspace: () => Promise<{ id: string }>; getWorkspaceKey: () => string; onFocus?: (ref: ResourceRef, selection?: ResourceSelection) => void; onAskAgent?: (ref: ResourceRef, selection?: ResourceSelection) => void; onError: (error: unknown) => void;
 }): FilesPanelController {
-  const { button, panel, rightPanels, apiHeaders, getSessionId, getWorkspace, getWorkspaceKey, onError } = options;
+  const { button, panel, rightPanels, apiHeaders, getSessionId, getWorkspace, getWorkspaceKey, onFocus, onAskAgent, onError } = options;
   const tree = panel.querySelector<HTMLElement>("#filesTree")!;
   const artifactsTree = panel.querySelector<HTMLElement>("#artifactsTree")!;
   const editor = panel.querySelector<HTMLElement>("#fileEditor")!;
@@ -70,6 +71,7 @@ export function initFilesPanel(options: {
   const editorWrapStorageKey = "pi-web.files.editor-line-wrap";
   const treeWidthStorageKey = "pi-web.files.tree-width";
   const activeTouchPointers = new Map<number, { x: number; y: number }>();
+  let workspaceId = "";
   let activePath = "";
   let loadedSession = "";
   let treeScope: ExplorerScope = "workspace";
@@ -100,7 +102,8 @@ export function initFilesPanel(options: {
   wrapToggle.setAttribute("aria-pressed", String(editorLineWrap));
 
   async function query(path = "") {
-    const params = new URLSearchParams({ workspaceId: (await getWorkspace()).id });
+    workspaceId = (await getWorkspace()).id;
+    const params = new URLSearchParams({ workspaceId });
     if (path) params.set("path", path);
     return params;
   }
@@ -137,6 +140,7 @@ export function initFilesPanel(options: {
       else { editor.textContent = ""; renderEditorEmpty(); panel.classList.remove("filesPanel--imageActive"); saveButton.disabled = true; status.textContent = ""; }
     }
     renderTabs();
+    askButton.disabled = !activePath;
   }
   function activate(path: string) {
     const doc = documents.get(path); if (!doc) return;
@@ -144,6 +148,10 @@ export function initFilesPanel(options: {
     for (const item of documents.values()) item.host.hidden = item !== doc;
     activePath = path; showWorkspaceEditor(); panel.classList.toggle("filesPanel--imageActive", doc.kind === "image"); saveButton.disabled = !dirty(doc); status.textContent = "";
     renderTabs();
+    askButton.disabled = false;
+    const ref: ResourceRef = { kind: "file", workspaceId, path };
+    onFocus?.(ref, currentSelection());
+    if (workspaceId) window.history.replaceState(window.history.state, "", resourceUrl(ref, location.href));
     // Touch-first tablets (including unfolded foldables) should not summon the
     // software keyboard merely because a file was opened.
     if (doc.kind === "text" && window.matchMedia("(hover: hover) and (pointer: fine)").matches) doc.view.focus();
@@ -151,12 +159,13 @@ export function initFilesPanel(options: {
   function editorExtensions(docRef: { current?: DocumentState }, language: Compartment, wrap: Compartment) {
     return [lineNumbers(), history(), drawSelection(), highlightActiveLine(), bracketMatching(), highlightSelectionMatches(),
       vscodeDark, keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab, { key: "Mod-s", preventDefault: true, run: () => { void save(); return true; } }]),
-      language.of([]), wrap.of(editorLineWrap ? EditorView.lineWrapping : []), EditorView.updateListener.of((update) => { if (!update.docChanged || !docRef.current) return; saveButton.disabled = !dirty(docRef.current); renderTabs(); })];
+      language.of([]), wrap.of(editorLineWrap ? EditorView.lineWrapping : []), EditorView.updateListener.of((update) => { if (update.selectionSet && docRef.current?.path === activePath && workspaceId) onFocus?.({ kind: "file", workspaceId, path: activePath }, currentSelection()); if (!update.docChanged || !docRef.current) return; saveButton.disabled = !dirty(docRef.current); renderTabs(); })];
   }
   async function openFile(path: string) {
     if (documents.has(path)) { activate(path); return; }
     status.textContent = "Opening…";
     try {
+      workspaceId = (await getWorkspace()).id;
       const host = document.createElement("div"); host.className = "fileEditorHost"; editor.append(host);
       if (isImagePath(path)) {
         host.classList.add("fileImagePreview");
@@ -194,6 +203,21 @@ export function initFilesPanel(options: {
     } catch (error) { status.textContent = error instanceof Error ? error.message : String(error); onError(error); }
     finally { saveButton.disabled = !dirty(doc); }
   }
+  function currentSelection(): ResourceSelection | undefined {
+    const doc = documents.get(activePath);
+    if (doc?.kind !== "text") return;
+    const { from, to } = doc.view.state.selection.main;
+    if (from === to) return;
+    return { text: doc.view.state.doc.sliceString(from, Math.min(to, from + 16000)),
+      fromLine: doc.view.state.doc.lineAt(from).number, toLine: doc.view.state.doc.lineAt(to).number };
+  }
+  const askButton = document.createElement("button"); askButton.type = "button";
+  askButton.disabled = true;
+  askButton.textContent = "Ask agent"; askButton.className = "resourceAskButton";
+  askButton.addEventListener("click", () => {
+    if (workspaceId && activePath) onAskAgent?.({ kind: "file", workspaceId, path: activePath }, currentSelection());
+  });
+  panel.querySelector(".filesPanelHeader")!.insertBefore(askButton, closeButton);
   function fileTypeClass(path: string) {
     const extension = path.split(".").pop()?.toLowerCase();
     if (["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension || "")) return "code";
@@ -290,6 +314,8 @@ export function initFilesPanel(options: {
   }
   function showWorkspaceEditor() {
     if (treeScope === "workspace" && workspaceMobileView !== "editor" && !panel.hidden) {
+      const treeUrl = new URL(location.href); treeUrl.searchParams.delete("path");
+      window.history.replaceState(window.history.state, "", treeUrl);
       replaceWorkspaceHistory("tree");
       window.history.pushState({ ...historyRecord(window.history.state), [workspaceHistoryStateKey]: { view: "editor" } satisfies WorkspaceHistoryState }, "");
     }
@@ -297,6 +323,8 @@ export function initFilesPanel(options: {
   }
   function showWorkspaceTree() {
     setWorkspaceMobileView("tree");
+    const url = new URL(location.href); url.searchParams.delete("path");
+    window.history.replaceState(window.history.state, "", url);
     replaceWorkspaceHistory("tree");
   }
   function updateTreeScope() {
@@ -337,7 +365,9 @@ export function initFilesPanel(options: {
     loadActiveScope();
   }
   function sessionChanged() {
-    const next = getWorkspaceKey(); if (next === loadedSession) return "unchanged" as const;
+    const explicit = new URL(location.href).searchParams.get("workspaceId");
+    if (explicit && explicit === workspaceId) return "unchanged" as const;
+    const next = explicit || getWorkspaceKey(); if (next === loadedSession) return "unchanged" as const;
     if ([...documents.values()].some(dirty) && !confirm("Discard unsaved file changes from the previous workspace?")) return "cancelled" as const;
     loadedSession = next;
     scopeLoaded = { workspace: false, artifacts: false };
@@ -345,7 +375,7 @@ export function initFilesPanel(options: {
     ++treeLoadGeneration;
     tree.className = "filesTree"; tree.textContent = ""; tree.removeAttribute("aria-busy");
     artifactBrowser.reset();
-    for (const doc of documents.values()) { if (doc.kind === "text") doc.view.destroy(); else URL.revokeObjectURL(doc.objectUrl); doc.host.remove(); } documents.clear(); renderEditorEmpty(); activePath = ""; renderTabs(); panel.classList.remove("filesPanel--imageActive"); setWorkspaceMobileView("tree");
+    for (const doc of documents.values()) { if (doc.kind === "text") doc.view.destroy(); else URL.revokeObjectURL(doc.objectUrl); doc.host.remove(); } documents.clear(); renderEditorEmpty(); activePath = ""; askButton.disabled = true; renderTabs(); panel.classList.remove("filesPanel--imageActive"); setWorkspaceMobileView("tree");
     if (!panel.hidden) loadActiveScope();
     return "changed" as const;
   }

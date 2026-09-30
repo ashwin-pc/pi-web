@@ -14,3 +14,5 @@
 .workspaceNav button[aria-current="page"] { color: var(--accent); box-shadow: inset 0 -2px var(--accent); }
 body .app { margin-top: 44px; height: calc(var(--app-height) - 44px); }
 body .appSidePanel { top: 44px; height: calc(var(--app-height) - 44px); }
+.resourceAskButton { min-height: 36px; padding: 4px 8px; white-space: nowrap; }
+.resourceMessageLink { display: block; margin-top: 8px; color: var(--accent); }

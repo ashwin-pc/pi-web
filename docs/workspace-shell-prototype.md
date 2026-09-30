@@ -127,3 +127,35 @@ Surface is a small optional registration property, not a durable object. The
 navigation bar reserves 44px on all layouts rather than overlapping file headers
 or the composer. The server still bootstraps Chat alongside resource surfaces;
 this spike proves prompt-independent navigation, not lazy agent startup.
+
+### P2–P3 — Resource references, Focus and Ask Agent (implemented)
+
+The shared `ResourceRef` union distinguishes workspace files from working-tree
+or staged diffs. Diff identity includes repository-relative root and stagedness;
+selection and session IDs are deliberately absent. Parsers reject absolute,
+traversing, control-character and backslash paths and normalize redundant `.`
+segments. Generic resource URLs keep existing citations/query parameters. Direct
+navigation, same-origin links in Chat, and `pi-web-open-resource` events use one
+opener. Resource deep links restore after boot; file tabs retain editor state.
+
+Files publishes current resource and bounded CodeMirror line selection; Git
+publishes the selected diff. `pi-web-resource-focus` is device-local. Ask Agent
+adds a structured resource attachment (up to 16,000 selected characters), switches
+to Chat, and preserves the source history entry. Browser Back restores the same
+editor or selected diff. Reopening Git now prefers the selected file instead of
+unconditionally choosing the first changed file. Resource context passes through
+the existing attachment codec, transcript DTO, and model prompt serialization;
+submitted Chat context includes a link back through the same resource opener.
+
+Discovery: the current composer context type was a GitHub-only alias. Extending
+that small union and existing codec was sufficient; no separate context protocol
+was needed. Resource references are pointers, not uploaded snapshots or read
+permissions. Unsaved edits are included only if selected; an unselected file
+reference points to disk. Selection is bounded context, not a durable cursor or
+layout record. Historical commit diffs, binary selection, renamed-path pairs,
+and agent tool-output links are not represented by this minimal union yet.
+
+Validation: resource normalization/identity and attachment round-trip/rejection
+unit tests pass; API, direct resource links, reload, mobile selection → Ask Agent
+→ browser Back → submitted context → Chat resource link pass. Git selection
+retention has an explicit second-file regression test.

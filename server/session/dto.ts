@@ -1,3 +1,4 @@
+import type { ResourceContextAttachment } from "../../shared/resourceRef.js";
 import type { HarnessEventDto } from "./piEventMap.js";
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -54,7 +55,7 @@ export interface BaseSessionStateDto {
 }
 
 /** Serializable, role-discriminated projection consumed by every transcript path. */
-export type AttachmentDto = {
+export type AttachmentDto = ResourceContextAttachment | {
   type: "file";
   id: string;
   name: string;

@@ -62,3 +62,65 @@ test("workspace destinations are URL addressable before prompting", async ({ pag
   await page.reload();
   await expect(page.locator("#filesPanel")).toBeVisible();
 });
+
+test("a shared resource link opens the same file as direct navigation", async ({ page, request }) => {
+  const { current } = await (await request.get("/api/workspaces")).json();
+  await page.goto(`/?surface=files&workspaceId=${current.id}&path=README.md`);
+  await expect(page.locator('.fileTabLabel[title="README.md"]')).toBeVisible();
+  const direct = new URL(page.url());
+  await page.locator('[data-workspace-surface="chat"]').click();
+  await page.evaluate((href) => {
+    const link = document.createElement("a"); link.id = "resourceProbe"; link.href = href; link.textContent = "Open README";
+    document.querySelector("#statusBar")!.append(link);
+  }, direct.href);
+  await page.locator("#resourceProbe").click();
+  await expect(page.locator("#filesPanel")).toBeVisible();
+  await expect(page.locator('.fileTabLabel[title="README.md"]')).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("workspaceId")).toBe(current.id);
+  expect(new URL(page.url()).searchParams.get("path")).toBe("README.md");
+  await page.reload();
+  await expect(page.locator('.fileTabLabel[title="README.md"]')).toBeVisible();
+});
+
+test("Ask agent carries a file selection and Back restores the mobile editor", async ({ page, request }) => {
+  const { current } = await (await request.get("/api/workspaces")).json();
+  await page.goto(`/?surface=files&workspaceId=${current.id}&path=README.md`);
+  await expect(page.locator('.fileTabLabel[title="README.md"]')).toBeVisible();
+  await page.locator(".cm-content").click();
+  await page.locator(".cm-content").press("Control+a");
+  await page.getByRole("button", { name: "Ask agent", exact: true }).click();
+  await expect(page.locator("#filesPanel")).toBeHidden();
+  await expect(page.locator(".contextAttachmentChip")).toContainText("README.md");
+  await page.goBack();
+  await expect(page.locator("#filesPanel")).toBeVisible();
+  await expect(page.locator("#filesPanel")).toHaveAttribute("data-mobile-view", "editor");
+  await expect(page.locator('.fileTabLabel[title="README.md"]')).toBeVisible();
+  await page.locator('[data-workspace-surface="chat"]').click();
+  await page.locator("#prompt").fill("Explain this selection");
+  const promptRequest = page.waitForRequest((req) => req.url().endsWith("/api/prompt") && req.method() === "POST");
+  await page.locator("#primaryButton").click();
+  const payload = (await promptRequest).postDataJSON();
+  expect(payload.attachments[0]).toMatchObject({ type: "resource", resource: { kind: "file", workspaceId: current.id, path: "README.md" }, selection: { fromLine: 1 } });
+  expect(payload.attachments[0].selection.text).toContain("pi-web");
+  await expect(page.locator(".resourceMessageLink").first()).toBeVisible();
+  await page.locator(".resourceMessageLink").first().click();
+  await expect(page.locator("#filesPanel")).toBeVisible();
+  expect(new URL(page.url()).searchParams.get("path")).toBe("README.md");
+});
+
+test("Ask agent returns to the selected Git diff rather than the first changed file", async ({ page, request }) => {
+  const { current } = await (await request.get("/api/workspaces")).json();
+  const files = ["first.ts", "selected.ts"].map((path) => ({ path, indexStatus: " ", worktreeStatus: "M", staged: false, label: "modified" }));
+  await page.route("**/api/git/repos**", (route) => route.fulfill({ json: { ok: true, cwd: current.root, repos: [{ path: ".", root: current.root, branch: "main", upstream: "", ahead: 0, behind: 0, dirtyCount: 2, isCurrent: true }] } }));
+  await page.route("**/api/git/status?**", (route) => route.fulfill({ json: { ok: true, isRepo: true, root: current.root, branch: "main", ahead: 0, behind: 0, files } }));
+  await page.route("**/api/git/log?**", (route) => route.fulfill({ json: { ok: true, commits: [] } }));
+  await page.route("**/api/git/diff?**", (route) => route.fulfill({ json: { ok: true, diff: "diff --git a/selected.ts b/selected.ts\n--- a/selected.ts\n+++ b/selected.ts\n@@ -1 +1 @@\n-old\n+new" } }));
+  await page.goto(`/?surface=git&workspaceId=${current.id}&path=selected.ts&repo=.&staged=0`);
+  await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("selected.ts");
+  await page.locator("#gitPanel .resourceAskButton").click();
+  await expect(page.locator(".contextAttachmentChip")).toContainText("selected.ts");
+  await page.goBack();
+  await expect(page.locator("#gitPanel")).toBeVisible();
+  await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("selected.ts");
+  expect(new URL(page.url()).searchParams.get("path")).toBe("selected.ts");
+});

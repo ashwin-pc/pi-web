@@ -1,3 +1,5 @@
+import { resourceFromUrl, resourceUrl, resourceKey, type ResourceRef, type ResourceSelection } from "../shared/resourceRef.js";
+import { configureResourceOpener } from "./workspace/resources.js";
 import { createWorkspaceClient } from "./workspace/client.js";
 import "./workspace/shell.css";
 import "./style.css";
@@ -910,6 +912,18 @@ initKeyboardShortcuts(keyboardShortcuts, {
   onError: showSystemError,
 });
 composer.updateQueueToggle();
+let resourceFocus: { resource: ResourceRef; selection?: ResourceSelection } | undefined;
+function publishResourceFocus(resource: ResourceRef, selection?: ResourceSelection) {
+  resourceFocus = { resource, ...(selection ? { selection } : {}) };
+  window.dispatchEvent(new CustomEvent("pi-web-resource-focus", { detail: resourceFocus }));
+}
+function askAgent(resource: ResourceRef, selection?: ResourceSelection) {
+  publishResourceFocus(resource, selection);
+  composer.addContextAttachment({ type: "resource", id: `resource:${resourceKey(resource)}`, label: resource.path,
+    title: resource.kind === "diff" ? `${resource.staged ? "Staged" : "Working tree"} diff · ${resource.repo}` : "Workspace file",
+    resource, ...(selection ? { selection } : {}) });
+  rightPanels.navigate("chat");
+}
 const workspaceClient = createWorkspaceClient(api.headers, () => state.currentSessionId);
 filesPanel = initFilesPanel({
   button: elements.filesButton,
@@ -918,7 +932,9 @@ filesPanel = initFilesPanel({
   apiHeaders: api.headers,
   getSessionId: () => state.currentSessionId,
   getWorkspace: workspaceClient.current,
-  getWorkspaceKey: () => new URL(location.href).searchParams.get("workspaceId") || state.currentCwd,
+  onFocus: publishResourceFocus,
+  onAskAgent: askAgent,
+  getWorkspaceKey: () => state.currentCwd,
   onError: showSystemError,
 });
 configureArtifactPanelOpener((url) => filesPanel.openArtifact(url));
@@ -929,12 +945,30 @@ gitPanel = initGitPanel({
   apiHeaders: api.headers,
   getSessionId: () => state.currentSessionId,
   getWorkspace: workspaceClient.current,
+  onFocus: publishResourceFocus,
+  onAskAgent: askAgent,
   onComposerContext: (context) => composer.addContextAttachment(context),
 });
 document.querySelectorAll<HTMLButtonElement>("[data-workspace-surface]").forEach((button) => {
   button.addEventListener("click", () => rightPanels.navigate(button.dataset.workspaceSurface!));
 });
 rightPanels.restoreSurface();
+async function openResource(ref: ResourceRef) {
+  const surface = ref.kind === "file" ? "files" : "git";
+  rightPanels.navigate(surface);
+  history.replaceState(history.state, "", resourceUrl(ref, location.href));
+  if (ref.kind === "file") await filesPanel.openFile(ref.path);
+  else await gitPanel.openResource(ref);
+}
+configureResourceOpener(openResource, showSystemError);
+async function restoreResource() {
+  const resource = resourceFromUrl(new URL(location.href));
+  if (resource) {
+    if (resource.kind === "file") await filesPanel.openFile(resource.path);
+    else await gitPanel.openResource(resource);
+  }
+}
+
 window.addEventListener("popstate", (event) => {
   citationSerial++;
   const reference = readSessionCitationFromUrl();
@@ -956,5 +990,5 @@ window.addEventListener("popstate", (event) => {
 });
 composer.updatePrimaryAction();
 queueCitation(readSessionCitationFromUrl());
-refreshState().catch(showSystemError);
+refreshState().then(restoreResource).catch(showSystemError);
 realtime.connect();

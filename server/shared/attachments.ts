@@ -1,3 +1,4 @@
+import { parseResourceContext, type ResourceContextAttachment } from "../../shared/resourceRef.js";
 import { existsSync, realpathSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { basename, join, relative, resolve, sep } from "node:path";
@@ -47,7 +48,7 @@ export type QuoteReplyMessageAttachment = {
   };
 };
 
-export type MessageAttachment = FileMessageAttachment | ReferenceMessageAttachment | QuoteReplyMessageAttachment;
+export type MessageAttachment = FileMessageAttachment | ReferenceMessageAttachment | QuoteReplyMessageAttachment | ResourceContextAttachment;
 type StoredFileAttachment = Omit<FileMessageAttachment, "contentUrl">;
 
 function safeStoredName(value: string) {
@@ -148,6 +149,8 @@ function validQuoteReplyAttachment(value: unknown): QuoteReplyMessageAttachment 
 }
 
 function normalizeAttachment(cwd: string | undefined, item: unknown): MessageAttachment | undefined {
+  const resource = parseResourceContext(item);
+  if (resource) return resource;
   const quoteReply = validQuoteReplyAttachment(item);
   if (quoteReply) return quoteReply;
   const reference = validReferenceAttachment(item);
