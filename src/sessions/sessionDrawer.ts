@@ -174,6 +174,7 @@ export function createSessions(options: {
   /** Called whenever derived per-session state (e.g. waiting-on-spawned/active workers) may have changed. */
   onDerivedSessionStateChanged?: () => void;
 }): SessionsController {
+  const initialSessionDeepLink = new URLSearchParams(window.location.search).get("sessionId")?.trim();
   const {
     state,
     elements,
@@ -617,7 +618,18 @@ export function createSessions(options: {
     if ((state.pinnedSessions.length > 0 || spawnOrigins().length > 0) && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
     if (!restoredPersistedLaneFocus) {
       restoredPersistedLaneFocus = true;
-      window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
+      // An explicit startup link takes priority over remembered lane focus.
+      if (!initialSessionDeepLink) {
+        window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
+      } else {
+        const initialLane = laneOf(initialSessionDeepLink);
+        if (initialLane) {
+          focusedLane = initialLane;
+          focusedSessionByLane[initialLane] = initialSessionDeepLink;
+          saveLaneFocus();
+          renderSessionBar();
+        }
+      }
     }
   }
 
