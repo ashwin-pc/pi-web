@@ -1,0 +1,40 @@
+{
+  "before_revision": "3e2b3c3265d78a815caa23341522096dd6e4f0ab",
+  "after_revision": "5f63832d876faccc32327141e6155905cc854c51",
+  "viewport": {
+    "width": 1100,
+    "height": 740
+  },
+  "before": {
+    "htmlPreview": {
+      "phase": "before",
+      "rawHtmlBlocks": 1,
+      "previewIframes": 0,
+      "sandbox": null
+    },
+    "deepLink": {
+      "phase": "before",
+      "requestedSessionId": "mock-older",
+      "actualSessionId": "mock-current",
+      "visibleTitle": "Current mock session",
+      "sessionOpenRequests": [
+        "mock-current"
+      ]
+    }
+  },
+  "after": {
+    "htmlPreview": {
+      "phase": "after",
+      "rawHtmlBlocks": 0,
+      "previewIframes": 1,
+      "sandbox": "allow-scripts"
+    },
+    "deepLink": {
+      "phase": "after",
+      "requestedSessionId": "mock-older",
+      "actualSessionId": "mock-older",
+      "visibleTitle": "Older mock session",
+      "sessionOpenRequests": []
+    }
+  }
+}
