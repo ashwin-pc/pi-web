@@ -1,0 +1,16 @@
+.workspaceNav {
+  position: fixed;
+  inset: 0 0 auto;
+  height: 44px;
+  z-index: 32;
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+  padding: 0 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.workspaceNav button { min-height: 44px; min-width: 64px; border: 0; background: transparent; color: var(--muted); }
+.workspaceNav button[aria-current="page"] { color: var(--accent); box-shadow: inset 0 -2px var(--accent); }
+body .app { margin-top: 44px; height: calc(var(--app-height) - 44px); }
+body .appSidePanel { top: 44px; height: calc(var(--app-height) - 44px); }

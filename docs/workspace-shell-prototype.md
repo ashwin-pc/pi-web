@@ -109,3 +109,21 @@ less-trusted runtime is connected.
 Validation: typecheck and production build pass. The workspace-only API exit test
 passes against the real HTTP routes: tree/read/write, revision conflicts, Git
 repos/status/log/diff, unknown IDs, traversal rejection, and the session alias.
+
+### P1 — Workspace-first shell (implemented)
+
+Chat, Files, and Git are persistent peer destinations in a 44px touch navigation
+bar. `?surface=files` and `?surface=git` launch directly; transitions preserve
+session citations and unrelated URL parameters. Reload and browser Back restore
+the destination. The existing panel manager supplies overlay/split policies;
+only one primary resource surface is shown on narrow screens. Settings and
+session drawers remain transient panels. Built-in Files/Git requests, including
+Git image diffs and file writes, use cached workspace descriptors and workspace
+IDs. Extension tabs and artifact routes retain session IDs pending their own
+migration. Switching agent sessions in the same cwd preserves file tabs/edits.
+
+Discovery: panel navigation already had history state, but no URL representation.
+Surface is a small optional registration property, not a durable object. The
+navigation bar reserves 44px on all layouts rather than overlapping file headers
+or the composer. The server still bootstraps Chat alongside resource surfaces;
+this spike proves prompt-independent navigation, not lazy agent startup.

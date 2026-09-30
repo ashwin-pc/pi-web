@@ -41,9 +41,9 @@ export type FilesPanelController = {
 
 export function initFilesPanel(options: {
   button: HTMLButtonElement; panel: HTMLElement; rightPanels: RightPanelManager;
-  apiHeaders: () => HeadersInit; getSessionId: () => string; onError: (error: unknown) => void;
+  apiHeaders: () => HeadersInit; getSessionId: () => string; getWorkspace: () => Promise<{ id: string }>; getWorkspaceKey: () => string; onError: (error: unknown) => void;
 }): FilesPanelController {
-  const { button, panel, rightPanels, apiHeaders, getSessionId, onError } = options;
+  const { button, panel, rightPanels, apiHeaders, getSessionId, getWorkspace, getWorkspaceKey, onError } = options;
   const tree = panel.querySelector<HTMLElement>("#filesTree")!;
   const artifactsTree = panel.querySelector<HTMLElement>("#artifactsTree")!;
   const editor = panel.querySelector<HTMLElement>("#fileEditor")!;
@@ -99,8 +99,8 @@ export function initFilesPanel(options: {
   fontValue.value = `${editorFontSize}px`;
   wrapToggle.setAttribute("aria-pressed", String(editorLineWrap));
 
-  function query(path = "") {
-    const params = new URLSearchParams({ sessionId: getSessionId() });
+  async function query(path = "") {
+    const params = new URLSearchParams({ workspaceId: (await getWorkspace()).id });
     if (path) params.set("path", path);
     return params;
   }
@@ -160,14 +160,14 @@ export function initFilesPanel(options: {
       const host = document.createElement("div"); host.className = "fileEditorHost"; editor.append(host);
       if (isImagePath(path)) {
         host.classList.add("fileImagePreview");
-        const response = await fetch(`/api/files/image?${query(path)}`, { headers: apiHeaders() });
+        const response = await fetch(`/api/files/image?${await query(path)}`, { headers: apiHeaders() });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || response.statusText);
         const objectUrl = URL.createObjectURL(await response.blob());
         const image = document.createElement("img"); image.alt = path.split("/").pop() || path; image.src = objectUrl;
         try { await image.decode(); } catch { URL.revokeObjectURL(objectUrl); throw new Error("Browser could not decode this image"); }
         host.append(image); documents.set(path, { kind: "image", path, host, objectUrl }); activate(path); return;
       }
-      const data = await responseJson(await fetch(`/api/files/read?${query(path)}`, { headers: apiHeaders() }));
+      const data = await responseJson(await fetch(`/api/files/read?${await query(path)}`, { headers: apiHeaders() }));
       const language = new Compartment(); const wrap = new Compartment(); const ref: { current?: DocumentState } = {};
       const view = new EditorView({ state: EditorState.create({ doc: data.content, extensions: editorExtensions(ref, language, wrap) }), parent: host });
       const doc: TextDocumentState = { kind: "text", path, revision: data.revision, saved: data.content, view, language: data.language, wrap, host };
@@ -189,7 +189,7 @@ export function initFilesPanel(options: {
     saveButton.disabled = true; status.textContent = "Saving…";
     try {
       const content = doc.view.state.doc.toString();
-      const data = await responseJson(await fetch("/api/files/write", { method: "PUT", headers: apiHeaders(), body: JSON.stringify({ sessionId: getSessionId(), path: doc.path, content, expectedRevision: doc.revision }) }));
+      const data = await responseJson(await fetch("/api/files/write", { method: "PUT", headers: apiHeaders(), body: JSON.stringify({ workspaceId: (await getWorkspace()).id, path: doc.path, content, expectedRevision: doc.revision }) }));
       doc.saved = content; doc.revision = data.revision; status.textContent = "Saved"; renderTabs();
     } catch (error) { status.textContent = error instanceof Error ? error.message : String(error); onError(error); }
     finally { saveButton.disabled = !dirty(doc); }
@@ -237,7 +237,7 @@ export function initFilesPanel(options: {
     renderTreeState(container, "loading", "Loading files…");
     container.setAttribute("aria-busy", "true");
     try {
-      const data = await responseJson(await fetch(`/api/files/tree?${query(path)}`, { headers: apiHeaders() }));
+      const data = await responseJson(await fetch(`/api/files/tree?${await query(path)}`, { headers: apiHeaders() }));
       if (context.generation !== treeLoadGeneration) return;
       container.textContent = "";
       container.classList.remove("fileTreeContainer--state");
@@ -337,8 +337,8 @@ export function initFilesPanel(options: {
     loadActiveScope();
   }
   function sessionChanged() {
-    const next = getSessionId(); if (next === loadedSession) return "unchanged" as const;
-    if ([...documents.values()].some(dirty) && !confirm("Discard unsaved file changes from the previous session?")) return "cancelled" as const;
+    const next = getWorkspaceKey(); if (next === loadedSession) return "unchanged" as const;
+    if ([...documents.values()].some(dirty) && !confirm("Discard unsaved file changes from the previous workspace?")) return "cancelled" as const;
     loadedSession = next;
     scopeLoaded = { workspace: false, artifacts: false };
     scopeScrollPositions.workspace = 0; scopeScrollPositions.artifacts = 0;
@@ -351,7 +351,7 @@ export function initFilesPanel(options: {
   }
   updateTreeScope();
   const handle = rightPanels.register({
-    id: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000,
+    id: "files", surface: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000,
     canCloseOnEscape: () => treeScope !== "artifacts" || panel.dataset.artifactView !== "preview",
     onOpen: () => {
       artifactBrowser.panelOpened();

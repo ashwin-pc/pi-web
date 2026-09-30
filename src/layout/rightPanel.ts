@@ -6,6 +6,8 @@ export type AppPanelSide = "left" | "right";
 export type AppPanelRegistration = {
   id: string;
   side?: AppPanelSide;
+  /** Addressable workspace destination; other panels remain transient overlays. */
+  surface?: string;
   panel: HTMLElement;
   trigger?: HTMLElement;
   backdrop?: HTMLElement;
@@ -37,6 +39,8 @@ export type AppPanelHandle = {
 export type AppPanelManager = {
   register: (registration: AppPanelRegistration) => AppPanelHandle;
   closeActive: () => void;
+  navigate: (surface: string) => void;
+  restoreSurface: () => void;
   activeId: (side?: AppPanelSide) => string | undefined;
   isOpen: (id: string) => boolean;
 };
@@ -183,6 +187,7 @@ export function createAppPanelManager(): AppPanelManager {
       setBodyPanelState(registration.side, undefined);
     }
     registration.onClose?.();
+    surfaceUrl();
     if (focusTrigger) focusElement(resolveElement(registration.focusOnClose) || registration.trigger);
   }
 
@@ -190,8 +195,19 @@ export function createAppPanelManager(): AppPanelManager {
     return ([active.left, active.right].filter(Boolean) as RegisteredPanel[]).map((registration) => registration.id);
   }
 
+  function surfaceUrl() {
+    const url = new URL(location.href);
+    const surface = active.right?.surface || "chat";
+    url.searchParams.set("surface", surface);
+    document.body.dataset.surface = surface;
+    document.querySelectorAll<HTMLElement>("[data-workspace-surface]").forEach((button) => {
+      button.setAttribute("aria-current", button.dataset.workspaceSurface === surface ? "page" : "false");
+    });
+    return url;
+  }
+
   function replacePanelHistoryState() {
-    history.replaceState({ ...historyState(), [panelHistoryStateKey]: activePanelIds() }, "");
+    history.replaceState({ ...historyState(), [panelHistoryStateKey]: activePanelIds() }, "", surfaceUrl());
   }
 
   function closeRegistrationFromUi(registration: RegisteredPanel, focusTrigger = true) {
@@ -220,6 +236,7 @@ export function createAppPanelManager(): AppPanelManager {
     setBodyPanelState(registration.side, registration);
     setTriggerState(registration, true);
     registration.onOpen?.();
+    surfaceUrl();
     focusElement(resolveElement(registration.focusOnOpen));
   }
 
@@ -227,7 +244,7 @@ export function createAppPanelManager(): AppPanelManager {
     if (!registration.panel.hidden) return;
     replacePanelHistoryState();
     openRegistration(registration);
-    history.pushState({ ...historyState(), [panelHistoryStateKey]: activePanelIds() }, "");
+    history.pushState({ ...historyState(), [panelHistoryStateKey]: activePanelIds() }, "", surfaceUrl());
   }
 
   function enforceLayoutMode() {
@@ -385,6 +402,11 @@ export function createAppPanelManager(): AppPanelManager {
       const registration = active[side];
       if (registration && !panelsToKeep.has(registration.id)) closeRegistration(registration, false);
     }
+    const surface = new URL(location.href).searchParams.get("surface");
+    if (surface && surface !== "chat") {
+      const registration = [...registrations.values()].find((item) => item.surface === surface);
+      if (registration) panelsToKeep.add(registration.id);
+    }
     for (const id of panelsToKeep) {
       const registration = registrations.get(id);
       if (registration?.panel.hidden) openRegistration(registration);
@@ -400,6 +422,22 @@ export function createAppPanelManager(): AppPanelManager {
 
   return {
     register,
+    navigate: (surface) => {
+      if (surface === "chat") {
+        replacePanelHistoryState();
+        for (const registration of Object.values(active)) if (registration) closeRegistration(registration, false);
+        history.pushState({ ...historyState(), [panelHistoryStateKey]: [] }, "", surfaceUrl());
+      } else {
+        const registration = [...registrations.values()].find((item) => item.surface === surface);
+        if (registration) openRegistrationFromUi(registration);
+      }
+    },
+    restoreSurface: () => {
+      const surface = new URL(location.href).searchParams.get("surface");
+      const registration = [...registrations.values()].find((item) => item.surface === surface);
+      if (registration) openRegistration(registration);
+      replacePanelHistoryState();
+    },
     closeActive: () => {
       const activePanel = (lastOpenedSide ? active[lastOpenedSide] : undefined) || active.right || active.left;
       if (activePanel) closeRegistrationFromUi(activePanel);

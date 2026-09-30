@@ -24,9 +24,11 @@ export function initGitPanel(options: {
   rightPanels?: RightPanelManager;
   apiHeaders: () => HeadersInit;
   getSessionId?: () => string;
+  getWorkspace: () => Promise<{ id: string }>;
   onComposerContext?: (context: ComposerContextAttachment) => void;
 }): GitPanelController {
-  const { button, panel, rightPanels, apiHeaders, getSessionId, onComposerContext } = options;
+  const { button, panel, rightPanels, apiHeaders, getSessionId, getWorkspace, onComposerContext } = options;
+  let workspaceScope: { workspaceId: string } | undefined;
   const primary = panel.querySelector<HTMLElement>("#gitPrimaryPane")!;
   const detail = panel.querySelector<HTMLElement>("#gitDetailPane")!;
   const statusTab = panel.querySelector<HTMLButtonElement>("#gitStatusTab")!;
@@ -119,7 +121,7 @@ export function initGitPanel(options: {
   }
 
   async function loadStatuses(repos: GitRepo[]) {
-    const entries = await Promise.all(repos.map(async (repo) => [repo.path, await fetchGitStatus(apiHeaders(), repo.path, true, getSessionId?.())] as const));
+    const entries = await Promise.all(repos.map(async (repo) => [repo.path, await fetchGitStatus(apiHeaders(), repo.path, true, workspaceScope)] as const));
     return Object.fromEntries(entries) as Record<string, GitStatusResponse>;
   }
 
@@ -147,7 +149,7 @@ export function initGitPanel(options: {
     }
 
     const repo = selectedRepoPath();
-    const [statuses, log] = await Promise.all([loadStatuses(state.repos), fetchGitLog(apiHeaders(), repo, getSessionId?.())]);
+    const [statuses, log] = await Promise.all([loadStatuses(state.repos), fetchGitLog(apiHeaders(), repo, workspaceScope)]);
     state.statusesByRepo = statuses;
     state.status = repo ? statuses[repo] : undefined;
     state.commits = log.commits || [];
@@ -170,7 +172,8 @@ export function initGitPanel(options: {
   async function refresh() {
     state.loading = true; state.error = undefined; render();
     try {
-      const repoList = await fetchGitRepos(apiHeaders(), getSessionId?.());
+      workspaceScope = { workspaceId: (await getWorkspace()).id };
+      const repoList = await fetchGitRepos(apiHeaders(), workspaceScope);
       state.repos = repoList.repos;
       state.repoCwd = repoList.cwd;
       state.selectedRepo = chooseRepo(repoList.repos, repoList.cwd);
@@ -196,8 +199,8 @@ export function initGitPanel(options: {
     render();
     try {
       const [status, log] = await Promise.all([
-        state.statusesByRepo[repo.path] ? Promise.resolve(state.statusesByRepo[repo.path]!) : fetchGitStatus(apiHeaders(), repo.path, true, getSessionId?.()),
-        fetchGitLog(apiHeaders(), repo.path, getSessionId?.()),
+        state.statusesByRepo[repo.path] ? Promise.resolve(state.statusesByRepo[repo.path]!) : fetchGitStatus(apiHeaders(), repo.path, true, workspaceScope),
+        fetchGitLog(apiHeaders(), repo.path, workspaceScope),
       ]);
       state.statusesByRepo = { ...state.statusesByRepo, [repo.path]: status };
       state.status = status;
@@ -222,7 +225,7 @@ export function initGitPanel(options: {
     if (navigate) state.mobileView = "diff";
     render();
     try {
-      const diff = await fetchGitDiff(apiHeaders(), file.path, file.staged && file.worktreeStatus === " ", repo.path, getSessionId?.());
+      const diff = await fetchGitDiff(apiHeaders(), file.path, file.staged && file.worktreeStatus === " ", repo.path, workspaceScope);
       state.diff = diff.diff;
     } catch (error) {
       state.diff = error instanceof Error ? error.message : String(error);
@@ -239,7 +242,7 @@ export function initGitPanel(options: {
     if (navigate) state.mobileView = "commit";
     render();
     try {
-      const details = await fetchGitCommit(apiHeaders(), commit.hash, selectedRepoPath(), getSessionId?.());
+      const details = await fetchGitCommit(apiHeaders(), commit.hash, selectedRepoPath(), workspaceScope);
       state.commitFiles = details.files;
       state.commitDiff = details.diff;
     } catch (error) {
@@ -305,8 +308,8 @@ export function initGitPanel(options: {
     state.error = undefined;
     render();
     try {
-      await syncGit(apiHeaders(), repo.path, getSessionId?.());
-      const repoList = await fetchGitRepos(apiHeaders(), getSessionId?.());
+      await syncGit(apiHeaders(), repo.path, workspaceScope);
+      const repoList = await fetchGitRepos(apiHeaders(), workspaceScope);
       state.repos = repoList.repos;
       state.repoCwd = repoList.cwd;
       state.selectedRepo = state.repos.find((item) => item.path === state.selectedRepo?.path) || state.repos.find((item) => item.path === repo.path) || chooseRepo(state.repos, repoList.cwd);
@@ -455,7 +458,7 @@ export function initGitPanel(options: {
     }
 
     if (state.mobileView === "commit") renderCommitView({ container: detail, commit: state.selectedCommit, files: state.commitFiles, diff: state.commitDiff, loading: state.commitLoading, onBack: () => setPrimary("graph") });
-    else renderDiffView({ container: detail, file: state.selectedFile, repo: state.selectedFileRepo, diff: state.diff, loading: state.diffLoading, apiHeaders, sessionId: getSessionId?.(), onBack: () => setPrimary("status") });
+    else renderDiffView({ container: detail, file: state.selectedFile, repo: state.selectedFileRepo, diff: state.diff, loading: state.diffLoading, apiHeaders, scope: workspaceScope, onBack: () => setPrimary("status") });
   }
 
   function invokeExtensionAction(activeKey: string, target: HTMLElement) {
@@ -489,7 +492,7 @@ export function initGitPanel(options: {
   });
 
   panelHandle = rightPanels?.register({
-    id: "git",
+    id: "git", surface: "git",
     side: "right",
     panel,
     trigger: button,

@@ -38,3 +38,27 @@ test("Files and Git accept workspace identity without a session", async ({ reque
   expect((await request.get("/api/git/repos?workspaceId=unknown")).status()).toBe(404);
   expect((await request.get(`/api/files/read?${query}&path=../package.json`)).status()).toBe(400);
 });
+
+test("workspace destinations are URL addressable before prompting", async ({ page }) => {
+  await page.goto("/?surface=files");
+  await expect(page.locator("#filesPanel")).toBeVisible();
+  await expect(page.locator('.fileTreeFile[title="README.md"]')).toBeVisible();
+  const treeRequests: string[] = [];
+  page.on("request", (request) => { if (request.url().includes("/api/git/repos")) treeRequests.push(request.url()); });
+  await page.locator('[data-workspace-surface="git"]').click();
+  await expect(page.locator("#gitPanel")).toBeVisible();
+  await expect(page.locator("#filesPanel")).toBeHidden();
+  await expect(page).toHaveURL(/surface=git/);
+  await expect.poll(() => treeRequests.length).toBeGreaterThan(0);
+  expect(new URL(treeRequests[0]).searchParams.has("workspaceId")).toBeTruthy();
+  expect(new URL(treeRequests[0]).searchParams.has("sessionId")).toBeFalsy();
+  await page.locator('[data-workspace-surface="chat"]').click();
+  await expect(page.locator("#gitPanel")).toBeHidden();
+  await expect(page).toHaveURL(/surface=chat/);
+  await page.goBack();
+  await expect(page.locator("#gitPanel")).toBeVisible();
+  await page.goBack();
+  await expect(page.locator("#filesPanel")).toBeVisible();
+  await page.reload();
+  await expect(page.locator("#filesPanel")).toBeVisible();
+});

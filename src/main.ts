@@ -1,3 +1,5 @@
+import { createWorkspaceClient } from "./workspace/client.js";
+import "./workspace/shell.css";
 import "./style.css";
 import "./components/diff.css";
 import "./git/git.css";
@@ -908,12 +910,15 @@ initKeyboardShortcuts(keyboardShortcuts, {
   onError: showSystemError,
 });
 composer.updateQueueToggle();
+const workspaceClient = createWorkspaceClient(api.headers, () => state.currentSessionId);
 filesPanel = initFilesPanel({
   button: elements.filesButton,
   panel: elements.filesPanel,
   rightPanels,
   apiHeaders: api.headers,
   getSessionId: () => state.currentSessionId,
+  getWorkspace: workspaceClient.current,
+  getWorkspaceKey: () => new URL(location.href).searchParams.get("workspaceId") || state.currentCwd,
   onError: showSystemError,
 });
 configureArtifactPanelOpener((url) => filesPanel.openArtifact(url));
@@ -923,8 +928,13 @@ gitPanel = initGitPanel({
   rightPanels,
   apiHeaders: api.headers,
   getSessionId: () => state.currentSessionId,
+  getWorkspace: workspaceClient.current,
   onComposerContext: (context) => composer.addContextAttachment(context),
 });
+document.querySelectorAll<HTMLButtonElement>("[data-workspace-surface]").forEach((button) => {
+  button.addEventListener("click", () => rightPanels.navigate(button.dataset.workspaceSurface!));
+});
+rightPanels.restoreSurface();
 window.addEventListener("popstate", (event) => {
   citationSerial++;
   const reference = readSessionCitationFromUrl();
