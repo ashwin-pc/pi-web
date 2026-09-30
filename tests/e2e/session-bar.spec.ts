@@ -906,6 +906,15 @@ test.describe("session quick bar", () => {
       await route.continue();
     });
     await page.goto("/");
+    // A navigation can finish before the async session UI-state read has
+    // populated both lanes. Swipe only once the source and destination are
+    // rendered; otherwise this tests startup timing instead of touch behavior.
+    await page.locator(".sessionLayersButton").click();
+    await expect(page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerCard[data-session-id="mock-current"]')).toBeVisible();
+    await expect(page.locator('.sessionLaneDrawerSection[data-lane="parked"] .sessionLaneDrawerCard[data-session-id="mock-older"]')).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sessionLaneDrawer")).toBeHidden();
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toBeVisible();
     const tabBox = await page.locator('.sessionBarTab.laned[data-session-id="mock-current"]').boundingBox();
     expect(tabBox).not.toBeNull();
     const x = tabBox!.x + tabBox!.width / 2;
