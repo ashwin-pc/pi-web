@@ -173,7 +173,13 @@ export function initGitPanel(options: {
     }
   }
 
-  async function refresh() {
+  let refreshPending: Promise<void> | undefined;
+  function refresh(): Promise<void> {
+    if (!refreshPending) refreshPending = refreshNow().finally(() => { refreshPending = undefined; });
+    return refreshPending;
+  }
+
+  async function refreshNow() {
     state.loading = true; state.error = undefined; render();
     try {
       workspaceScope = { workspaceId: (await getWorkspace()).id };

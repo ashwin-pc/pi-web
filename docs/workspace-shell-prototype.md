@@ -159,3 +159,71 @@ Validation: resource normalization/identity and attachment round-trip/rejection
 unit tests pass; API, direct resource links, reload, mobile selection → Ask Agent
 → browser Back → submitted context → Chat resource link pass. Git selection
 retention has an explicit second-file regression test.
+
+### P4 — Harness pressure test (assessed; exit test not yet met)
+
+The capability DTO is agent-neutral, but the implementation boundary is not.
+`LocalSessionFactory.create` must return `PiWebSession`; the service always binds
+the Pi web-UI bridge and assumes a Pi SessionManager, ModelRuntime, context/tree
+projection, extension runner and Pi event subscription. The existing factory is
+one service-wide override, not a per-session harness router. The `HarnessAdapter`
+/ `AgentSessionHandle` seam in `docs/multi-harness-design.md` is a design, not code.
+A Codex CLI is present in this environment, but the CLI's presence does not provide
+a binding that can inhabit this service. Pretending a constrained mock is a second
+harness would not meet the checkpoint.
+
+Next concrete increment: implement the two-level adapter seam, keep Pi's native
+features in its adapter, then route session creation/open by a stored harness
+binding. Preserve the capability DTO and opaque event escape hatch. This spike
+leaves the real two-harness exit test open; resource APIs/UI no longer depend on
+which eventual adapter supplies Chat.
+
+### P5 — Foreign app pressure test (implemented through existing extension runtime)
+
+Trusted rendered extension panels are now URL-addressable `surface=app&app=<key>`
+destinations, discoverable beside built-ins in shell navigation. They retain the
+existing action/form invocation protocol and session-scoped contribution lifecycle.
+The host explicitly labels them “Trusted extension”: their HTML runs in the host
+DOM, so they are not an isolation boundary. An unavailable contribution does not
+become an executable URL payload. Existing `#panel:` links continue to work.
+
+A generated HTML document can be launched from Files with Run App, or with
+`surface=preview&workspaceId=<id>&appPath=<workspace-relative HTML path>`. It runs
+in an `allow-scripts` iframe with an opaque origin, no same-origin grant and no
+host/tool bridge. A host-supplied CSP blocks network connections, external assets,
+forms and base-URL changes. This intentionally supports self-contained inline
+HTML/CSS/JS apps; relative assets and network-dependent apps are outside the probe.
+The document is loaded through the workspace Files API, not an arbitrary URL.
+Closing it destroys the frame; Back reexecutes it rather than persisting app state.
+The host reads saved disk content, not unsaved editor text.
+
+Discovery: the contribution runtime already hosts interactive foreign panels.
+Reusing it plus a separate untrusted document container is enough for this probe;
+a full MCP Apps transport/tool/result protocol would be a separate binding, not a
+small shell abstraction. No App SDK or second trusted extension runtime was added.
+Surface remains navigation state, while installed contributions belong to sessions.
+
+Validation: trusted app form invocation, reload and Back pass on mobile/desktop.
+A generated counter runs and handles clicks; attempts to access the parent document
+fail, the iframe has exactly `sandbox="allow-scripts"`, and Chat → Back reopens it.
+The wider suite also caught a desktop CSS specificity collision under the 44px bar;
+resource panel positioning now overrides that legacy selector consistently.
+
+### P6 — Activity spike (deferred behind P4)
+
+Per the planned ordering (“Only after the above”), durable Activity is not added
+while the second-harness ownership model remains untested. Existing session activity
+summaries are transcript presentation, not a workspace task grouping. A future
+Activity should reference workspace ResourceRefs and harness-bound sessions, without
+persisting panel widths, active surface, editor cursors or current focus. The current
+URL/history and localStorage layout policies provide no evidence those belong in a
+durable Activity record.
+
+### Containment follow-up
+
+The P0 Git discovery above is now covered and fixed: nested repository selectors
+and working-tree image previews check realpath containment as well as lexical
+containment. Symlink escapes are rejected while a harmless `..valid` directory
+name is accepted. Existing Git helper regression tests continue to pass. Workspace
+IDs themselves are still derived from resolved path spelling; symlink aliases of
+a workspace root remain a registry identity question, separate from containment.

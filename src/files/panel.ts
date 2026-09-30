@@ -42,7 +42,7 @@ export type FilesPanelController = {
 
 export function initFilesPanel(options: {
   button: HTMLButtonElement; panel: HTMLElement; rightPanels: RightPanelManager;
-  apiHeaders: () => HeadersInit; getSessionId: () => string; getWorkspace: () => Promise<{ id: string }>; getWorkspaceKey: () => string; onFocus?: (ref: ResourceRef, selection?: ResourceSelection) => void; onAskAgent?: (ref: ResourceRef, selection?: ResourceSelection) => void; onError: (error: unknown) => void;
+  apiHeaders: () => HeadersInit; getSessionId: () => string; getWorkspace: () => Promise<{ id: string }>; getWorkspaceKey: () => string; onFocus?: (ref: ResourceRef, selection?: ResourceSelection) => void; onAskAgent?: (ref: ResourceRef, selection?: ResourceSelection) => void; onRunApp?: (path: string) => void; onError: (error: unknown) => void;
 }): FilesPanelController {
   const { button, panel, rightPanels, apiHeaders, getSessionId, getWorkspace, getWorkspaceKey, onFocus, onAskAgent, onError } = options;
   const tree = panel.querySelector<HTMLElement>("#filesTree")!;
@@ -149,6 +149,7 @@ export function initFilesPanel(options: {
     activePath = path; showWorkspaceEditor(); panel.classList.toggle("filesPanel--imageActive", doc.kind === "image"); saveButton.disabled = !dirty(doc); status.textContent = "";
     renderTabs();
     askButton.disabled = false;
+    runButton.hidden = !/\.html?$/i.test(path);
     const ref: ResourceRef = { kind: "file", workspaceId, path };
     onFocus?.(ref, currentSelection());
     if (workspaceId) window.history.replaceState(window.history.state, "", resourceUrl(ref, location.href));
@@ -218,6 +219,10 @@ export function initFilesPanel(options: {
     if (workspaceId && activePath) onAskAgent?.({ kind: "file", workspaceId, path: activePath }, currentSelection());
   });
   panel.querySelector(".filesPanelHeader")!.insertBefore(askButton, closeButton);
+  const runButton = document.createElement("button"); runButton.type = "button"; runButton.hidden = true;
+  runButton.textContent = "Run app"; runButton.className = "resourceAskButton";
+  runButton.addEventListener("click", () => { if (activePath) options.onRunApp?.(activePath); });
+  panel.querySelector(".filesPanelHeader")!.insertBefore(runButton, askButton);
   function fileTypeClass(path: string) {
     const extension = path.split(".").pop()?.toLowerCase();
     if (["ts", "tsx", "js", "jsx", "mjs", "cjs"].includes(extension || "")) return "code";

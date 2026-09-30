@@ -1,3 +1,4 @@
+import { initGeneratedApp } from "./workspace/generatedApp.js";
 import { resourceFromUrl, resourceUrl, resourceKey, type ResourceRef, type ResourceSelection } from "../shared/resourceRef.js";
 import { configureResourceOpener } from "./workspace/resources.js";
 import { createWorkspaceClient } from "./workspace/client.js";
@@ -420,6 +421,15 @@ function renderActiveSessionMetadata() {
   setArtifactPreviews(inSlot("artifact-preview"));
   gitPanel?.setExtensionTabs(inSlot("git-tab"));
   webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
+  const workspaceNav = document.querySelector(".workspaceNav");
+  workspaceNav?.querySelectorAll("[data-workspace-app]").forEach((button) => button.remove());
+  for (const entry of webPanels?.entries() || []) {
+    const button = document.createElement("button"); button.type = "button";
+    button.textContent = entry.label; button.dataset.workspaceApp = entry.key; button.dataset.workspaceSurface = "app";
+    button.addEventListener("click", () => webPanels.open(entry.key));
+    workspaceNav?.append(button);
+  }
+
   actionLauncher?.setExtensionActions(inSlot("fab"));
   systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   const captureContributions = inSlot("composer-input").filter((entry): entry is ComposerCaptureDescriptor =>
@@ -912,6 +922,7 @@ initKeyboardShortcuts(keyboardShortcuts, {
   onError: showSystemError,
 });
 composer.updateQueueToggle();
+let generatedApp: ReturnType<typeof initGeneratedApp>;
 let resourceFocus: { resource: ResourceRef; selection?: ResourceSelection } | undefined;
 function publishResourceFocus(resource: ResourceRef, selection?: ResourceSelection) {
   resourceFocus = { resource, ...(selection ? { selection } : {}) };
@@ -934,6 +945,7 @@ filesPanel = initFilesPanel({
   getWorkspace: workspaceClient.current,
   onFocus: publishResourceFocus,
   onAskAgent: askAgent,
+  onRunApp: (path) => { void generatedApp.open(path).catch(showSystemError); },
   getWorkspaceKey: () => state.currentCwd,
   onError: showSystemError,
 });
@@ -952,7 +964,7 @@ gitPanel = initGitPanel({
 document.querySelectorAll<HTMLButtonElement>("[data-workspace-surface]").forEach((button) => {
   button.addEventListener("click", () => rightPanels.navigate(button.dataset.workspaceSurface!));
 });
-rightPanels.restoreSurface();
+generatedApp = initGeneratedApp({ panels: rightPanels, headers: api.headers, workspace: workspaceClient.current });
 async function openResource(ref: ResourceRef) {
   const surface = ref.kind === "file" ? "files" : "git";
   rightPanels.navigate(surface);
@@ -962,6 +974,7 @@ async function openResource(ref: ResourceRef) {
 }
 configureResourceOpener(openResource, showSystemError);
 async function restoreResource() {
+  rightPanels.restoreSurface();
   const resource = resourceFromUrl(new URL(location.href));
   if (resource) {
     if (resource.kind === "file") await filesPanel.openFile(resource.path);

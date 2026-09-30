@@ -82,7 +82,8 @@ export function createWebPanels(options: {
   close.title = "Close panel";
   close.setAttribute("aria-label", "Close panel");
   close.append(iconElement("x"));
-  header.append(heading, close);
+  const boundary = document.createElement("span"); boundary.className = "foreignAppBoundary"; boundary.textContent = "Trusted extension";
+  header.append(heading, boundary, close);
 
   const body = document.createElement("div");
   body.className = "webPanelBody";
@@ -154,6 +155,8 @@ export function createWebPanels(options: {
     activeKey = key;
     renderHeading(entry);
     panelHandle.open();
+    const url = new URL(location.href); url.searchParams.set("app", key);
+    history.replaceState(history.state, "", url);
     void invoke(initialEvent);
   }
 
@@ -196,7 +199,7 @@ export function createWebPanels(options: {
   }));
 
   panelHandle = rightPanels.register({
-    id: "web-extension",
+    id: "web-extension", surface: "app",
     side: "right",
     panel,
     closeButton: close,
@@ -204,6 +207,10 @@ export function createWebPanels(options: {
     minWidth: 320,
     maxWidth: 900,
     focusOnOpen: close,
+    onOpen: () => {
+      const key = new URL(location.href).searchParams.get("app");
+      if (!activeKey && key && panels.some((entry) => entry.key === key)) { activeKey = key; void invoke(); }
+    },
     onClose: () => { requestGeneration += 1; updatePending = false; },
   });
 

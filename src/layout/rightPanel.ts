@@ -199,7 +199,7 @@ export function createAppPanelManager(): AppPanelManager {
     const url = new URL(location.href);
     const surface = active.right?.surface || "chat";
     if (url.searchParams.get("surface") !== surface) {
-      for (const key of ["path", "repo", "staged"]) url.searchParams.delete(key);
+      for (const key of ["path", "repo", "staged", "app", "appPath"]) url.searchParams.delete(key);
     }
     url.searchParams.set("surface", surface);
     document.body.dataset.surface = surface;

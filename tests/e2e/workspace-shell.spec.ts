@@ -124,3 +124,46 @@ test("Ask agent returns to the selected Git diff rather than the first changed f
   await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("selected.ts");
   expect(new URL(page.url()).searchParams.get("path")).toBe("selected.ts");
 });
+
+test("generated HTML is an interactive peer with an opaque sandbox and no host bridge", async ({ page, request }) => {
+  const { current } = await (await request.get("/api/workspaces")).json();
+  await page.route("**/api/files/read?**", (route) => route.fulfill({ json: { ok: true, content: `
+    <button id="counter">0</button><span id="boundary"></span>
+    <script>counter.onclick=()=>counter.textContent=String(Number(counter.textContent)+1);
+    try { parent.document.body.dataset.escaped='yes'; boundary.textContent='escaped'; } catch { boundary.textContent='isolated'; }
+    </script>` } }));
+  await page.goto(`/?surface=preview&workspaceId=${current.id}&appPath=counter.html`);
+  const frame = page.frameLocator('.generatedAppBody iframe');
+  await expect(frame.locator("#boundary")).toHaveText("isolated");
+  await expect(page.locator(".generatedAppBody iframe")).toHaveAttribute("sandbox", "allow-scripts");
+  await frame.getByRole("button", { name: "0", exact: true }).click();
+  await expect(frame.locator("#counter")).toHaveText("1");
+  expect(await page.locator("body").getAttribute("data-escaped")).toBeNull();
+  await page.locator('[data-workspace-surface="chat"]').click();
+  await expect(page.locator(".generatedAppPanel")).toBeHidden();
+  await page.goBack();
+  await expect(page.locator(".generatedAppPanel")).toBeVisible();
+  await expect(frame.locator("#boundary")).toHaveText("isolated");
+});
+
+test("trusted extension apps share shell navigation, reload and browser history", async ({ page }) => {
+  await page.request.post("/api/mock/reset");
+  await page.request.post("/api/mock/state", { data: { webContributions: [
+    { version: 1, slot: "panel", key: "counter", kind: "rendered", label: "Counter app", title: "Counter app" },
+  ] } });
+  await page.route("**/api/web-contributions/invoke", (route) => {
+    const action = route.request().postDataJSON().event?.action;
+    return route.fulfill({ json: { ok: true, html: `<button data-web-action="increment">${action === "increment" ? "1" : "0"}</button>` } });
+  });
+  await page.goto("/?surface=app&app=counter");
+  await expect(page.locator("#webExtensionPanel")).toBeVisible();
+  await expect(page.locator(".foreignAppBoundary")).toHaveText("Trusted extension");
+  await page.locator("#webExtensionPanel button[data-web-action]").click();
+  await expect(page.locator("#webExtensionPanel button[data-web-action]")).toHaveText("1");
+  await page.locator('[data-workspace-surface="files"]').click();
+  await expect(page.locator("#webExtensionPanel")).toBeHidden();
+  await page.goBack();
+  await expect(page.locator("#webExtensionPanel")).toBeVisible();
+  await page.reload();
+  await expect(page.locator("#webExtensionPanel button[data-web-action]")).toHaveText("0");
+});

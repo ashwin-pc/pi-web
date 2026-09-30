@@ -13,6 +13,14 @@
 .workspaceNav button { min-height: 44px; min-width: 64px; border: 0; background: transparent; color: var(--muted); }
 .workspaceNav button[aria-current="page"] { color: var(--accent); box-shadow: inset 0 -2px var(--accent); }
 body .app { margin-top: 44px; height: calc(var(--app-height) - 44px); }
-body .appSidePanel { top: 44px; height: calc(var(--app-height) - 44px); }
+body .appSidePanel.appSidePanel--left, body .appSidePanel.appSidePanel--right { top: 44px; height: calc(var(--app-height) - 44px); }
 .resourceAskButton { min-height: 36px; padding: 4px 8px; white-space: nowrap; }
 .resourceMessageLink { display: block; margin-top: 8px; color: var(--accent); }
+.workspaceNav { overflow-x: auto; }
+.workspaceNav button { flex: 0 0 auto; }
+.generatedAppPanel { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+.generatedAppHeader { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--border); }
+.generatedAppHeader strong { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.generatedAppHeader span, .foreignAppBoundary { color: var(--muted); font-size: 11px; }
+.generatedAppBody { min-height: 0; padding: 8px; }
+.generatedAppBody iframe { width: 100%; height: 100%; border: 0; background: white; }
