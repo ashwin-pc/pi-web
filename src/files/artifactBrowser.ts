@@ -128,10 +128,14 @@ export function initArtifactBrowser(options: {
   // Only ephemeral pasted/blob images live here; filesystem artifacts retain their canonical URLs.
   const imageHistory = new Map<string, StandaloneImage>();
   const imageIds = new WeakMap<StandaloneImage, string>();
+  // A page-local namespace prevents an old history entry from matching a new
+  // image after reload. These are lookup keys, not security tokens.
+  const imageIdPrefix = `img-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  let imageSequence = 0;
   function imageId(image: StandaloneImage) {
     let id = imageIds.get(image);
     if (!id) {
-      id = crypto.randomUUID(); imageIds.set(image, id);
+      id = `${imageIdPrefix}-${(++imageSequence).toString(36)}`; imageIds.set(image, id);
     }
     if (!imageHistory.has(id)) {
       imageHistory.set(id, image);
@@ -159,7 +163,7 @@ export function initArtifactBrowser(options: {
     const record = candidate as Record<string, unknown>;
     if (record.view === "inactive") return { view: "inactive" };
     if (record.view === "image") {
-      return typeof record.id === "string" && /^[0-9a-f-]{36}$/.test(record.id) ? { view: "image", id: record.id } : undefined;
+      return typeof record.id === "string" && /^img-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+$/.test(record.id) ? { view: "image", id: record.id } : undefined;
     }
     if (record.view === "gallery") {
       const directory = typeof record.directory === "string" && isArtifactPath(record.directory, true) ? record.directory : artifactRootPath;

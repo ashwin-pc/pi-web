@@ -2156,6 +2156,23 @@ test.describe("image rendering", () => {
     await expect(page.locator("#artifactBrowserPreviewOpen")).toHaveAttribute("href", "https://cdn.example/api/artifacts/photo.png");
   });
 
+  test("image history works when crypto.randomUUID is unavailable", async ({ page }) => {
+    await page.evaluate(() => Object.defineProperty(crypto, "randomUUID", { value: undefined, configurable: true }));
+    await page.locator("#prompt").fill("show artifact");
+    await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
+    const frame = page.locator(".message.assistant .imageFrame").last();
+    await frame.locator("img").evaluate((img: HTMLImageElement, data) => { img.src = data; }, `data:image/png;base64,${VALID_PNG.toString("base64")}`);
+    await frame.hover(); await frame.locator("[title='Preview']").click();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    const id = await page.evaluate(() => history.state.piWebArtifactView.id as string);
+    expect(id).toMatch(/^img-[a-z0-9]+-[a-z0-9]+-[a-z0-9]+$/);
+    await page.goBack();
+    await expect(page.locator("#filesPanel")).toBeHidden();
+    await page.goForward();
+    await expect(page.locator("#artifactBrowserPreviewBody > img")).toBeVisible();
+    expect(await page.evaluate(() => history.state.piWebArtifactView.id)).toBe(id);
+  });
+
   test("transient image history stores only an ID and survives Back without serializing pixels", async ({ page }) => {
     await page.locator("#prompt").fill("show artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
