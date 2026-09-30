@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { defaultAppIdentity, isAvatarPresetId, type AppIdentity } from "../src/appIdentity.js";
+import { defaultAppIdentity, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
 
 export type PiWebModelSetting = {
   provider: string;

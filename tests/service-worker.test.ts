@@ -14,6 +14,7 @@ beforeEach(async () => {
   vi.clearAllMocks();
   vi.resetModules();
   vi.stubGlobal("caches", { open: vi.fn(async () => cache) });
+  vi.stubGlobal("fetch", vi.fn(async () => ({ json: async () => ({ name: "Custom Brand" }) })));
   vi.stubGlobal("self", {
     location: { origin: "https://pi.test" },
     clients: { matchAll: vi.fn(async () => [client]), openWindow: vi.fn(async () => undefined) },
@@ -33,7 +34,7 @@ describe("service worker completion notifications", () => {
     });
     await pending;
 
-    expect(showNotification).toHaveBeenCalledWith("pi-web — Run complete", expect.objectContaining({
+    expect(showNotification).toHaveBeenCalledWith("Custom Brand — Run complete", expect.objectContaining({
       body: "Finished",
       silent: false,
       vibrate: [180, 90, 240],

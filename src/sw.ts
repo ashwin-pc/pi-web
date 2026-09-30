@@ -2,6 +2,8 @@
 
 import { clientsClaim } from "workbox-core";
 import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
+import { registerRoute } from "workbox-routing";
+import { CacheFirst } from "workbox-strategies";
 
 declare let self: ServiceWorkerGlobalScope & { __WB_MANIFEST: Array<unknown> };
 
@@ -16,6 +18,13 @@ self.skipWaiting();
 clientsClaim();
 precacheAndRoute(self.__WB_MANIFEST);
 cleanupOutdatedCaches();
+
+// Avatars are cached only after selection/use, rather than downloading every
+// animation during service-worker installation. Keep the cache bounded.
+registerRoute(
+  ({ url }) => url.origin === self.location.origin && /^\/avatars\/[^/]+\/(?:still\.png|icon\.png|new-session\.apng|new-session\.webm)$/.test(url.pathname),
+  new CacheFirst({ cacheName: "pi-web-avatars-v1" }),
+);
 
 const preferencesCacheName = "pi-web-device-preferences";
 const preferencesUrl = new URL("/__pi-web/device-preferences", self.location.origin).href;
@@ -58,7 +67,9 @@ self.addEventListener("push", (event) => {
       tag: `pi-web-run-complete:${payload.sessionId}:${payload.completedAt || "latest"}`,
       data: { url: completionUrl(payload.sessionId) },
     };
-    await self.registration.showNotification("pi-web — Run complete", options);
+    const config = await fetch("/identity/config.json", { cache: "no-store" }).then(response => response.json()).catch(() => ({}));
+    const appName = typeof config.name === "string" && config.name.trim() ? config.name : "Pi Web";
+    await self.registration.showNotification(`${appName} — Run complete`, options);
   })());
 });
 

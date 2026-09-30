@@ -23,7 +23,7 @@ describe("shared sign-in presentation", () => {
     expect(app).toContain('/new-chat-animation.css');
     expect(html).toContain('/new-chat-animation.css');
     expect(html).toContain("motion.addEventListener('change',syncMotion)");
-    expect(html).toContain("if(motion.matches){avatar.style.display='none'");
+    expect(html).toContain("const animate=avatarHasMotion&&!motion.matches");
     expect(html).not.toContain('motion.sprite');
     expect(html).toContain('src="/avatars/current-pi/still.png"');
     expect(html).toContain("fetch('/identity/config.json')");

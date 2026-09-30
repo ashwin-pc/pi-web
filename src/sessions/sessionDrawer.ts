@@ -335,12 +335,39 @@ export function createSessions(options: {
     updateEmptyCwdChooser();
   }
 
+  let animationBlob: Promise<Blob> | undefined;
+  let animationBlobSource: string | undefined;
+  let animationObjectUrl: string | undefined;
   async function restartNewChatAnimation(generation: number) {
     if (generation !== transcriptLoadGeneration) return;
     transcriptLoading = false;
     updateEmptyCwdChooser();
     const animation = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
-    if (animation) animation.src = `${animation.src.split("?")[0]}?replay=${generation}`;
+    if (!animation) return;
+    const canonicalUrl = animation.dataset.canonicalUrl || animation.src.split("?")[0];
+    if (animationBlobSource !== canonicalUrl) {
+      animationBlobSource = canonicalUrl;
+      animationBlob = undefined;
+    }
+    try {
+      animationBlob ??= fetch(canonicalUrl).then(response => {
+        if (!response.ok) throw new Error(`Avatar animation failed (${response.status})`);
+        return response.blob();
+      }).catch(error => { animationBlob = undefined; throw error; });
+      const blob = await animationBlob;
+      if (generation !== transcriptLoadGeneration || animationBlobSource !== canonicalUrl) return;
+      // Settings may replace the media node while the first download is in flight.
+      const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+      if (!current) return;
+      const next = URL.createObjectURL(blob);
+      const previous = animationObjectUrl;
+      animationObjectUrl = next;
+      current.dataset.canonicalUrl = canonicalUrl;
+      current.src = next;
+      if (previous) URL.revokeObjectURL(previous);
+    } catch {
+      // The original image remains visible when offline or unavailable.
+    }
   }
 
   async function selectSessionCwd(cwd: string) {
@@ -402,7 +429,7 @@ export function createSessions(options: {
     clearMessages();
     sessionState.applySnapshot(data, { activate: true });
     await refreshState();
-    updateEmptyCwdChooser();
+    finishTranscriptLoading();
     if (shouldCloseDrawerAfterSessionSwitch()) {
       setSessionDrawerOpen(false);
     } else if (wasDrawerOpen) {

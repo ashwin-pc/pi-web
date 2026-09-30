@@ -48,8 +48,8 @@ fetch('/identity/config.json').then(r => r.ok ? r.json() : null).then(config => 
   const still = document.querySelector('.avatarStill'); still.src = assets.still;
   const animation = document.querySelector('.avatarAnimation');
   const motion = assets.newSession;
-  if (motion && typeof motion.apng === 'string') animation.src = motion.apng;
-  else { animation.style.display = 'none'; still.style.display = 'block'; }
+  avatarHasMotion = !!(motion && typeof motion.apng === 'string');
+  if (avatarHasMotion) animation.src = motion.apng;
   syncMotion();
 }).catch(() => {});
 
@@ -57,8 +57,9 @@ const statusElement=document.getElementById('status'),go=document.getElementById
 const report=(message,error=false)=>{statusElement.textContent=message;statusElement.classList.toggle('error',error)};
 // The same entry video and presentation as New Session; no app bootstrap or API dependency.
 const avatar=document.querySelector('.avatarAnimation'),motion=matchMedia('(prefers-reduced-motion: reduce)');
-const syncMotion=()=>{const still=document.querySelector('.avatarStill');if(motion.matches){avatar.style.display='none';still.style.display='block'}else if(avatar.src){avatar.style.display='block';still.style.display='none'}};
-avatar.onerror=()=>{avatar.style.display='none';document.querySelector('.avatarStill').style.display='block'};
+let avatarHasMotion=true;
+const syncMotion=()=>{const still=document.querySelector('.avatarStill');const animate=avatarHasMotion&&!motion.matches;avatar.style.display=animate?'block':'none';still.style.display=animate?'none':'block'};
+avatar.onerror=()=>{avatarHasMotion=false;syncMotion()};
 motion.addEventListener('change',syncMotion);syncMotion();
 if(!window.isSecureContext)report('Unencrypted connection. Use HTTPS for remote sign-in.',true);
 const toggle=document.getElementById('passwordToggle');if(toggle)toggle.onclick=()=>{const f=document.getElementById('password');f.hidden=!f.hidden;toggle.setAttribute('aria-expanded',String(!f.hidden));if(!f.hidden)f.elements.secret.focus()};

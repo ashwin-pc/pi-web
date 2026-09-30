@@ -3,17 +3,14 @@ import { Readable } from "node:stream";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { avatarPresetIds, avatarPresets, resolveAvatarBundle } from "../src/appIdentity.js";
+import { avatarPresetIds, avatarPresets, resolveAvatarBundle } from "../server/shared/appIdentity.js";
 import { applySettingsPatch, normalizeSettings } from "../server/settings.js";
 import { identityManifest, readAvatar, receiveAvatar } from "../server/appIdentity.js";
 
 function request(data: Buffer, type = "image/png") {
   return Object.assign(Readable.from([data]), { headers: { "content-type": type, "content-length": String(data.length) } }) as any;
 }
-const dimensions = Buffer.alloc(8);
-dimensions.writeUInt32BE(512, 0);
-dimensions.writeUInt32BE(512, 4);
-const png = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), Buffer.from([0,0,0,13]), Buffer.from("IHDR"), dimensions]);
+const png = await readFile(new URL("../public/avatars/current-pi/still.png", import.meta.url));
 describe("app identity", () => {
   it("resolves all nine bundled presets consistently", async () => {
     expect(avatarPresetIds).toHaveLength(9);
@@ -55,6 +52,9 @@ describe("app identity", () => {
       await expect(receiveAvatar(request(png, "text/plain"), file)).rejects.toThrow("image/png");
       await expect(receiveAvatar(request(Buffer.alloc(2 * 1024 * 1024 + 1)), file)).rejects.toThrow("2 MB");
       await receiveAvatar(request(png), file);
+      expect(await readAvatar(file)).toEqual(png);
+      await expect(receiveAvatar(request(png.subarray(0, 24)), file)).rejects.toThrow("Invalid PNG");
+      await expect(receiveAvatar(request(png.subarray(0, -12)), file)).rejects.toThrow("Invalid PNG");
       expect(await readAvatar(file)).toEqual(png);
     } finally { await rm(dir, { recursive: true, force: true }); }
   });

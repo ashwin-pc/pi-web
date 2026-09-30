@@ -635,6 +635,8 @@ body.artifactPreviewDocument {
 .messageAttachmentRow.missing { padding-right: 72px; opacity: .72; }
 .messageAttachmentUnavailable { position: absolute; right: 7px; top: 10px; color: color-mix(in srgb, #d6a25d 78%, var(--muted)); font-size: 8px; }
 .messageAttachmentPreview {
+  position: relative;
+  z-index: 3; /* Keep tiny attachment thumbnails clickable above hover actions. */
   display: grid;
   place-items: center;
   width: 18px;

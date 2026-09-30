@@ -10,6 +10,23 @@ test.afterEach(async ({ page }) => {
   await page.request.patch("/api/settings", { data: { identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" } } } });
 });
 
+test("unsaved identity drafts survive settings broadcasts and custom upload", async ({ page }) => {
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavIdentity").click();
+  await page.locator("#identityName").fill("Draft Brand");
+  await page.locator("#identityShortName").fill("Draft");
+  await page.request.patch("/api/settings", { data: { completionVibration: false } });
+  await expect(page.locator("#identityName")).toHaveValue("Draft Brand");
+  await expect(page.locator("#identityShortName")).toHaveValue("Draft");
+  await page.locator("#identityUpload").setInputFiles("public/avatars/current-pi/still.png");
+  await expect(page.locator("button.identityChoiceCustom")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#identityName")).toHaveValue("Draft Brand");
+  await expect(page.locator("#identityShortName")).toHaveValue("Draft");
+  await page.locator("#identitySave").click();
+  await expect.poll(async () => (await (await page.request.get("/identity/config.json")).json()).name).toBe("Draft Brand");
+});
+
 test("app identity presets drive both live previews and runtime avatar surfaces", async ({ page }) => {
   await page.goto("/");
   await openSessionDrawerFooterAction(page, "Preferences");
@@ -19,6 +36,7 @@ test("app identity presets drive both live previews and runtime avatar surfaces"
   await expect(gallery.locator(".identityChoice")).toHaveCount(9);
   await expect(page.locator("button.identityChoiceCustom")).toBeVisible();
   for (const choice of await gallery.locator(".identityChoice").all()) {
+    await choice.scrollIntoViewIfNeeded();
     await expect(choice.locator("img.avatarMediaVideo")).toHaveAttribute("src", /\/avatars\/.*\.apng/);
     expect(await choice.evaluate(node => node.getBoundingClientRect().height)).toBeGreaterThan(100);
   }

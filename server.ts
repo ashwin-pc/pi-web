@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { identityManifest, readAvatar, receiveAvatar } from "./server/appIdentity.js";
-import { resolveAvatarBundle } from "./src/appIdentity.js";
+import { resolveAvatarBundle } from "./server/shared/appIdentity.js";
 import { extname, join, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -556,9 +556,11 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         res.setHeader("content-type", "application/manifest+json");
         res.end(JSON.stringify(identityManifest(settings))); return;
       }
-      const assets = resolveAvatarBundle(settings.identity);
+      const png = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
+      // A removed or unavailable upload must not leave the public login page
+      // with broken artwork or send the icon endpoint into a redirect loop.
+      const assets = resolveAvatarBundle(png ? settings.identity : { ...settings.identity, avatar: { type: "preset", id: "current-pi" } });
       if (url.pathname === "/identity/config.json") return sendJson(res, 200, { ...settings.identity, assets });
-      const png = await readAvatar(settingsStore.file);
       if (settings.identity.avatar.type === "custom" && png) {
         res.setHeader("content-type", "image/png");
         res.end(png); return;

@@ -18,25 +18,15 @@ export default defineConfig({
       srcDir: "src",
       filename: "sw.ts",
       devOptions: { enabled: true, type: "module" },
-      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png", "avatars/**/*"],
-      manifest: {
-        name: "pi web",
-        short_name: "pi",
-        description: "pi coding agent web UI",
-        theme_color: "#1a1a1a",
-        background_color: "#1a1a1a",
-        display: "standalone",
-        scope: "/",
-        start_url: "/",
-        icons: [
-          { src: "pwa-192x192.png", sizes: "192x192", type: "image/png" },
-          { src: "pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
-        ],
-      },
+      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png", "avatars/pi/still.png"],
+      // The server owns /manifest.webmanifest and updates it with identity.
+      // Generating a static plugin manifest would also add it to the precache.
+      manifest: false,
       injectManifest: {
         // Do not precache HTML or register a navigation route. Native browser
         // navigations must continue to handle redirects from auth proxies.
         globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png}"],
+        globIgnores: ["manifest.webmanifest"],
       },
     }),
   ],

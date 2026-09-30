@@ -1,4 +1,4 @@
-import { defaultAppIdentity, type AppIdentity } from "../appIdentity.js";
+import { defaultAppIdentity, type AppIdentity } from "../../server/shared/appIdentity.js";
 import { parseSessionReference, sessionReferenceHref, type SessionReference } from "../../server/shared/sessionReference.js";
 
 export type Role = "user" | "assistant" | "tool" | "system";

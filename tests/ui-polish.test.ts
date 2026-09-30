@@ -343,7 +343,9 @@ describe("new session empty state", () => {
     expect(html).toContain('href="/new-chat-animation.css"');
     expect(sessionsTs).toContain("function finishTranscriptLoading()");
     expect(sessionsTs).toContain("#identityNewSessionAnimation");
-    expect(sessionsTs).toContain("?replay=${generation}");
+    expect(sessionsTs).toContain("URL.createObjectURL(blob)");
+    expect(sessionsTs).toContain("animationBlob ??= fetch(canonicalUrl)");
+    expect(sessionsTs).not.toContain("?replay=");
   });
 
   it("makes the working directory a compact accessible control", () => {

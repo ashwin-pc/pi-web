@@ -9,7 +9,7 @@ import {
   resolveAvatarBundle,
   type AppIdentity,
   type AvatarSelection,
-} from "../appIdentity.js";
+} from "../../server/shared/appIdentity.js";
 
 export function normalizeIdentity(value: unknown): AppIdentity {
   if (!value || typeof value !== "object") return structuredClone(defaultAppIdentity);
@@ -103,6 +103,10 @@ export function createIdentitySettings(
   let selected: AvatarSelection = saved.avatar;
   let mode: "home" | "new" = "home";
   let busy = false;
+  let dirtyName = false;
+  let dirtyShortName = false;
+  let dirtyAvatar = false;
+  let pendingAction: "save" | "reset" | "upload" | undefined;
 
   function previewIdentity(): AppIdentity {
     return {
@@ -156,7 +160,7 @@ export function createIdentitySettings(
   function render() {
     const identity = previewIdentity();
     const selectedId = selected.type === "custom" ? "custom" : selected.id;
-    for (const button of gallery.querySelectorAll<HTMLButtonElement>("button")) {
+    for (const button of root.querySelectorAll<HTMLButtonElement>("button[data-avatar]")) {
       button.setAttribute("aria-pressed", String(button.dataset.avatar === selectedId));
     }
     for (const button of root.querySelectorAll<HTMLButtonElement>("[data-identity-preview]")) {
@@ -167,19 +171,36 @@ export function createIdentitySettings(
     renderPreview(identity);
   }
 
+  // Hidden Settings never request the full animation gallery. Intersection
+  // observation starts media only when each choice actually enters view.
+  const galleryObserver = typeof IntersectionObserver === "undefined" ? undefined : new IntersectionObserver(entries => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const image = entry.target.querySelector<HTMLElement>(".identityChoiceImage");
+      const id = (entry.target as HTMLElement).dataset.avatar;
+      if (image && id && isAvatarPresetId(id)) setAvatarMedia(image, avatarPresets[id]);
+      galleryObserver?.unobserve(entry.target);
+    }
+  });
   for (const id of avatarPresetIds) {
     const button = el("button", "identityChoice");
     button.type = "button";
     button.dataset.avatar = id;
     button.setAttribute("aria-label", avatarPresetLabels[id]);
     const img = el("div", "identityChoiceImage");
-    setAvatarMedia(img, avatarPresets[id]);
+    const still = el("img");
+    still.src = avatarPresets[id].still;
+    still.alt = "";
+    still.loading = "lazy";
+    img.append(still);
     button.append(img, el("span", "identityChoiceLabel", avatarPresetLabels[id]));
     button.addEventListener("click", () => {
       selected = { type: "preset", id };
+      dirtyAvatar = true;
       render();
     });
     gallery.append(button);
+    galleryObserver?.observe(button);
   }
 
   const custom = el("button", "identityChoice identityChoiceCustom");
@@ -192,9 +213,16 @@ export function createIdentitySettings(
 
   function update(identity: AppIdentity) {
     saved = identity;
-    selected = identity.avatar;
-    name.value = identity.name;
-    shortName.value = identity.shortName;
+    if (pendingAction === "save" || pendingAction === "reset") {
+      dirtyName = dirtyShortName = dirtyAvatar = false;
+    }
+    if (pendingAction === "upload") {
+      selected = { type: "custom" };
+      dirtyAvatar = true;
+    } else if (!dirtyAvatar) selected = identity.avatar;
+    if (!dirtyName) name.value = identity.name;
+    if (!dirtyShortName) shortName.value = identity.shortName;
+    pendingAction = undefined;
     render();
     applyIdentity(identity);
   }
@@ -203,10 +231,10 @@ export function createIdentitySettings(
     mode = button.dataset.identityPreview as typeof mode;
     render();
   }));
-  name.addEventListener("input", render);
-  shortName.addEventListener("input", render);
+  name.addEventListener("input", () => { dirtyName = true; render(); });
+  shortName.addEventListener("input", () => { dirtyShortName = true; render(); });
 
-  async function request(method: "POST" | "PATCH", url: string, body: BodyInit, contentType?: string) {
+  async function request(method: "POST" | "PATCH", url: string, body: BodyInit, contentType?: string, action?: "save" | "reset" | "upload") {
     if (busy) return;
     busy = true;
     save.disabled = reset.disabled = true;
@@ -216,8 +244,10 @@ export function createIdentitySettings(
       const response = await fetch(url, { method, headers, body });
       const data = await response.json().catch(() => ({}));
       if (!response.ok || data.ok === false) throw new Error(data.error || `Request failed (${response.status})`);
+      pendingAction = action;
       onSettings(data.settings);
     } catch (error) {
+      pendingAction = undefined;
       onError(error instanceof Error ? error.message : String(error));
     } finally {
       busy = false;
@@ -232,11 +262,11 @@ export function createIdentitySettings(
     }
     void request("PATCH", "/api/settings", JSON.stringify({
       identity: { name: name.value.trim(), shortName: shortName.value.trim(), avatar: selected },
-    }));
+    }), undefined, "save");
   });
   reset.addEventListener("click", () => void request("PATCH", "/api/settings", JSON.stringify({
     identity: { name: defaultAppIdentity.name, shortName: defaultAppIdentity.shortName, avatar: defaultAppIdentity.avatar },
-  })));
+  }), undefined, "reset"));
 
   upload.addEventListener("change", async () => {
     const file = upload.files?.[0];
@@ -248,7 +278,7 @@ export function createIdentitySettings(
     }
     try {
       const blob = await normalizedAvatar(file);
-      await request("POST", "/api/identity/avatar", blob, "image/png");
+      await request("POST", "/api/identity/avatar", blob, "image/png", "upload");
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
     }
