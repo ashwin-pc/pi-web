@@ -217,7 +217,6 @@ export function createSessions(options: {
   let transcriptLoading = true;
   let transcriptLoadGeneration = 0;
   let lastReplayedGeneration = -1;
-  const newChatAnimationPlaybackRate = 1.2;
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let sessionListRenderFrame: number | undefined;
@@ -337,35 +336,11 @@ export function createSessions(options: {
   }
 
   async function restartNewChatAnimation(generation: number) {
-    const video = elements.emptyCwdChooserEl.querySelector<HTMLVideoElement>(".newChatLoadingAnimation");
-    if (!video) {
-      if (generation !== transcriptLoadGeneration) return;
-      transcriptLoading = false;
-      updateEmptyCwdChooser();
-      return;
-    }
-
-    video.classList.add("resetting");
-    video.pause();
-    video.playbackRate = newChatAnimationPlaybackRate;
-    video.currentTime = 0;
-    if (video.seeking) {
-      await new Promise<void>((resolve) => {
-        const timeout = window.setTimeout(resolve, 150);
-        video.addEventListener("seeked", () => {
-          window.clearTimeout(timeout);
-          resolve();
-        }, { once: true });
-      });
-    }
     if (generation !== transcriptLoadGeneration) return;
-
     transcriptLoading = false;
     updateEmptyCwdChooser();
-    // Visibility must not depend on codec support: nested source failures can
-    // leave play() pending forever in Chromium builds without H.264.
-    video.classList.remove("resetting");
-    void video.play().catch(() => undefined);
+    const animation = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+    if (animation) animation.src = `${animation.src.split("?")[0]}?replay=${generation}`;
   }
 
   async function selectSessionCwd(cwd: string) {

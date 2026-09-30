@@ -136,8 +136,8 @@ export function createRunNotifications(options: {
       const worker = await registration();
       const options: NotificationOptions & { vibrate?: number[] } = {
         body: "Notification, sound, and vibration test.",
-        icon: "/pwa-192x192.png",
-        badge: "/pwa-192x192.png",
+        icon: "/identity/icon.png",
+        badge: "/identity/icon.png",
         silent: false,
         vibrate: completionVibrationEnabled() ? [180, 90, 240] : undefined,
         tag: `pi-web-local-test:${Date.now()}`,

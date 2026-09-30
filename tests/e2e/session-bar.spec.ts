@@ -436,10 +436,9 @@ test.describe("session quick bar", () => {
     await expect(page.getByText("Cleared tab. Previous session remains in history.")).toHaveCount(0);
     const emptyState = page.locator("#emptyCwdChooser");
     await expect(emptyState).toBeVisible();
-    const animation = emptyState.locator(".newChatLoadingAnimation");
+    const animation = emptyState.locator("#identityNewSessionAnimation");
     await expect(animation).toBeVisible();
-    await expect(animation).not.toHaveClass(/resetting/);
-    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+    await expect.poll(() => animation.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
 
     const folderButton = emptyState.getByRole("button", { name: "Change working directory" });
     await expect(folderButton.locator(".emptyCwdPath")).toHaveText(currentCwd);

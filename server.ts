@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
+import { identityManifest, readAvatar, receiveAvatar } from "./server/appIdentity.js";
+import { resolveAvatarBundle } from "./src/appIdentity.js";
 import { extname, join, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -547,6 +549,27 @@ import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 const server = createServer(withAccessLog(async (req, res, url) => {
   const method = req.method || "GET";
   try {
+    if (method === "GET" && ["/manifest.webmanifest", "/identity/config.json", "/identity/avatar.png", "/identity/icon.png"].includes(url.pathname)) {
+      res.setHeader("cache-control", "no-store");
+      const settings = await settingsStore.read();
+      if (url.pathname === "/manifest.webmanifest") {
+        res.setHeader("content-type", "application/manifest+json");
+        res.end(JSON.stringify(identityManifest(settings))); return;
+      }
+      const assets = resolveAvatarBundle(settings.identity);
+      if (url.pathname === "/identity/config.json") return sendJson(res, 200, { ...settings.identity, assets });
+      const png = await readAvatar(settingsStore.file);
+      if (settings.identity.avatar.type === "custom" && png) {
+        res.setHeader("content-type", "image/png");
+        res.end(png); return;
+      }
+      if (url.pathname === "/identity/icon.png") {
+        res.statusCode = 302;
+        res.setHeader("location", assets.icon);
+        res.end(); return;
+      }
+      return sendJson(res, 404, { error: "Avatar not found" });
+    }
 
     if (url.pathname.startsWith("/api/")) {
       // Scoped credentials must be checked before even public auth routes: no
@@ -997,6 +1020,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
 
+      if (method === "POST" && url.pathname === "/api/identity/avatar") {
+        try { await receiveAvatar(req, settingsStore.file); }
+        catch (error) { return sendJson(res, 400, { ok: false, error: (error as Error).message }); }
+        const settings = await settingsStore.patch({ identity: { avatar: { type: "custom" } } });
+        broadcast({ type: "settings_updated", settings });
+        return sendJson(res, 200, { ok: true, settings });
+      }
       if (method === "GET" && url.pathname === "/api/settings") {
         return sendJson(res, 200, { ok: true, settings: await settingsStore.read(), webSettingsSchemas: sessionService.settingsSchemas() });
       }

@@ -18,7 +18,7 @@ export default defineConfig({
       srcDir: "src",
       filename: "sw.ts",
       devOptions: { enabled: true, type: "module" },
-      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png"],
+      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png", "avatars/**/*"],
       manifest: {
         name: "pi web",
         short_name: "pi",
@@ -36,7 +36,7 @@ export default defineConfig({
       injectManifest: {
         // Do not precache HTML or register a navigation route. Native browser
         // navigations must continue to handle redirects from auth proxies.
-        globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
+        globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png}"],
       },
     }),
   ],

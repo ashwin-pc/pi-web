@@ -18,13 +18,15 @@ describe("shared sign-in presentation", () => {
     expect(html).toContain('<h1>Pi Web</h1>');
     for (const removed of ['Private workspace', '<header', '<footer', '<h1>Sign in', 'class="logo"', 'Sign in to continue']) expect(html).not.toContain(removed);
     const app = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    for (const asset of ['/new-chat-loading.webm', '/new-chat-loading.mp4', '/new-chat-animation.css']) {
-      expect(app).toContain(asset);
-      expect(html).toContain(asset);
-    }
+    expect(app).toContain('/avatars/current-pi/new-session.apng');
+    expect(html).toContain('/avatars/current-pi/new-session.apng');
+    expect(app).toContain('/new-chat-animation.css');
+    expect(html).toContain('/new-chat-animation.css');
     expect(html).toContain("motion.addEventListener('change',syncMotion)");
-    expect(html).toContain('if(motion.matches)avatar.pause()');
-    expect(html).toContain('src="/new-chat-still.png"');
+    expect(html).toContain("if(motion.matches){avatar.style.display='none'");
+    expect(html).not.toContain('motion.sprite');
+    expect(html).toContain('src="/avatars/current-pi/still.png"');
+    expect(html).toContain("fetch('/identity/config.json')");
     expect(loginPageHeaders['content-security-policy']).toContain("media-src 'self'");
     expect(loginPageHeaders['content-security-policy']).toContain("style-src 'self' 'unsafe-inline'");
     expect(html).not.toContain('class="glow"');

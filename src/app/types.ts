@@ -1,3 +1,4 @@
+import { defaultAppIdentity, type AppIdentity } from "../appIdentity.js";
 import { parseSessionReference, sessionReferenceHref, type SessionReference } from "../../server/shared/sessionReference.js";
 
 export type Role = "user" | "assistant" | "tool" | "system";
@@ -106,6 +107,7 @@ export type LoadingAnimation = "fireworks" | "glow" | "pulse";
 
 export type PiWebSettings = {
   version: 1;
+  identity: AppIdentity;
   appearance: {
     density: "comfortable" | "compact" | "minimal";
     accentColor: string;
@@ -534,6 +536,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
+  identity: structuredClone(defaultAppIdentity),
   appearance: { density: "comfortable", accentColor: defaultAccentColor, loadingAnimation: defaultLoadingAnimation },
   composer: { queueMode: "steer", expanded: false },
   defaults: {},

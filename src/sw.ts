@@ -51,8 +51,8 @@ self.addEventListener("push", (event) => {
 
     const options: NotificationOptions & { vibrate?: number[] } = {
       body: payload.title || "A session finished running.",
-      icon: "/pwa-192x192.png",
-      badge: "/pwa-192x192.png",
+      icon: "/identity/icon.png",
+      badge: "/identity/icon.png",
       silent: false,
       vibrate: await completionVibrationEnabled() ? [180, 90, 240] : undefined,
       tag: `pi-web-run-complete:${payload.sessionId}:${payload.completedAt || "latest"}`,

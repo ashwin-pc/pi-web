@@ -34,6 +34,7 @@ describe("pi-web settings", () => {
       defaults: { model: { provider: "", id: "model" }, thinkingLevel: "", sessionBucketColor: "orange" },
     })).toEqual({
       version: 1,
+      identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" }, revision: 0 },
       appearance: { density: "comfortable", accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
       defaults: {},
@@ -55,6 +56,7 @@ describe("pi-web settings", () => {
 
     expect(next).toEqual({
       version: 1,
+      identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" }, revision: 0 },
       appearance: { density: "compact", accentColor: "#ff00aa", loadingAnimation: "pulse" },
       composer: { queueMode: "followUp", expanded: true },
       defaults: { model: { provider: "mock", id: "model" }, thinkingLevel: "low", sessionBucketColor: "purple" },
