@@ -108,7 +108,10 @@ jobs:
       - name: Complete E2E matrix
         env:
           PI_WEB_E2E_SHARDS: 2
-          PI_WEB_E2E_CONCURRENCY: 2
+          # macOS hosted runners intermittently starve async browser startup
+          # with multiple Chromium servers active. Keep all shards/tests, but
+          # run one server at a time to preserve deterministic event readiness.
+          PI_WEB_E2E_CONCURRENCY: 1
         run: node scripts/run-all-tests.mjs --e2e-only --skip-build
 
       - name: Upload Playwright report
