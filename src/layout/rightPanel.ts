@@ -372,17 +372,17 @@ export function createAppPanelManager(): AppPanelManager {
     return handle;
   }
 
-  document.addEventListener("keydown", (event) => {
+  window.addEventListener("keydown", (event) => {
     const activePanel = (lastOpenedSide ? active[lastOpenedSide] : undefined) || active.right || active.left;
     if (event.key !== "Escape" || !activePanel || event.defaultPrevented) return;
     // A dialog opened over the panel owns its Escape; never close the pane below it.
     if (document.querySelector('dialog[open], [aria-modal="true"]:not([hidden])')) return;
     if (activePanel.onEscape?.()) {
-      event.preventDefault(); event.stopImmediatePropagation();
+      event.preventDefault();
       return;
     }
     if (activePanel.closeOnEscape === false || activePanel.canCloseOnEscape?.() === false) return;
-    event.preventDefault(); event.stopImmediatePropagation();
+    event.preventDefault();
     closeRegistrationFromUi(activePanel);
   });
 
@@ -391,6 +391,7 @@ export function createAppPanelManager(): AppPanelManager {
     const panelsToKeep = new Set(Array.isArray(state[panelHistoryStateKey]) ? state[panelHistoryStateKey] : []);
     for (const side of ["left", "right"] as const) {
       const registration = active[side];
+      // History navigation returns focus to the panel trigger just like an explicit close.
       if (registration && !panelsToKeep.has(registration.id)) closeRegistration(registration);
     }
     for (const id of panelsToKeep) {

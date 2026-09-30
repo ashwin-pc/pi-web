@@ -920,7 +920,7 @@ filesPanel = initFilesPanel({
 configureArtifactPanelOpener((url, opener) => filesPanel.openArtifact(url, opener));
 configureImagePreviewOpener((source, name, opener) => {
   const pathname = new URL(source, location.href).pathname;
-  if (/^\/api\/(?:session-)?artifacts\//.test(pathname)) filesPanel.openArtifact(source, opener);
+  if (new URL(source, location.href).origin === location.origin && /^\/api\/(?:session-)?artifacts\//.test(pathname)) filesPanel.openArtifact(source, opener);
   else filesPanel.openImage(source, name, opener);
 });
 gitPanel = initGitPanel({

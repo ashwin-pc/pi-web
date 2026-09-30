@@ -353,6 +353,7 @@ export function initFilesPanel(options: {
   }
   updateTreeScope();
   let previewOpener: HTMLElement | undefined;
+  let replacingPreview = false;
   const handle = rightPanels.register({
     id: "files", side: "right", panel, trigger: button, closeButton, width: "760px", minWidth: 360, maxWidth: 10_000,
     onEscape: () => artifactBrowser.leavePreview(),
@@ -364,7 +365,7 @@ export function initFilesPanel(options: {
     },
     onBeforeOpen: () => { if (!previewOpener?.isConnected) previewOpener = undefined; },
     onOpen: () => {
-      artifactBrowser.panelOpened();
+      artifactBrowser.panelOpened(replacingPreview);
       const sessionResult = sessionChanged();
       if (sessionResult === "cancelled") return;
       loadActiveScope();
@@ -469,9 +470,12 @@ export function initFilesPanel(options: {
     const panelWasOpen = handle.isOpen();
     if (!panelWasOpen) previewOpener = opener || (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
     const origin = panelWasOpen && treeScope === "artifacts" ? "current" : "inactive";
-    handle.open();
-    setTreeScope("artifacts");
-    show({ history: panelWasOpen ? "push" : "replace", origin });
+    replacingPreview = true;
+    try {
+      handle.open();
+      setTreeScope("artifacts");
+      show({ history: panelWasOpen ? "push" : "replace", origin });
+    } finally { replacingPreview = false; }
   }
   function openArtifact(url: string, opener?: HTMLElement) {
     openPreview(opener, (navigation) => { artifactBrowser.openArtifact(url, navigation); });

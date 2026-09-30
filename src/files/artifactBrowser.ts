@@ -15,7 +15,7 @@ type ArtifactHistoryState =
   | { view: "inactive" }
   | { view: "gallery"; directory: string }
   | { view: "preview"; entry: ArtifactEntry }
-  | { view: "image"; image: StandaloneImage };
+  | { view: "image"; id: string };
 
 type ArtifactPreviewNavigation = {
   history: "push" | "replace";
@@ -92,7 +92,7 @@ function isArtifactPath(path: string, allowRoot = false) {
 export type ArtifactBrowserController = {
   refresh(): void;
   reset(): void;
-  panelOpened(): void;
+  panelOpened(replacingPreview?: boolean): void;
   panelClosed(): void;
   leavePreview(): boolean;
   historyView(state: unknown): ArtifactHistoryState["view"] | undefined;
@@ -125,6 +125,17 @@ export function initArtifactBrowser(options: {
   let renderedGalleryDirectory: string | undefined;
   let activeEntry: ArtifactEntry | undefined;
   let activeImage: StandaloneImage | undefined;
+  // Only ephemeral pasted/blob images live here; filesystem artifacts retain their canonical URLs.
+  const imageHistory = new Map<string, StandaloneImage>();
+  const imageIds = new WeakMap<StandaloneImage, string>();
+  function imageId(image: StandaloneImage) {
+    let id = imageIds.get(image);
+    if (!id) {
+      id = crypto.randomUUID(); imageIds.set(image, id); imageHistory.set(id, image);
+      if (imageHistory.size > 32) imageHistory.delete(imageHistory.keys().next().value!);
+    }
+    return id;
+  }
   let disposeImage: (() => void) | undefined;
   function stopPreviewMedia() {
     disposeImage?.(); disposeImage = undefined;
@@ -145,9 +156,7 @@ export function initArtifactBrowser(options: {
     const record = candidate as Record<string, unknown>;
     if (record.view === "inactive") return { view: "inactive" };
     if (record.view === "image") {
-      const image = record.image as Partial<StandaloneImage> | undefined;
-      if (image?.kind === "standalone" && typeof image.src === "string" && typeof image.name === "string" && image.src.length < 2_000_000 && /^(?:blob:|data:image\/|https?:)/.test(image.src)) return { view: "image", image: { kind: "standalone", src: image.src, name: image.name } };
-      return undefined;
+      return typeof record.id === "string" && /^[0-9a-f-]{36}$/.test(record.id) ? { view: "image", id: record.id } : undefined;
     }
     if (record.view === "gallery") {
       const directory = typeof record.directory === "string" && isArtifactPath(record.directory, true) ? record.directory : artifactRootPath;
@@ -165,7 +174,7 @@ export function initArtifactBrowser(options: {
 
   function currentArtifactHistory(): ArtifactHistoryState {
     if (panel.dataset.artifactView === "preview") {
-      if (activeImage) return { view: "image", image: activeImage };
+      if (activeImage) return { view: "image", id: imageId(activeImage) };
       if (activeEntry) return { view: "preview", entry: activeEntry };
     }
     return { view: "gallery", directory: currentDirectory };
@@ -453,11 +462,12 @@ export function initArtifactBrowser(options: {
   }
 
   function showImage(image: StandaloneImage, navigation: ArtifactPreviewNavigation | false = { history: "push", origin: "current" }) {
-    if (navigation && !panel.hidden) updateArtifactPreviewHistory({ view: "image", image }, navigation);
+    if (navigation && !panel.hidden) updateArtifactPreviewHistory({ view: "image", id: imageId(image) }, navigation);
     activeEntry = undefined;
     activeImage = image;
     previewOwnsHistoryEntry = Boolean(navigation);
     panel.dataset.artifactView = "preview";
+    updateSteps();
     const generation = ++previewGeneration;
     stopPreviewMedia();
     preview.dataset.artifactKind = "image";
@@ -479,6 +489,7 @@ export function initArtifactBrowser(options: {
     activeEntry = entry;
     previewOwnsHistoryEntry = Boolean(navigation);
     panel.dataset.artifactView = "preview";
+    updateSteps();
     renderPreview(entry);
     requestAnimationFrame(() => { if (!panel.hidden && panel.dataset.artifactView === "preview") previewBack.focus(); });
   }
@@ -503,7 +514,7 @@ export function initArtifactBrowser(options: {
 
   function openArtifact(value: string, navigation: ArtifactPreviewNavigation = { history: "push", origin: "current" }) {
     let pathname: string;
-    try { pathname = new URL(value, window.location.origin).pathname; } catch { return false; }
+    try { const url = new URL(value, window.location.href); if (url.origin !== window.location.origin) return false; pathname = url.pathname; } catch { return false; }
     let encoded = "";
     if (pathname.startsWith("/api/artifacts/")) encoded = pathname.slice(15);
     else if (pathname.startsWith("/api/session-artifacts/")) {
@@ -550,7 +561,7 @@ export function initArtifactBrowser(options: {
     const state = artifactHistoryState();
     // Use the same traversal as browser Back. Only a preview retained across a
     // manual panel close/reopen lacks a live navigation entry and needs fallback.
-    if (previewOwnsHistoryEntry && ((state?.view === "preview" && state.entry.path === activeEntry?.path) || (state?.view === "image" && state.image.src === activeImage?.src))) {
+    if (previewOwnsHistoryEntry && ((state?.view === "preview" && state.entry.path === activeEntry?.path) || (state?.view === "image" && imageHistory.get(state.id) === activeImage))) {
       previewOwnsHistoryEntry = false;
       history.back();
       return true;
@@ -560,7 +571,8 @@ export function initArtifactBrowser(options: {
     return true;
   }
 
-  function panelOpened() {
+  function panelOpened(replacingPreview = false) {
+    if (replacingPreview) return;
     if (panel.dataset.artifactView !== "preview") return;
     previewOwnsHistoryEntry = false;
     if (activeEntry) renderPreview(activeEntry);
@@ -581,7 +593,13 @@ export function initArtifactBrowser(options: {
     const state = artifactHistoryState(value);
     if (!state || state.view === "inactive") return;
     if (state.view === "image") {
-      showImage(state.image, false);
+      const image = imageHistory.get(state.id);
+      if (image) showImage(image, false);
+      else {
+        panel.dataset.artifactView = "preview"; activeImage = undefined; activeEntry = undefined;
+        previewTitle.textContent = "Image"; previewOpen.removeAttribute("href"); previewDownload.removeAttribute("href");
+        stopPreviewMedia(); renderPreviewError("The image could not be loaded after reloading this page.");
+      }
       previewOwnsHistoryEntry = true;
       return;
     }
@@ -615,9 +633,11 @@ export function initArtifactBrowser(options: {
     button.className = "artifactBrowserPreviewBack";
     button.setAttribute("aria-label", label);
     button.title = label;
-    button.textContent = button === previous ? "‹" : "›";
+
   }
   previewTitle.parentElement?.after(previous, next);
+  previous.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg>';
+  next.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>';
   function sessionPreviews() {
     const messages = document.querySelector("#messages");
     if (!messages) return [];
@@ -632,11 +652,22 @@ export function initArtifactBrowser(options: {
     };
     return [...new Map(items.map((item) => [key(item.url), item])).values()];
   }
+  function samePreviewUrl(left: string, right: string) {
+    if (left === right) return true;
+    const a = new URL(left, location.href), b = new URL(right, location.href);
+    return a.origin === location.origin && b.origin === location.origin && /^\/api\//.test(a.pathname) && a.pathname === b.pathname;
+  }
+  function updateSteps() {
+    const items = sessionPreviews();
+    const current = activeImage?.src || (activeEntry ? artifactUrl(activeEntry.path, activeEntry.url) : "");
+    const index = items.findIndex((item) => current && samePreviewUrl(item.url, current));
+    previous.disabled = next.disabled = items.length < 2 || (!activeImage && index < 0);
+  }
   function step(direction: number) {
     const items = sessionPreviews();
     if (items.length < 2) return;
     const current = activeImage?.src || (activeEntry ? artifactUrl(activeEntry.path, activeEntry.url) : "");
-    const index = items.findIndex((item) => item.url === current || (new URL(item.url, location.href).pathname.startsWith("/api/") && new URL(item.url, location.href).pathname === new URL(current, location.href).pathname));
+    const index = items.findIndex((item) => current && samePreviewUrl(item.url, current));
     if (index < 0) return;
     const item = items[(index + direction + items.length) % items.length];
     if (!openArtifact(item.url)) openImage(item.url, item.name);

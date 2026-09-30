@@ -1050,7 +1050,7 @@ export function createSessions(options: {
       closeOpenCurrentSessionBucketMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenCurrentSessionBucketMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenCurrentSessionBucketMenu(); }
     };
     const onResize = () => closeOpenCurrentSessionBucketMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
@@ -1086,7 +1086,7 @@ export function createSessions(options: {
       closeOpenSessionActionsMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenSessionActionsMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenSessionActionsMenu(); }
     };
     const onResize = () => closeOpenSessionActionsMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
@@ -1235,7 +1235,7 @@ export function createSessions(options: {
       closeOpenSessionColorFilterMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenSessionColorFilterMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenSessionColorFilterMenu(); }
     };
     const onResize = () => closeOpenSessionColorFilterMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);

@@ -35,6 +35,8 @@ export function attachImageActions(img: HTMLImageElement) {
   fullScreen.append(createElement(Maximize2, { "aria-hidden": "true" }));
   fullScreen.addEventListener("click", () => openImagePreview(img, fullScreen));
   img.tabIndex = 0;
+  img.setAttribute("role", "button");
+  img.setAttribute("aria-label", `Preview ${img.alt || "image"}`);
   img.addEventListener("click", () => openImagePreview(img));
   img.addEventListener("keydown", (event) => {
     if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImagePreview(img); }

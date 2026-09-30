@@ -24,16 +24,26 @@ export function mountImagePreview(host: HTMLElement, source: string, alt: string
     const maxY = Math.max(0, (image.clientHeight * scale - host.clientHeight) / 2);
     x = Math.max(-maxX, Math.min(maxX, x));
     y = Math.max(-maxY, Math.min(maxY, y));
+    image.dataset.zoomed = String(scale > 1);
     image.style.transform = scale === 1 ? "" : `translate(${x}px, ${y}px) scale(${scale})`;
     reset.textContent = `${Math.round(scale * 100)}%`;
   };
-  const zoom = (next: number) => { scale = Math.max(1, Math.min(6, next)); if (scale === 1) x = y = 0; transform(); };
+  const zoom = (next: number, point?: { x: number; y: number }) => {
+    const previous = scale; scale = Math.max(1, Math.min(6, next));
+    if (point && previous !== scale) {
+      const rect = image.getBoundingClientRect();
+      const centerX = rect.left + rect.width / 2, centerY = rect.top + rect.height / 2;
+      x += (centerX - point.x) * (scale / previous - 1);
+      y += (centerY - point.y) * (scale / previous - 1);
+    }
+    if (scale === 1) x = y = 0; transform();
+  };
   out.addEventListener("click", () => zoom(scale / 1.25), { signal });
   into.addEventListener("click", () => zoom(scale * 1.25), { signal });
   reset.addEventListener("click", () => zoom(1), { signal });
   image.addEventListener("wheel", (event) => {
     if (!event.ctrlKey && !event.metaKey) return; // ordinary scrolling stays native
-    event.preventDefault(); zoom(scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15));
+    event.preventDefault(); zoom(scale * (event.deltaY < 0 ? 1.15 : 1 / 1.15), { x: event.clientX, y: event.clientY });
   }, { passive: false, signal });
   let mouse: { pointerId: number; startX: number; startY: number; lastX: number; lastY: number } | undefined;
   let suppressClick = false;
