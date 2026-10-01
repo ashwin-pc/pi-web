@@ -19,17 +19,18 @@ describe("app identity", () => {
       expect(bundle.still).toBe(`/avatars/${id}/still.png`);
       expect(bundle.fab).toBe(bundle.still);
       expect(bundle.icon).toBe(`/avatars/${id}/icon.png`);
+      const iconBytes = await readFile(new URL(`../public/avatars/${id}/icon.png`, import.meta.url));
+      expect([iconBytes.readUInt32BE(16), iconBytes.readUInt32BE(20)]).toEqual([512, 512]);
       const image = await readFile(new URL(`../public${bundle.still}`, import.meta.url));
       expect([image.readUInt32BE(16), image.readUInt32BE(20)]).toEqual([512, 512]);
-      expect(bundle.newSession?.sources).toEqual([
-        { src: `/avatars/${id}/new-session.webm`, type: 'video/webm; codecs="vp9"' },
-      ]);
-      for (const source of bundle.newSession!.sources) {
-        const video = await readFile(new URL(`../public${source.src}`, import.meta.url));
-        expect(video.length).toBeGreaterThan(0);
-      }
+      expect(image[25]).toBe(6); // RGBA, never opaque in-app artwork
       expect(bundle.newSession?.apng).toBe(`/avatars/${id}/new-session.apng`);
-      expect((await readFile(new URL(`../public${bundle.newSession!.apng}`, import.meta.url))).length).toBeGreaterThan(0);
+      const apng = await readFile(new URL(`../public${bundle.newSession!.apng}`, import.meta.url));
+      expect(apng[25]).toBe(6);
+      const animationControl = apng.indexOf("acTL");
+      expect(animationControl).toBeGreaterThan(0);
+      expect(apng.readUInt32BE(animationControl + 4)).toBeGreaterThan(1); // real frames
+      expect(apng.readUInt32BE(animationControl + 8)).toBe(1); // settle, do not loop
       expect(bundle.newSession).not.toHaveProperty("sprite");
     }
   });
@@ -42,7 +43,7 @@ describe("app identity", () => {
     expect(resolveAvatarBundle(updated.identity).icon).toBe("/avatars/fox/icon.png");
     const manifest = identityManifest(updated);
     expect(manifest).toMatchObject({ id: "/", start_url: "/", name: "My App" });
-    expect(manifest.icons).toContainEqual(expect.objectContaining({ src: "/identity/icon.png?v=1", sizes: "192x192" }));
+    expect(manifest.icons).toEqual([{ src: "/identity/icon.png?v=1", sizes: "512x512", type: "image/png", purpose: "any" }]);
   });
   it("accepts only bounded PNG uploads", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-identity-"));

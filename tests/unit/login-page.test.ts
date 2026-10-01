@@ -18,7 +18,8 @@ describe("shared sign-in presentation", () => {
     expect(html).toContain('<h1>Pi Web</h1>');
     for (const removed of ['Private workspace', '<header', '<footer', '<h1>Sign in', 'class="logo"', 'Sign in to continue']) expect(html).not.toContain(removed);
     const app = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    expect(app).toContain('/avatars/current-pi/new-session.apng');
+    expect(app).not.toContain('/avatars/current-pi/new-session.apng');
+    expect(app).toContain('id="identityNewSessionMedia"');
     expect(html).toContain('/avatars/current-pi/new-session.apng');
     expect(app).toContain('/new-chat-animation.css');
     expect(html).toContain('/new-chat-animation.css');

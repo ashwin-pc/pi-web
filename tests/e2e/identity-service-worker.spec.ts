@@ -1,6 +1,28 @@
 import { expect, test } from "@playwright/test";
 
 test.use({ serviceWorkers: "allow" });
+test("a fresh worker serves the default still offline before that avatar was selected", async ({ page, context }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop", "Production Chromium service-worker regression");
+  await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "preset", id: "fox" } } } });
+  try {
+    await page.goto("/");
+    await expect(page.locator(".actionLauncherToggle img")).toHaveAttribute("src", "/avatars/fox/still.png");
+    await page.evaluate(async () => { await navigator.serviceWorker.register("/sw.js"); await navigator.serviceWorker.ready; });
+    await page.reload();
+    await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+    await context.setOffline(true);
+    const result = await page.evaluate(async () => {
+      const response = await fetch("/avatars/current-pi/still.png");
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      return { status: response.status, signature: [...bytes.slice(0, 8)] };
+    });
+    expect(result).toEqual({ status: 200, signature: [137, 80, 78, 71, 13, 10, 26, 10] });
+  } finally {
+    await context.setOffline(false);
+    await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "preset", id: "current-pi" } } } });
+  }
+});
+
 test("controlling worker does not freeze the identity manifest or bulk-download avatars", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "Production Chromium service-worker regression");
   const avatarRequests: string[] = [];

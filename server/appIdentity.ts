@@ -92,9 +92,8 @@ export function identityManifest(settings: PiWebSettings) {
     description: "pi coding agent web UI",
     theme_color: "#1a1a1a",
     background_color: "#1a1a1a",
-    icons: [
-      { src: icon, sizes: "192x192", type: "image/png", purpose: "any" },
-      { src: icon, sizes: "512x512", type: "image/png", purpose: "any maskable" },
-    ],
+    // Bundled and normalized custom icons are 512×512. None has a verified
+    // maskable safe zone, so don't advertise a smaller size or maskability.
+    icons: [{ src: icon, sizes: "512x512", type: "image/png", purpose: "any" }],
   };
 }

@@ -750,14 +750,24 @@ test.describe("session quick bar", () => {
   });
 
   test("dragging a background session clears stale source focus without replacing destination focus", async ({ page }) => {
+    const created = await page.request.post("/api/sessions/new", { data: {} });
+    expect(created.ok()).toBe(true);
+    const destinationFocus = (await created.json()).sessionId as string;
+    expect((await page.request.post("/api/sessions/open", { data: { sessionId: "mock-current" } })).ok()).toBe(true);
     await seedServerSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: destinationFocus, lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
     ] });
     await page.goto("/");
-    await page.evaluate(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
-    await page.reload();
+    // Establish focus through the live UI after lane state has loaded; an
+    // invented ID in localStorage is pruned during asynchronous boot.
+    for (const sessionId of [destinationFocus, "mock-older", "mock-current"]) {
+      await page.locator(".sessionLayersButton").click();
+      await page.locator(`.sessionLaneDrawerCard[data-session-id="${sessionId}"] .sessionLaneDrawerItem`).click();
+    }
     await page.locator(".sessionLayersButton").click();
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", parked: "mock-older", bookmarks: destinationFocus });
     const handle = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"] .sessionLaneDragHandle');
     const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
     const handleBox = await handle.boundingBox(); const destinationBox = await destination.boundingBox();
@@ -765,10 +775,11 @@ test.describe("session quick bar", () => {
     const pointer = { pointerId: 29, pointerType: "touch", isPrimary: true, button: 0 };
     await handle.dispatchEvent("pointerdown", { ...pointer, clientX: handleBox!.x + 5, clientY: handleBox!.y + 5 });
     await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
+    await expect(destination.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
     await page.locator("body").dispatchEvent("pointerup", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
-
+    await expect(destination.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]')).toHaveCount(1);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", bookmarks: "destination-focus" });
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", bookmarks: destinationFocus });
   });
 
   test("removing the active lane entry keeps it visible as a temporary tab", async ({ page }) => {

@@ -3,10 +3,7 @@ export type AvatarPresetId = typeof avatarPresetIds[number];
 export type AvatarSelection = { type: "preset"; id: AvatarPresetId } | { type: "custom" };
 export type AppIdentity = { name: string; shortName: string; avatar: AvatarSelection; revision: number };
 
-export type AvatarMotion = {
-  sources: Array<{ src: string; type: string }>;
-  apng: string;
-};
+export type AvatarMotion = { apng: string };
 export type AvatarBundle = {
   still: string;
   fab: string;
@@ -30,10 +27,7 @@ export const avatarPresetLabels: Record<AvatarPresetId, string> = {
 
 export const avatarPresets: Record<AvatarPresetId, AvatarBundle> = Object.fromEntries(avatarPresetIds.map(id => {
   const still = `/avatars/${id}/still.png`;
-  const newSession: AvatarMotion = {
-    sources: [{ src: `/avatars/${id}/new-session.webm`, type: 'video/webm; codecs="vp9"' }],
-    apng: `/avatars/${id}/new-session.apng`,
-  };
+  const newSession: AvatarMotion = { apng: `/avatars/${id}/new-session.apng` };
   return [id, { still, fab: still, icon: `/avatars/${id}/icon.png`, fallback: still, newSession }];
 })) as Record<AvatarPresetId, AvatarBundle>;
 

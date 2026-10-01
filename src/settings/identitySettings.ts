@@ -90,6 +90,7 @@ export function createIdentitySettings(
   api: ApiClient,
   onSettings: (settings: unknown) => void,
   onError: (message: string) => void,
+  onNotice: (message: string) => void,
 ) {
   const root = panel.querySelector<HTMLElement>("#settingsPageIdentity")!;
   const name = root.querySelector<HTMLInputElement>("#identityName")!;
@@ -219,7 +220,7 @@ export function createIdentitySettings(
     }
     if (pendingAction === "upload") {
       selected = { type: "custom" };
-      dirtyAvatar = true;
+      dirtyAvatar = false;
     } else if (!dirtyAvatar) selected = identity.avatar;
     if (!dirtyName) name.value = identity.name;
     if (!dirtyShortName) shortName.value = identity.shortName;
@@ -235,7 +236,7 @@ export function createIdentitySettings(
   name.addEventListener("input", () => { dirtyName = true; render(); });
   shortName.addEventListener("input", () => { dirtyShortName = true; render(); });
 
-  async function request(method: "POST" | "PATCH", url: string, body: BodyInit, contentType?: string, action?: "save" | "reset" | "upload") {
+  async function request(method: "POST" | "PATCH", url: string, body: BodyInit, contentType?: string, action?: "save" | "reset" | "upload", afterSave?: (settings: { identity: AppIdentity }) => Promise<void>) {
     if (busy) { onError("Wait for the current identity update to finish."); return; }
     busy = true;
     save.disabled = reset.disabled = upload.disabled = true;
@@ -247,6 +248,8 @@ export function createIdentitySettings(
       if (!response.ok || data.ok === false) throw new Error(data.error || `Request failed (${response.status})`);
       pendingAction = action;
       onSettings(data.settings);
+      if (afterSave) await afterSave(data.settings);
+      if (action === "upload") onNotice("Custom avatar applied immediately. Unsaved name changes still need Save identity.");
     } catch (error) {
       pendingAction = undefined;
       onError(error instanceof Error ? error.message : String(error));
@@ -265,9 +268,22 @@ export function createIdentitySettings(
       identity: { name: name.value.trim(), shortName: shortName.value.trim(), avatar: selected },
     }), undefined, "save");
   });
-  reset.addEventListener("click", () => void request("PATCH", "/api/settings", JSON.stringify({
-    identity: { name: defaultAppIdentity.name, shortName: defaultAppIdentity.shortName, avatar: defaultAppIdentity.avatar },
-  }), undefined, "reset"));
+  reset.addEventListener("click", () => {
+    if (busy || processingUpload) { onError("Wait for the current identity update to finish."); return; }
+    if (!window.confirm("Reset the app name and avatar to Pi Web? This also permanently removes your uploaded custom avatar file.")) return;
+    void request("PATCH", "/api/settings", JSON.stringify({
+      identity: { name: defaultAppIdentity.name, shortName: defaultAppIdentity.shortName, avatar: defaultAppIdentity.avatar },
+    }), undefined, "reset", async settings => {
+      try {
+        const response = await fetch(`/api/identity/avatar?revision=${settings.identity.revision}`, { method: "DELETE", headers: api.headers() });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok || data.ok === false) throw new Error(data.error || String(response.status));
+        onNotice("Identity reset and uploaded custom avatar removed. This cannot be undone.");
+      } catch (error) {
+        throw new Error(`Identity reset, but uploaded avatar cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    });
+  });
 
   upload.addEventListener("change", async () => {
     const file = upload.files?.[0];

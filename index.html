@@ -155,10 +155,7 @@
 
       <section id="messages" class="messages" aria-live="polite"></section>
       <div id="emptyCwdChooser" class="emptyCwdChooser" hidden>
-        <div id="identityNewSessionMedia" class="newChatLoadingAnimation" aria-hidden="true">
-          <img id="identityNewSessionAnimation" src="/avatars/current-pi/new-session.apng" alt="">
-          <img id="identityNewSessionStill" class="identityNewSessionStill" src="/avatars/current-pi/still.png" alt="" hidden>
-        </div>
+        <div id="identityNewSessionMedia" class="newChatLoadingAnimation" aria-hidden="true"></div>
         <div class="emptyCwdInner">
           <span class="emptyCwdLabel">Working directory</span>
           <div class="emptyWorkspaceControls">
@@ -274,7 +271,7 @@
             <p id="settingsSearchEmpty" class="settingsSearchEmpty" hidden>No settings match your search.</p>
           </nav>
           <div id="settingsContent" class="settingsContent" tabindex="-1">
-            <section id="settingsPageIdentity" class="settingsPage" data-settings-page="identity" aria-labelledby="settingsPageIdentityTitle" hidden><header class="settingsPageHeader"><span>Preferences</span><h3 id="settingsPageIdentityTitle" class="settingsPageTitle" tabindex="-1">App identity</h3><p>Choose the name and avatar shown throughout the app.</p></header><div class="identityFields"><label>App name <input id="identityName" maxlength="64" required></label><label>Short name <input id="identityShortName" maxlength="24" required></label></div><div id="identityGallery" class="identityGallery" role="group" aria-label="Avatar presets"></div><label class="identityUploadLabel">Upload custom avatar <input id="identityUpload" type="file" accept="image/png,image/jpeg,image/webp"></label><div class="identityPreviewModes"><button type="button" data-identity-preview="home">Home screen</button><button type="button" data-identity-preview="new">New session</button></div><div id="identityPreview" class="identityPreview"></div><div class="identityActions"><button id="identitySave" type="button">Save identity</button><button id="identityReset" type="button">Reset</button></div></section>
+            <section id="settingsPageIdentity" class="settingsPage" data-settings-page="identity" aria-labelledby="settingsPageIdentityTitle" hidden><header class="settingsPageHeader"><span>Preferences</span><h3 id="settingsPageIdentityTitle" class="settingsPageTitle" tabindex="-1">App identity</h3><p>Choose the name and avatar shown throughout the app.</p></header><div class="identityFields"><label>App name <input id="identityName" maxlength="64" required></label><label>Short name <input id="identityShortName" maxlength="24" required></label></div><div id="identityGallery" class="identityGallery" role="group" aria-label="Avatar presets"></div><label class="identityUploadLabel">Upload custom avatar (applies immediately; save name changes separately) <input id="identityUpload" type="file" accept="image/png,image/jpeg,image/webp"></label><div class="identityPreviewModes"><button type="button" data-identity-preview="home">Home screen</button><button type="button" data-identity-preview="new">New session</button></div><div id="identityPreview" class="identityPreview"></div><div class="identityActions"><button id="identitySave" type="button">Save identity</button><button id="identityReset" type="button">Reset name and avatar…</button></div></section>
             <section id="settingsPageAppearance" class="settingsPage" data-settings-page="appearance" aria-labelledby="settingsPageAppearanceTitle">
               <header class="settingsPageHeader">
                 <span>Experience</span>

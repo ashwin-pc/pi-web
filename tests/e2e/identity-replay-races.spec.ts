@@ -86,31 +86,51 @@ test("an A→B→A switch does not apply an earlier A replay to the replacement 
   } finally { delayed.release(); }
 });
 
-test("slow boot-default replay cannot cover the saved Cat identity", async ({ page }) => {
-  await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "preset", id: "cat" } } } });
-  await trackReplayBlobs(page);
+test("slow saved identity keeps the boot shell empty instead of downloading Pi", async ({ page }) => {
+  await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "preset", id: "fox" } } } });
   const settings = gate();
-  const replay = gate();
+  const requested: string[] = [];
+  page.on("request", request => requested.push(new URL(request.url()).pathname));
   await page.route("**/api/settings", async route => {
     if (route.request().method() === "GET") { settings.start(); await settings.held; }
-    await route.continue();
-  });
-  await page.route("**/avatars/current-pi/new-session.apng", async route => {
-    if (route.request().resourceType() === "fetch") { replay.start(); await replay.held; }
     await route.continue();
   });
   try {
     await page.goto("/");
     await settings.waiting;
-    await startSession(page);
-    await replay.waiting;
+    await expect(page.locator("#identityNewSessionMedia img")).toHaveCount(0);
+    expect(await page.locator(".actionLauncherToggle img").getAttribute("src")).toBeNull();
+    expect(requested.filter(path => path.startsWith("/avatars/current-pi/"))).toEqual([]);
     settings.release();
-    await expect(page.locator("#identityNewSessionAnimation")).toHaveAttribute("src", "/avatars/cat/new-session.apng");
-    const completed = page.waitForResponse(response => response.url().endsWith("/avatars/current-pi/new-session.apng") && response.request().resourceType() === "fetch");
-    replay.release();
-    await completed;
-    await page.evaluate(() => new Promise(resolve => setTimeout(resolve, 100)));
-    await expect(page.locator("#identityNewSessionAnimation")).toHaveAttribute("src", "/avatars/cat/new-session.apng");
-    expect(await page.evaluate(() => (window as any).__replayBlobs)).toEqual([]);
-  } finally { settings.release(); replay.release(); }
+    await expect(page.locator("#identityNewSessionAnimation")).toHaveAttribute("src", "/avatars/fox/new-session.apng");
+    await expect(page.locator(".actionLauncherToggle img")).toHaveAttribute("src", "/avatars/fox/still.png");
+    expect(requested.filter(path => path.startsWith("/avatars/current-pi/"))).toEqual([]);
+  } finally { settings.release(); }
+});
+
+test("custom saved avatar avoids Pi on cold boot and uses its still under reduced motion", async ({ page }) => {
+  const { readFile } = await import("node:fs/promises");
+  const upload = await page.request.post("/api/identity/avatar", {
+    data: await readFile("public/avatars/fox/still.png"), headers: { "content-type": "image/png" },
+  });
+  expect(upload.ok()).toBe(true);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const settings = gate();
+  const requested: string[] = [];
+  page.on("request", request => requested.push(new URL(request.url()).pathname));
+  await page.route("**/api/settings", async route => {
+    if (route.request().method() === "GET") { settings.start(); await settings.held; }
+    await route.continue();
+  });
+  try {
+    await page.goto("/");
+    await settings.waiting;
+    expect(await page.locator(".actionLauncherToggle img").getAttribute("src")).toBeNull();
+    await expect(page.locator("#identityNewSessionMedia img")).toHaveCount(0);
+    settings.release();
+    await expect(page.locator(".actionLauncherToggle img")).toHaveAttribute("src", /\/identity\/avatar\.png\?v=\d+/);
+    await expect(page.locator("#identityNewSessionStill")).toHaveAttribute("src", /\/identity\/avatar\.png\?v=\d+/);
+    await expect(page.locator("#identityNewSessionAnimation")).toHaveCount(0);
+    expect(requested.filter(path => path.startsWith("/avatars/current-pi/"))).toEqual([]);
+  } finally { settings.release(); }
 });

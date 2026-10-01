@@ -39,7 +39,7 @@ export default defineConfig({
       srcDir: "src",
       filename: "sw.ts",
       devOptions: { enabled: true, type: "module" },
-      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png", "avatars/pi/still.png"],
+      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png", "avatars/current-pi/still.png"],
       // The server owns /manifest.webmanifest and updates it with identity.
       // Generating a static plugin manifest would also add it to the precache.
       manifest: false,

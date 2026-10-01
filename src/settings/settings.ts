@@ -250,7 +250,7 @@ export function createSettings(options: {
     return true;
   }
 
-  function applySettings(rawSettings: PiWebSettings) {
+  function applySettings(rawSettings: PiWebSettings, { applySavedIdentity = true } = {}) {
     const previousDensity = state.settings.appearance.density;
     const settings = normalizeSettings(rawSettings);
     const storedExpanded = (() => {
@@ -263,8 +263,10 @@ export function createSettings(options: {
     })();
     const shouldInitializeExpanded = !hasAppliedSettings;
     state.settings = settings;
-    applyIdentity(settings.identity);
-    identitySettings?.update(settings.identity);
+    if (applySavedIdentity) {
+      applyIdentity(settings.identity);
+      identitySettings?.update(settings.identity);
+    }
     settingsShell?.setSummary("identity", settings.identity.name);
     state.queueMode = settings.composer.queueMode;
     if (shouldInitializeExpanded) state.editorExpanded = storedExpanded ?? settings.composer.expanded;
@@ -743,7 +745,7 @@ export function createSettings(options: {
   function init() {
     populateBucketColorSelect(elements.settingDefaultBucketColorSelect, state);
     settingsShell = createSettingsShell(elements.settingsPanel);
-    identitySettings = createIdentitySettings(elements.settingsPanel, api, value => applySettings(value as PiWebSettings), message => setSettingsStatus(message, true));
+    identitySettings = createIdentitySettings(elements.settingsPanel, api, value => applySettings(value as PiWebSettings), message => setSettingsStatus(message, true), message => setSettingsStatus(message, false));
     settingsShell.init();
     securitySettings = createSecuritySettings({ container: elements.securitySettings, api, setStatus: setSettingsStatus });
     const restartContainer = elements.settingsPanel.querySelector<HTMLElement>("#settingsPageServer");
@@ -763,7 +765,10 @@ export function createSettings(options: {
       setStatus: setSettingsStatus,
       notifyError: (message) => addMessage("system", message, "error"),
     });
-    applySettings(state.settings);
+    // Initialize non-identity controls without fetching the default avatar.
+    // The saved identity arrives asynchronously from /api/settings; the shell
+    // stays unbranded until then rather than flashing Pi for Fox/custom users.
+    applySettings(state.settings, { applySavedIdentity: false });
 
     settingsPanelHandle = rightPanels?.register({
       id: "settings",

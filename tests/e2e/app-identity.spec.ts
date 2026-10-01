@@ -21,7 +21,7 @@ test("sign-in HTML starts with the selected avatar and never requests default Pi
   await expect(page).toHaveTitle("Fox Workspace");
   await expect(page.locator(".avatarAnimation")).toHaveAttribute("src", "/avatars/fox/new-session.apng");
   await expect.poll(() => page.locator(".avatarAnimation").evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
-  expect(requested).not.toContain("/avatars/current-pi/new-session.apng");
+  expect(requested.filter(path => path.startsWith("/avatars/current-pi/"))).toEqual([]);
   expect(requested).not.toContain("/identity/config.json");
   await page.emulateMedia({ reducedMotion: "reduce" });
   await expect(page.locator(".avatarAnimation")).toBeHidden();
@@ -60,6 +60,42 @@ test("public identity artwork follows every preset and an existing custom upload
   expect(config.assets.still).toMatch(/^\/identity\/avatar\.png\?v=\d+$/);
   expect(config.assets.newSession).toBeUndefined();
   expect((await page.request.get("/identity/icon.png", { maxRedirects: 0 })).status()).toBe(200);
+});
+
+test("reset confirms removal, preserves drafts on cancel, and rejects stale cleanup", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "Identity reset lifecycle regression");
+  const { readFile } = await import("node:fs/promises");
+  const fox = await readFile("public/avatars/fox/still.png");
+  const cat = await readFile("public/avatars/cat/still.png");
+  expect((await page.request.post("/api/identity/avatar", { data: fox, headers: { "content-type": "image/png" } })).ok()).toBe(true);
+  await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "preset", id: "fox" } } } });
+  await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "custom" } } } });
+  expect(await (await page.request.get("/identity/avatar.png")).body()).toEqual(fox);
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavIdentity").click();
+  await page.locator("#identityName").fill("Unsaved draft");
+  page.once("dialog", dialog => dialog.dismiss());
+  await page.locator("#identityReset").click();
+  await expect(page.locator("#identityName")).toHaveValue("Unsaved draft");
+  expect((await (await page.request.get("/api/settings")).json()).settings.identity.avatar).toEqual({ type: "custom" });
+  page.once("dialog", dialog => {
+    expect(dialog.message()).toContain("permanently removes your uploaded custom avatar file");
+    void dialog.accept();
+  });
+  await page.locator("#identityReset").click();
+  await expect(page.locator("#settingsStatus")).toContainText("uploaded custom avatar removed");
+  await expect(page.locator("#identityName")).toHaveValue("Pi Web");
+  // Explicitly re-selecting custom without a new upload must use the fallback:
+  // reset removed the old bytes, unlike merely saving a preset selection.
+  await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "custom" } } } });
+  expect((await (await page.request.get("/identity/config.json")).json()).assets.still).toBe("/avatars/current-pi/still.png");
+  const reset = await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "preset", id: "current-pi" } } } });
+  const revision = (await reset.json()).settings.identity.revision;
+  expect((await page.request.post("/api/identity/avatar", { data: cat, headers: { "content-type": "image/png" } })).ok()).toBe(true);
+  const stale = await page.request.delete(`/api/identity/avatar?revision=${revision}`);
+  expect(stale.status()).toBe(409);
+  expect(await (await page.request.get("/identity/avatar.png")).body()).toEqual(cat);
 });
 
 test("in-flight save rejects concurrent upload explicitly and allows retry", async ({ page }, info) => {
@@ -110,6 +146,11 @@ test("upload preprocessing blocks concurrent saves without dropping the upload",
   await expect(page.locator("#identitySave")).toBeEnabled();
   await expect(page.locator("#identityName")).toHaveValue("Unsent Draft");
   await expect(page.locator("button.identityChoiceCustom")).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#settingsStatus")).toContainText("Custom avatar applied immediately");
+  const custom = await (await page.request.get("/identity/avatar.png")).body();
+  expect([custom.readUInt32BE(16), custom.readUInt32BE(20)]).toEqual([512, 512]);
+  const manifest = await (await page.request.get("/manifest.webmanifest")).json();
+  expect(manifest.icons).toEqual([{ src: expect.stringMatching(/^\/identity\/icon\.png\?v=\d+$/), sizes: "512x512", type: "image/png", purpose: "any" }]);
 });
 
 test("unsaved identity drafts survive settings broadcasts and custom upload", async ({ page }) => {

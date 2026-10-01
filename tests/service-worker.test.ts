@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 
 vi.mock("workbox-core", () => ({ clientsClaim: vi.fn() }));
 vi.mock("workbox-precaching", () => ({ cleanupOutdatedCaches: vi.fn(), precacheAndRoute: vi.fn() }));
@@ -27,6 +28,11 @@ beforeEach(async () => {
 });
 
 describe("service worker completion notifications", () => {
+  it("includes the actual default still asset in Vite's precache inputs", () => {
+    const config = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
+    expect(config).toContain('"avatars/current-pi/still.png"');
+    // The packed smoke additionally checks the generated dist/sw.js manifest.
+  });
   it("cleans only stale avatar caches after an artwork revision", async () => {
     let pending!: Promise<unknown>;
     listeners.get("activate")?.({ waitUntil: (value: Promise<unknown>) => { pending = value; } });

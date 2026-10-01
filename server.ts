@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { identityManifest, publicIdentityAssets, readAvatar, receiveAvatar } from "./server/appIdentity.js";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { avatarFile, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar } from "./server/appIdentity.js";
 import { extname, join, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -470,6 +470,14 @@ sessionService = new LocalSessionService({
   clientCount: () => realtimeHub.clientCount,
 });
 const settingsStore = sessionService.settingsStore;
+// Serialize avatar uploads, settings patches, and explicit reset cleanup.
+// Otherwise an identity patch could race the revision check and unlink.
+let avatarMutation: Promise<unknown> = Promise.resolve();
+function withAvatarMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = avatarMutation.then(operation);
+  avatarMutation = result.catch(() => undefined);
+  return result;
+}
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
     mockPromptCorrelations.delete(event.sessionKey);
@@ -1028,18 +1036,34 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
 
       if (method === "POST" && url.pathname === "/api/identity/avatar") {
-        try { await receiveAvatar(req, settingsStore.file); }
-        catch (error) { return sendJson(res, 400, { ok: false, error: (error as Error).message }); }
-        const settings = await settingsStore.patch({ identity: { avatar: { type: "custom" } } });
+        const settings = await withAvatarMutation(async () => {
+          try { await receiveAvatar(req, settingsStore.file); }
+          catch (error) { throw new HttpError((error as Error).message, 400); }
+          return settingsStore.patch({ identity: { avatar: { type: "custom" } } });
+        });
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });
+      }
+      if (method === "DELETE" && url.pathname === "/api/identity/avatar") {
+        const expectedRevision = Number(url.searchParams.get("revision"));
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !url.searchParams.has("revision"))
+          return sendJson(res, 400, { ok: false, error: "A saved identity revision is required" });
+        return withAvatarMutation(async () => {
+          const { identity } = await settingsStore.read();
+          if (identity.revision !== expectedRevision || identity.avatar.type !== "preset" || identity.avatar.id !== "current-pi")
+            return sendJson(res, 409, { ok: false, error: "Identity changed; uploaded avatar was not deleted" });
+          try { await unlink(avatarFile(settingsStore.file)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+          return sendJson(res, 200, { ok: true });
+        });
       }
       if (method === "GET" && url.pathname === "/api/settings") {
         return sendJson(res, 200, { ok: true, settings: await settingsStore.read(), webSettingsSchemas: sessionService.settingsSchemas() });
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
-        const settings = await settingsStore.patch(await readBody(req));
+        const patch = await readBody(req);
+        const settings = await withAvatarMutation(() => settingsStore.patch(patch));
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });
       }

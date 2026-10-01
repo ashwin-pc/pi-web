@@ -1,8 +1,7 @@
 import type { AvatarBundle } from "../server/shared/appIdentity.js";
 
-/** APNG preserves alpha consistently across Safari, Chromium and Firefox.
- * VP9 alpha remains in the bundle for consumers with verified decoder support,
- * but a codec-supported WebM can still be composited as opaque by a browser. */
+/** APNG is the sole in-app motion source: it preserves transparent animation
+ * consistently across Safari, Chromium and Firefox. */
 export function setAvatarMedia(host: HTMLElement, bundle: AvatarBundle): HTMLImageElement | null {
   const existing = host.querySelector<HTMLImageElement>(".avatarMediaVideo");
   const existingStill = host.querySelector<HTMLImageElement>(".avatarMediaStill");

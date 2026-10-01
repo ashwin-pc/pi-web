@@ -338,7 +338,8 @@ describe("new session empty state", () => {
   it("shows and replays the restored new-chat animation after transcript loading", () => {
     expect(statSync(new URL("../public/avatars/current-pi/new-session.apng", import.meta.url)).size).toBeGreaterThan(0);
     expect(html).toContain('class="newChatLoadingAnimation"');
-    expect(html).toContain('src="/avatars/current-pi/new-session.apng"');
+    expect(html).not.toContain('src="/avatars/current-pi/new-session.apng"');
+    expect(html).toContain('id="identityNewSessionMedia"');
     expect(readFileSync(new URL("../public/new-chat-animation.css", import.meta.url), "utf8")).not.toContain("mask-image:");
     expect(html).toContain('href="/new-chat-animation.css"');
     expect(sessionsTs).toContain("function finishTranscriptLoading()");

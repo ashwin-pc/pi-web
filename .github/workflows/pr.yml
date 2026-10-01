@@ -114,10 +114,9 @@ jobs:
       - name: Complete E2E matrix
         env:
           PI_WEB_E2E_SHARDS: 2
-          # Keep the hosted macOS browser matrix within one active server while
-          # still exercising every shard; realtime event tests separately wait
-          # for the server's hello before publishing nondurable mock events.
-          PI_WEB_E2E_CONCURRENCY: 1
+          # Run two concurrent E2E servers/shards; realtime event tests wait
+          # for the server hello before publishing nondurable mock events.
+          PI_WEB_E2E_CONCURRENCY: 2
         run: node scripts/run-all-tests.mjs --e2e-only --skip-build
 
       - name: Upload Playwright report

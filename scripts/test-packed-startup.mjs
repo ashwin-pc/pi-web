@@ -25,7 +25,13 @@ async function main() {
     assert.ok(npmCli, "Run the packaged startup check with npm run test:package");
     const packed = spawnSync(process.execPath, [npmCli, "pack", "--json", "--pack-destination", dir], { cwd: root, encoding: "utf8" });
     assert.equal(packed.status, 0, packed.stderr);
-    const tarball = join(dir, JSON.parse(packed.stdout)[0].filename);
+    const packageInfo = JSON.parse(packed.stdout)[0];
+    // Budget guards against accidentally publishing duplicate/unconsumed motion.
+    assert.ok(packageInfo.size < 24 * 1024 * 1024, `Compressed package exceeds 24 MiB: ${packageInfo.size}`);
+    assert.ok(packageInfo.unpackedSize < 28 * 1024 * 1024, `Unpacked package exceeds 28 MiB: ${packageInfo.unpackedSize}`);
+    assert.equal(packageInfo.files.filter(({ path }) => /(?:^|\/)avatars\/.*\/new-session\.webm$/.test(path)).length, 0);
+    assert.equal(packageInfo.files.filter(({ path }) => /(?:new-chat-loading\.(?:mp4|webm)|new-chat-still\.png|pi-mascot-avatar\.png)$/.test(path)).length, 0);
+    const tarball = join(dir, packageInfo.filename);
     const extract = spawnSync("tar", ["-xf", tarball, "-C", dir], { encoding: "utf8" });
     assert.equal(extract.status, 0, extract.stderr);
     const pkg = join(dir, "package");
@@ -59,6 +65,8 @@ async function main() {
     assert.equal(icon.headers.get("location"), "/avatars/current-pi/icon.png");
     assert.equal((await fetch(`http://127.0.0.1:${port}/identity/avatar.png`)).status, 200);
     assert.match(await readFile(join(pkg, "server/shared/appIdentity.ts"), "utf8"), /avatarPresetIds/);
+    // Assert against the actual packaged Workbox manifest, not just Vite config.
+    assert.match(await readFile(join(pkg, "dist/sw.js"), "utf8"), /avatars\/current-pi\/still\.png/);
   } catch (error) {
     primaryError = error;
     throw error;
