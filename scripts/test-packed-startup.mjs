@@ -6,20 +6,26 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
-// Run the actual tarball entrypoint: source-tree imports can otherwise hide
-// missing files from the published package allowlist.
+// Test the actual npm tarball after build: source-tree imports can hide files
+// omitted from the published package, while an unbuilt tree has no static assets.
+// Reuse installed dependencies through a link; never install/download a second
+// dependency tree just to verify the extracted server and HTTP artwork routes.
 async function main() {
   const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const dir = await mkdtemp(join(tmpdir(), "pi-web-package-"));
   let child;
   try {
-    const packed = spawnSync("npm", ["pack", "--json", "--pack-destination", dir], { cwd: root, encoding: "utf8" });
+    // npm_execpath is the portable npm CLI supplied by `npm run test:package`.
+    // Invoke it through Node rather than spawning a Windows .cmd file directly.
+    const npmCli = process.env.npm_execpath;
+    assert.ok(npmCli, "Run the packaged startup check with npm run test:package");
+    const packed = spawnSync(process.execPath, [npmCli, "pack", "--json", "--pack-destination", dir], { cwd: root, encoding: "utf8" });
     assert.equal(packed.status, 0, packed.stderr);
     const tarball = join(dir, JSON.parse(packed.stdout)[0].filename);
     const extract = spawnSync("tar", ["-xf", tarball, "-C", dir], { encoding: "utf8" });
     assert.equal(extract.status, 0, extract.stderr);
     const pkg = join(dir, "package");
-    await symlink(join(root, "node_modules"), join(pkg, "node_modules"), "dir");
+    await symlink(join(root, "node_modules"), join(pkg, "node_modules"), process.platform === "win32" ? "junction" : "dir");
     const port = 21000 + Math.floor(Math.random() * 30000);
     await writeFile(join(dir, "settings.json"), JSON.stringify({ version: 1, identity: { name: "Backup Brand", shortName: "Backup", avatar: { type: "custom" }, revision: 3 } }));
     child = spawn(process.execPath, ["--import", join(root, "node_modules/tsx/dist/loader.mjs"), "server.ts"], {

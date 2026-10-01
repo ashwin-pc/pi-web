@@ -13,7 +13,8 @@ beforeEach(async () => {
   listeners.clear();
   vi.clearAllMocks();
   vi.resetModules();
-  vi.stubGlobal("caches", { open: vi.fn(async () => cache) });
+  vi.stubGlobal("caches", { open: vi.fn(async () => cache), keys: vi.fn(async () => ["pi-web-avatars-old", "pi-web-avatars-test", "other-cache"]), delete: vi.fn(async () => true) });
+  vi.stubGlobal("__PI_WEB_AVATAR_CACHE_REVISION__", "test");
   vi.stubGlobal("fetch", vi.fn(async () => ({ json: async () => ({ name: "Custom Brand" }) })));
   vi.stubGlobal("self", {
     location: { origin: "https://pi.test" },
@@ -26,6 +27,14 @@ beforeEach(async () => {
 });
 
 describe("service worker completion notifications", () => {
+  it("cleans only stale avatar caches after an artwork revision", async () => {
+    let pending!: Promise<unknown>;
+    listeners.get("activate")?.({ waitUntil: (value: Promise<unknown>) => { pending = value; } });
+    await pending;
+    expect(caches.delete).toHaveBeenCalledWith("pi-web-avatars-old");
+    expect(caches.delete).not.toHaveBeenCalledWith("pi-web-avatars-test");
+    expect(caches.delete).not.toHaveBeenCalledWith("other-cache");
+  });
   it("shows a visible, vibrating notification linked to the completed session", async () => {
     let pending!: Promise<unknown>;
     listeners.get("push")?.({

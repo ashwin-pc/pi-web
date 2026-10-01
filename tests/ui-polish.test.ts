@@ -344,7 +344,8 @@ describe("new session empty state", () => {
     expect(sessionsTs).toContain("function finishTranscriptLoading()");
     expect(sessionsTs).toContain("#identityNewSessionAnimation");
     expect(sessionsTs).toContain("URL.createObjectURL(blob)");
-    expect(sessionsTs).toContain("animationBlob ??= fetch(canonicalUrl)");
+    expect(sessionsTs).toContain("const download = fetch(canonicalUrl)");
+    expect(sessionsTs).toContain("current !== animation");
     expect(sessionsTs).not.toContain("?replay=");
   });
 

@@ -76,6 +76,12 @@ jobs:
       - name: TypeScript worker tests
         run: npx vitest run --config examples/pi-web-extensions/dictation/vitest.config.ts
 
+      - name: Build and smoke-test the npm package on Windows
+        if: runner.os == 'Windows' && matrix.python == '3.13'
+        run: |
+          npm run build
+          npm run test:package
+
   test:
     runs-on: macos-latest
 

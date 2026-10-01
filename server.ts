@@ -1,8 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
-import { identityManifest, readAvatar, receiveAvatar } from "./server/appIdentity.js";
-import { resolveAvatarBundle } from "./server/shared/appIdentity.js";
+import { identityManifest, publicIdentityAssets, readAvatar, receiveAvatar } from "./server/appIdentity.js";
 import { extname, join, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -546,6 +545,12 @@ function withAccessLog(
 
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 
+async function loginPresentation() {
+  const settings = await settingsStore.read();
+  const uploaded = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
+  return { name: settings.identity.name, assets: publicIdentityAssets(settings, uploaded) };
+}
+
 const server = createServer(withAccessLog(async (req, res, url) => {
   const method = req.method || "GET";
   try {
@@ -559,7 +564,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       const png = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
       // A removed or unavailable upload must not leave the public login page
       // with broken artwork or send the icon endpoint into a redirect loop.
-      const assets = resolveAvatarBundle(png ? settings.identity : { ...settings.identity, avatar: { type: "preset", id: "current-pi" } });
+      const assets = publicIdentityAssets(settings, png);
       if (url.pathname === "/identity/config.json") return sendJson(res, 200, { ...settings.identity, assets });
       if (settings.identity.avatar.type === "custom" && png) {
         res.setHeader("content-type", "image/png");
@@ -583,10 +588,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
         if (url.pathname.endsWith("challenge")) return sendJson(res, 200, !req.headers.cookie?.includes("pi_web_session=") && authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
-        passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined); return;
+        passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined, await loginPresentation()); return;
       }
       if (await handlePasswordLogin(req, res, url, authKernel, authStore, authOrigin)) return;
-      if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig, loginPresentation)) return;
       if (method === "POST" && url.pathname === "/api/auth/logout") {
         if (!req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { error: "CSRF validation failed" });
         await authKernel.revokeSession(req);

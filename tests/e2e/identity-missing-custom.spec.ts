@@ -36,6 +36,11 @@ test("restored custom selection without an upload renders fallback artwork", asy
     await expect(fab).toHaveAttribute("src", "/identity/avatar.png?v=3");
     await expect.poll(() => fab.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     expect((await context.request.get("/identity/avatar.png")).ok()).toBe(true);
+    const login = await page.goto("/api/auth/login");
+    expect(login?.status()).toBe(200);
+    await expect(page).toHaveTitle("Backup Brand");
+    await expect(page.locator(".avatarAnimation")).toHaveCount(1);
+    await expect(page.locator(".avatarAnimation")).toHaveAttribute("src", "/avatars/current-pi/new-session.apng");
   } finally {
     await context.close();
     child.kill();

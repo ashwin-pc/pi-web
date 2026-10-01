@@ -1,3 +1,5 @@
+import { defaultAppIdentity, resolveAvatarBundle, type AvatarBundle } from "../shared/appIdentity.js";
+
 // Shared presentation and browser ceremony for all public sign-in/setup routes.
 // Authentication policy, challenges, and session creation remain in their route handlers.
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -24,8 +26,17 @@ input{display:block;margin:6px 0 12px;background:var(--bg);font-size:16px}form{m
 @media(max-width:480px){body{padding:20px 16px}main{padding:22px}}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}img.avatarAnimation{display:none}.avatarStill{display:block}}
 `;
 
-export function renderLoginPage(options: { methods: readonly string[]; setupToken?: string; passkeyOnly?: boolean }) {
+export type LoginPresentation = { name: string; assets: AvatarBundle };
+
+export function renderLoginPage(options: { methods: readonly string[]; setupToken?: string; passkeyOnly?: boolean; presentation?: LoginPresentation }) {
   const { methods, setupToken, passkeyOnly = false } = options;
+  const presentation = options.presentation ?? { name: defaultAppIdentity.name, assets: resolveAvatarBundle(defaultAppIdentity) };
+  const name = escapeHtml(presentation.name);
+  const still = escapeHtml(presentation.assets.still);
+  const icon = escapeHtml(presentation.assets.icon);
+  const animation = presentation.assets.newSession?.apng
+    ? `<img class="newChatLoadingAnimation avatarAnimation" src="${escapeHtml(presentation.assets.newSession.apng)}" alt="" aria-hidden="true">`
+    : "";
   const setup = setupToken !== undefined;
   const hasPasskey = methods.includes("passkey");
   const hasPassword = methods.includes("password") && !passkeyOnly;
@@ -37,29 +48,14 @@ export function renderLoginPage(options: { methods: readonly string[]; setupToke
     methods.includes("external") ? '<form data-method="external"><button>Continue with trusted proxy</button></form>' : "",
     methods.includes("legacy") ? form("legacy", "Legacy token (deprecated)") : "",
   ].join("") : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Pi Web</title><link rel="stylesheet" href="/new-chat-animation.css"><style>${styles}</style></head><body><main><div class="loginAvatar"><img class="newChatLoadingAnimation avatarAnimation" src="/avatars/current-pi/new-session.apng" alt="" aria-hidden="true"><img class="newChatLoadingAnimation avatarStill" src="/avatars/current-pi/still.png" alt="" aria-hidden="true"></div><h1>Pi Web</h1>${setup ? `<h2>${passkeyOnly ? "Enroll a passkey" : "Set up your workspace"}</h2><p>Choose a sign-in method for your private workspace. Keep a backup credential and terminal recovery access.</p>` : ""}${passkey}${hasPassword && hasPasskey && !setup ? '<button class="secondary" id="passwordToggle" aria-expanded="false" aria-controls="password">Use a password</button>' : ""}${hasPassword ? form("password", setup ? "New password (12+ characters)" : "Password", hasPasskey && !setup) : ""}${alternatives ? `<details><summary>Other ways to sign in</summary>${alternatives}</details>` : ""}${!methods.length ? '<p>No sign-in method is available. Use terminal recovery to restore access.</p>' : ""}${passkeyOnly && !setup ? '<a class="back" href="/api/auth/login">Other sign-in methods</a>' : ""}<p id="status" role="status" aria-live="polite" aria-atomic="true"></p><noscript>JavaScript is required to sign in. Enable it and reload this page.</noscript></main><script>
-fetch('/identity/config.json').then(r => r.ok ? r.json() : null).then(config => {
-  if (!config) return;
-  const name = config.name || config.shortName;
-  if (name) { document.title = name; document.querySelector('h1').textContent = name; }
-  const assets = config.assets;
-  if (!assets) return;
-  const icon = document.createElement('link'); icon.rel = 'icon'; icon.href = assets.icon; document.head.append(icon);
-  const still = document.querySelector('.avatarStill'); still.src = assets.still;
-  const animation = document.querySelector('.avatarAnimation');
-  const motion = assets.newSession;
-  avatarHasMotion = !!(motion && typeof motion.apng === 'string');
-  if (avatarHasMotion) animation.src = motion.apng;
-  syncMotion();
-}).catch(() => {});
-
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${name}</title><link rel="icon" href="${icon}"><link rel="stylesheet" href="/new-chat-animation.css"><style>${styles}</style></head><body><main><div class="loginAvatar">${animation}<img class="newChatLoadingAnimation avatarStill" src="${still}" alt="" aria-hidden="true"></div><h1>${name}</h1>${setup ? `<h2>${passkeyOnly ? "Enroll a passkey" : "Set up your workspace"}</h2><p>Choose a sign-in method for your private workspace. Keep a backup credential and terminal recovery access.</p>` : ""}${passkey}${hasPassword && hasPasskey && !setup ? '<button class="secondary" id="passwordToggle" aria-expanded="false" aria-controls="password">Use a password</button>' : ""}${hasPassword ? form("password", setup ? "New password (12+ characters)" : "Password", hasPasskey && !setup) : ""}${alternatives ? `<details><summary>Other ways to sign in</summary>${alternatives}</details>` : ""}${!methods.length ? '<p>No sign-in method is available. Use terminal recovery to restore access.</p>' : ""}${passkeyOnly && !setup ? '<a class="back" href="/api/auth/login">Other sign-in methods</a>' : ""}<p id="status" role="status" aria-live="polite" aria-atomic="true"></p><noscript>JavaScript is required to sign in. Enable it and reload this page.</noscript></main><script>
 const statusElement=document.getElementById('status'),go=document.getElementById('go'),setup=${scriptValue(setup)},setupToken=${scriptValue(setupToken || "")};
 const report=(message,error=false)=>{statusElement.textContent=message;statusElement.classList.toggle('error',error)};
 // The same entry video and presentation as New Session; no app bootstrap or API dependency.
 const avatar=document.querySelector('.avatarAnimation'),motion=matchMedia('(prefers-reduced-motion: reduce)');
-let avatarHasMotion=true;
-const syncMotion=()=>{const still=document.querySelector('.avatarStill');const animate=avatarHasMotion&&!motion.matches;avatar.style.display=animate?'block':'none';still.style.display=animate?'none':'block'};
-avatar.onerror=()=>{avatarHasMotion=false;syncMotion()};
+let avatarHasMotion=!!avatar;
+const syncMotion=()=>{const still=document.querySelector('.avatarStill');const animate=avatarHasMotion&&!motion.matches;if(avatar)avatar.style.display=animate?'block':'none';still.style.display=animate?'none':'block'};
+if(avatar)avatar.onerror=()=>{avatarHasMotion=false;syncMotion()};
 motion.addEventListener('change',syncMotion);syncMotion();
 if(!window.isSecureContext)report('Unencrypted connection. Use HTTPS for remote sign-in.',true);
 const toggle=document.getElementById('passwordToggle');if(toggle)toggle.onclick=()=>{const f=document.getElementById('password');f.hidden=!f.hidden;toggle.setAttribute('aria-expanded',String(!f.hidden));if(!f.hidden)f.elements.secret.focus()};

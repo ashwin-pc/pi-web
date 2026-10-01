@@ -26,10 +26,21 @@ describe("shared sign-in presentation", () => {
     expect(html).toContain("const animate=avatarHasMotion&&!motion.matches");
     expect(html).not.toContain('motion.sprite');
     expect(html).toContain('src="/avatars/current-pi/still.png"');
-    expect(html).toContain("fetch('/identity/config.json')");
+    expect(html).not.toContain("fetch('/identity/config.json')");
     expect(loginPageHeaders['content-security-policy']).toContain("media-src 'self'");
     expect(loginPageHeaders['content-security-policy']).toContain("style-src 'self' 'unsafe-inline'");
     expect(html).not.toContain('class="glow"');
+  });
+  it("renders the saved identity initially without unsafe markup or default animation", () => {
+    const html = renderLoginPage({ methods: ["password"], presentation: {
+      name: '<img src=x onerror="alert(1)">',
+      assets: { still: "/identity/avatar.png?v=4", fab: "/identity/avatar.png?v=4", icon: "/identity/icon.png?v=4", fallback: "/identity/avatar.png?v=4" },
+    } });
+    expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
+    expect(html).not.toContain('<img src=x onerror="alert(1)">');
+    expect(html).toContain('src="/identity/avatar.png?v=4"');
+    expect(html).not.toContain('src="/avatars/current-pi/new-session.apng"');
+    expect(html).not.toContain('class="newChatLoadingAnimation avatarAnimation"');
   });
   it("prioritizes direct passkey authentication and discloses enabled alternatives", () => {
     const html = renderLoginPage({ methods: ["password", "passkey", "legacy", "external"] });

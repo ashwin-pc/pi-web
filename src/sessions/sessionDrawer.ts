@@ -338,6 +338,15 @@ export function createSessions(options: {
   let animationBlob: Promise<Blob> | undefined;
   let animationBlobSource: string | undefined;
   let animationObjectUrl: string | undefined;
+  // Avatar switches (including reduced-motion changes) replace the media node.
+  // Release a replay URL as soon as its image is no longer the current media.
+  new MutationObserver(() => {
+    if (!animationObjectUrl) return;
+    const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+    if (current?.src === animationObjectUrl) return;
+    URL.revokeObjectURL(animationObjectUrl);
+    animationObjectUrl = undefined;
+  }).observe(elements.emptyCwdChooserEl, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
   async function restartNewChatAnimation(generation: number) {
     if (generation !== transcriptLoadGeneration) return;
     transcriptLoading = false;
@@ -350,15 +359,22 @@ export function createSessions(options: {
       animationBlob = undefined;
     }
     try {
-      animationBlob ??= fetch(canonicalUrl).then(response => {
-        if (!response.ok) throw new Error(`Avatar animation failed (${response.status})`);
-        return response.blob();
-      }).catch(error => { animationBlob = undefined; throw error; });
+      if (!animationBlob) {
+        const download = fetch(canonicalUrl).then(response => {
+          if (!response.ok) throw new Error(`Avatar animation failed (${response.status})`);
+          return response.blob();
+        });
+        const pending = download.catch(error => {
+          if (animationBlob === pending) animationBlob = undefined;
+          throw error;
+        });
+        animationBlob = pending;
+      }
       const blob = await animationBlob;
       if (generation !== transcriptLoadGeneration || animationBlobSource !== canonicalUrl) return;
       // Settings may replace the media node while the first download is in flight.
       const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
-      if (!current) return;
+      if (current !== animation || (current.dataset.canonicalUrl || current.src.split("?")[0]) !== canonicalUrl) return;
       const next = URL.createObjectURL(blob);
       const previous = animationObjectUrl;
       animationObjectUrl = next;

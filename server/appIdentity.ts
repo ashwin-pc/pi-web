@@ -4,6 +4,7 @@ import { mkdir, readFile, rename, writeFile, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { IncomingMessage } from "node:http";
 import type { PiWebSettings } from "./settings.js";
+import { resolveAvatarBundle } from "./shared/appIdentity.js";
 
 export const maxAvatarBytes = 2 * 1024 * 1024;
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -71,6 +72,13 @@ export async function readAvatar(settingsFile: string): Promise<Buffer | undefin
   try { return await readFile(avatarFile(settingsFile)); }
   catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
 }
+export function publicIdentityAssets(settings: PiWebSettings, uploadedPng?: Buffer) {
+  const identity = settings.identity.avatar.type === "custom" && !uploadedPng
+    ? { ...settings.identity, avatar: { type: "preset" as const, id: "current-pi" as const } }
+    : settings.identity;
+  return resolveAvatarBundle(identity);
+}
+
 export function identityManifest(settings: PiWebSettings) {
   const { name, shortName } = settings.identity;
   const icon = `/identity/icon.png?v=${settings.identity.revision}`;

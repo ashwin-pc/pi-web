@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
+import { avatarPresetIds } from "../../server/shared/appIdentity.js";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -8,6 +9,57 @@ test.beforeEach(async ({ page }) => {
 
 test.afterEach(async ({ page }) => {
   await page.request.patch("/api/settings", { data: { identity: { name: "Pi Web", shortName: "Pi", avatar: { type: "preset", id: "current-pi" } } } });
+});
+
+test("sign-in HTML starts with the selected avatar and never requests default Pi", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "Public sign-in artwork regression");
+  await page.request.patch("/api/settings", { data: { identity: { name: "Fox Workspace", avatar: { type: "preset", id: "fox" } } } });
+  const requested: string[] = [];
+  page.on("request", request => requested.push(new URL(request.url()).pathname));
+  const login = await page.goto("/api/auth/login");
+  expect(login?.status()).toBe(200);
+  await expect(page).toHaveTitle("Fox Workspace");
+  await expect(page.locator(".avatarAnimation")).toHaveAttribute("src", "/avatars/fox/new-session.apng");
+  await expect.poll(() => page.locator(".avatarAnimation").evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  expect(requested).not.toContain("/avatars/current-pi/new-session.apng");
+  expect(requested).not.toContain("/identity/config.json");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(page.locator(".avatarAnimation")).toBeHidden();
+  await expect(page.locator(".avatarStill")).toBeVisible();
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await expect(page.locator(".avatarAnimation")).toBeVisible();
+  await page.request.post("/api/identity/avatar", {
+    data: await import("node:fs/promises").then(fs => fs.readFile("public/avatars/current-pi/still.png")),
+    headers: { "content-type": "image/png" },
+  });
+  requested.length = 0;
+  await page.reload();
+  await expect(page.locator(".avatarAnimation")).toHaveCount(0);
+  await expect.poll(() => page.locator(".avatarStill").evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
+  expect(requested).not.toContain("/avatars/current-pi/new-session.apng");
+});
+
+test("public identity artwork follows every preset and an existing custom upload", async ({ page }, info) => {
+  test.skip(info.project.name !== "desktop", "Public identity route regression");
+  for (const id of avatarPresetIds) {
+    const saved = await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "preset", id } } } });
+    expect(saved.ok()).toBe(true);
+    const config = await (await page.request.get("/identity/config.json")).json();
+    expect(config.assets.still).toBe(`/avatars/${id}/still.png`);
+    expect(config.assets.newSession.apng).toBe(`/avatars/${id}/new-session.apng`);
+    const icon = await page.request.get("/identity/icon.png", { maxRedirects: 0 });
+    expect(icon.status()).toBe(302);
+    expect(icon.headers().location).toBe(`/avatars/${id}/icon.png`);
+  }
+  const upload = await page.request.post("/api/identity/avatar", {
+    data: await import("node:fs/promises").then(fs => fs.readFile("public/avatars/current-pi/still.png")),
+    headers: { "content-type": "image/png" },
+  });
+  expect(upload.ok()).toBe(true);
+  const config = await (await page.request.get("/identity/config.json")).json();
+  expect(config.assets.still).toMatch(/^\/identity\/avatar\.png\?v=\d+$/);
+  expect(config.assets.newSession).toBeUndefined();
+  expect((await page.request.get("/identity/icon.png", { maxRedirects: 0 })).status()).toBe(200);
 });
 
 test("in-flight save rejects concurrent upload explicitly and allows retry", async ({ page }, info) => {
