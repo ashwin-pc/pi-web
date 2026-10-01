@@ -90,7 +90,7 @@ export function createWorkShell(options: Options) {
   function renderDrawer() {
     const query = search.value.toLowerCase(); rows.replaceChildren();
     for (const work of records.filter(work => `${work.title} ${work.workspaceIds.map(id => root(id)?.name).join(" ")}`.toLowerCase().includes(query))) {
-      const row = button("", () => void selectWork(work.id).catch(options.onError)); row.className = "workRow"; row.dataset.work = work.id; row.setAttribute("aria-current", String(work.id === currentId));
+      const row = button("", () => void selectWork(work.id).catch(options.onError)); row.classList.add("workRow"); row.dataset.work = work.id; row.setAttribute("aria-current", String(work.id === currentId));
       const name = document.createElement("strong"), projects = document.createElement("small"), status = document.createElement("span"); name.textContent = work.title; projects.textContent = work.workspaceIds.map(id => root(id)?.name || "Unavailable project").join(" + "); status.className = "workRowStatus"; row.append(name, projects, status); rows.append(row);
     }
     updateStatuses();

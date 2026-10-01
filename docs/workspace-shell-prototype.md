@@ -353,3 +353,8 @@ The first-sign-in regression checks incorrect and correct tokens, mobile chat,
 project context and the desktop layout. The existing FAB also measured labels with
 a different font from its buttons; it now uses the computed button font so width
 ordering stays consistent.
+
+Recording discovery: goal rows replaced the shared button class instead of adding
+their row class. This dropped the flex layout and ran the goal, project and status
+labels together. Rows now retain both classes so their labels stack and the shared
+button sizing, focus and hover styles apply.
