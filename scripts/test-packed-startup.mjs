@@ -10,10 +10,24 @@ import { setTimeout as delay } from "node:timers/promises";
 // omitted from the published package, while an unbuilt tree has no static assets.
 // Reuse installed dependencies through a link; never install/download a second
 // dependency tree just to verify the extracted server and HTTP artwork routes.
+async function stopChild(child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise((resolve, reject) => {
+    let forced;
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      forced = setTimeout(() => reject(new Error("Packed server did not shut down")), 5_000);
+    }, 5_000);
+    child.once("close", () => { clearTimeout(timeout); clearTimeout(forced); resolve(); });
+    child.kill();
+  });
+}
+
 async function main() {
   const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
   const dir = await mkdtemp(join(tmpdir(), "pi-web-package-"));
   let child;
+  let primaryError;
   try {
     // npm_execpath is the portable npm CLI supplied by `npm run test:package`.
     // Invoke it through Node rather than spawning a Windows .cmd file directly.
@@ -51,9 +65,19 @@ async function main() {
     assert.equal(icon.headers.get("location"), "/avatars/current-pi/icon.png");
     assert.equal((await fetch(`http://127.0.0.1:${port}/identity/avatar.png`)).status, 200);
     assert.match(await readFile(join(pkg, "server/shared/appIdentity.ts"), "utf8"), /avatarPresetIds/);
+  } catch (error) {
+    primaryError = error;
+    throw error;
   } finally {
-    child?.kill();
-    await rm(dir, { recursive: true, force: true });
+    // Windows keeps a process's working directory locked until its stdio and
+    // handles close. Preserve both the test and cleanup errors if either fails.
+    try {
+      await stopChild(child);
+      await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch (cleanupError) {
+      if (primaryError) throw new AggregateError([primaryError, cleanupError], "Packed server and cleanup failed");
+      throw cleanupError;
+    }
   }
 }
 
