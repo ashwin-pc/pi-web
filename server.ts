@@ -11,6 +11,12 @@ import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./serv
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { WorkspaceRegistry } from "./server/workspace/registry.js";
 import { HttpError } from "./server/shared/httpError.js";
+import { WorkStore, WorkError } from "./server/workspace/workStore.js";
+import { WorkViews } from "./server/workspace/views.js";
+import { WorkspaceBrowser } from "./server/workspace/browser.js";
+import { WorkspaceMcp } from "./server/workspace/mcp.js";
+import { createWorkspaceTools } from "./server/workspace/tools.js";
+import { handleWorkRoute } from "./server/workspace/routes.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
@@ -64,6 +70,15 @@ let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
 const workspaces = new WorkspaceRegistry();
 workspaces.register(piCwd);
+const workStateFile = process.env.PI_WEB_WORK_STATE_FILE || (process.env.PI_WEB_SESSION_UI_STATE_FILE ? process.env.PI_WEB_SESSION_UI_STATE_FILE + ".work.json" : join(agentDir, "pi-web-work.json"));
+const workStore = new WorkStore(workStateFile, workspaces);
+await workStore.read().catch(error => console.warn("Work catalogue unavailable:", error.message));
+const workspaceBrowser = new WorkspaceBrowser();
+const workspaceMcp = new WorkspaceMcp(process.env.PI_WEB_MCP_CONNECTIONS_FILE || workStateFile + ".mcp.json", broadcast);
+const workViews = new WorkViews(workStore, broadcast, async (workId, item) => {
+  if (item.kind === "browser") workspaceBrowser.validate(workId, item.id);
+  if (item.kind === "mcp-app") await workspaceMcp.validate(workId, item.connectionId, item.toolName);
+});
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
 const mockMode = process.env.PI_WEB_MOCK === "1";
@@ -475,6 +490,7 @@ const mockSessionFactory = mockMode ? {
 } : undefined;
 
 sessionService = new LocalSessionService({
+  workspaceTools: createWorkspaceTools({ views: workViews, work: workStore, registry: workspaces, browser: workspaceBrowser, mcp: workspaceMcp }),
   extensionHttp,
   modelRuntime,
   sessionFactory: mockSessionFactory,
@@ -671,6 +687,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const current = workspaces.register(await requestCwdFromSessionId(url.searchParams.get("sessionId")));
         return sendJson(res, 200, { ok: true, current, workspaces: workspaces.list() });
       }
+
+      if (await handleWorkRoute(req, res, url, { store: workStore, registry: workspaces, views: workViews, browser: workspaceBrowser, mcp: workspaceMcp,
+        defaultRoot: () => piCwd, refreshRoots: refreshWorkspaces, sessionRoot: async id => sessionService.cwdForSession(await sessionService.require(id)), readBody, send: sendJson })) return;
 
       if (method === "GET" && url.pathname === "/api/files/tree") {
         try {
@@ -1188,11 +1207,12 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown; workContext?: unknown };
         const message = String(body.message || "").trim();
         const target = await sessionService.require(resolveSessionId(body.sessionId));
         const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);
         if (!message && attachments.length === 0) return sendJson(res, 400, { ok: false, error: "message or attachment is required" });
+        if (body.workContext !== undefined) await workViews.capture(target.sessionId, body.workContext, target.isStreaming);
         const clientMessageId = cleanClientId(body.clientMessageId);
         const sourceClientId = clientIdFromRequest(req);
         if (mockMode && clientMessageId && sourceClientId) {
@@ -1218,6 +1238,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "POST" && url.pathname === "/api/abort") {
         const body = await readBody(req) as { sessionId?: unknown };
+        workViews.cancel(resolveSessionId(body.sessionId));
         return sendJson(res, 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId)) });
       }
 
@@ -1299,7 +1320,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
+    const status = error instanceof SessionServiceError || error instanceof HttpError || error instanceof WorkError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));

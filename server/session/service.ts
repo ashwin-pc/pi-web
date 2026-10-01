@@ -10,6 +10,7 @@ import {
   getAgentDir,
   type AgentSessionEvent,
   type ModelRuntime,
+  type ToolDefinition,
   SessionManager,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
@@ -86,6 +87,7 @@ export interface LocalSessionConfiguration {
 }
 
 export interface LocalSessionServiceDependencies {
+  workspaceTools?: ToolDefinition[];
   extensionHttp?: Pick<import("../auth/extensionHttp.js").ExtensionHttpRegistry, "createClient" | "revokeOwner">;
   modelRuntime: ModelRuntime;
   sessionFactory?: LocalSessionFactory;
@@ -956,7 +958,7 @@ export class LocalSessionService implements SessionService {
       sessionManager: manager,
       modelRuntime: this.deps.modelRuntime,
       resourceLoader: loader,
-      customTools: createSessionsReadTools((reference, tail) => this.readSession(reference, tail)),
+      customTools: [...createSessionsReadTools((reference, tail) => this.readSession(reference, tail)), ...(this.deps.workspaceTools || [])],
       sessionStartEvent,
     });
     this.extensionLoaders.set(result.session, loader);
