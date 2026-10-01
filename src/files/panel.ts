@@ -10,8 +10,8 @@ import { iconElement } from "../app/icons.js";
 import { initArtifactBrowser } from "./artifactBrowser.js";
 
 type FileEntry = { name: string; path: string; kind: "file" | "directory" | "symlink"; size?: number };
-type TextDocumentState = { kind: "text"; path: string; revision: string; saved: string; view: EditorView; language: string; wrap: Compartment; host: HTMLElement };
-type ImageDocumentState = { kind: "image"; path: string; host: HTMLElement; objectUrl: string };
+type TextDocumentState = { kind: "text"; workspaceId: string; path: string; version: string; revision: string; saved: string; view: EditorView; language: string; wrap: Compartment; host: HTMLElement };
+type ImageDocumentState = { kind: "image"; workspaceId: string; path: string; host: HTMLElement; objectUrl: string };
 type DocumentState = TextDocumentState | ImageDocumentState;
 type ExplorerScope = "workspace" | "artifacts";
 type DirectoryLoadContext = { generation: number; root: boolean };
@@ -34,6 +34,12 @@ async function languageExtension(language: string) {
 }
 
 export type FilesPanelController = {
+  draft(ref: ResourceRef): import("../../shared/work.js").WorkDraft | undefined;
+  applyDraft(draft: import("../../shared/work.js").WorkDraft, mode: "append" | "replace", allowLatestAppend?: boolean): boolean;
+  mountFile(ref: Extract<ResourceRef, { kind: "file" }>, host: HTMLElement): void;
+  releaseFile(ref: ResourceRef): void;
+  saveFile(ref: ResourceRef): Promise<void>;
+  selection(ref: ResourceRef): ResourceSelection | undefined;
   isOpen(): boolean;
   sessionChanged(): void;
   openFile(path: string): Promise<void>;
@@ -66,7 +72,29 @@ export function initFilesPanel(options: {
   const fontValue = panel.querySelector<HTMLOutputElement>("#fileFontValue")!;
   const wrapToggle = panel.querySelector<HTMLButtonElement>("#fileWrapToggle")!;
   const artifactBrowser = initArtifactBrowser({ panel, tree: artifactsTree, apiHeaders, getSessionId });
-  const documents = new Map<string, DocumentState>();
+  let documents = new Map<string, DocumentState>();
+  const workspaceBuffers = new Map<string, { documents: Map<string, DocumentState>; activePath: string }>();
+  const draftKey = (owner: string, path: string) => "pi-web.files.draft/" + JSON.stringify([owner, path]);
+  function keepDraft(doc: TextDocumentState) {
+    try {
+      if (!dirty(doc)) sessionStorage.removeItem(draftKey(doc.workspaceId, doc.path));
+      else sessionStorage.setItem(draftKey(doc.workspaceId, doc.path), JSON.stringify({ version: doc.version, saved: doc.saved, revision: doc.revision, text: doc.view.state.doc.toString(), anchor: doc.view.state.selection.main.anchor, head: doc.view.state.selection.main.head }));
+    } catch { /* The live editor remains usable when storage is unavailable/full. */ }
+  }
+  function retainWorkspace() {
+    if (workspaceId) workspaceBuffers.set(workspaceId, { documents, activePath });
+    for (const doc of documents.values()) { if (doc.kind === "text") keepDraft(doc); if (!doc.host.dataset.workMounted) doc.host.remove(); }
+  }
+  function useWorkspace(id: string) {
+    if (workspaceId === id) return;
+    retainWorkspace(); workspaceId = id;
+    const retained = workspaceBuffers.get(id);
+    documents = retained?.documents || new Map(); activePath = retained?.activePath || "";
+    editor.replaceChildren();
+    for (const doc of documents.values()) { if (!doc.host.dataset.workMounted) { editor.append(doc.host); doc.host.hidden = doc.path !== activePath; } if (doc.kind === "text") doc.view.requestMeasure(); }
+    if (!documents.size) renderEditorEmpty();
+    saveButton.disabled = !activePath || !dirty(documents.get(activePath)!); askButton.disabled = !activePath; renderTabs();
+  }
   const editorFontStorageKey = "pi-web.files.editor-font-size";
   const editorWrapStorageKey = "pi-web.files.editor-line-wrap";
   const treeWidthStorageKey = "pi-web.files.tree-width";
@@ -77,6 +105,7 @@ export function initFilesPanel(options: {
   let treeScope: ExplorerScope = "workspace";
   let treeLoadGeneration = 0;
   let workspaceGeneration = 0;
+  let fileOpenGeneration = 0;
   let workspaceMobileView: "tree" | "editor" = "tree";
   let scopeLoaded: Record<ExplorerScope, boolean> = { workspace: false, artifacts: false };
   const scopeScrollPositions: Record<ExplorerScope, number> = { workspace: 0, artifacts: 0 };
@@ -103,8 +132,11 @@ export function initFilesPanel(options: {
   wrapToggle.setAttribute("aria-pressed", String(editorLineWrap));
 
   async function query(path = "") {
-    workspaceId = (await getWorkspace()).id;
-    const params = new URLSearchParams({ workspaceId });
+    const key = new URL(location.href).searchParams.get("workspaceId") || getWorkspaceKey();
+    const workspace = await getWorkspace();
+    if (key !== (new URL(location.href).searchParams.get("workspaceId") || getWorkspaceKey())) throw new DOMException("Project changed", "AbortError");
+    useWorkspace(workspace.id);
+    const params = new URLSearchParams({ workspaceId: workspace.id });
     if (path) params.set("path", path);
     return params;
   }
@@ -135,6 +167,7 @@ export function initFilesPanel(options: {
     if (doc.kind === "text") doc.view.destroy();
     else URL.revokeObjectURL(doc.objectUrl);
     doc.host.remove(); documents.delete(path);
+    try { sessionStorage.removeItem(draftKey(doc.workspaceId, path)); } catch { /* Ignore storage failures. */ }
     if (activePath === path) {
       const next = paths[index + 1] || paths[index - 1]; activePath = "";
       if (next && documents.has(next)) activate(next);
@@ -146,7 +179,8 @@ export function initFilesPanel(options: {
   function activate(path: string) {
     const doc = documents.get(path); if (!doc) return;
     errorHost?.remove(); errorHost = undefined;
-    for (const item of documents.values()) item.host.hidden = item !== doc;
+    if (doc.host.dataset.workMounted) { delete doc.host.dataset.workMounted; editor.append(doc.host); }
+    for (const item of documents.values()) if (!item.host.dataset.workMounted) item.host.hidden = item !== doc;
     activePath = path; showWorkspaceEditor(); panel.classList.toggle("filesPanel--imageActive", doc.kind === "image"); saveButton.disabled = !dirty(doc); status.textContent = "";
     renderTabs();
     askButton.disabled = false;
@@ -160,17 +194,29 @@ export function initFilesPanel(options: {
   }
   function editorExtensions(docRef: { current?: DocumentState }, language: Compartment, wrap: Compartment) {
     return [lineNumbers(), history(), drawSelection(), highlightActiveLine(), bracketMatching(), highlightSelectionMatches(),
-      vscodeDark, keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab, { key: "Mod-s", preventDefault: true, run: () => { void save(); return true; } }]),
-      language.of([]), wrap.of(editorLineWrap ? EditorView.lineWrapping : []), EditorView.updateListener.of((update) => { if (update.selectionSet && docRef.current?.path === activePath && workspaceId) onFocus?.({ kind: "file", workspaceId, path: activePath }, currentSelection()); if (!update.docChanged || !docRef.current) return; saveButton.disabled = !dirty(docRef.current); renderTabs(); })];
+      vscodeDark, keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab, { key: "Mod-s", preventDefault: true, run: () => { void saveDocument(docRef.current); return true; } }]),
+      language.of([]), wrap.of(editorLineWrap ? EditorView.lineWrapping : []), EditorView.updateListener.of((update) => { if (update.selectionSet && docRef.current?.path === activePath && docRef.current.workspaceId === workspaceId) onFocus?.({ kind: "file", workspaceId, path: activePath }, currentSelection()); if (docRef.current?.kind === "text") { if (update.docChanged) docRef.current.version = crypto.randomUUID(); if (update.docChanged || update.selectionSet) keepDraft(docRef.current); } if (!update.docChanged || !docRef.current) return; if (docRef.current.workspaceId === workspaceId && docRef.current.path === activePath) saveButton.disabled = !dirty(docRef.current); renderTabs(); })];
   }
   async function openFile(path: string) {
+    const serial = ++fileOpenGeneration;
+    const key = new URL(location.href).searchParams.get("workspaceId") || getWorkspaceKey();
     status.textContent = "Opening…";
     let generation = workspaceGeneration;
     try {
       const workspace = await getWorkspace();
-      if (workspaceId && workspaceId !== workspace.id && sessionChanged() === "cancelled") return;
-      workspaceId = workspace.id;
-      if (documents.has(path)) { activate(path); return; }
+      if (serial !== fileOpenGeneration || key !== (new URL(location.href).searchParams.get("workspaceId") || getWorkspaceKey())) return;
+      if (workspaceId && workspaceId !== workspace.id) sessionChanged();
+      useWorkspace(workspace.id);
+      generation = workspaceGeneration;
+      if (documents.has(path)) {
+        const cached = documents.get(path)!;
+        if (cached.kind === "text" && !dirty(cached)) {
+          const data = await responseJson(await fetch(`/api/files/read?${new URLSearchParams({ workspaceId: workspace.id, path })}`, { headers: apiHeaders() }));
+          if (generation !== workspaceGeneration || serial !== fileOpenGeneration) return;
+          if (!dirty(cached) && data.revision !== cached.revision) { cached.saved = data.content; cached.revision = data.revision; cached.view.dispatch({ changes: { from: 0, to: cached.view.state.doc.length, insert: data.content } }); }
+        }
+        activate(path); return;
+      }
       generation = workspaceGeneration;
       const host = document.createElement("div"); host.className = "fileEditorHost"; editor.append(host);
       if (isImagePath(path)) {
@@ -178,22 +224,27 @@ export function initFilesPanel(options: {
         const response = await fetch(`/api/files/image?${await query(path)}`, { headers: apiHeaders() });
         if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || response.statusText);
         const bytes = await response.blob();
-        if (generation !== workspaceGeneration) { host.remove(); return; }
+        if (generation !== workspaceGeneration || serial !== fileOpenGeneration) { host.remove(); return; }
         const objectUrl = URL.createObjectURL(bytes);
         const image = document.createElement("img"); image.alt = path.split("/").pop() || path; image.src = objectUrl;
         try { await image.decode(); } catch { URL.revokeObjectURL(objectUrl); throw new Error("Browser could not decode this image"); }
-        if (generation !== workspaceGeneration) { URL.revokeObjectURL(objectUrl); host.remove(); return; }
-        host.append(image); documents.set(path, { kind: "image", path, host, objectUrl }); activate(path); return;
+        if (generation !== workspaceGeneration || serial !== fileOpenGeneration) { URL.revokeObjectURL(objectUrl); host.remove(); return; }
+        host.append(image); documents.set(path, { kind: "image", workspaceId, path, host, objectUrl }); activate(path); return;
       }
       const data = await responseJson(await fetch(`/api/files/read?${await query(path)}`, { headers: apiHeaders() }));
-      if (generation !== workspaceGeneration) { host.remove(); return; }
+      if (generation !== workspaceGeneration || serial !== fileOpenGeneration) { host.remove(); return; }
       const language = new Compartment(); const wrap = new Compartment(); const ref: { current?: DocumentState } = {};
-      const view = new EditorView({ state: EditorState.create({ doc: data.content, extensions: editorExtensions(ref, language, wrap) }), parent: host });
-      const doc: TextDocumentState = { kind: "text", path, revision: data.revision, saved: data.content, view, language: data.language, wrap, host };
+      let draft: { version?: string; text?: string; saved?: string; revision?: string; anchor?: number; head?: number } | undefined;
+      try { draft = JSON.parse(sessionStorage.getItem(draftKey(workspaceId, path)) || "null") || undefined; } catch { /* Ignore unavailable/invalid drafts. */ }
+      const text = typeof draft?.text === "string" ? draft.text : data.content;
+      const selection = draft && Number.isSafeInteger(draft.anchor) && Number.isSafeInteger(draft.head) ? { anchor: Math.min(text.length, Math.max(0, draft.anchor!)), head: Math.min(text.length, Math.max(0, draft.head!)) } : undefined;
+      const view = new EditorView({ state: EditorState.create({ doc: text, selection, extensions: editorExtensions(ref, language, wrap) }), parent: host });
+      const doc: TextDocumentState = { kind: "text", workspaceId, path, version: draft?.version || crypto.randomUUID(), revision: draft?.revision || data.revision, saved: draft?.saved ?? data.content, view, language: data.language, wrap, host };
       ref.current = doc; documents.set(path, doc); activate(path);
+      if (draft && draft.revision !== data.revision) status.textContent = "File changed on disk. Your draft is kept; Save checks its revision.";
       const extension = await languageExtension(data.language); if (documents.get(path) !== doc) return; view.dispatch({ effects: language.reconfigure(extension) });
     } catch (error) {
-      if (generation !== workspaceGeneration) return;
+      if (generation !== workspaceGeneration || serial !== fileOpenGeneration) return;
       editor.querySelector<HTMLElement>(".fileEditorHost:empty")?.remove();
       for (const doc of documents.values()) doc.host.hidden = true;
       errorHost?.remove();
@@ -205,18 +256,23 @@ export function initFilesPanel(options: {
     }
   }
   async function save() {
-    const doc = documents.get(activePath); if (!doc || doc.kind !== "text" || !dirty(doc)) return;
+    await saveDocument(documents.get(activePath));
+  }
+  async function saveDocument(doc: DocumentState | undefined) {
+    if (!doc || doc.kind !== "text" || !dirty(doc)) return;
     saveButton.disabled = true; status.textContent = "Saving…";
     try {
       const content = doc.view.state.doc.toString();
-      const targetWorkspaceId = workspaceId;
+      const targetWorkspaceId = doc.workspaceId;
       const data = await responseJson(await fetch("/api/files/write", { method: "PUT", headers: apiHeaders(), body: JSON.stringify({ workspaceId: targetWorkspaceId, path: doc.path, content, expectedRevision: doc.revision }) }));
-      doc.saved = content; doc.revision = data.revision; status.textContent = "Saved"; renderTabs();
+      doc.saved = content; doc.revision = data.revision; keepDraft(doc); status.textContent = "Saved"; renderTabs();
     } catch (error) { status.textContent = error instanceof Error ? error.message : String(error); onError(error); }
     finally { saveButton.disabled = !dirty(doc); }
   }
   function currentSelection(): ResourceSelection | undefined {
-    const doc = documents.get(activePath);
+    return selectionFor(documents.get(activePath));
+  }
+  function selectionFor(doc: DocumentState | undefined): ResourceSelection | undefined {
     if (doc?.kind !== "text") return;
     const { from, to } = doc.view.state.selection.main;
     if (from === to) return;
@@ -384,7 +440,7 @@ export function initFilesPanel(options: {
     const explicit = new URL(location.href).searchParams.get("workspaceId");
     if (explicit && explicit === workspaceId) return "unchanged" as const;
     const next = explicit || getWorkspaceKey(); if (next === loadedSession) return "unchanged" as const;
-    if ([...documents.values()].some(dirty) && !confirm("Discard unsaved file changes from the previous workspace?")) return "cancelled" as const;
+    retainWorkspace();
     loadedSession = next;
     workspaceGeneration++;
     scopeLoaded = { workspace: false, artifacts: false };
@@ -392,7 +448,7 @@ export function initFilesPanel(options: {
     ++treeLoadGeneration;
     tree.className = "filesTree"; tree.textContent = ""; tree.removeAttribute("aria-busy");
     artifactBrowser.reset();
-    for (const doc of documents.values()) { if (doc.kind === "text") doc.view.destroy(); else URL.revokeObjectURL(doc.objectUrl); doc.host.remove(); } documents.clear(); renderEditorEmpty(); activePath = ""; askButton.disabled = true; renderTabs(); panel.classList.remove("filesPanel--imageActive"); setWorkspaceMobileView("tree");
+    documents = new Map(); workspaceId = ""; renderEditorEmpty(); activePath = ""; askButton.disabled = true; renderTabs(); panel.classList.remove("filesPanel--imageActive"); setWorkspaceMobileView("tree");
     if (!panel.hidden) loadActiveScope();
     return "changed" as const;
   }
@@ -402,8 +458,7 @@ export function initFilesPanel(options: {
     canCloseOnEscape: () => treeScope !== "artifacts" || panel.dataset.artifactView !== "preview",
     onOpen: () => {
       artifactBrowser.panelOpened();
-      const sessionResult = sessionChanged();
-      if (sessionResult === "cancelled") return;
+      sessionChanged();
       loadActiveScope();
     },
   });
@@ -501,7 +556,11 @@ export function initFilesPanel(options: {
     if (view === "editor" && (activePath || errorHost)) setWorkspaceMobileView("editor");
     else if (workspaceMobileView === "editor") setWorkspaceMobileView("tree");
   });
-  window.addEventListener("beforeunload", (event) => { if ([...documents.values()].some(dirty)) event.preventDefault(); });
+  window.addEventListener("beforeunload", (event) => {
+    const all = new Set([...documents.values(), ...[...workspaceBuffers.values()].flatMap(buffer => [...buffer.documents.values()])]);
+    for (const doc of all) if (doc.kind === "text") keepDraft(doc);
+    if ([...all].some(dirty)) event.preventDefault();
+  });
   function openArtifact(url: string) {
     const panelWasOpen = handle.isOpen();
     const origin = panelWasOpen && treeScope === "artifacts" ? "current" : "inactive";
@@ -509,5 +568,19 @@ export function initFilesPanel(options: {
     setTreeScope("artifacts");
     artifactBrowser.openArtifact(url, { history: panelWasOpen ? "push" : "replace", origin });
   }
-  return { isOpen: handle.isOpen, sessionChanged, openFile, openArtifact };
+  const documentFor = (ref: ResourceRef) => ref.workspaceId === workspaceId ? documents.get(ref.path) : workspaceBuffers.get(ref.workspaceId)?.documents.get(ref.path);
+  return { isOpen: handle.isOpen, sessionChanged, openFile, openArtifact,
+    mountFile(ref, host) { const doc = documentFor(ref); if (!doc) throw new Error("Open the file before placing it alongside"); doc.host.dataset.workMounted = "1"; host.replaceChildren(doc.host); doc.host.hidden = false; if (doc.kind === "text") doc.view.requestMeasure(); },
+    releaseFile(ref) { const doc = documentFor(ref); if (!doc?.host.dataset.workMounted) return; delete doc.host.dataset.workMounted; if (ref.workspaceId === workspaceId) { editor.append(doc.host); doc.host.hidden = doc.path !== activePath; } else doc.host.remove(); },
+    saveFile: ref => saveDocument(documentFor(ref)),
+    selection: ref => selectionFor(documentFor(ref)),
+    draft(ref) { const doc = documentFor(ref); if (doc?.kind === "text" && ref.kind === "file") return { resource: ref, version: doc.version, text: doc.view.state.doc.toString() }; },
+    applyDraft(draft, mode, allowLatestAppend = false) {
+      const doc = documentFor(draft.resource); if (doc?.kind !== "text" || (doc.version !== draft.version && !(mode === "append" && allowLatestAppend))) return false;
+      const text = doc.view.state.doc.toString();
+      if (mode === "append") { if (!text.includes(draft.text)) doc.view.dispatch({ changes: { from: text.length, insert: (text.endsWith("\n") ? "" : "\n") + draft.text + "\n" } }); }
+      else doc.view.dispatch({ changes: { from: 0, to: text.length, insert: draft.text } });
+      return true;
+    },
+  };
 }

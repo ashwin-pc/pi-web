@@ -54,6 +54,7 @@ export function createComposer(options: {
   endStreamFollow?: () => void;
   quoteReplies: QuoteRepliesController;
   drafts: SessionDraftStore;
+  workContext?: () => import("../../shared/work.js").WorkViewContext | undefined;
 }): ComposerController {
   const { state, elements, api, addMessage, addToolHistoryCard, sessionState, updateThinkingOptions, refreshModels, refreshMessages, refreshState, beginTranscriptLoading, beginStreamFollow, endStreamFollow, quoteReplies, drafts } = options;
 
@@ -812,7 +813,7 @@ export function createComposer(options: {
         const res = await fetch("/api/prompt", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, attachments }),
+          body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, attachments, workContext: options.workContext?.() }),
         });
         if (!res.ok) throw new Error(await res.text());
         if (quoteSubmission) quoteReplies.commitSubmission(quoteSubmission);

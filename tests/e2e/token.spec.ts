@@ -208,6 +208,38 @@ test.describe("token overlay", () => {
     await expect(page.locator("#messages")).toBeVisible();
   });
 
+  test("default Work initializes after sign-in and remains usable on mobile and desktop", async ({ page }) => {
+    await page.addInitScript(() => localStorage.removeItem("pi-web.shell"));
+    await page.setViewportSize({ width: 390, height: 844 });
+    const workRequests: number[] = [];
+    page.on("response", response => { if (new URL(response.url()).pathname === "/api/work") workRequests.push(response.status()); });
+    await page.goto("/");
+    await expect(page.locator("#tokenOverlay")).toBeVisible();
+    await page.locator("#tokenInput").fill(WRONG_TOKEN);
+    await Promise.all([
+      page.waitForResponse(response => new URL(response.url()).pathname === "/api/state" && response.status() === 401),
+      page.locator("#tokenForm button[type=submit]").click(),
+    ]);
+    await expect(page.locator("#tokenOverlay")).toBeVisible();
+    expect(workRequests).toEqual([]);
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await expect(page.locator("#filesPanel")).toBeVisible();
+    await expect(page.locator("main.workChat")).toBeHidden();
+    await page.locator("#workAskPi").click();
+    await expect(page.locator("main.workChat")).toBeVisible();
+    await expect(page.locator("#prompt")).toBeFocused();
+    await page.getByText("Projects for Pi", { exact: true }).click();
+    await expect(page.getByRole("combobox", { name: "Run Pi in project" })).toBeVisible();
+    await page.getByRole("button", { name: "Minimize", exact: true }).click();
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.locator("#workAskPi").click();
+    await expect(page.locator("main.workChat")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    expect(workRequests.length).toBeGreaterThan(0);
+    expect(workRequests.every(status => status >= 200 && status < 300)).toBe(true);
+  });
+
   test("mints a session cookie and renders a sandboxed HTML artifact through srcdoc", async ({ page }) => {
     await ensurePreviewArtifact();
     await page.goto("/");

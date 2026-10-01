@@ -1,3 +1,4 @@
+import { createWorkShell, workspaceMode } from "./workspace/workShell.js";
 import { initGeneratedApp } from "./workspace/generatedApp.js";
 import { resourceFromUrl, resourceUrl, resourceKey, type ResourceRef, type ResourceSelection } from "../shared/resourceRef.js";
 import { configureResourceOpener } from "./workspace/resources.js";
@@ -81,6 +82,10 @@ const settlementDependencies = createSettlementDependencyStore(state.settlementD
 const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
+const workMode = workspaceMode();
+document.body.classList.toggle("workShell", workMode);
+rightPanels.setWorkMode(workMode);
+let workShell: ReturnType<typeof createWorkShell> | undefined;
 const api = createApiClient(state);
 configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
 configureArtifactPreviews({ headers: api.headers, getSessionId: () => state.currentSessionId });
@@ -355,6 +360,7 @@ const webHeaderActions = createWebHeaderActions({
 });
 
 function showSystemError(error: unknown) {
+  workShell?.error(error);
   messages.addMessage("system", error instanceof Error ? error.message : String(error), "error");
 }
 
@@ -410,6 +416,7 @@ function renderActiveSessionMetadata() {
   state.currentThinkingLevel = view?.thinkingLevel || "off";
   state.currentCwd = view?.cwd || "";
   filesPanel?.sessionChanged();
+  void workShell?.bindSession().catch(showSystemError);
 
   const contributions = view?.capabilities?.extensions === false
     ? []
@@ -605,6 +612,7 @@ async function refreshState() {
   state.initialSyncComplete = messagesResult.status === "fulfilled";
   if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   composer.updatePrimaryAction();
+  await workShell?.init();
 }
 
 function initStaticIcons() {
@@ -711,6 +719,7 @@ sessionInfo = createSessionInfo({
 });
 
 composer = createComposer({
+  workContext: () => workShell?.context(),
   state,
   elements,
   api,
@@ -794,7 +803,7 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     allowInEditable: true,
     when: () => elements.tokenOverlay.hidden,
-    run: () => sessions.setSessionDrawerOpen(elements.sessionDrawer.hidden),
+    run: () => workShell ? workShell.toggleDrawer() : sessions.setSessionDrawerOpen(elements.sessionDrawer.hidden),
   },
   {
     id: "sessions.toggleCurrentPin",
@@ -805,7 +814,7 @@ const keyboardShortcuts: Shortcut[] = [
     shift: true,
     allowInEditable: true,
     when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
-    run: () => sessions.toggleCurrentSessionPin(),
+    run: () => workShell ? workShell.togglePin() : sessions.toggleCurrentSessionPin(),
   },
   {
     id: "sessions.parkCurrent",
@@ -925,6 +934,7 @@ composer.updateQueueToggle();
 let generatedApp: ReturnType<typeof initGeneratedApp>;
 let resourceFocus: { resource: ResourceRef; selection?: ResourceSelection } | undefined;
 function publishResourceFocus(resource: ResourceRef, selection?: ResourceSelection) {
+  workShell?.focus(resource);
   resourceFocus = { resource, ...(selection ? { selection } : {}) };
   window.dispatchEvent(new CustomEvent("pi-web-resource-focus", { detail: resourceFocus }));
 }
@@ -935,6 +945,7 @@ function askAgent(resource: ResourceRef, selection?: ResourceSelection) {
     resource, ...(selection ? { selection } : {}) });
   rightPanels.navigate("chat");
 }
+window.addEventListener("pi-web-ask-resource", ((event: CustomEvent) => askAgent(event.detail.resource, event.detail.selection)) as EventListener);
 const workspaceClient = createWorkspaceClient(api.headers, () => state.currentSessionId);
 filesPanel = initFilesPanel({
   button: elements.filesButton,
@@ -967,12 +978,13 @@ document.querySelectorAll<HTMLButtonElement>("[data-workspace-surface]").forEach
 generatedApp = initGeneratedApp({ panels: rightPanels, headers: api.headers, workspace: workspaceClient.current });
 async function openResource(ref: ResourceRef) {
   const surface = ref.kind === "file" ? "files" : "git";
-  rightPanels.navigate(surface);
   history.replaceState(history.state, "", resourceUrl(ref, location.href));
+  rightPanels.navigate(surface);
   if (ref.kind === "file") await filesPanel.openFile(ref.path);
   else await gitPanel.openResource(ref);
 }
 configureResourceOpener(openResource, showSystemError);
+if (workMode) workShell = createWorkShell({ api, elements, state, sessions, panels: rightPanels, files: filesPanel, webPanels, openResource, openPreview: generatedApp.open, onError: showSystemError });
 async function restoreResource() {
   rightPanels.restoreSurface();
   const resource = resourceFromUrl(new URL(location.href));
@@ -1003,5 +1015,5 @@ window.addEventListener("popstate", (event) => {
 });
 composer.updatePrimaryAction();
 queueCitation(readSessionCitationFromUrl());
-refreshState().then(restoreResource).catch(showSystemError);
+refreshState().then(() => { if (!workShell) return restoreResource(); }).catch(showSystemError);
 realtime.connect();

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright-core";
+import type { Browser, BrowserContext, Page } from "playwright-core";
 import { WorkError } from "./workStore.js";
 
 export function browserUrl(value: unknown) {
@@ -11,10 +11,10 @@ export function browserUrl(value: unknown) {
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new WorkError("Browser addresses must use http or https without embedded credentials");
   return url.href;
 }
-function browserExecutable() {
+function browserExecutable(defaultExecutable: string) {
   const explicit = process.env.PI_WEB_BROWSER_EXECUTABLE;
   if (explicit) return explicit;
-  for (const path of ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome", chromium.executablePath()]) if (existsSync(path)) return path;
+  for (const path of ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/usr/bin/google-chrome", defaultExecutable]) if (existsSync(path)) return path;
   const cache = process.env.PLAYWRIGHT_BROWSERS_PATH || join(homedir(), ".cache", "ms-playwright");
   if (existsSync(cache)) for (const dir of readdirSync(cache).filter(dir => /^chromium-\d+$/.test(dir)).reverse()) {
     for (const executable of ["chrome-linux/chrome", "chrome-linux64/chrome"]) { const path = join(cache, dir, executable); if (existsSync(path)) return path; }
@@ -29,7 +29,7 @@ export class WorkspaceBrowser {
   private launch() {
     if (!this.browser) {
       const proxy = process.env.PI_WEB_BROWSER_PROXY || process.env.HTTPS_PROXY;
-      this.browser = chromium.launch({ executablePath: browserExecutable(), headless: true, ...(proxy ? { proxy: { server: proxy, bypass: "localhost,127.0.0.1" } } : {}) }).catch(error => { this.browser = undefined; throw error; });
+      this.browser = import("playwright-core").then(({ chromium }) => chromium.launch({ executablePath: browserExecutable(chromium.executablePath()), headless: true, ...(proxy ? { proxy: { server: proxy, bypass: "localhost,127.0.0.1" } } : {}) })).catch(error => { this.browser = undefined; throw error; });
     }
     return this.browser;
   }

@@ -1,5 +1,4 @@
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import type { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { readFile, writeFile, mkdir, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -48,6 +47,7 @@ export class WorkspaceMcp {
   private async createClient(connection: Connection) {
     const headers: Record<string, string> = {};
     for (const [header, variable] of Object.entries(connection.headersEnv)) { const value = process.env[variable]; if (!value) throw new WorkError(`Set ${variable} before using this connection`, 503); headers[header] = value; }
+    const [{ Client }, { StreamableHTTPClientTransport }] = await Promise.all([import("@modelcontextprotocol/sdk/client/index.js"), import("@modelcontextprotocol/sdk/client/streamableHttp.js")]);
     const client = new Client({ name: "pi-web", version: "0.6.1" }, { capabilities: { extensions: { "io.modelcontextprotocol/ui": {} } } });
     try { await client.connect(new StreamableHTTPClientTransport(new URL(connection.url), { requestInit: { headers } }), { timeout: 15_000 }); return client; }
     catch (error) { await client.close().catch(() => undefined); throw error; }

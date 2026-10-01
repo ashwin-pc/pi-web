@@ -1,0 +1,117 @@
+body.workShell { --work-left: 0px; --work-chat: 0px; --work-top: 56px; --work-bottom: calc(64px + env(safe-area-inset-bottom)); }
+.workToolbar, .workTabs, .workDrawer, .workNotice, .workEmpty { display: none; }
+body.workShell [hidden] { display: none !important; }
+.workButton { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 44px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); color: var(--text); cursor: pointer; font: inherit; }
+.workButton svg { width: 17px; height: 17px; flex: 0 0 auto; }
+.workButton:disabled { opacity: .45; cursor: default; }
+.workButton:hover:not(:disabled), .workRow[aria-current="true"], .workTab.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.workButton:focus-visible, .workDialog input:focus-visible, .workDialog select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+body.workShell .workToolbar { position: fixed; inset: 0 0 auto; height: var(--work-top); padding: 6px 8px; display: flex; align-items: center; gap: 8px; z-index: 32; background: var(--panel); border-bottom: 1px solid var(--border); }
+.workTitle { min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.workTitle strong, .workTitle small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workTitle small, .workTab small { color: var(--muted); font-size: 11px; }
+body.workShell .workTabs { position: fixed; inset: auto 0 0; height: var(--work-bottom); padding: 6px 8px max(6px, env(safe-area-inset-bottom)); display: flex; align-items: stretch; gap: 6px; overflow-x: auto; z-index: 32; background: var(--panel); border-top: 1px solid var(--border); }
+.workTab { display: flex; align-items: center; flex: 0 0 auto; max-width: 300px; border: 1px solid var(--border); border-radius: 9px; background: var(--panel-2); }
+.workTab > .workButton { border: 0; background: transparent; padding: 4px 8px; }
+.workTab > .workButton:first-child { flex: 1; min-width: 76px; display: flex; flex-direction: column; align-items: flex-start; gap: 0; overflow: hidden; }
+.workTab strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 150px; font-size: 13px; }
+.workTab .pinned { color: var(--accent); }
+.workTab.companion { border-style: dashed; border-color: var(--accent); }
+body.workShell .workEmpty { position: fixed; top: var(--work-top); bottom: var(--work-bottom); left: var(--work-left); right: var(--work-chat); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+.workEmpty h1 { font-size: 22px; font-weight: 500; }
+body.workShell .workNotice { position: fixed; top: calc(var(--work-top) + 8px); left: calc(var(--work-left) + 8px); right: calc(var(--work-chat) + 8px); z-index: 34; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 12px; pointer-events: none; }
+.workNotice:empty { display: none !important; }
+.workNotice:not(:empty) { width: fit-content; max-width: calc(100vw - 16px); padding: 4px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); pointer-events: auto; box-shadow: 0 4px 20px #0006; }
+body.workShell .workDrawer { position: fixed; top: var(--work-top); bottom: var(--work-bottom); left: 0; width: min(300px, 90vw); z-index: 36; padding: 12px; background: var(--panel); border-right: 1px solid var(--border); display: none; flex-direction: column; gap: 12px; }
+body.workShell.workDrawerOpen .workDrawer { display: flex; }
+.workDrawer > header, .workDrawer > footer { display: flex; align-items: center; gap: 8px; }
+.workDrawer > header strong { flex: 1; }
+.workDrawer > footer { flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 8px; }
+.workDrawer input, .workDialog input:not([type="checkbox"]), .workDialog select, .workDialog textarea, .workChatContext select { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text); background: var(--bg); font: inherit; }
+.workRows { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+.workRow { flex: 0 0 auto; flex-direction: column; align-items: flex-start; gap: 3px; padding: 12px; text-align: left; overflow-wrap: anywhere; }
+.workRow small, .workRowStatus { color: var(--muted); font-size: 11px; }
+.workRowStatus { color: var(--accent); }
+.workDrawerShade { position: fixed; inset: var(--work-top) 0 var(--work-bottom); z-index: 35; background: #0008; }
+/* Addressable panels fill the work area. Transient settings keep their own overlay. */
+body.workShell .appSidePanel[data-work-role] { inset: var(--work-top) var(--work-chat) var(--work-bottom) var(--work-left); top: var(--work-top); width: auto; max-width: none; height: calc(var(--app-height) - var(--work-top) - var(--work-bottom)); z-index: 20; border: 0; border-radius: 0; }
+body.workShell .appSidePanel[data-work-role="companion"] { display: none; }
+body.workShell .appSidePanel[data-work-role] > .appPanelResizeHandle, body.workShell #fileTabs, body.workShell #sessionBar { display: none; }
+body.workShell > .appPanelBackdrop { z-index: 42; }
+body.workShell > .appSidePanel:not([data-work-role]) { z-index: 43; }
+body.workShell .app.workChat { position: fixed; inset: var(--work-top) 0 var(--work-bottom); margin: 0; width: 100%; max-width: none; height: calc(var(--app-height) - var(--work-top) - var(--work-bottom)); z-index: 40; background: var(--panel); display: flex; flex-direction: column; padding: 0; border: 1px solid var(--border); box-shadow: 0 12px 50px #0008; overflow: hidden; }
+.workChatHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--border); flex: 0 0 auto; }
+.workChatHeader strong { font-size: 18px; color: var(--accent); }
+.workChatContext { padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 12px; flex: 0 0 auto; max-height: 30%; overflow: auto; }
+.workChatContext summary { cursor: pointer; min-height: 28px; color: var(--muted); }
+.workChatContext > div { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.workChatContext label { display: flex; align-items: center; gap: 6px; }
+.workChatContext select { width: auto; min-height: 36px; }
+body.workShell .workChat > #messages { flex: 1; min-height: 0; width: 100%; }
+body.workShell .workChat > .statusBar, body.workShell .workChat > .composer, body.workShell .workChat > .pendingMessages, body.workShell .workChat > .waitingSessions, body.workShell .workChat > .extensionFooter { flex: 0 0 auto; }
+body.workShell .workChat > .composer { margin: 8px; }
+body.workShell .workChat .sessionDrawer { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 5; }
+body.workShell .workChat .sessionBackdrop { position: absolute; inset: 0; z-index: 4; }
+body.workShell .workChat .jumpToLatestButton { position: absolute; left: 50%; }
+.workDialog { width: min(640px, calc(100vw - 24px)); max-height: calc(var(--app-height) - 32px); border: 1px solid var(--border); border-radius: 14px; padding: 16px; color: var(--text); background: var(--panel); overflow: auto; }
+.workDialog::backdrop { background: #0009; }
+.workDialog > header, .workDialog > nav { display: flex; align-items: center; gap: 8px; margin-bottom: 16px; }
+.workDialog h2 { flex: 1; font-size: 18px; margin: 0; }
+.workDialog form, .workPickerBody { display: flex; flex-direction: column; gap: 12px; }
+.workDialog fieldset { border: 1px solid var(--border); border-radius: 8px; display: flex; flex-direction: column; gap: 8px; }
+.workDialog label { display: flex; align-items: center; gap: 8px; min-height: 36px; overflow-wrap: anywhere; }
+.workDialog button[type="submit"] { min-height: 44px; padding: 8px; color: var(--text); background: var(--panel-2); border: 1px solid var(--accent); border-radius: 8px; cursor: pointer; }
+.workDialog section { border-top: 1px solid var(--border); padding: 12px 0; }
+.workDialog pre { max-height: 250px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg); padding: 12px; }
+.workDialog p[role="alert"], .workDialog p[role="status"] { color: var(--danger); }
+.workBrowserPanel, .workMcpPanel { display: flex; flex-direction: column; }
+.workBrowserHeader { display: flex; gap: 8px; padding: 8px; align-items: center; border-bottom: 1px solid var(--border); }
+.workBrowserHeader form { flex: 1; min-width: 0; }
+.workBrowserHeader input { width: 100%; min-width: 0; }
+.workBrowserBody { flex: 1; min-height: 0; overflow: auto; background: white; }
+.workBrowserBody img { display: block; width: 100%; height: auto; }
+.workBrowserInput { display: flex; padding: 8px; gap: 8px; }
+.workBrowserInput input { flex: 1; min-width: 0; }
+.workMcpBody { flex: 1; min-height: 0; }
+.workMcpBody iframe { width: 100%; height: 100%; border: 0; }
+@media (max-width: 640px) {
+  .workToolbar { gap: 4px !important; }
+  .workToolbar > .workButton { font-size: 12px; padding: 6px 8px; }
+  .workToolbar > .workButton svg { display: none; }
+  .workTitle small, #workSplit { display: none; }
+  .workTitle strong { font-size: 13px; }
+  .workTab > .workButton { min-width: 44px; }
+}
+@media (min-width: 1025px) {
+  body.workShell.workDrawerOpen { --work-left: 260px; }
+  body.workShell .workDrawer { width: 260px; }
+  .workDrawerShade { display: none; }
+  body.workShell .workTabs { left: var(--work-left); }
+  body.workShell .app.workChat { inset: auto 16px calc(var(--work-bottom) + 16px) auto; width: 430px; height: min(740px, calc(var(--app-height) - var(--work-top) - var(--work-bottom) - 32px)); border-radius: 14px; }
+  body.workShell.workSplit .appSidePanel[data-work-role="primary"] { right: calc(var(--work-chat) + (100vw - var(--work-left) - var(--work-chat)) / 2); border-right: 1px solid var(--border); }
+  body.workShell.workSplit .appSidePanel[data-work-role="companion"] { display: flex; left: calc(var(--work-left) + (100vw - var(--work-left) - var(--work-chat)) / 2); }
+  body.workShell.workSplit .generatedAppPanel[data-work-role="companion"] { display: grid; }
+}
+@media (min-width: 1600px) { body.workShell.workChatOpen { --work-chat: 462px; } }
+
+#workCompanionFile { display: flex; flex-direction: column; }
+#workCompanionFile > header { display: flex; align-items: center; gap: 8px; padding: 8px; border-bottom: 1px solid var(--border); }
+#workCompanionFile strong { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.workCompanionEditor { flex: 1; min-height: 0; overflow: hidden; }
+.workCompanionEditor .fileEditorHost { height: 100%; }
+.workForeignPanel { display: flex; flex-direction: column; }
+.workForeignPanel > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px; border-bottom: 1px solid var(--border); }
+.workForeignBody { flex: 1; min-height: 0; overflow: auto; }
+#workMcpApp .workForeignBody { overflow: hidden; }
+.workForeignBody iframe { width: 100%; height: 100%; border: 0; background: white; }
+.workBrowserAddress { display: flex; align-items: center; gap: 8px; padding: 8px; }
+.workBrowserAddress input { flex: 1; min-width: 0; }
+.workBrowserImage { display: block; width: 100%; height: auto; }
+.workForeignBody input { color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px; min-height: 44px; }
+.workForeignBody button { color: var(--text); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; min-height: 44px; }
+.workForeignBody button svg { width: 18px; height: 18px; }
+.workBrowserError { color: var(--danger); margin: 0 8px; }
+#workCompanionFile > header { flex: 0 0 auto; }
+.workCompanionEditor { position: relative; }
+@media (max-width: 1024px) { body.workShell #workCompanionFile[data-work-role="companion"] { display: none; } }
+body.workShell .workNotice:not(:empty) { pointer-events: auto; }

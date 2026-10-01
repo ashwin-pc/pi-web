@@ -37,6 +37,9 @@ export type AppPanelHandle = {
 };
 
 export type AppPanelManager = {
+  setWorkMode: (enabled: boolean) => void;
+  setCompanion: (id?: string) => void;
+  closePrimary: () => void;
   register: (registration: AppPanelRegistration) => AppPanelHandle;
   closeActive: () => void;
   navigate: (surface: string) => void;
@@ -128,6 +131,17 @@ export function createAppPanelManager(): AppPanelManager {
   const registrations = new Map<string, RegisteredPanel>();
   const active: Partial<Record<AppPanelSide, RegisteredPanel>> = {};
   let lastOpenedSide: AppPanelSide | undefined;
+  let workMode = false;
+  let companion: RegisteredPanel | undefined;
+  let workPrimary: RegisteredPanel | undefined;
+  const notify = (action: string, registration: RegisteredPanel) => queueMicrotask(() => window.dispatchEvent(new CustomEvent("pi-web-panel-navigation", { detail: { action, id: registration.id, surface: registration.surface } })));
+  function setCompanion(id?: string) {
+    const next = id ? registrations.get(id) : undefined;
+    if (companion && companion !== next) { companion.panel.removeAttribute("data-work-role"); if (active.right !== companion) closeRegistration(companion, false); }
+    companion = next && next !== active.right ? next : undefined;
+    if (companion) { companion.panel.dataset.workRole = "companion"; companion.panel.hidden = false; companion.onOpen?.(); }
+    document.body.classList.toggle("workSplit", Boolean(companion));
+  }
 
   const paneMode = window.matchMedia(panelPaneModeQuery);
   const multiSideMode = window.matchMedia(multiSideQuery);
@@ -183,10 +197,13 @@ export function createAppPanelManager(): AppPanelManager {
     if (registration.backdrop) registration.backdrop.hidden = true;
     setTriggerState(registration, false);
     if (active[registration.side]?.id === registration.id) {
-      active[registration.side] = undefined;
-      setBodyPanelState(registration.side, undefined);
+      active[registration.side] = workMode && registration.side === "right" && workPrimary !== registration ? workPrimary : undefined;
+      setBodyPanelState(registration.side, active[registration.side]);
     }
+    if (workPrimary === registration) workPrimary = undefined;
     registration.onClose?.();
+    registration.panel.removeAttribute("data-work-role");
+    if (companion === registration) { companion = undefined; document.body.classList.remove("workSplit"); }
     surfaceUrl();
     if (focusTrigger) focusElement(resolveElement(registration.focusOnClose) || registration.trigger);
   }
@@ -197,7 +214,7 @@ export function createAppPanelManager(): AppPanelManager {
 
   function surfaceUrl() {
     const url = new URL(location.href);
-    const surface = active.right?.surface || "chat";
+    const surface = (workMode ? workPrimary : active.right)?.surface || "chat";
     if (url.searchParams.get("surface") !== surface) {
       for (const key of ["path", "repo", "staged", "app", "appPath"]) url.searchParams.delete(key);
     }
@@ -216,9 +233,11 @@ export function createAppPanelManager(): AppPanelManager {
   function closeRegistrationFromUi(registration: RegisteredPanel, focusTrigger = true) {
     closeRegistration(registration, focusTrigger);
     replacePanelHistoryState();
+    notify("close", registration);
   }
 
   function closeOppositeIfNeeded(side: AppPanelSide) {
+    if (workMode) return;
     if (multiSideMode.matches) return;
     const other = active[oppositeSide(side)];
     if (other) closeRegistration(other, false);
@@ -226,9 +245,20 @@ export function createAppPanelManager(): AppPanelManager {
 
   function openRegistration(registration: RegisteredPanel) {
     const sameSide = active[registration.side];
-    if (sameSide && sameSide.id !== registration.id) closeRegistration(sameSide, false);
+    if (sameSide && sameSide.id !== registration.id && sameSide !== companion && !(workMode && sameSide === workPrimary && !registration.surface)) closeRegistration(sameSide, false);
+    if (workMode && registration.side === "right" && registration.surface) {
+      if (workPrimary && workPrimary !== registration && workPrimary !== companion && workPrimary !== sameSide) closeRegistration(workPrimary, false);
+      workPrimary = registration;
+      if (registration === companion) { companion = undefined; document.body.classList.remove("workSplit"); }
+      registration.panel.dataset.workRole = "primary";
+    }
     closeOppositeIfNeeded(registration.side);
-    if (!registration.panel.hidden) return;
+    if (!registration.panel.hidden) {
+      active[registration.side] = registration;
+      setBodyPanelState(registration.side, registration);
+      surfaceUrl();
+      return;
+    }
 
     blurActiveEditableOnMobile();
     registration.onBeforeOpen?.();
@@ -241,16 +271,18 @@ export function createAppPanelManager(): AppPanelManager {
     registration.onOpen?.();
     surfaceUrl();
     focusElement(resolveElement(registration.focusOnOpen));
+    notify("open", registration);
   }
 
   function openRegistrationFromUi(registration: RegisteredPanel) {
-    if (!registration.panel.hidden) return;
+    if (!registration.panel.hidden && (!workMode || active[registration.side] === registration)) return;
     replacePanelHistoryState();
     openRegistration(registration);
     history.pushState({ ...historyState(), [panelHistoryStateKey]: activePanelIds() }, "", surfaceUrl());
   }
 
   function enforceLayoutMode() {
+    if (workMode) return;
     if (multiSideMode.matches || !(active.left && active.right)) return;
     const sideToClose: AppPanelSide = lastOpenedSide === "left" ? "right" : "left";
     const registration = active[sideToClose];
@@ -399,6 +431,7 @@ export function createAppPanelManager(): AppPanelManager {
   });
 
   window.addEventListener("popstate", (event) => {
+    if (workMode) return; // The work controller restores its owner-qualified scene.
     const state = event.state && typeof event.state === "object" ? event.state as PanelHistoryState : {};
     const panelsToKeep = new Set(Array.isArray(state[panelHistoryStateKey]) ? state[panelHistoryStateKey] : []);
     for (const side of ["left", "right"] as const) {
@@ -425,7 +458,11 @@ export function createAppPanelManager(): AppPanelManager {
 
   return {
     register,
+    setWorkMode: (enabled) => { workMode = enabled; },
+    setCompanion,
+    closePrimary: () => { if (workPrimary) closeRegistration(workPrimary, false); replacePanelHistoryState(); },
     navigate: (surface) => {
+      if (workMode && surface === "chat") { window.dispatchEvent(new Event("pi-web-open-chat")); return; }
       if (surface === "chat") {
         replacePanelHistoryState();
         for (const registration of Object.values(active)) if (registration) closeRegistration(registration, false);

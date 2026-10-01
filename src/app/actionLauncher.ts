@@ -84,7 +84,12 @@ export function initActionLauncher(
   function renderActions() {
     menu.textContent = "";
     const measure = document.createElement("canvas").getContext("2d");
-    if (measure) measure.font = "13px system-ui";
+    // The fan orders by rendered width. Use the actual button font, including
+    // its weight and density, rather than an approximation of the label font.
+    const probe = document.createElement("button"); probe.className = "actionLauncherItem"; menu.append(probe);
+    const font = getComputedStyle(probe);
+    if (measure) measure.font = `${font.fontStyle} ${font.fontWeight} ${font.fontSize} ${font.fontFamily}`;
+    probe.remove();
     const actions: LauncherAction[] = [
       ...builtInActions,
       ...extensionActions.map((action) => ({

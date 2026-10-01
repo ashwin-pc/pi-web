@@ -689,7 +689,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (await handleWorkRoute(req, res, url, { store: workStore, registry: workspaces, views: workViews, browser: workspaceBrowser, mcp: workspaceMcp,
-        defaultRoot: () => piCwd, refreshRoots: refreshWorkspaces, sessionRoot: async id => sessionService.cwdForSession(await sessionService.require(id)), readBody, send: sendJson })) return;
+        defaultRoot: () => piCwd, refreshRoots: refreshWorkspaces, sessionRoot: id => sessionService.cwdForSessionId(id), readBody, send: sendJson })) return;
 
       if (method === "GET" && url.pathname === "/api/files/tree") {
         try {

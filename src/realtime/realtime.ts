@@ -746,6 +746,10 @@ export function createRealtime(options: {
         return;
       }
       const isReplay = data.replay === true;
+      if (data.type === "work_view" || data.type === "work_draft" || data.type === "work_mcp_result") {
+        window.dispatchEvent(new CustomEvent("pi-web-work-event", { detail: data }));
+        return;
+      }
       if (data.type === "hello" || data.type === "state_changed") {
         const appliesToCurrentSession = !data.sessionId || !state.currentSessionId || data.sessionId === state.currentSessionId;
         sessionState.applySnapshot(data, { activate: data.type === "hello" && !state.currentSessionId });
@@ -852,6 +856,7 @@ export function createRealtime(options: {
       }
       if (data.type === "agent_event") {
         const eventSessionKey = String(data.sessionId || data.sessionFile || "");
+        if (!isReplay && ["agent_start", "agent_settled"].includes(data.event?.type) && !(data.event.type === "agent_settled" && abortedRuns.get(eventSessionKey))) window.dispatchEvent(new CustomEvent("pi-web-work-run", { detail: { type: data.event.type, sessionId: data.sessionId } }));
         noteRuntimeEvent(eventSessionKey, data.event);
         if (data.event?.type === "agent_start") abortedRuns.set(eventSessionKey, false);
         if (data.event?.type === "agent_end") abortedRuns.set(eventSessionKey, Boolean(data.event.aborted));

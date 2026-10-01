@@ -90,8 +90,8 @@ test("renders an interactive system-info contribution and reports invocation fai
 
   await panel.locator('input[name="query"]').fill("disk usage");
   await panel.getByRole("button", { name: "Run probe" }).click();
-  await expect.poll(() => invocations.length).toBe(2);
-  expect(invocations[1]).toMatchObject({
+  await expect.poll(() => invocations.filter(input => input.event?.action === "run").length).toBe(1);
+  expect(invocations.find(input => input.event?.action === "run")).toMatchObject({
     sessionId: "mock-current", slot: "system-info", key: "runtime-tools",
     event: { action: "run", payload: { depth: 2 }, fields: { query: "disk usage", scope: ["host", "process"] } },
   });
@@ -113,6 +113,7 @@ test("settings lives in the drawer and the FAB contains session actions only", a
   await expect(launcher.getByRole("menuitem", { name: "File explorer" })).toBeVisible();
   await expect(launcher.getByRole("menuitem", { name: "Conversation tree" })).toBeVisible();
   await expect(launcher.getByRole("menuitem", { name: "New session" })).toBeVisible();
+  await launcher.evaluate(async node => { await Promise.all(node.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => undefined))); });
   const widths = await launcher.getByRole("menuitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().width));
   expect(widths).toEqual([...widths].sort((a, b) => a - b));
   await expect(page.locator(".actionLauncherToggle")).toHaveAttribute("aria-label", "Close session actions");

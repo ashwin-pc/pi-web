@@ -210,262 +210,146 @@ fail, the iframe has exactly `sandbox="allow-scripts"`, and Chat → Back reopen
 The wider suite also caught a desktop CSS specificity collision under the 44px bar;
 resource panel positioning now overrides that legacy selector consistently.
 
-### P6 — Activity spike (deferred behind P4)
+### P6 — Work in the real shell (implemented on the Pi adapter)
 
-Per the planned ordering (“Only after the above”), durable Activity is not added
-while the second-harness ownership model remains untested. Existing session activity
-summaries are transcript presentation, not a workspace task grouping. A future
-Activity should reference workspace ResourceRefs and harness-bound sessions, without
-persisting panel widths, active surface, editor cursors or current focus. The current
-URL/history and localStorage layout policies provide no evidence those belong in a
-durable Activity record.
+The latest product direction asks for real multitasking before another harness
+adapter is available. The UI calls the grouping **Work**: a named goal can include
+several project folders, saved file/app references and multiple conversations. It
+can exist without a conversation. Records and registered project roots live in an
+atomic, revision-checked catalogue; `PI_WEB_WORK_STATE_FILE` overrides its location.
+This changes the original P6 ordering deliberately. P4 remains open: these are real
+Pi conversations, not a second harness or a claim of harness independence.
 
-### Containment follow-up
+The Work drawer is the only goal switcher. Bottom tabs are the files, apps and pages
+open in that goal. Files and Git occupy the main area; Pi uses the existing transcript,
+composer, queue, model controls, extensions and conversations in a floating panel.
+The UI shares Pi Web's colours, density, typography and icons. `?shell=chat` or the
+browser preference `pi-web.shell=chat` restores the existing chat layout. Existing
+session pins are kept as data; the Work layout uses its bottom bar for open items.
+No standalone mock, walkthrough, recording or export script is retained.
 
-The P0 Git discovery above is now covered and fixed: nested repository selectors
-and working-tree image previews check realpath containment as well as lexical
-containment. Symlink escapes are rejected while a harmless `..valid` directory
-name is accepted. Existing Git helper regression tests continue to pass. Workspace
-IDs themselves are still derived from resolved path spelling; symlink aliases of
-a workspace root remain a registry identity question, separate from containment.
+Layout, active/companion tabs, pins, draft text and cursor positions stay in each
+browser window's sessionStorage. A goal's references are durable, while closing a
+tab does not delete the reference or discard an unsaved draft. New windows can open
+those references with their own arrangements. File identity always includes its
+project ID; two identically named files from different projects have independent
+editors, versions, selections and save targets. Switching goals or projects keeps
+live editors, and reload recovers dirty drafts. Cancelling a reload leaves their
+DOM attached. Saved files are refreshed from disk when reopened; dirty drafts keep
+their original disk revision so conflicting saves fail rather than overwrite.
 
-Cross-workspace follow-up: an explicit open-resource event for another workspace
-now invalidates same-name file tabs before reuse. Saves capture the source
-workspace ID, and late file/image/language loads cannot repopulate a switched
-workspace. A browser regression test opens `README.md` in two different roots and
-asserts both displayed content and write routing remain isolated. Git's Ask Agent
-button is disabled while showing a commit/extension view because the minimal
-ResourceRef intentionally covers only working-tree/staged diffs.
+Desktop supports a primary and companion view, including two files. It moves the
+same editor into the companion pane rather than cloning buffers. Narrow layouts
+show one view; selecting the companion tab swaps roles while keeping both editors.
+Same-kind foreign apps and Git views currently share one renderer and cannot both
+be shown together. Opening another such item selects it. Browser and MCP instances
+keep their own ownership; they do not acquire file permissions by being in Work.
 
-Validation follow-up: the full matrix found an existing tablet test assuming that
-session drawers remain panes above 700px. The shared responsive policy has used
-overlays through 1024px, so the test now reads that policy rather than using a
-second breakpoint. Resource/foreign-surface checkpoint tests pass on mobile and
-desktop, including Files → Run App → Back. Screenshot baselines have been updated
-for the persistent shell bar and reviewed for mobile editor and desktop Git layout.
+### Real browser and MCP Apps binding
 
-Packaging discovery: the new browser/server shared ResourceRef module lives outside
-both `src/` and `server/`. The npm package uses an explicit files allowlist, so
-`shared/` must be listed or installed server builds would lose the attachment
-codec dependency. `npm pack --dry-run --json --ignore-scripts` verifies that
-`shared/resourceRef.ts` is included; no package was published.
+`workspace_browser` uses isolated Chromium contexts, actual navigation, rendered
+text, screenshots, selector clicks and typing. The browser tab displays and sends
+input to that same page. Its screenshot transport is a prototype browser control,
+not a complete local-browser replacement: scrolling, downloads, popup handling,
+password management and accessibility mirroring are unfinished. Each context is
+owned by one Work, expires after 30 idle minutes, and requires installed Chromium
+(`npx playwright install chromium` or `PI_WEB_BROWSER_EXECUTABLE`). Browser runtime
+IDs do not survive a server restart. Closing a tab hides it; the browser tool's
+close action ends its runtime. URLs use http(s), without embedded credentials.
+Proxy settings and TLS verification remain in force.
+Browser and MCP transport libraries load on first use rather than adding their
+initialization cost to every server start and supervised restart.
 
-## Final validation — 2026-09-30
+MCP connections use the SDK's Streamable HTTP transport. The Open > Apps picker
+connects a real endpoint and discovers tools advertising `ui.resourceUri` (or the
+legacy `ui/resourceUri`). Calling a tool passes its actual arguments and results
+to the advertised HTML resource through the MCP Apps `AppBridge`. The iframe has
+an opaque origin and a host CSP based on declared resource/connect domains. Tool
+visibility is checked for model and app callers; app calls stay within their own
+connection. Links open in the real browser. Hidden or background apps cannot initiate
+host tool calls. Generated saved HTML retains its separate, network-free sandbox;
+trusted Pi extension panels retain their existing host-DOM trust boundary.
 
-`PI_WEB_E2E_SHARDS=3 PI_WEB_E2E_CONCURRENCY=4 npm test` passes completely:
-typecheck, production Vite build, 541 unit tests, and 969 browser tests across
-mobile/tablet/desktop/auth. No retries or flaky results in the final run.
-`npm run build` also passes the extension declaration build. The npm package
-allowlist check and Git containment regression pass. P0–P3 and the existing-runtime
-P5 probe meet their implemented exit tests; P4 remains an adapter architecture gap,
-and P6 remains explicitly behind it. No main merge or deployment is performed.
+Connections persist independently of app frames. API `headersEnv` maps header names
+to environment variable names; secret values are neither returned nor saved. The
+initial binding does not implement OAuth discovery, stdio transports, disconnect
+management, file uploads, app permissions or arbitrary resource proxying. Only the
+advertised app resource can be read through its bridge. Third-party endpoints and
+Chromium need the deployment's ordinary network and certificate configuration.
+Manual app launch currently accepts tool arguments as JSON. The agent can supply
+those arguments through `workspace_mcp`; generating forms from tool schemas is a
+follow-up for the direct-launch UI.
 
-## Workspace-first multitasking design probe — 2026-09-30
+### Agent requests, foreground policy and draft changes
 
-The desktop scene variations exposed a more fundamental issue: choosing an
-arrangement around a conversation still makes Chat the organizing construct.
-The user works on several activities within several projects at once. The shell
-must let those contexts exist, resume, and remain visible independently of agents.
+Real Pi sessions register `workspace_view`, `workspace_draft`, `workspace_browser`
+and `workspace_mcp`. A prompt captures its Work, submitting browser client, local
+arrangement revision, selected projects and bounded open drafts. A running
+conversation retains that origin; another goal or browser cannot retarget its
+queued run. The agent can list project paths, request files/diffs/apps, call connected
+MCP tools or use the real browser. A view request acknowledges a request, not that
+the user has already seen it.
 
-The [interactive multitasking probe](prototypes/multitasking-shell/README.md) now
-starts with two workspaces and four activities, with no Chat open. A workspace
-rail selects projects; an activity list resumes work within a project; a grouped
-Ctrl/Cmd K switcher reaches any activity or keeps one alongside another. Two
-desktop contexts can belong to different workspaces. On mobile/tablet, one
-resource is primary and the same grouped switcher remains available. The narrated
-walkthrough follows one session across the contexts rather than presenting more
-disconnected layout alternatives.
+Only the submitting, visible window applies a view while that goal and revision
+remain current and the user is not editing or composing. Background goals, other
+windows, changed arrangements and typing defer requests to Updates > Show. Commands
+are applied in order, pins protect tabs from agent closure, and Restore my previous
+view restores the arrangement before the first agent change. View events omit the
+captured draft contents. Abort cancels later view/draft requests; native tools also
+check the run's abort signal after long browser/MCP calls.
 
-Each document buffer belongs to `(workspaceId, path)`. Activities reference
-resources; an agent session is an optional resource within an activity. Every
-mutation captures its source activity and workspace. The selected context is
-window-local URL state, not a global current-workspace variable. Background
-results update badges and become available under their original activity; opening
-their report is an explicit navigation choice. Closing Chat keeps a job running.
-Switching retains local drafts, cursor/scroll positions, filters, and selected
-resources. None of those local scene preferences should be confused with durable
-Activity content.
+Draft tools read the prompt's exact open-buffer snapshots and propose append/replace
+changes. Automatic application requires the captured buffer version. A later user
+edit keeps the proposal for review. Explicit append preserves the current draft;
+replacement of a changed draft requires manual merging. Saving remains explicit
+and uses the original project and disk revision. Context is bounded to eight small
+open drafts (7,000 characters each); large files remain disk references. This scope
+controls the new workspace tools, not filesystem authorization for Pi's existing
+native tools or the capabilities of a connected MCP server.
 
-Architectural findings for the integrated shell:
+The catalogue is durable; view/draft requests and MCP results are runtime records.
+They survive websocket reconnection within the same server process, with local
+receipts preventing repeated application. Restarting the server loses pending
+requests and browser contexts. A full harness adapter, durable run journal and
+conflict-aware document collaboration remain separate work.
 
-- A project catalogue must exist without agent sessions. Current workspace
-  discovery draws from Pi's cwd, known cwds, and session-service roots; it still
-  needs a deliberate way to register or select a workspace before starting an
-  agent. The sample catalogue in this probe supplies that missing UI context.
-- Durable Activity owns resource references and optional harness bindings.
-  Scene/focus/layout stay per device or window. This probe's localStorage model
-  proves interactions only; P6 remains deferred behind P4.
-- Session-owned extension contributions from P5 need a workspace app catalogue
-  if apps are to remain available without a selected session. That ownership
-  change is separate from rendering an app as a peer surface.
-- Jobs need owner-qualified event/result routing. Their completion should not
-  select a workspace or open a surface. Another browser window must receive
-  progress without inheriting the other window's current context.
-- Activities sharing one workspace also share files and a Git checkout. Parallel
-  write isolation requires explicit worktrees or write coordination, not merely
-  different activity IDs. A live buffer needs revision checks and conflict
-  recovery. The probe demonstrates a visible choice for divergent tab drafts;
-  localStorage still cannot provide atomic multiwriter transactions.
-- Side-by-side activity contexts have explicit workspace headers and action
-  targets. Each shows its selected resource at this density; one desktop activity
-  can show several peer resources. Shrinking to mobile hides the companion
-  without deleting its state or stopping background work.
+### Validation of the real implementation
 
-Validation: `node scripts/check-multitasking-prototype.mjs` passes context ownership,
-same-name file isolation, state restoration, optional Chat, independent tabs,
-background completion with editor selection and focus preserved, explicit result
-review, history/reload, draft conflict recovery, mobile/tablet single-resource
-views, and 44px controls. The production build also passes. No production runtime
-code is changed by this probe; sample resources and simulated review are labeled
-in its UI and documentation. It does not claim a real second harness, durable
-Activity implementation, or real filesystem writes.
+Automated checks cover catalogue restart and lost updates, root-scoped identities,
+immutable run origins, cancellation, snapshot draft proposals, native Pi tool
+execution, real Chromium interaction, and HTTP MCP discovery/resource/tool/result
+flow with caller and connection restrictions. Browser tests use isolated real
+project folders and the product UI across phone, tablet and desktop. They verify
+multi-project drafts, explicit saves, goal switching/reload, split ownership, mobile
+role swaps, floating Pi context and deferred/pinned view requests. Existing chat
+regressions run with the compatibility layout selected explicitly.
+Native tool tests execute the registered definitions with a Pi extension context;
+the browser UI tests use deterministic session events rather than a paid model run.
 
-## Multiworkspace activities and resource-first presentations — 2026-10-01
+Final checkpoint validation: `npm run build` and `npm run typecheck` pass. The full
+sharded `npm test` run passes 548 unit tests and 1,000 browser tests across phone,
+tablet, desktop and authenticated servers, with 67 platform/capability skips and
+no retries. Standalone prototype files, export/check scripts, recordings, narration
+and temporary scene helpers have been removed.
 
-The user's follow-up corrected the previous catalogue assumption: an activity
-must be able to span projects. The earlier workspace-scoped activity list was a
-presentation convenience, not a suitable ownership model. The
-[multitasking probe](prototypes/multitasking-shell/README.md) now has five goals,
-including **Coordinate the release**, which references Pi Web's checklist and
-Trail Notes' roadmap. An existing activity can also gain another workspace by
-attaching one of its resources. There is no scalar `activity.workspaceId`.
+Additional edge cases: revision checks serialize mutations within one server;
+sharing the same catalogue between several server processes is unsupported. A
+running conversation keeps the initial read scope and draft snapshots for queued
+prompts; send an idle prompt or use another conversation for a fresh capture.
+Session deep links open floating Pi in their owning Work, and late file responses
+cannot replace a newer goal or file selection. Editing project membership removes
+associations and filters old tabs while preserving files, drafts and conversations.
+The catalogue still stores opaque Pi session IDs; membership validation resolves
+their project from live/saved metadata without loading an agent runtime. Editing a
+Work prunes its deleted conversations and their extension-app references; new
+unknown conversations and conversations from excluded projects are rejected. A
+lightweight harness descriptor is part of the remaining P4 adapter work.
 
-A workspace remains the owner of a resource and the target for reads/writes.
-Workspace navigation is a catalogue filter: the same shared activity appears
-under either root, and the global switcher lists it once. Document identity remains
-`(workspaceId, path)`, including two same-named files within one shared activity.
-Closing a resource closes its surface but retains its activity reference. A goal
-can span roots without copying their files or granting access to them.
-
-An activity also does not prescribe a full-screen arrangement. The probe can
-present related resources together, focus one resource with an activity card
-docked beside it, or keep several activities as compact pills. Inspecting another
-card keeps the primary resource in place. Expanding restores open resources and
-editor positions. Mobile/tablet keep one primary resource and present activity
-details as a bottom sheet. A retained desktop companion is hidden while focusing
-one resource or on narrow viewports, and reappears in the expanded arrangement.
-These choices belong to a local scene, not to the durable Activity record.
-
-Agent context cannot be inferred from whichever workspace happens to be visible.
-The form explicitly selects an execution workspace and read-context roots. Jobs
-capture those choices and owner-qualified resource snapshots at submission. A
-run may execute in one root while reading selected context from another; this
-mock's review is read-only. Its report keeps the submitted scope even if resource
-references later change. No completion selects a project, opens a surface or
-steals a foreground document's cursor. Real multi-harness sessions will need the
-same explicit binding and permission checks behind P4's adapter seam.
-
-Design discovery: Pi Web already provides suitable primitives for this direction.
-The separate mock now reuses its default black/charcoal and gold tokens, typography,
-Lucide icons, neutral drawer row styling, compact worker pills and existing mascot
-fan launcher. It embeds the mascot in its portable export. The styles are copied
-component idioms rather than a new production design-system package, and do not
-inherit live theme settings. The mock remains independent of the production UI.
-
-Edge cases and remaining boundaries:
-
-- A shared activity is an association graph, not a combined filesystem. Cross-root
-  mutations need owner-qualified operations; multi-root commits cannot be assumed
-  atomic. Multiple activities over one checkout still need write coordination or
-  explicit worktrees for isolation.
-- Activity references do not grant read/write permission. Production root
-  registration, permission revocation, missing roots and moved files need handling
-  per resource, independently of activity membership.
-- The URL can address an activity without a workspace parent. A supplied workspace
-  filter must include that goal; an unattached resource is rejected without
-  automatically adding it. Added references remain browser-local in this probe,
-  so their URLs alone cannot reconstruct them in another browser.
-- Job execution/read scopes must remain captured facts, distinct from the
-  activity's current root membership. An unchecked read root contributes no
-  snapshots; an empty read selection disables submission.
-- This revision uses the v2 demo storage namespace, preserving earlier v1 drafts
-  instead of silently migrating or deleting them. It still has localStorage
-  multiwriter races, fixed sample goals and one optional mock session per activity.
-  Detaching a reference, editing the catalogue and durable synchronization are not
-  implemented; closing a view should not be confused with those operations.
-
-Validation: the focused browser check passes cross-workspace attachment and saves,
-same-name file isolation in one activity, shared-goal deduplication, explicit
-execution/read scope selection and submitted snapshots, dock/compact/expanded
-restoration, history/reload, foreground focus during completion, independent tabs
-and conflict recovery, dense desktop, mobile bottom sheets and one primary
-resource with 44px controls. The portable export is self-contained. Production
-build passes; this increment changes only the mock, its exporter/check and docs.
-P4 and durable P6 remain open. No main merge or deployment is performed.
-
-## User language and prompt-driven work — 2026-10-01
-
-The previous mock exposed internal modeling terms and repeated goal navigation
-in a sidebar, compact rail and bottom shelf. The user's review clarified the
-problem: the interface needs understandable controls and an observable prompt →
-open → inspect → edit flow, including apps and browsers. The
-[standalone probe](prototypes/multitasking-shell/README.md) now has one **Work**
-drawer for choosing goals across projects, bottom tabs for their open files/apps/
-pages, and optional floating **Pi** chat. The previous rail, activity shelf,
-compact/docked cards and scene menus are removed. Work rows and tabs select
-different objects; no internal Resource/Surface/Scene vocabulary is presented.
-
-Chat borrows the current Pi Web message/composer styling; the drawer and tabs use
-its session navigation idioms. A goal can retain its tabs and draft while Chat is
-closed. Desktop may split two items within a goal; phones/tablets show one item
-and retain the companion. Higher density desktops reserve room for floating Pi.
-
-The first sample prompt opens Browser and Release planner, inspects rendered
-preview controls, and answers from the current planner data. The planner is an
-interactive opaque-origin iframe with a narrow MCP-style demo bridge. Its UI and
-the deterministic sample agent call the same allowlisted local backend; marking
-an item ready changes the next answer. A second prompt appends a missing check to
-the Pi Web draft, preserves notes, pins the planner, and closes Browser. The edit
-remains an unsaved draft with an explicit Save action. No real model, live MCP
-connection, external website or repository file write is implied.
-
-Architectural discoveries and corrections:
-
-- The earlier blanket “workspace owns resources” claim was too broad. Files and
-  Git operations are workspace-owned; a connected app is connection-owned; a page
-  is browser-session-owned. They can share a tab strip without fabricating paths
-  or making users learn a resource ontology. Durable goals reference these owners.
-- Agents should submit owner-qualified view commands to shell policy. An unchanged
-  foreground view can open alongside the current work; changed navigation,
-  active editing or IME composition defers commands behind Show/Updates. A job
-  still targets its submitted work, execution root and selected read scope.
-- Results/progress are shared facts; applying/restoring an arrangement requires a
-  per-window receipt. A global “view applied” job flag makes other windows lose
-  their pending Show action. The probe now separates these records and tests a
-  second window holding focus on its file while the first displays the result.
-- A draft edit captures its version. Changed or active text gets a proposed
-  addition against the latest buffer, without overwriting new notes. Restoring
-  an arrangement does not undo edits. Pins survive cleanup and restoration;
-  human close and an explicit unpin request can override them. Minimize keeps a
-  job alive; Stop prevents late edits and view application.
-- The demo app bridge validates message source, scopes tools by goal membership
-  and denies arbitrary file tools. Agent Context narrows its reads independently
-  of the open app's display scope. Goal references remain distinct from actual
-  production connection/root permissions.
-- Browser display and agent browser execution have separate lifetimes. This
-  probe inspects a matching sandboxed sample page, validating frame/nonce/page
-  identity. Real arbitrary browsing needs a browser service or suitable WebView;
-  website embedding restrictions preclude a general iframe-only implementation.
-- The protocol explicitly advertises `demo`. Full MCP Apps negotiation, real
-  connection/tool lifecycle, permission revocation and app discovery remain
-  integration work. Sample guest state is re-created after closing; the planner
-  backend persists locally. P5's trusted extension path is unchanged.
-- Ownership attributes must not double as generic click selectors. Editor and
-  app containers carry a work ID for routing, but only work-selection buttons
-  should navigate. A regression check now clicks into the draft with Pi open,
-  including after filtering Work, and verifies that chat and focus remain intact.
-
-The v3 namespace preserves old v1/v2 data without migration. Layout defaults are
-browser-local, focus/history and application receipts window-local. Concurrent
-localStorage writes are not atomic; draft recovery does not solve transactional
-multiwriter jobs or app state. The fixed catalogue, missing-root/connection
-recovery, durable goals and real agent adapters remain outside this mock.
-
-Validation: the focused Playwright check passes the full prompt flow, app data
-updates, actual preview inspection, scoped draft edits, pin/close/restore,
-read-only requests, cancellation, sandbox/source/tool isolation, deferred focus,
-independent windows, history/reload, conflicting drafts, same-name files,
-mobile/tablet one-item views with 44px targets, and dense desktop. Production
-build passes. The portable export and one narrated walkthrough accompany this
-increment. No production runtime changes, P4 completion, durable P6, main merge
-or deployment are claimed.
+Authentication discovery: the initial state fetch can finish by presenting a token
+overlay. Starting Work from that promise incorrectly treated this as a successful
+sign-in and did not retry after entering a token. Work now starts only after an
+authenticated state snapshot, with an idempotent guard for conversation refreshes.
+The first-sign-in regression checks incorrect and correct tokens, mobile chat,
+project context and the desktop layout. The existing FAB also measured labels with
+a different font from its buttons; it now uses the computed button font so width
+ordering stays consistent.

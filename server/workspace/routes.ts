@@ -17,13 +17,25 @@ export async function handleWorkRoute(req: IncomingMessage, res: ServerResponse,
   try {
     options.refreshRoots();
     const body = async () => (await readBody(req)) as Record<string, unknown>;
-    const validateSessions = async (input: Record<string, unknown>) => {
+    const validateSessions = async (input: Record<string, unknown>, previousIds: string[] = []) => {
       if (!Array.isArray(input.sessionIds) || !Array.isArray(input.workspaceIds)) return;
+      const retained: string[] = [];
+      const deleted = new Set<string>();
       for (const id of input.sessionIds) {
         if (typeof id !== "string") throw new WorkError("Invalid conversation reference");
-        const workspace = registry.register(await options.sessionRoot(id));
+        let cwd: string;
+        try { cwd = await options.sessionRoot(id); }
+        catch (error) {
+          const status = Number((error as { status?: number })?.status) || 502;
+          if (status === 404 && previousIds.includes(id)) { deleted.add(id); continue; }
+          throw new WorkError(error instanceof Error ? error.message : "Conversation is unavailable", status);
+        }
+        const workspace = registry.register(cwd);
         if (!input.workspaceIds.includes(workspace.id)) throw new WorkError("A conversation's project must be included in this work");
+        retained.push(id);
       }
+      input.sessionIds = retained;
+      if (Array.isArray(input.references)) input.references = input.references.filter(item => !item || item.kind !== "app" || !deleted.has(item.sessionId));
     };
     if (url.pathname === "/api/workspaces" && req.method === "POST") {
       const input = await body(); if (typeof input.root !== "string") throw new WorkError("Choose a project folder");
@@ -46,7 +58,7 @@ export async function handleWorkRoute(req: IncomingMessage, res: ServerResponse,
     const parts = url.pathname.slice("/api/work/".length).split("/").map(decodeURIComponent);
     const workId = parts[0], record = await store.require(workId);
     if (parts.length === 1 && req.method === "PATCH") {
-      const input = await body(); await validateSessions({ ...record, ...input });
+      const input: Record<string, unknown> = { ...record, ...await body() }; await validateSessions(input, record.sessionIds);
       send(res, 200, { ok: true, work: await store.patch(workId, input, input.expectedRevision) }); return true;
     }
     if (parts[1] === "browser") {

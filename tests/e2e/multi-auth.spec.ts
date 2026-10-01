@@ -47,6 +47,7 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
   child.stderr.on("data", (data) => (output += data));
   const owner = await browser.newContext({ serviceWorkers: "block" }),
     fresh = await browser.newContext({ serviceWorkers: "block" });
+  for (const context of [owner, fresh]) await context.addInitScript(() => localStorage.setItem("pi-web.shell", "chat"));
   try {
     await expect
       .poll(

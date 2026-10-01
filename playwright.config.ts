@@ -29,6 +29,7 @@ export default defineConfig({
   },
   use: {
     baseURL: `http://127.0.0.1:${port}`,
+    storageState: { cookies: [], origins: [{ origin: `http://127.0.0.1:${port}`, localStorage: [{ name: "pi-web.shell", value: "chat" }] }] },
     // Tracing this bundle can add several minutes to a retry while Playwright
     // collects and compresses source maps. Enable it only for focused debugging.
     trace: process.env.PI_WEB_E2E_TRACE === "1" ? "on-first-retry" : "off",
