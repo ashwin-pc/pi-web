@@ -318,3 +318,76 @@ views, and 44px controls. The production build also passes. No production runtim
 code is changed by this probe; sample resources and simulated review are labeled
 in its UI and documentation. It does not claim a real second harness, durable
 Activity implementation, or real filesystem writes.
+
+## Multiworkspace activities and resource-first presentations — 2026-10-01
+
+The user's follow-up corrected the previous catalogue assumption: an activity
+must be able to span projects. The earlier workspace-scoped activity list was a
+presentation convenience, not a suitable ownership model. The
+[multitasking probe](prototypes/multitasking-shell/README.md) now has five goals,
+including **Coordinate the release**, which references Pi Web's checklist and
+Trail Notes' roadmap. An existing activity can also gain another workspace by
+attaching one of its resources. There is no scalar `activity.workspaceId`.
+
+A workspace remains the owner of a resource and the target for reads/writes.
+Workspace navigation is a catalogue filter: the same shared activity appears
+under either root, and the global switcher lists it once. Document identity remains
+`(workspaceId, path)`, including two same-named files within one shared activity.
+Closing a resource closes its surface but retains its activity reference. A goal
+can span roots without copying their files or granting access to them.
+
+An activity also does not prescribe a full-screen arrangement. The probe can
+present related resources together, focus one resource with an activity card
+docked beside it, or keep several activities as compact pills. Inspecting another
+card keeps the primary resource in place. Expanding restores open resources and
+editor positions. Mobile/tablet keep one primary resource and present activity
+details as a bottom sheet. A retained desktop companion is hidden while focusing
+one resource or on narrow viewports, and reappears in the expanded arrangement.
+These choices belong to a local scene, not to the durable Activity record.
+
+Agent context cannot be inferred from whichever workspace happens to be visible.
+The form explicitly selects an execution workspace and read-context roots. Jobs
+capture those choices and owner-qualified resource snapshots at submission. A
+run may execute in one root while reading selected context from another; this
+mock's review is read-only. Its report keeps the submitted scope even if resource
+references later change. No completion selects a project, opens a surface or
+steals a foreground document's cursor. Real multi-harness sessions will need the
+same explicit binding and permission checks behind P4's adapter seam.
+
+Design discovery: Pi Web already provides suitable primitives for this direction.
+The separate mock now reuses its default black/charcoal and gold tokens, typography,
+Lucide icons, neutral drawer row styling, compact worker pills and existing mascot
+fan launcher. It embeds the mascot in its portable export. The styles are copied
+component idioms rather than a new production design-system package, and do not
+inherit live theme settings. The mock remains independent of the production UI.
+
+Edge cases and remaining boundaries:
+
+- A shared activity is an association graph, not a combined filesystem. Cross-root
+  mutations need owner-qualified operations; multi-root commits cannot be assumed
+  atomic. Multiple activities over one checkout still need write coordination or
+  explicit worktrees for isolation.
+- Activity references do not grant read/write permission. Production root
+  registration, permission revocation, missing roots and moved files need handling
+  per resource, independently of activity membership.
+- The URL can address an activity without a workspace parent. A supplied workspace
+  filter must include that goal; an unattached resource is rejected without
+  automatically adding it. Added references remain browser-local in this probe,
+  so their URLs alone cannot reconstruct them in another browser.
+- Job execution/read scopes must remain captured facts, distinct from the
+  activity's current root membership. An unchecked read root contributes no
+  snapshots; an empty read selection disables submission.
+- This revision uses the v2 demo storage namespace, preserving earlier v1 drafts
+  instead of silently migrating or deleting them. It still has localStorage
+  multiwriter races, fixed sample goals and one optional mock session per activity.
+  Detaching a reference, editing the catalogue and durable synchronization are not
+  implemented; closing a view should not be confused with those operations.
+
+Validation: the focused browser check passes cross-workspace attachment and saves,
+same-name file isolation in one activity, shared-goal deduplication, explicit
+execution/read scope selection and submitted snapshots, dock/compact/expanded
+restoration, history/reload, foreground focus during completion, independent tabs
+and conflict recovery, dense desktop, mobile bottom sheets and one primary
+resource with 44px controls. The portable export is self-contained. Production
+build passes; this increment changes only the mock, its exporter/check and docs.
+P4 and durable P6 remain open. No main merge or deployment is performed.
