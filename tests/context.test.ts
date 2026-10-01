@@ -22,6 +22,25 @@ describe("agent context organization", () => {
     expect(context).toContain("`gh issue view`");
   });
 
+  it("describes response formatting as optional capabilities while retaining safety rules", async () => {
+    const context = await text("contexts/web-ui.md");
+
+    expect(context).toContain("## Response formatting capabilities");
+    expect(context).toContain("standard Markdown, including headings, lists, tables, code blocks, and blockquotes");
+    expect(context).toContain("available tools, not required response structures");
+    expect(context).toContain("Do not add a table, diagram, or interactive preview solely because the format is available");
+    expect(context).toContain("`html-preview` blocks render in a sandboxed opaque-origin iframe");
+    expect(context).toContain("guard access to `localStorage` or `sessionStorage` with `try`/`catch`");
+    expect(context).toContain("When drawing a diagram, use a fenced Mermaid block instead of ASCII art");
+    expect(context).toContain("Do not turn prose, lists, or tables into diagrams merely to use Mermaid");
+
+    expect(context).not.toContain("at most two sentences");
+    expect(context).not.toContain("give each concept 2–3 sentences");
+    expect(context).not.toContain("Use one concept per widget");
+    expect(context).not.toContain("If a visual could be a Mermaid diagram, it must be Mermaid");
+    expect(context).not.toContain("Example of an appropriate interactive figure");
+  });
+
   it("keeps pi-web project instructions in AGENTS.md", async () => {
     const agents = await text("AGENTS.md");
 
