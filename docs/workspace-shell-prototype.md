@@ -356,5 +356,5 @@ ordering stays consistent.
 
 Recording discovery: goal rows replaced the shared button class instead of adding
 their row class. This dropped the flex layout and ran the goal, project and status
-labels together. Rows now retain both classes so their labels stack and the shared
-button sizing, focus and hover styles apply.
+labels together. Rows now retain both classes and use automatic height so their
+labels stack without clipping and the shared focus and hover styles apply.

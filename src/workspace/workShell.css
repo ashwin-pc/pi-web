@@ -29,7 +29,7 @@ body.workShell.workDrawerOpen .workDrawer { display: flex; }
 .workDrawer > footer { flex-wrap: wrap; border-top: 1px solid var(--border); padding-top: 8px; }
 .workDrawer input, .workDialog input:not([type="checkbox"]), .workDialog select, .workDialog textarea, .workChatContext select { width: 100%; min-height: 44px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; color: var(--text); background: var(--bg); font: inherit; }
 .workRows { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
-.workRow { flex: 0 0 auto; flex-direction: column; align-items: flex-start; gap: 3px; padding: 12px; text-align: left; overflow-wrap: anywhere; }
+.workRow { height: auto; flex: 0 0 auto; flex-direction: column; align-items: flex-start; gap: 3px; padding: 12px; text-align: left; overflow-wrap: anywhere; }
 .workRow small, .workRowStatus { color: var(--muted); font-size: 11px; }
 .workRowStatus { color: var(--accent); }
 .workDrawerShade { position: fixed; inset: var(--work-top) 0 var(--work-bottom); z-index: 35; background: #0008; }
