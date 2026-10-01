@@ -12,6 +12,11 @@ website/public/generated/
 # Local uploads / screenshots
 .pi-web-uploads/
 
+# Review-only evidence: attach or link in PR descriptions, never commit
+.pi/web/artifacts/
+docs/evidence/
+.github/evidence/
+
 # Environment / secrets
 .env
 .env.*
