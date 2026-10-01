@@ -1,7 +1,7 @@
 import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import dictation, { DictationWorker, migrateDictationSettings } from "./index.js";
 import { defaultModel, platformDefaults, resolveRuntime, validateCombination } from "./adapters/config.js";
 
@@ -114,12 +114,50 @@ describe("DictationWorker lifecycle", () => {
   });
 
   it("starts a queued request timeout at dispatch rather than enqueue", async () => {
-    const worker = createWorker();
-    const first = request(worker);
-    // Each request takes 200ms. A 300ms enqueue deadline would expire before
-    // the queued response (~400ms), while a dispatch deadline succeeds.
-    const queued = request(worker, undefined, 300);
-    await expect(Promise.all([first, queued])).resolves.toHaveLength(2);
+    // The peer records each received request and holds its response until released.
+    // This keeps dispatch and response ordering independent of host scheduling.
+    await writeFile(script, String.raw`
+import json, pathlib, sys, time
+root = pathlib.Path(__file__).parent
+for number, line in enumerate(sys.stdin, 1):
+    message = json.loads(line)
+    (root / f"received-{number}").touch()
+    while not (root / f"release-{number}").exists():
+        time.sleep(0.01)
+    print(json.dumps({"id": message["id"], "ok": True, "text": "fake transcript"}), flush=True)
+`);
+    const received = async (number: number) => {
+      while (!(await readdir(root)).includes(`received-${number}`)) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
+    // Fake only deadline timers: filesystem, child-process I/O and Python remain real.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const worker = new DictationWorker({ workerScript: script, tempRoot: root, killWindowsTree: async () => {} });
+      workers.push(worker);
+      const first = request(worker);
+      const queued = request(worker, undefined, 300);
+      const queuedResult = expect(queued).resolves.toMatchObject({ text: "fake transcript" });
+      await received(1); // first dispatched and held; second is still queued
+      await vi.advanceTimersByTimeAsync(300);
+      await writeFile(join(root, "release-1"), "");
+      await expect(first).resolves.toMatchObject({ text: "fake transcript" });
+      await received(2); // second dispatched after the logical enqueue deadline
+      await writeFile(join(root, "release-2"), "");
+      await queuedResult;
+
+      const timedOut = request(worker, undefined, 300);
+      const rejection = expect(timedOut).rejects.toThrow("Dictation timed out");
+      await received(3); // dispatched, but the peer cannot respond before the deadline
+      await vi.advanceTimersByTimeAsync(300);
+      // Cleanup may wait for child exit (and a Windows tree-kill hook); drive
+      // its bounded fallback too rather than awaiting a frozen fake timer.
+      await vi.advanceTimersByTimeAsync(2_000);
+      await rejection;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("bounds unread worker protocol output", async () => {
