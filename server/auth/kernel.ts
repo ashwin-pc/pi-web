@@ -280,10 +280,10 @@ function cookies(req: IncomingMessage) {
   }
   return result;
 }
-export type AuthVia = "session" | "token" | "legacy" | "external" | "open";
+export type AuthVia = "session" | "token" | "legacy" | "external" | "open" | "extension";
 export type GateResult =
   | { ok: true; identity: Identity; via: AuthVia; sessionHash?: string }
-  | { ok: false };
+  | { ok: false; status?: 401 | 403 };
 
 export class AuthKernel {
   private wsTickets = new Map<
@@ -354,6 +354,7 @@ export class AuthKernel {
     readonly trustedHeader = "",
     policy?: AccessPolicy,
     methods?: HumanAuthMethod[],
+    private readonly extensionResolver?: (req: IncomingMessage) => Promise<GateResult>,
   ) {
     this.policy = policy || (mode === "none" ? "open" : "authenticated");
     this.methods = new Set(methods || (mode === "none" ? [] : [mode]));
@@ -379,6 +380,11 @@ export class AuthKernel {
     return ticket && ticket.expiresAt > Date.now() ? ticket : undefined;
   }
   async gate(req: IncomingMessage): Promise<GateResult> {
+    // Reserved credential class: never fall through to open/browser/machine auth.
+    if (/^PiWebExtension(?:\s|$)/i.test(req.headers.authorization || "")) {
+      try { return await this.extensionResolver?.(req) || { ok: false }; }
+      catch { return { ok: false }; }
+    }
     const state = await this.store.read();
     // Credential and policy decisions use one snapshot, never a stale refresh
     // that could restore legacy authority during concurrent method retirement.

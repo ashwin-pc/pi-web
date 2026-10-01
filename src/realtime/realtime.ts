@@ -57,9 +57,11 @@ export function createRealtime(options: {
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   updateWebContribution?: (key: string, sessionId: string) => void;
+  applySettlementDependencies?: (sessionId: unknown, childIds: readonly unknown[]) => boolean;
+  onSettlementDependenciesChanged?: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, applySettlementDependencies, onSettlementDependenciesChanged, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -360,7 +362,7 @@ export function createRealtime(options: {
   function ensureRetryErrorCard(info: AssistantErrorInfo) {
     if (!retryErrorCard?.isConnected) {
       messages.invalidateRefreshes();
-      retryErrorCard = tools.addRuntimeErrorCard("assistant error", info.text, info.body);
+      retryErrorCard = tools.addRuntimeErrorCard({ title: "assistant error", subtitle: info.text, technicalDetails: info.body });
     }
     return retryErrorCard;
   }
@@ -485,7 +487,7 @@ export function createRealtime(options: {
       failedAfter ? "The model request failed after pi exhausted automatic retries." : "The model request failed.",
       "Retry the failed model request from the last good context without adding a new user message, or switch models if this provider remains rate-limited or overloaded.",
     ].join("\n");
-    terminalFailureCard = tools.addRuntimeErrorCard("response failed", subtitle, body);
+    terminalFailureCard = tools.addRuntimeErrorCard({ title: "response failed", subtitle, technicalDetails: body });
     expandRuntimeErrorCard(terminalFailureCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
@@ -497,10 +499,10 @@ export function createRealtime(options: {
 
   function addIncompleteResponseCard(info: TranscriptIncomplete) {
     incompleteResponseCard?.remove();
-    incompleteResponseCard = tools.addRuntimeErrorCard("response incomplete", info.text, [
+    incompleteResponseCard = tools.addRuntimeErrorCard({ title: "response incomplete", subtitle: info.text, technicalDetails: [
       info.body,
       "Continue from the current context without adding a new user message, or switch models if this provider remains unreliable.",
-    ].filter(Boolean).join("\n"));
+    ].filter(Boolean).join("\n") });
     expandRuntimeErrorCard(incompleteResponseCard);
     const actions = document.createElement("div");
     actions.className = "runtimeErrorActions";
@@ -619,6 +621,10 @@ export function createRealtime(options: {
         const deliveredRole = String(deliveredMessage?.role || deliveredMessage?.raw?.role || "");
         if (deliveredRole === "user") {
           composer.handleUserMessage(messageText(deliveredMessage), envelope?.clientMessageId, envelope?.sourceClientId, deliveredMessage.attachments || []);
+        } else if (deliveredRole === "assistant") {
+          // message_end separates assistant rounds and is also the fallback
+          // flush when a provider omits text_end before a tool or error.
+          messages.resetStreamingAssistant();
         }
         const errorInfo = assistantErrorInfoFromMessage(event.message);
         if (errorInfo) {
@@ -656,6 +662,8 @@ export function createRealtime(options: {
       }
       case "agent_settled": {
         sessionState.patchRuntime(state.currentSessionId, { isStreaming: false, isRetrying: false }, { kind: "end" });
+        // A provider may settle without a final text_end. Flush the buffered
+        // prefix before the asynchronous persisted-transcript reconciliation.
         messages.resetStreamingAssistant();
         messages.endStreamFollow();
         tools.clearActiveToolCards();
@@ -766,9 +774,8 @@ export function createRealtime(options: {
         if (key && (!data.runtime?.isRunning || typeof data.runtime?.startedAt === "string")) terminalRuntimeSessions.delete(key);
         if (!data.sessionId) return;
         const transition = sessionState.replaceRuntime(String(data.sessionId), data.runtime);
-        // Any runtime change (including a spawned child's) can flip the
-        // current session's derived "waiting on spawned sessions" state.
-        status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
+        // Any dependency runtime change can update linked-session pill status.
+        onSettlementDependenciesChanged?.();
         if (transition.isActive && transition.previous.isRunning && !transition.next.isRunning) {
           refreshMessages()
             .then(() => {
@@ -798,9 +805,14 @@ export function createRealtime(options: {
         settings.applyWebSettingsSchemas(data.webSettingsSchemas);
         return;
       }
+      if (data.type === "settlement_dependencies_changed") {
+        if (applySettlementDependencies?.(data.sessionId, Array.isArray(data.childIds) ? data.childIds : [])) {
+          onSettlementDependenciesChanged?.();
+        }
+        return;
+      }
       if (data.type === "session_ui_state_changed") {
         sessions.applySessionUiState(data.sessionUiState);
-        status.updateWaitingStatus(sessions.waitingInfoFor(state.currentSessionId || ""));
         return;
       }
       if (data.type === "interaction_request" || data.type === "interaction_effect") {

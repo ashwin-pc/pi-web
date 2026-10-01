@@ -271,7 +271,7 @@ test("git status repo accordions switch the selected file", async ({ page }) => 
   await expect(page.locator(".gitFileItem.selected .gitFilePath")).toHaveText("b.txt");
 });
 
-test("mobile launcher opens Git without activating a compact composer", async ({ page }) => {
+test("mobile launcher opens Git without activating a nonempty composer", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
 
@@ -280,14 +280,14 @@ test("mobile launcher opens Git without activating a compact composer", async ({
   await prompt.fill("A draft that should remain compact while opening Git");
   await prompt.blur();
 
-  await expect(composer).toHaveClass(/compactInactive/);
-  await expect.poll(async () => (await composer.boundingBox())?.height || 0).toBeLessThanOrEqual(50);
+  // A nonempty draft remains expanded when blurred so it cannot be hidden.
+  await expect(composer).not.toHaveClass(/compactInactive/);
   await page.locator(".actionLauncherToggle").click();
   await page.locator(".actionLauncherItem", { hasText: "Git" }).click();
 
   await expect(page.locator("#gitPanel")).toBeVisible();
   await expect(prompt).not.toBeFocused();
-  await expect.poll(async () => (await composer.boundingBox())?.height || 0).toBeLessThanOrEqual(50);
+  await expect(composer).not.toHaveClass(/compactInactive/);
 });
 
 test("git panel switches to a single visible pane when its container is narrow", async ({ page }) => {

@@ -1194,7 +1194,22 @@ describe("Live session lifecycle", () => {
 
   it("terminates stale WebSockets with missed heartbeats and releases their session lease", async () => {
     await reset();
+    const opened = await fetch(`${baseUrl}/api/sessions/open`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pi-web-client-id": "heartbeat-test" },
+      body: JSON.stringify({ sessionId: "mock-older", clientId: "heartbeat-test" }),
+    });
+    expect(opened.status).toBe(200);
+
+    let replyToPings = true;
+    let acknowledgedPings = 0;
     const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-older&clientId=heartbeat-test`, { autoPong: false });
+    const closed = new Promise<void>((resolve) => ws.once("close", resolve));
+    ws.on("ping", () => {
+      if (!replyToPings) return;
+      acknowledgedPings += 1;
+      ws.pong();
+    });
     try {
       await new Promise<void>((resolve, reject) => {
         ws.on("message", (data) => {
@@ -1203,18 +1218,24 @@ describe("Live session lifecycle", () => {
         });
         ws.on("error", reject);
       });
+      await waitForCondition(() => acknowledgedPings >= 2);
 
       const leased = await lifecycleState();
       expect(leased.liveSessions.some((item) => item.sessionId === "mock-older" && item.viewerLeases === 1)).toBe(true);
       expect(leased.viewerLeases.some((item) => item.clientId === "heartbeat-test" && item.sockets === 1)).toBe(true);
 
-      await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error("WebSocket was not closed by heartbeat")), 3_000);
-        ws.on("close", () => {
-          clearTimeout(timeout);
-          resolve();
-        });
-      });
+      replyToPings = false;
+      let expiryTimeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          closed,
+          new Promise<void>((_resolve, reject) => {
+            expiryTimeout = setTimeout(() => reject(new Error("WebSocket was not closed by heartbeat")), 3_000);
+          }),
+        ]);
+      } finally {
+        if (expiryTimeout) clearTimeout(expiryTimeout);
+      }
 
       await waitForCondition(async () => {
         const state = await lifecycleState();

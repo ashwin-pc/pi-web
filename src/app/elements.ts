@@ -1,6 +1,7 @@
 export type AppElements = {
   messagesEl: HTMLDivElement;
   statusTitleEl: HTMLSpanElement;
+  copySessionLinkButton: HTMLButtonElement;
   statusPathEl: HTMLSpanElement;
   activityStatusEl: HTMLSpanElement;
   connectionStatusEl: HTMLSpanElement;
@@ -35,6 +36,7 @@ export type AppElements = {
   sessionListEl: HTMLDivElement;
   sessionBarEl: HTMLDivElement;
   queueToggle: HTMLButtonElement;
+  composerExtensionInputs: HTMLDivElement;
   attachButton: HTMLButtonElement;
   imageInput: HTMLInputElement;
   attachmentsEl: HTMLDivElement;
@@ -101,6 +103,7 @@ export function getAppElements(): AppElements {
   return {
     messagesEl: requiredElement<HTMLDivElement>("#messages"),
     statusTitleEl: requiredElement<HTMLSpanElement>("#statusTitle"),
+    copySessionLinkButton: requiredElement<HTMLButtonElement>("#copySessionLinkButton"),
     statusPathEl: requiredElement<HTMLSpanElement>("#statusPath"),
     activityStatusEl: requiredElement<HTMLSpanElement>("#activityStatus"),
     connectionStatusEl: requiredElement<HTMLSpanElement>("#connectionStatus"),
@@ -135,6 +138,7 @@ export function getAppElements(): AppElements {
     sessionListEl: requiredElement<HTMLDivElement>("#sessionList"),
     sessionBarEl: requiredElement<HTMLDivElement>("#sessionBar"),
     queueToggle: requiredElement<HTMLButtonElement>("#queueToggle"),
+    composerExtensionInputs: requiredElement<HTMLDivElement>("#composerExtensionInputs"),
     attachButton: requiredElement<HTMLButtonElement>("#attachButton"),
     imageInput: requiredElement<HTMLInputElement>("#imageInput"),
     attachmentsEl: requiredElement<HTMLDivElement>("#attachments"),

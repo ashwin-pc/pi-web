@@ -1,0 +1,163 @@
+import { createHash } from "node:crypto";
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { readWavyPreviewAssets, renderWavyView } from "../../preview.js";
+import type { LoadedProject } from "../../types.js";
+import { verifyWavyPackage } from "../../scripts/verify-package.mjs";
+
+const wavyRoot = dirname(fileURLToPath(new URL("../../package.json", import.meta.url)));
+
+type ArchiveMutation =
+  | { kind: "alias"; archivePath: string; contents: string }
+  | { kind: "directory"; archivePath: string };
+
+async function packageFixture(change?: (wavy: string) => Promise<void>, archiveMutations: ArchiveMutation[] = []) {
+  const fixture = await mkdtemp(join(tmpdir(), "wavy-package-fixture-"));
+  const wavy = join(fixture, "package");
+  await mkdir(wavy, { recursive: true });
+  for (const path of ["README.md", "package.json", "browser.js", "index.ts", "player.ts", "player-model.ts", "preview.ts", "styles.css", "store.ts", "types.ts", "settings.ts", "engines.ts", "engine/README.md", "engine/sheetsage.py", "engine/yue.py", "skill/SKILL.md"]) {
+    await mkdir(dirname(join(wavy, path)), { recursive: true });
+    await cp(join(wavyRoot, path), join(wavy, path));
+  }
+  await cp(join(wavyRoot, "vendor"), join(wavy, "vendor"), { recursive: true });
+  await change?.(wavy);
+  const archive = join(fixture, "fixture.tgz");
+  if (archiveMutations.length) {
+    const script = [
+      "import io,json,sys,tarfile",
+      "root,archive,mutations=sys.argv[1],sys.argv[2],json.loads(sys.argv[3])",
+      "replaced={m['archivePath'] for m in mutations if m['kind']=='directory'}",
+      "def keep(info): return None if info.name in replaced else info",
+      "with tarfile.open(archive,'w:gz') as out:",
+      " out.add(root,arcname='package',filter=keep)",
+      " for mutation in mutations:",
+      "  name=mutation['archivePath']",
+      "  if mutation['kind']=='directory':",
+      "   info=tarfile.TarInfo(name.rstrip('/')+'/');info.type=tarfile.DIRTYPE;info.mode=0o755;out.addfile(info)",
+      "  else:",
+      "   data=mutation['contents'].encode();info=tarfile.TarInfo(name);info.size=len(data);info.mode=0o644;out.addfile(info,io.BytesIO(data))",
+    ].join("\n");
+    const packed = spawnSync("python3", ["-c", script, wavy, archive, JSON.stringify(archiveMutations)], { encoding: "utf8" });
+    if (packed.status !== 0) throw new Error(packed.stderr);
+  } else {
+    const packed = spawnSync("tar", ["-czf", archive, "package"], { cwd: fixture, encoding: "utf8" });
+    if (packed.status !== 0) throw new Error(packed.stderr);
+  }
+  return { fixture, archive };
+}
+
+describe("Wavy build and package contract", () => {
+  it("reports an actionable error when the generated browser bundle is absent", async () => {
+    const fixture = await mkdtemp(join(tmpdir(), "wavy-missing-browser-"));
+    try {
+      await writeFile(join(fixture, "styles.css"), "body{}");
+      await expect(readWavyPreviewAssets(fixture)).rejects.toThrow(/npm run build/);
+    } finally { await rm(fixture, { recursive: true, force: true }); }
+  });
+
+  it("does not read ABCjs or stage piano samples for a project without a saved score", async () => {
+    const assetFixture = await mkdtemp(join(tmpdir(), "wavy-no-notation-assets-"));
+    await writeFile(join(assetFixture, "styles.css"), "body{}");
+    await writeFile(join(assetFixture, "browser.js"), '"use strict";');
+    await expect(readWavyPreviewAssets(assetFixture, false)).resolves.toEqual(["body{}", '"use strict";', ""]);
+    await rm(assetFixture, { recursive: true, force: true });
+
+    const cwd = await mkdtemp(join(tmpdir(), "wavy-no-score-"));
+    const project: LoadedProject = {
+      absolutePath: join(cwd, "draft.wavy"), artifactPath: "/api/artifacts/draft.wavy", warnings: [],
+      head: { lyrics: "Draft", style: "", settings: { precision: "bf16", planning: "off", maxSemanticTokens: 9000 } },
+      index: { format: "wavy", version: 1, title: "Draft", createdAt: "2026-09-19T00:00:00Z", updatedAt: "2026-09-19T00:00:00Z", revision: 0, revisions: [], sources: [], takes: [] },
+    };
+    try {
+      const view = await renderWavyView(project);
+      expect(view).not.toContain("abcjs_basic v6.4.4");
+      await expect(access(join(cwd, ".pi"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+
+  it("includes ABCjs for a renderable in-memory score without requiring revision file metadata", async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "wavy-unpersisted-score-"));
+    const project: LoadedProject = {
+      absolutePath: join(cwd, "draft.wavy"), artifactPath: "/api/artifacts/draft.wavy", warnings: [],
+      head: { lyrics: "Draft", style: "", score: "X:1\nK:C\nC4|", settings: { precision: "bf16", planning: "off", maxSemanticTokens: 9000 } },
+      index: { format: "wavy", version: 1, title: "Draft", createdAt: "2026-09-19T00:00:00Z", updatedAt: "2026-09-19T00:00:00Z", revision: 0, revisions: [], sources: [], takes: [] },
+    };
+    try {
+      const view = await renderWavyView(project);
+      expect(view).toContain("abcjs_basic v6.4.4");
+      await expect(access(join(cwd, ".pi"))).rejects.toMatchObject({ code: "ENOENT" });
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+
+  it("matches every vendored byte length and hash in the shipped-subset manifest", async () => {
+    const vendor = join(wavyRoot, "vendor");
+    const manifest = JSON.parse(await readFile(join(vendor, "manifest.json"), "utf8")) as {
+      schemaVersion: number;
+      upstreams: Array<{ notice: string; shippedFiles: Array<{ path: string; bytes: number; sha256: string }> }>;
+    };
+    expect(manifest.schemaVersion).toBe(1);
+    expect(manifest.upstreams.flatMap(item => item.shippedFiles)).toHaveLength(1);
+    for (const upstream of manifest.upstreams) {
+      await expect(access(join(vendor, upstream.notice))).resolves.toBeUndefined();
+      for (const file of upstream.shippedFiles) {
+        const data = await readFile(join(vendor, file.path));
+        expect(data.byteLength, file.path).toBe(file.bytes);
+        expect(createHash("sha256").update(data).digest("hex"), file.path).toBe(file.sha256);
+      }
+    }
+  });
+
+  it("rejects missing or tampered bundles, undeclared vendor files, and caches", async () => {
+    const cases: Array<[(wavy: string) => Promise<void>, RegExp]> = [
+      [async wavy => rm(join(wavy, "browser.js")), /missing browser\.js/],
+      [async wavy => writeFile(join(wavy, "browser.js"), '"use strict"; tampered'), /differs from the canonical/],
+      [async wavy => writeFile(join(wavy, "vendor/unexpected.bin"), "extra"), /Undeclared vendored files/],
+      [async wavy => { await mkdir(join(wavy, "nested/__pycache__"), { recursive: true }); await writeFile(join(wavy, "nested/__pycache__/x.pyc"), "cache"); }, /cache\/test artifacts/],
+    ];
+    for (const [change, message] of cases) {
+      const { fixture, archive } = await packageFixture(change);
+      try { await expect(verifyWavyPackage(archive)).rejects.toThrow(message); }
+      finally { await rm(fixture, { recursive: true, force: true }); }
+    }
+  });
+
+  it.each([
+    {
+      name: "dot-segment aliases",
+      mutations: [{ kind: "alias", archivePath: "package/./browser.js", contents: 'alert("tampered")' }] satisfies ArchiveMutation[],
+      message: /non-canonical archive member path/,
+    },
+    {
+      name: "directories in place of required files",
+      mutations: [{ kind: "directory", archivePath: "package/index.ts" }] satisfies ArchiveMutation[],
+      message: /must be a regular file: index\.ts/,
+    },
+  ])("rejects $name from archive metadata", async ({ mutations, message }) => {
+    const { fixture, archive } = await packageFixture(undefined, mutations);
+    try {
+      const listed = spawnSync("tar", ["-tzf", archive], { encoding: "utf8" });
+      expect(listed.status).toBe(0);
+      if (mutations[0].kind === "alias") expect(listed.stdout).toContain("package/./browser.js");
+      else expect(listed.stdout).toMatch(/package\/index\.ts\/?(?:\r?\n|$)/);
+      await expect(verifyWavyPackage(archive)).rejects.toThrow(message);
+    } finally { await rm(fixture, { recursive: true, force: true }); }
+  });
+
+  it("keeps build, tests, and packaging extension-owned", async () => {
+    const pkg = JSON.parse(await readFile(join(wavyRoot, "package.json"), "utf8"));
+    expect(pkg.scripts.build).toBe("node scripts/build-browser.mjs");
+    expect(pkg.scripts.dev).toContain("--watch");
+    expect(pkg.scripts.prepack).toMatch(/^npm run build/);
+    expect(pkg.devDependencies.esbuild).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(Object.keys(pkg.peerDependencies).sort()).toEqual([
+      "@ashwin-pc/pi-web", "@earendil-works/pi-ai", "@earendil-works/pi-coding-agent", "typebox",
+    ]);
+    expect(pkg.devDependencies).not.toHaveProperty("@earendil-works/pi-coding-agent");
+    expect(pkg.files).toContain("browser.js");
+    expect(pkg.files).not.toContain("tests/");
+  });
+});

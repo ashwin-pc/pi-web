@@ -111,6 +111,12 @@ function makeCtx(options: {
     },
     ui: {
       web: {
+        createApiClient: vi.fn(() => ({
+          request: (method: string, path: string, options?: { body?: unknown }) => globalThis.fetch(path, {
+            method, ...(options?.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+          }),
+          dispose: vi.fn(),
+        })),
         registerSettings: vi.fn(async () => ({ registered: true, migrated: false, usedBackup: false })),
         getSettings: vi.fn(async () => ({
           schemaVersion: 1,
@@ -204,12 +210,31 @@ afterEach(() => {
 });
 
 describe("sessions_spawn tool surface", () => {
-  it("registers the orchestration tools", async () => {
+  it("requests explicit scoped cross-session access and disposes it at shutdown", async () => {
+    const ctx = makeCtx();
+    await activate(ctx);
+    expect(ctx.ui.web.createApiClient).toHaveBeenCalledWith({
+      name: "session-orchestrator", sessionIds: "all",
+      scopes: ["sessions.read", "sessions.create", "sessions.write", "sessions.delete"],
+    });
+    const client = ctx.ui.web.createApiClient.mock.results[0].value;
+    handlers.get("session_shutdown")?.({}, ctx);
+    expect(client.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("fails clearly on older hosts without falling back to browser tokens", async () => {
+    const ctx: any = makeCtx();
+    delete ctx.ui.web.createApiClient;
+    const result = await spawn(ctx, { name: "worker", task: "read" });
+    expect(resultText(result)).toContain("scoped extension HTTP API");
+    expect(calls).toEqual([]);
+  });
+
+  it("registers worker-management tools, leaving sessions_read to core", async () => {
     await activate(makeCtx());
     expect([...tools.keys()].sort()).toEqual([
       "sessions_abort",
       "sessions_prompt",
-      "sessions_read",
       "sessions_spawn",
       "sessions_status",
     ]);
@@ -306,6 +331,17 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(calls.findIndex((c) => c.path === "/api/model")).toBeLessThan(calls.findIndex((c) => c.path === "/api/prompt"));
     expect(pathsFor("POST")).not.toContain("/api/sessions/delete");
     expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: ["worker-1"] });
+  });
+
+  it("keeps the last declaration across shutdown for atomic reload or idle handoff", async () => {
+    const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
+    await spawn(ctx, { name: "scout", task: "look around" });
+    const callsBeforeShutdown = ctx.ui.web.reportSettlementDependencies.mock.calls.length;
+
+    await handlers.get("session_shutdown")?.({}, ctx);
+
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: ["worker-1"] });
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenCalledTimes(callsBeforeShutdown);
   });
 
   it("returns only the category name after a successful spawn and keeps the model mapping private", async () => {
@@ -583,6 +619,15 @@ describe("watcher lifecycle and wakeup retries", () => {
 
     expect(pi.sendMessage).toHaveBeenCalledTimes(1);
     expect(String(pi.sendMessage.mock.calls[0][0].content)).toContain("finished after restart");
+    expect(pi.sendMessage.mock.calls[0][0].details).toMatchObject({
+      workers: [{ sessionId: "ledger-worker", name: "ledger worker", status: "idle" }],
+      presentation: {
+        kind: "expandable-report",
+        label: "ledger worker · finished",
+        preview: "finished after restart",
+        tone: "accent",
+      },
+    });
     expect(pi.appendEntry).toHaveBeenCalledWith("orchestrator-watch-resolved", { childId: "ledger-worker" });
     expect(stateCalls).toBe(6); // re-arm failure + status check + four settled polls
   });

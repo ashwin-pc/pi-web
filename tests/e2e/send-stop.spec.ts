@@ -104,7 +104,7 @@ test.describe("send button", () => {
 
 test.describe("send while streaming", () => {
   test("both stop and send buttons visible when streaming with text typed", async ({ page }) => {
-    await page.locator("#prompt").fill("slow running task");
+    await page.locator("#prompt").fill("quiet runtime");
     await page.locator("#primaryButton").click();
 
     await expect(page.locator("#stopButton")).toBeVisible();
@@ -112,16 +112,28 @@ test.describe("send while streaming", () => {
     // type into the prompt while streaming
     await page.locator("#prompt").fill("steer it this way");
 
-    await expect(page.locator("#stopButton")).toBeVisible();
-    const stop = page.locator("#stopButton");
-    const send = page.locator("#primaryButton");
-    await expect(send).toBeVisible();
-    await expect(send).toBeEnabled();
-    const stopBox = (await stop.boundingBox())!;
-    const sendBox = (await send.boundingBox())!;
-    expect(Math.abs(stopBox.x + stopBox.width - sendBox.x)).toBeLessThanOrEqual(1);
-    await expect(stop).toHaveCSS("border-right-width", "0px");
-    await expect(send).toHaveCSS("border-left-width", "0px");
+    // Read both controls in one browser frame. Separate locator calls can straddle
+    // a composer layout update and pair a stale visibility assertion with a
+    // hidden element's null bounding box.
+    await expect.poll(() => page.locator(".composerFooter").evaluate((footer) => {
+      const stop = footer.querySelector<HTMLButtonElement>("#stopButton");
+      const send = footer.querySelector<HTMLButtonElement>("#primaryButton");
+      if (!stop || !send) return false;
+      const stopStyle = getComputedStyle(stop);
+      const sendStyle = getComputedStyle(send);
+      const stopBox = stop.getBoundingClientRect();
+      const sendBox = send.getBoundingClientRect();
+      return stopStyle.display !== "none" &&
+        stopStyle.visibility !== "hidden" &&
+        sendStyle.display !== "none" &&
+        sendStyle.visibility !== "hidden" &&
+        stopBox.width > 0 && stopBox.height > 0 &&
+        sendBox.width > 0 && sendBox.height > 0 &&
+        !send.disabled &&
+        Math.abs(stopBox.x + stopBox.width - sendBox.x) <= 1 &&
+        stopStyle.borderRightWidth === "0px" &&
+        sendStyle.borderLeftWidth === "0px";
+    })).toBe(true);
   });
 
   test("send button disabled during streaming with no input", async ({ page }) => {

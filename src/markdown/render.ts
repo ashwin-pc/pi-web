@@ -1,9 +1,11 @@
 import hljs from "highlight.js/lib/common";
 import { marked } from "marked";
-import { Check, Copy, createElement, Download, PanelRightOpen } from "lucide";
+import { Check, Copy, createElement, Download, MessageCircle, PanelRightOpen } from "lucide";
 import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 import { matchingArtifactPreview, mountArtifactPreview } from "../extensions/artifactPreviews.js";
+import { createStreamingBatch, type StreamingBatch } from "./streamingScheduler.js";
+import { sessionCitationFromHref, sessionCitationHref } from "../app/types.js";
 
 marked.setOptions({
   async: false,
@@ -31,7 +33,7 @@ type ArtifactPreviewAction = { key?: unknown; title?: unknown; label?: unknown; 
 let artifactPreviewActions: ArtifactPreviewAction[] = [];
 let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type": "application/json" });
 let artifactActionSessionId = () => "";
-let openArtifactInPanel: (url: string) => void = () => {};
+let openArtifactInPanel: (url: string, opener?: HTMLElement) => void = () => {};
 let artifactPreviewId = 0;
 const interactiveArtifactCards = new Set<HTMLElement>();
 let artifactInteractionListenerAttached = false;
@@ -41,7 +43,7 @@ export function configureArtifactPreviewActions(options: { headers: () => Record
   artifactActionSessionId = options.getSessionId;
 }
 
-export function configureArtifactPanelOpener(open: (url: string) => void) {
+export function configureArtifactPanelOpener(open: (url: string, opener?: HTMLElement) => void) {
   openArtifactInPanel = open;
 }
 
@@ -55,7 +57,16 @@ export function setArtifactPreviewActions(value: unknown) {
 export type MarkdownRenderer = {
   renderAssistantMarkdown: (body: HTMLElement, text: string) => void;
   queueAssistantMarkdownRender: (body: HTMLElement, text: string) => void;
+  queueStreamingAssistantMarkdown: (body: HTMLElement, text: string, onRendered?: () => void) => void;
+  finalizeStreamingAssistantMarkdown: (body: HTMLElement, text: string) => void;
+  cancelStreamingAssistantMarkdown: (body: HTMLElement) => void;
   unobserve: (body: HTMLElement) => void;
+};
+
+export type MarkdownRendererOptions = {
+  /** Injectable for browser A/B measurements; false preserves the legacy plain-text stream. */
+  streamingMarkdown?: boolean;
+  streamingBatchMs?: number;
 };
 
 function sanitizeMarkdownHtml(html: string) {
@@ -120,6 +131,32 @@ function highlightCodeBlock(code: HTMLElement) {
   code.classList.add(`language-${language}`);
 }
 
+function parseMarkdownHtml(text: string) {
+  return sanitizeMarkdownHtml(marked.parse(text) as string);
+}
+
+function enhanceSessionCitationLinks(root: ParentNode) {
+  for (const anchor of root.querySelectorAll<HTMLAnchorElement>("a[href]")) {
+    if (anchor.dataset.sessionCitation) continue;
+    const reference = sessionCitationFromHref(anchor.getAttribute("href") || "");
+    if (!reference) continue;
+    const label = anchor.textContent?.trim() || "";
+    const rawLabel = !label || Boolean(sessionCitationFromHref(label));
+    anchor.href = sessionCitationHref(reference);
+    anchor.dataset.sessionCitation = "true";
+    anchor.classList.add("sessionCitation");
+    anchor.title = reference.entryId
+      ? `Open session ${reference.sessionId} at message ${reference.entryId}`
+      : `Open session ${reference.sessionId}`;
+    anchor.setAttribute("aria-label", rawLabel ? anchor.title : `Open ${label}`);
+    if (rawLabel) anchor.textContent = reference.entryId ? `Session ${reference.sessionId.slice(-8)} · ${reference.entryId.slice(-8)}` : `Session ${reference.sessionId.slice(-8)}`;
+    const icon = createElement(MessageCircle);
+    icon.classList.add("sessionCitationChatIcon");
+    icon.setAttribute("aria-hidden", "true");
+    anchor.prepend(icon);
+  }
+}
+
 function markdownHtml(text: string) {
   const cached = markdownCache.get(text);
   if (cached !== undefined) {
@@ -128,7 +165,7 @@ function markdownHtml(text: string) {
     return cached;
   }
 
-  const html = sanitizeMarkdownHtml(marked.parse(text) as string);
+  const html = parseMarkdownHtml(text);
   markdownCache.set(text, html);
   if (markdownCache.size > maxCachedMarkdown) markdownCache.delete(markdownCache.keys().next().value as string);
   return html;
@@ -630,7 +667,7 @@ function enhanceArtifactLinks(root: ParentNode) {
     open.title = "Open in Artifacts panel";
     open.setAttribute("aria-label", open.title);
     open.append(createElement(PanelRightOpen, { "aria-hidden": "true" }));
-    open.addEventListener("click", () => openArtifactInPanel(url.pathname));
+    open.addEventListener("click", () => openArtifactInPanel(url.pathname, open));
     const download = document.createElement("button");
     download.type = "button";
     download.className = "artifactPreviewAction artifactPreviewAction--icon";
@@ -763,6 +800,7 @@ function enhanceArtifactLinks(root: ParentNode) {
         content.classList.add("markdownBody");
         content.innerHTML = markdownHtml(text);
         enhanceMermaid(content);
+        enhanceInlineHtmlPreviews(content);
         enhanceCodeBlocks(content);
         enhanceImages(content);
         refreshOverflow();
@@ -782,6 +820,7 @@ export function renderStandaloneMarkdown(
 ) {
   body.classList.add("markdownBody");
   body.innerHTML = markdownHtml(text);
+  enhanceSessionCitationLinks(body);
   enhanceMermaid(body);
   enhanceInlineHtmlPreviews(body);
   enhanceCodeBlocks(body);
@@ -795,11 +834,59 @@ function renderAssistantMarkdown(body: HTMLElement, text: string) {
   delete body.dataset.markdownText;
 }
 
-export function createMarkdownRenderer(messagesEl: HTMLElement, onAssistantRendered?: (body: HTMLElement) => void): MarkdownRenderer {
+export function createMarkdownRenderer(
+  messagesEl: HTMLElement,
+  onAssistantRendered?: (body: HTMLElement) => void,
+  options: MarkdownRendererOptions = {},
+): MarkdownRenderer {
   const render = (body: HTMLElement, text: string) => {
     renderAssistantMarkdown(body, text);
     onAssistantRendered?.(body);
   };
+  const streamingMarkdown = options.streamingMarkdown !== false;
+  const streamingBatchMs = Math.max(0, options.streamingBatchMs ?? 75);
+  const streamingRenders = new WeakMap<HTMLElement, StreamingBatch<{ text: string; onRendered?: () => void }>>();
+
+  // Parse the complete prefix for correctness (reference definitions can change
+  // earlier blocks), but retain nodes whose serialized output is unchanged so
+  // selection and controls in stable content survive tail updates.
+  const renderStreaming = (body: HTMLElement, text: string) => {
+    const template = document.createElement("template");
+    template.innerHTML = parseMarkdownHtml(text);
+    const incoming = Array.from(template.content.childNodes);
+    for (let index = 0; index < incoming.length; index += 1) {
+      const current = body.childNodes[index];
+      const next = incoming[index];
+      if (!current) {
+        body.append(next);
+        continue;
+      }
+      const currentHtml = current instanceof Element ? current.outerHTML : current.textContent;
+      const nextHtml = next instanceof Element ? next.outerHTML : next.textContent;
+      if (current.nodeType !== next.nodeType || currentHtml !== nextHtml) current.replaceWith(next);
+    }
+    while (body.childNodes.length > incoming.length) body.lastChild?.remove();
+    body.classList.add("markdownBody");
+  };
+
+  const finalizeStreaming = (body: HTMLElement, text: string) => {
+    renderStreaming(body, text);
+    enhanceSessionCitationLinks(body);
+    enhanceMermaid(body);
+    enhanceInlineHtmlPreviews(body);
+    enhanceCodeBlocks(body);
+    enhanceImages(body);
+    enhanceArtifactLinks(body);
+    body.dataset.markdownRendered = "true";
+    delete body.dataset.markdownText;
+    onAssistantRendered?.(body);
+  };
+
+  const cancelStreamingAssistantMarkdown = (body: HTMLElement) => {
+    streamingRenders.get(body)?.cancel();
+    streamingRenders.delete(body);
+  };
+
   const requestIdle = window.requestIdleCallback || ((callback: IdleRequestCallback) => window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 1));
   const markdownRenderObserver = "IntersectionObserver" in window
     ? new IntersectionObserver((entries, observer) => {
@@ -824,6 +911,30 @@ export function createMarkdownRenderer(messagesEl: HTMLElement, onAssistantRende
         if (body.isConnected && !body.dataset.markdownRendered) render(body, text);
       });
     },
+    queueStreamingAssistantMarkdown(body, text, onRendered) {
+      if (!streamingMarkdown) {
+        body.textContent = text;
+        onRendered?.();
+        return;
+      }
+      let batch = streamingRenders.get(body);
+      if (!batch) {
+        batch = createStreamingBatch(streamingBatchMs, (pending) => {
+          if (!body.isConnected) return;
+          renderStreaming(body, pending.text);
+          pending.onRendered?.();
+        });
+        streamingRenders.set(body, batch);
+      }
+      batch.queue({ text, onRendered });
+    },
+    finalizeStreamingAssistantMarkdown(body, text) {
+      cancelStreamingAssistantMarkdown(body);
+      if (!body.isConnected) return;
+      if (streamingMarkdown) finalizeStreaming(body, text);
+      else body.textContent = text;
+    },
+    cancelStreamingAssistantMarkdown,
     unobserve(body) {
       markdownRenderObserver?.unobserve(body);
     },

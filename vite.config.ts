@@ -18,7 +18,7 @@ export default defineConfig({
       srcDir: "src",
       filename: "sw.ts",
       devOptions: { enabled: true, type: "module" },
-      includeAssets: ["icon.svg", "apple-touch-icon.png"],
+      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png"],
       manifest: {
         name: "pi web",
         short_name: "pi",

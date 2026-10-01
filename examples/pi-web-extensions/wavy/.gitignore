@@ -1,0 +1,8 @@
+node_modules/
+browser.js
+browser.js.tmp-*
+test-results/
+playwright-report/
+*.tgz
+__pycache__/
+*.py[cod]

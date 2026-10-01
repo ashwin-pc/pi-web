@@ -19,6 +19,7 @@ export type SettingsShellController = {
   setSummary: (pageId: string, summary: string) => void;
   setBadge: (pageId: string, label?: string, tone?: "neutral" | "ready" | "warning" | "danger") => void;
   setSearchTerms: (pageId: string, terms: string[]) => void;
+  setScope: (scope: "preferences" | "system") => void;
 };
 
 type PageEntry = {
@@ -66,12 +67,14 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
   const entriesById = new Map(entries.map((entry) => [entry.id, entry]));
   let selectedId = entries.find((entry) => entry.button.getAttribute("aria-current") === "page")?.id || entries[0].id;
   let showingMobileDetail = false;
+  let activeScope: "preferences" | "system" = "preferences";
 
   function updateMobilePresentation() {
     const showBack = mobile.matches && showingMobileDetail;
     elements.panel.classList.toggle("settingsShowingDetail", showBack);
     elements.backButton.hidden = !showBack;
-    elements.mobileTitle.textContent = showBack ? entriesById.get(selectedId)?.title || "Settings" : "Settings";
+    const scopeLabel = activeScope === "system" ? "System" : "Preferences";
+    elements.mobileTitle.textContent = showBack ? entriesById.get(selectedId)?.title || scopeLabel : scopeLabel;
   }
 
   function applySelection(pageId: string, focus = false) {
@@ -100,13 +103,17 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
     if (focus) entriesById.get(selectedId)?.button.focus({ preventScroll: true });
   }
 
+  const isEntryVisible = (entry: PageEntry) => !entry.button.hidden;
+
   function filterNavigation() {
     const query = normalizedSearchText(elements.searchInput.value);
     let visibleCount = 0;
     for (const entry of entries) {
       const dynamicTerms = entry.button.dataset.settingsDynamicSearch || "";
       const searchText = normalizedSearchText(`${entry.button.dataset.settingsSearch || ""} ${dynamicTerms} ${entry.button.textContent || ""}`);
-      const visible = !query || searchText.includes(query);
+      const entryScope = entry.button.dataset.settingsScope || entry.button.closest<HTMLElement>("[data-settings-scope]")?.dataset.settingsScope || "preferences";
+      const available = entry.button.dataset.settingsAvailable !== "false";
+      const visible = available && entryScope === activeScope && (!query || searchText.includes(query));
       entry.button.hidden = !visible;
       if (visible) visibleCount += 1;
     }
@@ -117,7 +124,7 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
   }
 
   function moveSearchSelection(direction: 1 | -1) {
-    const visible = entries.map((entry) => entry.button).filter((button) => !button.hidden);
+    const visible = entries.filter(isEntryVisible).map((entry) => entry.button);
     if (visible.length === 0) return;
     const activeIndex = visible.indexOf(document.activeElement as HTMLButtonElement);
     const nextIndex = activeIndex < 0
@@ -141,7 +148,7 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
         return;
       }
       if (event.key !== "Enter") return;
-      const first = entries.find((entry) => !entry.button.hidden);
+      const first = entries.find(isEntryVisible);
       if (!first) return;
       event.preventDefault();
       applySelection(first.id, true);
@@ -158,6 +165,7 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
     applySelection(selectedId, false);
     if (mobile.matches) showNavigation(false);
     filterNavigation();
+    new MutationObserver(filterNavigation).observe(elements.navigation, { attributes: true, subtree: true, attributeFilter: ["data-settings-available"] });
   }
 
   function prepareOpen() {
@@ -197,6 +205,22 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
     filterNavigation();
   }
 
+  function setScope(scope: "preferences" | "system") {
+    activeScope = scope;
+    const scopeLabel = scope === "system" ? "System" : "Preferences";
+    elements.navigation.setAttribute("aria-label", `${scopeLabel} categories`);
+    elements.searchInput.setAttribute("aria-label", `Search ${scopeLabel.toLocaleLowerCase()}`);
+    elements.backButton.setAttribute("aria-label", `Back to ${scopeLabel.toLocaleLowerCase()} categories`);
+    elements.backButton.title = `Back to ${scopeLabel.toLocaleLowerCase()} categories`;
+    const closeButton = elements.panel.querySelector<HTMLButtonElement>("#settingsCloseButton");
+    closeButton?.setAttribute("aria-label", `Close ${scopeLabel.toLocaleLowerCase()}`);
+    if (closeButton) closeButton.title = `Close ${scopeLabel.toLocaleLowerCase()}`;
+    elements.searchInput.value = "";
+    filterNavigation();
+    const first = entries.find(isEntryVisible);
+    if (first) applySelection(first.id);
+  }
+
   return {
     init,
     prepareOpen,
@@ -206,5 +230,6 @@ export function createSettingsShell(panel: HTMLElement): SettingsShellController
     setSummary,
     setBadge,
     setSearchTerms,
+    setScope,
   };
 }

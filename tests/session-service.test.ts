@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,7 +6,7 @@ import { jsonRoundTrip, type MessageDto, type SessionServiceEvent } from "../ser
 import { SessionActivity } from "../server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
 import { mapPiEvent } from "../server/session/piEventMap.js";
-import { pi084Events } from "./fixtures/pi-0.84-events.js";
+import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 
@@ -20,7 +20,7 @@ afterEach(async () => {
 
 function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jsonl`)) {
   const entries: any[] = [
-    { id: "call", parentId: null, type: "message", timestamp: "2026-01-01T00:00:00Z", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", toolName: "read", arguments: { path: "secret" } }], timestamp: "2026-01-01T00:00:00Z" } },
+    { id: "call", parentId: null, type: "message", timestamp: "2026-01-01T00:00:00Z", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "secret" } }], timestamp: "2026-01-01T00:00:00Z" } },
     { id: "result", parentId: "call", type: "message", timestamp: "2026-01-01T00:00:01Z", message: { role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "ok" }], isError: false, timestamp: "2026-01-01T00:00:01Z" } },
   ];
   const listeners = new Set<(event: unknown) => void>();
@@ -44,6 +44,7 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
         syncMessages();
       },
       buildSessionContext: () => ({ messages: entries.map((entry) => entry.message) }),
+      getEntry: (entryId: string) => entries.find((entry) => entry.id === entryId),
       getBranch: () => entries,
       getLeafId: () => entries.at(-1)?.id || null,
       getTree: () => entries.length ? [{ entry: entries[0], children: entries.slice(1).map((entry) => ({ entry, children: [] })) }] : [],
@@ -283,10 +284,11 @@ describe("LocalSessionService contract", () => {
     expect(order).toEqual(["session_ui_state_changed", "state_changed"]);
   });
 
-  it("keeps the dependency surface to six true externals", async () => {
+  it("keeps seven true externals including the optional scoped extension transport", async () => {
     const source = await readFile(new URL("../server/session/service.ts", import.meta.url), "utf8");
     const body = source.slice(source.indexOf("export interface LocalSessionServiceDependencies"), source.indexOf("}\n\ntype WorkLeaseKind"));
-    expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(6);
+    expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(7);
+    expect(body).toContain("extensionHttp?");
     expect(body).not.toContain("decorateState");
     expect(body).not.toContain("resolve(sessionId");
   });
@@ -411,7 +413,7 @@ describe("LocalSessionService contract", () => {
       webUiEntries: (value) => service.webUiEntries(value), sessionActivity: activity,
       broadcast: (value) => wire.push(value), markSessionUnreadCompleted: () => undefined,
     });
-    const mapped = pi084Events.map(mapPiEvent).filter((item) => item.kind === "event");
+    const mapped = pi087Events.map(mapPiEvent).filter((item) => item.kind === "event");
     for (const item of mapped) {
       if (item.kind === "event") handler({ type: "agent", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: item.event });
     }
@@ -653,6 +655,45 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(service.sessionForId(initial.sessionId)).toBeUndefined();
     expect(service.sessionForId("mock-reset")).toBe(replacementFixture.session);
     expect(service.lifecycleSnapshot().viewerLeases).toEqual([]);
+  });
+
+  it("reads cold exact entries without opening another runtime and labels an archive tail", async () => {
+    let coldPath = "";
+    const { service, initial, cwd, creates } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "cold-session", path: coldPath, cwd, name: "", firstMessage: "root", allMessagesText: "root",
+        created: new Date("2026-01-01T00:00:00Z"), modified: new Date("2026-01-01T00:00:00Z"), messageCount: 200,
+      }] : [],
+    });
+    coldPath = join(cwd, "cold-session.jsonl");
+    const records = [
+      { type: "session", version: 3, id: "cold-session", cwd },
+      { type: "message", id: "root", parentId: null, message: { role: "user", content: "root" } },
+      { type: "message", id: "old", parentId: "root", message: { role: "assistant", content: "old branch " + "x".repeat(7_000) } },
+      { type: "message", id: "active", parentId: "root", message: { role: "assistant", content: "active branch" } },
+      ...Array.from({ length: 197 }, (_, index) => ({
+        type: "message", id: `tail-${index}`, parentId: index ? `tail-${index - 1}` : "active",
+        message: { role: "assistant", content: `tail ${index}` },
+      })),
+    ];
+    const original = records.map((entry) => JSON.stringify(entry)).join("\n") + "\n";
+    await writeFile(coldPath, original);
+
+    const live = await service.readSession({ sessionId: initial.sessionId }, 20);
+    expect(live).toMatchObject({ source: "active branch", entries: expect.arrayContaining([expect.objectContaining({ entryId: "result", text: expect.stringContaining("✓ read: ok") })]) });
+    expect(live.entries[0]?.text).toContain("→ read(path: secret)");
+
+    const exact = await service.readSession({ sessionId: "cold-session", entryId: "old" }, 200);
+    expect(exact).toMatchObject({ source: "saved history (may include alternate branches)", entries: [expect.objectContaining({ entryId: "old" })], truncated: true });
+    expect(exact.entries[0]?.text).toMatch(/…$/);
+
+    const tail = await service.readSession({ sessionId: "cold-session" }, 200);
+    expect(tail.source).toBe("saved history (may include alternate branches)");
+    expect(tail.truncated).toBe(true);
+    expect(tail.entries).toHaveLength(200);
+    expect(tail.entries.map((entry) => entry.entryId)).toEqual(["root", "old", "active", ...Array.from({ length: 197 }, (_, index) => `tail-${index}`)]);
+    expect(creates).toHaveLength(1);
+    expect(await readFile(coldPath, "utf8")).toBe(original);
   });
 
   it("captures operation paths and clears both registration and current paths on shutdown", async () => {

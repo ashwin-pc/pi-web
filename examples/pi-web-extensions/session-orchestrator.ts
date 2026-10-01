@@ -2,9 +2,9 @@
  * session-orchestrator — experimental pi-web extension
  *
  * Gives every pi-web session the same orchestration verbs a human has in the
- * UI: spawn sibling sessions, check on them, read their transcripts, steer or
- * interrupt them, and abort them. Workers are ordinary first-class pi-web
- * sessions (full history, visible in the sidebar, resumable).
+ * UI: spawn sibling sessions, check on them, steer or interrupt them, and abort
+ * them. Workers are ordinary first-class pi-web sessions (full history, visible
+ * in the sidebar, resumable). Core supplies sessions_read for transcript inspection.
  *
  * Wakeups: after spawning/prompting a worker, the parent does NOT block. A
  * background watcher (plain JS polling — zero tokens) injects a user message
@@ -19,7 +19,7 @@
  */
 
 import { Type } from "typebox";
-import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebSettingsSchema } from "@ashwin-pc/pi-web/extensions";
+import type { PiWebExtensionAPI, PiWebExtensionContext, PiWebSettingsSchema, PiWebHttpClient } from "@ashwin-pc/pi-web/extensions";
 
 const WORKER_MARKER = "[pi-web orchestrated worker]";
 const EXT_VERSION = "v9";
@@ -66,10 +66,6 @@ const SETTINGS_SCHEMA: PiWebSettingsSchema = {
     },
   ],
 };
-
-const PORT = Number(process.env.PORT || 8787);
-const TOKEN = process.env.PI_WEB_TOKEN || "";
-const BASE = `http://127.0.0.1:${PORT}`;
 
 // ---------------------------------------------------------------------------
 // Global helpers: token parsing, resolution
@@ -130,23 +126,6 @@ class ApiError extends Error {
   }
 }
 
-async function api(method: string, path: string, body?: unknown): Promise<any> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: {
-      ...(TOKEN ? { Authorization: `Bearer ${TOKEN}` } : {}),
-      ...(body !== undefined ? { "Content-Type": "application/json" } : {}),
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(20_000),
-  });
-  const json = await res.json().catch(() => ({}));
-  if (!res.ok || json?.ok === false) {
-    throw new ApiError(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`, res.status);
-  }
-  return json;
-}
-
 function trunc(value: unknown, max: number): string {
   const text = String(value ?? "").trim();
   if (text.length <= max) return text;
@@ -157,14 +136,14 @@ function shortId(id: string): string {
   return id.length > 8 ? id.slice(-8) : id;
 }
 
+/** Generic pi-web custom-message presentation metadata; semantics stay here. */
+function reportPresentation(label: string, preview: string, tone: "accent" | "danger" = "accent") {
+  return { kind: "expandable-report", label, preview: trunc(preview, 320), tone };
+}
+
 // ---------------------------------------------------------------------------
 // Transcript helpers (uses /api/messages simplified message shape)
 // ---------------------------------------------------------------------------
-
-async function fetchMessages(sessionId: string): Promise<any[]> {
-  const json = await api("GET", `/api/messages?sessionId=${encodeURIComponent(sessionId)}`);
-  return Array.isArray(json.messages) ? json.messages : [];
-}
 
 function lastAssistantText(messages: any[]): { text: string; isError: boolean } {
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -176,44 +155,23 @@ function lastAssistantText(messages: any[]): { text: string; isError: boolean } 
   return { text: "", isError: false };
 }
 
-function shortArgs(args: Record<string, unknown> | undefined): string {
-  if (!args || typeof args !== "object") return "";
-  const parts: string[] = [];
-  for (const [key, value] of Object.entries(args)) {
-    parts.push(`${key}: ${trunc(typeof value === "string" ? value : JSON.stringify(value), 60)}`);
-    if (parts.join(", ").length > 140) break;
-  }
-  return trunc(parts.join(", "), 160);
-}
-
-function formatTranscript(messages: any[], tail: number): string {
-  const slice = messages.slice(-tail);
-  const lines: string[] = [];
-  if (messages.length > slice.length) lines.push(`… (${messages.length - slice.length} earlier entries omitted; increase tail to see more)`);
-  for (const m of slice) {
-    if (!m || typeof m !== "object") continue;
-    if (m.role === "user") {
-      lines.push(`[user] ${trunc(m.text, 400)}`);
-    } else if (m.role === "assistant") {
-      if (m.text) lines.push(`[assistant] ${trunc(m.text, 700)}`);
-      for (const call of m.toolCalls || []) {
-        lines.push(`  → ${call.toolName}(${shortArgs(call.args)})`);
-      }
-    } else if (m.role === "toolResult") {
-      lines.push(`  ${m.isError ? "✗" : "✓"} ${m.toolName}: ${trunc(m.text, 200)}`);
-    } else if (m.role === "bashExecution") {
-      lines.push(`  $ ${trunc(m.command, 160)}`);
-      if (m.output) lines.push(`    ${trunc(m.output, 200)}`);
-    }
-  }
-  return lines.join("\n") || "(no messages)";
-}
-
 // ---------------------------------------------------------------------------
 // Extension
 // ---------------------------------------------------------------------------
 
 export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
+  let client: PiWebHttpClient | undefined;
+  async function api(method: "GET" | "POST", path: string, body?: Record<string, unknown>): Promise<any> {
+    if (!client) throw new Error("Session orchestration requires pi-web's scoped extension HTTP API; update pi-web and reload extensions.");
+    const res = await client.request(method, path, { body });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok || json?.ok === false) throw new ApiError(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`, res.status);
+    return json;
+  }
+  async function fetchMessages(sessionId: string): Promise<any[]> {
+    const json = await api("GET", `/api/messages?sessionId=${encodeURIComponent(sessionId)}`);
+    return Array.isArray(json.messages) ? json.messages : [];
+  }
   type Watched = {
     id: string;
     name: string;
@@ -245,6 +203,13 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   // wakeups through /api/prompt (the same battle-tested path the web UI uses
   // for steering), which works both when the parent is idle and mid-turn.
   function captureSelf(ctx: PiWebExtensionContext) {
+    if (!client && !disposed) client = ctx.ui?.web?.createApiClient?.({
+      name: "session-orchestrator",
+      scopes: ["sessions.read", "sessions.create", "sessions.write", "sessions.delete"],
+      // The existing tools deliberately accept arbitrary user-selected sessions,
+      // including restored workers; cross-session access is explicit, not implicit.
+      sessionIds: "all",
+    });
     const id = ownSessionId(ctx);
     if (id && id !== "unknown") selfSessionId = id;
     const reporter = ctx?.ui?.web?.reportSettlementDependencies;
@@ -786,6 +751,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration) || finished.length === 0) return;
 
     const finishedIds = new Set(finished.map((worker) => worker.id));
+    const catchUpFailed = finished.some((worker) => worker.summary.isError);
     const details = {
       kind: "wakeup",
       catchUp: true,
@@ -793,6 +759,11 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       stillRunning: Array.from(watched.values())
         .filter((worker) => !finishedIds.has(worker.id))
         .map((o) => ({ sessionId: o.id, name: o.name })),
+      presentation: reportPresentation(
+        finished.length === 1 ? `${finished[0].name} · ${catchUpFailed ? "failed" : "finished"}` : `${finished.length} workers · ${catchUpFailed ? "completed with errors" : "finished"}`,
+        finished.map((worker) => worker.summary.text || "No final message captured").join(" · "),
+        catchUpFailed ? "danger" : "accent",
+      ),
     };
     const sections = finished.map((f) => [
       `Worker "${f.name}" (session ${f.id}) finished while this session was offline.`,
@@ -916,7 +887,11 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           if (w.errorPolls >= 20) {
             const ok = await deliverWakeup(
               `🔔 [orchestrator] Lost track of worker "${w.name}" (session ${w.id}): status polling kept failing (it may have been deleted). Check it with sessions_status or in the sidebar.`,
-              { kind: "wakeup", workers: [{ sessionId: w.id, name: w.name, status: "error" }] },
+              {
+                kind: "wakeup",
+                workers: [{ sessionId: w.id, name: w.name, status: "error" }],
+                presentation: reportPresentation(`${w.name} · unavailable`, "Status polling repeatedly failed", "danger"),
+              },
               expectedGeneration,
             );
             if (!isActive(expectedGeneration)) return;
@@ -935,6 +910,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         const completedIds = new Set(completed.map(({ w }) => w.id));
         const activeWorkers = Array.from(watched.values()).filter((w) => !completedIds.has(w.id));
         const stillRunning = activeWorkers.map((o) => `"${o.name}"`).join(", ");
+        const completedWithError = completed.some(({ summary }) => summary.isError);
+        const allAborted = completed.every(({ w }) => w.aborted);
         const details = {
           kind: "wakeup",
           workers: completed.map(({ w, summary }) => ({
@@ -943,6 +920,13 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             status: w.aborted ? "aborted" : summary.isError ? "error" : "idle",
           })),
           stillRunning: activeWorkers.map((o) => ({ sessionId: o.id, name: o.name })),
+          presentation: reportPresentation(
+            completed.length === 1
+              ? `${completed[0].w.name} · ${completed[0].w.aborted ? "stopped" : completedWithError ? "failed" : "finished"}`
+              : `${completed.length} workers · ${allAborted ? "stopped" : completedWithError ? "completed with errors" : "finished"}`,
+            completed.map(({ summary }) => summary.text || "No final message captured").join(" · "),
+            completedWithError ? "danger" : "accent",
+          ),
         };
         const sections = completed.map(({ w, summary }) => [
           `Worker "${w.name}" (session ${w.id}) is now ${w.aborted ? "stopped (aborted)" : "idle"}.`,
@@ -1014,25 +998,6 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   });
 
   // -------------------------------------------------------------------------
-  // sessions_read
-  // -------------------------------------------------------------------------
-  pi.registerTool({
-    name: "sessions_read",
-    label: "Read worker transcript",
-    description: "Read the tail of a session's transcript (compact rendering: user/assistant text, tool calls one-line each). Use to review a worker's work or diagnose one that's going down the wrong path. Keep tails small — don't pull a worker's full process back into your context.",
-    promptSnippet: "Read the recent transcript of another session",
-    parameters: Type.Object({
-      id: Type.String({ description: "Session id" }),
-      tail: Type.Optional(Type.Number({ description: "How many trailing entries to include (default 20)" })),
-    }),
-    async execute(_toolCallId: string, params: any) {
-      const messages = await fetchMessages(params.id);
-      const text = formatTranscript(messages, Math.max(1, Math.min(200, params.tail || 20)));
-      return { content: [{ type: "text", text }], details: { sessionId: params.id, totalMessages: messages.length } };
-    },
-  });
-
-  // -------------------------------------------------------------------------
   // sessions_prompt
   // -------------------------------------------------------------------------
   pi.registerTool({
@@ -1087,6 +1052,10 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   // Lifecycle
   // -------------------------------------------------------------------------
   pi.on("session_shutdown", () => {
+    // Keep the last atomic declaration across reload and idle disposal. The
+    // durable ledger lets the replacement instance re-report or resolve it.
+    client?.dispose();
+    client = undefined;
     disposed = true;
     generation += 1;
     if (timer) clearInterval(timer);

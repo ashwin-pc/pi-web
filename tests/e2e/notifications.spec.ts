@@ -54,7 +54,7 @@ test.beforeEach(async ({ page }) => {
 
 test("notification settings test notification, sound, vibration, and persistence", async ({ page }) => {
   await page.goto("/");
-  await openSessionDrawerFooterAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "Preferences");
   await page.locator("#settingsNavNotifications").click();
 
   await expect(page.locator("#settingRunNotificationsCheckbox")).toBeChecked();
@@ -69,7 +69,7 @@ test("notification settings test notification, sound, vibration, and persistence
   });
 
   await page.reload();
-  await openSessionDrawerFooterAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "Preferences");
   await page.locator("#settingsNavNotifications").click();
   await expect(page.locator("#settingCompletionSoundCheckbox")).toBeChecked();
   await expect(page.locator("#settingCompletionVibrationCheckbox")).toBeChecked();

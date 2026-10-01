@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { mapPiEvent, type HarnessEventDto } from "../server/session/piEventMap.js";
-import { pi084Events } from "./fixtures/pi-0.84-events.js";
+import { pi087Events } from "./fixtures/pi-0.87-events.js";
 
 describe("pi event wire mapping", () => {
   it("maps the recorded pi event surface without cumulative streaming messages", () => {
-    const mapped = pi084Events.map(mapPiEvent);
+    const mapped = pi087Events.map(mapPiEvent);
     expect(mapped).toMatchSnapshot();
     const updates = mapped.filter((item) => item.kind === "event" && item.event.type === "message_update");
     expect(updates.map((item) => item.kind === "event" && item.event.type === "message_update" ? item.event.assistantMessageEvent.type : "")).toEqual(["text_start", "text_delta", "text_end"]);

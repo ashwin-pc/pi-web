@@ -2,6 +2,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
+import { isolatedAuthEnv } from "./tests/auth-isolation.js";
 
 const port = Number(process.env.PLAYWRIGHT_PORT || 9876);
 const authOnly = process.env.PI_WEB_E2E_AUTH === "1";
@@ -37,6 +38,7 @@ export default defineConfig({
     serviceWorkers: "block",
   },
   webServer: {
+    env: Object.fromEntries(Object.entries(isolatedAuthEnv()).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
     // E2E runs against the preflight production build. Starting many embedded
     // Vite optimizers in parallel made sharded runs slow and resource-sensitive.
     command: `PI_WEB_DEV=0 NODE_ENV=test PI_WEB_MOCK=1 HOST=127.0.0.1 PORT=${port} PI_WEB_AUTH_STORE=${JSON.stringify(join(runtimeDir, `auth-${port}.json`))} PI_WEB_AUTH_MODE=${authOnly ? "legacy" : "none"} PI_WEB_AUTH_POLICY= PI_WEB_AUTH_METHODS= PI_WEB_AUTH_ORIGIN=http://127.0.0.1:${port} PI_WEB_AUTH_TRUSTED_HEADER= PI_WEB_AUTH_PROXY_PEERS= PI_WEB_TOKEN=${authOnly ? "test-secret" : ""} PI_WEB_CWD=$PWD PI_WEB_SETTINGS_FILE=${JSON.stringify(settingsFile(port))} PI_WEB_SESSION_UI_STATE_FILE=${JSON.stringify(sessionUiStateFile(port))} node --import tsx server.ts`,

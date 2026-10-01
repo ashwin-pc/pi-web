@@ -42,12 +42,14 @@ export type SessionUiState = {
   lanes: SessionLaneEntry[];
   sessionNotes: SessionNote[];
   pinnedFolders: string[];
+  favoriteFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
+  bucketOrder: SessionMarkerColorId[];
 };
 
 export type SessionUiStatePatch = Partial<{
@@ -55,12 +57,14 @@ export type SessionUiStatePatch = Partial<{
   pinnedSessions: unknown; // legacy v1 patch alias
   sessionNotes: unknown;
   pinnedFolders: unknown;
+  favoriteFolders: unknown;
   sessionMarkers: unknown;
   sessionUnreadStates: unknown;
   sessionOrigins: unknown;
   selectedMarkerColor: unknown;
   allowedMarkerColors: unknown;
   bucketLabels: unknown;
+  bucketOrder: unknown;
   force: unknown;
 }>;
 
@@ -81,7 +85,8 @@ export const SESSION_UI_STATE_SHRINK_MINIMUM_SIZE = 10;
 export const SESSION_UI_STATE_MAX_SHRINK_FRACTION = 0.5;
 const guardedSessionUiStateCollections: GuardedSessionUiStateCollection[] = ["lanes", "sessionMarkers", "sessionUnreadStates", "sessionOrigins"];
 
-const markerColors = new Set<SessionMarkerColorId>(["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"]);
+const defaultBucketOrder: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
+const markerColors = new Set<SessionMarkerColorId>(defaultBucketOrder);
 const legacyBucketToColor: Record<string, SessionMarkerColorId> = {
   later: "blue",
   review: "purple",
@@ -96,12 +101,14 @@ export const defaultSessionUiState: SessionUiState = {
   lanes: [],
   sessionNotes: [],
   pinnedFolders: [],
+  favoriteFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
   sessionOrigins: [],
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
   bucketLabels: {},
+  bucketOrder: [...defaultBucketOrder],
 };
 
 function cloneState(value: SessionUiState): SessionUiState {
@@ -140,6 +147,12 @@ function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
     result.push(color);
   }
   return result;
+}
+
+function normalizeBucketOrder(value: unknown): SessionMarkerColorId[] {
+  const ordered = normalizeMarkerColors(value);
+  const seen = new Set(ordered);
+  return [...ordered, ...defaultBucketOrder.filter((color) => !seen.has(color))];
 }
 
 function normalizeLaneEntry(value: unknown): SessionLaneEntry | undefined {
@@ -254,6 +267,9 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   if (Array.isArray(value.pinnedFolders)) {
     state.pinnedFolders = uniqueBy(value.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
   }
+  if (Array.isArray(value.favoriteFolders)) {
+    state.favoriteFolders = uniqueBy(value.favoriteFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+  }
 
   if (Array.isArray(value.sessionMarkers)) {
     state.sessionMarkers = uniqueBy(value.sessionMarkers.map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId);
@@ -270,6 +286,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;
   state.allowedMarkerColors = normalizeMarkerColors(value.allowedMarkerColors);
   state.bucketLabels = normalizeBucketLabels(value.bucketLabels);
+  state.bucketOrder = normalizeBucketOrder(value.bucketOrder);
   return state;
 }
 
@@ -290,6 +307,9 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
 
   if ("pinnedFolders" in patch && Array.isArray(patch.pinnedFolders)) {
     next.pinnedFolders = uniqueBy(patch.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+  }
+  if ("favoriteFolders" in patch && Array.isArray(patch.favoriteFolders)) {
+    next.favoriteFolders = uniqueBy(patch.favoriteFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
   }
 
   if ("sessionMarkers" in patch && Array.isArray(patch.sessionMarkers)) {
@@ -312,6 +332,9 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
   }
   if ("bucketLabels" in patch && isRecord(patch.bucketLabels)) {
     next.bucketLabels = normalizeBucketLabels(patch.bucketLabels);
+  }
+  if ("bucketOrder" in patch && Array.isArray(patch.bucketOrder)) {
+    next.bucketOrder = normalizeBucketOrder(patch.bucketOrder);
   }
 
   return normalizeSessionUiState(next);

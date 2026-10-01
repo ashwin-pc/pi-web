@@ -8,6 +8,8 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
+import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { HttpError } from "./server/shared/httpError.js";
 import { createSessionUiStateStore, defaultSessionUiState, SessionUiStateShrinkRejected } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
@@ -27,6 +29,7 @@ import { LocalSessionService, SessionServiceError } from "./server/session/servi
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
+import { ExtensionHttpRegistry, extensionHttpOrigin, hasExtensionCredential } from "./server/auth/extensionHttp.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { initializeAuth } from "./server/auth/bootstrap.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
@@ -48,7 +51,10 @@ const authMode = authConfig.legacyMode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
 const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
-const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods);
+// Runtimes can initialize before the HTTP server is constructed or listening.
+let extensionHttpServer: ReturnType<typeof createServer> | undefined;
+const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
+const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
@@ -66,6 +72,7 @@ const systemInfoSnapshot = createSystemInfoProvider({
   port,
 });
 let mockStateOverrides: Record<string, unknown> = {};
+const captureUploadLimiter = new CaptureUploadLimiter();
 
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -113,21 +120,30 @@ function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
 }
 
-async function readBytes(req: IncomingMessage, maxBytes = 30_000_000): Promise<Buffer> {
+async function readBytes(req: IncomingMessage, maxBytes = 30_000_000, onChunk?: (bytes: number) => void): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of req) {
     const buffer = Buffer.from(chunk);
     bytes += buffer.length;
-    if (bytes > maxBytes) throw new Error("Request body is too large");
+    onChunk?.(buffer.length);
+    if (bytes > maxBytes) throw new HttpError("Request body is too large", 413);
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
 }
 
-async function readBody(req: IncomingMessage): Promise<unknown> {
-  const text = (await readBytes(req, 40_000_000)).toString("utf-8");
-  return text ? JSON.parse(text) : {};
+const jsonBodies = new WeakMap<IncomingMessage, Promise<unknown>>();
+function readBody(req: IncomingMessage): Promise<unknown> {
+  let body = jsonBodies.get(req);
+  if (!body) {
+    body = readBytes(req, hasExtensionCredential(req) ? 1_000_000 : 40_000_000).then(bytes => {
+      const text = bytes.toString("utf-8");
+      return text ? JSON.parse(text) : {};
+    });
+    jsonBodies.set(req, body);
+  }
+  return body;
 }
 
 async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionScoped = false) {
@@ -332,6 +348,8 @@ function cleanClientId(value: unknown) {
 }
 
 function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
+  // Extension operations must never acquire, move or otherwise use browser leases.
+  if (hasExtensionCredential(req)) return "";
   const raw = req.headers["x-pi-web-client-id"];
   const headerValue = Array.isArray(raw) ? raw[0] : raw;
   return cleanClientId(headerValue) || cleanClientId(fallback);
@@ -436,6 +454,7 @@ const mockSessionFactory = mockMode ? {
 } : undefined;
 
 sessionService = new LocalSessionService({
+  extensionHttp,
   modelRuntime,
   sessionFactory: mockSessionFactory,
   additionalExtensionPaths,
@@ -459,6 +478,7 @@ sessionService.subscribe((event) => {
   handleSessionServiceEvent(event);
   if (event.type === "settlement_dependencies") {
     settlementTracker.report(event.sessionId, event.childIds);
+    broadcast({ type: "settlement_dependencies_changed", sessionId: event.sessionId, childIds: event.childIds });
   }
   const settlementRelevant = event.type === "runtime" || event.type === "state"
     || (event.type === "agent" && [
@@ -504,6 +524,7 @@ function withAccessLog(
         performance.now() - start,
         Math.max(0, req.socket.bytesWritten - startBytes),
         aborted,
+        extensionHttp.caller(req),
       );
     };
     res.on("finish", () => log(false));
@@ -528,7 +549,11 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   try {
 
     if (url.pathname.startsWith("/api/")) {
-      await authKernel.refreshConfig();
+      // Scoped credentials must be checked before even public auth routes: no
+      // alternate resolver, open-policy fallback, or credential-management path.
+      const extensionAuth = hasExtensionCredential(req) ? await authKernel.gate(req) : undefined;
+      if (extensionAuth && !extensionAuth.ok) return sendJson(res, extensionAuth.status || 401, { ok: false, error: "Extension API authorization failed" });
+      if (!extensionAuth) await authKernel.refreshConfig();
       if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
@@ -543,7 +568,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         authKernel.clearSession(res);
         return sendJson(res, 200, { ok: true });
       }
-      const auth = await authKernel.gate(req);
+      const auth = extensionAuth || await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
       if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
@@ -571,6 +596,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         setWebsiteWorkflowExtensionEnabled(body.websiteWorkflowExtension === true);
         setRecommendedAddonsExtensionEnabled(body.recommendedAddonsExtension === true);
         resetMockSessions();
+        settlementTracker.reset();
         await sessionUiStateStore.write(defaultSessionUiState);
         session = await sessionService.initialize();
         broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
@@ -590,6 +616,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const body = await readBody(req);
         if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as any).type !== "string") {
           return sendJson(res, 400, { ok: false, error: "Mock event requires a type" });
+        }
+        if ((body as any).type === "settlement_dependencies_changed") {
+          settlementTracker.report(String((body as any).sessionId || ""), Array.isArray((body as any).childIds) ? (body as any).childIds : []);
         }
         broadcast(body);
         return sendJson(res, 200, { ok: true });
@@ -783,17 +812,46 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         });
       }
 
+      if (method === "POST" && url.pathname === "/api/web-captures") {
+        const sessionId = resolveSessionId(url.searchParams.get("sessionId"));
+        const key = url.searchParams.get("key") || "";
+        const registrationId = url.searchParams.get("registrationId") || "";
+        const durationMs = Number(url.searchParams.get("durationMs"));
+        const mimeType = String(req.headers["content-type"] || "");
+        const rawLength = req.headers["content-length"];
+        const declaredLength = typeof rawLength === "string" && rawLength !== "" ? Number(rawLength) : undefined;
+        const upload = captureUploadLimiter.begin(declaredLength);
+        try {
+          // The service applies the contribution-specific limit again after this
+          // coarse global request bound.
+          const bytes = await readBytes(req, 25_000_000, upload.add);
+          const capture = await sessionService.storeCapture(sessionId, key, registrationId, { durationMs, mimeType, bytes });
+          return sendJson(res, 201, { ok: true, captureId: capture.id, expiresAt: capture.expiresAt });
+        } finally {
+          upload.release();
+        }
+      }
+
       if (method === "POST" && url.pathname === "/api/web-contributions/invoke") {
         const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        req.once("aborted", abort);
+        res.once("close", () => { if (!res.writableEnded) abort(); });
+        const timeout = setTimeout(abort, 3 * 60_000);
+        timeout.unref?.();
         try {
-          return sendJson(res, 200, { ok: true, ...await sessionService.invokeContribution(resolveSessionId(body.sessionId), body) });
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeContribution(resolveSessionId(body.sessionId), body, controller.signal) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status
+          const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status
             : message === "key is required" || message.includes("returned no") || message.includes("returned unknown panel") || message === "Contribution is not invokable" ? 400
             : message.includes("not found") ? 404
             : 500;
           return sendJson(res, status, { ok: false, error: message });
+        } finally {
+          clearTimeout(timeout);
+          req.off("aborted", abort);
         }
       }
 
@@ -885,6 +943,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
         const target = await sessionService.require(requestedSessionId);
         return sendJson(res, 200, { ok: true, messages: decorateMessages(await sessionService.messages(target.sessionId), target.sessionFile) });
+      }
+
+      if (method === "GET" && url.pathname === "/api/session/reference") {
+        const sessionId = url.searchParams.get("sessionId")?.trim() || "";
+        const entryId = url.searchParams.get("entryId")?.trim() || "";
+        if (!sessionId || !entryId) return sendJson(res, 400, { ok: false, error: "sessionId and entryId are required" });
+        return sendJson(res, 200, { ok: true, ...await sessionService.readSession({ sessionId, entryId }, 1) });
       }
 
       if (method === "GET" && url.pathname === "/api/sessions") {
@@ -1151,6 +1216,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
         const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; origin?: unknown };
         const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined);
+        extensionHttp.recordCreatedSession(req, baseState.sessionId);
         const state = await decorateServiceState(baseState);
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
         const origin = body.origin && typeof body.origin === "object" ? body.origin as { sessionId?: unknown; kind?: unknown } : undefined;
@@ -1213,7 +1279,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionServiceError ? error.status : 500;
+    const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));
@@ -1290,6 +1356,7 @@ if (isDev) {
 
 startEventLoopTelemetry();
 
+extensionHttpServer = server;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);

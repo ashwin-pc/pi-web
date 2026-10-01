@@ -88,6 +88,32 @@ test("session details panel shows workspace, tool surface, context assembly, and
   await expect(page.locator("#gitPanel")).toBeVisible();
 });
 
+test("does not refresh Git status while session details are closed", async ({ page }) => {
+  let gitStatusRequests = 0;
+  await page.route("**/api/git/status**", (route) => {
+    gitStatusRequests += 1;
+    return route.fulfill({ json: { ok: true, isRepo: false } });
+  });
+
+  await page.goto("/");
+  await expect(page.locator("#sessionInfoPanel")).toBeHidden();
+
+  for (let index = 0; index < 8; index += 1) {
+    await page.request.post("/api/mock/event", { data: {
+      type: "web_contribution_updated",
+      sessionId: "mock-current",
+      key: `stream-update-${index}`,
+    } });
+  }
+  await page.waitForTimeout(100);
+  expect(gitStatusRequests).toBe(0);
+
+  await page.locator(".actionLauncherToggle").click();
+  await page.getByRole("menuitem", { name: "Session details" }).click();
+  await expect(page.locator("#sessionInfoPanel")).toBeVisible();
+  await expect.poll(() => gitStatusRequests).toBe(1);
+});
+
 test("session details panel stays within a narrow viewport", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 640 });
   await page.goto("/");

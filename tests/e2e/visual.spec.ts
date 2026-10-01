@@ -1,44 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { ensurePreviewArtifact } from "./helpers/artifacts.js";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 const visualArtifactRoot = ".pi/web/artifacts";
-const previewHtml = `<!doctype html><html><body>
-<h1>HTML artifact</h1>
-<p id="static">Rendered in a sandboxed iframe.</p>
-<p id="script-status">script did not run</p>
-<script>
-  const statuses = [];
-  document.getElementById("script-status").textContent = "script ran";
-  try {
-    parent.document.body.dataset.artifactAccess = "unexpected";
-    statuses.push("parent accessible");
-  } catch (error) {
-    statuses.push("parent blocked");
-  }
-  try {
-    localStorage.getItem("pi-web-token");
-    statuses.push("localStorage accessible");
-  } catch (error) {
-    statuses.push("localStorage blocked");
-  }
-  try {
-    statuses.push(document.cookie ? "cookies visible" : "cookies empty");
-  } catch (error) {
-    statuses.push("cookies blocked");
-  }
-  const list = document.createElement("ul");
-  list.id = "sandbox-status";
-  for (const status of statuses) {
-    const item = document.createElement("li");
-    item.textContent = status;
-    list.append(item);
-  }
-  document.body.append(list);
-</script>
-</body></html>`;
+
 
 async function sendPrompt(page: import("@playwright/test").Page, prompt: string) {
   await page.locator("#prompt").fill(prompt);
@@ -398,7 +366,7 @@ test.beforeEach(async ({ page }) => {
   const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
   await mkdir(artifactDir, { recursive: true });
   await writeFile(join(artifactDir, "e2e-test.jpg"), await readFile(join(process.cwd(), "tests", "fixtures", "showcase-artifact.jpg")));
-  await writeFile(join(artifactDir, "preview.html"), previewHtml);
+  await ensurePreviewArtifact();
   await page.addStyleTag({
     content: `
       *, *::before, *::after {
@@ -524,7 +492,7 @@ test.describe("visual regression", () => {
   test("focused completion notifications", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "Preferences");
     await page.locator("#settingsNavNotifications").click();
     await expect(page.locator("#settingRunNotificationsCheckbox")).toBeVisible();
     await expect(page).toHaveScreenshot(`capability-notifications-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
@@ -539,8 +507,9 @@ test.describe("visual regression", () => {
       json: { id: "visual-grant", secret: "single-use-visual-grant", expiresAt: Date.now() + 120_000, url: "https://demo.pi-web.dev/api/auth/device?grant=single-use-visual-grant" },
     }));
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
+    await page.getByRole("button", { name: "＋ Connect a device", exact: true }).click();
     await page.getByRole("button", { name: "Create add-device link" }).click();
     await expect(page.getByLabel("Add-device link")).toHaveValue(/single-use-visual-grant/);
     await expect(page.getByRole("img", { name: "Add device QR code" })).toBeVisible();
@@ -806,7 +775,8 @@ test.describe("visual regression", () => {
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 1000 });
 
     await page.goto("/");
-    await openSessionDrawerFooterAction(page, "System info");
+    await openSessionDrawerFooterAction(page, "System");
+    if (!await page.locator("#systemInfoPanel").isVisible()) await page.locator("#settingsNavOverview").click();
     await expect(page.locator("#systemInfoPanel")).toBeVisible();
     await expect(page.locator("#systemInfoPanel").getByRole("heading", { name: "Host machine" })).toBeVisible();
 

@@ -244,6 +244,8 @@ export interface SessionService {
   stats(sessionId: string): Promise<{ sessionId: string; stats: SessionStatsDto }>;
   tree(sessionId: string): Promise<ConversationTreeDto>;
   messages(sessionId: string): Promise<MessageDto[]>;
+  /** Read bounded saved text without opening or mutating a session runtime. */
+  readSession(reference: import("../shared/sessionReference.js").SessionReference, tail: number): Promise<import("./referenceTools.js").SessionReadResult>;
   commands(sessionId: string): Promise<SlashCommandDto[]>;
   models(sessionId: string): Promise<ModelsResultDto>;
   setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string): Promise<BaseSessionStateDto>;

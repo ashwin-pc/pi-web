@@ -11,6 +11,11 @@ const skipBuild = process.argv.includes("--skip-build");
 // retry-trace contention. CI can still opt into shards when it has more capacity.
 const e2eShards = Math.max(1, Number(process.env.PI_WEB_E2E_SHARDS || 1));
 const e2eConcurrency = Math.max(1, Number(process.env.PI_WEB_E2E_CONCURRENCY || 4));
+// Independent worktrees can run the whole matrix without sharing server ports.
+const portOffset = Number(process.env.PI_WEB_E2E_PORT_OFFSET || 0);
+if (!Number.isInteger(portOffset) || portOffset < 0 || 10_776 + portOffset + (e2eShards - 1) * 10 > 65_535) {
+  throw new Error("PI_WEB_E2E_PORT_OFFSET must keep all E2E ports between 1024 and 65535");
+}
 
 const e2eProjects = [
   { name: "mobile", basePort: 9876 },
@@ -26,7 +31,7 @@ const e2eTasks = e2eProjects.flatMap((project) =>
       name: project.name === "auth" || e2eShards === 1 ? `e2e:${project.name}` : `e2e:${project.name}:${shard}/${e2eShards}`,
       command: bin("playwright"),
       args: ["test", `--project=${project.name}`, ...(project.name === "auth" ? [] : [`--shard=${shard}/${e2eShards}`])],
-      env: { PLAYWRIGHT_PORT: String(project.basePort + index * 10), PI_WEB_E2E_AUTH: project.name === "auth" ? "1" : "0" },
+      env: { PLAYWRIGHT_PORT: String(project.basePort + portOffset + index * 10), PI_WEB_E2E_AUTH: project.name === "auth" ? "1" : "0" },
       kind: "e2e",
     };
   }),

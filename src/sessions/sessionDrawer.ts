@@ -6,11 +6,13 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { panelOverlayModeQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import { normalizeSessionUiState, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, shouldMigrateLocalUiState, writeActiveSessionIdToUrl } from "../app/types.js";
-import { runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type WaitingInfo } from "./lineage.js";
+import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, shouldMigrateLocalUiState, writeActiveSessionIdToUrl } from "../app/types.js";
+import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
 import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
+import { animateReorderLayout, edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
+import { openFolderPicker as showFolderPicker, type FolderListing } from "../files/folderPicker.js";
 
 export async function fetchSessionList(url: string, headers: HeadersInit, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -39,6 +41,7 @@ export type SessionsController = {
   applySessionUiState: (value: unknown) => void;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
+  activeWorkersFor: (sessionId: string) => ActiveWorker[];
   openSessionTab: (sessionId: string, cwd: string) => Promise<void>;
   openSessionById: (sessionId: string) => Promise<void>;
 };
@@ -168,9 +171,10 @@ export function createSessions(options: {
   refreshSessionTitle: () => Promise<void>;
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
-  /** Called whenever derived per-session state (e.g. waiting-on-spawned) may have changed. */
+  /** Called whenever derived per-session state (e.g. waiting-on-spawned/active workers) may have changed. */
   onDerivedSessionStateChanged?: () => void;
 }): SessionsController {
+  const initialSessionDeepLink = new URLSearchParams(window.location.search).get("sessionId")?.trim();
   const {
     state,
     elements,
@@ -185,6 +189,7 @@ export function createSessions(options: {
     clearMessages,
     addMessage,
   } = options;
+  const onDerivedSessionStateChanged = options.onDerivedSessionStateChanged;
 
   let cachedSessions: SessionInfo[] = [];
   const knownSessionNames = new Map<string, string>();
@@ -212,6 +217,7 @@ export function createSessions(options: {
   let transcriptLoading = true;
   let transcriptLoadGeneration = 0;
   let lastReplayedGeneration = -1;
+  const newChatAnimationPlaybackRate = 1.2;
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let sessionListRenderFrame: number | undefined;
@@ -285,6 +291,7 @@ export function createSessions(options: {
     item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: noteForSession(sessionId), unread: Boolean(unreadStateForSession(sessionId)) }; },
     moveToLane: (sessionId, lane) => moveToLane(sessionId, lane, { cwd: cachedSessions.find((entry) => entry.id === sessionId)?.cwd || laneEntry(sessionId)?.cwd || state.currentCwd }),
     setBucket: (sessionId, color) => setSessionMarker(sessionId, color),
+    bucketColors: () => bucketColors().map((color) => ({ id: color.id, label: markerColorLabel(color.id) })),
     editNote: editSessionNote,
     removeFromLanes,
     openSession: (sessionId) => { void openSessionById(sessionId); },
@@ -340,6 +347,7 @@ export function createSessions(options: {
 
     video.classList.add("resetting");
     video.pause();
+    video.playbackRate = newChatAnimationPlaybackRate;
     video.currentTime = 0;
     if (video.seeking) {
       await new Promise<void>((resolve) => {
@@ -377,102 +385,31 @@ export function createSessions(options: {
     refreshSessionTitle();
   }
 
-  async function openFolderPicker(startPath: string) {
+  function openFolderPicker(startPath: string) {
     blurActiveEditableOnMobile();
-    const backdrop = document.createElement("div");
-    backdrop.className = "folderPickerBackdrop";
-    const modal = document.createElement("div");
-    modal.className = "folderPicker";
-    const title = document.createElement("h2");
-    title.textContent = "Select working directory";
-    const input = document.createElement("input");
-    input.className = "folderPickerInput";
-    input.value = startPath;
-    const list = document.createElement("div");
-    list.className = "folderPickerList";
-    const error = document.createElement("div");
-    error.className = "folderPickerError";
-    const actions = document.createElement("div");
-    actions.className = "folderPickerActions";
-    const create = document.createElement("button");
-    create.type = "button";
-    create.textContent = "New folder";
-    const cancel = document.createElement("button");
-    cancel.type = "button";
-    cancel.textContent = "Cancel";
-    const select = document.createElement("button");
-    select.type = "button";
-    select.className = "primaryAction";
-    select.textContent = "Select folder";
-    actions.append(create, cancel, select);
-    modal.append(title, input, list, error, actions);
-    backdrop.append(modal);
-    document.body.append(backdrop);
-
-    async function load(path: string) {
-      error.textContent = "";
-      list.textContent = "Loading…";
-      const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}`, { headers: api.headers() });
-      const data = await res.json();
-      if (!res.ok || data.ok === false) throw new Error(data.error || "Could not list directory");
-      input.value = data.path;
-      list.textContent = "";
-      const up = document.createElement("button");
-      up.type = "button";
-      up.className = "folderPickerRow";
-      up.textContent = "..";
-      up.addEventListener("click", () => load(data.parent).catch((e) => { error.textContent = e.message; }));
-      list.append(up);
-      for (const dir of data.dirs || []) {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "folderPickerRow";
-        row.textContent = dir.name;
-        row.addEventListener("click", () => load(dir.path).catch((e) => { error.textContent = e.message; }));
-        list.append(row);
-      }
-    }
-
-    create.addEventListener("click", async () => {
-      const name = window.prompt("New folder name");
-      if (name === null) return;
-      try {
-        create.disabled = true;
-        error.textContent = "";
-        const res = await fetch("/api/fs/dirs", {
-          method: "POST",
-          headers: api.headers(),
-          body: JSON.stringify({ parent: input.value, name }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || data.ok === false) throw new Error(data.error || "Could not create folder");
-        input.value = data.path;
-        await load(data.path);
-      } catch (e) {
-        error.textContent = e instanceof Error ? e.message : String(e);
-      } finally {
-        create.disabled = false;
-      }
+    showFolderPicker({
+      startPath,
+      getBookmarks: () => state.favoriteFolders,
+      setBookmarks: (favoriteFolders) => {
+        state.favoriteFolders = favoriteFolders;
+        persistSessionUiState({ favoriteFolders });
+      },
+      api: {
+        list: async (path, signal): Promise<FolderListing> => {
+          const res = await fetch(`/api/fs/dirs?path=${encodeURIComponent(path)}`, { headers: api.headers(), signal });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || "Could not list directory");
+          return { path: data.path, parent: data.parent, dirs: Array.isArray(data.dirs) ? data.dirs : [] };
+        },
+        create: async (parent, name) => {
+          const res = await fetch("/api/fs/dirs", { method: "POST", headers: api.headers(), body: JSON.stringify({ parent, name }) });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || data.ok === false) throw new Error(data.error || "Could not create folder");
+          return data.path;
+        },
+        select: selectSessionCwd,
+      },
     });
-    cancel.addEventListener("click", () => backdrop.remove());
-    backdrop.addEventListener("click", (event) => { if (event.target === backdrop) backdrop.remove(); });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") load(input.value).catch((e) => { error.textContent = e.message; });
-    });
-    select.addEventListener("click", async () => {
-      try {
-        select.disabled = true;
-        await selectSessionCwd(input.value);
-        backdrop.remove();
-      } catch (e) {
-        error.textContent = e instanceof Error ? e.message : String(e);
-        select.disabled = false;
-      }
-    });
-    load(startPath).catch((e) => { error.textContent = e.message; list.textContent = ""; });
-    if (!("ontouchstart" in window) && navigator.maxTouchPoints === 0) {
-      input.focus();
-    }
   }
 
   async function startNewSession(cwd?: string) {
@@ -631,6 +568,7 @@ export function createSessions(options: {
     if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
     renderSessionBar();
     updateSessionButtonUnread();
+    options.onDerivedSessionStateChanged?.();
   }
 
   function updateSessionRuntime(sessionId: string, runtime: SessionInfo["runtime"]) {
@@ -638,6 +576,7 @@ export function createSessions(options: {
     cachedSessions = cachedSessions.map((session) => session.id === sessionId ? { ...session, runtime } : session);
     if (!patchRenderedRuntimeBranch(sessionId)) scheduleSessionListRender();
     renderSessionBar();
+    options.onDerivedSessionStateChanged?.();
   }
 
   // ── Markers and pinning ────────────────────────────────────────────────────
@@ -657,12 +596,14 @@ export function createSessions(options: {
     state.sessionNotes = next.sessionNotes;
     state.pinnedSessions = next.lanes.filter((entry) => entry.lane === "pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) }));
     state.pinnedFolders = next.pinnedFolders;
+    state.favoriteFolders = next.favoriteFolders;
     state.sessionMarkers = next.sessionMarkers;
     state.sessionUnreadStates = next.sessionUnreadStates;
     state.sessionOrigins = next.sessionOrigins;
     syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
     state.bucketLabels = next.bucketLabels;
+    state.bucketOrder = next.bucketOrder;
     allowedMarkerColors.clear();
     for (const color of next.allowedMarkerColors) allowedMarkerColors.add(color);
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
@@ -671,12 +612,27 @@ export function createSessions(options: {
     updateSessionButtonUnread();
     updateCurrentSessionPinButton();
     renderCurrentSessionBucketButton();
-    if (state.pinnedSessions.length > 0 && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
+    options.onDerivedSessionStateChanged?.();
+    // Durable worker origins need an initial runtime snapshot too, even when
+    // no sessions are pinned and the drawer has never been opened.
+    if ((state.pinnedSessions.length > 0 || spawnOrigins().length > 0) && cachedSessions.length === 0) refreshSessions().catch(() => undefined);
     if (!restoredPersistedLaneFocus) {
       restoredPersistedLaneFocus = true;
-      window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
+      // An explicit startup link takes priority over remembered lane focus.
+      if (!initialSessionDeepLink) {
+        window.setTimeout(() => { void switchFocusedLane(focusedLane); }, 0);
+      } else {
+        const initialLane = laneOf(initialSessionDeepLink);
+        if (initialLane) {
+          focusedLane = initialLane;
+          focusedSessionByLane[initialLane] = initialSessionDeepLink;
+          saveLaneFocus();
+          renderSessionBar();
+        }
+      }
     }
   }
+
 
   function applySessionUiState(value: unknown) {
     // Realtime snapshots emitted before our PATCH response can contain the old
@@ -745,12 +701,14 @@ export function createSessions(options: {
       lanes: state.lanes,
       sessionNotes: state.sessionNotes,
       pinnedFolders: state.pinnedFolders,
+      favoriteFolders: state.favoriteFolders,
       sessionMarkers: state.sessionMarkers,
       sessionUnreadStates: state.sessionUnreadStates,
       sessionOrigins: state.sessionOrigins,
       selectedMarkerColor: state.selectedMarkerColor,
       allowedMarkerColors: Array.from(allowedMarkerColors),
       bucketLabels: state.bucketLabels,
+      bucketOrder: state.bucketOrder,
     });
     const snapshot = await fetchSessionUiStateSnapshot();
     if (!snapshot) return;
@@ -801,22 +759,31 @@ export function createSessions(options: {
    * Derived "waiting" state: session is idle but sessions it spawned are still
    * running. Computed purely from origins + live runtimes — nothing to reset.
    */
+  function describeWorker(childId: string) {
+    const cached = cachedSessions.find((item) => item.id === childId);
+    const cachedName = (cached ? sessionTitle(cached) : "").replace(/^[⑂⤑]\s*/, "");
+    return {
+      name: cachedName || knownSessionNames.get(childId) || "",
+      cwd: cached?.cwd,
+    };
+  }
+
   function waitingInfoFor(sessionId: string): WaitingInfo | undefined {
     const self = cachedSessions.find((item) => item.id === sessionId);
-    return waitingInfoFrom(sessionId, spawnOrigins(), {
+    return waitingInfoFrom(sessionId, state.settlementDependencies[sessionId] || [], {
       selfRunning: isSessionRunning(sessionId, Boolean(self?.runtime?.isRunning)),
       isRunning: (childId) => {
-        const cached = cachedSessions.find((item) => item.id === childId);
-        return isSessionRunning(childId, Boolean(cached?.runtime?.isRunning));
+        const runtime = runtimeForSession(childId);
+        return Boolean(runtime?.isRunning || Number(runtime?.pendingMessageCount || 0) > 0);
       },
-      describe: (childId) => {
-        const cached = cachedSessions.find((item) => item.id === childId);
-        const cachedName = (cached ? sessionTitle(cached) : "").replace(/^[⑂⤑]\s*/, "");
-        return {
-          name: cachedName || knownSessionNames.get(childId) || "",
-          cwd: cached?.cwd,
-        };
-      },
+      describe: describeWorker,
+    });
+  }
+
+  function activeWorkersFor(sessionId: string): ActiveWorker[] {
+    return activeWorkersFrom(sessionId, state.settlementDependencies[sessionId] || [], {
+      runtime: runtimeForSession,
+      describe: describeWorker,
     });
   }
 
@@ -924,8 +891,12 @@ export function createSessions(options: {
     return sessionMarkerColors.find((color) => color.id === colorId);
   }
 
+  function bucketColors() {
+    return orderedSessionMarkerColors(state.bucketOrder);
+  }
+
   function selectedMarkerColor() {
-    return colorForMarker(state.selectedMarkerColor) || sessionMarkerColors[0];
+    return colorForMarker(state.selectedMarkerColor) || bucketColors()[0];
   }
 
   function markerColorLabel(color: SessionMarkerColorId) {
@@ -933,7 +904,7 @@ export function createSessions(options: {
   }
 
   function sortedAllowedMarkerColors() {
-    return sessionMarkerColors
+    return bucketColors()
       .map((color) => color.id)
       .filter((color) => allowedMarkerColors.has(color));
   }
@@ -1053,7 +1024,7 @@ export function createSessions(options: {
     });
     menu.append(clearButton);
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = marker?.color === color.id;
       const item = document.createElement("button");
       item.type = "button";
@@ -1082,7 +1053,7 @@ export function createSessions(options: {
       closeOpenCurrentSessionBucketMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenCurrentSessionBucketMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenCurrentSessionBucketMenu(); }
     };
     const onResize = () => closeOpenCurrentSessionBucketMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
@@ -1118,7 +1089,7 @@ export function createSessions(options: {
       closeOpenSessionActionsMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenSessionActionsMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenSessionActionsMenu(); }
     };
     const onResize = () => closeOpenSessionActionsMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
@@ -1234,7 +1205,7 @@ export function createSessions(options: {
       updateMenuState();
     });
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const button = document.createElement("button");
       button.type = "button";
       button.className = `sessionColorFilterMenuItem marker-${color.id}`;
@@ -1267,7 +1238,7 @@ export function createSessions(options: {
       closeOpenSessionColorFilterMenu();
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeOpenSessionColorFilterMenu();
+      if (event.key === "Escape" && !event.defaultPrevented) { event.preventDefault(); closeOpenSessionColorFilterMenu(); }
     };
     const onResize = () => closeOpenSessionColorFilterMenu();
     const installPointerListener = window.setTimeout(() => document.addEventListener("pointerdown", onPointerDown), 0);
@@ -1366,10 +1337,12 @@ export function createSessions(options: {
       markCachedCurrentSession(sessionId, cwd);
       if (targetLane) { focusedSessionByLane[targetLane] = sessionId; saveLaneFocus(); }
       markSessionReadBestEffort(sessionId);
+      options.onDerivedSessionStateChanged?.();
     } catch (error) {
       if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
       focusedLane = previousFocusedLane;
       renderSessionBar();
+      options.onDerivedSessionStateChanged?.();
       addMessage("system", error instanceof Error ? error.message : String(error), "error");
     }
   }
@@ -1486,10 +1459,11 @@ export function createSessions(options: {
     const bar = elements.sessionBarEl;
     const holdDelayMs = 300;
     const touchMoveTolerancePx = 10;
-    const mouseLiftDistancePx = 6;
+    const liftDistancePx = 6;
     const edgeZonePx = 48;
     const maxScrollPerFrame = 14;
-    const settleDurationMs = 220;
+    const reducedMotion = prefersReducedReorderMotion();
+    const settleDurationMs = reducedMotion ? 0 : 180;
 
     tab.addEventListener("pointerdown", (downEvent) => {
       if (sessionBarGestureInFlight || !downEvent.isPrimary) return;
@@ -1501,11 +1475,11 @@ export function createSessions(options: {
       const startY = downEvent.clientY;
       let lastClientX = startX;
       let lifted = false;
-      let scrolling = false;
       let longPressReady = false;
       let pressActive = true;
       let holdTimer: number | undefined;
       let autoScrollFrame: number | undefined;
+      let dragFrame: number | undefined;
       let tabs: HTMLElement[] = [];
       let rects: DOMRect[] = [];
       let others: Array<{ tab: HTMLElement; domIndex: number }> = [];
@@ -1519,10 +1493,12 @@ export function createSessions(options: {
       let barRect: DOMRect | undefined;
 
       sessionBarGestureInFlight = true;
+      if (downEvent.pointerType !== "mouse") tab.classList.add("touch-gesture-active");
 
       const clearListeners = () => {
         if (holdTimer !== undefined) window.clearTimeout(holdTimer);
         if (autoScrollFrame !== undefined) cancelAnimationFrame(autoScrollFrame);
+        if (dragFrame !== undefined) cancelAnimationFrame(dragFrame);
         window.removeEventListener("pointermove", onPointerMove);
         window.removeEventListener("pointerup", onPointerUp);
         window.removeEventListener("pointercancel", onPointerCancel);
@@ -1532,13 +1508,14 @@ export function createSessions(options: {
       const finishPress = (delay = 0) => {
         if (!pressActive) return;
         pressActive = false;
-        tab.classList.remove("reorder-ready");
+        tab.classList.remove("reorder-ready", "touch-gesture-active");
         clearListeners();
         if (delay > 0) window.setTimeout(() => flushQueuedSessionBarRender(), delay);
         else flushQueuedSessionBarRender();
       };
 
       const updateDrag = () => {
+        dragFrame = undefined;
         if (!lifted) return;
         const previousIndex = newIndex;
         const rawDx = (lastClientX - startX) + (bar.scrollLeft - scrollLeft0);
@@ -1546,7 +1523,12 @@ export function createSessions(options: {
         const center = rects[originalIndex].left + draggedWidth / 2 + dx;
         if (dx <= minDx + 0.5) newIndex = 0;
         else if (dx >= maxDx - 0.5) newIndex = tabs.length - 1;
-        else newIndex = others.filter((item) => rects[item.domIndex].left + rects[item.domIndex].width / 2 < center).length;
+        else {
+          // Resolve an exact center-to-center drop in the drag direction. Without
+          // the nudge, moving right stopped on the target's center while moving
+          // left reordered, making a natural tab-on-tab drop asymmetric.
+          newIndex = insertionIndex(rects, center + Math.sign(rawDx) * 0.5, "x", originalIndex);
+        }
         if (newIndex !== previousIndex) navigator.vibrate?.(5);
 
         tab.style.transform = `translateX(${dx}px) scale(1.06)`;
@@ -1559,19 +1541,18 @@ export function createSessions(options: {
         }
       };
 
+      const scheduleDragUpdate = () => {
+        if (dragFrame === undefined) dragFrame = requestAnimationFrame(updateDrag);
+      };
+
       const runAutoScroll = () => {
         if (!lifted || !barRect) return;
-        let velocity = 0;
-        if (lastClientX < barRect.left + edgeZonePx) {
-          velocity = -maxScrollPerFrame * Math.min(1, (barRect.left + edgeZonePx - lastClientX) / edgeZonePx);
-        } else if (lastClientX > barRect.right - edgeZonePx) {
-          velocity = maxScrollPerFrame * Math.min(1, (lastClientX - (barRect.right - edgeZonePx)) / edgeZonePx);
-        }
+        const velocity = edgeScrollVelocity(lastClientX, barRect.left, barRect.right, edgeZonePx, maxScrollPerFrame);
         if (velocity !== 0) {
           const nextScrollLeft = Math.min(maxScrollLeft, Math.max(0, bar.scrollLeft + velocity));
           if (nextScrollLeft !== bar.scrollLeft) {
             bar.scrollLeft = nextScrollLeft;
-            updateDrag();
+            scheduleDragUpdate();
           }
         }
         autoScrollFrame = requestAnimationFrame(runAutoScroll);
@@ -1606,7 +1587,7 @@ export function createSessions(options: {
         bar.classList.add("reordering");
         tab.classList.add("dragging");
         navigator.vibrate?.(10);
-        updateDrag();
+        scheduleDragUpdate();
         if (maxScrollLeft > 0) autoScrollFrame = requestAnimationFrame(runAutoScroll);
       };
 
@@ -1616,7 +1597,7 @@ export function createSessions(options: {
         clearListeners();
         suppressTabClickUntil = performance.now() + 400;
         bar.classList.remove("reordering");
-        tab.classList.remove("reorder-ready", "dragging");
+        tab.classList.remove("reorder-ready", "dragging", "touch-gesture-active");
         tab.classList.add("settling");
 
         let targetOffset = 0;
@@ -1625,6 +1606,7 @@ export function createSessions(options: {
         } else if (commit && newIndex < originalIndex) {
           for (let index = newIndex; index < originalIndex; index += 1) targetOffset -= rects[index].width;
         }
+        if (commit && newIndex !== originalIndex) targetOffset = rects[newIndex].left - rects[originalIndex].left;
         tab.style.transform = `translateX(${targetOffset}px) scale(1)`;
         if (!commit) {
           for (const item of others) item.tab.style.transform = "";
@@ -1646,6 +1628,7 @@ export function createSessions(options: {
             syncPinnedProjection();
             persistSessionUiState({ lanes: state.lanes });
           }
+          tab.classList.remove("settling");
           flushQueuedSessionBarRender(true);
         }, settleDurationMs);
       };
@@ -1655,45 +1638,38 @@ export function createSessions(options: {
         lastClientX = event.clientX;
         const distance = Math.hypot(event.clientX - startX, event.clientY - startY);
         if (!lifted) {
-          if (downEvent.pointerType === "mouse" && distance > mouseLiftDistancePx) {
+          if (downEvent.pointerType === "mouse" && distance > liftDistancePx) {
             lift();
           } else if (downEvent.pointerType !== "mouse") {
             const dx = event.clientX - startX;
             const dy = event.clientY - startY;
-            if (longPressReady && distance > mouseLiftDistancePx) {
+            if (!longPressReady && distance >= touchMoveTolerancePx) {
+              // Movement before the hold belongs to the browser. Do not capture
+              // it: the overflowing bar must retain native horizontal panning
+              // and inertia, and this gesture must not select or reorder a tab.
+              finishPress();
+            } else if (longPressReady && distance > liftDistancePx) {
               lift();
-            } else if (scrolling) {
-              event.preventDefault();
-              bar.scrollLeft = scrollLeft0 - dx;
-            } else if (distance >= touchMoveTolerancePx) {
-              if (Math.abs(dx) > Math.abs(dy)) {
-                scrolling = true;
-                scrollLeft0 = bar.scrollLeft;
-                if (holdTimer !== undefined) window.clearTimeout(holdTimer);
-                suppressTabClickUntil = performance.now() + 400;
-                event.preventDefault();
-              } else {
-                finishPress();
-              }
             }
           }
         }
         if (lifted) {
           event.preventDefault();
-          updateDrag();
+          scheduleDragUpdate();
         }
       }
 
       function onPointerUp(event: PointerEvent) {
         if (!pressActive || event.pointerId !== pointerId) return;
-        lastClientX = event.clientX;
+        // Keep the last move coordinate. Chromium's trusted touchEnd can expose
+        // clientX=0 after its contact list becomes empty, which otherwise snaps
+        // a successfully lifted tab back to the first slot at drop time.
         if (lifted) {
           updateDrag();
           settle(true);
         } else if (longPressReady) {
           suppressTabClickUntil = performance.now() + 400;
-          finishPress();
-        } else if (scrolling) {
+          sessionInspector.openAt(tab, tab.dataset.sessionId!, "tab");
           finishPress();
         } else {
           // Keep the old tab alive until the synthetic click following pointerup.
@@ -1724,7 +1700,10 @@ export function createSessions(options: {
     });
 
     tab.addEventListener("touchmove", (event) => {
-      if (tab.classList.contains("dragging")) event.preventDefault();
+      // Once a stationary hold has armed, claim subsequent movement before the
+      // browser turns it into a native pan/pointercancel. Before that point this
+      // listener deliberately does nothing so the strip scrolls normally.
+      if (tab.classList.contains("reorder-ready") || tab.classList.contains("dragging")) event.preventDefault();
     }, { passive: false });
     tab.addEventListener("contextmenu", (event) => {
       if (sessionBarGestureInFlight || tab.classList.contains("dragging")) event.preventDefault();
@@ -1757,7 +1736,7 @@ export function createSessions(options: {
 
     const filters = document.createElement("div"); filters.className = "sessionLaneDrawerBucketFilters"; filters.setAttribute("role", "group"); filters.setAttribute("aria-label", "Filter lanes by bucket");
     const allBuckets = document.createElement("button"); allBuckets.type = "button"; allBuckets.className = `sessionLaneDrawerBucketFilterAll${laneDrawerBucketFilter ? "" : " selected"}`; allBuckets.textContent = "All"; allBuckets.setAttribute("aria-pressed", String(!laneDrawerBucketFilter)); allBuckets.addEventListener("click", () => { laneDrawerBucketFilter = undefined; openLaneDrawer(); }); filters.append(allBuckets);
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = laneDrawerBucketFilter === color.id;
       const button = document.createElement("button"); button.type = "button"; button.className = `sessionLaneDrawerBucketFilter marker-${color.id}${selected ? " selected" : ""}`;
       const label = markerColorLabel(color.id); button.title = label; button.setAttribute("aria-label", `Show ${label} bucket`); button.setAttribute("aria-pressed", String(selected));
@@ -1797,11 +1776,29 @@ export function createSessions(options: {
         open.addEventListener("click", () => { if (performance.now() < suppressOpenUntil) return; closeLaneDrawer?.(); void openSessionTab(entry.sessionId, live?.cwd || entry.cwd || state.currentCwd); });
         card.append(open);
         const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter); dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
-        let dragPointer: number | undefined; let dragStartY = 0; let dragging = false;
+        let dragPointer: number | undefined; let dragStartY = 0; let dragClientY = 0; let dragScrollTop = 0; let dragging = false; let originLane: SessionLaneId = lane;
+        let dragRect: DOMRect | undefined; let destinationSlot: HTMLElement | undefined; let dragFrame: number | undefined;
+        const reducedReorderMotion = prefersReducedReorderMotion();
+        const clearDragFrame = () => { if (dragFrame !== undefined) cancelAnimationFrame(dragFrame); dragFrame = undefined; };
+        const clearFloatingStyles = () => {
+          Object.assign(card.style, { position: "", left: "", top: "", width: "", height: "", margin: "", transform: "" });
+        };
         const finishDrag = () => {
           if (dragPointer === undefined) return;
-          if (dragging) {
-            suppressOpenUntil = performance.now() + 350; card.classList.remove("dragging");
+          clearDragFrame();
+          if (dragging && destinationSlot) {
+            suppressOpenUntil = performance.now() + 350;
+            const painted = card.getBoundingClientRect();
+            destinationSlot.replaceWith(card); destinationSlot = undefined;
+            clearFloatingStyles();
+            if (!reducedReorderMotion) {
+              const natural = card.getBoundingClientRect();
+              card.style.transition = "none";
+              card.style.transform = `translate(${painted.left - natural.left}px, ${painted.top - natural.top}px)`;
+              requestAnimationFrame(() => { card.style.transition = ""; card.style.transform = ""; });
+            }
+            card.classList.remove("dragging"); card.classList.add("settling");
+            window.setTimeout(() => card.classList.remove("settling"), reducedReorderMotion ? 0 : 180);
             const byId = new Map(state.lanes.map((item) => [item.sessionId, item]));
             const orderedIds = (["pinned", "parked", "bookmarks"] as SessionLaneId[]).flatMap((laneId) =>
               Array.from(drawer.querySelectorAll<HTMLElement>(`.sessionLaneDrawerSection[data-lane="${laneId}"] .sessionLaneDrawerCard`)).map((node) => node.dataset.sessionId!).filter(Boolean));
@@ -1821,28 +1818,67 @@ export function createSessions(options: {
             state.lanes = nextLanes; commitLanes();
             if (moved?.lane === "parked" && entry.lane !== "parked" && !noteForSession(entry.sessionId)) requestAnimationFrame(() => promptForParkedNote(entry.sessionId));
           }
-          dragPointer = undefined; dragging = false;
+          card.classList.remove("reorder-pressed");
+          dragPointer = undefined; dragging = false; dragRect = undefined;
+        };
+        const paintDrag = () => {
+          dragFrame = undefined;
+          if (!dragging || !dragRect || !destinationSlot) return;
+          const bodyRect = body.getBoundingClientRect();
+          if (dragClientY < bodyRect.top + 48) body.scrollTop -= 18;
+          else if (dragClientY > bodyRect.bottom - 48) body.scrollTop += 18;
+          const sections = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerSection"));
+          const targetSection = sections.reduce((target, candidate) => candidate.querySelector<HTMLElement>(".sessionLaneDrawerHeading")!.getBoundingClientRect().top <= dragClientY ? candidate : target, sections[0]);
+          const siblings = Array.from(targetSection.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard"));
+          const before = siblings.find((node) => dragClientY < node.getBoundingClientRect().top + node.offsetHeight / 2);
+          if (destinationSlot.parentElement !== targetSection || destinationSlot.nextElementSibling !== (before || null)) {
+            const cards = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard"));
+            animateReorderLayout(cards, () => targetSection.insertBefore(destinationSlot!, before || null), { exclude: card, reducedMotion: reducedReorderMotion });
+          }
+          card.dataset.lane = targetSection.dataset.lane as SessionLaneId;
+          const scrollDelta = body.scrollTop - dragScrollTop;
+          let translateY = dragClientY - dragStartY + scrollDelta;
+          const scale = reducedReorderMotion ? "" : " scale(1.015)";
+          card.style.transform = `translateY(${translateY}px)${scale}`;
+          translateY += dragRect.top + dragClientY - dragStartY - card.getBoundingClientRect().top;
+          card.style.transform = `translateY(${translateY}px)${scale}`;
         };
         const moveDrag = (event: PointerEvent) => {
           if (dragPointer !== event.pointerId) return;
-          if (!dragging && Math.abs(event.clientY - dragStartY) < 8) return;
-          dragging = true; suppressOpenUntil = performance.now() + 350; card.classList.add("dragging"); event.preventDefault();
-          const bodyRect = body.getBoundingClientRect();
-          if (event.clientY < bodyRect.top + 48) body.scrollTop -= 18;
-          else if (event.clientY > bodyRect.bottom - 48) body.scrollTop += 18;
-          const sections = Array.from(drawer.querySelectorAll<HTMLElement>(".sessionLaneDrawerSection"));
-          const targetSection = sections.find((candidate) => { const rect = candidate.getBoundingClientRect(); return event.clientY >= rect.top && event.clientY <= rect.bottom; })
-            || sections.reduce((closest, candidate) => Math.abs(candidate.getBoundingClientRect().top - event.clientY) < Math.abs(closest.getBoundingClientRect().top - event.clientY) ? candidate : closest);
-          const targetLane = targetSection.dataset.lane as SessionLaneId; card.dataset.lane = targetLane;
-          const siblings = Array.from(targetSection.querySelectorAll<HTMLElement>(".sessionLaneDrawerCard")).filter((node) => node !== card);
-          const before = siblings.find((node) => event.clientY < node.getBoundingClientRect().top + node.offsetHeight / 2);
-          targetSection.insertBefore(card, before || null);
+          dragClientY = event.clientY;
+          if (!dragging && Math.abs(dragClientY - dragStartY) < 8) return;
+          if (!dragging) {
+            dragRect = card.getBoundingClientRect(); dragScrollTop = body.scrollTop; originLane = card.dataset.lane as SessionLaneId || lane;
+            destinationSlot = document.createElement("div"); destinationSlot.className = "sessionLaneDrawerDropSlot"; destinationSlot.style.height = `${dragRect.height}px`;
+            dragging = true; card.after(destinationSlot); backdrop.append(card);
+            Object.assign(card.style, { position: "fixed", left: `${dragRect.left}px`, top: `${dragRect.top}px`, width: `${dragRect.width}px`, height: `${dragRect.height}px`, margin: "0" });
+            const fixedRect = card.getBoundingClientRect();
+            card.style.left = `${dragRect.left + dragRect.left - fixedRect.left}px`; card.style.top = `${dragRect.top + dragRect.top - fixedRect.top}px`;
+            suppressOpenUntil = performance.now() + 350; card.classList.add("dragging"); card.classList.remove("reorder-pressed");
+          }
+          event.preventDefault();
+          if (dragFrame === undefined) dragFrame = requestAnimationFrame(paintDrag);
         };
-        const endDrag = (event: PointerEvent) => { if (dragPointer !== event.pointerId) return; window.removeEventListener("pointermove", moveDrag); window.removeEventListener("pointerup", endDrag); window.removeEventListener("pointercancel", endDrag); finishDrag(); };
-        card.addEventListener("session-inspector-open", () => { window.removeEventListener("pointermove", moveDrag); window.removeEventListener("pointerup", endDrag); window.removeEventListener("pointercancel", endDrag); dragPointer = undefined; dragging = false; card.classList.remove("dragging"); });
+        const removeDragListeners = () => { window.removeEventListener("pointermove", moveDrag); window.removeEventListener("pointerup", endDrag); window.removeEventListener("pointercancel", cancelDrag); };
+        const endDrag = (event: PointerEvent) => { if (dragPointer !== event.pointerId) return; removeDragListeners(); paintDrag(); finishDrag(); };
+        const cancelDrag = (event?: PointerEvent) => {
+          if (event && dragPointer !== event.pointerId) return;
+          removeDragListeners(); clearDragFrame(); destinationSlot?.remove(); destinationSlot = undefined;
+          const originSection = drawer.querySelector<HTMLElement>(`.sessionLaneDrawerSection[data-lane="${originLane}"]`);
+          if (originSection) {
+            const originIds = state.lanes.filter((item) => item.lane === originLane).map((item) => item.sessionId);
+            const originIndex = originIds.indexOf(entry.sessionId);
+            const nextCard = originIds.slice(originIndex + 1).map((id) => originSection.querySelector<HTMLElement>(`.sessionLaneDrawerCard[data-session-id="${CSS.escape(id)}"]`)).find(Boolean) || null;
+            originSection.insertBefore(card, nextCard);
+          }
+          card.dataset.lane = originLane; clearFloatingStyles(); card.classList.remove("dragging", "settling", "reorder-pressed");
+          dragPointer = undefined; dragging = false; dragRect = undefined;
+        };
+        card.addEventListener("session-inspector-open", () => cancelDrag());
         dragHandle.addEventListener("pointerdown", (event) => {
-          dragPointer = event.pointerId; dragStartY = event.clientY;
-          window.addEventListener("pointermove", moveDrag, { passive: false }); window.addEventListener("pointerup", endDrag); window.addEventListener("pointercancel", endDrag);
+          if (dragPointer !== undefined || (event.pointerType === "mouse" && event.button !== 0)) return;
+          dragPointer = event.pointerId; dragStartY = dragClientY = event.clientY; originLane = card.dataset.lane as SessionLaneId || lane; card.classList.add("reorder-pressed");
+          window.addEventListener("pointermove", moveDrag, { passive: false }); window.addEventListener("pointerup", endDrag); window.addEventListener("pointercancel", cancelDrag);
         });
         sessionInspector.attach(card, entry.sessionId, "lane");
         if (live) { const actions = document.createElement("button"); actions.type = "button"; actions.className = "sessionLaneDrawerActions"; actions.textContent = "⋯"; actions.title = "Session actions"; actions.setAttribute("aria-label", actions.title); actions.addEventListener("click", (event) => { event.stopPropagation(); sessionInspector.openAt(actions, entry.sessionId, "lane"); }); card.append(actions); }
@@ -1944,7 +1980,7 @@ export function createSessions(options: {
       tab.dataset.sessionId = sessionId;
       // Give the reorder gesture a clear head start; a stationary hold still
       // opens the Inspector, while hold-and-move reliably becomes a drag.
-      sessionInspector.attach(tab, sessionId, "tab", 650);
+      sessionInspector.attach(tab, sessionId, "tab", 650, options.laned ? "external" : "inspector");
       if (options.laned) attachLaneTabReorder(tab);
       if (isActive) activeTab = tab;
       if (options.running) {
@@ -2155,7 +2191,7 @@ export function createSessions(options: {
     });
     row.append(clear);
 
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = marker?.color === color.id;
       const button = document.createElement("button");
       button.type = "button";
@@ -2317,7 +2353,7 @@ export function createSessions(options: {
     laneFilters.setAttribute("aria-label", "Filter sessions");
     if (sessionColorFilterButton) laneFilters.append(sessionColorFilterButton);
     const bucketFilters = document.createElement("span"); bucketFilters.className = "sessionBucketFilters"; bucketFilters.setAttribute("role", "group"); bucketFilters.setAttribute("aria-label", "Quick bucket selection");
-    for (const color of sessionMarkerColors) {
+    for (const color of bucketColors()) {
       const selected = quickBucketColor === color.id;
       const dot = document.createElement("button"); dot.type = "button"; dot.className = `sessionBucketFilter marker-${color.id}${selected ? " selected" : ""}`;
       dot.title = selected ? `Stop marking ${markerColorLabel(color.id)}` : `Mark multiple sessions ${markerColorLabel(color.id)}`;
@@ -2682,9 +2718,11 @@ export function createSessions(options: {
         rememberSessionCwd(nextCwd);
         markCachedCurrentSession(item.id, nextCwd);
         markSessionReadBestEffort(item.id);
+        onDerivedSessionStateChanged?.();
         if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
       } catch (error) {
         if (switchingSessions && state.currentSessionId === item.id) sessionState.activate(previousSessionId);
+        onDerivedSessionStateChanged?.();
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
         if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
       }
@@ -2729,8 +2767,8 @@ export function createSessions(options: {
     });
     new MutationObserver(updateEmptyCwdChooser).observe(elements.messagesEl, { childList: true });
     elements.emptyCwdButton.addEventListener("click", () => openFolderPicker(state.currentCwd));
-    const headerTitle = elements.sessionDrawer.querySelector(".sessionDrawerHeader h2");
-    if (headerTitle) {
+    const drawerHeader = elements.sessionDrawer.querySelector(".sessionDrawerHeader");
+    if (drawerHeader) {
       const filterWrap = document.createElement("div");
       filterWrap.className = "sessionDrawerFilters";
       sessionSearchInput = document.createElement("input");
@@ -2756,21 +2794,19 @@ export function createSessions(options: {
       sessionColorFilterButton.addEventListener("click", () => openSessionColorFilterMenu(sessionColorFilterButton!));
       renderSessionColorFilterButton();
       filterWrap.append(sessionSearchInput, sessionWorkerCollapseAllButton);
-      headerTitle.replaceWith(filterWrap);
+      drawerHeader.prepend(filterWrap);
     }
 
-    setIcon(elements.sessionDrawerSettingsButton, "settings");
-    elements.sessionDrawerSettingsButton.append(document.createTextNode("Settings"));
-    setIcon(elements.sessionDrawerInfoButton, "info");
-    elements.sessionDrawerInfoButton.append(document.createTextNode("Info"));
-    elements.sessionNewButton.textContent = "+ New session";
+    setIcon(elements.sessionNewButton, "square-pen");
+    setIcon(elements.sessionCloseButton, "x");
     elements.sessionDrawerSettingsButton.addEventListener("click", () => {
       setSessionDrawerOpen(false);
-      elements.settingsButton.click();
+      document.dispatchEvent(new CustomEvent("pi-web-open-settings", { detail: { scope: "preferences" } }));
     });
-    // The system-info panel owns this button's open handler. Closing the drawer
-    // first keeps the transition consistent on both split-pane and mobile layouts.
-    elements.sessionDrawerInfoButton.addEventListener("click", () => setSessionDrawerOpen(false));
+    elements.sessionDrawerInfoButton.addEventListener("click", () => {
+      setSessionDrawerOpen(false);
+      document.dispatchEvent(new CustomEvent("pi-web-open-settings", { detail: { scope: "system" } }));
+    });
 
     sessionPanelHandle = rightPanels?.register({
       id: "sessions",
@@ -2848,6 +2884,7 @@ export function createSessions(options: {
     applySessionUiState,
     markSessionRead,
     waitingInfoFor,
+    activeWorkersFor,
     openSessionTab,
     openSessionById,
     openAdjacentPinnedSession,

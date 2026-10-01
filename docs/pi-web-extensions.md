@@ -91,6 +91,44 @@ ctx.ui.web.update("worker-status");
 
 The typed `setFooter`, `setHeaderAction`, `setArtifactAction`, `setGitTab`, `setPanel`, and `setFabAction` methods remain supported convenience wrappers over this registry.
 
+### Composer audio capture
+
+A `composer-input` / `capture` contribution adds a host-owned microphone control to the composer. The extension stays server-side: pi-web owns `getUserMedia`, `MediaRecorder`, record/stop/cancel controls, authenticated upload, temporary-file cleanup, and applying the returned browser effect. This does **not** allow extension JavaScript in the browser and does not turn audio into a durable message attachment.
+
+```ts
+ctx.ui.web.contribute("acme.dictation", {
+  slot: "composer-input",
+  kind: "capture",
+  title: "Dictate",
+  label: "Dictation",
+  icon: "mic",
+  capture: {
+    media: "audio",
+    maxSeconds: 120,
+    maxBytes: 25_000_000,
+    // Optional. The browser picks the first MediaRecorder-supported value.
+    mimeTypes: ["audio/webm", "audio/ogg"],
+  },
+  async invoke({ capture, signal }) {
+    // capture.path is a validated private temporary file available only during
+    // this invocation. Read/transcribe it before invoke() returns and propagate
+    // signal to subprocesses/network work so Cancel and disconnects stop work.
+    const text = await transcribe(capture.path, { signal });
+    return {
+      effects: [{ type: "insert-composer-text", text, placement: "selection" }],
+    };
+  },
+});
+```
+
+Limits are additive and fail closed: `maxSeconds` defaults to and is clamped to 120; `maxBytes` defaults to and is clamped to 25 MB. When omitted, `mimeTypes` keeps core's default audio policy. When specified, it must be a non-empty array of at most 20 valid `audio/*` MIME strings; entries are normalized by removing parameters, lowercasing, and de-duplicating, while any invalid entry rejects the contribution. A syntactically valid type such as `audio/x-private` can still name a container or codec unavailable in the browser or extension decoder, so extension owners must advertise only formats their complete pipeline supports. Core bounds bytes and the host-reported recording duration; extensions that decode untrusted media must also validate the actual container, codec, and decoded duration before transcription. Each upload is bound to its session, contribution key, and opaque registration revision (replacing a contribution invalidates captures from the previous registration), can be consumed by one invocation only, and is deleted when the invocation finishes (with a five-minute expiry as fallback). On POSIX it lives in a mode-0700 temporary directory as a mode-0600 file; on Windows it inherits the current user's temporary-directory ACL because POSIX mode bits do not define Windows access control. The browser-provided capture path is ignored; the server injects the validated `{ path, mimeType, size, durationMs }` record.
+
+`insert-composer-text` is intentionally browser-scoped and never submits a prompt. `placement` is `selection` (default), `cursor`, or `end`. Core applies it only if the same session, draft revision, and selection are still active; edits, selection changes, session switches, cancellation, page unload, and stale completions leave the current draft untouched.
+
+Independently distributed extensions should check that `ctx.ui.web.capabilities.slots` includes `composer-input`, `kinds` includes `capture`, and `effects` includes `insert-composer-text` before registering this contribution.
+
+The [local dictation example](../examples/pi-web-extensions/dictation/README.md) provides private, on-device transcription with explicit family/runtime selection: Parakeet or Whisper through MLX on Apple Silicon, and Whisper through faster-whisper on macOS, Linux, or Windows CPU. Runtime packages and model IDs are extension-owned and configurable; model weights remain outside the repository in a user-managed path or external cache. Core capture APIs remain model-agnostic.
+
 The [global notepad example](../examples/pi-web-extensions/notepad.ts) demonstrates a rendered panel, explicit FAB launcher, persisted cross-session data, and `update()` invalidation across every live session.
 
 ## Footer API
@@ -240,6 +278,10 @@ The context is `{ name, path, kind }`. The only accepted result field is `html`,
 
 The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. Clear either form with `undefined` under the same key.
 
+### Example: Wavy music projects
+
+[`examples/pi-web-extensions/wavy/`](../examples/pi-web-extensions/wavy/) is an opt-in music-project extension. Its self-contained HTML preview embeds pinned ABCjs for notation and provides a piano roll, zoom/pan, passage selection, and explicitly labelled oscillator audition. Passage comments stay local and become selectable text with revision, hash, and source ranges for manual copying; the preview has no host callbacks, preview assets, authenticated audio fetching, or generated-recording playback. Tools preserve immutable revisions and takes, and return ordinary audio artifact links when recordings exist. Engines remain explicit local, non-commercial-weight integrations and never download or load models during registration or preview.
+
 ### Example: 3D modeling workflow
 
 [`examples/pi-web-extensions/3d-modeling/`](../examples/pi-web-extensions/3d-modeling/) is a complete Fusion 360 → STL → PrusaSlicer → G-code example. It contributes sandboxed interactive STL and G-code previews, Fusion MCP status/screenshot/script tools, a typed PrusaSlicer tool, and a **Slice** action for STL artifacts. Its README documents local dependencies, profile overrides, artifact-path protections, size limits, and the fact that Fusion Python executes unsandboxed with the user's permissions.
@@ -379,6 +421,16 @@ Storage notes:
   values are kept in `backup`, and the schema is published with a
   `migrationError` so the UI can surface it.
 
+## Scoped server-side HTTP client
+
+`ctx.ui.web.createApiClient({ name, scopes, sessionIds? })` gives trusted server-side
+extensions scoped access to pi-web's existing HTTP API. Core supplies and renews
+short-lived credentials; do not copy browser cookies or read `PI_WEB_TOKEN`.
+The client is not exposed in browser contribution descriptors. Its default targets
+are the calling agent session and sessions created by the client; cross-session
+access must be explicit. See [Scoped extension HTTP](extension-http.md) for the
+route catalogue, lifecycle, trust model, and a complete example.
+
 ## Referencing sessions from extension output
 
 Extension output can point at other sessions, and pi-web renders those as links.
@@ -402,6 +454,35 @@ pi.sendMessage({
 - Core caps rendering at 8 references per card, truncates labels, and requires
   plausible session ids, because `details` is untrusted persisted input. No
   extension or tool name is special-cased.
+
+### Optional compact custom-message presentation
+
+In Minimal density, every displayed custom message has a generic compact,
+expandable report view. An extension may supply a short label, preview, and
+semantic tone through `details.presentation`; the full `content` remains the
+expanded Markdown body. Core validates and bounds this persisted input and does
+not interpret `customType` or extension-authored prose.
+
+```ts
+pi.sendMessage({
+  customType: "my-ext",
+  content: "## Full report\n\nEverything needed for the complete record.",
+  display: true,
+  details: {
+    sessionRefs: [{ sessionId, name: "related session", status: "ok" }],
+    presentation: {
+      kind: "expandable-report",
+      label: "Background check · finished", // maximum 80 characters
+      preview: "No issues found",            // maximum 320 characters
+      tone: "accent",                        // neutral | accent | warning | danger
+    },
+  },
+});
+```
+
+The descriptor is optional. Existing custom messages without it use a readable
+label derived mechanically from `customType`, a plain-text preview of `content`,
+and neutral tone. Ordinary user messages are never reclassified from their text.
 
 ## Example: GitHub PRs and issues tab
 
@@ -471,9 +552,12 @@ It lets one session spawn, monitor, steer, and interrupt other sessions, turning
 pi-web into a multi-agent workspace where each worker is a **normal, fully
 visible session** in the sidebar rather than a hidden subagent.
 
-It registers five tools — `sessions_spawn`, `sessions_status`, `sessions_read`,
-`sessions_prompt`, `sessions_abort` — and a zero-token background poller that
-delivers a wakeup message when a worker goes idle, so the parent never polls.
+It registers four tools — `sessions_spawn`, `sessions_status`, `sessions_prompt`,
+and `sessions_abort` — and a zero-token background poller that delivers a wakeup
+message when a worker goes idle, so the parent never polls. Transcript inspection
+uses core `sessions_read`, which accepts a session ID or message link in `id` and
+an optional `tail`. Update pi-web alongside the extension; the extension no longer
+registers its own reader.
 Worker models are chosen from user-authored **categories** (name + "when to use"
 prose + a model) configured through the Settings API above; the concrete model
 mapping stays private to the config and the spawn tool resolves it fail-closed.
@@ -484,11 +568,21 @@ while a session's workers run, wakeups render as notification cards, and both th
 spawn tool card and wakeup card link to the worker session.
 
 The extension reports its durable worker obligations through
-`ctx.ui.web.reportSettlementDependencies(...)`. Automation can query
-`GET /api/sessions/:id/status`; `settled` means the session is idle, has no
-finished-worker wakeups pending, and every tracked worker is recursively
-settled. A `session-settled` event is emitted on the existing replayable
-WebSocket stream when that value transitions from false to true.
+`ctx.ui.web.reportSettlementDependencies(...)`. Reports are atomic snapshots of
+generic linked session IDs: core uses them both for settlement and for the linked
+session pills above the composer, then combines them with ordinary session
+runtime/name metadata. Core does not infer pill membership from spawn lineage;
+lineage remains navigation provenance only. Extensions must re-report durable
+obligations on session start and clear the snapshot only when no wakeup is owed.
+The last atomic declaration remains authoritative across reload or idle disposal
+until the replacement instance re-reports it, without rewriting prior history.
+
+Automation can query `GET /api/sessions/:id/status`; `trackedWorkers` is also the
+current direct dependency snapshot, while `settled` means the session is idle,
+has no finished-worker wakeups pending, and every tracked worker is recursively
+settled. A `settlement_dependencies_changed` event publishes snapshot changes to
+browser clients, and a `session-settled` event is emitted on the existing
+replayable WebSocket stream when `settled` transitions from false to true.
 
 Install the extension into a pi-web extension directory, and the companion skill
 into a pi skills directory:

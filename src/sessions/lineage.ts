@@ -112,6 +112,40 @@ export function runningChildIdsOf(
 export type WaitingSession = { sessionId: string; name: string; cwd?: string };
 export type WaitingInfo = { count: number; names: string[]; sessions: WaitingSession[] };
 
+export type ActiveWorker = WaitingSession;
+
+/**
+ * Live dependencies explicitly declared by an extension for the session dock.
+ * Creation provenance is intentionally not consulted: lineage controls navigation,
+ * while a dependency report controls current membership. Only sessions confirmed
+ * as currently running are shown.
+ */
+export function activeWorkersFrom(
+  sessionId: string,
+  dependencyIds: readonly string[],
+  lookups: {
+    runtime: (id: string) => { isRunning?: boolean; pendingMessageCount?: number } | undefined;
+    describe: (id: string) => { name?: string; cwd?: string };
+  },
+): ActiveWorker[] {
+  if (!sessionId) return [];
+  const seen = new Set<string>();
+  const workers: ActiveWorker[] = [];
+  for (const childId of dependencyIds) {
+    if (!childId || childId === sessionId || seen.has(childId)) continue;
+    seen.add(childId);
+    const runtime = lookups.runtime(childId);
+    if (!runtime?.isRunning) continue;
+    const described = lookups.describe(childId) || {};
+    workers.push({
+      sessionId: childId,
+      name: (described.name || "").trim() || childId.slice(-8),
+      cwd: described.cwd,
+    });
+  }
+  return workers;
+}
+
 /**
  * Derived "waiting on spawned sessions" state for one session: it is idle, but
  * sessions it spawned are still running. Returns the running children so the UI
@@ -119,7 +153,7 @@ export type WaitingInfo = { count: number; names: string[]; sessions: WaitingSes
  */
 export function waitingInfoFrom(
   sessionId: string,
-  origins: Array<{ sessionId: string; originSessionId: string }>,
+  dependencyIds: readonly string[],
   lookups: {
     isRunning: (id: string) => boolean;
     selfRunning: boolean;
@@ -128,7 +162,9 @@ export function waitingInfoFrom(
 ): WaitingInfo | undefined {
   // A running session shows its own progress instead of what it is waiting for.
   if (!sessionId || lookups.selfRunning) return undefined;
-  const running = runningChildIdsOf(sessionId, origins, lookups.isRunning);
+  const running = dependencyIds.filter((childId, index) =>
+    Boolean(childId && childId !== sessionId && dependencyIds.indexOf(childId) === index && lookups.isRunning(childId))
+  );
   if (running.length === 0) return undefined;
 
   const sessions: WaitingSession[] = running.map((childId) => {

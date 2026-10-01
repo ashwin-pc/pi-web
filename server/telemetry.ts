@@ -113,9 +113,9 @@ function ensureAccessFlushTimer() {
   accessFlushTimer.unref?.();
 }
 
-export function logRequest(method: string, pathname: string, status: number, durationMs: number, bytes: number, aborted = false) {
+export function logRequest(method: string, pathname: string, status: number, durationMs: number, bytes: number, aborted = false, caller?: string) {
   ensureAccessFlushTimer();
-  const line = `[access] ${new Date().toISOString()} ${method} ${pathname} ${status} ${Math.round(durationMs)}ms ${fmtBytes(bytes)}${aborted ? " aborted" : ""}`;
+  const line = `[access] ${new Date().toISOString()} ${method} ${pathname} ${status} ${Math.round(durationMs)}ms ${fmtBytes(bytes)}${aborted ? " aborted" : ""}${caller ? ` caller=${JSON.stringify(caller.slice(0, 400))}` : ""}`;
   const lineBytes = Buffer.byteLength(line) + 1;
   const now = performance.now();
   if (now - accessWindowStart >= ACCESS_WINDOW_MS) accessRollWindow(now);

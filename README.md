@@ -21,38 +21,17 @@ It keeps the surrounding work visible—sessions, rich artifacts, files, diagram
 - Session-oriented: organize ongoing work with reorderable pinned tabs, drawers, colors, filters, metadata, and conversation navigation
 - Rich output: preview artifacts and open Mermaid diagrams in a full-screen viewer
 
-## What changed in 0.5.0?
+## What changed in 0.6.1?
 
-0.5.0 expands the session workspace and improves everyday interaction across devices:
+0.6.1 updates pi-web's bundled Pi runtime to Pi 0.87.1. No separate global Pi installation is required.
 
-- reorder pinned session tabs and assign colors directly from the tab menu
-- inspect session metadata and use new artifact actions
-- open Mermaid diagrams in a dedicated full-screen viewer
-- see queued steering and follow-up messages before they are sent
-- use the improved model picker and tighter mobile folder selector
-- recover more easily from connection warnings and session switches
-- benefit from more reliable conversation-tree layouts and updated Pi 0.82.0 runtime support
-
-See the [0.5.0 release notes](docs/releases/0.5.0.md) for the fuller changelog.
+See the [0.6.1 release notes](docs/releases/0.6.1.md). For the preceding feature release, see [0.6.0](docs/releases/0.6.0.md).
 
 ## Install
 
-For development:
+Requires Node.js 24 or newer. pi-web currently uses [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) as its agent harness; pi-web 0.6.1 bundles Pi 0.87.1, so a separate global Pi install is not required.
 
-```bash
-npm install
-```
-
-pi-web currently works through a local, authenticated [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) installation. Prepare the harness first:
-
-```bash
-npm install -g @earendil-works/pi-coding-agent
-pi
-```
-
-Run `/login` inside pi, complete provider authentication, then exit pi. Authentication belongs to the harness rather than pi-web. As support for additional harnesses arrives, the boundary remains the same: install and sign in to the harness locally before using it through pi-web.
-
-Then install and run pi-web from npm:
+Install and run pi-web from npm:
 
 ```bash
 npm i -g @ashwin-pc/pi-web
@@ -68,16 +47,30 @@ npx -y @ashwin-pc/pi-web@latest
 From a GitHub release asset:
 
 ```bash
-# Download pi-web-<version>.tgz from the release page, then:
-npm install -g ./pi-web-*.tgz
+# Download ashwin-pc-pi-web-<version>.tgz from the release page, then:
+npm install -g ./ashwin-pc-pi-web-*.tgz
 pi-web
 ```
 
-`pi-web` starts the production server on `http://127.0.0.1:8787` by default. It runs Pi in the directory where you call the command; override with `PI_WEB_CWD=/path/to/project pi-web`.
+`pi-web` starts on `http://127.0.0.1:8787` and runs Pi in the directory where you invoke it; override that workspace with `PI_WEB_CWD=/path/to/project pi-web`. On a genuinely unconfigured installation, the terminal prints a single-use, ten-minute setup URL for enrolling a browser password or passkey.
+
+Provider credentials and pi-web login serve different purposes. Configure model-provider credentials locally through Pi. For interactive provider login, install and launch the Pi terminal CLI:
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+pi
+```
+
+Run `/login` inside that terminal CLI, complete provider authentication, then exit Pi. pi-web uses the same local provider credentials. Separately, use pi-web's browser sign-in and **Settings → Security** to control access to the web application. See [authentication and recovery](docs/passkey-auth.md) for browser setup, migration, and recovery.
 
 ## Run locally with Vite HMR
 
+Clone the repository and install its dependencies first:
+
 ```bash
+git clone https://github.com/ashwin-pc/pi-web.git
+cd pi-web
+npm install
 npm run dev
 ```
 
@@ -114,6 +107,10 @@ The session UI is built for small screens first, then scales up to desktop. Sess
 
 Right-click a session—or long-press it on touch devices—to open the Inspector Card and change its lane, bucket, or optional note. Keyboard shortcuts cover pinning (`Ctrl/Cmd+Shift+P`), parking (`Ctrl/Cmd+Shift+K`), bookmarking (`Ctrl/Cmd+Shift+B`), and cycling through the focused lane (`Ctrl/Cmd+Shift+←/→`).
 
+### Cross-session references
+
+Copy a saved message or session link and paste it into another conversation. Markdown links such as `[Decision](/?sessionId=<id>&entryId=<entry-id>)` render as chat-icon citations and open the session at that message. If the message is outside the visible transcript, the UI shows a bounded read-only quote with links to the saved message and its session, without changing branches. The core `sessions_read` tool accepts a session ID or a copied link in its `id` argument, with optional `tail` for short session excerpts; links require the instance's usual access.
+
 ### Workspace Explorer
 
 The responsive Explorer opens the active session's working directory as a lazy-loaded file tree and a full CodeMirror editor. A dedicated Artifacts scope presents generated project output as a visual gallery, with large interactive previews for images, sandboxed HTML, rendered Markdown, video, and PDFs—without digging through Pi's internal storage folders. Workspace and Artifacts each preserve their folder, scroll, and preview state when switching views or reopening the panel. Browser Back returns an open file or artifact to its prior tree or gallery before closing the panel on the next step. The Explorer supports syntax highlighting, multiple closeable tabs, conflict-aware saves, search and editor shortcuts, line wrapping, pinch or slider font resizing, and a resizable or collapsible tree. Desktop keeps chat, tree, and editor visible together; phones and touch-first foldables switch cleanly between the tree and editor without summoning the keyboard until the editor is tapped.
@@ -134,9 +131,9 @@ The Git button in the header opens a responsive Git panel for repo status, commi
 
 ### pi-web extensions
 
-pi-web supports browser-specific extensions in `.pi/web/extensions` and `~/.pi/web/extensions`. These use pi's extension runtime with a typed pi-web UI API, including `ctx.ui.web.setFooter(...)` for rendering text or trusted HTML between the composer and pinned session tabs.
+pi-web supports browser-specific extensions in `.pi/web/extensions` and `~/.pi/web/extensions`. These use pi's extension runtime and a typed contribution API for footers, actions, panels, settings, artifact previews, and Git tabs.
 
-See [pi-web extensions](docs/pi-web-extensions.md) for locations, types, and examples, including the live git footer in [`examples/pi-web-extensions/git-footer.ts`](examples/pi-web-extensions/git-footer.ts).
+Trusted server-side extensions can also use core-managed, short-lived HTTP clients whose routes and session targets are checked by pi-web. These capabilities reduce credential exposure but do not sandbox installed extension code. See [pi-web extensions](docs/pi-web-extensions.md) and [scoped extension HTTP](docs/extension-http.md), including the bundled [multi-agent session orchestrator](examples/pi-web-extensions/session-orchestrator.ts).
 
 ## Screenshots
 
@@ -199,17 +196,16 @@ npm start
 
 ## Remote access
 
-pi-web binds to localhost by default. For remote access, use HTTPS through your secure networking or reverse proxy, set `PI_WEB_AUTH_ORIGIN` to the public origin, and enable authenticated access. New unconfigured installations print a single-use setup link in the terminal. See [authentication and migration](docs/passkey-auth.md) for password, passkey, and trusted-proxy login.
+pi-web binds to localhost by default. Remote browser login—especially passkeys—needs a secure HTTPS origin. Keep the app on loopback behind a TLS-terminating reverse proxy or secure-networking proxy, set `PI_WEB_AUTH_ORIGIN` to the exact public origin, and restrict direct backend access. Keeping the application listener on loopback also supports the scoped HTTP client used by server-side extensions; a direct non-loopback-only bind does not.
 
-For example, with Tailscale Serve you can keep the Node app localhost-only:
+For example, Tailscale Serve can provide HTTPS while Node remains localhost-only:
 
 ```bash
-npm run build
-PI_WEB_TOKEN="$(openssl rand -hex 32)" \
-PI_WEB_CWD=/Users/ashwin/projects/comfy-lan-webapp \
+PI_WEB_AUTH_ORIGIN=https://your-machine.your-tailnet.ts.net \
+PI_WEB_CWD=/path/to/project \
 HOST=127.0.0.1 \
 PORT=8787 \
-npm start
+pi-web
 ```
 
 In another terminal:
@@ -218,30 +214,7 @@ In another terminal:
 tailscale serve --bg http://127.0.0.1:8787
 ```
 
-Then open:
-
-```text
-https://<machine-name>.<tailnet>.ts.net
-```
-
-For an existing legacy installation, enter `PI_WEB_TOKEN` on the token screen, then use **Settings → Security** to enroll and verify a password/passkey before retiring legacy. Add-device QR codes now contain short-lived, revocable grants—not the permanent token.
-
-### Direct Tailnet bind
-
-You can also bind directly to your Tailscale IP:
-
-```bash
-PI_WEB_TOKEN="$(openssl rand -hex 32)" \
-HOST="$(tailscale ip -4)" \
-PORT=8787 \
-npm start
-```
-
-Then open:
-
-```text
-http://<machine-name>:8787
-```
+Open the configured HTTPS origin. On a new installation, follow the single-use setup URL printed by `pi-web`; no legacy token is needed. Existing legacy installations should enroll and verify a replacement in **Settings → Security** before retiring legacy. For exact proxy-header requirements, authentication migration, recovery commands, and alternative methods, follow the [authentication guide](docs/passkey-auth.md).
 
 ## Environment variables
 
@@ -255,7 +228,7 @@ http://<machine-name>:8787
 - `PI_WEB_AUTH_RP_ID` - WebAuthn RP ID, defaults to origin hostname
 - `PI_WEB_AUTH_TRUSTED_HEADER` - verified proxy identity header; requires a restricted backend
 - `PI_WEB_AUTH_STORE` - authentication database path (default `~/.pi/agent/web/auth.json`); independent dev/production instances must use different paths, otherwise policy and revocation changes are shared live
-- `PI_WEB_AUTH_PROXY_PEERS` - optional exact socket IPs allowed to supply a sanitized, single-IP `X-Forwarded-For` for login throttling; requires a header-stripping trusted proxy and restricted backend access (unset by default)
+- `PI_WEB_AUTH_PROXY_PEERS` - exact socket IPs trusted to supply one strictly parsed `X-Forwarded-Host` and a sanitized single-IP `X-Forwarded-For`; the proxy must overwrite caller headers and backend access must be restricted (unset by default)
 - `PI_WEB_CWD` - project directory Pi should operate in, default current directory
 - `PI_WEB_NO_SESSION=1` - use in-memory sessions only
 - `PI_WEB_CHILD_HOST` - supervised child bind host, default `127.0.0.1`

@@ -1,3 +1,5 @@
+import { parseSessionReference, sessionReferenceHref, type SessionReference } from "../../server/shared/sessionReference.js";
+
 export type Role = "user" | "assistant" | "tool" | "system";
 
 export type PiEvent = {
@@ -105,7 +107,7 @@ export type LoadingAnimation = "fireworks" | "glow" | "pulse";
 export type PiWebSettings = {
   version: 1;
   appearance: {
-    density: "comfortable" | "compact";
+    density: "comfortable" | "compact" | "minimal";
     accentColor: string;
     loadingAnimation: LoadingAnimation;
   };
@@ -192,12 +194,14 @@ export type SessionUiState = {
   lanes: SessionLaneEntry[];
   sessionNotes: SessionNote[];
   pinnedFolders: string[];
+  favoriteFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
   selectedMarkerColor: SessionMarkerColorId;
   allowedMarkerColors: SessionMarkerColorId[];
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
+  bucketOrder: SessionMarkerColorId[];
 };
 
 export const sessionMarkerColors: SessionMarkerColor[] = [
@@ -217,12 +221,14 @@ export const defaultSessionUiState: SessionUiState = {
   lanes: [],
   sessionNotes: [],
   pinnedFolders: [],
+  favoriteFolders: [],
   sessionMarkers: [],
   sessionUnreadStates: [],
   sessionOrigins: [],
   selectedMarkerColor: "blue",
   allowedMarkerColors: [],
   bucketLabels: {},
+  bucketOrder: sessionMarkerColors.map((color) => color.id),
 };
 
 const markerColorIds = new Set<SessionMarkerColorId>(sessionMarkerColors.map((color) => color.id));
@@ -353,6 +359,18 @@ export function normalizeMarkerColors(value: unknown): SessionMarkerColorId[] {
   return result;
 }
 
+/** Normalize a persisted bucket order into a complete stable-ID permutation. */
+export function normalizeBucketOrder(value: unknown): SessionMarkerColorId[] {
+  const ordered = normalizeMarkerColors(value);
+  const seen = new Set(ordered);
+  return [...ordered, ...sessionMarkerColors.map((color) => color.id).filter((color) => !seen.has(color))];
+}
+
+export function orderedSessionMarkerColors(order: unknown): SessionMarkerColor[] {
+  const byId = new Map(sessionMarkerColors.map((color) => [color.id, color]));
+  return normalizeBucketOrder(order).map((id) => byId.get(id)!);
+}
+
 export function normalizeSessionOrigins(value: unknown): SessionOrigin[] {
   if (!Array.isArray(value)) return [];
   const seen = new Set<string>();
@@ -381,12 +399,14 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
     lanes: lanes.length ? lanes : legacy.map((item) => ({ sessionId: item.id, lane: "pinned" as const, ...(item.cwd ? { cwd: item.cwd } : {}), since: new Date().toISOString() })),
     sessionNotes: [...sessionNotes, ...migratedLaneNotes.filter((item) => !noteIds.has(item.sessionId))],
     pinnedFolders: normalizePinnedFolders(raw.pinnedFolders),
+    favoriteFolders: normalizePinnedFolders(raw.favoriteFolders),
     sessionMarkers: normalizeSessionMarkers(raw.sessionMarkers),
     sessionUnreadStates: normalizeSessionUnreadStates(raw.sessionUnreadStates),
     sessionOrigins: normalizeSessionOrigins(raw.sessionOrigins),
     selectedMarkerColor: normalizeMarkerColor(raw.selectedMarkerColor) || defaultSessionUiState.selectedMarkerColor,
     allowedMarkerColors: normalizeMarkerColors(raw.allowedMarkerColors),
     bucketLabels: normalizeBucketLabels(raw.bucketLabels),
+    bucketOrder: normalizeBucketOrder(raw.bucketOrder),
   };
 }
 
@@ -514,11 +534,15 @@ export type AppState = {
   sessionNotes: SessionNote[];
   sessionsById: Record<string, SessionViewState>;
   pinnedFolders: string[];
+  favoriteFolders: string[];
   sessionMarkers: SessionMarker[];
   sessionUnreadStates: SessionUnreadState[];
   sessionOrigins: SessionOrigin[];
+  /** Generic extension-declared, currently outstanding session dependencies by parent. */
+  settlementDependencies: Record<string, string[]>;
   selectedMarkerColor: SessionMarkerColorId;
   bucketLabels: Partial<Record<SessionMarkerColorId, string>>;
+  bucketOrder: SessionMarkerColorId[];
   collapsedSessionFolders: Set<string>;
   expandedSessionFolders: Set<string>;
   expandedWorkerBranches: Set<string>;
@@ -558,8 +582,27 @@ function consumeUrlToken() {
   history.replaceState(null, "", url.toString());
 }
 
+export type SessionCitation = SessionReference;
+
 export function readActiveSessionIdFromUrl() {
   return new URLSearchParams(location.search).get(sessionIdUrlParam) || "";
+}
+
+export function readSessionCitationFromUrl(): SessionCitation | undefined {
+  return parseSessionReference(location.href, location.origin) || undefined;
+}
+
+/** Parse only canonical, same-origin session links rendered in Markdown. */
+export function sessionCitationFromHref(href: string): SessionCitation | undefined {
+  return parseSessionReference(href, location.origin) || undefined;
+}
+
+export function sessionCitationHref(reference: SessionCitation) {
+  return sessionReferenceHref(reference);
+}
+
+export function absoluteSessionCitationHref(reference: SessionCitation) {
+  return new URL(sessionCitationHref(reference), location.origin).href;
 }
 
 function objectHistoryState(value: unknown): Record<string, unknown> {
@@ -576,10 +619,7 @@ export function syncActiveSessionIdHistoryState(sessionId: string) {
   history.replaceState({ ...objectHistoryState(history.state), [sessionIdHistoryStateKey]: sessionId }, "");
 }
 
-export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "replace" = "push") {
-  const url = new URL(location.href);
-  if (sessionId) url.searchParams.set(sessionIdUrlParam, sessionId);
-  else url.searchParams.delete(sessionIdUrlParam);
+function writeSessionUrl(url: URL, sessionId: string, mode: "push" | "replace") {
   if (url.href === location.href) {
     syncActiveSessionIdHistoryState(sessionId);
     return;
@@ -587,6 +627,19 @@ export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "rep
   const nextState: Record<string, unknown> = { ...objectHistoryState(history.state), [sessionIdHistoryStateKey]: sessionId };
   for (const key of sessionScopedHistoryStateKeys) delete nextState[key];
   history[mode === "replace" ? "replaceState" : "pushState"](nextState, "", url.toString());
+}
+
+export function writeActiveSessionIdToUrl(sessionId: string, mode: "push" | "replace" = "push") {
+  const url = new URL(location.href);
+  if (sessionId) url.searchParams.set(sessionIdUrlParam, sessionId);
+  else url.searchParams.delete(sessionIdUrlParam);
+  url.searchParams.delete("entryId");
+  writeSessionUrl(url, sessionId, mode);
+}
+
+/** Citation navigation intentionally drops incidental token and panel query state. */
+export function writeSessionCitationToUrl(reference: SessionCitation, mode: "push" | "replace" = "push") {
+  writeSessionUrl(new URL(sessionCitationHref(reference), location.origin), reference.sessionId, mode);
 }
 
 function readCollapsedSessionFolders() {
@@ -639,11 +692,14 @@ export function createAppState(): AppState {
     sessionNotes: [],
     sessionsById: {},
     pinnedFolders: [],
+    favoriteFolders: [],
     sessionMarkers: readLegacySessionMarkers(),
     sessionUnreadStates: [],
     sessionOrigins: [],
+    settlementDependencies: {},
     selectedMarkerColor: readLegacySelectedMarkerColor() || defaultSessionUiState.selectedMarkerColor,
     bucketLabels: {},
+    bucketOrder: [...defaultSessionUiState.bucketOrder],
     collapsedSessionFolders: new Set(readCollapsedSessionFolders()),
     expandedSessionFolders: new Set(),
     expandedWorkerBranches: new Set(readExpandedWorkerBranches()),
