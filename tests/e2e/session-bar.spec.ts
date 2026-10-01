@@ -754,11 +754,14 @@ test.describe("session quick bar", () => {
     await seedServerSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: "destination-focus", lane: "bookmarks", cwd: "/saved/workspace", since: "2026-01-01T00:00:00.000Z" },
     ] });
+    await page.addInitScript(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
     await page.goto("/");
-    await page.evaluate(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
-    await page.reload();
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toBeVisible();
     await page.locator(".sessionLayersButton").click();
+    await expect(page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerCard[data-session-id="destination-focus"]')).toBeVisible();
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" });
     const handle = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"] .sessionLaneDragHandle');
     const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
     const handleBox = await handle.boundingBox(); const destinationBox = await destination.boundingBox();
@@ -766,7 +769,9 @@ test.describe("session quick bar", () => {
     const pointer = { pointerId: 29, pointerType: "touch", isPrimary: true, button: 0 };
     await handle.dispatchEvent("pointerdown", { ...pointer, clientX: handleBox!.x + 5, clientY: handleBox!.y + 5 });
     await page.locator("body").dispatchEvent("pointermove", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
+    await expect(destination.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
     await page.locator("body").dispatchEvent("pointerup", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
+    await expect(destination.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]')).toHaveCount(1);
 
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     expect(await page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", bookmarks: "destination-focus" });
