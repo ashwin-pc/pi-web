@@ -19,7 +19,8 @@ workspace-first rather than session-first.
 - Preserve the current mobile behavior. One primary surface on narrow screens is the baseline.
 - Do not build a traditional window manager. Layout is a shell policy over surfaces.
 - Do not build a large App SDK up front. Extract abstractions from Files, Git, and Chat.
-- Workspace owns resources. Session owns agent/harness state.
+- Workspace owns files and Git operations. Apps and pages retain connection or
+  browser-session ownership. Session owns agent/harness state.
 - Prefer compatibility aliases while migrating existing session-scoped APIs.
 - Optimize for discovering edge cases, not for preserving this branch as production architecture.
 
@@ -391,3 +392,80 @@ and conflict recovery, dense desktop, mobile bottom sheets and one primary
 resource with 44px controls. The portable export is self-contained. Production
 build passes; this increment changes only the mock, its exporter/check and docs.
 P4 and durable P6 remain open. No main merge or deployment is performed.
+
+## User language and prompt-driven work — 2026-10-01
+
+The previous mock exposed internal modeling terms and repeated goal navigation
+in a sidebar, compact rail and bottom shelf. The user's review clarified the
+problem: the interface needs understandable controls and an observable prompt →
+open → inspect → edit flow, including apps and browsers. The
+[standalone probe](prototypes/multitasking-shell/README.md) now has one **Work**
+drawer for choosing goals across projects, bottom tabs for their open files/apps/
+pages, and optional floating **Pi** chat. The previous rail, activity shelf,
+compact/docked cards and scene menus are removed. Work rows and tabs select
+different objects; no internal Resource/Surface/Scene vocabulary is presented.
+
+Chat borrows the current Pi Web message/composer styling; the drawer and tabs use
+its session navigation idioms. A goal can retain its tabs and draft while Chat is
+closed. Desktop may split two items within a goal; phones/tablets show one item
+and retain the companion. Higher density desktops reserve room for floating Pi.
+
+The first sample prompt opens Browser and Release planner, inspects rendered
+preview controls, and answers from the current planner data. The planner is an
+interactive opaque-origin iframe with a narrow MCP-style demo bridge. Its UI and
+the deterministic sample agent call the same allowlisted local backend; marking
+an item ready changes the next answer. A second prompt appends a missing check to
+the Pi Web draft, preserves notes, pins the planner, and closes Browser. The edit
+remains an unsaved draft with an explicit Save action. No real model, live MCP
+connection, external website or repository file write is implied.
+
+Architectural discoveries and corrections:
+
+- The earlier blanket “workspace owns resources” claim was too broad. Files and
+  Git operations are workspace-owned; a connected app is connection-owned; a page
+  is browser-session-owned. They can share a tab strip without fabricating paths
+  or making users learn a resource ontology. Durable goals reference these owners.
+- Agents should submit owner-qualified view commands to shell policy. An unchanged
+  foreground view can open alongside the current work; changed navigation,
+  active editing or IME composition defers commands behind Show/Updates. A job
+  still targets its submitted work, execution root and selected read scope.
+- Results/progress are shared facts; applying/restoring an arrangement requires a
+  per-window receipt. A global “view applied” job flag makes other windows lose
+  their pending Show action. The probe now separates these records and tests a
+  second window holding focus on its file while the first displays the result.
+- A draft edit captures its version. Changed or active text gets a proposed
+  addition against the latest buffer, without overwriting new notes. Restoring
+  an arrangement does not undo edits. Pins survive cleanup and restoration;
+  human close and an explicit unpin request can override them. Minimize keeps a
+  job alive; Stop prevents late edits and view application.
+- The demo app bridge validates message source, scopes tools by goal membership
+  and denies arbitrary file tools. Agent Context narrows its reads independently
+  of the open app's display scope. Goal references remain distinct from actual
+  production connection/root permissions.
+- Browser display and agent browser execution have separate lifetimes. This
+  probe inspects a matching sandboxed sample page, validating frame/nonce/page
+  identity. Real arbitrary browsing needs a browser service or suitable WebView;
+  website embedding restrictions preclude a general iframe-only implementation.
+- The protocol explicitly advertises `demo`. Full MCP Apps negotiation, real
+  connection/tool lifecycle, permission revocation and app discovery remain
+  integration work. Sample guest state is re-created after closing; the planner
+  backend persists locally. P5's trusted extension path is unchanged.
+- Ownership attributes must not double as generic click selectors. Editor and
+  app containers carry a work ID for routing, but only work-selection buttons
+  should navigate. A regression check now clicks into the draft with Pi open,
+  including after filtering Work, and verifies that chat and focus remain intact.
+
+The v3 namespace preserves old v1/v2 data without migration. Layout defaults are
+browser-local, focus/history and application receipts window-local. Concurrent
+localStorage writes are not atomic; draft recovery does not solve transactional
+multiwriter jobs or app state. The fixed catalogue, missing-root/connection
+recovery, durable goals and real agent adapters remain outside this mock.
+
+Validation: the focused Playwright check passes the full prompt flow, app data
+updates, actual preview inspection, scoped draft edits, pin/close/restore,
+read-only requests, cancellation, sandbox/source/tool isolation, deferred focus,
+independent windows, history/reload, conflicting drafts, same-name files,
+mobile/tablet one-item views with 44px targets, and dense desktop. Production
+build passes. The portable export and one narrated walkthrough accompany this
+increment. No production runtime changes, P4 completion, durable P6, main merge
+or deployment are claimed.
