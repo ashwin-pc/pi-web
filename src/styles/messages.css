@@ -47,6 +47,16 @@
 .markdownBody {
   white-space: normal;
 }
+.streamingWordReveal {
+  animation: streamingWordFade ease-out both;
+}
+@keyframes streamingWordFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .streamingWordReveal { animation: none; }
+}
 
 html.artifactPreviewDocument,
 body.artifactPreviewDocument {
