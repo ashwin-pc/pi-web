@@ -1,0 +1,22 @@
+[
+  {
+    "label": "Git",
+    "width": 76.9375
+  },
+  {
+    "label": "File explorer",
+    "width": 157.671875
+  },
+  {
+    "label": "New session",
+    "width": 153.078125
+  },
+  {
+    "label": "Session details",
+    "width": 173.890625
+  },
+  {
+    "label": "Conversation tree",
+    "width": 199.203125
+  }
+]
