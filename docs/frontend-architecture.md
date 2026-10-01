@@ -66,6 +66,8 @@ For behavior changes, also run the relevant tests or the full suite:
 
 ```bash
 npm run test:unit
+# After a completed build, verify the actual npm tarball boots and serves assets.
+npm run test:package
 npm run test:e2e
 # or
 npm test

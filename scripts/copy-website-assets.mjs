@@ -90,7 +90,7 @@ for (const filename of allowlist) {
 }
 
 for (const filename of animationAssets) {
-  await copyRequired(resolve(root, 'public', filename), filename, 'welcome animation');
+  await copyRequired(resolve(root, 'website', 'assets', filename), filename, 'welcome animation');
 }
 
 console.log(`Copied ${allowlist.length} approved website captures and ${animationAssets.length} welcome animation files to ${output}`);

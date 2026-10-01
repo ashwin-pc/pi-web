@@ -909,10 +909,9 @@ test.describe("sessions drawer", () => {
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     const emptyState = page.locator(".emptyCwdChooser", { hasText: "Working directory" });
     await expect(emptyState).toBeVisible();
-    const animation = emptyState.locator(".newChatLoadingAnimation");
+    const animation = emptyState.locator("#identityNewSessionAnimation");
     await expect(animation).toBeVisible();
-    await expect(animation).not.toHaveClass(/resetting/);
-    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+    await expect.poll(() => animation.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     const cwdButton = emptyState.getByRole("button", { name: "Change working directory" });
     await expect(cwdButton).toContainText(/pi-web/);
     const trailingSpace = await cwdButton.evaluate((button) => {

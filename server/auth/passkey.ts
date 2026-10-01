@@ -1,4 +1,4 @@
-import { loginPageHeaders, renderLoginPage } from "./loginPage.js";
+import { loginPageHeaders, renderLoginPage, type LoginPresentation } from "./loginPage.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON, WebAuthnCredential } from "@simplewebauthn/server";
@@ -27,14 +27,14 @@ const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64url");
 const bytes = (value: string) => new Uint8Array(Buffer.from(value, "base64url"));
 
 export type PasskeyConfig = { rpID: string; rpName: string; origin: string };
-export async function handlePasskeyRoute(req: IncomingMessage, res: ServerResponse, url: URL, kernel: AuthKernel, store: AuthStore, config: PasskeyConfig): Promise<boolean> {
+export async function handlePasskeyRoute(req: IncomingMessage, res: ServerResponse, url: URL, kernel: AuthKernel, store: AuthStore, config: PasskeyConfig, presentation?: () => Promise<LoginPresentation>): Promise<boolean> {
   if (!url.pathname.startsWith("/api/auth/")) return false;
   if (!url.pathname.includes("bootstrap") && !kernel.methods.has("passkey")) return false;
   if (req.method === "GET" && url.pathname === "/api/auth/challenge") { json(res, 200, { mode: "redirect", url: "/api/auth/login" }); return true; }
   if (req.method === "GET" && (url.pathname === "/api/auth/login" || url.pathname === "/api/auth/passkey-login" || url.pathname === "/api/auth/passkey-bootstrap")) {
     if (url.pathname.endsWith("bootstrap") && bootstrapRequiresLoopback(config) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap is localhost-only" }); return true; }
     const bootstrap = url.pathname.endsWith("bootstrap"); const token = bootstrap ? url.searchParams.get("token") || "" : "";
-    const html = renderLoginPage({ methods: ["passkey"], passkeyOnly: true, ...(bootstrap ? { setupToken: token } : {}) });
+    const html = renderLoginPage({ methods: ["passkey"], passkeyOnly: true, ...(bootstrap ? { setupToken: token } : {}), presentation: await presentation?.() });
     res.writeHead(200, loginPageHeaders); res.end(html); return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/passkey/options") {

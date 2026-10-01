@@ -5,11 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
     <title>pi web</title>
     <meta name="theme-color" content="#1a1a1a" />
+    <link rel="manifest" href="/manifest.webmanifest" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="pi" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
-    <link rel="icon" type="image/png" href="/pwa-192x192.png" />
+    <link rel="apple-touch-icon" href="/identity/icon.png" />
+    <link rel="icon" type="image/png" href="/identity/icon.png" />
     <link rel="stylesheet" href="/new-chat-animation.css" />
   </head>
   <body>
@@ -154,10 +155,7 @@
 
       <section id="messages" class="messages" aria-live="polite"></section>
       <div id="emptyCwdChooser" class="emptyCwdChooser" hidden>
-        <video class="newChatLoadingAnimation" muted playsinline preload="auto" aria-hidden="true">
-          <source src="/new-chat-loading.webm" type='video/webm; codecs="vp8"'>
-          <source src="/new-chat-loading.mp4" type='video/mp4; codecs="avc1.64001e"'>
-        </video>
+        <div id="identityNewSessionMedia" class="newChatLoadingAnimation" aria-hidden="true"></div>
         <div class="emptyCwdInner">
           <span class="emptyCwdLabel">Working directory</span>
           <div class="emptyWorkspaceControls">
@@ -215,6 +213,7 @@
                   <span class="settingsNavCopy"><span class="settingsNavTitle">Appearance</span><span class="settingsNavSummary">Interface and color</span></span>
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
                 </button>
+                <button id="settingsNavIdentity" class="settingsNavButton" type="button" data-settings-page-target="identity" data-settings-search="app identity name avatar icon branding" aria-controls="settingsPageIdentity"><span class="settingsNavIcon" data-settings-icon="star" aria-hidden="true"></span><span class="settingsNavCopy"><span class="settingsNavTitle">App identity</span><span class="settingsNavSummary">Name and avatar</span></span><span class="settingsNavChevron" aria-hidden="true">›</span></button>
                 <button id="settingsNavComposer" class="settingsNavButton" type="button" data-settings-page-target="composer" data-settings-search="composer queue mode steer follow up expanded editor" aria-controls="settingsPageComposer">
                   <span class="settingsNavIcon" data-settings-icon="notebook-pen" aria-hidden="true"></span>
                   <span class="settingsNavCopy"><span class="settingsNavTitle">Composer</span><span class="settingsNavSummary">Queue and editor behavior</span></span>
@@ -272,6 +271,7 @@
             <p id="settingsSearchEmpty" class="settingsSearchEmpty" hidden>No settings match your search.</p>
           </nav>
           <div id="settingsContent" class="settingsContent" tabindex="-1">
+            <section id="settingsPageIdentity" class="settingsPage" data-settings-page="identity" aria-labelledby="settingsPageIdentityTitle" hidden><header class="settingsPageHeader"><span>Preferences</span><h3 id="settingsPageIdentityTitle" class="settingsPageTitle" tabindex="-1">App identity</h3><p>Choose the name and avatar shown throughout the app.</p></header><div class="identityFields"><label>App name <input id="identityName" maxlength="64" required></label><label>Short name <input id="identityShortName" maxlength="24" required></label></div><div id="identityGallery" class="identityGallery" role="group" aria-label="Avatar presets"></div><label class="identityUploadLabel">Upload custom avatar (applies immediately; save name changes separately) <input id="identityUpload" type="file" accept="image/png,image/jpeg,image/webp"></label><div class="identityPreviewModes"><button type="button" data-identity-preview="home">Home screen</button><button type="button" data-identity-preview="new">New session</button></div><div id="identityPreview" class="identityPreview"></div><div class="identityActions"><button id="identitySave" type="button">Save identity</button><button id="identityReset" type="button">Reset name and avatar…</button></div></section>
             <section id="settingsPageAppearance" class="settingsPage" data-settings-page="appearance" aria-labelledby="settingsPageAppearanceTitle">
               <header class="settingsPageHeader">
                 <span>Experience</span>

@@ -217,7 +217,6 @@ export function createSessions(options: {
   let transcriptLoading = true;
   let transcriptLoadGeneration = 0;
   let lastReplayedGeneration = -1;
-  const newChatAnimationPlaybackRate = 1.2;
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let sessionListRenderFrame: number | undefined;
@@ -336,36 +335,55 @@ export function createSessions(options: {
     updateEmptyCwdChooser();
   }
 
+  let animationBlob: Promise<Blob> | undefined;
+  let animationBlobSource: string | undefined;
+  let animationObjectUrl: string | undefined;
+  // Avatar switches (including reduced-motion changes) replace the media node.
+  // Release a replay URL as soon as its image is no longer the current media.
+  new MutationObserver(() => {
+    if (!animationObjectUrl) return;
+    const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+    if (current?.src === animationObjectUrl) return;
+    URL.revokeObjectURL(animationObjectUrl);
+    animationObjectUrl = undefined;
+  }).observe(elements.emptyCwdChooserEl, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
   async function restartNewChatAnimation(generation: number) {
-    const video = elements.emptyCwdChooserEl.querySelector<HTMLVideoElement>(".newChatLoadingAnimation");
-    if (!video) {
-      if (generation !== transcriptLoadGeneration) return;
-      transcriptLoading = false;
-      updateEmptyCwdChooser();
-      return;
-    }
-
-    video.classList.add("resetting");
-    video.pause();
-    video.playbackRate = newChatAnimationPlaybackRate;
-    video.currentTime = 0;
-    if (video.seeking) {
-      await new Promise<void>((resolve) => {
-        const timeout = window.setTimeout(resolve, 150);
-        video.addEventListener("seeked", () => {
-          window.clearTimeout(timeout);
-          resolve();
-        }, { once: true });
-      });
-    }
     if (generation !== transcriptLoadGeneration) return;
-
     transcriptLoading = false;
     updateEmptyCwdChooser();
-    // Visibility must not depend on codec support: nested source failures can
-    // leave play() pending forever in Chromium builds without H.264.
-    video.classList.remove("resetting");
-    void video.play().catch(() => undefined);
+    const animation = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+    if (!animation) return;
+    const canonicalUrl = animation.dataset.canonicalUrl || animation.src.split("?")[0];
+    if (animationBlobSource !== canonicalUrl) {
+      animationBlobSource = canonicalUrl;
+      animationBlob = undefined;
+    }
+    try {
+      if (!animationBlob) {
+        const download = fetch(canonicalUrl).then(response => {
+          if (!response.ok) throw new Error(`Avatar animation failed (${response.status})`);
+          return response.blob();
+        });
+        const pending = download.catch(error => {
+          if (animationBlob === pending) animationBlob = undefined;
+          throw error;
+        });
+        animationBlob = pending;
+      }
+      const blob = await animationBlob;
+      if (generation !== transcriptLoadGeneration || animationBlobSource !== canonicalUrl) return;
+      // Settings may replace the media node while the first download is in flight.
+      const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+      if (current !== animation || (current.dataset.canonicalUrl || current.src.split("?")[0]) !== canonicalUrl) return;
+      const next = URL.createObjectURL(blob);
+      const previous = animationObjectUrl;
+      animationObjectUrl = next;
+      current.dataset.canonicalUrl = canonicalUrl;
+      current.src = next;
+      if (previous) URL.revokeObjectURL(previous);
+    } catch {
+      // The original image remains visible when offline or unavailable.
+    }
   }
 
   async function selectSessionCwd(cwd: string) {
@@ -427,7 +445,7 @@ export function createSessions(options: {
     clearMessages();
     sessionState.applySnapshot(data, { activate: true });
     await refreshState();
-    updateEmptyCwdChooser();
+    finishTranscriptLoading();
     if (shouldCloseDrawerAfterSessionSwitch()) {
       setSessionDrawerOpen(false);
     } else if (wasDrawerOpen) {

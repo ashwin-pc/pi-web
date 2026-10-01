@@ -1,3 +1,4 @@
+import { applyIdentity, createIdentitySettings, normalizeIdentity } from "./identitySettings.js";
 import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
@@ -55,6 +56,7 @@ function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
 
+  settings.identity = normalizeIdentity(value.identity);
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
   if (appearance?.density === "compact" || appearance?.density === "comfortable" || appearance?.density === "minimal") settings.appearance.density = appearance.density;
   settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
@@ -120,6 +122,7 @@ export function createSettings(options: {
   let settingsPanelHandle: RightPanelHandle | undefined;
   let extSettings: ExtensionSettingsController | undefined;
   let settingsShell: SettingsShellController | undefined;
+  let identitySettings: ReturnType<typeof createIdentitySettings> | undefined;
   let securitySettings: ReturnType<typeof createSecuritySettings> | undefined;
   let restartSettings: ReturnType<typeof createRestartSettings> | undefined;
   let extensionHealth: "loading" | "ready" | "degraded" = "loading";
@@ -140,6 +143,7 @@ export function createSettings(options: {
   const runNotifications = createRunNotifications({
     elements,
     api,
+    getAppName: () => state.settings.identity.name,
     onError: (error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"),
   });
 
@@ -246,7 +250,7 @@ export function createSettings(options: {
     return true;
   }
 
-  function applySettings(rawSettings: PiWebSettings) {
+  function applySettings(rawSettings: PiWebSettings, { applySavedIdentity = true } = {}) {
     const previousDensity = state.settings.appearance.density;
     const settings = normalizeSettings(rawSettings);
     const storedExpanded = (() => {
@@ -259,6 +263,11 @@ export function createSettings(options: {
     })();
     const shouldInitializeExpanded = !hasAppliedSettings;
     state.settings = settings;
+    if (applySavedIdentity) {
+      applyIdentity(settings.identity);
+      identitySettings?.update(settings.identity);
+    }
+    settingsShell?.setSummary("identity", settings.identity.name);
     state.queueMode = settings.composer.queueMode;
     if (shouldInitializeExpanded) state.editorExpanded = storedExpanded ?? settings.composer.expanded;
     hasAppliedSettings = true;
@@ -736,6 +745,7 @@ export function createSettings(options: {
   function init() {
     populateBucketColorSelect(elements.settingDefaultBucketColorSelect, state);
     settingsShell = createSettingsShell(elements.settingsPanel);
+    identitySettings = createIdentitySettings(elements.settingsPanel, api, value => applySettings(value as PiWebSettings), message => setSettingsStatus(message, true), message => setSettingsStatus(message, false));
     settingsShell.init();
     securitySettings = createSecuritySettings({ container: elements.securitySettings, api, setStatus: setSettingsStatus });
     const restartContainer = elements.settingsPanel.querySelector<HTMLElement>("#settingsPageServer");
@@ -755,7 +765,10 @@ export function createSettings(options: {
       setStatus: setSettingsStatus,
       notifyError: (message) => addMessage("system", message, "error"),
     });
-    applySettings(state.settings);
+    // Initialize non-identity controls without fetching the default avatar.
+    // The saved identity arrives asynchronously from /api/settings; the shell
+    // stays unbranded until then rather than flashing Pi for Fox/custom users.
+    applySettings(state.settings, { applySavedIdentity: false });
 
     settingsPanelHandle = rightPanels?.register({
       id: "settings",
