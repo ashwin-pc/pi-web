@@ -105,6 +105,8 @@ test("settings lives in the drawer and the FAB contains session actions only", a
   test.skip(testInfo.project.name !== "desktop");
   await page.goto("/");
 
+  // Deliberately change the real button font; canvas constants cannot model this.
+  await page.addStyleTag({ content: ".actionLauncherItem { font: 700 16px Georgia, serif; }" });
   await page.locator(".actionLauncherToggle").click();
   const launcher = page.locator(".actionLauncherMenu");
   await expect(launcher.getByRole("menuitem", { name: "Settings" })).toHaveCount(0);
@@ -113,6 +115,11 @@ test("settings lives in the drawer and the FAB contains session actions only", a
   await expect(launcher.getByRole("menuitem", { name: "File explorer" })).toBeVisible();
   await expect(launcher.getByRole("menuitem", { name: "Conversation tree" })).toBeVisible();
   await expect(launcher.getByRole("menuitem", { name: "New session" })).toBeVisible();
+  // The staggered scale animation can make an incorrectly sorted menu look sorted.
+  await launcher.getByRole("menuitem").first().evaluate(async (item) => {
+    await Promise.all(Array.from(item.parentElement!.querySelectorAll("button"), (button) =>
+      Promise.all(button.getAnimations().map((animation) => animation.finished))));
+  });
   const widths = await launcher.getByRole("menuitem").evaluateAll((items) => items.map((item) => item.getBoundingClientRect().width));
   expect(widths).toEqual([...widths].sort((a, b) => a - b));
   await expect(page.locator(".actionLauncherToggle")).toHaveAttribute("aria-label", "Close session actions");

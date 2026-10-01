@@ -760,6 +760,7 @@ test.describe("session quick bar", () => {
       { sessionId: destinationFocus, lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
     ] });
     await page.goto("/");
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toBeVisible();
     // Establish focus through the live UI after lane state has loaded; an
     // invented ID in localStorage is pruned during asynchronous boot.
     for (const sessionId of [destinationFocus, "mock-older", "mock-current"]) {
