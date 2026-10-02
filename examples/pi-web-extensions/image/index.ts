@@ -10,12 +10,12 @@ import { fileURLToPath } from "node:url";
 export const parameters = Type.Object({
   prompt: Type.Optional(Type.String({ minLength: 1, description: "Shared prompt; required unless every batch job has its own prompt" })),
   model: Type.Optional(Type.String({ minLength: 1, description: "Local Qwen model profile name; defaults to PI_IMAGE_CONFIG defaultModel" })),
-  image_path: Type.Optional(Type.String({ description: "Primary PNG/JPEG/WebP input; omit to generate" })),
-  reference_image_paths: Type.Optional(Type.Array(Type.String(), { maxItems: 2, description: "Additional edit references; requires image_path" })),
+  image_path: Type.Optional(Type.String({ minLength: 1, description: "Primary PNG/JPEG/WebP input; omit to generate" })),
+  reference_image_paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 2, description: "Additional edit references; requires image_path" })),
   jobs: Type.Optional(Type.Array(Type.Object({
     prompt: Type.Optional(Type.String({ minLength: 1 })),
-    image_path: Type.Optional(Type.String()),
-    reference_image_paths: Type.Optional(Type.Array(Type.String(), { maxItems: 2 })),
+    image_path: Type.Optional(Type.String({ minLength: 1 })),
+    reference_image_paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { maxItems: 2 })),
     seed: Type.Optional(Type.Integer({ minimum: 0, maximum: 2147483647 })),
     width: Type.Optional(Type.Integer({ minimum: 256, maximum: 2048, multipleOf: 32 })),
     height: Type.Optional(Type.Integer({ minimum: 256, maximum: 2048, multipleOf: 32 })),
@@ -32,8 +32,10 @@ export function normalize(input: Request): (Required<Pick<Job, "prompt" | "seed"
   return jobs.map((job) => {
     const prompt = job.prompt ?? input.prompt;
     if (!prompt?.trim()) throw new Error("A nonempty prompt is required for each job");
-    if (job.reference_image_paths?.length && !job.image_path) throw new Error("reference_image_paths requires image_path");
-    return { prompt, images: job.image_path ? [job.image_path, ...(job.reference_image_paths ?? [])] : [], seed: job.seed ?? Math.floor(Math.random() * 2147483648), width: job.width ?? 1024, height: job.height ?? 1024 };
+    if (job.image_path !== undefined && !job.image_path.trim()) throw new Error("image_path must be nonempty");
+    if (job.reference_image_paths?.some(path => !path.trim())) throw new Error("reference_image_paths must be nonempty");
+    if (job.reference_image_paths?.length && job.image_path === undefined) throw new Error("reference_image_paths requires image_path");
+    return { prompt, images: job.image_path !== undefined ? [job.image_path, ...(job.reference_image_paths ?? [])] : [], seed: job.seed ?? Math.floor(Math.random() * 2147483648), width: job.width ?? 1024, height: job.height ?? 1024 };
   });
 }
 const runner = join(dirname(fileURLToPath(import.meta.url)), "runner.py");

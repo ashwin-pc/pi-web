@@ -36,6 +36,11 @@ test("generate, edit, batch and validation", () => {
   assert.deepEqual(normalize({ prompt: "modify", image_path: "a.png", reference_image_paths: ["b.png"], seed: 2 })[0].images, ["a.png", "b.png"]);
   assert.deepEqual(normalize({ prompt: "shared", jobs: [{ seed: 1 }, { prompt: "other", image_path: "a.png", seed: 2 }] }).map(j => [j.prompt, j.images]), [["shared", []], ["other", ["a.png"]]]);
   assert.throws(() => normalize({ prompt: "x", reference_image_paths: ["a.png"] }), /requires image_path/);
+  for (const image_path of ["", "  "]) {
+    assert.throws(() => normalize({ prompt: "edit", image_path }), /image_path must be nonempty/);
+    assert.throws(() => normalize({ jobs: [{ prompt: "edit", image_path }] }), /image_path must be nonempty/);
+  }
+  assert.throws(() => normalize({ prompt: "edit", image_path: "valid.png", reference_image_paths: [" "] }), /reference_image_paths must be nonempty/);
   assert.throws(() => normalize({ jobs: [{ seed: 1 }] }), /prompt/);
   assert.throws(() => normalize({ prompt: "x", jobs: [{}], image_path: "a.png" }), /jobs or top-level/);
   assert.deepEqual(normalize({ jobs: [{ prompt: "a", seed: 1 }, { prompt: "b", seed: 2 }] }).map(j => j.seed), [1, 2]);
