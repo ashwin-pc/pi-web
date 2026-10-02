@@ -648,7 +648,7 @@ export function initArtifactBrowser(options: {
   function sessionPreviews() {
     const messages = document.querySelector("#messages");
     if (!messages) return [];
-    const items = Array.from(messages.querySelectorAll<HTMLElement>(".artifactPreview[data-artifact-path], .imageFrame > img, a[href^='/api/artifacts/'], a[href^='/api/session-artifacts/']"))
+    const items = Array.from(messages.querySelectorAll<HTMLElement>(".artifactPreview[data-artifact-path], img[data-image-preview], .imageFrame > img, a[href^='/api/artifacts/'], a[href^='/api/session-artifacts/']"))
       .map((element) => ({
         url: element instanceof HTMLImageElement ? element.currentSrc || element.src : element instanceof HTMLAnchorElement ? element.getAttribute("href") || "" : element.dataset.artifactPath || "",
         name: element instanceof HTMLImageElement ? element.alt || "Image" : element instanceof HTMLAnchorElement ? element.textContent?.trim() || "Artifact" : element.dataset.artifactName || "Artifact",

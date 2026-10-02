@@ -180,7 +180,9 @@ test("batched streaming preserves scroll-away intent and a selection in stable c
   await expect.poll(() => messages.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(1);
   await messages.dispatchEvent("wheel", { deltaY: -600 });
   await stableText.evaluate((element) => {
-    const node = element.firstChild;
+    // Live text can be inside a temporary reveal span. Select actual text,
+    // rather than treating an element's child indexes as character offsets.
+    const node = document.createTreeWalker(element, NodeFilter.SHOW_TEXT).nextNode();
     if (!node) throw new Error("selection text missing");
     const range = document.createRange(); range.setStart(node, 0); range.setEnd(node, Math.min(24, node.textContent?.length || 0));
     const selection = getSelection(); selection?.removeAllRanges(); selection?.addRange(range);

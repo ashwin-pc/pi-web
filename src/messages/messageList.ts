@@ -128,7 +128,7 @@ function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, 
         });
     }
     item.append(image);
-    attachImageActions(image);
+    attachImageActions(image, "thumbnail");
   } else {
     item.textContent = name.includes(".") ? name.split(".").pop()!.slice(0, 3).toUpperCase() : "FILE";
   }
@@ -898,6 +898,7 @@ export function createMessageList(options: {
     if (role === "user") {
       const baseline = document.createElement("div");
       baseline.className = `messageAttachmentBaseline${standardAttachments.length ? "" : " messageAttachmentBaseline--timeOnly"}`;
+      if (standardAttachments.length) div.classList.add("hasAttachments");
       if (standardAttachments.length) {
         const summary = document.createElement("button");
         summary.type = "button";
@@ -935,13 +936,13 @@ export function createMessageList(options: {
         const label = document.createElement("span");
         label.className = "messageAttachmentCount";
         label.textContent = `${standardAttachments.length} attached`;
-        summary.append(previews, label);
+        summary.append(label);
         summary.addEventListener("click", (event) => {
           event.stopPropagation();
           popover.hidden = !popover.hidden;
           summary.setAttribute("aria-expanded", String(!popover.hidden));
         });
-        baseline.append(summary, popover);
+        baseline.append(previews, summary, popover);
       }
       const time = document.createElement("time");
       const timestamp = metadata.timestamp ? new Date(metadata.timestamp) : new Date();

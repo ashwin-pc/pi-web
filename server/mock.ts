@@ -610,9 +610,13 @@ export function createMockHarness(options: MockSessionOptions) {
         const withStreamingMarkdownBenchmark = /streaming markdown benchmark/i.test(message);
         const withStreamingMarkdownBoundaries = /streaming markdown boundaries/i.test(message);
         const withStreamingMarkdownAdjacent = /streaming markdown adjacent indexes/i.test(message);
+        const withStreamingReveal = /streaming reveal fixture/i.test(message);
+        const withStreamingRevealRapid = /streaming reveal rapid/i.test(message);
+        const withStreamingRevealReference = /streaming reveal reference/i.test(message);
+        const withStreamingRevealDuplicate = /streaming reveal duplicate/i.test(message);
         const streamingMarkdownBursty = withStreamingMarkdownBenchmark && /bursty/i.test(message);
         const streamingMarkdownInteractionPause = withStreamingMarkdownBenchmark && /interaction pause/i.test(message);
-        const withTools = !withStreamingMarkdownBenchmark && !withStreamingMarkdownBoundaries && !withStreamingMarkdownAdjacent && !withShowcase && !withEditTool && !withMalformedEditTool && !withInterruptedTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
+        const withTools = !withStreamingMarkdownBenchmark && !withStreamingMarkdownBoundaries && !withStreamingMarkdownAdjacent && !withStreamingReveal && !withStreamingRevealRapid && !withStreamingRevealReference && !withStreamingRevealDuplicate && !withShowcase && !withEditTool && !withMalformedEditTool && !withInterruptedTool && (/tool|interleav/i.test(message) || withProgressDemo || withLateToolTimestamp);
         mockSession.isStreaming = true;
         if (withQuietRuntime) {
           setRuntimeStartedAt(new Date(Date.now() - 45_000).toISOString(), new Date(Date.now() - 31_000).toISOString());
@@ -698,6 +702,56 @@ export function createMockHarness(options: MockSessionOptions) {
             appendMockMessage(recoveredMessage);
             broadcastPiEvent({ type: "message_end", message: recoveredMessage });
           }
+        } else if (withStreamingRevealRapid) {
+          // The 120ms gap is deliberately longer than the 75ms batch window
+          // but shorter than the 350ms reveal: it exercises an update while
+          // the first chunk's fade is still in progress.
+          const chunks = ["Rapid", " update"];
+          const content = chunks.join("");
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: chunks[0] } });
+          if (!(await waitForMockRun(120))) return;
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: chunks[1] } });
+          if (!(await waitForMockRun(420))) return;
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content } });
+          appendMockMessage({ role: "assistant", content, timestamp: new Date().toISOString() });
+        } else if (withStreamingRevealDuplicate) {
+          // The growing first paragraph must not be traded for the later,
+          // exact duplicate paragraph when the block boundary arrives.
+          const chunks = ["Hello", " more\n\nHello"];
+          const content = chunks.join("");
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: chunks[0] } });
+          if (!(await waitForMockRun(120))) return;
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: chunks[1] } });
+          if (!(await waitForMockRun(420))) return;
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content } });
+          appendMockMessage({ role: "assistant", content, timestamp: new Date().toISOString() });
+        } else if (withStreamingRevealReference) {
+          // A reference definition inserts an anchor before an already-live
+          // strong sibling. Keep the gap inside the 350ms reveal window.
+          const chunks = ["[link][guide] **steady** tail", "\n\n[guide]: https://example.com"];
+          const content = chunks.join("");
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: chunks[0] } });
+          if (!(await waitForMockRun(120))) return;
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: chunks[1] } });
+          if (!(await waitForMockRun(420))) return;
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content } });
+          appendMockMessage({ role: "assistant", content, timestamp: new Date().toISOString() });
+        } else if (withStreamingReveal) {
+          // Long pauses leave each live prefix observable independently. The
+          // bold delimiter closure specifically exercises reconciliation of a
+          // previously settled prefix when Markdown changes its parent node.
+          const chunks = ["Hello ", "**bold", "** world", "\n\nFinal tail."];
+          const content = chunks.join("");
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+          for (const chunk of chunks) {
+            broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: chunk } });
+            if (!(await waitForMockRun(420))) return;
+          }
+          broadcastPiEvent({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content } });
+          appendMockMessage({ role: "assistant", content, timestamp: new Date().toISOString() });
         } else if (withStreamingMarkdownAdjacent) {
           const adjacent = ["## Adjacent block zero\n\nFirst independent buffer.", "## Adjacent block one\n\nSecond independent buffer."];
           for (let contentIndex = 0; contentIndex < adjacent.length; contentIndex += 1) {

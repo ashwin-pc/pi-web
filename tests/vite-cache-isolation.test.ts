@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { viteCacheDir } from "../vite.config.js";
 
 describe("Vite optimizer cache isolation", () => {
@@ -17,7 +17,7 @@ describe("Vite optimizer cache isolation", () => {
       await symlink(join(dir, "shared-node-modules"), join(second, "node_modules"));
       const env = { command: "serve" as const, mode: "development" };
       expect(viteCacheDir(env, "8788", first)).not.toBe(viteCacheDir(env, "8788", second));
-      expect(viteCacheDir(env, "8788", first).startsWith(join(first, ".vite-cache") + "/")).toBe(true);
+      expect(dirname(viteCacheDir(env, "8788", first))).toBe(join(first, ".vite-cache"));
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

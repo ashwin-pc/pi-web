@@ -2,6 +2,7 @@
 
 - This is a TypeScript/Vite web UI for pi. Keep changes small, typed, and easy to test.
 - Every PR description must show the change's before-and-after behavior with screenshots, a short recording, or concrete reproducible evidence. Use `.github/PULL_REQUEST_TEMPLATE.md`; reviewers should be able to understand the result without reading the code. For UI changes, include visual evidence; for non-UI changes, include observed outputs or test results for both versions.
+- Do not commit review-only screenshots, recordings, metrics, or scratch reports. Attach them to the PR description or link to reviewer-accessible artifacts instead. Keep local captures in ignored locations such as `.pi/web/artifacts/`, `docs/evidence/`, or `.github/evidence/`. Maintained test fixtures, visual regression baselines, and product/documentation assets are not review-only evidence and remain tracked.
 - Run `npm run typecheck` after TypeScript changes; run `npm run build` after frontend or Vite changes.
 - For full validation, run `npm test`; it uses the parallel/sharded runner. Do not use the slower `npm run test:serial` unless explicitly debugging serial behavior. Increase or decrease E2E parallelism with `PI_WEB_E2E_SHARDS=<n> npm test`.
 - Do not leave known test failures behind; debug or explicitly fix failing tests before considering work complete.

@@ -100,7 +100,7 @@
     max-width: clamp(104px, 34vw, 170px);
   }
 
-  .message { max-width: 96%; }
+  .message { max-width: 96%; --message-action-space: 0px; }
   .messageActions { display: none; }
 
   .sessionDrawer {

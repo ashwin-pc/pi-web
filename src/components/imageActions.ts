@@ -3,6 +3,7 @@ import { createElement, Download, ExternalLink, Maximize2 } from "lucide";
 // Image actions delegate presentation and lifecycle to the shared files panel.
 // The source remains the original image URL (including authenticated and blob URLs).
 let openImage: ((source: string, name: string, opener: HTMLElement) => void) | undefined;
+const enhancedImages = new WeakSet<HTMLImageElement>();
 export function configureImagePreviewOpener(open: (source: string, name: string, opener: HTMLElement) => void) { openImage = open; }
 
 export function openImagePreview(img: HTMLImageElement, opener: HTMLElement = img) {
@@ -19,8 +20,20 @@ export function revealImageOpener(opener: HTMLElement) {
   return opener;
 }
 
-export function attachImageActions(img: HTMLImageElement) {
-  if (img.closest(".imageFrame")) return;
+export function attachImageActions(img: HTMLImageElement, presentation: "full" | "thumbnail" = "full") {
+  // Preview discovery must not depend on a full-size presentation wrapper.
+  img.dataset.imagePreview = "";
+  if (enhancedImages.has(img) || img.closest(".imageFrame")) return;
+  enhancedImages.add(img);
+
+  img.tabIndex = 0;
+  img.setAttribute("role", "button");
+  img.setAttribute("aria-label", `Preview ${img.alt || "image"}`);
+  img.addEventListener("click", () => openImagePreview(img));
+  img.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImagePreview(img); }
+  });
+  if (presentation === "thumbnail") return;
 
   const frame = document.createElement("span");
   frame.className = "imageFrame";
@@ -34,13 +47,6 @@ export function attachImageActions(img: HTMLImageElement) {
   fullScreen.setAttribute("aria-label", "Preview image");
   fullScreen.append(createElement(Maximize2, { "aria-hidden": "true" }));
   fullScreen.addEventListener("click", () => openImagePreview(img, fullScreen));
-  img.tabIndex = 0;
-  img.setAttribute("role", "button");
-  img.setAttribute("aria-label", `Preview ${img.alt || "image"}`);
-  img.addEventListener("click", () => openImagePreview(img));
-  img.addEventListener("keydown", (event) => {
-    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImagePreview(img); }
-  });
 
   const download = document.createElement("a");
   download.className = "imageAction";

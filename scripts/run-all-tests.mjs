@@ -44,7 +44,9 @@ const packedStartupTask = { name: "package-startup", command: isWin ? "npm.cmd" 
 const preflightTasks = [
   { name: "typecheck", command: bin("tsc"), args: ["--noEmit"], kind: "static" },
   { name: "unit", command: bin("vitest"), args: ["run"], kind: "unit" },
-  { name: "build", command: bin("vite"), args: ["build"], kind: "static" },
+  // Match the production server even when the caller is a development shell.
+  // NODE_ENV=development would otherwise compile out SW activation reloads.
+  { name: "build", command: bin("vite"), args: ["build"], env: { NODE_ENV: "production", PI_WEB_DEV: "0" }, kind: "static" },
 ];
 
 const colors = ["\x1b[36m", "\x1b[35m", "\x1b[32m", "\x1b[34m", "\x1b[33m", "\x1b[95m"];
