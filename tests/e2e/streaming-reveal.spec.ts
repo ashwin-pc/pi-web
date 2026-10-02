@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { nextRealtimeHello } from "./helpers/realtimeReady.js";
 
 async function startRevealFixture(page: Page, prompt = "streaming reveal fixture") {
   await page.request.post("/api/mock/reset");
@@ -214,26 +215,48 @@ test("settling a reveal span preserves a selection inside its text", async ({ pa
 });
 
 test("a settled text selection survives a later delta in the same paragraph", async ({ page }) => {
-  const body = await startRevealFixture(page);
-  await expect(body).toContainText("Hello **bold");
-  await expect.poll(() => page.evaluate(() => {
-    const bodies = document.querySelectorAll(".message.assistant .body");
-    const paragraph = bodies[bodies.length - 1]?.querySelector("p");
-    const text = paragraph?.firstChild;
-    if (!paragraph || !text || !text.textContent?.startsWith("Hello")) return false;
+  await page.request.post("/api/mock/reset");
+  const hello = nextRealtimeHello(page);
+  await page.goto("/");
+  await hello;
+  await expect(page.locator("#prompt")).toBeVisible();
+  const publish = async (event: Record<string, unknown>) => {
+    const response = await page.request.post("/api/mock/event", { data: {
+      type: "agent_event", sessionId: "mock-current", event,
+    } });
+    expect(response.ok()).toBe(true);
+  };
+  const prefix = "Hello **bold";
+  const suffix = "** world";
+  await publish({ type: "agent_start" });
+  await publish({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+  await publish({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: prefix } });
+  const body = page.locator(".message.assistant .body").last();
+  await expect(body).toContainText(prefix);
+  // Hold the prefix until its real fade has settled and the selection is made.
+  // The next delta is test-controlled, not a transient 420ms opportunity.
+  await expect(body.locator(".streamingWordReveal")).toHaveCount(0);
+  await body.locator("p").evaluate(paragraph => {
+    const text = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT).nextNode();
+    if (!(text instanceof Text) || !text.data.startsWith("Hello")) throw new Error("settled selection text missing");
     getSelection()?.setBaseAndExtent(text, 0, text, 5);
-    (globalThis as typeof globalThis & { __settledSelection?: { paragraph: Element; text: ChildNode } }).__settledSelection = { paragraph, text };
-    return true;
-  })).toBe(true);
+    (globalThis as typeof globalThis & { __settledSelection?: { paragraph: Element; text: Text } }).__settledSelection = { paragraph, text };
+  });
+  expect(await page.evaluate(() => getSelection()?.toString())).toBe("Hello");
 
+  await publish({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: suffix } });
   await expect(body).toContainText("Hello bold world");
   expect(await page.evaluate(() => {
-    const saved = (globalThis as typeof globalThis & { __settledSelection?: { paragraph: Element; text: ChildNode } }).__settledSelection;
+    const saved = (globalThis as typeof globalThis & { __settledSelection?: { paragraph: Element; text: Text } }).__settledSelection;
     return saved?.paragraph.isConnected
       && saved.text.isConnected
       && saved.text.parentElement === saved.paragraph
       && getSelection()?.toString() === "Hello";
   })).toBe(true);
+  await publish({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content: prefix + suffix } });
+  await expect(body.locator("strong")).toHaveText("bold");
+  await expect(body.locator(".streamingWordReveal")).toHaveCount(0);
+  await publish({ type: "agent_settled" });
   await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5_000 });
 });
 
