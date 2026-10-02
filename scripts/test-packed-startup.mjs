@@ -52,14 +52,21 @@ async function main() {
       // Windows working-directory lock and all inherited stdio handles.
       childClosed = new Promise(resolve => child.once("close", resolve));
       child.once("error", error => { spawnError = error; });
+      let output = "";
       let errors = "";
+      let lastFetchError;
+      const startupStarted = Date.now();
+      // Drain both pipes so startup cannot block on an unread stdout buffer.
+      child.stdout?.on("data", chunk => { output += chunk; });
       child.stderr?.on("data", chunk => { errors += chunk; });
       for (let i = 0; i < 80; i++) {
         if (child.exitCode !== null) break;
         try { response = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`); break; }
-        catch { await delay(100); }
+        catch (error) { lastFetchError = error; await delay(100); }
       }
       if (response?.status === 200) break;
+      // 'exit' can precede the final stderr data; classify only after it drains.
+      if (child.exitCode !== null) await childClosed;
       if (attempt < 2 && !spawnError && isRetryableBindFailure(errors)) {
         // The OS port probe and child bind are separate; another process can
         // claim the port between them. Fully close the failed child first.
@@ -68,7 +75,14 @@ async function main() {
         childClosed = undefined;
         continue;
       }
-      assert.equal(response?.status, 200, spawnError || errors);
+      assert.equal(response?.status, 200, [
+        `Packed server not ready after ${Date.now() - startupStarted}ms at http://127.0.0.1:${port}/manifest.webmanifest`,
+        `pid=${child.pid}, exitCode=${child.exitCode}, signal=${child.signalCode}`,
+        `spawn error: ${spawnError?.stack || "none"}`,
+        `last fetch error: ${lastFetchError?.stack || "none"}; cause: ${lastFetchError?.cause || "none"}`,
+        `stdout:\n${output || "<empty>"}`,
+        `stderr:\n${errors || "<empty>"}`,
+      ].join("\n"));
     }
     assert.equal(response?.status, 200);
     assert.equal((await response.json()).name, "Backup Brand");
