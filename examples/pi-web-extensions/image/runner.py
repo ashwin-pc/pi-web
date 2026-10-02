@@ -127,10 +127,15 @@ def active_comfy_processes(process_list, cwd_for_pid, executable_for_pid):
         if not pathlib.Path(executable_for_pid(pid)).name.lower().startswith('python'):
             continue
         cwd = cwd_for_pid(pid)
-        # Test relative main.py against the actual cwd. For absolute paths, scan
-        # slash-delimited suffixes so spaces in unquoted ps argv remain intact.
-        paths = [cwd / 'main.py'] if re.search(r'(?:^|\s)(?:\./)?main\.py(?=\s|$)', command) else []
+        # Every whitespace boundary could start a relative script path, even
+        # "ComfyUI/main.py" or a directory with spaces. Every slash could start
+        # an absolute path; existence checks disambiguate the lossy ps string.
+        paths = []
         for match in re.finditer(r'main\.py(?=\s|$)', command):
+            for start in [0, *(index + 1 for index, char in enumerate(command[:match.start()]) if char.isspace())]:
+                candidate = command[start:match.end()].strip()
+                if candidate and not pathlib.Path(candidate).is_absolute():
+                    paths.append(cwd / candidate)
             for start, char in enumerate(command[:match.start()]):
                 if char == '/':
                     paths.append(pathlib.Path(command[start:match.end()]))
