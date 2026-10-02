@@ -37,11 +37,21 @@ const previewHtml = `<!doctype html><html><body>
 </script>
 </body></html>`;
 
+const previewMarkdown = "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n[Open HTML](/api/artifacts/preview.html)\n\n[External docs](https://example.com/)\n\n```ts\nconst preview = true;\n```\n";
+
 /** Each consuming spec owns setup; atomic identical writes are safe across shards. */
-export async function ensurePreviewArtifact() {
+async function writePreviewFixture(filename: string, content: string) {
   const dir = join(process.cwd(), ".pi", "web", "artifacts");
   await mkdir(dir, { recursive: true });
   const temp = join(dir, `.preview-${randomUUID()}.tmp`);
-  await writeFile(temp, previewHtml);
-  await rename(temp, join(dir, "preview.html"));
+  await writeFile(temp, content);
+  await rename(temp, join(dir, filename));
+}
+
+export async function ensurePreviewArtifact() {
+  await writePreviewFixture("preview.html", previewHtml);
+}
+
+export async function ensureMarkdownPreviewArtifact() {
+  await writePreviewFixture("report.md", previewMarkdown);
 }

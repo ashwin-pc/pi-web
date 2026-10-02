@@ -5,6 +5,7 @@ import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 import { matchingArtifactPreview, mountArtifactPreview } from "../extensions/artifactPreviews.js";
 import { createStreamingBatch, type StreamingBatch } from "./streamingScheduler.js";
+import { createStreamingReveal } from "./streamingReveal.js";
 import { sessionCitationFromHref, sessionCitationHref } from "../app/types.js";
 
 marked.setOptions({
@@ -847,25 +848,13 @@ export function createMarkdownRenderer(
   const streamingBatchMs = Math.max(0, options.streamingBatchMs ?? 75);
   const streamingRenders = new WeakMap<HTMLElement, StreamingBatch<{ text: string; onRendered?: () => void }>>();
 
+  const streamingReveal = createStreamingReveal();
   // Parse the complete prefix for correctness (reference definitions can change
-  // earlier blocks), but retain nodes whose serialized output is unchanged so
-  // selection and controls in stable content survive tail updates.
+  // earlier blocks). Reveal only new visible text while retaining stable nodes.
   const renderStreaming = (body: HTMLElement, text: string) => {
     const template = document.createElement("template");
     template.innerHTML = parseMarkdownHtml(text);
-    const incoming = Array.from(template.content.childNodes);
-    for (let index = 0; index < incoming.length; index += 1) {
-      const current = body.childNodes[index];
-      const next = incoming[index];
-      if (!current) {
-        body.append(next);
-        continue;
-      }
-      const currentHtml = current instanceof Element ? current.outerHTML : current.textContent;
-      const nextHtml = next instanceof Element ? next.outerHTML : next.textContent;
-      if (current.nodeType !== next.nodeType || currentHtml !== nextHtml) current.replaceWith(next);
-    }
-    while (body.childNodes.length > incoming.length) body.lastChild?.remove();
+    streamingReveal.render(body, template.content);
     body.classList.add("markdownBody");
   };
 
@@ -882,9 +871,13 @@ export function createMarkdownRenderer(
     onAssistantRendered?.(body);
   };
 
-  const cancelStreamingAssistantMarkdown = (body: HTMLElement) => {
+  const stopStreamingBatch = (body: HTMLElement) => {
     streamingRenders.get(body)?.cancel();
     streamingRenders.delete(body);
+  };
+  const cancelStreamingAssistantMarkdown = (body: HTMLElement) => {
+    stopStreamingBatch(body);
+    streamingReveal.cancel(body);
   };
 
   const requestIdle = window.requestIdleCallback || ((callback: IdleRequestCallback) => window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 0 }), 1));
@@ -929,10 +922,15 @@ export function createMarkdownRenderer(
       batch.queue({ text, onRendered });
     },
     finalizeStreamingAssistantMarkdown(body, text) {
-      cancelStreamingAssistantMarkdown(body);
-      if (!body.isConnected) return;
+      stopStreamingBatch(body);
+      if (!body.isConnected) {
+        streamingReveal.cancel(body);
+        return;
+      }
       if (streamingMarkdown) finalizeStreaming(body, text);
       else body.textContent = text;
+      // Let the last words finish fading; settlement must not replay the stream.
+      streamingReveal.finish(body);
     },
     cancelStreamingAssistantMarkdown,
     unobserve(body) {
