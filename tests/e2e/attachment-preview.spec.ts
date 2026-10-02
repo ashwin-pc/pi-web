@@ -1,8 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { nextRealtimeHello } from "./helpers/realtimeReady.js";
+import { ensureMarkdownPreviewArtifact } from "./helpers/artifacts.js";
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
 test.use({ locale: "en-US" });
+test.beforeAll(ensureMarkdownPreviewArtifact);
 
 for (const clock of [
   { name: "short clock", hour: 1, minute: 11, label: "You · 1:11 AM" },

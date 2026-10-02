@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { ensurePreviewArtifact } from "./helpers/artifacts.js";
+import { ensureMarkdownPreviewArtifact, ensurePreviewArtifact } from "./helpers/artifacts.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -1623,7 +1623,7 @@ test.describe("image rendering", () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
-    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n[Open HTML](/api/artifacts/preview.html)\n\n[External docs](https://example.com/)\n\n```ts\nconst preview = true;\n```\n");
+    await ensureMarkdownPreviewArtifact();
     await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
     await ensurePreviewArtifact();
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));
