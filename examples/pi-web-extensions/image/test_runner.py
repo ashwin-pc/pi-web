@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 import subprocess
 import signal
+import tempfile
 
 HERE = pathlib.Path(__file__).parent
 spec = importlib.util.spec_from_file_location('image_runner', HERE / 'runner.py')
@@ -34,6 +35,21 @@ class WorkflowTests(unittest.TestCase):
             runner.stop_process_group(stubborn)
         self.assertEqual([call.args[1] for call in kill.call_args_list], [signal.SIGTERM, signal.SIGKILL])
         stubborn.wait.assert_any_call(timeout=5)
+
+    def test_preflight_finds_relative_comfy_launches_without_false_positives(self):
+        with tempfile.TemporaryDirectory() as temp:
+            comfy_root = pathlib.Path(temp) / 'ComfyUI'
+            comfy_root.mkdir()
+            (comfy_root / 'comfy').mkdir()
+            (comfy_root / 'main.py').write_text('')
+            other = pathlib.Path(temp) / 'other'
+            other.mkdir()
+            (other / 'main.py').write_text('')
+            listing = f' 120 /venv/bin/python main.py --port 8188\n 121 /venv/bin/python {comfy_root}/main.py\n 122 /venv/bin/python main.py\n 123 /venv/bin/python -m package.main\n'
+            self.assertEqual(runner.active_comfy_processes(listing, lambda pid: other if pid == 122 else comfy_root), [120, 121])
+            self.assertEqual(runner.active_comfy_processes('124 /venv/bin/python ./main.py --listen 0.0.0.0', lambda pid: comfy_root), [124])
+        with patch.object(runner.subprocess, 'run', return_value=Mock(stdout='p12\nfcwd\nn/tmp/ComfyUI\n')):
+            self.assertEqual(runner.process_cwd(12), pathlib.Path('/tmp/ComfyUI'))
 
     def test_local_qwen_variants_and_inputs(self):
         models = json.loads((HERE / 'config.example.json').read_text())['models']
