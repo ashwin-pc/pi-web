@@ -46,10 +46,19 @@ class WorkflowTests(unittest.TestCase):
             other.mkdir()
             (other / 'main.py').write_text('')
             listing = f' 120 /venv/bin/python main.py --port 8188\n 121 /venv/bin/python {comfy_root}/main.py\n 122 /venv/bin/python main.py\n 123 /venv/bin/python -m package.main\n'
-            self.assertEqual(runner.active_comfy_processes(listing, lambda pid: other if pid == 122 else comfy_root), [120, 121])
-            self.assertEqual(runner.active_comfy_processes('124 /venv/bin/python ./main.py --listen 0.0.0.0', lambda pid: comfy_root), [124])
-        with patch.object(runner.subprocess, 'run', return_value=Mock(stdout='p12\nfcwd\nn/tmp/ComfyUI\n')):
+            executable = lambda pid: '/venv/bin/python'
+            self.assertEqual(runner.active_comfy_processes(listing, lambda pid: other if pid == 122 else comfy_root, executable), [120, 121])
+            self.assertEqual(runner.active_comfy_processes('124 /venv/bin/python ./main.py --listen 0.0.0.0', lambda pid: comfy_root, executable), [124])
+            spaced = pathlib.Path(temp) / 'pi review space' / 'ComfyUI'
+            spaced.mkdir(parents=True)
+            (spaced / 'comfy').mkdir()
+            (spaced / 'main.py').write_text('')
+            command = f'125 {temp}/pi review space/venv/bin/python {spaced}/main.py --port 8188'
+            self.assertEqual(runner.active_comfy_processes(command, lambda pid: other, lambda pid: f'{temp}/pi review space/venv/bin/python'), [125])
+            self.assertEqual(runner.active_comfy_processes(command, lambda pid: other, lambda pid: '/usr/bin/other'), [])
+        with patch.object(runner.subprocess, 'run', side_effect=[Mock(stdout='p12\nfcwd\nn/tmp/ComfyUI\n'), Mock(stdout='/tmp/pi review space/venv/bin/python\n')]):
             self.assertEqual(runner.process_cwd(12), pathlib.Path('/tmp/ComfyUI'))
+            self.assertEqual(runner.process_executable(12), '/tmp/pi review space/venv/bin/python')
 
     def test_local_qwen_variants_and_inputs(self):
         models = json.loads((HERE / 'config.example.json').read_text())['models']

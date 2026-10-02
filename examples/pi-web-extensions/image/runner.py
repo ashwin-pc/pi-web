@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Canonical isolated Qwen 2.1 ComfyUI runner. Usage: python qwen-tool-runner.py request.json."""
-import json, os, pathlib, shlex, shutil, signal, socket, subprocess, sys, time, urllib.request, urllib.error, uuid
+import json, os, pathlib, re, shutil, signal, socket, subprocess, sys, time, urllib.request, urllib.error, uuid
 
 HOME = pathlib.Path(os.environ.get('PI_IMAGE_RUNTIME_ROOT', '')).expanduser().resolve() if os.environ.get('PI_IMAGE_RUNTIME_ROOT') else None
 COMFY = HOME / 'ComfyUI' if HOME else None
@@ -116,32 +116,36 @@ def stop_process_group(proc):
         pass
     proc.wait(timeout=5)
 
-def active_comfy_processes(process_list, cwd_for_pid):
-    """Identify absolute and relative main.py launches without matching unrelated apps."""
+def active_comfy_processes(process_list, cwd_for_pid, executable_for_pid):
+    """Identify Python ComfyUI main.py launches; ps command strings lose argv boundaries."""
     found = []
     for line in process_list.splitlines():
         pid_text, _, command = line.strip().partition(' ')
-        if not pid_text.isdigit():
-            continue
-        try:
-            args = shlex.split(command.strip())
-        except ValueError:
-            continue
-        if not args or 'python' not in pathlib.Path(args[0]).name.lower():
-            continue
-        scripts = [arg for arg in args[1:] if pathlib.Path(arg).name == 'main.py']
-        if not scripts:
+        if not pid_text.isdigit() or not re.search(r'main\.py(?=\s|$)', command):
             continue
         pid = int(pid_text)
-        for script in scripts:
-            path = pathlib.Path(script)
-            if not path.is_absolute():
-                path = cwd_for_pid(pid) / path
+        if not pathlib.Path(executable_for_pid(pid)).name.lower().startswith('python'):
+            continue
+        cwd = cwd_for_pid(pid)
+        # Test relative main.py against the actual cwd. For absolute paths, scan
+        # slash-delimited suffixes so spaces in unquoted ps argv remain intact.
+        paths = [cwd / 'main.py'] if re.search(r'(?:^|\s)(?:\./)?main\.py(?=\s|$)', command) else []
+        for match in re.finditer(r'main\.py(?=\s|$)', command):
+            for start, char in enumerate(command[:match.start()]):
+                if char == '/':
+                    paths.append(pathlib.Path(command[start:match.end()]))
+        for path in paths:
             directory = path.resolve().parent
             if (directory / 'comfy').is_dir() and (directory / 'main.py').is_file():
                 found.append(pid)
                 break
     return found
+
+def process_executable(pid):
+    result = subprocess.run(['ps', '-p', str(pid), '-o', 'comm='], capture_output=True, text=True, check=True)
+    if not result.stdout.strip():
+        raise RuntimeError(f'Cannot inspect executable of potential ComfyUI process {pid}; retry when idle')
+    return result.stdout.strip()
 
 def process_cwd(pid):
     result = subprocess.run(['lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'], capture_output=True, text=True, check=True)
@@ -189,7 +193,7 @@ def main(req):
     match = re.search(r'System-wide memory free percentage:\s*(\d+)', vm)
     if not match or int(match.group(1)) < 25: raise RuntimeError('Memory preflight: less than 25% free system memory')
     procs = subprocess.run(['ps','-axo','pid=,command='], capture_output=True, text=True, check=True).stdout
-    if active_comfy_processes(procs, process_cwd):
+    if active_comfy_processes(procs, process_cwd, process_executable):
         raise RuntimeError('Memory preflight: another ComfyUI process appears active; retry when idle')
     sock = socket.socket(); sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]; sock.close()
     log = open(root/'comfy.log', 'wb')
