@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { ensureMarkdownPreviewArtifact, ensurePreviewArtifact } from "./helpers/artifacts.js";
-import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
+import { openSessionDrawerFooterAction, shouldCloseSessionDrawerAfterSwitch } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -797,8 +797,8 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
 
     await page.getByText("Older mock session").click();
-    const isMobile = (page.viewportSize()?.width || 0) <= 700;
-    if (isMobile) {
+    const closesAfterSwitch = await shouldCloseSessionDrawerAfterSwitch(page);
+    if (closesAfterSwitch) {
       await expect(page.locator("#sessionDrawer")).toBeHidden();
       await page.locator("#sessionButton").click();
     } else {
@@ -898,14 +898,14 @@ test.describe("sessions drawer", () => {
     await expect(drawer.getByText("Older mock session")).toBeVisible();
 
     await drawer.getByText("Older mock session").click();
-    const isOverlayMode = (page.viewportSize()?.width || 0) <= 1024;
-    if (isOverlayMode) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    const closesAfterSwitch = await shouldCloseSessionDrawerAfterSwitch(page);
+    if (closesAfterSwitch) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.getByText("Resumed older session.")).toBeVisible();
 
-    if (isOverlayMode) await page.locator("#sessionButton").click();
+    if (closesAfterSwitch) await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
-    if (isOverlayMode) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    if (closesAfterSwitch) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     const emptyState = page.locator(".emptyCwdChooser", { hasText: "Working directory" });
     await expect(emptyState).toBeVisible();

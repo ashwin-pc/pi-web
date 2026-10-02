@@ -1,4 +1,5 @@
 import type { ApiClient } from "../app/api.js";
+import { blurActiveEditableOnMobile } from "../app/focus.js";
 import { iconElement, isIconName } from "../app/icons.js";
 import { createComposerCaptureRenderer } from "./composerCaptureRenderer.js";
 
@@ -171,6 +172,9 @@ export function createComposerCapture(options: {
 
   async function start(descriptor: ComposerCaptureDescriptor) {
     cancel();
+    // Dictation replaces typing on touch devices; dismiss the keyboard before
+    // requesting microphone permission without changing the insertion selection.
+    blurActiveEditableOnMobile();
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       options.onError("Microphone capture requires a secure context and MediaRecorder support.");
       return;
@@ -281,8 +285,8 @@ export function createComposerCapture(options: {
       button.setAttribute("aria-pressed", String(recording));
       const icon = descriptor.icon && isIconName(descriptor.icon) ? descriptor.icon : "mic";
       button.append(iconElement(recording ? "square" : icon));
-      // Keep textarea focus/selection stable on touch layouts while the dynamic
-      // composer controls rerender between record and stop.
+      // Prevent pointer taps from transferring focus to rerendered controls.
+      // start() owns dismissing editable focus on touch devices.
       button.addEventListener("pointerdown", (event) => event.preventDefault());
       button.addEventListener("click", () => {
         if (recording && operation) stopRecording(operation);
