@@ -6,6 +6,9 @@ import pathlib
 import sys
 import types
 import unittest
+from unittest.mock import Mock, patch
+import subprocess
+import signal
 
 HERE = pathlib.Path(__file__).parent
 spec = importlib.util.spec_from_file_location('image_runner', HERE / 'runner.py')
@@ -13,6 +16,18 @@ runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
 
 class WorkflowTests(unittest.TestCase):
+    def test_process_group_cleanup_after_leader_exit_and_timeout(self):
+        exited = Mock(pid=1234)
+        with patch.object(runner.os, 'killpg', side_effect=ProcessLookupError):
+            runner.stop_process_group(exited)
+        exited.wait.assert_called_once_with(timeout=15)
+        hanging = Mock(pid=5678)
+        hanging.wait.side_effect = [subprocess.TimeoutExpired('ComfyUI', 15), 0]
+        with patch.object(runner.os, 'killpg', side_effect=[None, ProcessLookupError]) as kill:
+            runner.stop_process_group(hanging)
+        self.assertEqual([call.args[1] for call in kill.call_args_list], [signal.SIGTERM, signal.SIGKILL])
+        self.assertEqual(hanging.wait.call_count, 2)
+
     def test_local_qwen_variants_and_inputs(self):
         models = json.loads((HERE / 'config.example.json').read_text())['models']
         for name, profile in models.items():

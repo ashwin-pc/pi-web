@@ -87,6 +87,22 @@ def api(port, path, data=None):
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.load(response)
 
+def stop_process_group(proc):
+    # poll() may already have reaped the leader; children may still be alive.
+    # A missing group is benign, but other signal failures should surface.
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+
 def main(req):
     root = pathlib.Path(req['root']).resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -158,12 +174,11 @@ def main(req):
             time.sleep(2)
         raise TimeoutError('Inference timed out')
     finally:
-        if proc is not None:
-            os.killpg(proc.pid, signal.SIGTERM)
-            try: proc.wait(timeout=15)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL); proc.wait()
-        log.close()
+        try:
+            if proc is not None:
+                stop_process_group(proc)
+        finally:
+            log.close()
 
 if __name__ == '__main__':
     signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt('Cancelled')))
