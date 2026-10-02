@@ -17,6 +17,8 @@ export interface SessionStatsDto {
   assistantMessages: number;
   toolResults: number;
   totalMessages: number;
+  /** Exact count of transcript messages, excluding branch metadata entries. */
+  conversationMessages: number;
   tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number };
   cost: number;
   contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null };

@@ -65,7 +65,7 @@ async function expectLane(page: Page, sessionId: string, lane: "pinned" | undefi
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
-  await page.request.patch("/api/settings", { data: { defaults: { pinNewSessions: false } } });
+  await page.request.patch("/api/settings", { data: { defaults: { pinNewSessions: false, model: null, thinkingLevel: null } } });
   await page.goto("/");
   await expect(page.locator("#connectionStatus")).toBeHidden();
 });
@@ -73,7 +73,7 @@ test.beforeEach(async ({ page }) => {
 // Mock reset deliberately preserves global settings, so every outcome (including
 // a failed assertion) must restore the suite's default preference.
 test.afterEach(async ({ page }) => {
-  await page.request.patch("/api/settings", { data: { defaults: { pinNewSessions: false } } });
+  await page.request.patch("/api/settings", { data: { defaults: { pinNewSessions: false, model: null, thinkingLevel: null } } });
 });
 
 test.describe("new-session defaults", () => {
@@ -96,6 +96,13 @@ test.describe("new-session defaults", () => {
   });
 
   test("keeps a reused pinned tab empty across sequential /new commands", async ({ page }) => {
+    // These are the production-shaped saved defaults that add SDK metadata to
+    // an otherwise blank snapshot; the exact conversational count must still win.
+    await page.request.patch("/api/settings", { data: { defaults: {
+      pinNewSessions: true,
+      model: { provider: "mock", id: "model" },
+      thinkingLevel: "low",
+    } } });
     await setPinNewSessions(page, true);
     let newPosts = 0;
     page.on("request", (request) => {
@@ -108,8 +115,31 @@ test.describe("new-session defaults", () => {
     await expect.poll(() => activeSessionId(page)).not.toBe("mock-current");
     const reusedId = await activeSessionId(page);
 
-    await page.locator("#prompt").fill("/new");
-    await page.locator("#primaryButton").click();
+    // Reload through a cold listing, then inflate the SDK-wide total while
+    // preserving its exact conversational count. New must use the latter.
+    await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
+    await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+    await page.route("**/api/sessions**", async (route) => {
+      if (new URL(route.request().url()).pathname !== "/api/sessions") return route.continue();
+      const response = await route.fetch();
+      const data = await response.json();
+      for (const session of data.sessions || []) delete session.messageCount;
+      await route.fulfill({ response, json: data });
+    });
+    await page.goto("/?sessionId=mock-current");
+    await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+    await page.route("**/api/state**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("sessionId") !== reusedId) return route.continue();
+      const response = await route.fetch();
+      const data = await response.json();
+      data.stats = { ...(data.stats || {}), totalMessages: (data.stats?.totalMessages || 0) + 2, conversationMessages: 0 };
+      await route.fulfill({ response, json: data });
+    });
+    const opened = page.waitForResponse((response) => response.url().includes("/api/sessions/open") && response.request().method() === "POST" && response.ok());
+    await clickHeaderNew(page);
+    await opened;
     await expect.poll(() => activeSessionId(page)).toBe(reusedId);
     await page.waitForTimeout(150);
     expect(newPosts).toBe(1);
@@ -238,6 +268,59 @@ test.describe("new-session defaults", () => {
     await opened;
     await expect.poll(() => activeSessionId(page)).toBe(b);
     expect(newPosts).toBe(0);
+  });
+
+  test("creates a replacement when a cached empty pinned tab was deleted elsewhere", async ({ page }) => {
+    await setPinNewSessions(page, true);
+    const vanishedId = await createNewSession(page);
+    await expectPinned(page, vanishedId);
+
+    await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
+    await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+
+    // Keep the listing's stale pin, but make the authoritative open report the
+    // external deletion just as the production endpoint does.
+    await page.route("**/api/sessions/open", async (route) => {
+      if (route.request().postDataJSON()?.sessionId === vanishedId) {
+        await route.fulfill({ status: 404, contentType: "text/plain", body: "Session not found" });
+      } else {
+        await route.continue();
+      }
+    });
+    const created = page.waitForResponse((response) => response.url().endsWith("/api/sessions/new") && response.request().method() === "POST" && response.ok());
+    await clickHeaderNew(page);
+    await created;
+    await expect.poll(() => activeSessionId(page)).not.toBe("mock-current");
+    const replacementId = await activeSessionId(page);
+    expect(replacementId).not.toBe(vanishedId);
+    await expectPinned(page, replacementId);
+    await expect(page.locator(`.sessionBarTab[data-session-id="${vanishedId}"]`)).toHaveCount(0);
+    await expectLane(page, vanishedId, undefined);
+  });
+
+  test("does not create a replacement when opening a reusable tab fails", async ({ page }) => {
+    await setPinNewSessions(page, true);
+    const reusableId = await createNewSession(page);
+    await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
+    await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+
+    let newPosts = 0;
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/sessions/new") && request.method() === "POST") newPosts += 1;
+    });
+    await page.route("**/api/sessions/open", async (route) => {
+      if (route.request().postDataJSON()?.sessionId === reusableId) {
+        await route.fulfill({ status: 500, contentType: "text/plain", body: "Temporary failure" });
+      } else {
+        await route.continue();
+      }
+    });
+    await clickHeaderNew(page);
+    await expect(page.locator("#messages")).toContainText("Temporary failure");
+    expect(newPosts).toBe(0);
+    await expect.poll(() => activeSessionId(page)).toBe("mock-current");
   });
 
   test("drafts and worker/parked tabs are not reused; explicit unpin stays unpinned", async ({ page }) => {

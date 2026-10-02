@@ -95,6 +95,23 @@ describe("empty new-session reuse", () => {
     expect(reusableEmptySession(value, cwd, noDraft)?.id).toBe("cold");
   });
 
+  it("reuses a metadata-only snapshot when its refreshed conversational count is zero", () => {
+    expect(reusableEmptySession(state({
+      id: "active",
+      cwd,
+      stats: { totalMessages: 2, conversationMessages: 0 },
+    }), cwd, noDraft)?.id).toBe("active");
+  });
+
+  it.each([
+    { messageCount: 0, stats: { totalMessages: 3, conversationMessages: 1 } },
+    { messageCount: 1, stats: { totalMessages: 2, conversationMessages: 0 } },
+    { messageCount: 1, stats: { totalMessages: 1, conversationMessages: 1 } },
+    { firstMessage: "Custom extension report", stats: { totalMessages: 1, conversationMessages: 0 } },
+  ])("does not reuse a positive conversational count or visible content: %j", (patch) => {
+    expect(reusableEmptySession(state({ ...empty("active"), ...patch }), cwd, noDraft)).toBeUndefined();
+  });
+
   it("can use an exact empty list count without a loaded transcript", () => {
     expect(reusableEmptySession(state({ id: "active", cwd, messageCount: 0 }), cwd, noDraft)?.id).toBe("active");
   });

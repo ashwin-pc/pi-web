@@ -89,6 +89,8 @@ export type SessionStats = {
   assistantMessages?: number;
   toolResults?: number;
   totalMessages?: number;
+  /** Exact transcript-message count, excluding SDK branch metadata. */
+  conversationMessages?: number;
   tokens?: {
     input?: number;
     output?: number;

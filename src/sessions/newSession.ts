@@ -35,13 +35,27 @@ export function emptySessionCandidates(
     const runtime = session.runtime;
     if (runtime?.isRunning || runtime?.isStreaming || runtime?.isRetrying || runtime?.isCompacting || runtime?.pendingMessageCount) return false;
     if (session.queue?.steering.length || session.queue?.followUp.length) return false;
-    const total = session.stats?.totalMessages;
-    if ((total ?? 0) > 0 || (session.messageCount ?? 0) > 0) return false;
+    // conversationMessages is refreshed with every stats event. totalMessages
+    // includes SDK branch metadata, so a legacy total only proves emptiness at
+    // zero when no authoritative conversational count is available.
+    const conversational = session.stats?.conversationMessages;
+    // A fresh list count can arrive before the next stats event. Treat either
+    // positive authoritative count as content rather than risking reuse.
+    if ((conversational !== undefined && conversational !== 0)
+      || (session.messageCount !== undefined && session.messageCount !== 0)) return false;
+    if (conversational === undefined && session.messageCount === undefined
+      && (session.stats?.totalMessages ?? 0) > 0) return false;
     return !hasDraft(session.id);
   });
 }
 
 /** Never infer emptiness merely from a missing first-message preview. */
 export function reusableEmptySession(...args: Parameters<typeof emptySessionCandidates>): SessionViewState | undefined {
-  return emptySessionCandidates(...args).find((session) => session.stats?.totalMessages === 0 || session.messageCount === 0);
+  return emptySessionCandidates(...args).find((session) => {
+    const conversational = session.stats?.conversationMessages;
+    if ((conversational !== undefined && conversational !== 0)
+      || (session.messageCount !== undefined && session.messageCount !== 0)) return false;
+    return conversational === 0 || session.messageCount === 0
+      || (conversational === undefined && session.messageCount === undefined && session.stats?.totalMessages === 0);
+  });
 }

@@ -43,7 +43,7 @@ export type SessionsController = {
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
   activeWorkersFor: (sessionId: string) => ActiveWorker[];
-  openSessionTab: (sessionId: string, cwd: string) => Promise<void>;
+  openSessionTab: (sessionId: string, cwd: string) => Promise<"opened" | "missing" | "failed">;
   openSessionById: (sessionId: string) => Promise<void>;
 };
 
@@ -440,9 +440,10 @@ export function createSessions(options: {
   async function startOrReuseSession(cwd: string | undefined, targetCwd: string, previousSessionId: string) {
     const wasDrawerOpen = !elements.sessionDrawer.hidden;
     const pinNewSessions = state.settings.defaults.pinNewSessions === true;
-    let reusable = pinNewSessions ? reusableEmptySession(state, targetCwd, options.hasSessionDraft) : undefined;
-    if (pinNewSessions && reusable?.id !== state.currentSessionId) {
-      // Refresh before checking inactive pinned tabs; their cached counts may be stale.
+    let reusable: ReturnType<typeof reusableEmptySession>;
+    if (pinNewSessions) {
+      // Validate even the active tab: a recent prompt or external edit can make
+      // its previously empty snapshot stale before realtime stats arrive.
       await refreshSessions(true);
       reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
       if (!reusable) {
@@ -452,7 +453,10 @@ export function createSessions(options: {
         delete headers["x-pi-web-client-id"];
         for (const candidate of emptySessionCandidates(state, targetCwd, options.hasSessionDraft)) {
           const res = await fetch(`/api/state?sessionId=${encodeURIComponent(candidate.id)}`, { headers });
-          if (res.status === 404) continue; // A stale pin may point at a deleted session.
+          if (res.status === 404) {
+            discardMissingSession(candidate.id);
+            continue; // A stale pin may point at a deleted session.
+          }
           if (!res.ok) throw new Error(await res.text());
           sessionState.applySnapshot(await res.json());
           reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
@@ -460,10 +464,15 @@ export function createSessions(options: {
         }
       }
     }
-    if (reusable) {
-      if (reusable.id !== state.currentSessionId) await openSessionTab(reusable.id, targetCwd);
-      // Do not re-pin a tab the user explicitly closed/unpinned.
-    } else {
+    while (reusable && reusable.id !== state.currentSessionId) {
+      // Opening is the authoritative existence check. A cached pin can disappear
+      // between the list/snapshot read and this request.
+      const result = await openSessionTab(reusable.id, targetCwd);
+      if (result === "opened") break;
+      if (result === "failed") return; // Never create a duplicate after a network/server failure.
+      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+    }
+    if (!reusable) {
       const res = await fetch("/api/sessions/new", {
         method: "POST",
         headers: api.headers(),
@@ -1362,7 +1371,22 @@ export function createSessions(options: {
     return "Session";
   }
 
-  async function openSessionTab(sessionId: string, cwd: string) {
+  function discardMissingSession(sessionId: string) {
+    cachedSessions = cachedSessions.filter((session) => session.id !== sessionId);
+    sessionState.remove(sessionId);
+    const lane = laneOf(sessionId);
+    state.lanes = state.lanes.filter((entry) => entry.sessionId !== sessionId);
+    if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane];
+    saveLaneFocus();
+    // Preserve notes, markers, and all other preferences: only the vanished
+    // session's cached projection and lane are no longer meaningful.
+    if (lane) persistSessionUiState({ lanes: state.lanes });
+    syncPinnedProjection();
+    renderSessionList(cachedSessions);
+    renderSessionBar();
+  }
+
+  async function openSessionTab(sessionId: string, cwd: string): Promise<"opened" | "missing" | "failed"> {
     const previousSessionId = state.currentSessionId;
     const previousFocusedLane = focusedLane;
     const targetLane = laneOf(sessionId);
@@ -1373,26 +1397,36 @@ export function createSessions(options: {
       beginTranscriptLoading();
       clearMessages();
     }
+    let missing = false;
     try {
       const openRes = await fetch("/api/sessions/open", {
         method: "POST",
         headers: api.headers(),
         body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
-      if (!openRes.ok) throw new Error(await openRes.text());
-      if (!await applyOpenedSession(openRes)) { focusedLane = previousFocusedLane; renderSessionBar(); return; }
+      if (!openRes.ok) {
+        missing = openRes.status === 404;
+        throw new Error(await openRes.text());
+      }
+      if (!await applyOpenedSession(openRes)) { focusedLane = previousFocusedLane; renderSessionBar(); return "failed"; }
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       if (targetLane) { focusedSessionByLane[targetLane] = sessionId; saveLaneFocus(); }
       markSessionReadBestEffort(sessionId);
       options.onDerivedSessionStateChanged?.();
+      return "opened";
     } catch (error) {
       if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
       focusedLane = previousFocusedLane;
-      renderSessionBar();
+      if (missing) {
+        discardMissingSession(sessionId);
+      } else {
+        renderSessionBar();
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      }
       options.onDerivedSessionStateChanged?.();
-      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      return missing ? "missing" : "failed";
     }
   }
 
