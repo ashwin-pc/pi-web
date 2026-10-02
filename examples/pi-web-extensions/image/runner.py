@@ -21,6 +21,25 @@ def profile_assets(profile):
         assets.append(('loras', safe_filename(profile['lora']['file'])))
     return assets
 
+def edit_size(original_w, original_h, requested_resolution):
+    """Mirror TextEncodeQwenImage21's resize exactly; choose a valid scalar, never distort the input."""
+    import math
+    if original_w <= 0 or original_h <= 0:
+        raise ValueError('Edit image dimensions must be positive')
+    ratio = original_w / original_h
+    def dimensions(resolution):
+        width = max(32, round(math.sqrt(resolution * resolution * ratio) / 32) * 32)
+        height = max(32, round(math.sqrt(resolution * resolution / ratio) / 32) * 32)
+        return width, height
+    # The upstream encoder accepts a single scalar resolution (step 32); matching
+    # its actual resize is essential because it also creates the sampling latent.
+    candidates = [(abs(resolution - requested_resolution), resolution, *dimensions(resolution))
+                  for resolution in range(32, 4097, 32)]
+    for _, resolution, width, height in sorted(candidates):
+        if 256 <= width <= 2048 and 256 <= height <= 2048:
+            return resolution, width, height
+    raise ValueError(f'Edit aspect ratio {original_w}:{original_h} cannot fit 256–2048 pixel sampling bounds without distortion; crop or pad the source image')
+
 def workflow(req, inputs):
     profile = req['profile']
     profile_assets(profile)
@@ -83,16 +102,12 @@ def main(req):
         shutil.copyfile(path, root/'input'/name)
         copied.append(name)
     if copied:
-        # TextEncodeQwenImage21 sets the edit latent from the first resized reference.
-        import math
+        # TextEncodeQwenImage21 creates the edit latent at the first reference's
+        # resized dimensions. Use its exact scalar/rounding for sigmas and latent.
         from PIL import Image
         with Image.open(root/'input'/copied[0]) as image:
             original_w, original_h = image.size
-        resolution = max(req['width'], req['height'])
-        req['edit_resolution'] = resolution
-        ratio = original_w / original_h
-        req['width'] = max(32, round(math.sqrt(resolution * resolution * ratio) / 32) * 32)
-        req['height'] = max(32, round(math.sqrt(resolution * resolution / ratio) / 32) * 32)
+        req['edit_resolution'], req['width'], req['height'] = edit_size(original_w, original_h, max(req['width'], req['height']))
     flow = workflow(req, copied)
     (root/'workflow.json').write_text(json.dumps(flow, indent=2)+'\n')
     if req.get('dry_run'):

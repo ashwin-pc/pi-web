@@ -45,6 +45,30 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(graph['model']['inputs']['unet_name'],'personal.safetensors')
         with self.assertRaises(ValueError): runner.profile_assets(dict(custom, model=dict(loader='UNETLoader',file='../outside')))
 
+    def test_edit_resize_matches_encoder_and_sampler_for_both_schedules(self):
+        models = json.loads((HERE / 'config.example.json').read_text())['models']
+        cases = [(5000, 1000), (1000, 5000), (8000, 1000), (1000, 8000), (4000, 1000), (1000, 4000)]
+        for original_w, original_h in cases:
+            resolution, width, height = runner.edit_size(original_w, original_h, 1024)
+            self.assertEqual(resolution % 32, 0)
+            self.assertTrue(256 <= width <= 2048 and 256 <= height <= 2048)
+            # Upstream TextEncodeQwenImage21 computes precisely this pair from resolution.
+            ratio = original_w / original_h
+            self.assertEqual(width, max(32, round(math.sqrt(resolution * resolution * ratio) / 32) * 32))
+            self.assertEqual(height, max(32, round(math.sqrt(resolution * resolution / ratio) / 32) * 32))
+            for profile in models.values():
+                graph = runner.workflow(dict(profile=profile,prompt='edit',seed=1,width=width,height=height,edit_resolution=resolution), ['input.png'])
+                self.assertEqual(graph['encode']['inputs']['resolution'], resolution)
+                if profile['sampling']['kind'] == 'viggle-flow':
+                    self.assertEqual(graph['sigmas']['inputs'], {'width':width,'height':height})
+                else:
+                    self.assertEqual(graph['sample']['inputs']['latent_image'], ['encode',2])
+        self.assertEqual(runner.edit_size(5000,1000,1024), (896,2016,416))
+        self.assertEqual(runner.edit_size(1000,5000,1024), (896,416,2016))
+        for dimensions in [(10000,100), (100,10000)]:
+            with self.assertRaisesRegex(ValueError, 'crop or pad'):
+                runner.edit_size(*dimensions, 1024)
+
     def test_custom_node_math_and_padding_parity(self):
         try:
             import torch
