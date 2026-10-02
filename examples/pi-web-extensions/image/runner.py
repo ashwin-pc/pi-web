@@ -87,21 +87,34 @@ def api(port, path, data=None):
     with urllib.request.urlopen(request, timeout=15) as response:
         return json.load(response)
 
+def process_group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
 def stop_process_group(proc):
-    # poll() may already have reaped the leader; children may still be alive.
-    # A missing group is benign, but other signal failures should surface.
+    # poll() may have reaped the leader, but a child can still hold the group.
+    # Waiting on proc alone cannot detect that child or unload its weights.
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
-    try:
-        proc.wait(timeout=15)
-    except subprocess.TimeoutExpired:
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
+            proc.wait(timeout=0)  # Reap the leader; a zombie also keeps the group visible.
+        except subprocess.TimeoutExpired:
             pass
-        proc.wait()
+        if not process_group_exists(proc.pid):
+            return
+        time.sleep(0.2)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait(timeout=5)
 
 def main(req):
     root = pathlib.Path(req['root']).resolve()

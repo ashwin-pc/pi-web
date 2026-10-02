@@ -18,15 +18,22 @@ spec.loader.exec_module(runner)
 class WorkflowTests(unittest.TestCase):
     def test_process_group_cleanup_after_leader_exit_and_timeout(self):
         exited = Mock(pid=1234)
-        with patch.object(runner.os, 'killpg', side_effect=ProcessLookupError):
+        with patch.object(runner.os, 'killpg', side_effect=ProcessLookupError), patch.object(runner.time, 'sleep'):
             runner.stop_process_group(exited)
-        exited.wait.assert_called_once_with(timeout=15)
-        hanging = Mock(pid=5678)
-        hanging.wait.side_effect = [subprocess.TimeoutExpired('ComfyUI', 15), 0]
-        with patch.object(runner.os, 'killpg', side_effect=[None, ProcessLookupError]) as kill:
-            runner.stop_process_group(hanging)
+        exited.wait.assert_called_once_with(timeout=0)
+        # The leader is already reaped, yet another group member survives TERM.
+        # Cleanup must probe the whole group until it disappears, not return on wait().
+        child_alive = Mock(pid=5678)
+        with patch.object(runner.os, 'killpg') as kill, patch.object(runner, 'process_group_exists', side_effect=[True, True, False]) as probe, patch.object(runner.time, 'sleep') as sleep:
+            runner.stop_process_group(child_alive)
+        self.assertEqual(probe.call_count, 3)
+        self.assertEqual(sleep.call_count, 2)
+        self.assertEqual([call.args[1] for call in kill.call_args_list], [signal.SIGTERM])
+        stubborn = Mock(pid=9876)
+        with patch.object(runner.os, 'killpg') as kill, patch.object(runner, 'process_group_exists', return_value=True), patch.object(runner.time, 'monotonic', side_effect=[0, 0, 16]), patch.object(runner.time, 'sleep'):
+            runner.stop_process_group(stubborn)
         self.assertEqual([call.args[1] for call in kill.call_args_list], [signal.SIGTERM, signal.SIGKILL])
-        self.assertEqual(hanging.wait.call_count, 2)
+        stubborn.wait.assert_any_call(timeout=5)
 
     def test_local_qwen_variants_and_inputs(self):
         models = json.loads((HERE / 'config.example.json').read_text())['models']
