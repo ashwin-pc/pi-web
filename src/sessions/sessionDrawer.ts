@@ -219,6 +219,8 @@ export function createSessions(options: {
   let transcriptLoading = true;
   let transcriptLoadGeneration = 0;
   let lastReplayedGeneration = -1;
+  // Every open is a navigation intent, including refreshes of the active tab.
+  let sessionOpenGeneration = 0;
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let sessionListRenderFrame: number | undefined;
@@ -451,7 +453,15 @@ export function createSessions(options: {
         // moving this browser's viewer lease or opening/changing the active tab.
         const headers = api.headers();
         delete headers["x-pi-web-client-id"];
-        for (const candidate of emptySessionCandidates(state, targetCwd, options.hasSessionDraft)) {
+        // Local slash-command output can make the active tab's optimistic
+        // projection look non-empty even though its authoritative transcript is
+        // blank. Validate it alongside ordinary empty candidates.
+        const activeCandidate = state.sessionsById[state.currentSessionId];
+        const candidates = [
+          ...(activeCandidate && activeCandidate.cwd === targetCwd && !options.hasSessionDraft(activeCandidate.id) ? [activeCandidate] : []),
+          ...emptySessionCandidates(state, targetCwd, options.hasSessionDraft),
+        ];
+        for (const candidate of Array.from(new Map(candidates.map((item) => [item.id, item])).values())) {
           const res = await fetch(`/api/state?sessionId=${encodeURIComponent(candidate.id)}`, { headers });
           if (res.status === 404) {
             discardMissingSession(candidate.id);
@@ -464,13 +474,15 @@ export function createSessions(options: {
         }
       }
     }
-    while (reusable && reusable.id !== state.currentSessionId) {
-      // Opening is the authoritative existence check. A cached pin can disappear
-      // between the list/snapshot read and this request.
-      const result = await openSessionTab(reusable.id, targetCwd);
-      if (result === "opened") break;
+    while (reusable) {
+      // Opening is the authoritative existence check and also refreshes an
+      // already-active candidate, which removes transient local-only output.
+      // A cached pin can disappear or gain a message between discovery and open.
+      const openedId = reusable.id;
+      const result = await openSessionTab(openedId, targetCwd);
       if (result === "failed") return; // Never create a duplicate after a network/server failure.
       reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+      if (result === "opened" && reusable?.id === openedId) break;
     }
     if (!reusable) {
       const res = await fetch("/api/sessions/new", {
@@ -1387,18 +1399,16 @@ export function createSessions(options: {
   }
 
   async function openSessionTab(sessionId: string, cwd: string): Promise<"opened" | "missing" | "failed"> {
+    const openGeneration = ++sessionOpenGeneration;
     const previousSessionId = state.currentSessionId;
     const previousFocusedLane = focusedLane;
     const targetLane = laneOf(sessionId);
-    const switchingSessions = state.currentSessionId !== sessionId;
-    if (targetLane) focusedLane = targetLane;
-    if (switchingSessions) {
-      sessionState.activate(sessionId);
-      beginTranscriptLoading();
-      clearMessages();
-    }
+    const switchingSessions = previousSessionId !== sessionId;
     let missing = false;
     try {
+      // Do not clear the current transcript until the server has accepted the
+      // open. Besides avoiding a lossy rollback on an offline/500 response,
+      // this makes a late response harmless if another navigation won first.
       const openRes = await fetch("/api/sessions/open", {
         method: "POST",
         headers: api.headers(),
@@ -1408,7 +1418,20 @@ export function createSessions(options: {
         missing = openRes.status === 404;
         throw new Error(await openRes.text());
       }
-      if (!await applyOpenedSession(openRes)) { focusedLane = previousFocusedLane; renderSessionBar(); return "failed"; }
+      if (openGeneration !== sessionOpenGeneration || state.currentSessionId !== previousSessionId) return "failed";
+      if (targetLane) focusedLane = targetLane;
+      if (switchingSessions) {
+        sessionState.activate(sessionId);
+        beginTranscriptLoading();
+      }
+      const applied = await applyOpenedSession(openRes);
+      if (openGeneration !== sessionOpenGeneration || state.currentSessionId !== sessionId) return "failed";
+      if (!applied) {
+        sessionState.activate(previousSessionId);
+        focusedLane = previousFocusedLane;
+        renderSessionBar();
+        return "failed";
+      }
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
@@ -1417,13 +1440,23 @@ export function createSessions(options: {
       options.onDerivedSessionStateChanged?.();
       return "opened";
     } catch (error) {
-      if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
+      if (openGeneration !== sessionOpenGeneration
+        || (state.currentSessionId !== previousSessionId && state.currentSessionId !== sessionId)) return "failed";
+      if (state.currentSessionId === sessionId && switchingSessions) sessionState.activate(previousSessionId);
       focusedLane = previousFocusedLane;
       if (missing) {
         discardMissingSession(sessionId);
-      } else {
-        renderSessionBar();
-        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      } else if (state.currentSessionId === previousSessionId) {
+        // The old transcript was never cleared. A prior in-flight refresh may
+        // nevertheless have replaced it while this open was pending, so refresh
+        // the still-current previous session before showing the error. If the
+        // network is down too, retain whatever local transcript survived.
+        try { await refreshMessages(); } catch { /* Local transcript is the offline fallback. */ }
+        if (state.currentSessionId === previousSessionId) {
+          finishTranscriptLoading();
+          renderSessionBar();
+          addMessage("system", error instanceof Error ? error.message : String(error), "error");
+        }
       }
       options.onDerivedSessionStateChanged?.();
       return missing ? "missing" : "failed";
@@ -2781,34 +2814,9 @@ export function createSessions(options: {
       navBtn.append(meta);
     }
     navBtn.addEventListener("click", async () => {
-      const previousSessionId = state.currentSessionId;
-      const nextCwd = item.cwd || cwd;
-      const switchingSessions = state.currentSessionId !== item.id;
-      if (switchingSessions) {
-        sessionState.activate(item.id);
-        beginTranscriptLoading();
-        clearMessages();
-      }
-      try {
-        const openRes = await fetch("/api/sessions/open", {
-          method: "POST",
-          headers: api.headers(),
-          body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
-        });
-        if (!openRes.ok) throw new Error(await openRes.text());
-        if (!await applyOpenedSession(openRes)) return;
-        writeActiveSessionIdToUrl(item.id);
-        rememberSessionCwd(nextCwd);
-        markCachedCurrentSession(item.id, nextCwd);
-        markSessionReadBestEffort(item.id);
-        onDerivedSessionStateChanged?.();
-        if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
-      } catch (error) {
-        if (switchingSessions && state.currentSessionId === item.id) sessionState.activate(previousSessionId);
-        onDerivedSessionStateChanged?.();
-        addMessage("system", error instanceof Error ? error.message : String(error), "error");
-        if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
-      }
+      const result = await openSessionTab(item.id, item.cwd || cwd);
+      if (result === "opened" && shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
+      else if (result === "failed" && !elements.sessionDrawer.hidden) void refreshSessions().catch(() => undefined);
     });
 
     const actionsBtn = document.createElement("button");

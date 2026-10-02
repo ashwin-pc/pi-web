@@ -147,6 +147,57 @@ test.describe("new-session defaults", () => {
     await expect(page.locator("#emptyCwdChooser")).toBeVisible();
   });
 
+  test("refreshes an active empty reusable tab after local help output", async ({ page }) => {
+    await setPinNewSessions(page, true);
+    const emptyId = await createNewSession(page);
+    await page.locator("#prompt").fill("/help");
+    await page.locator("#primaryButton").click();
+    await expect(page.locator("#messages")).not.toBeEmpty();
+    let newPosts = 0;
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/sessions/new") && request.method() === "POST") newPosts += 1;
+    });
+    const opened = page.waitForResponse((response) => response.url().endsWith("/api/sessions/open") && response.request().postDataJSON()?.sessionId === emptyId && response.ok());
+    await clickHeaderNew(page);
+    await opened;
+    await expect.poll(() => activeSessionId(page)).toBe(emptyId);
+    await expect(page.locator("#messages")).toBeEmpty();
+    await expect(page.locator("#emptyCwdChooser")).toBeVisible();
+    expect(newPosts).toBe(0);
+  });
+
+  test("latest tab-open intent wins over a delayed earlier open", async ({ page }) => {
+    await setPinNewSessions(page, true);
+    const a = await createNewSession(page);
+    await page.locator("#prompt").fill("keep A draft");
+    let releaseB!: () => void;
+    const bOpened = new Promise<void>((resolve) => { releaseB = resolve; });
+    let bRequested!: () => void;
+    const bRequest = new Promise<void>((resolve) => { bRequested = resolve; });
+    let aRequested!: () => void;
+    const aRequest = new Promise<void>((resolve) => { aRequested = resolve; });
+    await page.route("**/api/sessions/open", async (route) => {
+      const id = route.request().postDataJSON()?.sessionId;
+      if (id === "mock-older") {
+        bRequested();
+        await bOpened;
+      }
+      if (id === a) aRequested();
+      await route.continue();
+    });
+    await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator('.sessionItem[data-session-id="mock-older"] .sessionItemNavBtn').click();
+    await bRequest;
+    await expect.poll(() => activeSessionId(page)).toBe(a);
+    await page.locator(`.sessionBarTab[data-session-id="${a}"] .sessionBarTabOpen`).evaluate((button: HTMLButtonElement) => button.click());
+    await aRequest;
+    const finishedB = page.waitForResponse((response) => response.url().endsWith("/api/sessions/open") && response.request().postDataJSON()?.sessionId === "mock-older");
+    releaseB();
+    await finishedB;
+    await expect(page.locator("#prompt")).toHaveValue("keep A draft");
+    await expect.poll(() => activeSessionId(page)).toBe(a);
+  });
+
   test("coalesces a rapid mixed New burst and reuses an inactive empty pinned tab", async ({ page }) => {
     await setPinNewSessions(page, true);
     let release!: () => void;
@@ -305,6 +356,8 @@ test.describe("new-session defaults", () => {
     await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
     await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
     await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+    const originalUser = await page.locator(".message.user").first().textContent();
+    const originalAssistant = await page.locator(".message.assistant").first().textContent();
 
     let newPosts = 0;
     page.on("request", (request) => {
@@ -319,8 +372,34 @@ test.describe("new-session defaults", () => {
     });
     await clickHeaderNew(page);
     await expect(page.locator("#messages")).toContainText("Temporary failure");
+    await expect(page.locator(".message.user").first()).toHaveText(originalUser || "");
+    await expect(page.locator(".message.assistant").first()).toHaveText(originalAssistant || "");
     expect(newPosts).toBe(0);
     await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+  });
+
+  test("keeps the current transcript when reusable-tab open has a transport failure", async ({ page }) => {
+    await setPinNewSessions(page, true);
+    const reusableId = await createNewSession(page);
+    await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
+    const originalUser = await page.locator(".message.user").first().textContent();
+    const originalAssistant = await page.locator(".message.assistant").first().textContent();
+    let newPosts = 0;
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/sessions/new") && request.method() === "POST") newPosts += 1;
+    });
+    await page.route("**/api/sessions/open", async (route) => {
+      if (route.request().postDataJSON()?.sessionId === reusableId) await route.abort("failed");
+      else await route.continue();
+    });
+    await page.route("**/api/messages?sessionId=mock-current", (route) => route.abort("failed"));
+
+    await clickHeaderNew(page);
+    await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+    await expect(page.locator(".message.user").first()).toHaveText(originalUser || "");
+    await expect(page.locator(".message.assistant").first()).toHaveText(originalAssistant || "");
+    expect(newPosts).toBe(0);
   });
 
   test("drafts and worker/parked tabs are not reused; explicit unpin stays unpinned", async ({ page }) => {
