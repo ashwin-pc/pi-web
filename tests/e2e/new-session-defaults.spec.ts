@@ -95,6 +95,28 @@ test.describe("new-session defaults", () => {
     await expectPinned(page, pinnedId);
   });
 
+  test("keeps a reused pinned tab empty across sequential /new commands", async ({ page }) => {
+    await setPinNewSessions(page, true);
+    let newPosts = 0;
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/sessions/new") && request.method() === "POST") newPosts += 1;
+    });
+
+    await page.locator("#prompt").fill("/new");
+    await page.locator("#primaryButton").click();
+    await expect.poll(() => newPosts).toBe(1);
+    await expect.poll(() => activeSessionId(page)).not.toBe("mock-current");
+    const reusedId = await activeSessionId(page);
+
+    await page.locator("#prompt").fill("/new");
+    await page.locator("#primaryButton").click();
+    await expect.poll(() => activeSessionId(page)).toBe(reusedId);
+    await page.waitForTimeout(150);
+    expect(newPosts).toBe(1);
+    await expect(page.locator("#messages")).toBeEmpty();
+    await expect(page.locator("#emptyCwdChooser")).toBeVisible();
+  });
+
   test("coalesces a rapid mixed New burst and reuses an inactive empty pinned tab", async ({ page }) => {
     await setPinNewSessions(page, true);
     let release!: () => void;

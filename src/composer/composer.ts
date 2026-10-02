@@ -780,7 +780,9 @@ export function createComposer(options: {
           clearDraft();
           hideSlashCommands();
           updatePrimaryAction();
-          addMessage("system", `› ${promptMessage}`);
+          // /new changes the active session synchronously. Unlike ordinary commands,
+          // its local echo would be left in an empty tab when that tab is reused.
+          if (slashCommandName(promptMessage) !== "new") addMessage("system", `› ${promptMessage}`);
           try {
             await runSlashCommand(promptMessage);
           } catch (error) {
