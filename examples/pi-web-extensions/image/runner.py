@@ -5,22 +5,34 @@ import json, os, pathlib, shutil, signal, socket, subprocess, sys, time, urllib.
 HOME = pathlib.Path(os.environ.get('PI_IMAGE_RUNTIME_ROOT', '')).expanduser().resolve() if os.environ.get('PI_IMAGE_RUNTIME_ROOT') else None
 COMFY = HOME / 'ComfyUI' if HOME else None
 WEIGHTS = COMFY / 'models' if COMFY else None
-MODELS = {
-    'official-bf16': ('UNETLoader', 'qwen_image_2.1_bf16.safetensors', 40),
-    'uc-q4': ('UnetLoaderGGUF', 'qwen-image-2.1-UC-Q4_K_M.gguf', 40),
-    'viggle-4step': ('UNETLoader', 'qwen_image_2.1_bf16.safetensors', 4),
-    'uc-viggle': ('UnetLoaderGGUF', 'qwen-image-2.1-UC-Q4_K_M.gguf', 4),
-}
-VIGGLE_MODELS = {'viggle-4step', 'uc-viggle'}
+def safe_filename(value):
+    if not isinstance(value, str) or not value or value in ('.', '..') or '/' in value or '\\' in value:
+        raise ValueError('Model asset must be a filename within its ComfyUI model directory')
+    return value
+
+def profile_assets(profile):
+    model = profile['model']
+    if model['loader'] not in ('UNETLoader', 'UnetLoaderGGUF'):
+        raise ValueError('Unsupported Qwen model loader')
+    assets = [('diffusion_models', safe_filename(model['file'])),
+              ('text_encoders', safe_filename(profile['textEncoder'])),
+              ('vae', safe_filename(profile['vae']))]
+    if profile.get('lora'):
+        assets.append(('loras', safe_filename(profile['lora']['file'])))
+    return assets
 
 def workflow(req, inputs):
-    kind = req['model']
-    loader, model_name, steps = MODELS[kind]
+    profile = req['profile']
+    profile_assets(profile)
+    model_spec = profile['model']
+    sampling = profile['sampling']
+    loader = model_spec['loader']
+    model_name = model_spec['file']
     w, h = req['width'], req['height']
     d = {
-      'model': {'class_type': loader, 'inputs': {'unet_name': model_name, **({'weight_dtype': 'default'} if loader == 'UNETLoader' else {})}},
-      'clip': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': 'qwen3vl_8b_bf16.safetensors', 'type': 'qwen_image', 'device': 'default'}},
-      'vae': {'class_type': 'PiQwen21VAELoader', 'inputs': {'vae_name': 'qwen_image_2.1_vae_bf16.safetensors'}},
+      'model': {'class_type': loader, 'inputs': {'unet_name': model_name, **({'weight_dtype': model_spec.get('weight_dtype', 'default')} if loader == 'UNETLoader' else {})}},
+      'clip': {'class_type': 'CLIPLoader', 'inputs': {'clip_name': profile['textEncoder'], 'type': 'qwen_image', 'device': 'default'}},
+      'vae': {'class_type': 'PiQwen21VAELoader', 'inputs': {'vae_name': profile['vae']}},
       'encode': {'class_type': 'TextEncodeQwenImage21', 'inputs': {'clip': ['clip',0], 'vae': ['vae',0], 'prompt': req['prompt'], 'negative_prompt': '', 'resolution': req.get('edit_resolution', max(w,h))}},
       'decode': {'class_type': 'VAEDecode', 'inputs': {'vae': ['vae',0], 'samples': ['sample',0]}},
       'save': {'class_type': 'SaveImage', 'inputs': {'images': ['decode',0], 'filename_prefix': 'image-output'}},
@@ -33,18 +45,22 @@ def workflow(req, inputs):
     if not inputs:
         d['latent'] = {'class_type': 'PiQwen21EmptyLatent', 'inputs': {'width': w, 'height': h}}
     model = ['model',0]
-    if kind in VIGGLE_MODELS:
-        d['lora'] = {'class_type': 'LoraLoaderModelOnly', 'inputs': {'model': model, 'lora_name': 'Qwen-Image-2.1-viggle-turbo-4step-r64-comfyui-T8.safetensors', 'strength_model': 1.0}}
+    if profile.get('lora'):
+        d['lora'] = {'class_type': 'LoraLoaderModelOnly', 'inputs': {'model': model, 'lora_name': profile['lora']['file'], 'strength_model': profile['lora']['strength']}}
         model = ['lora',0]
+    if sampling['kind'] == 'viggle-flow':
+        if sampling['steps'] != 4: raise ValueError('viggle-flow requires four steps')
         d.update({
           'noise': {'class_type': 'RandomNoise', 'inputs': {'noise_seed': req['seed']}},
-          'guider': {'class_type': 'CFGGuider', 'inputs': {'model': model, 'positive': ['encode',0], 'negative': ['encode',1], 'cfg': 1.0}},
-          'sampler': {'class_type': 'KSamplerSelect', 'inputs': {'sampler_name': 'euler'}},
+          'guider': {'class_type': 'CFGGuider', 'inputs': {'model': model, 'positive': ['encode',0], 'negative': ['encode',1], 'cfg': sampling['cfg']}},
+          'sampler': {'class_type': 'KSamplerSelect', 'inputs': {'sampler_name': sampling['sampler']}},
           'sigmas': {'class_type': 'PiViggleFlowSigmas', 'inputs': {'width': w, 'height': h}},
           'sample': {'class_type': 'SamplerCustomAdvanced', 'inputs': {'noise': ['noise',0], 'guider': ['guider',0], 'sampler': ['sampler',0], 'sigmas': ['sigmas',0], 'latent_image': latent}},
         })
+    elif sampling['kind'] == 'standard':
+        d['sample'] = {'class_type': 'KSampler', 'inputs': {'model': model, 'positive': ['encode',0], 'negative': ['encode',1], 'latent_image': latent, 'seed': req['seed'], 'steps': sampling['steps'], 'cfg': sampling['cfg'], 'sampler_name': sampling['sampler'], 'scheduler': sampling.get('scheduler', 'simple'), 'denoise': sampling.get('denoise', 1.0)}}
     else:
-        d['sample'] = {'class_type': 'KSampler', 'inputs': {'model': model, 'positive': ['encode',0], 'negative': ['encode',1], 'latent_image': latent, 'seed': req['seed'], 'steps': steps, 'cfg': 1.0, 'sampler_name': 'euler', 'scheduler': 'simple', 'denoise': 1.0}}
+        raise ValueError('Unsupported Qwen sampling kind')
     return d
 
 def api(port, path, data=None):
@@ -85,8 +101,7 @@ def main(req):
     # Preflight before any model weights are loaded. No cross-session inference lock by design.
     if HOME is None or not (HOME/'venv/bin/python').is_file() or not (COMFY/'main.py').is_file():
         raise RuntimeError('Set PI_IMAGE_RUNTIME_ROOT to an isolated runtime with venv/bin/python and ComfyUI/main.py')
-    files = [(WEIGHTS/'diffusion_models'/MODELS[req['model']][1]), WEIGHTS/'text_encoders/qwen3vl_8b_bf16.safetensors', WEIGHTS/'vae/qwen_image_2.1_vae_bf16.safetensors']
-    if req['model'] in VIGGLE_MODELS: files.append(WEIGHTS/'loras/Qwen-Image-2.1-viggle-turbo-4step-r64-comfyui-T8.safetensors')
+    files = [WEIGHTS/folder/name for folder, name in profile_assets(req['profile'])]
     for f in files:
         if not f.is_file() or f.stat().st_size < 1000000: raise RuntimeError(f'Missing model weight: {f}')
     if sys.platform != 'darwin':

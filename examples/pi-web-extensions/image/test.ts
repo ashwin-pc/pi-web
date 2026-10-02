@@ -1,14 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalize, selections, parameters, run } from "./index.js";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { normalize, parameters, run } from "./index.js";
+import { parseConfig, selectProfile, loadConfig } from "./config.js";
+import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
- test("four selector mappings and default", () => {
-  assert.deepEqual(selections, { quick: "viggle-4step", quality: "official-bf16", "uc-quick": "uc-viggle", "uc-quality": "uc-q4" });
-  assert.equal(selections.quick, "viggle-4step");
-  assert.deepEqual((parameters.properties.mode as { anyOf: unknown[] }).anyOf.length, 4);
+test("arbitrary local Qwen names, options and default selection", async () => {
+  const sample = JSON.parse(await readFile(new URL("./config.example.json", import.meta.url), "utf8"));
+  const config = parseConfig(sample);
+  assert.equal(selectProfile(config).name, "my-fast-qwen");
+  assert.equal(selectProfile(config, "my-detailed-qwen").profile.sampling.steps, 40);
+  assert.equal(selectProfile(config, "my-quantized-fast-qwen").profile.model.loader, "UnetLoaderGGUF");
+  const renamed = parseConfig({ defaultModel: "personal-variant", models: { "personal-variant": { ...sample.models["my-detailed-qwen"], model: { loader: "UNETLoader", file: "another-qwen.safetensors" }, sampling: { kind: "standard", steps: 28, cfg: 2, sampler: "heun", scheduler: "normal", denoise: .7 } } } });
+  assert.equal(selectProfile(renamed).profile.model.file, "another-qwen.safetensors");
+  assert.equal(selectProfile(renamed).profile.sampling.sampler, "heun");
+  assert.equal(selectProfile(renamed).profile.sampling.steps, 28);
+  assert.ok(parameters.properties.model);
+  assert.ok(!Object.hasOwn(parameters.properties, "mode"));
+  assert.throws(() => selectProfile(renamed, "quick"), /Unknown image model/);
+  assert.throws(() => parseConfig({ ...sample, defaultModel: "missing" }), /Unknown defaultModel/);
+  assert.throws(() => parseConfig({ defaultModel: "bad", models: { bad: { ...sample.models["my-fast-qwen"], sampling: { ...sample.models["my-fast-qwen"].sampling, steps: 6 } } } }), /requires 4 steps/);
+  assert.throws(() => parseConfig({ defaultModel: "bad", models: { bad: { ...sample.models["my-fast-qwen"], model: { loader: "UNETLoader", file: "../secret" } } } }), /filename/);
+  const prior = process.env.PI_IMAGE_CONFIG;
+  delete process.env.PI_IMAGE_CONFIG;
+  try { await assert.rejects(loadConfig(), /PI_IMAGE_CONFIG/); }
+  finally { if (prior !== undefined) process.env.PI_IMAGE_CONFIG = prior; }
 });
 test("generate, edit, batch and validation", () => {
   assert.deepEqual(normalize({ prompt: "scene", seed: 1 })[0], { prompt: "scene", images: [], seed: 1, width: 1024, height: 1024 });
