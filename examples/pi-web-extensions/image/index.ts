@@ -2,9 +2,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import { loadConfig, selectProfile } from "./config.js";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const parameters = Type.Object({
@@ -65,6 +65,11 @@ export function run(request: string, signal?: AbortSignal): Promise<string> {
     });
   });
 }
+export function artifactUrl(artifacts: string, output: string): string {
+  const path = relative(artifacts, output);
+  if (!path || isAbsolute(path) || path.split(sep).includes("..")) throw new Error("Image runner output is outside the artifact root");
+  return `/api/artifacts/${path.split(sep).map(encodeURIComponent).join("/")}`;
+}
 export default function imageExtension(pi: ExtensionAPI) {
   pi.registerTool({
     name: "image", label: "Generate or edit images",
@@ -75,7 +80,9 @@ export default function imageExtension(pi: ExtensionAPI) {
       runtimeRoot(); // Fail configuration before creating run artifacts.
       const { name: model, profile } = selectProfile(await loadConfig(), params.model);
       const id = `${Date.now()}-${randomUUID().slice(0, 8)}`;
-      const artifacts = join(ctx.cwd, ".pi", "web", "artifacts");
+      const artifactDirectory = join(ctx.cwd, ".pi", "web", "artifacts");
+      await mkdir(artifactDirectory, { recursive: true });
+      const artifacts = await realpath(artifactDirectory);
       const root = join(artifacts, "image", id);
       await mkdir(root, { recursive: true });
       const urls: string[] = [];
@@ -89,7 +96,7 @@ export default function imageExtension(pi: ExtensionAPI) {
           await writeFile(requestPath, `${JSON.stringify(request, null, 2)}\n`);
           onUpdate?.({ content: [{ type: "text", text: `Running image job ${index + 1}/${jobs.length} (${model})…` }], details: { runId: id, model, completed: index } });
           const result = JSON.parse((await run(requestPath, signal)).trim()) as { outputs: string[]; prompt_id: string };
-          const outputUrls = result.outputs.map((path) => `/api/artifacts/${relative(artifacts, path).split(sep).map(encodeURIComponent).join("/")}`);
+          const outputUrls = result.outputs.map((path) => artifactUrl(artifacts, path));
           urls.push(...outputUrls);
           await writeFile(join(jobRoot, "result.json"), `${JSON.stringify({ outputUrls, prompt_id: result.prompt_id, stopped: true }, null, 2)}\n`);
         }

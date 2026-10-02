@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { normalize, parameters, run } from "./index.js";
+import { artifactUrl, normalize, parameters, run } from "./index.js";
 import { parseConfig, selectProfile, loadConfig } from "./config.js";
-import { mkdtemp, mkdir, writeFile, rm, readFile } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, rm, readFile, symlink, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -44,6 +44,18 @@ test("generate, edit, batch and validation", () => {
   assert.throws(() => normalize({ jobs: [{ seed: 1 }] }), /prompt/);
   assert.throws(() => normalize({ prompt: "x", jobs: [{}], image_path: "a.png" }), /jobs or top-level/);
   assert.deepEqual(normalize({ jobs: [{ prompt: "a", seed: 1 }, { prompt: "b", seed: 2 }] }).map(j => j.seed), [1, 2]);
+});
+test("artifact URL remains valid through symlinked session cwd", async () => {
+  const temp = await mkdtemp(join(tmpdir(), "pi-image-url-"));
+  try {
+    const real = join(temp, "actual");
+    await mkdir(join(real, ".pi/web/artifacts"), { recursive: true });
+    await symlink(real, join(temp, "linked"));
+    const artifacts = await realpath(join(temp, "linked/.pi/web/artifacts"));
+    const output = join(await realpath(real), ".pi/web/artifacts/image/run/job-1/output/file name.png");
+    assert.equal(artifactUrl(artifacts, output), "/api/artifacts/image/run/job-1/output/file%20name.png");
+    assert.throws(() => artifactUrl(artifacts, join(temp, "elsewhere.png")), /outside the artifact root/);
+  } finally { await rm(temp, { recursive: true, force: true }); }
 });
 test("runner cancellation terminates child and missing configuration fails before spawn", async () => {
   const prior = process.env.PI_IMAGE_RUNTIME_ROOT;
