@@ -13,19 +13,6 @@
       "textEncoder": "qwen3vl_8b_bf16.safetensors",
       "vae": "qwen_image_2.1_vae_bf16.safetensors",
       "sampling": { "kind": "standard", "steps": 40, "cfg": 1, "sampler": "euler", "scheduler": "simple", "denoise": 1 }
-    },
-    "my-quantized-qwen": {
-      "model": { "loader": "UnetLoaderGGUF", "file": "qwen-image-2.1-UC-Q4_K_M.gguf" },
-      "textEncoder": "qwen3vl_8b_bf16.safetensors",
-      "vae": "qwen_image_2.1_vae_bf16.safetensors",
-      "sampling": { "kind": "standard", "steps": 40, "cfg": 1, "sampler": "euler" }
-    },
-    "my-quantized-fast-qwen": {
-      "model": { "loader": "UnetLoaderGGUF", "file": "qwen-image-2.1-UC-Q4_K_M.gguf" },
-      "textEncoder": "qwen3vl_8b_bf16.safetensors",
-      "vae": "qwen_image_2.1_vae_bf16.safetensors",
-      "lora": { "file": "Qwen-Image-2.1-viggle-turbo-4step-r64-comfyui-T8.safetensors", "strength": 1 },
-      "sampling": { "kind": "viggle-flow", "steps": 4, "cfg": 1, "sampler": "euler" }
     }
   }
 }

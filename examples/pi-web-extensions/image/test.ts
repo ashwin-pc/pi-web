@@ -11,7 +11,11 @@ test("arbitrary local Qwen names, options and default selection", async () => {
   const config = parseConfig(sample);
   assert.equal(selectProfile(config).name, "my-fast-qwen");
   assert.equal(selectProfile(config, "my-detailed-qwen").profile.sampling.steps, 40);
-  assert.equal(selectProfile(config, "my-quantized-fast-qwen").profile.model.loader, "UnetLoaderGGUF");
+  assert.equal(Object.keys(config.models).length, 2);
+  assert.deepEqual(Object.keys(config.models), ["my-fast-qwen", "my-detailed-qwen"]);
+  const synthetic = parseConfig({ defaultModel: "personal-gguf", models: { "personal-gguf": { ...sample.models["my-fast-qwen"], model: { loader: "UnetLoaderGGUF", file: "private-qwen.gguf" } } } });
+  assert.equal(selectProfile(synthetic).profile.model.loader, "UnetLoaderGGUF");
+  assert.equal(selectProfile(synthetic).profile.lora?.strength, 1);
   const renamed = parseConfig({ defaultModel: "personal-variant", models: { "personal-variant": { ...sample.models["my-detailed-qwen"], model: { loader: "UNETLoader", file: "another-qwen.safetensors" }, sampling: { kind: "standard", steps: 28, cfg: 2, sampler: "heun", scheduler: "normal", denoise: .7 } } } });
   assert.equal(selectProfile(renamed).profile.model.file, "another-qwen.safetensors");
   assert.equal(selectProfile(renamed).profile.sampling.sampler, "heun");

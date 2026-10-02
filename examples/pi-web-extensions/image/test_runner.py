@@ -32,6 +32,11 @@ class WorkflowTests(unittest.TestCase):
                     self.assertEqual(graph['guider']['inputs']['cfg'], profile['sampling']['cfg'])
                 else:
                     self.assertEqual(graph['sample']['inputs']['steps'], profile['sampling']['steps'])
+        synthetic = dict(models['my-fast-qwen'], model=dict(loader='UnetLoaderGGUF',file='personal-qwen.gguf'))
+        fast_graph = runner.workflow(dict(profile=synthetic,prompt='test',seed=1,width=512,height=512), [])
+        self.assertEqual(fast_graph['model']['class_type'], 'UnetLoaderGGUF')
+        self.assertEqual(fast_graph['sample']['class_type'], 'SamplerCustomAdvanced')
+        self.assertEqual(fast_graph['lora']['inputs']['lora_name'], synthetic['lora']['file'])
         custom = dict(models['my-detailed-qwen'], model=dict(loader='UNETLoader',file='personal.safetensors'), sampling=dict(kind='standard',steps=27,cfg=2,sampler='heun',scheduler='normal',denoise=.8))
         graph = runner.workflow(dict(profile=custom,prompt='test',seed=1,width=512,height=512), [])
         self.assertEqual(graph['sample']['inputs']['steps'],27)
