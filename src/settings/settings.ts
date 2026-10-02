@@ -74,6 +74,8 @@ function normalizeSettings(value: unknown): PiWebSettings {
   if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim()) settings.defaults.thinkingLevel = defaults.thinkingLevel.trim();
   const sessionBucketColor = normalizeMarkerColor(defaults?.sessionBucketColor);
   if (sessionBucketColor) settings.defaults.sessionBucketColor = sessionBucketColor;
+  // Omitted on older settings files means false; retain the optional shape.
+  if (typeof defaults?.pinNewSessions === "boolean") settings.defaults.pinNewSessions = defaults.pinNewSessions;
 
   // Carry the extension-settings blob through verbatim (server owns validation).
   if (isRecord(value.extensions)) settings.extensions = value.extensions as PiWebSettings["extensions"];
@@ -282,6 +284,7 @@ export function createSettings(options: {
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
+    elements.settingPinNewSessionsCheckbox.checked = settings.defaults.pinNewSessions === true;
     elements.settingModelDefaultsValue.textContent = settingsLabel(settings);
 
     const density = settings.appearance.density === "minimal" ? "Minimal" : settings.appearance.density === "compact" ? "Compact" : "Comfortable";
@@ -289,7 +292,11 @@ export function createSettings(options: {
     const model = settings.defaults.model;
     settingsShell?.setSummary("appearance", `${density} · ${accentName(accentColor)}`);
     settingsShell?.setSummary("composer", `${queueMode} · ${settings.composer.expanded ? "Expanded" : "Collapsed"}`);
-    settingsShell?.setSummary("new-sessions", model ? `${model.provider}/${model.id}` : settings.defaults.sessionBucketColor ? "Bucket default set" : "No defaults set");
+    settingsShell?.setSummary("new-sessions", [
+      model ? `${model.provider}/${model.id}` : undefined,
+      settings.defaults.sessionBucketColor ? "Bucket default set" : undefined,
+      settings.defaults.pinNewSessions ? "Pinned by default" : undefined,
+    ].filter(Boolean).join(" · ") || "No defaults set");
     settingsShell?.setSummary("access", "Credentials and devices");
     updateExtensionSearchTerms();
     updateQueueToggle();
@@ -857,6 +864,13 @@ export function createSettings(options: {
 
     elements.settingDefaultBucketColorSelect.addEventListener("change", () => {
       patchSettings({ defaults: { sessionBucketColor: elements.settingDefaultBucketColorSelect.value || null } }).catch((error) => {
+        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      });
+    });
+
+    elements.settingPinNewSessionsCheckbox.addEventListener("change", () => {
+      patchSettings({ defaults: { pinNewSessions: elements.settingPinNewSessionsCheckbox.checked } }).catch((error) => {
         setSettingsStatus(error instanceof Error ? error.message : String(error), true);
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       });

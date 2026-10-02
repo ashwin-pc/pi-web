@@ -11,6 +11,7 @@ import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfo
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
 import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
+import { emptySessionCandidates, queueNewSession, reusableEmptySession } from "./newSession.js";
 import { animateReorderLayout, edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 import { openFolderPicker as showFolderPicker, type FolderListing } from "../files/folderPicker.js";
 
@@ -171,6 +172,7 @@ export function createSessions(options: {
   refreshSessionTitle: () => Promise<void>;
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
+  hasSessionDraft: (sessionId: string) => boolean;
   /** Called whenever derived per-session state (e.g. waiting-on-spawned/active workers) may have changed. */
   onDerivedSessionStateChanged?: () => void;
 }): SessionsController {
@@ -430,22 +432,54 @@ export function createSessions(options: {
     });
   }
 
-  async function startNewSession(cwd?: string) {
+  const startNewSession = queueNewSession(
+    () => state.currentCwd,
+    (cwd) => startOrReuseSession(cwd, cwd || state.currentCwd, state.currentSessionId),
+  );
+
+  async function startOrReuseSession(cwd: string | undefined, targetCwd: string, previousSessionId: string) {
     const wasDrawerOpen = !elements.sessionDrawer.hidden;
-    const res = await fetch("/api/sessions/new", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: state.currentSessionId }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
-    rememberSessionCwd(cwd || data.cwd || state.currentCwd);
-    beginTranscriptLoading();
-    clearMessages();
-    sessionState.applySnapshot(data, { activate: true });
-    await refreshState();
-    finishTranscriptLoading();
+    const pinNewSessions = state.settings.defaults.pinNewSessions === true;
+    let reusable = pinNewSessions ? reusableEmptySession(state, targetCwd, options.hasSessionDraft) : undefined;
+    if (pinNewSessions && reusable?.id !== state.currentSessionId) {
+      // Refresh before checking inactive pinned tabs; their cached counts may be stale.
+      await refreshSessions(true);
+      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+      if (!reusable) {
+        // Cold listings deliberately omit counts. Read candidate snapshots without
+        // moving this browser's viewer lease or opening/changing the active tab.
+        const headers = api.headers();
+        delete headers["x-pi-web-client-id"];
+        for (const candidate of emptySessionCandidates(state, targetCwd, options.hasSessionDraft)) {
+          const res = await fetch(`/api/state?sessionId=${encodeURIComponent(candidate.id)}`, { headers });
+          if (res.status === 404) continue; // A stale pin may point at a deleted session.
+          if (!res.ok) throw new Error(await res.text());
+          sessionState.applySnapshot(await res.json());
+          reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+          if (reusable) break;
+        }
+      }
+    }
+    if (reusable) {
+      if (reusable.id !== state.currentSessionId) await openSessionTab(reusable.id, targetCwd);
+      // Do not re-pin a tab the user explicitly closed/unpinned.
+    } else {
+      const res = await fetch("/api/sessions/new", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: previousSessionId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
+      rememberSessionCwd(cwd || data.cwd || state.currentCwd);
+      beginTranscriptLoading();
+      clearMessages();
+      sessionState.applySnapshot(data, { activate: true });
+      if (pinNewSessions && data.sessionId) moveToLane(data.sessionId, "pinned", { cwd: data.cwd || targetCwd });
+      await refreshState();
+      finishTranscriptLoading();
+    }
     if (shouldCloseDrawerAfterSessionSwitch()) {
       setSessionDrawerOpen(false);
     } else if (wasDrawerOpen) {

@@ -26,6 +26,7 @@ export type ComposerController = {
   addContextAttachment: (context: ComposerContextAttachment) => void;
   renderAttachments: () => void;
   switchSession: (sessionId: string) => void;
+  hasSessionDraft: (sessionId: string) => boolean;
   setPromptText: (text: string) => void;
   setCaptureContributions: (contributions: ComposerCaptureDescriptor[]) => void;
   syncCompactState: () => void;
@@ -49,6 +50,7 @@ export function createComposer(options: {
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
+  startNewSession: () => Promise<void>;
   beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
@@ -671,6 +673,10 @@ export function createComposer(options: {
 
   async function runSlashCommand(command: string) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
+    if (name === "new") {
+      await options.startNewSession();
+      return;
+    }
     if (name === "compact" && activeSessionState(state)?.capabilities?.compaction === false) throw new Error("Compaction is not supported by this harness.");
     if (name === "logout") {
       try {
@@ -697,7 +703,7 @@ export function createComposer(options: {
     const text = await res.text();
     const data = text ? JSON.parse(text) : {};
     if (!res.ok || data.ok === false) throw new Error(data.error || text);
-    const resetsSession = name === "new" || name === "clear";
+    const resetsSession = name === "clear";
     if (resetsSession) beginTranscriptLoading?.();
     if (data.state) {
       sessionState.applySnapshot(data.state, { activate: resetsSession });
@@ -1014,6 +1020,12 @@ export function createComposer(options: {
     syncCompactState: updateCompactInactive,
     renderAttachments,
     switchSession,
+    hasSessionDraft: (sessionId) => {
+      const draft = drafts.get(sessionId);
+      return Boolean(draft.text.trim() || draft.attachments.length || draft.quoteReplies.length
+        || sessionContextAttachments.get(sessionId)?.length
+        || (sessionId === ownedSessionId && (elements.promptEl.value.trim() || state.attachedImages.length || contextAttachments.length || quoteReplies.hasDrafts())));
+    },
     setPromptText,
     stopStreaming,
     updatePrimaryAction,

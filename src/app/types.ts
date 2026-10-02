@@ -121,6 +121,8 @@ export type PiWebSettings = {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
     sessionBucketColor?: SessionMarkerColorId;
+    /** Opt in to pinning sessions created after this preference is saved. */
+    pinNewSessions?: boolean;
   };
   extensions?: Record<string, StoredExtensionSettings>;
 };
