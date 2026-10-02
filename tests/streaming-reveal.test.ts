@@ -56,6 +56,24 @@ describe("streaming text reveal ranges", () => {
     ]);
   });
 
+  it("inherits the fade of an extended grapheme and fades only genuinely new clusters", () => {
+    for (const [base, completed] of [["e", "e\u0301"], ["👨", "👨‍👩‍👧‍👦"], ["👍", "👍🏽"], ["❤", "❤️"], ["🇺", "🇺🇸"]]) {
+      const first = updateStreamingReveal({ text: "", ranges: [] }, base, 0);
+      expect(updateStreamingReveal(first, completed, 75).ranges).toEqual([{ start: 0, end: completed.length, startedAt: 0 }]);
+      expect(updateStreamingReveal({ text: base, ranges: [] }, `${completed} word`, 500).ranges).toEqual([
+        { start: completed.length, end: completed.length + 5, startedAt: 500 },
+      ]);
+    }
+  });
+
+  it("never maps a changed grapheme to a partial-cluster fade", () => {
+    const first = updateStreamingReveal({ text: "", ranges: [] }, "e\u0301 X", 0);
+    expect(updateStreamingReveal(first, "e\u0301 XY", 75).ranges).toEqual([
+      { start: 0, end: 4, startedAt: 0 },
+      { start: 4, end: 5, startedAt: 75 },
+    ]);
+  });
+
   it("returns no ranges when content is removed", () => {
     const first = updateStreamingReveal({ text: "", ranges: [] }, "Hello world", 0);
     expect(updateStreamingReveal(first, "", 75)).toEqual({ text: "", ranges: [] });

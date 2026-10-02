@@ -4,6 +4,9 @@ const maxDiffCells = 65_536;
 type RevealRange = { start: number; end: number; startedAt: number };
 export type StreamingRevealState = { text: string; ranges: RevealRange[] };
 type TextMatch = { oldStart: number; newStart: number; length: number };
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const graphemes = (text: string) => Array.from(segmenter.segment(text), ({ segment, index }) => ({ segment, start: index, end: index + segment.length }));
+const completeText = (text: string) => /[\uD800-\uDBFF]$/.test(text) ? text.slice(0, -1) : text;
 
 // Markdown completion can remove delimiters or turn a paragraph into a table.
 // Match the displayed text, not the source or HTML, so those changes don't
@@ -14,17 +17,19 @@ export function updateStreamingReveal(
   now: number,
 ): StreamingRevealState {
   const old = previous.text;
+  const oldParts = graphemes(old);
+  const newParts = graphemes(text);
   let prefix = 0;
-  while (prefix < old.length && prefix < text.length && old[prefix] === text[prefix]) prefix += 1;
+  while (prefix < oldParts.length && prefix < newParts.length && oldParts[prefix].segment === newParts[prefix].segment) prefix += 1;
   let suffix = 0;
   // Prefer earlier matches in the changing tail: a new "world" must not steal
   // the "ld" at the end of an existing "bold". Trim a common suffix only when
   // needed to bound a reparse that changes earlier, otherwise-stable blocks.
-  if ((old.length - prefix) * (text.length - prefix) > maxDiffCells) {
-    while (suffix < old.length - prefix && suffix < text.length - prefix && old[old.length - suffix - 1] === text[text.length - suffix - 1]) suffix += 1;
+  if ((oldParts.length - prefix) * (newParts.length - prefix) > maxDiffCells) {
+    while (suffix < oldParts.length - prefix && suffix < newParts.length - prefix && oldParts[oldParts.length - suffix - 1].segment === newParts[newParts.length - suffix - 1].segment) suffix += 1;
   }
-  const oldLength = old.length - prefix - suffix;
-  const newLength = text.length - prefix - suffix;
+  const oldLength = oldParts.length - prefix - suffix;
+  const newLength = newParts.length - prefix - suffix;
   const matches: TextMatch[] = [];
   const match = (oldStart: number, newStart: number, length: number) => {
     if (!length) return;
@@ -39,21 +44,24 @@ export function updateStreamingReveal(
     const lengths = new Uint16Array((oldLength + 1) * width);
     for (let i = oldLength - 1; i >= 0; i -= 1) {
       for (let j = newLength - 1; j >= 0; j -= 1) {
-        lengths[i * width + j] = old[prefix + i] === text[prefix + j]
+        lengths[i * width + j] = oldParts[prefix + i].segment === newParts[prefix + j].segment
           ? lengths[(i + 1) * width + j + 1] + 1
           : Math.max(lengths[(i + 1) * width + j], lengths[i * width + j + 1]);
       }
     }
     let i = 0; let j = 0;
     while (i < oldLength && j < newLength) {
-      if (old[prefix + i] === text[prefix + j]) { match(prefix + i, prefix + j, 1); i += 1; j += 1; }
+      if (oldParts[prefix + i].segment === newParts[prefix + j].segment) { match(prefix + i, prefix + j, 1); i += 1; j += 1; }
       else if (lengths[(i + 1) * width + j] >= lengths[i * width + j + 1]) i += 1;
       else j += 1;
     }
   }
-  match(old.length - suffix, text.length - suffix, suffix);
+  match(oldParts.length - suffix, newParts.length - suffix, suffix);
 
-  const active = previous.ranges.filter(range => now - range.startedAt < streamingRevealDurationMs);
+  const active = previous.ranges.filter(range => now - range.startedAt < streamingRevealDurationMs).map(range => {
+    const end = oldParts.findIndex(part => part.start >= range.end);
+    return { start: oldParts.findIndex(part => part.end > range.start), end: end < 0 ? oldParts.length : end, startedAt: range.startedAt };
+  });
   const ranges: RevealRange[] = [];
   const add = (start: number, end: number, startedAt: number) => {
     if (start >= end) return;
@@ -73,16 +81,39 @@ export function updateStreamingReveal(
     }
     cursor = entry.newStart + entry.length;
   }
-  if (canDiff) add(cursor, text.length, now);
-  return { text, ranges };
+  if (canDiff) add(cursor, newParts.length, now);
+  // Extending the last grapheme retains its original fade or settled opacity.
+  if (oldParts.length && text.startsWith(old)) {
+    const tail = oldParts.at(-1)!;
+    const continuation = newParts.findIndex(part => part.start <= tail.start && part.end > old.length);
+    if (continuation >= 0) {
+      const inherited = active.find(range => range.start <= oldParts.length - 1 && range.end >= oldParts.length);
+      const index = ranges.findIndex(range => range.start <= continuation && range.end > continuation);
+      if (index >= 0) {
+        const range = ranges[index];
+        if (range.start === continuation) range.start += 1;
+        else if (range.end === continuation + 1) range.end -= 1;
+        else { ranges.splice(index + 1, 0, { start: continuation + 1, end: range.end, startedAt: range.startedAt }); range.end = continuation; }
+        if (range.start >= range.end) ranges.splice(index, 1);
+      }
+      if (inherited) ranges.push({ start: continuation, end: continuation + 1, startedAt: inherited.startedAt });
+      ranges.sort((a, b) => a.start - b.start);
+    }
+  }
+  return { text, ranges: ranges.map(range => ({ start: newParts[range.start].start, end: newParts[range.end - 1].end, startedAt: range.startedAt })) };
 }
 
 type TextRun = { node: Text | HTMLSpanElement; text: Text; settle?: () => void };
 type LiveNode =
-  | { kind: "element"; node: Element; source: string; children: LiveNode[] }
+  | { kind: "element"; node: Element; source: string; displayed: string; children: LiveNode[] }
   | { kind: "text"; source: string; runs: TextRun[] }
   | { kind: "other"; node: Node; source: string | null };
-type RenderContext = { offset: number; now: number; ranges: RevealRange[]; sources: WeakMap<Node, string> };
+type RenderContext = { offset: number; now: number; ranges: RevealRange[]; sources: WeakMap<Node, string>; final: boolean };
+
+function visibleText(node: Node, final: boolean): string {
+  if (node instanceof Text) return final ? node.data : completeText(node.data);
+  return Array.from(node.childNodes).map(child => visibleText(child, final)).join("");
+}
 
 function nodeSource(node: Node, context: RenderContext) {
   let source = context.sources.get(node);
@@ -120,6 +151,7 @@ export function createStreamingReveal() {
   // Canonical Markdown nodes and presentation runs are separate. A text leaf
   // can contain several runs, but adding to it never remounts its earlier runs.
   const views = new WeakMap<HTMLElement, LiveNode[]>();
+  const pending = new WeakMap<HTMLElement, DocumentFragment>();
   const ownedSpans = new WeakMap<HTMLElement, TextRun>();
   const unwrap = (span: HTMLElement) => {
     const selection = window.getSelection();
@@ -190,22 +222,33 @@ export function createStreamingReveal() {
 
   const reconcileNode = (current: LiveNode | undefined, next: Node, context: RenderContext): LiveNode => {
     if (next instanceof Text) {
-      const value = next.data;
+      const value = context.final ? next.data : completeText(next.data);
       const view = current?.kind === "text" ? current : { kind: "text" as const, source: "", runs: [] };
       if (view.source !== value) {
-        let prefix = 0;
-        while (prefix < view.source.length && prefix < value.length && view.source[prefix] === value[prefix]) prefix += 1;
-        const runs: TextRun[] = [];
-        let remaining = prefix;
-        for (const run of view.runs) {
-          if (!remaining) break;
-          const length = Math.min(remaining, run.text.length);
-          if (length < run.text.length) run.text.deleteData(length, run.text.length - length);
-          runs.push(run);
-          remaining -= length;
+        const oldTail = graphemes(view.source).at(-1);
+        const continuation = oldTail && value.startsWith(view.source) && graphemes(value).find(part => part.start === oldTail.start && part.end > view.source.length);
+        if (continuation && view.runs.length) {
+          view.runs.at(-1)!.text.appendData(value.slice(view.source.length, continuation.end));
+          view.runs.push(...createTextRuns(value.slice(continuation.end), context.offset + continuation.end, context));
+          view.source = value;
+        } else {
+          let prefix = 0;
+          while (prefix < view.source.length && prefix < value.length && view.source[prefix] === value[prefix]) prefix += 1;
+          const oldBoundaries = new Set([0, ...graphemes(view.source).map(part => part.end)]);
+          const newBoundaries = new Set([0, ...graphemes(value).map(part => part.end)]);
+          while (prefix && (!oldBoundaries.has(prefix) || !newBoundaries.has(prefix))) prefix -= 1;
+          const runs: TextRun[] = [];
+          let remaining = prefix;
+          for (const run of view.runs) {
+            if (!remaining) break;
+            const length = Math.min(remaining, run.text.length);
+            if (length < run.text.length) run.text.deleteData(length, run.text.length - length);
+            runs.push(run);
+            remaining -= length;
+          }
+          view.runs = [...runs, ...createTextRuns(value.slice(prefix), context.offset + prefix, context)];
+          view.source = value;
         }
-        view.runs = [...runs, ...createTextRuns(value.slice(prefix), context.offset + prefix, context)];
-        view.source = value;
       }
       context.offset += value.length;
       return view;
@@ -214,8 +257,11 @@ export function createStreamingReveal() {
       const source = nodeSource(next, context);
       const view = current?.kind === "element" && current.node.tagName === next.tagName
         ? current
-        : { kind: "element" as const, node: next.cloneNode(false) as Element, source: "", children: [] };
-      if (view.source === source) context.offset += next.textContent?.length || 0;
+        : { kind: "element" as const, node: next.cloneNode(false) as Element, source: "", displayed: "", children: [] };
+      const displayed = visibleText(next, context.final);
+      // Source HTML can stay identical when a withheld surrogate becomes
+      // renderable. Track canonical displayed text, not widget-enhanced DOM.
+      if (view.source === source && view.displayed === displayed) context.offset += displayed.length;
       else {
         for (const attribute of Array.from(view.node.attributes)) {
           if (!next.hasAttribute(attribute.name)) view.node.removeAttribute(attribute.name);
@@ -225,6 +271,7 @@ export function createStreamingReveal() {
         }
         view.children = reconcileChildren(view.node, view.children, Array.from(next.childNodes), context);
         view.source = source;
+        view.displayed = displayed;
       }
       return view;
     }
@@ -278,21 +325,27 @@ export function createStreamingReveal() {
     return next;
   };
 
+  const render = (body: HTMLElement, fragment: DocumentFragment, final = false) => {
+    if (!final) pending.set(body, fragment);
+    const now = performance.now();
+    const text = visibleText(fragment, final);
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const state = reducedMotion ? { text, ranges: [] } : updateStreamingReveal(states.get(body) || { text: body.textContent || "", ranges: [] }, text, now);
+    states.set(body, state);
+    if (reducedMotion) settleReveals(body);
+    views.set(body, reconcileChildren(body, views.get(body) || [], Array.from(fragment.childNodes), { offset: 0, now, ranges: state.ranges, sources: new WeakMap(), final }));
+  };
   return {
-    render(body: HTMLElement, fragment: DocumentFragment) {
-      const now = performance.now();
-      const text = fragment.textContent || "";
-      const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      const state = reducedMotion ? { text, ranges: [] } : updateStreamingReveal(states.get(body) || { text: body.textContent || "", ranges: [] }, text, now);
-      states.set(body, state);
-      if (reducedMotion) settleReveals(body);
-      views.set(body, reconcileChildren(body, views.get(body) || [], Array.from(fragment.childNodes), { offset: 0, now, ranges: state.ranges, sources: new WeakMap() }));
-    },
+    render,
     finish(body: HTMLElement) {
+      const fragment = pending.get(body);
+      if (fragment && visibleText(fragment, false) !== visibleText(fragment, true)) render(body, fragment, true);
+      pending.delete(body);
       states.delete(body);
       views.delete(body);
     },
     cancel(body: HTMLElement) {
+      pending.delete(body);
       states.delete(body);
       views.delete(body);
       settleReveals(body);

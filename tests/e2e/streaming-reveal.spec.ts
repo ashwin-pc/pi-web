@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { build } from "esbuild";
 import { nextRealtimeHello } from "./helpers/realtimeReady.js";
 
 async function startRevealFixture(page: Page, prompt = "streaming reveal fixture") {
@@ -65,9 +66,199 @@ async function startRevealFixture(page: Page, prompt = "streaming reveal fixture
   return page.locator(".message.assistant .body").last();
 }
 
+test("grapheme continuations retain their live glyph and animation without replaying settled text", async ({ page }) => {
+  await page.goto("/");
+  const bundle = await build({
+    entryPoints: ["src/markdown/streamingReveal.ts"], bundle: true, write: false, format: "iife",
+    globalName: "__graphemeReveal", platform: "browser",
+  });
+  await page.addScriptTag({ content: bundle.outputFiles[0].text });
+  const results = await page.evaluate(async () => {
+    const factory = (window as typeof window & { __graphemeReveal: typeof import("../../src/markdown/streamingReveal.js") }).__graphemeReveal;
+    const cases = [["e", "e\u0301"], ["👨", "👨‍👩", "👨‍👩‍👧‍👦"], ["👍", "👍🏽"], ["❤", "❤️"], ["🇺", "🇺🇸"], ["\uD83D", "😀"]];
+    const outcomes = [];
+    for (const [first, ...continuations] of cases) {
+      const body = document.createElement("div");
+      document.body.append(body);
+      const reveal = factory.createStreamingReveal();
+      const render = (value: string) => {
+        const fragment = document.createDocumentFragment();
+        fragment.append(document.createTextNode(value));
+        reveal.render(body, fragment);
+      };
+      render(first);
+      const pendingSurrogateText = body.textContent;
+      const span = body.querySelector(".streamingWordReveal");
+      const text = span?.firstChild;
+      const animation = span?.getAnimations()[0];
+      animation?.pause();
+      const steps = [];
+      for (const value of continuations) {
+        render(value);
+        steps.push({ value, actual: body.textContent, sameSpan: span === body.querySelector(".streamingWordReveal"),
+          sameText: text === span?.firstChild, sameAnimation: animation === span?.getAnimations()[0],
+          count: body.querySelectorAll(".streamingWordReveal").length });
+      }
+      (body.querySelector(".streamingWordReveal"))?.dispatchEvent(new Event("animationend"));
+      render(`${continuations.at(-1)} word`);
+      const settledText = body.textContent;
+      const newFade = [...body.querySelectorAll(".streamingWordReveal")].map(node => node.textContent);
+      const oldSpanGone = !span?.isConnected;
+      body.remove();
+      const settledBody = document.createElement("div");
+      document.body.append(settledBody);
+      const settledReveal = factory.createStreamingReveal();
+      const settledRender = (value: string) => {
+        const fragment = document.createDocumentFragment();
+        fragment.append(document.createTextNode(value));
+        settledReveal.render(settledBody, fragment);
+      };
+      settledRender(first);
+      const firstSpan = settledBody.querySelector(".streamingWordReveal");
+      firstSpan?.dispatchEvent(new Event("animationend"));
+      const settledNode = settledBody.firstChild;
+      const selection = window.getSelection()!;
+      if (settledNode instanceof Text && settledNode.length) {
+        selection.setBaseAndExtent(settledNode, 0, settledNode, settledNode.length);
+      }
+      for (const value of continuations) settledRender(value);
+      const settled: { actual: string | null; sameNode: boolean; fades: number; selection: string; finalMalformedCodeUnit?: number } = { actual: settledBody.textContent, sameNode: settledNode === settledBody.firstChild,
+        fades: settledBody.querySelectorAll(".streamingWordReveal").length,
+        selection: selection.toString() };
+      selection.removeAllRanges();
+      if (first === "\uD83D") {
+        const incomplete = document.createElement("div");
+        document.body.append(incomplete);
+        const unfinished = factory.createStreamingReveal();
+        const fragment = document.createDocumentFragment();
+        fragment.append(document.createTextNode(first));
+        unfinished.render(incomplete, fragment);
+        unfinished.finish(incomplete);
+        settled.finalMalformedCodeUnit = incomplete.textContent?.charCodeAt(0);
+        incomplete.remove();
+      }
+      outcomes.push({ first, pendingSurrogateText, steps, settledText, newFade, oldSpanGone, settled });
+      settledBody.remove();
+    }
+    return outcomes;
+  });
+  for (const outcome of results) {
+    if (outcome.first === "\uD83D") expect(outcome.pendingSurrogateText).toBe("");
+    for (const step of outcome.steps) {
+      expect(step.actual).toBe(step.value);
+      if (outcome.first !== "\uD83D") {
+        expect(step.sameSpan).toBe(true);
+        expect(step.sameText).toBe(true);
+        expect(step.sameAnimation).toBe(true);
+        expect(step.count).toBe(1);
+      }
+    }
+    expect(outcome.settledText).toBe(`${outcome.steps.at(-1)?.value} word`);
+    expect(outcome.newFade).toEqual([" word"]);
+    expect(outcome.oldSpanGone).toBe(true);
+    expect(outcome.settled.actual).toBe(outcome.steps.at(-1)?.value);
+    if (outcome.first !== "\uD83D") {
+      expect(outcome.settled.sameNode).toBe(true);
+      expect(outcome.settled.fades).toBe(0);
+      expect(outcome.settled.selection).toBe(outcome.steps.at(-1)?.value);
+    } else expect(outcome.settled.finalMalformedCodeUnit).toBe(0xD83D);
+  }
+});
+
 function revealTexts(page: Page) {
   return page.locator(".streamingWordReveal").allTextContents();
 }
+
+for (const [label, first, continuation] of [["acute", "e", "\u0301"], ["family", "👨", "‍👩‍👧‍👦"], ["surrogate", "\uD83D", "\uDE00"]]) {
+  test(`real Markdown stream keeps ${label} in its paragraph through finalization`, async ({ page }) => {
+    await page.request.post("/api/mock/reset");
+    const hello = nextRealtimeHello(page);
+    await page.goto("/");
+    await hello;
+    const publish = async (event: Record<string, unknown>) => {
+      const response = await page.request.post("/api/mock/event", { data: { type: "agent_event", sessionId: "mock-current", event } });
+      expect(response.ok()).toBe(true);
+    };
+    if (first !== "\uD83D") {
+      await page.evaluate(value => {
+        const observer = new MutationObserver(() => {
+          const span = [...document.querySelectorAll(".message.assistant p .streamingWordReveal")].find(node => node.textContent === value);
+          if (!span) return;
+          (window as typeof window & { __graphemeApp?: { paragraph: Element; span: Element; text: ChildNode; animation?: Animation } }).__graphemeApp =
+            { paragraph: span.parentElement!, span, text: span.firstChild!, animation: span.getAnimations()[0] };
+          observer.disconnect();
+        });
+        observer.observe(document.body, { childList: true, subtree: true });
+      }, first);
+    }
+    await publish({ type: "agent_start" });
+    await publish({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+    await publish({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: first } });
+    const body = page.locator(".message.assistant .body").last();
+    if (first !== "\uD83D") {
+      await page.waitForFunction(() => Boolean((window as typeof window & { __graphemeApp?: unknown }).__graphemeApp));
+    } else {
+      // An empty paragraph proves the batch rendered without exposing a lone surrogate.
+      await expect(body.locator("p")).toHaveCount(1);
+      await expect(body.locator("p")).toHaveText("");
+    }
+    await publish({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: continuation } });
+    const complete = first + continuation;
+    await expect(body.locator("p")).toHaveText(complete);
+    if (first !== "\uD83D") {
+      expect(await body.evaluate(element => {
+        const saved = (window as typeof window & { __graphemeApp?: { paragraph: Element; span: Element; text: ChildNode; animation?: Animation } }).__graphemeApp!;
+        const spans = element.querySelectorAll(".streamingWordReveal");
+        return saved.paragraph.isConnected && saved.paragraph === element.querySelector("p")
+          && (saved.span.isConnected
+            ? spans.length === 1 && spans[0] === saved.span && saved.span.firstChild === saved.text && saved.span.getAnimations()[0] === saved.animation
+            : spans.length === 0 && saved.text.parentElement === saved.paragraph);
+      })).toBe(true);
+    }
+    await publish({ type: "message_update", assistantMessageEvent: { type: "text_end", contentIndex: 0, content: complete } });
+    await expect(body.locator("p")).toHaveText(complete);
+    await expect(body.locator(".streamingWordReveal")).toHaveCount(0);
+    // Mock events aren't durable history; settling can replace them with the server snapshot.
+    await publish({ type: "agent_settled" });
+    await expect(page.locator("#stopButton")).toBeHidden();
+  });
+}
+
+test("nested Markdown nodes restore a withheld surrogate after unchanged reparses and finalization", async ({ page }) => {
+  await page.goto("/");
+  const bundle = await build({ entryPoints: ["src/markdown/streamingReveal.ts"], bundle: true, write: false, format: "iife", globalName: "__graphemeReveal", platform: "browser" });
+  await page.addScriptTag({ content: bundle.outputFiles[0].text });
+  const result = await page.evaluate(() => {
+    const factory = (window as typeof window & { __graphemeReveal: typeof import("../../src/markdown/streamingReveal.js") }).__graphemeReveal;
+    const body = document.createElement("div");
+    document.body.append(body);
+    const reveal = factory.createStreamingReveal();
+    const render = (last: string) => {
+      const fragment = document.createDocumentFragment();
+      const stable = document.createElement("p");
+      stable.textContent = "Stable";
+      const changing = document.createElement("p");
+      changing.append(document.createTextNode(last));
+      fragment.append(stable, changing);
+      reveal.render(body, fragment);
+    };
+    render("\uD83D");
+    const first = body.textContent;
+    const stableNode = body.firstChild;
+    const decoration = document.createElement("button");
+    decoration.textContent = "Preview";
+    stableNode?.appendChild(decoration);
+    render("\uD83D");
+    const repeated = body.textContent;
+    reveal.finish(body);
+    const finalText = body.textContent;
+    const finalCodeUnit = body.lastChild?.textContent?.charCodeAt(0);
+    const stablePreserved = stableNode === body.firstChild && decoration.parentNode === stableNode;
+    body.remove();
+    return { first, repeated, finalText, finalCodeUnit, stablePreserved };
+  });
+  expect(result).toEqual({ first: "Stable", repeated: "StablePreview", finalText: "StablePreview\uD83D", finalCodeUnit: 0xD83D, stablePreserved: true });
+});
 
 test("live words gently fade once, remain settled through Markdown reconciliation, and clean up at finalization", async ({ page }) => {
   const body = await startRevealFixture(page);
