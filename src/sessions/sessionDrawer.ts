@@ -170,6 +170,7 @@ export function createSessions(options: {
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   refreshSessionTitle: () => Promise<void>;
+  checkpointTranscript: () => { restore: () => void };
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
   hasSessionDraft: (sessionId: string) => boolean;
@@ -583,14 +584,16 @@ export function createSessions(options: {
     return sessionRefreshPromise;
   }
 
-  async function applyOpenedSession(openRes: Response) {
+  async function applyOpenedSession(openRes: Response, ownsOpen: () => boolean) {
+    if (!ownsOpen()) return false;
     const data = await openRes.json();
+    if (!ownsOpen()) return false;
     const responseSessionId = typeof data.sessionId === "string" ? data.sessionId : "";
     sessionState.applySnapshot(data, { activate: Boolean(responseSessionId && responseSessionId === state.currentSessionId) });
     if (responseSessionId && responseSessionId !== state.currentSessionId) return false;
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await Promise.all([refreshModels(), refreshMessages()]);
-    return !responseSessionId || responseSessionId === state.currentSessionId;
+    return ownsOpen() && (!responseSessionId || responseSessionId === state.currentSessionId);
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -1403,12 +1406,16 @@ export function createSessions(options: {
     const previousSessionId = state.currentSessionId;
     const previousFocusedLane = focusedLane;
     const targetLane = laneOf(sessionId);
-    const switchingSessions = previousSessionId !== sessionId;
+    const checkpoint = options.checkpointTranscript();
     let missing = false;
+    let accepted = false;
+    const ownsOpen = () => openGeneration === sessionOpenGeneration && state.currentSessionId === sessionId;
+    if (targetLane) focusedLane = targetLane;
+    sessionState.activate(sessionId);
+    beginTranscriptLoading();
+    clearMessages();
+    renderSessionBar();
     try {
-      // Do not clear the current transcript until the server has accepted the
-      // open. Besides avoiding a lossy rollback on an offline/500 response,
-      // this makes a late response harmless if another navigation won first.
       const openRes = await fetch("/api/sessions/open", {
         method: "POST",
         headers: api.headers(),
@@ -1418,20 +1425,11 @@ export function createSessions(options: {
         missing = openRes.status === 404;
         throw new Error(await openRes.text());
       }
-      if (openGeneration !== sessionOpenGeneration || state.currentSessionId !== previousSessionId) return "failed";
-      if (targetLane) focusedLane = targetLane;
-      if (switchingSessions) {
-        sessionState.activate(sessionId);
-        beginTranscriptLoading();
-      }
-      const applied = await applyOpenedSession(openRes);
+      accepted = true;
+      if (!ownsOpen()) return "failed";
+      const applied = await applyOpenedSession(openRes, ownsOpen);
       if (openGeneration !== sessionOpenGeneration || state.currentSessionId !== sessionId) return "failed";
-      if (!applied) {
-        sessionState.activate(previousSessionId);
-        focusedLane = previousFocusedLane;
-        renderSessionBar();
-        return "failed";
-      }
+      if (!applied) throw new Error("Unable to load session");
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
@@ -1440,24 +1438,20 @@ export function createSessions(options: {
       options.onDerivedSessionStateChanged?.();
       return "opened";
     } catch (error) {
-      if (openGeneration !== sessionOpenGeneration
-        || (state.currentSessionId !== previousSessionId && state.currentSessionId !== sessionId)) return "failed";
-      if (state.currentSessionId === sessionId && switchingSessions) sessionState.activate(previousSessionId);
-      focusedLane = previousFocusedLane;
-      if (missing) {
-        discardMissingSession(sessionId);
-      } else if (state.currentSessionId === previousSessionId) {
-        // The old transcript was never cleared. A prior in-flight refresh may
-        // nevertheless have replaced it while this open was pending, so refresh
-        // the still-current previous session before showing the error. If the
-        // network is down too, retain whatever local transcript survived.
-        try { await refreshMessages(); } catch { /* Local transcript is the offline fallback. */ }
-        if (state.currentSessionId === previousSessionId) {
-          finishTranscriptLoading();
-          renderSessionBar();
-          addMessage("system", error instanceof Error ? error.message : String(error), "error");
-        }
+      if (!ownsOpen()) return "failed";
+      // An accepted open changed the server viewer lease even if hydration
+      // failed. Repair it without activating anything or adding another POST.
+      if (accepted && previousSessionId) {
+        try { await fetch(`/api/state?sessionId=${encodeURIComponent(previousSessionId)}`, { headers: api.headers() }); } catch { /* Offline rollback still preserves local history. */ }
+        if (!ownsOpen()) return "failed";
       }
+      sessionState.activate(previousSessionId);
+      focusedLane = previousFocusedLane;
+      checkpoint.restore();
+      finishTranscriptLoading();
+      renderSessionBar();
+      if (missing) discardMissingSession(sessionId);
+      else addMessage("system", error instanceof Error ? error.message : String(error), "error");
       options.onDerivedSessionStateChanged?.();
       return missing ? "missing" : "failed";
     }

@@ -118,6 +118,7 @@ type LiveSessionEntry = {
 
 type ViewerLease = {
   sessionKey: string;
+  lastAcceptedSeq?: number;
   sockets: Set<symbol>;
   releaseTimer?: ReturnType<typeof setTimeout>;
 };
@@ -806,13 +807,16 @@ export class LocalSessionService implements SessionService {
     return this.projectState(await this.createNewLiveSession(cwd, value.sessionFile));
   }
 
-  acquireViewer(sessionId: string, clientId: string) {
+  acquireViewer(sessionId: string, clientId: string, seq?: number) {
     const value = this.liveById.get(sessionId);
     if (!clientId || !value) return;
     const key = sessionPathKey(value);
     const entry = this.liveSessions.get(key);
     if (!entry) return;
     let lease = this.viewerLeases.get(clientId);
+    // Check before touching timers or either session's lease membership.
+    const validSeq = seq !== undefined && Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
+    if (validSeq !== undefined && lease?.lastAcceptedSeq !== undefined && validSeq < lease.lastAcceptedSeq) return;
     this.clearTimer(lease?.releaseTimer);
     if (!lease) {
       lease = { sessionKey: key, sockets: new Set() };
@@ -823,6 +827,7 @@ export class LocalSessionService implements SessionService {
       this.scheduleLiveSessionCleanup(previousKey);
       lease.sessionKey = key;
     }
+    if (validSeq !== undefined) lease.lastAcceptedSeq = validSeq;
     entry.viewerClientIds.add(clientId);
     this.cancelLiveSessionCleanup(entry);
     if (lease.sockets.size === 0) this.scheduleViewerLeaseRelease(clientId);

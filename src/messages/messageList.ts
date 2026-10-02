@@ -67,6 +67,7 @@ export type MessageList = {
   startStreamingThinking: (contentIndex?: number | string) => void;
   appendStreamingThinkingDelta: (delta: string, contentIndex?: number | string) => void;
   endStreamingThinking: (content?: string, contentIndex?: number | string) => void;
+  checkpoint: () => { restore: () => void };
   clear: () => void;
   beginStreamFollow: () => void;
   endStreamFollow: () => void;
@@ -1220,6 +1221,28 @@ export function createMessageList(options: {
     setJumpButtonVisible(false);
   }
 
+  function checkpoint() {
+    invalidatePendingRefreshes();
+    const nodes = Array.from(messagesEl.childNodes);
+    const scrollTop = messagesEl.scrollTop;
+    const scalars = { streamingAssistant, currentStreamingTextKey, currentAssistantResponseKey, currentStreamingResponseKey, currentStreamingThinkingKey, thinkingSerial, isStreaming, shouldFollowStream };
+    const saveMap = <K, V>(map: Map<K, V>) => {
+      const entries = new Map(map);
+      return () => { map.clear(); entries.forEach((value, key) => map.set(key, value)); };
+    };
+    const restoreMaps = [saveMap(streamingTextBlocks), saveMap(streamingTextContent), saveMap(streamingTextBodies), saveMap(streamingThinkingCards), saveMap(customReportExpansion)];
+    const quotes = quoteReplies?.checkpoint();
+    return { restore() {
+      clear();
+      messagesEl.replaceChildren(...nodes);
+      ({ streamingAssistant, currentStreamingTextKey, currentAssistantResponseKey, currentStreamingResponseKey, currentStreamingThinkingKey, thinkingSerial, isStreaming, shouldFollowStream } = scalars);
+      restoreMaps.forEach((restore) => restore());
+      quotes?.restore();
+      messagesEl.scrollTop = scrollTop;
+      activity.schedule();
+    } };
+  }
+
   function clear() {
     activity.reset();
     customReportExpansion.clear();
@@ -1581,6 +1604,7 @@ export function createMessageList(options: {
     endStreamFollow,
     endStreamingThinking,
     refreshMessages,
+    checkpoint,
     resetStreamingAssistant,
     invalidateRefreshes: invalidateExternalRefreshes,
     reconcileActivity: activity.schedule,

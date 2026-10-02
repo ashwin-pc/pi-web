@@ -188,7 +188,8 @@ test.describe("new-session defaults", () => {
     await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
     await page.locator('.sessionItem[data-session-id="mock-older"] .sessionItemNavBtn').click();
     await bRequest;
-    await expect.poll(() => activeSessionId(page)).toBe(a);
+    await expect.poll(() => activeSessionId(page)).toBe("mock-older");
+    await expect(page.locator("#messages .message")).toHaveCount(0);
     await page.locator(`.sessionBarTab[data-session-id="${a}"] .sessionBarTabOpen`).evaluate((button: HTMLButtonElement) => button.click());
     await aRequest;
     const finishedB = page.waitForResponse((response) => response.url().endsWith("/api/sessions/open") && response.request().postDataJSON()?.sessionId === "mock-older");
@@ -363,14 +364,20 @@ test.describe("new-session defaults", () => {
     page.on("request", (request) => {
       if (request.url().endsWith("/api/sessions/new") && request.method() === "POST") newPosts += 1;
     });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
     await page.route("**/api/sessions/open", async (route) => {
       if (route.request().postDataJSON()?.sessionId === reusableId) {
+        await gate;
         await route.fulfill({ status: 500, contentType: "text/plain", body: "Temporary failure" });
       } else {
         await route.continue();
       }
     });
     await clickHeaderNew(page);
+    await expect.poll(() => activeSessionId(page)).toBe(reusableId);
+    await expect(page.locator("#messages .message")).toHaveCount(0);
+    release();
     await expect(page.locator("#messages")).toContainText("Temporary failure");
     await expect(page.locator(".message.user").first()).toHaveText(originalUser || "");
     await expect(page.locator(".message.assistant").first()).toHaveText(originalAssistant || "");
@@ -389,17 +396,45 @@ test.describe("new-session defaults", () => {
     page.on("request", (request) => {
       if (request.url().endsWith("/api/sessions/new") && request.method() === "POST") newPosts += 1;
     });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
     await page.route("**/api/sessions/open", async (route) => {
-      if (route.request().postDataJSON()?.sessionId === reusableId) await route.abort("failed");
+      if (route.request().postDataJSON()?.sessionId === reusableId) { await gate; await route.abort("failed"); }
       else await route.continue();
     });
     await page.route("**/api/messages?sessionId=mock-current", (route) => route.abort("failed"));
 
     await clickHeaderNew(page);
+    await expect.poll(() => activeSessionId(page)).toBe(reusableId);
+    await expect(page.locator("#messages .message")).toHaveCount(0);
+    release();
     await expect.poll(() => activeSessionId(page)).toBe("mock-current");
     await expect(page.locator(".message.user").first()).toHaveText(originalUser || "");
     await expect(page.locator(".message.assistant").first()).toHaveText(originalAssistant || "");
     expect(newPosts).toBe(0);
+  });
+
+  test("restores local history and the viewer lease after accepted open hydration fails", async ({ page }) => {
+    await setPinNewSessions(page, true);
+    const reusableId = await createNewSession(page);
+    await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+    await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
+    await expect(page.locator("#messages")).toContainText("Can you add image attachments?");
+    const originalUser = await page.locator(".message.user").first().textContent();
+    let repairClient: string | undefined;
+    let openPosts = 0;
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/sessions/open")) openPosts++;
+      const url = new URL(request.url());
+      if (url.pathname === "/api/state" && url.searchParams.get("sessionId") === "mock-current") repairClient = request.headers()["x-pi-web-client-id"];
+    });
+    await page.route(`**/api/messages?sessionId=${reusableId}`, (route) => route.fulfill({ status: 500, body: "Hydration failed" }));
+    await clickHeaderNew(page);
+    await expect(page.locator("#messages")).toContainText("Hydration failed");
+    await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+    await expect(page.locator(".message.user").first()).toHaveText(originalUser || "");
+    expect(repairClient).toBeTruthy();
+    expect(openPosts).toBe(1);
   });
 
   test("drafts and worker/parked tabs are not reused; explicit unpin stays unpinned", async ({ page }) => {

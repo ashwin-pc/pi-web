@@ -605,6 +605,43 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(events.filter((event) => event.type === "runtime" && event.action === "changed")).toHaveLength(changedAfterAbort);
   });
 
+  it("orders viewer acquisitions per client and retains legacy acquisitions", async () => {
+    const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
+    service.acquireViewer(initial.sessionId, "client", 20);
+    const connection = service.connectViewer("client")!;
+    const snapshot = () => service.lifecycleSnapshot().liveSessions;
+    service.acquireViewer(second.sessionId, "client", 19);
+    expect(snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 1 }),
+      expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 0 }),
+    ]));
+    service.acquireViewer(second.sessionId, "client", 21);
+    expect(snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 0 }),
+      expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 1 }),
+    ]));
+    service.acquireViewer(initial.sessionId, "other-client", 0);
+    expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(1);
+    service.acquireViewer(initial.sessionId, "client");
+    service.acquireViewer(second.sessionId, "client", 20);
+    expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(2);
+    service.disconnectViewer(connection);
+    service.releaseViewer("other-client");
+  });
+
+  it("does not let an obsolete acquisition extend the viewer release timer", async () => {
+    vi.stubEnv("PI_WEB_VIEWER_LEASE_GRACE_MS", "100");
+    const { service, initial } = await fixtureService();
+    vi.useFakeTimers();
+    service.acquireViewer(initial.sessionId, "client", 2);
+    await vi.advanceTimersByTimeAsync(75);
+    service.acquireViewer(initial.sessionId, "client", 1);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(service.lifecycleSnapshot().viewerLeases).toEqual([]);
+    await service.disposeAll("reset");
+  });
+
   it("does not let a stale socket release a replacement viewer lease", async () => {
     const { service, cwd } = await fixtureService();
     const first = await service.create(undefined);

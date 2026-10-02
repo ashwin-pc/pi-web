@@ -675,6 +675,11 @@ sessions = createSessions({
     }
     activeWorkerDock?.refresh();
   },
+  checkpointTranscript: () => {
+    const transcript = messages.checkpoint();
+    const toolState = tools.checkpoint();
+    return { restore() { transcript.restore(); toolState.restore(); } };
+  },
   clearMessages: () => {
     tools.clearActiveToolCards();
     messages.clear();

@@ -35,6 +35,7 @@ export type QuoteRepliesController = {
   hasDrafts: () => boolean;
   prepareSubmission: (overallInstruction: string) => QuoteReplySubmission | undefined;
   commitSubmission: (submission: QuoteReplySubmission) => void;
+  checkpoint: () => { restore: () => void };
   clear: () => void;
   restoreSubmittedReferences: (body?: HTMLElement) => void;
   renderSubmittedMessage: (body: HTMLElement, message: string, attachments: AttachedImage[]) => boolean;
@@ -599,6 +600,17 @@ export function createQuoteReplies(options: {
         reference.pin.classList.add("submitted");
       });
       updateSummary();
+    },
+    checkpoint() {
+      const saved = { references: [...references], pending, nextId, persisted: new Map(persistedReplies) };
+      return { restore() {
+        references = saved.references;
+        pending = saved.pending;
+        nextId = saved.nextId;
+        persistedReplies.clear();
+        saved.persisted.forEach((value, key) => persistedReplies.set(key, value));
+        updateSummary();
+      } };
     },
     clear() {
       // Transcript teardown only clears rendered UI. Draft deletion is reserved
