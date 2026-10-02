@@ -222,6 +222,14 @@ export function createSessions(options: {
   let lastReplayedGeneration = -1;
   // Every open is a navigation intent, including refreshes of the active tab.
   let sessionOpenGeneration = 0;
+  // One stable rollback source per navigation transaction, never the blank
+  // optimistic transcript of an earlier pending click.
+  let pendingOpen: {
+    sessionId: string;
+    lane: SessionLaneId;
+    checkpoint: ReturnType<typeof options.checkpointTranscript>;
+    targetId: string;
+  } | undefined;
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let sessionListRenderFrame: number | undefined;
@@ -313,6 +321,13 @@ export function createSessions(options: {
   };
 
   function beginTranscriptLoading() {
+    // New/clear and other external transcript navigation supersede tab opens.
+    ++sessionOpenGeneration;
+    pendingOpen = undefined;
+    markTranscriptLoading();
+  }
+
+  function markTranscriptLoading() {
     transcriptLoading = true;
     transcriptLoadGeneration += 1;
     updateEmptyCwdChooser();
@@ -1403,16 +1418,21 @@ export function createSessions(options: {
 
   async function openSessionTab(sessionId: string, cwd: string): Promise<"opened" | "missing" | "failed"> {
     const openGeneration = ++sessionOpenGeneration;
-    const previousSessionId = state.currentSessionId;
-    const previousFocusedLane = focusedLane;
+    if (pendingOpen && pendingOpen.targetId !== state.currentSessionId) pendingOpen = undefined;
+    const transaction = pendingOpen ?? {
+      sessionId: state.currentSessionId,
+      lane: focusedLane,
+      checkpoint: options.checkpointTranscript(),
+      targetId: sessionId,
+    };
+    pendingOpen = transaction;
+    transaction.targetId = sessionId;
     const targetLane = laneOf(sessionId);
-    const checkpoint = options.checkpointTranscript();
     let missing = false;
-    let accepted = false;
-    const ownsOpen = () => openGeneration === sessionOpenGeneration && state.currentSessionId === sessionId;
+    const ownsOpen = () => openGeneration === sessionOpenGeneration && pendingOpen === transaction && state.currentSessionId === sessionId;
     if (targetLane) focusedLane = targetLane;
     sessionState.activate(sessionId);
-    beginTranscriptLoading();
+    markTranscriptLoading();
     clearMessages();
     renderSessionBar();
     try {
@@ -1425,7 +1445,6 @@ export function createSessions(options: {
         missing = openRes.status === 404;
         throw new Error(await openRes.text());
       }
-      accepted = true;
       if (!ownsOpen()) return "failed";
       const applied = await applyOpenedSession(openRes, ownsOpen);
       if (openGeneration !== sessionOpenGeneration || state.currentSessionId !== sessionId) return "failed";
@@ -1435,25 +1454,32 @@ export function createSessions(options: {
       markCachedCurrentSession(sessionId, cwd);
       if (targetLane) { focusedSessionByLane[targetLane] = sessionId; saveLaneFocus(); }
       markSessionReadBestEffort(sessionId);
+      pendingOpen = undefined; // Release retained DOM/controller state after hydration.
       options.onDerivedSessionStateChanged?.();
       return "opened";
     } catch (error) {
       if (!ownsOpen()) return "failed";
-      // An accepted open changed the server viewer lease even if hydration
-      // failed. Repair it without activating anything or adding another POST.
-      if (accepted && previousSessionId) {
-        try { await fetch(`/api/state?sessionId=${encodeURIComponent(previousSessionId)}`, { headers: api.headers() }); } catch { /* Offline rollback still preserves local history. */ }
+      // Any earlier pending open may already have acquired the viewer lease,
+      // even when this latest request failed before acceptance. A fresh sequence
+      // restores the stable lease and fences out older requests still in flight.
+      if (transaction.sessionId) {
+        try { await fetch(`/api/state?sessionId=${encodeURIComponent(transaction.sessionId)}`, { headers: api.headers() }); } catch { /* Offline rollback still preserves local history. */ }
         if (!ownsOpen()) return "failed";
       }
-      sessionState.activate(previousSessionId);
-      focusedLane = previousFocusedLane;
-      checkpoint.restore();
+      sessionState.activate(transaction.sessionId);
+      focusedLane = transaction.lane;
+      transaction.checkpoint.restore();
+      pendingOpen = undefined;
       finishTranscriptLoading();
       renderSessionBar();
       if (missing) discardMissingSession(sessionId);
       else addMessage("system", error instanceof Error ? error.message : String(error), "error");
       options.onDerivedSessionStateChanged?.();
       return missing ? "missing" : "failed";
+    } finally {
+      // External activation can bypass beginTranscriptLoading. Do not retain
+      // its obsolete checkpoint, or release one owned by a newer tab click.
+      if (openGeneration === sessionOpenGeneration && pendingOpen === transaction && state.currentSessionId !== sessionId) pendingOpen = undefined;
     }
   }
 

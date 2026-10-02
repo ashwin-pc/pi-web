@@ -199,6 +199,73 @@ test.describe("new-session defaults", () => {
     await expect.poll(() => activeSessionId(page)).toBe(a);
   });
 
+  for (const failure of ["500", "transport"] as const) {
+    test(`rolls overlapping opens back to stable history after ${failure}`, async ({ page }) => {
+      await setPinNewSessions(page, true);
+      const c = await createNewSession(page);
+      await page.request.patch("/api/session-ui-state", { data: { lanes: ["mock-current", "mock-older", c].map((sessionId) => ({ sessionId, lane: "pinned", since: "2026-01-01T00:00:00.000Z" })) } });
+      await page.goto("/?sessionId=mock-current");
+      await expect(page.locator("#messages")).toContainText("Can you add image attachments?");
+      await page.locator("#prompt").fill("stable A draft");
+      const originalUser = await page.locator(".message.user").first().textContent();
+      let releaseB!: () => void;
+      const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+      let acceptedB!: () => void;
+      const serverAcceptedB = new Promise<void>((resolve) => { acceptedB = resolve; });
+      let openPosts = 0;
+      let newPosts = 0;
+      let latestOpenSeq = 0;
+      let repairSeq = 0;
+      let repairClient: string | undefined;
+      page.on("request", (request) => {
+        if (request.url().endsWith("/api/sessions/open")) {
+          openPosts++;
+          latestOpenSeq = Number(request.headers()["x-pi-web-viewer-seq"]);
+        }
+        if (request.url().endsWith("/api/sessions/new")) newPosts++;
+        const url = new URL(request.url());
+        if (url.pathname === "/api/state" && url.searchParams.get("sessionId") === "mock-current") {
+          repairSeq = Number(request.headers()["x-pi-web-viewer-seq"]);
+          repairClient = request.headers()["x-pi-web-client-id"];
+        }
+      });
+      await page.route("**/api/sessions/open", async (route) => {
+        const id = route.request().postDataJSON()?.sessionId;
+        if (id === "mock-older") {
+          // Gate the response, not the request: B already owns the server lease.
+          const response = await route.fetch();
+          acceptedB();
+          await gateB;
+          await route.fulfill({ response });
+        } else if (id === c) {
+          if (failure === "500") await route.fulfill({ status: 500, body: "C open failed" });
+          else await route.abort("failed");
+        } else await route.continue();
+      });
+      const clickTab = (id: string) => page.locator(`.sessionBarTab[data-session-id="${id}"] .sessionBarTabOpen`).evaluate((button: HTMLButtonElement) => button.click());
+      await clickTab("mock-older");
+      await serverAcceptedB;
+      await expect.poll(() => activeSessionId(page)).toBe("mock-older");
+      await expect(page.locator("#messages .message")).toHaveCount(0);
+      await clickTab(c);
+      await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+      await expect(page.locator(".message.user").first()).toHaveText(originalUser || "");
+      await expect(page.locator("#prompt")).toHaveValue("stable A draft");
+      const finishedB = page.waitForResponse((response) => response.url().endsWith("/api/sessions/open") && response.request().postDataJSON()?.sessionId === "mock-older");
+      releaseB();
+      await finishedB;
+      // A subsequent browser task observes the completed stale-open handler.
+      await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+      await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+      await expect(page.locator(".message.user").first()).toHaveText(originalUser || "");
+      await expect(page.locator("#prompt")).toHaveValue("stable A draft");
+      expect(openPosts).toBe(2);
+      expect(newPosts).toBe(0);
+      expect(repairClient).toBeTruthy();
+      expect(repairSeq).toBeGreaterThan(latestOpenSeq);
+    });
+  }
+
   test("coalesces a rapid mixed New burst and reuses an inactive empty pinned tab", async ({ page }) => {
     await setPinNewSessions(page, true);
     let release!: () => void;
