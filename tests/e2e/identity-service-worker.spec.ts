@@ -2,12 +2,15 @@ import { expect, test, type Page } from "@playwright/test";
 
 test.use({ serviceWorkers: "allow" });
 
-async function activateWorker(page: Page) {
-  // Production's controllerchange handler reloads during activation. Awaiting
-  // serviceWorker.ready in page.evaluate can outlive its execution context.
-  await page.evaluate(() => { void navigator.serviceWorker.register("/sw.js"); });
-  await expect.poll(() => page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
-  await page.reload();
+async function waitForWorkerActivation(page: Page) {
+  // The production page already registers its worker and reloads on activation.
+  // waitForFunction survives that navigation; page.evaluate does not. Observe
+  // the controlled, post-reload document before fetching anything offline.
+  await page.waitForFunction(() => {
+    const navigation = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    return !!navigator.serviceWorker.controller && navigation?.type === "reload";
+  });
+  await page.waitForLoadState("load");
 }
 test("a fresh worker serves the default still offline before that avatar was selected", async ({ page, context }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop", "Production Chromium service-worker regression");
@@ -15,7 +18,7 @@ test("a fresh worker serves the default still offline before that avatar was sel
   try {
     await page.goto("/");
     await expect(page.locator(".actionLauncherToggle img")).toHaveAttribute("src", "/avatars/fox/still.png");
-    await activateWorker(page);
+    await waitForWorkerActivation(page);
     await context.setOffline(true);
     const result = await page.evaluate(async () => {
       const response = await fetch("/avatars/current-pi/still.png");
@@ -42,7 +45,7 @@ test("controlling worker does not freeze the identity manifest or bulk-download 
     await page.goto("/");
     await page.waitForLoadState("networkidle");
     expect(coldAvatarBytes).toBeLessThan(8 * 1024 * 1024);
-    await activateWorker(page);
+    await waitForWorkerActivation(page);
     expect(avatarRequests.some(url => url.endsWith(".webm"))).toBe(false);
     expect(new Set(avatarRequests.filter(url => url.endsWith(".apng"))).size).toBeLessThanOrEqual(1);
     const first = await page.evaluate(async () => (await fetch("/manifest.webmanifest")).json());
