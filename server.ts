@@ -247,6 +247,18 @@ function resolveSessionId(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : session.sessionId;
 }
 
+type OptionalSessionUiState =
+  | { sessionUiState: Awaited<ReturnType<typeof sessionUiStateStore.read>>; sessionUiStateAvailability?: never; sessionUiStateWarning?: never }
+  | { sessionUiState?: never; sessionUiStateAvailability: "unavailable"; sessionUiStateWarning: string };
+
+async function readOptionalSessionUiState(): Promise<OptionalSessionUiState> {
+  try { return { sessionUiState: await sessionUiStateStore.read() }; }
+  catch (error) {
+    console.warn("Session UI state unavailable during chat read:", error);
+    return { sessionUiStateAvailability: "unavailable", sessionUiStateWarning: "Session preferences are unavailable. Chat remains available; preferences are read-only until storage is repaired." };
+  }
+}
+
 function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessionUiState: { sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string }> }) {
   const unreadById = new Map((sessionUiState.sessionUnreadStates || []).map((item) => [item.sessionId, item]));
   return sessions.map((item) => {
@@ -861,7 +873,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, {
           ok: true,
           ...await decorateServiceState(await sessionService.state(requestedSessionId)),
-          sessionUiState: await sessionUiStateStore.read(),
+          ...await readOptionalSessionUiState(),
           tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
@@ -1008,8 +1020,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "GET" && url.pathname === "/api/sessions") {
         const extraCwds = url.searchParams.getAll("cwd");
-        const sessionUiState = await sessionUiStateStore.read();
-        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(decorateSessionInfos(await sessionService.list(extraCwds)), sessionUiState) });
+        const sessions = decorateSessionInfos(await sessionService.list(extraCwds));
+        const optionalUi = await readOptionalSessionUiState();
+        return sendJson(res, 200, {
+          ok: true,
+          sessions: optionalUi.sessionUiState ? applySessionUnreadState(sessions, optionalUi.sessionUiState) : sessions,
+          ...optionalUi,
+        });
       }
 
       if (method === "GET" && url.pathname === "/api/session-ui-state") {

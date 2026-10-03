@@ -29,7 +29,135 @@ function peer(initial = state()) {
   return { coordinator, render, report, writes, get server() { return server; }, set server(value) { server = value; } };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe("session UI state causal sync", () => {
+  it("does not refresh a held initialization conflict after read-only mode, but accepts a committed initialization", async () => {
+    for (const responseStatus of [409, 200]) {
+      const held = deferred<{ status: number; state?: SessionUiState }>();
+      const dispatched = deferred<void>();
+      const read = vi.fn(async () => state({ revision: 0, initialized: false }));
+      const patch = vi.fn(() => { dispatched.resolve(); return held.promise; });
+      const coordinator = new SessionUiCoordinator({ read, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+      const boot = state({ revision: 0, initialized: false, lanes: [lane("legacy")] });
+      const starting = coordinator.start(boot);
+      await dispatched.promise;
+      coordinator.markUnavailable();
+      held.resolve(responseStatus === 409 ? { status: 409 } : { status: 200, state: state({ revision: 1, lanes: [lane("legacy")] }) });
+      await starting;
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(patch).toHaveBeenCalledTimes(1);
+      expect(coordinator.ready).toBe(false);
+      expect(coordinator.projected?.lanes).toEqual([lane("legacy")]);
+    }
+  });
+
+  it("stops a held 409 before any conflict GET or retry PATCH after availability loss", async () => {
+    const first = deferred<{ status: number }>();
+    const dispatched = deferred<void>();
+    const read = vi.fn(async () => state({ lanes: [lane("saved")] }));
+    const patch = vi.fn(() => { dispatched.resolve(); return first.promise; });
+    const coordinator = new SessionUiCoordinator({ read, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+    await coordinator.start(state());
+    const gesture = coordinator.mutate({ lanes: [lane("saved"), lane("new")] });
+    await dispatched.promise;
+    coordinator.markUnavailable();
+    first.resolve({ status: 409 });
+    expect(await gesture).toBe(false);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(coordinator.projected?.lanes).toEqual([lane("saved")]);
+  });
+
+  it("reports a held 200 PATCH as committed even if read-only mode arrived in flight", async () => {
+    const first = deferred<{ status: number; state: SessionUiState }>();
+    const dispatched = deferred<void>();
+    const canonical = state({ lanes: [lane("saved")] });
+    const committed = state({ revision: 2, lanes: [lane("saved"), lane("new")] });
+    const patch = vi.fn(() => { dispatched.resolve(); return first.promise; });
+    const coordinator = new SessionUiCoordinator({ read: async () => canonical, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+    await coordinator.start(state());
+    const gesture = coordinator.mutate({ lanes: committed.lanes });
+    await dispatched.promise;
+    coordinator.markUnavailable();
+    first.resolve({ status: 200, state: committed });
+    expect(await gesture).toBe(true);
+    expect(coordinator.ready).toBe(false);
+    expect(coordinator.projected).toEqual(committed);
+    expect(await coordinator.mutate({ lanes: [lane("other")] })).toBe(false);
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a conflict when a held refresh GET finishes after read-only mode", async () => {
+    const refresh = deferred<SessionUiState>();
+    const refreshing = deferred<void>();
+    const read = vi.fn().mockResolvedValueOnce(state({ lanes: [lane("saved")] })).mockImplementationOnce(() => {
+      refreshing.resolve(); return refresh.promise;
+    });
+    const patch = vi.fn(async () => ({ status: 409 }));
+    const coordinator = new SessionUiCoordinator({ read, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+    await coordinator.start(state());
+    const gesture = coordinator.mutate({ lanes: [lane("saved"), lane("new")] });
+    await refreshing.promise;
+    coordinator.markUnavailable();
+    refresh.resolve(state({ revision: 2, lanes: [lane("saved"), lane("remote")] }));
+    expect(await gesture).toBe(false);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a held unread 200 as committed without resurrecting its cleared intent", async () => {
+    const ack = deferred<{ status: number; state: SessionUiState }>();
+    const dispatched = deferred<void>();
+    const postUnread = vi.fn(() => { dispatched.resolve(); return ack.promise; });
+    const canonical = state({ lanes: [lane("saved")] });
+    const committed = state({ ...canonical, revision: 2, sessionUnreadStates: [{ sessionId: "saved", unreadAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z" }] });
+    const coordinator = new SessionUiCoordinator({ read: async () => canonical, patch: vi.fn(), postUnread }, vi.fn(), vi.fn());
+    await coordinator.start(state());
+    const operation = coordinator.setUnread("saved", true);
+    await dispatched.promise;
+    coordinator.markUnavailable();
+    ack.resolve({ status: 200, state: committed });
+    expect(await operation).toBe(true);
+    expect(coordinator.ready).toBe(false);
+    expect(coordinator.projected?.sessionUnreadStates).toEqual(committed.sessionUnreadStates);
+  });
+  it("an explicit unavailable chat response retains the cached display and blocks all preferences writes", async () => {
+    const cached = state({ lanes: [lane("cached")] });
+    const read = vi.fn(async () => cached);
+    const patch = vi.fn();
+    const postUnread = vi.fn();
+    const render = vi.fn<(state: SessionUiState) => void>();
+    const report = vi.fn();
+    const coordinator = new SessionUiCoordinator({ read, patch, postUnread }, render, report);
+    await coordinator.start(state());
+    coordinator.markUnavailable();
+    expect(coordinator.ready).toBe(false);
+    expect(coordinator.projected?.lanes).toEqual([lane("cached")]);
+    expect(await coordinator.mutate({ lanes: [lane("cached"), lane("new")] })).toBe(false);
+    expect(await coordinator.setUnread("cached", false)).toBe(false);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(patch).not.toHaveBeenCalled();
+    expect(postUnread).not.toHaveBeenCalled();
+    expect(report).not.toHaveBeenCalled(); // no repeated chat notices from blocked gestures
+    expect(render.mock.lastCall?.[0].lanes).toEqual([lane("cached")]);
+  });
+
+  it("explicit unavailability before bootstrap prevents even a legacy migration GET or write", async () => {
+    const read = vi.fn();
+    const patch = vi.fn();
+    const coordinator = new SessionUiCoordinator({ read, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+    coordinator.markUnavailable();
+    await coordinator.start(state({ lanes: [lane("legacy")] }));
+    expect(coordinator.ready).toBe(false);
+    expect(coordinator.projected?.lanes).toEqual([lane("legacy")]);
+    expect(read).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+  });
   it("waits for the authorized caller before GET; starts once and then permits pin/read", async () => {
     let stored = state({ revision: 0, initialized: false });
     const read = vi.fn(async () => stored);

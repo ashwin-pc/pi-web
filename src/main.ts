@@ -21,6 +21,7 @@ import {
   readActiveSessionIdFromUrl,
   readSessionCitationFromUrl,
   sessionCitationHref,
+  sessionUiUnavailableWarning,
   syncActiveSessionIdHistoryState,
   writeSessionCitationToUrl,
   type SessionCitation,
@@ -73,6 +74,19 @@ initSwAutoReload();
 
 const elements = getAppElements();
 const state = createAppState();
+let preferencesWarningShown = false;
+function showPreferencesWarning(warning: string) {
+  if (preferencesWarningShown) return;
+  preferencesWarningShown = true;
+  const notice = document.createElement("div");
+  notice.id = "sessionPreferencesWarning";
+  notice.setAttribute("role", "status");
+  notice.className = "sessionPreferencesWarning";
+  notice.textContent = `Session preferences are read-only. Chat remains available. ${warning} Reload to retry.`;
+  // Inside the existing composer grid row, not a new implicit .app row that
+  // can fall outside its fixed-height viewport.
+  elements.formEl.prepend(notice);
+}
 const settlementDependencies = createSettlementDependencyStore(state.settlementDependencies);
 const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
@@ -573,6 +587,8 @@ async function refreshState() {
   }
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
+  const preferencesWarning = sessionUiUnavailableWarning(data);
+  if (preferencesWarning) { sessions.markUiStateUnavailable(); showPreferencesWarning(preferencesWarning); }
   if (requestedSessionId && requestedSessionId !== state.currentSessionId) {
     sessionState.applySnapshot(data);
     return;
@@ -593,7 +609,11 @@ async function refreshState() {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
-  if (messagesResult.status === "fulfilled" && await uiStateReady) sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  // A slow or unavailable preferences store must not delay chat setup.
+  void uiStateReady.then((ready) => {
+    if (!ready) showPreferencesWarning("Preference storage could not be loaded.");
+    else if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  });
   composer.updatePrimaryAction();
 }
 
@@ -638,6 +658,7 @@ settings = createSettings({
   rightPanels,
   addMessage: messages.addMessage,
   saveBucketPreference: (patch, order) => sessions.saveBucketPreference(patch, order),
+  canEditBucketPreference: () => sessions.canEditUiState(),
   onAppearanceChange: () => {
     activeWorkerDock?.refresh();
     messages.reconcileActivity();
@@ -670,6 +691,7 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
+  onUiStateUnavailable: (warning) => showPreferencesWarning(warning),
   onDerivedSessionStateChanged: () => {
     // Rehydrate inactive pinned parents too. Realtime dependency declarations
     // are not replayed after a browser reconnect, while pinned indicators must

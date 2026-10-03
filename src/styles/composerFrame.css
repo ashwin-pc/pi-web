@@ -46,6 +46,22 @@
 .pendingMessages:not([hidden]) ~ .composer .runtimeStatus,
 .pendingMessages:not([hidden]) ~ .composer .contextMeterLabel { top: -8px; }
 
+.sessionPreferencesWarning {
+  margin: 8px 12px 0;
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: #5b401c;
+  color: #fff;
+  font-size: 12px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+}
+
 .composer {
   grid-row: 4;
   min-width: 0;

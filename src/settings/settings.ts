@@ -117,10 +117,11 @@ export function createSettings(options: {
   rightPanels?: RightPanelManager;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
   saveBucketPreference: (patch: Pick<Partial<SessionUiState>, "bucketLabels" | "bucketOrder">, order?: UiIntent) => Promise<boolean>;
+  canEditBucketPreference: () => boolean;
   /** Called after an applied settings response changes the UI density. */
   onAppearanceChange?: (density: PiWebSettings["appearance"]["density"]) => void;
 }): SettingsController {
-  const { state, elements, api, rightPanels, addMessage, saveBucketPreference, onAppearanceChange } = options;
+  const { state, elements, api, rightPanels, addMessage, saveBucketPreference, canEditBucketPreference, onAppearanceChange } = options;
   const expandedStorageKey = "pi-web-composer-expanded";
   let hasAppliedSettings = false;
   let settingsPanelHandle: RightPanelHandle | undefined;
@@ -451,6 +452,7 @@ export function createSettings(options: {
     const orderFromRows = () => Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow"))
       .map((item) => item.dataset.bucketColor as SessionMarkerColorId);
     const commitOrder = async (next: SessionMarkerColorId[], previous: SessionMarkerColorId[], movedColor: SessionMarkerColorId, focusOwner?: HTMLElement, delayMs = 0) => {
+      if (!canEditBucketPreference()) { setSettingsStatus("Session preferences are read-only; reload before editing buckets.", true); renderBucketNames(); return; }
       if (next.every((id, index) => id === previous[index])) return;
       state.bucketOrder = next;
       const index = next.indexOf(movedColor);
@@ -480,9 +482,11 @@ export function createSettings(options: {
       input.type = "text";
       input.maxLength = 40;
       input.value = state.bucketLabels[color.id] || "";
+      input.disabled = !canEditBucketPreference();
       input.placeholder = color.label;
       input.setAttribute("aria-label", `${color.label} bucket name`);
       input.addEventListener("change", async () => {
+        if (!canEditBucketPreference()) { setSettingsStatus("Session preferences are read-only; reload before editing buckets.", true); renderBucketNames(); return; }
         const label = input.value.trim().slice(0, 40);
         input.value = label;
         const bucketLabels = { ...state.bucketLabels };
@@ -502,6 +506,7 @@ export function createSettings(options: {
 
       const handle = document.createElement("button");
       handle.type = "button";
+      handle.disabled = !canEditBucketPreference();
       handle.className = "settingsBucketDragHandle";
       handle.textContent = "⠿";
       handle.setAttribute("aria-describedby", instructions.id ||= "bucketOrderInstructions");

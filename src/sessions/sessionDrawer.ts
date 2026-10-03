@@ -6,7 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { sessionDrawerAutoCloseQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, writeActiveSessionIdToUrl } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, sessionUiUnavailableWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import { SessionUiCoordinator, type UiIntent } from "./sessionUiSync.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
@@ -42,6 +42,8 @@ export type SessionsController = {
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
   startUiStateAfterAuth: () => Promise<boolean>;
+  markUiStateUnavailable: () => void;
+  canEditUiState: () => boolean;
   saveBucketPreference: (patch: Pick<Partial<SessionUiState>, "bucketLabels" | "bucketOrder">, order?: UiIntent) => Promise<boolean>;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
@@ -179,6 +181,7 @@ export function createSessions(options: {
   hasSessionDraft: (sessionId: string) => boolean;
   /** Called whenever derived per-session state (e.g. waiting-on-spawned/active workers) may have changed. */
   onDerivedSessionStateChanged?: () => void;
+  onUiStateUnavailable?: (warning: string) => void;
 }): SessionsController {
   const initialSessionDeepLink = new URLSearchParams(window.location.search).get("sessionId")?.trim();
   const {
@@ -593,6 +596,8 @@ export function createSessions(options: {
       const res = await fetchSessionList(url, api.headers());
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
+      const warning = sessionUiUnavailableWarning(data);
+      if (warning) { uiSync.markUnavailable(); options.onUiStateUnavailable?.(warning); }
       cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
       for (const session of cachedSessions) sessionState.mergeSessionInfo(session);
       let laneCwdsChanged = false;
@@ -606,7 +611,7 @@ export function createSessions(options: {
       });
       if (laneCwdsChanged) {
         syncPinnedProjection();
-        persistSessionUiState({ lanes: state.lanes });
+        if (uiSync.ready) persistSessionUiState({ lanes: state.lanes });
       }
       scheduleSessionListRender();
       renderSessionBar();
@@ -757,7 +762,10 @@ export function createSessions(options: {
       const data = await res.json().catch(() => ({}));
       return { status: res.status, state: sessionUiStateFromResponse({ ok: res.ok && data.ok === true, sessionUiState: data.sessionUiState }), error: data.error as string | undefined };
     },
-  }, applySessionUiStateValue, (message) => addMessage("system", message, "error"));
+  }, applySessionUiStateValue, (message) => {
+    if (uiSync.unavailable) options.onUiStateUnavailable?.(message);
+    else addMessage("system", message, "error");
+  });
 
   function persistSessionUiState(patch: Partial<SessionUiState>, order?: UiIntent) { return uiSync.mutate(patch, order); }
 
@@ -2929,6 +2937,8 @@ export function createSessions(options: {
     renderCurrentSessionBucketButton,
     applySessionUiState,
     startUiStateAfterAuth,
+    markUiStateUnavailable: () => uiSync.markUnavailable(),
+    canEditUiState: () => uiSync.ready,
     saveBucketPreference: (patch, order) => persistSessionUiState(patch, order),
     markSessionRead,
     waitingInfoFor,

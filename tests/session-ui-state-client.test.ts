@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { hasAnySessionUiState, normalizeSessionUiState, parseSessionUiStateSnapshot, shouldMigrateLocalUiState } from "../src/app/types.js";
+import { hasAnySessionUiState, normalizeSessionUiState, parseSessionUiStateSnapshot, sessionUiUnavailableWarning, shouldMigrateLocalUiState } from "../src/app/types.js";
 
 const localState = normalizeSessionUiState({
   lanes: [{ sessionId: "legacy-pin", lane: "pinned", since: "2025-01-01T00:00:00.000Z" }],
 });
 
 describe("session UI state first-run migration", () => {
+  it("recognizes only explicit unavailable chat responses without inventing UI state", () => {
+    const chat = { ok: true, sessionId: "live-chat", messages: [{ role: "assistant", content: "hello" }],
+      sessionUiStateAvailability: "unavailable", sessionUiStateWarning: "Preferences storage unavailable" };
+    expect(chat.messages).toHaveLength(1);
+    expect(sessionUiUnavailableWarning(chat)).toBe("Preferences storage unavailable");
+    expect("sessionUiState" in chat).toBe(false);
+    expect(parseSessionUiStateSnapshot((chat as Record<string, unknown>).sessionUiState)).toBeUndefined();
+    expect(shouldMigrateLocalUiState({ ok: true, status: 200, sessionUiState: undefined }, localState)).toBe(false);
+    expect(sessionUiUnavailableWarning({ ok: true, sessionUiStateWarning: "ignore" })).toBeUndefined();
+  });
   it("migrates only from an explicit uninitialized revision-zero snapshot", () => {
     expect(shouldMigrateLocalUiState({
       ok: true,

@@ -358,6 +358,60 @@ describe("pi-web mock API", () => {
     expect(current.settings.appearance.loadingAnimation).toBe("pulse");
   });
 
+  it("keeps chat reads and prompts available without fabricating UI state when its storage is unreadable", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const file = join(settingsDir, "session-ui-state.json");
+    const historyFile = `${file}.history.json`;
+    const baseline = await readFile(file, "utf8");
+    const history = await readFile(historyFile, "utf8");
+    const before = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+    expect(before.initialized).toBe(true);
+    await rm(historyFile);
+    await mkdir(historyFile);
+    await writeFile(join(historyFile, "keep"), "block history replacement");
+    try {
+      // A failed write invalidates the in-process cache; the next read now sees
+      // damaged history and must fail closed rather than supplying revision zero.
+      const attempted = await fetch(`${baseUrl}/api/session-ui-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: before.revision, lanes: [] }) });
+      expect(attempted.ok).toBe(false);
+      const { readdir } = await import("node:fs/promises");
+      const backups = (await readdir(settingsDir)).filter((name) => name.startsWith("session-ui-state.json.bak-")).sort();
+      const snapshotBackups = await Promise.all(backups.map((name) => readFile(join(settingsDir, name), "utf8")));
+      const unavailable = await fetch(`${baseUrl}/api/session-ui-state`);
+      expect(unavailable.status).toBe(503);
+      const refused = await fetch(`${baseUrl}/api/session-ui-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: before.revision, lanes: [] }) });
+      expect(refused.status).toBe(503);
+      for (const action of ["read", "unread"]) {
+        const targeted = await fetch(`${baseUrl}/api/session-ui-state/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "mock-older" }) });
+        expect(targeted.status).toBe(503);
+      }
+      const stateResponse = await fetch(`${baseUrl}/api/state`);
+      expect(stateResponse.status).toBe(200);
+      const state = await stateResponse.json();
+      expect(state).toMatchObject({ ok: true, sessionId: "mock-current", sessionUiStateAvailability: "unavailable", sessionUiStateWarning: expect.any(String) });
+      expect(Object.hasOwn(state, "sessionUiState")).toBe(false);
+      const listResponse = await fetch(`${baseUrl}/api/sessions`);
+      expect(listResponse.status).toBe(200);
+      const listed = await listResponse.json();
+      expect(listed).toMatchObject({ ok: true, sessionUiStateAvailability: "unavailable", sessionUiStateWarning: expect.any(String) });
+      expect(Object.hasOwn(listed, "sessionUiState")).toBe(false);
+      expect(listed.sessions.map((item: { id: string }) => item.id)).toEqual(expect.arrayContaining(["mock-current", "mock-older"]));
+      expect(listed.sessions.every((item: { unread?: boolean }) => !Object.hasOwn(item, "unread"))).toBe(true);
+      const prompt = await fetch(`${baseUrl}/api/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "synthetic healthy chat while preferences unavailable" }) });
+      expect(prompt.status).toBe(202);
+      const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
+      expect(messages.messages.map((item: { text?: string }) => item.text)).toContain("synthetic healthy chat while preferences unavailable");
+      expect(await readFile(file, "utf8")).toBe(baseline);
+      expect(await readFile(join(historyFile, "keep"), "utf8")).toBe("block history replacement");
+      expect((await readdir(settingsDir)).filter((name) => name.startsWith("session-ui-state.json.bak-")).sort()).toEqual(backups);
+      expect(await Promise.all(backups.map((name) => readFile(join(settingsDir, name), "utf8")))).toEqual(snapshotBackups);
+    } finally {
+      await rm(historyFile, { recursive: true });
+      await writeFile(historyFile, history);
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    }
+  });
+
   it("persists and returns server session UI state", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();

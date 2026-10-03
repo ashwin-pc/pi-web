@@ -114,7 +114,17 @@ export class SessionUiCoordinator {
   private failed = false;
   constructor(private readonly transport: UiTransport, private readonly render: (state: SessionUiState) => void, private readonly report: (message: string) => void) {}
   get ready() { return !this.failed && this.canonical !== undefined; }
+  get unavailable() { return this.failed; }
+  /** Trusted server availability signal: retain the last display but prohibit writes and migration. */
+  markUnavailable() {
+    if (this.failed) return;
+    this.failed = true;
+    this.migrationSeed = undefined;
+    this.pending = [];
+    this.draw();
+  }
   get projected() {
+    if (this.failed && this.canonical && !this.canonical.initialized && this.canonical.revision === 0 && this.bootProjection) return copyUiState(this.bootProjection);
     if (!this.canonical) return this.bootProjection ? copyUiState(this.pending.reduce(applyUiIntent, this.bootProjection)) : undefined;
     const base = this.migrationSeed && !this.canonical.initialized && this.canonical.revision === 0 ? this.migrationSeed : this.canonical;
     return copyUiState(this.pending.reduce(applyUiIntent, base));
@@ -131,6 +141,7 @@ export class SessionUiCoordinator {
     if (this.started) return this.queue;
     this.started = true;
     this.bootProjection = copyUiState(seed);
+    if (this.failed) { this.draw(); return this.queue; }
     this.migrationSeed = hasAnySessionUiState(seed) ? copyUiState(seed) : undefined;
     this.queue = this.loadInitialState();
     return this.queue;
@@ -139,6 +150,7 @@ export class SessionUiCoordinator {
     let snapshot: SessionUiState | undefined;
     try { snapshot = await this.transport.read(); } catch { /* A failed read is never permission to migrate. */ }
     if (!snapshot) {
+      if (this.failed) return;
       this.failed = true;
       this.migrationSeed = undefined;
       this.pending = [];
@@ -149,45 +161,62 @@ export class SessionUiCoordinator {
       return;
     }
     this.accept(snapshot);
-    this.bootProjection = undefined;
+    if (this.failed) return; // An availability signal won while the GET was in flight.
     // An SSE snapshot may have won while the initial GET was pending. Never
     // decide first-run eligibility from that stale GET after accept ignored it.
     if (!this.canonical || this.canonical.initialized || this.canonical.revision !== 0 || !this.migrationSeed) {
+      this.bootProjection = undefined;
       this.migrationSeed = undefined;
       return;
     }
     const migration = this.migrationSeed;
     // Migration is a one-shot initialize attempt; a racing winner is authoritative.
     const write = async () => {
+      if (this.failed) return;
       const result = await this.transport.patch({ ...migration, expectedRevision: 0, initialize: true });
-      if (result.status === 409) {
+      if (result.status === 200 && result.state) {
+        // An already-dispatched initialize may have committed before read-only mode.
         this.migrationSeed = undefined;
-        const latest = await this.transport.read();
-        if (!latest) throw new Error("Session preferences unavailable; reload to retry.");
-        this.accept(latest);
-      } else if (result.status !== 200 || !result.state) throw new Error(result.error || `Session preferences update failed (${result.status}). Reload to retry.`);
-      else { this.migrationSeed = undefined; this.accept(result.state); }
+        this.accept(result.state);
+        this.bootProjection = undefined;
+      } else {
+        if (this.failed) return; // Never refresh or retry after an availability signal.
+        if (result.status === 409) {
+          this.migrationSeed = undefined;
+          const latest = await this.transport.read();
+          if (this.failed) return;
+          if (!latest) throw new Error("Session preferences unavailable; reload to retry.");
+          this.accept(latest);
+          this.bootProjection = undefined;
+        } else throw new Error(result.error || `Session preferences update failed (${result.status}). Reload to retry.`);
+      }
       this.draw();
     };
-    try { await write(); } catch (error) { this.fail(error); }
+    try { await write(); } catch (error) { if (!this.failed) this.fail(error); }
   }
   setUnread(sessionId: string, unread: boolean): Promise<boolean> {
-    if (this.failed || !this.projected) { this.report("Session preferences unavailable; reload to retry."); return Promise.resolve(false); }
+    if (this.failed) return Promise.resolve(false); // Persistent read-only warning already explains this state.
+    if (!this.projected) { this.report("Session preferences are still loading; retry once loaded."); return Promise.resolve(false); }
     const now = new Date().toISOString();
     const intent: UiIntent = { kind: "entry", field: "sessionUnreadStates", id: sessionId,
       ...(unread ? { value: { sessionId, unreadAt: now, updatedAt: now } } : {}) };
     this.pending.push(intent);
     this.draw();
     return this.enqueue(async () => {
+      if (this.failed) return false;
       const response = await this.transport.postUnread(sessionId, unread);
-      if (response.status !== 200 || !response.state) throw new Error(response.error || `Session unread update failed (${response.status}). Reload to retry.`);
-      this.accept(response.state);
-      this.pending.splice(this.pending.indexOf(intent), 1);
-      this.draw();
-    }).then(() => !this.failed);
+      if (response.status === 200 && response.state) {
+        this.accept(response.state);
+        this.pending = this.pending.filter((entry) => entry !== intent);
+        this.draw();
+        return true;
+      }
+      if (this.failed) return false;
+      throw new Error(response.error || `Session unread update failed (${response.status}). Reload to retry.`);
+    });
   }
   mutate(next: Partial<SessionUiState>, order?: UiIntent): Promise<boolean> {
-    if (this.failed) { this.draw(); this.report("Session preferences unavailable; reload before changing them."); return Promise.resolve(false); }
+    if (this.failed) { this.draw(); return Promise.resolve(false); }
     const base = this.projected;
     if (!base) { this.report("Session preferences are still loading; retry this change once loaded."); return Promise.resolve(false); }
     const intents = captureUiIntents(base, next);
@@ -203,6 +232,7 @@ export class SessionUiCoordinator {
     return this.enqueue(async () => {
       const fields = [...new Set(intents.map((intent) => intent.kind === "label" ? "bucketLabels" : intent.field))];
       for (let attempt = 0; attempt < 3; attempt++) {
+        if (this.failed) return false;
         if (!this.canonical) throw new Error("Session preferences unavailable; reload to retry.");
         const updated = intents.reduce(applyUiIntent, this.canonical);
         const patch = {
@@ -210,27 +240,35 @@ export class SessionUiCoordinator {
           expectedRevision: this.canonical.revision,
         } as Partial<SessionUiState> & { expectedRevision: number };
         const response = await this.transport.patch(patch);
+        if (response.status === 200 && response.state) {
+          // The server committed this gesture even if a later signal made us read-only.
+          this.accept(response.state);
+          this.pending = this.pending.filter((intent) => !intents.includes(intent));
+          this.draw();
+          return true;
+        }
+        if (this.failed) return false;
         if (response.status === 409) {
           const latest = await this.transport.read();
+          if (this.failed) return false;
           if (!latest) throw new Error("Session preferences conflict; reload to retry.");
           this.accept(latest);
           continue;
         }
-        if (response.status !== 200 || !response.state) throw new Error(response.status === 428
+        throw new Error(response.status === 428
           ? "Session preferences need a current version. Reload this tab before retrying."
           : response.error || `Session preferences update failed (${response.status}). Reload to retry.`);
-        this.accept(response.state);
-        this.pending = this.pending.filter((intent) => !intents.includes(intent));
-        this.draw();
-        return;
       }
       throw new Error("Session preferences changed repeatedly; reload to retry.");
-    }).then(() => !this.failed);
+    });
   }
-  private enqueue(write: () => Promise<void>): Promise<void> {
-    const result = this.queue.then(() => { if (!this.failed) return write(); });
-    this.queue = result.catch((error: unknown) => this.fail(error));
-    return this.queue;
+  private enqueue(write: () => Promise<boolean>): Promise<boolean> {
+    const result = this.queue.then(() => this.failed ? false : write()).catch((error: unknown) => {
+      if (!this.failed) this.fail(error);
+      return false;
+    });
+    this.queue = result.then(() => undefined);
+    return result;
   }
   private fail(error: unknown) {
     this.failed = true;

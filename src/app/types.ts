@@ -421,6 +421,17 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
 
 export type SessionUiStateResponse = { ok: boolean; status?: number; sessionUiState?: unknown };
 
+/** Only an explicit server availability marker is authoritative; omission alone is not first-run state. */
+export function sessionUiUnavailableWarning(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const response = value as Record<string, unknown>;
+  if (response.sessionUiStateAvailability !== "unavailable") return undefined;
+  const warning = response.sessionUiStateWarning;
+  return typeof warning === "string" && warning.trim()
+    ? warning.trim().slice(0, 240)
+    : "Session preferences are unavailable. Chat remains available; preferences are read-only until reload.";
+}
+
 /** Parse a complete authoritative v3 snapshot; local legacy normalization is intentionally separate. */
 export function parseSessionUiStateSnapshot(value: unknown): SessionUiState | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
