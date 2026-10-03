@@ -1,6 +1,8 @@
 import { open, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { SessionInfoDto } from "./dto.js";
+import type { SessionInfoDto as SessionInfo } from "./dto.js";
+/** This lister is Pi storage metadata, whose path and creation time are known. */
+type SessionInfoDto = SessionInfo & { path: string; created: string };
 
 const HEAD_BYTES = 32 * 1024;
 const TAIL_BYTES = 8 * 1024;

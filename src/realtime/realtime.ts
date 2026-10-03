@@ -2,7 +2,8 @@ import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import type { AppState, PiEvent } from "../app/types.js";
 import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import type { MessageDto } from "../../server/session/dto.js";
+import type { MessageDto, TranscriptEventDto, InteractionRequestDto } from "../../server/session/dto.js";
+import type { Interactions } from "./interactions.js";
 import { reconnectDelayMs } from "../app/types.js";
 import type { ComposerController } from "../composer/composer.js";
 import { messageText } from "../messages/content.js";
@@ -48,6 +49,7 @@ export function createRealtime(options: {
   composer: ComposerController;
   messages: MessageList;
   models: ModelSettings;
+  interactions?: Interactions;
   sessions: SessionsController;
   settings: SettingsController;
   status: StatusBar;
@@ -746,13 +748,19 @@ export function createRealtime(options: {
         return;
       }
       const isReplay = data.replay === true;
+      if (["message_start", "message_part", "message_delta", "message_replace"].includes(data.type)) {
+        if (data.sessionId === state.currentSessionId) messages.applyTranscriptEvent(data as TranscriptEventDto);
+        return;
+      }
+      if (data.type === "interaction_resolved") { options.interactions?.resolved(data.sessionId, data.id); return; }
       if (data.type === "hello" || data.type === "state_changed") {
         const appliesToCurrentSession = !data.sessionId || !state.currentSessionId || data.sessionId === state.currentSessionId;
         sessionState.applySnapshot(data, { activate: data.type === "hello" && !state.currentSessionId });
         if (!appliesToCurrentSession) return;
         if (data.thinkingLevels) models.updateThinkingOptions(data.thinkingLevels);
         if (elements.modelSelectEl.options.length) elements.modelSelectEl.value = state.currentModelKey;
-        if (data.type === "state_changed" && !isReplay && data.sourceClientId !== api.clientId) {
+        options.interactions?.render();
+        if (data.type === "state_changed" && data.capabilities?.queue !== false && !isReplay && data.sourceClientId !== api.clientId) {
           refreshMessages()
             .then(() => {
               restoreTerminalFailureCard();
@@ -816,7 +824,8 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "interaction_request" || data.type === "interaction_effect") {
-        handleInteractionRequest(data);
+        if (data.source && data.source !== "extension") options.interactions?.request(data as InteractionRequestDto);
+        else handleInteractionRequest(data);
         return;
       }
       if (data.type === "web_contributions_changed") {

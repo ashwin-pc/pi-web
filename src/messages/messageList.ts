@@ -1,7 +1,8 @@
 import type { ApiHeaders } from "../app/api.js";
 import { iconElement, type IconName } from "../app/icons.js";
 import { sessionCitationFromHref, type AttachedImage, type Role, type SessionCitation } from "../app/types.js";
-import type { MessageDto } from "../../server/session/dto.js";
+import type { MessageDto, TranscriptEventDto } from "../../server/session/dto.js";
+import { createNativeTranscript } from "./nativeTranscript.js";
 import { attachImageActions } from "../components/imageActions.js";
 import type { MarkdownRenderer } from "../markdown/render.js";
 import { createActivitySummaries, liveThinkingPreview, setActivityCardMetadata } from "./activitySummary.js";
@@ -29,7 +30,8 @@ export type MessageMetadata = {
   entryId?: string;
   parentEntryId?: string;
   copyText?: string;
-  timestamp?: string;
+  /** null means unavailable; undefined retains legacy optimistic Pi timing. */
+  timestamp?: string | null;
   /** Internal identity for prose blocks belonging to one assistant response. */
   responseKey?: string;
 };
@@ -85,6 +87,7 @@ export type MessageList = {
   resetStreamingAssistant: () => void;
   invalidateRefreshes: () => void;
   reconcileActivity: () => void;
+  applyTranscriptEvent: (event: TranscriptEventDto) => boolean;
   appendCommittedMessage: (message: MessageDto, options: {
     addToolHistoryCard: AddToolHistoryCard;
     addPendingToolCard: AddPendingToolCard;
@@ -294,10 +297,12 @@ export function createMessageList(options: {
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
+  canNavigateHistory?: () => boolean;
   apiHeaders?: ApiHeaders;
   quoteReplies?: QuoteRepliesController;
 }): MessageList {
   const { messagesEl, markdown, onMessageAction, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, apiHeaders, quoteReplies } = options;
+  const nativeTranscript = createNativeTranscript(addMessage, markdown, scrollToBottom);
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
   const streamingTextContent = new Map<string, string>();
@@ -778,7 +783,7 @@ export function createMessageList(options: {
     const actionText = () => copyText || body.textContent || "";
     const entryId = metadata.entryId?.trim();
     if (entryId) messageEl.dataset.entryId = entryId;
-    if (entryId && onMessageAction) {
+    if (entryId && onMessageAction && options.canNavigateHistory?.() !== false) {
       const runAction = (action: MessageActionKind) => {
         void onMessageAction({ action, entryId, parentEntryId: metadata.parentEntryId?.trim(), role, text: actionText() });
       };
@@ -948,8 +953,11 @@ export function createMessageList(options: {
       const time = document.createElement("time");
       const timestamp = metadata.timestamp ? new Date(metadata.timestamp) : new Date();
       time.className = "messageTimestamp";
-      time.dateTime = Number.isNaN(timestamp.valueOf()) ? "" : timestamp.toISOString();
-      time.textContent = `You · ${Number.isNaN(timestamp.valueOf()) ? "now" : timestamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      if (metadata.timestamp === null) time.textContent = "You";
+      else {
+        time.dateTime = Number.isNaN(timestamp.valueOf()) ? "" : timestamp.toISOString();
+        time.textContent = `You · ${Number.isNaN(timestamp.valueOf()) ? "now" : timestamp.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      }
       baseline.append(time);
       div.append(baseline);
     }
@@ -1209,6 +1217,7 @@ export function createMessageList(options: {
   }
 
   function clearInternal(invalidate = true) {
+    nativeTranscript.clear();
     if (invalidate) invalidatePendingRefreshes();
     quoteReplies?.clear();
     clearStreamingText();
@@ -1448,6 +1457,7 @@ export function createMessageList(options: {
     isStreaming?: boolean;
   }) {
     const { addToolHistoryCard, addPendingToolCard, addRuntimeErrorCard, completedToolResults, renderedToolResultIds, isStreaming } = options;
+    if (nativeTranscript.append(message)) return;
     switch (message.role) {
       case "toolResult": {
         const id = message.toolCallId;
@@ -1542,7 +1552,7 @@ export function createMessageList(options: {
       clearInternal(false);
       clearActiveToolCards();
       const allMessages = (data.messages || []) as MessageDto[];
-      const runtimeState = transcriptRuntimeState(allMessages, historyIsStreaming);
+      const runtimeState = allMessages.some((message) => message.parts) ? {} : transcriptRuntimeState(allMessages, historyIsStreaming);
       bulkRendering = true;
       const completedToolResults = new Map<string, MessageDto>();
       const renderedToolResultIds = new Set<string>();
@@ -1595,6 +1605,7 @@ export function createMessageList(options: {
   return {
     addMessage,
     appendCommittedMessage,
+    applyTranscriptEvent: (event) => { mutationSerial++; return nativeTranscript.event(event); },
     startStreamingText,
     appendStreamingDelta,
     endStreamingText,

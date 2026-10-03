@@ -1,8 +1,6 @@
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { PiWebSession, PiWebSessionInfo } from "./types.js";
-import { simplifyMessage } from "./session/projection.js";
-import { mapPiEvent } from "./session/piEventMap.js";
-import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import websiteWorkflowExtension from "./fixtures/websiteWorkflowExtension.js";
 import recommendedAddonsExtension from "./fixtures/recommendedAddonsExtension.js";
 
@@ -235,6 +233,7 @@ export function createMockHarness(options: MockSessionOptions) {
 
     syncMessagesToLeaf();
     let mockSession: PiWebSession;
+    const eventListeners = new Set<(event: unknown) => void>();
     const extensionHandlers = new Map<string, Array<(event: any, ctx: any) => unknown>>();
     let extensionContext: any;
     let compactionAbortRequested = false;
@@ -278,22 +277,7 @@ export function createMockHarness(options: MockSessionOptions) {
     function broadcastPiEvent(input: Record<string, unknown>, activityAt?: string | false) {
       const lastActivityAt = activityAt === false ? runtimeLastActivityAt : markRuntimeActivity(activityAt || new Date().toISOString());
       const event = lastActivityAt ? { ...input, lastActivityAt } : input;
-      const mapped = mapPiEvent(event as unknown as AgentSessionEvent);
-      const committedMessage = input.type === "message_end" ? simplifyMessage(input.message) : undefined;
-      if (mapped.kind === "event") broadcast({
-        type: "agent_event",
-        sessionId: mockSession.sessionId,
-        sessionFile: mockSession.sessionFile,
-        event: mapped.event,
-      });
-      else broadcast({ type: "committed_message", sessionId: mockSession.sessionId, sessionFile: mockSession.sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, kind: mapped.entryKind });
-      broadcastRuntimeChanged();
-      if (committedMessage) broadcast({
-        type: "committed_message",
-        sessionId: mockSession.sessionId,
-        sessionFile: mockSession.sessionFile,
-        message: committedMessage,
-      });
+      for (const listener of eventListeners) listener(event);
     }
 
     async function runMockCompaction(customInstructions?: string, slow = false) {
@@ -325,7 +309,7 @@ export function createMockHarness(options: MockSessionOptions) {
 
     const mockSessionManager = {
       newSession() {
-        mockSession.sessionId = `mock-${Date.now()}`;
+        mockSession.sessionId = `mock-${randomUUID()}`;
         mockSession.sessionFile = join(piCwd, `.mock-sessions/${mockSession.sessionId}.jsonl`);
         // Rename reads/writes this index. Without a record, a new-session rename
         // succeeds optimistically in the browser but returns "New session".
@@ -369,6 +353,9 @@ export function createMockHarness(options: MockSessionOptions) {
     };
 
     function broadcastRuntimeChanged() {
+      if (!mockSession.isStreaming && !mockSession.isRetrying && !mockSession.isCompacting) {
+        for (const listener of eventListeners) listener({ type: "agent_settled" });
+      }
       broadcast({
         type: "session_runtime_changed",
         sessionId: mockSession.sessionId,
@@ -520,7 +507,6 @@ export function createMockHarness(options: MockSessionOptions) {
         const info = mockSessions.find((item) => item.path === mockSession.sessionFile);
         if (info) info.name = name.trim();
         broadcastPiEvent({ type: "session_info_changed", name: name.trim() || undefined });
-        if (isCurrentSession(mockSession)) broadcast({ type: "state_changed", ...currentState() as object });
       },
       setModel: async (model: unknown) => { mockSession.model = model as typeof mockModel; },
       setThinkingLevel: (level: string) => { mockSession.thinkingLevel = level; },
@@ -974,9 +960,9 @@ export function createMockHarness(options: MockSessionOptions) {
       abort: async () => { mockSession.isStreaming = false; mockSession.isRetrying = false; clearRuntimeTimestamps(); broadcastRuntimeChanged(); },
       abortCompaction: () => { compactionAbortRequested = true; },
       clearQueue: () => undefined,
-      subscribe: () => undefined,
+      subscribe: (listener) => { eventListeners.add(listener); return () => eventListeners.delete(listener); },
     };
-    (mockSession as any).dispose = () => { lifecycleFor(mockSession.sessionId).disposes += 1; };
+    (mockSession as any).dispose = () => { eventListeners.clear(); lifecycleFor(mockSession.sessionId).disposes += 1; };
     return mockSession;
   }
 

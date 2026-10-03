@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { PiSessionFactory, piSessionDirectory } from "../server/session/piFactory.js";
-import { LocalSessionService, type LocalSessionServiceDependencies } from "../server/session/service.js";
+import { LocalSessionService } from "../server/session/service.js";
+import { createPiAdapter, type PiAdapterDependencies } from "../server/session/adapters/pi/index.js";
 
 const loaderState = vi.hoisted(() => ({ options: [] as any[], reload: vi.fn(async () => undefined) }));
 vi.mock("../server/extensions/resilientLoader.js", () => ({
@@ -109,13 +110,10 @@ describe("PiSessionFactory resource lifecycle", () => {
     await mkdir(other);
     const path = await savedSession(other);
     vi.stubEnv("PI_WEB_NO_SESSION", "0");
-    const service = new LocalSessionService({
-      modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
-      additionalExtensionPaths: () => [],
-      sessionConfig: { defaultsFor: async () => ({}), finalizeCreatedSession: async () => undefined },
-      globalCwd: () => cwd,
-      clientCount: () => 0,
-    });
+    const pi = createPiAdapter({ modelRuntime: {} as PiAdapterDependencies["modelRuntime"],
+      additionalExtensionPaths: () => [], defaultsFor: async () => ({}), globalCwd: () => cwd, clientCount: () => 0 });
+    const service = new LocalSessionService({ pi, nativeBindingsFile: join(root, "bindings.json"),
+      finalizeCreatedSession: async () => undefined, globalCwd: () => cwd });
     loaderState.reload.mockImplementationOnce(async () => {
       expect(service.knownCwds()).toContain(other);
       throw new Error("reload failed");

@@ -8,7 +8,9 @@ import { shallowSessionCwd } from "../server/session/shallowList.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
 import { mapPiEvent } from "../server/session/piEventMap.js";
 import { pi087Events } from "./fixtures/pi-0.87-events.js";
-import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
+import { LocalSessionService, SessionServiceError } from "../server/session/service.js";
+import type { LocalSessionFactory } from "../server/session/piFactory.js";
+import { createPiAdapter, PiSessionHandle as SharedPiHandle, type PiAdapterDependencies } from "../server/session/adapters/pi/index.js";
 import type { PiWebSession } from "../server/types.js";
 import { PiSessionHandle } from "../server/session/piHandle.js";
 
@@ -185,7 +187,7 @@ type FixtureServiceOptions = {
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: LocalSessionFactory["list"];
   remove?: LocalSessionFactory["remove"];
-  defaultsFor?: LocalSessionServiceDependencies["sessionConfig"]["defaultsFor"];
+  defaultsFor?: PiAdapterDependencies["defaultsFor"];
   openError?: Error;
   clientCount?: number | (() => number);
 };
@@ -208,20 +210,18 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
     list: options.list || (async () => []),
     remove: options.remove,
   };
-  const deps: LocalSessionServiceDependencies = {
-    modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
-    sessionFactory: factory,
+  const pi = createPiAdapter({
+    modelRuntime: { getAvailableSnapshot: () => [] } as unknown as PiAdapterDependencies["modelRuntime"],
+    peer: { ...factory, newSessionAfterCreate: Boolean(options.isMock) },
     additionalExtensionPaths: () => [],
-    sessionConfig: {
-      defaultsFor: options.defaultsFor || (async () => ({})),
-      finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined),
-    },
+    defaultsFor: options.defaultsFor || (async () => ({})),
     globalCwd: () => cwd,
     clientCount: () => typeof options.clientCount === "function" ? options.clientCount() : options.clientCount ?? 0,
-  };
-  const service = new LocalSessionService(deps);
-  const initial = await service.initialize();
-  return { service, initial, fixture: sessions.get("current")!, creates, cwd };
+  });
+  const service = new LocalSessionService({ pi, nativeBindingsFile: join(cwd, "bindings.json"),
+    finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined), globalCwd: () => cwd });
+  await service.initialize();
+  return { service, initial: sessions.get("current")!.session, pi, sessions, fixture: sessions.get("current")!, creates, cwd };
 }
 
 describe("LocalSessionService contract", () => {
@@ -235,7 +235,7 @@ describe("LocalSessionService contract", () => {
       name: "Saved", firstMessage: "hello", allMessagesText: "hello", messageCount: 1,
       created: new Date("2026-01-01T00:00:00Z"), modified: new Date("2026-01-01T00:00:00Z"),
     }]);
-    const { service, fixture, cwd, creates } = await fixtureService({
+    const { service, fixture, cwd, creates, sessions } = await fixtureService({
       list, remove, defaultsFor, finalizeCreatedSession: finalize,
     });
     savedCwd = cwd;
@@ -256,7 +256,7 @@ describe("LocalSessionService contract", () => {
     expect(creates.at(-1)).toMatchObject({ reason: "new", previous: fixture.session.sessionFile, cwd });
     expect(finalize).toHaveBeenCalledWith(created.sessionId);
     expect(defaultsFor).toHaveBeenCalledWith(cwd);
-    const createdSession = service.sessionForPath(created.sessionFile)!;
+    const createdSession = sessions.get(created.sessionId)!.session;
     expect(createdSession.setModel).toHaveBeenCalled();
     expect(createdSession.setThinkingLevel).toHaveBeenCalledWith("medium");
     expect(await service.delete("saved", cwd)).toEqual({ id: "saved", disposition: "trashed" });
@@ -483,19 +483,19 @@ describe("LocalSessionService contract", () => {
       finalizeCreatedSession: async () => { order.push("session_ui_state_changed"); },
     });
     service.subscribe((event) => {
-      if (event.type === "wire" && (event.value as any).type === "state_changed") order.push("state_changed");
+      if (event.type === "state") order.push("state_changed");
     });
     await fixture.extensionOptions.commandContextActions.newSession();
     expect(order).toEqual(["session_ui_state_changed", "state_changed"]);
   });
 
-  it("keeps seven true externals including the optional scoped extension transport", async () => {
+  it("keeps the generic host raw-free with one registry and explicit Pi operations", async () => {
     const source = await readFile(new URL("../server/session/service.ts", import.meta.url), "utf8");
-    const body = source.slice(source.indexOf("export interface LocalSessionServiceDependencies"), source.indexOf("}\n\ntype WorkLeaseKind"));
-    expect(body.match(/^  \w+[^\n]*;/gm)).toHaveLength(7);
-    expect(body).toContain("extensionHttp?");
-    expect(body).not.toContain("decorateState");
-    expect(body).not.toContain("resolve(sessionId");
+    expect(source).toContain("SessionRegistry");
+    expect(source).toContain("handle.piOperations");
+    expect(source).not.toContain("PiWebSession");
+    expect(source).not.toContain("instanceof PiSessionHandle");
+    expect(source).not.toContain("agent.state");
   });
 
   it("executes the synchronous service-to-host event pipeline with exact wire payloads", async () => {
@@ -522,7 +522,7 @@ describe("LocalSessionService contract", () => {
 
     wire.length = 0;
     fixture.emit({ type: "session_info_changed", name: "Renamed" });
-    const { thinkingLevels: _thinkingLevels, ...stateWithoutThinkingLevels } = service.projectState(initial);
+    const { thinkingLevels: _thinkingLevels, ...stateWithoutThinkingLevels } = service.projectState(await service.require(initial.sessionId));
     expect(wire).toEqual([
       { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "session_info_changed", name: "Renamed" } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
@@ -672,10 +672,11 @@ describe("LocalSessionService contract", () => {
     expect(activity.hasStarted(initial.sessionFile)).toBe(false);
   });
 
-  it("propagates WebSocket open failures but keeps unknown-ID fallback eligible", async () => {
-    const { initial } = await fixtureService();
-    await expect(resolveWebSocketHelloSession("unknown", initial, async () => undefined)).resolves.toBeUndefined();
-    await expect(resolveWebSocketHelloSession("corrupt", initial, async () => { throw new Error("corrupt session"); })).rejects.toThrow("corrupt session");
+  it("propagates WebSocket open failures and never aliases unknown identity", async () => {
+    const { initial, service } = await fixtureService();
+    const handle = await service.require(initial.sessionId);
+    await expect(resolveWebSocketHelloSession("unknown", handle, async () => undefined)).rejects.toMatchObject({ status: 404 });
+    await expect(resolveWebSocketHelloSession("corrupt", handle, async () => { throw new Error("corrupt session"); })).rejects.toThrow("corrupt session");
   });
 
   it("decorates ID-less tool calls by their matching content position", () => {
@@ -848,14 +849,14 @@ describe("LocalSessionService standalone lifecycle", () => {
   });
 
   it("does not let a stale socket release a replacement viewer lease", async () => {
-    const { service, cwd } = await fixtureService();
+    const { service, cwd, pi } = await fixtureService();
     const first = await service.create(undefined);
     service.acquireViewer(first.sessionId, "client");
     const staleConnection = service.connectViewer("client")!;
 
     await service.disposeAll("reset");
     const replacement = fixtureSession(cwd, "replacement").session;
-    service.setCurrentSession(replacement);
+    service.setCurrentSession(new SharedPiHandle(replacement, pi));
     service.acquireViewer(replacement.sessionId, "client");
     const activeConnection = service.connectViewer("client")!;
 
@@ -886,16 +887,17 @@ describe("LocalSessionService standalone lifecycle", () => {
   });
 
   it("resets mock lifecycle state, leases, and registrations standalone", async () => {
-    const { service, initial, fixture, cwd } = await fixtureService({ isMock: true });
+    const { service, initial, fixture, cwd, pi } = await fixtureService({ isMock: true });
     service.acquireViewer(initial.sessionId, "mock-client");
     service.connectViewer("mock-client");
     const replacementFixture = fixtureSession(cwd, "mock-reset");
 
-    await service.resetWith(replacementFixture.session);
+    const replacementHandle = new SharedPiHandle(replacementFixture.session, pi);
+    await service.resetWith(replacementHandle);
 
     expect(fixture.disposeCalls).toBe(1);
     expect(service.sessionForId(initial.sessionId)).toBeUndefined();
-    expect(service.sessionForId("mock-reset")).toBe(replacementFixture.session);
+    expect(service.sessionForId("mock-reset")).toBe(replacementHandle);
     expect(service.lifecycleSnapshot().viewerLeases).toEqual([]);
   });
 

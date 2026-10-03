@@ -5,7 +5,7 @@ import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import { sessionDrawerAutoCloseQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
-import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
+import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, sessionUiMutationWarning, sessionUiUnavailableWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import { SessionUiCoordinator, type UiIntent } from "./sessionUiSync.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
@@ -28,6 +28,7 @@ export type SessionsController = {
   refreshSessions: () => Promise<void>;
   setSessionDrawerOpen: (open: boolean) => void;
   startNewSession: (cwd?: string) => Promise<void>;
+  refreshHarnesses: () => Promise<void>;
   toggleCurrentSessionPin: () => void;
   openAdjacentPinnedSession: (direction: -1 | 1) => Promise<void>;
   moveCurrentSessionToLane: (lane: SessionLaneId) => void;
@@ -366,7 +367,7 @@ export function createSessions(options: {
 
   function updateEmptyCwdChooser() {
     elements.emptyCwdPathEl.textContent = state.currentCwd;
-    elements.emptyCwdChooserEl.hidden = transcriptLoading || elements.messagesEl.children.length > 0 || sessionRuntime(state).isStreaming;
+    elements.emptyCwdChooserEl.hidden = transcriptLoading || activeSessionState(state)?.capabilities?.cwdChange === false || elements.messagesEl.children.length > 0 || sessionRuntime(state).isStreaming;
   }
 
   function finishTranscriptLoading() {
@@ -485,6 +486,27 @@ export function createSessions(options: {
     });
   }
 
+  const agentChoice = document.createElement("select");
+  agentChoice.setAttribute("aria-label", "Agent for new session");
+  agentChoice.className = "agentChoice";
+  agentChoice.hidden = true;
+  elements.newSessionHeaderButton.before(agentChoice);
+  async function refreshHarnesses() {
+    const response = await fetch("/api/harnesses", { headers: api.headers() });
+    if (!response.ok) throw new Error(await response.text());
+    const catalog = await response.json();
+    state.harnessCatalog = catalog;
+    const selected = agentChoice.value || state.currentSessionId && state.sessionsById[state.currentSessionId]?.harnessId || catalog.defaultHarnessId;
+    agentChoice.replaceChildren(...catalog.harnesses.map((agent: { id: string; name: string; enabled: boolean; available: boolean; unavailableReason?: string }) => {
+      const option = document.createElement("option"); option.value = agent.id; option.textContent = agent.name;
+      option.disabled = !agent.enabled || !agent.available; option.title = agent.unavailableReason || "";
+      return option;
+    }));
+    agentChoice.value = selected;
+    if (!agentChoice.value) agentChoice.value = catalog.defaultHarnessId;
+    agentChoice.hidden = catalog.harnesses.filter((agent: { enabled: boolean }) => agent.enabled).length < 2;
+  }
+
   const startNewSession = queueNewSession(
     () => state.currentCwd,
     (cwd) => startOrReuseSession(cwd, cwd || state.currentCwd, state.currentSessionId),
@@ -494,7 +516,8 @@ export function createSessions(options: {
     const wasDrawerOpen = !elements.sessionDrawer.hidden;
     const pinNewSessions = state.settings.defaults.pinNewSessions === true;
     let reusable: ReturnType<typeof reusableEmptySession>;
-    if (pinNewSessions) {
+    const harnessId = agentChoice.value || state.harnessCatalog?.defaultHarnessId;
+    if (pinNewSessions && (!harnessId || harnessId === state.harnessCatalog?.defaultHarnessId)) {
       // Validate even the active tab: a recent prompt or external edit can make
       // its previously empty snapshot stale before realtime stats arrive.
       await refreshSessions(true);
@@ -539,7 +562,7 @@ export function createSessions(options: {
       const res = await fetch("/api/sessions/new", {
         method: "POST",
         headers: api.headers(),
-        body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: previousSessionId }),
+        body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: previousSessionId, harnessId }),
       });
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
@@ -2222,7 +2245,8 @@ export function createSessions(options: {
     if (item.runtime?.isRunning) throw new Error("Wait for the session to finish before deleting it.");
 
     const title = sessionTitle(item);
-    if (!window.confirm(`Delete session “${title}”?`)) return;
+    const bindingOnly = state.harnessCatalog?.harnesses.find((agent) => agent.id === item.harnessId)?.capabilities.historyRemoval === "binding";
+    if (!window.confirm(bindingOnly ? `Remove “${title}” from pi-web? Native history will remain untouched.` : `Delete session “${title}”?`)) return;
 
     const res = await fetch("/api/sessions/delete", {
       method: "POST",
@@ -2244,7 +2268,7 @@ export function createSessions(options: {
     renderSessionBar();
     const warning = sessionUiMutationWarning(data);
     if (warning) options.onUiStateUnavailable?.(warning);
-    addMessage("system", data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
+    addMessage("system", data.disposition === "forgotten" ? "Session removed from pi-web; native history was not deleted." : data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
   }
 
   function getSessionActions(item: SessionInfo, cwd: string): SessionAction[] {
@@ -2274,7 +2298,7 @@ export function createSessions(options: {
       },
       {
         id: "delete",
-        label: "Delete",
+        label: state.harnessCatalog?.harnesses.find((agent) => agent.id === item.harnessId)?.capabilities.historyRemoval === "binding" ? "Remove from pi-web" : "Delete",
         icon: "trash-2",
         danger: true,
         disabled: Boolean(deleteDisabledReason),
@@ -2964,6 +2988,7 @@ export function createSessions(options: {
     refreshSessions: () => refreshSessions(true),
     setSessionDrawerOpen,
     startNewSession,
+    refreshHarnesses,
     toggleCurrentSessionPin,
     beginTranscriptLoading,
     updateEmptyCwdChooser,

@@ -5,6 +5,7 @@ import "./files/files.css";
 import "./files/artifacts.css";
 import "./styles/appLayout.css";
 import "./styles/debugDiagnostics.css";
+import "./styles/interactions.css";
 import "highlight.js/styles/github-dark.css";
 import { createApiClient } from "./app/api.js";
 import { getAppElements, initAppHeightSync } from "./app/elements.js";
@@ -60,6 +61,7 @@ import { createQuoteReplies } from "./quotes/quoteReplies.js";
 import { createSessionDraftStore } from "./drafts/sessionDraftStore.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
+import { createInteractions } from "./realtime/interactions.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { createSettlementDependencyStore } from "./sessions/settlementDependencies.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
@@ -92,6 +94,7 @@ const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
+const interactions = createInteractions({ state, elements, api, refreshState });
 configureArtifactPreviewActions({ headers: api.headers, getSessionId: () => state.currentSessionId });
 configureArtifactPreviews({ headers: api.headers, getSessionId: () => state.currentSessionId });
 
@@ -336,6 +339,7 @@ const quoteReplies = createQuoteReplies({
   composerEl: elements.formEl,
   getSessionId: () => state.currentSessionId,
   drafts: sessionDrafts,
+  canQuote: () => activeSessionState(state)?.capabilities?.attachments !== false,
   onChange: () => composer?.updatePrimaryAction(),
 });
 const markdownTestOptions = (globalThis as typeof globalThis & {
@@ -352,6 +356,7 @@ messages = createMessageList({
   apiHeaders: api.headers,
   quoteReplies,
   onMessageAction: handleMessageAction,
+  canNavigateHistory: () => activeSessionState(state)?.capabilities?.tree !== false,
   getSessionId: () => state.currentSessionId,
   citationHref: absoluteSessionCitationHref,
   openCitation,
@@ -418,7 +423,10 @@ function renderActiveSessionRuntime(
 }
 
 function renderActiveSessionMetadata() {
+  interactions.render();
   const view = activeSessionState(state);
+  const agentName = state.harnessCatalog?.harnesses.find((agent) => agent.id === view?.harnessId)?.name.toLowerCase();
+  if (agentName) elements.promptEl.placeholder = `Ask ${agentName}…`;
   state.currentModelKey = modelKey(view?.model);
   state.currentModelDisplay = view?.model ? modelLabel(view.model) : "";
   state.currentThinkingLevel = view?.thinkingLevel || "off";
@@ -499,7 +507,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   const includesRuntimeView = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting", "stats", "queue"].some((key) => key in data));
   const includesMetadataView = Boolean(data && [
     "cwd", "model", "thinkingLevel", "sessionName", "sessionTitle",
-    "webContributions",
+    "webContributions", "capabilities", "nativeSettings", "pendingInteractions", "activeExecution",
   ].some((key) => key in data));
   if (activatesSession || includesMetadataView) renderActiveSessionMetadata();
   if (activatesSession || includesRuntimeView) {
@@ -604,6 +612,8 @@ async function refreshState() {
   syncActiveSessionIdHistoryState(state.currentSessionId);
   const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
   refreshSettlementDependencies(dependencySessionId);
+  await sessions.refreshHarnesses();
+  renderActiveSessionMetadata();
   const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
@@ -771,6 +781,7 @@ realtime = createRealtime({
   composer,
   messages,
   models: modelSettings,
+  interactions,
   sessions,
   status: statusBar,
   tools,
