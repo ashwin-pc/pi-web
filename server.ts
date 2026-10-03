@@ -1,13 +1,16 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
-import { extname, join, resolve } from "node:path";
+import { mkdir, writeFile, unlink } from "node:fs/promises";
+import { avatarFile, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar } from "./server/appIdentity.js";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
+import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { HttpError } from "./server/shared/httpError.js";
 import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
@@ -70,6 +73,7 @@ const systemInfoSnapshot = createSystemInfoProvider({
   port,
 });
 let mockStateOverrides: Record<string, unknown> = {};
+const captureUploadLimiter = new CaptureUploadLimiter();
 
 const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -117,13 +121,14 @@ function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
 }
 
-async function readBytes(req: IncomingMessage, maxBytes = 30_000_000): Promise<Buffer> {
+async function readBytes(req: IncomingMessage, maxBytes = 30_000_000, onChunk?: (bytes: number) => void): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let bytes = 0;
   for await (const chunk of req) {
     const buffer = Buffer.from(chunk);
     bytes += buffer.length;
-    if (bytes > maxBytes) throw new Error("Request body is too large");
+    onChunk?.(buffer.length);
+    if (bytes > maxBytes) throw new HttpError("Request body is too large", 413);
     chunks.push(buffer);
   }
   return Buffer.concat(chunks);
@@ -203,10 +208,11 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(url.pathname);
-  const relative = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
-  const file = resolve(staticDir, relative);
+  const reqPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  const file = resolve(staticDir, reqPath);
+  const relPath = relative(staticDir, file);
 
-  if (!file.startsWith(staticDir) || !existsSync(file)) {
+  if (relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(file)) {
     sendJson(res, 404, { ok: false, error: "Not found" });
     return;
   }
@@ -351,9 +357,15 @@ function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
   return cleanClientId(headerValue) || cleanClientId(fallback);
 }
 
+function parseViewerSeq(value: unknown): number | undefined {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return undefined;
+  const seq = Number(value);
+  return Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
+}
+
 function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, fallbackClientId?: unknown) {
   const clientId = clientIdFromRequest(req, fallbackClientId);
-  if (clientId) sessionService.acquireViewer(value.sessionId, clientId);
+  if (clientId) sessionService.acquireViewer(value.sessionId, clientId, parseViewerSeq(req.headers["x-pi-web-viewer-seq"]));
 }
 
 function bindViewerSocket(clientId: string, ws: WebSocket) {
@@ -465,6 +477,14 @@ sessionService = new LocalSessionService({
   clientCount: () => realtimeHub.clientCount,
 });
 const settingsStore = sessionService.settingsStore;
+// Serialize avatar uploads, settings patches, and explicit reset cleanup.
+// Otherwise an identity patch could race the revision check and unlink.
+let avatarMutation: Promise<unknown> = Promise.resolve();
+function withAvatarMutation<T>(operation: () => Promise<T>): Promise<T> {
+  const result = avatarMutation.then(operation);
+  avatarMutation = result.catch(() => undefined);
+  return result;
+}
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
     mockPromptCorrelations.delete(event.sessionKey);
@@ -540,9 +560,38 @@ function withAccessLog(
 
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 
+async function loginPresentation() {
+  const settings = await settingsStore.read();
+  const uploaded = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
+  return { name: settings.identity.name, assets: publicIdentityAssets(settings, uploaded) };
+}
+
 const server = createServer(withAccessLog(async (req, res, url) => {
   const method = req.method || "GET";
   try {
+    if (method === "GET" && ["/manifest.webmanifest", "/identity/config.json", "/identity/avatar.png", "/identity/icon.png"].includes(url.pathname)) {
+      res.setHeader("cache-control", "no-store");
+      const settings = await settingsStore.read();
+      if (url.pathname === "/manifest.webmanifest") {
+        res.setHeader("content-type", "application/manifest+json");
+        res.end(JSON.stringify(identityManifest(settings))); return;
+      }
+      const png = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
+      // A removed or unavailable upload must not leave the public login page
+      // with broken artwork or send the icon endpoint into a redirect loop.
+      const assets = publicIdentityAssets(settings, png);
+      if (url.pathname === "/identity/config.json") return sendJson(res, 200, { ...settings.identity, assets });
+      if (settings.identity.avatar.type === "custom" && png) {
+        res.setHeader("content-type", "image/png");
+        res.end(png); return;
+      }
+      if (url.pathname === "/identity/icon.png" || url.pathname === "/identity/avatar.png") {
+        res.statusCode = 302;
+        res.setHeader("location", url.pathname === "/identity/icon.png" ? assets.icon : assets.still);
+        res.end(); return;
+      }
+      return sendJson(res, 404, { error: "Avatar not found" });
+    }
 
     if (url.pathname.startsWith("/api/")) {
       // Scoped credentials must be checked before even public auth routes: no
@@ -554,10 +603,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
         if (url.pathname.endsWith("challenge")) return sendJson(res, 200, !req.headers.cookie?.includes("pi_web_session=") && authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
-        passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined); return;
+        passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined, await loginPresentation()); return;
       }
       if (await handlePasswordLogin(req, res, url, authKernel, authStore, authOrigin)) return;
-      if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig)) return;
+      if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig, loginPresentation)) return;
       if (method === "POST" && url.pathname === "/api/auth/logout") {
         if (!req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { error: "CSRF validation failed" });
         await authKernel.revokeSession(req);
@@ -592,6 +641,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         setWebsiteWorkflowExtensionEnabled(body.websiteWorkflowExtension === true);
         setRecommendedAddonsExtensionEnabled(body.recommendedAddonsExtension === true);
         resetMockSessions();
+        settlementTracker.reset();
         await sessionUiStateStore.write(defaultSessionUiState);
         session = await sessionService.initialize();
         broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
@@ -807,17 +857,46 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         });
       }
 
+      if (method === "POST" && url.pathname === "/api/web-captures") {
+        const sessionId = resolveSessionId(url.searchParams.get("sessionId"));
+        const key = url.searchParams.get("key") || "";
+        const registrationId = url.searchParams.get("registrationId") || "";
+        const durationMs = Number(url.searchParams.get("durationMs"));
+        const mimeType = String(req.headers["content-type"] || "");
+        const rawLength = req.headers["content-length"];
+        const declaredLength = typeof rawLength === "string" && rawLength !== "" ? Number(rawLength) : undefined;
+        const upload = captureUploadLimiter.begin(declaredLength);
+        try {
+          // The service applies the contribution-specific limit again after this
+          // coarse global request bound.
+          const bytes = await readBytes(req, 25_000_000, upload.add);
+          const capture = await sessionService.storeCapture(sessionId, key, registrationId, { durationMs, mimeType, bytes });
+          return sendJson(res, 201, { ok: true, captureId: capture.id, expiresAt: capture.expiresAt });
+        } finally {
+          upload.release();
+        }
+      }
+
       if (method === "POST" && url.pathname === "/api/web-contributions/invoke") {
         const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
+        const controller = new AbortController();
+        const abort = () => controller.abort();
+        req.once("aborted", abort);
+        res.once("close", () => { if (!res.writableEnded) abort(); });
+        const timeout = setTimeout(abort, 3 * 60_000);
+        timeout.unref?.();
         try {
-          return sendJson(res, 200, { ok: true, ...await sessionService.invokeContribution(resolveSessionId(body.sessionId), body) });
+          return sendJson(res, 200, { ok: true, ...await sessionService.invokeContribution(resolveSessionId(body.sessionId), body, controller.signal) });
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
-          const status = error instanceof SessionServiceError ? error.status
+          const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status
             : message === "key is required" || message.includes("returned no") || message.includes("returned unknown panel") || message === "Contribution is not invokable" ? 400
             : message.includes("not found") ? 404
             : 500;
           return sendJson(res, status, { ok: false, error: message });
+        } finally {
+          clearTimeout(timeout);
+          req.off("aborted", abort);
         }
       }
 
@@ -1005,12 +1084,35 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
 
+      if (method === "POST" && url.pathname === "/api/identity/avatar") {
+        const settings = await withAvatarMutation(async () => {
+          try { await receiveAvatar(req, settingsStore.file); }
+          catch (error) { throw new HttpError((error as Error).message, 400); }
+          return settingsStore.patch({ identity: { avatar: { type: "custom" } } });
+        });
+        broadcast({ type: "settings_updated", settings });
+        return sendJson(res, 200, { ok: true, settings });
+      }
+      if (method === "DELETE" && url.pathname === "/api/identity/avatar") {
+        const expectedRevision = Number(url.searchParams.get("revision"));
+        if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0 || !url.searchParams.has("revision"))
+          return sendJson(res, 400, { ok: false, error: "A saved identity revision is required" });
+        return withAvatarMutation(async () => {
+          const { identity } = await settingsStore.read();
+          if (identity.revision !== expectedRevision || identity.avatar.type !== "preset" || identity.avatar.id !== "current-pi")
+            return sendJson(res, 409, { ok: false, error: "Identity changed; uploaded avatar was not deleted" });
+          try { await unlink(avatarFile(settingsStore.file)); }
+          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+          return sendJson(res, 200, { ok: true });
+        });
+      }
       if (method === "GET" && url.pathname === "/api/settings") {
         return sendJson(res, 200, { ok: true, settings: await settingsStore.read(), webSettingsSchemas: sessionService.settingsSchemas() });
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
-        const settings = await settingsStore.patch(await readBody(req));
+        const patch = await readBody(req);
+        const settings = await withAvatarMutation(() => settingsStore.patch(patch));
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });
       }
@@ -1280,7 +1382,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionServiceError ? error.status : 500;
+    const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));
@@ -1334,7 +1436,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   }
   const clientId = cleanClientId(url.searchParams.get("clientId") || "");
   if (clientId) {
-    sessionService.acquireViewer((targetSession || session).sessionId, clientId);
+    sessionService.acquireViewer((targetSession || session).sessionId, clientId, parseViewerSeq(url.searchParams.get("viewerSeq")));
     bindViewerSocket(clientId, realtimeWs);
   }
   const helloState = targetSession ? currentState(targetSession) : currentState();

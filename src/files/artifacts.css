@@ -75,12 +75,19 @@
 .artifactBrowserPreviewBody--loading, .artifactBrowserPreviewBody--error { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 30px; color: var(--muted); font-size: 11px; text-align: center; }
 .artifactBrowserPreviewBody--error strong { color: #d8a099; }
 .artifactBrowserPreviewSpinner { width: 18px; height: 18px; border: 1.5px solid color-mix(in srgb, var(--muted) 28%, transparent); border-top-color: var(--accent); border-radius: 50%; animation: fileTreeSpin .7s linear infinite; }
-.artifactBrowserPreviewBody--image { display: grid; place-items: center; padding: 20px; background: radial-gradient(circle at 50% 40%, #191c23, #0c0e12 70%); }
-.artifactBrowserPreviewBody--image img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; box-shadow: 0 18px 52px rgba(0,0,0,.32); }
+.artifactBrowserPreviewBody--image { overflow: hidden; display: grid; place-items: center; padding: 20px; background: radial-gradient(circle at 50% 40%, #191c23, #0c0e12 70%); }
+.artifactBrowserPreviewBody--image img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; border-radius: 4px; box-shadow: 0 18px 52px rgba(0,0,0,.32); user-select: none; touch-action: pan-y; }
+.artifactBrowserPreviewBody--image img[data-zoomed="true"] { cursor: grab; touch-action: none; }
+.artifactBrowserPreviewBody--image img:active[data-zoomed="true"] { cursor: grabbing; }
+.artifactImageZoom { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 3px; padding: 3px; border-radius: 7px; background: rgba(10, 12, 16, .84); }
+.artifactImageZoom button { min-width: 30px; min-height: 30px; border: 0; border-radius: 5px; background: transparent; color: #fff; cursor: pointer; }
+.artifactImageZoom button:hover, .artifactImageZoom button:focus-visible { background: rgba(255, 255, 255, .18); }
 .artifactBrowserPreviewBody--html, .artifactBrowserPreviewBody--pdf { overflow: hidden; padding: 0; background: #fff; }
 .artifactBrowserPreviewBody--html iframe, .artifactBrowserPreviewBody--pdf iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
 .artifactBrowserPreviewBody--video { display: grid; place-items: center; overflow: hidden; padding: 18px; background: #050505; }
 .artifactBrowserPreviewBody--video video { display: block; width: 100%; max-width: 1100px; max-height: 100%; background: #000; }
+.artifactBrowserPreviewBody--audio { display: grid; place-items: center; padding: 18px; }
+.artifactBrowserPreviewBody--audio audio { display: block; width: min(100%, 700px); }
 .artifactBrowserPreviewBody--markdown { padding: clamp(18px, 4vw, 42px); }
 .artifactBrowserPreviewBody--markdown.markdownBody { width: 100%; }
 .artifactBrowserPreviewBody--markdown > * { max-width: 900px; margin-right: auto; margin-left: auto; }

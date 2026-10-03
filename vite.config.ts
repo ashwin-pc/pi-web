@@ -1,8 +1,44 @@
 import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
+import type { ConfigEnv } from "vite";
+import { fileURLToPath } from "node:url";
 
-export default defineConfig({
+// A content-derived revision keeps cached motion offline across unchanged
+// builds, but an artwork replacement at the same URL changes the cache name.
+export function avatarAssetRevision(root = fileURLToPath(new URL("./public/avatars/", import.meta.url))) {
+  const hash = createHash("sha256");
+  function visit(directory: string, relative = "") {
+    for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const path = join(directory, entry.name);
+      const key = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) visit(path, key);
+      else if (entry.isFile()) hash.update(key).update("\0").update(readFileSync(path));
+    }
+  }
+  visit(root);
+  return hash.digest("hex").slice(0, 16);
+}
+
+// Dependencies may be symlinked between worktrees. Vite's default cache in
+// node_modules/.vite would then be replaced by another worktree's optimizer.
+export function viteCacheDir(
+  { command, mode }: Pick<ConfigEnv, "command" | "mode">,
+  port = process.env.PORT,
+  root = fileURLToPath(new URL(".", import.meta.url)),
+) {
+  // Embedded dev servers use PORT; builds and test-mode Vite get separate caches.
+  const modeKey = `${mode.replace(/[^a-zA-Z0-9_-]/g, "_")}-${createHash("sha256").update(mode).digest("hex").slice(0, 8)}`;
+  const instance = command === "serve" ? `serve-${modeKey}-${port && /^\d+$/.test(port) ? port : "default"}` : `build-${modeKey}`;
+  return resolve(root, ".vite-cache", instance);
+}
+
+export default defineConfig((env) => ({
+  cacheDir: viteCacheDir(env),
   appType: "spa",
+  define: { __PI_WEB_AVATAR_CACHE_REVISION__: JSON.stringify(avatarAssetRevision()) },
   build: {
     rollupOptions: {
       input: {
@@ -18,25 +54,15 @@ export default defineConfig({
       srcDir: "src",
       filename: "sw.ts",
       devOptions: { enabled: true, type: "module" },
-      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png"],
-      manifest: {
-        name: "pi web",
-        short_name: "pi",
-        description: "pi coding agent web UI",
-        theme_color: "#1a1a1a",
-        background_color: "#1a1a1a",
-        display: "standalone",
-        scope: "/",
-        start_url: "/",
-        icons: [
-          { src: "pwa-192x192.png", sizes: "192x192", type: "image/png" },
-          { src: "pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
-        ],
-      },
+      includeAssets: ["apple-touch-icon.png", "pwa-192x192.png", "pwa-512x512.png", "avatars/current-pi/still.png"],
+      // The server owns /manifest.webmanifest and updates it with identity.
+      // Generating a static plugin manifest would also add it to the precache.
+      manifest: false,
       injectManifest: {
         // Do not precache HTML or register a navigation route. Native browser
         // navigations must continue to handle redirects from auth proxies.
-        globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png,webmanifest}"],
+        globPatterns: ["assets/{index,artifactPreview,render}-*.{js,css}", "*.{svg,png}"],
+        globIgnores: ["manifest.webmanifest"],
       },
     }),
   ],
@@ -48,4 +74,4 @@ export default defineConfig({
     // Tailscale MagicDNS names like http://studio:8787.
     allowedHosts: true,
   },
-});
+}));

@@ -86,8 +86,9 @@ export function createSystemInfo(options: {
   apiHeaders: () => HeadersInit;
   getSessionId: () => string;
   onError: (message: string) => void;
+  inlineContainer?: HTMLElement;
 }): SystemInfoController {
-  const { api, rightPanels, trigger, focusOnClose, apiHeaders, getSessionId, onError } = options;
+  const { api, rightPanels, trigger, focusOnClose, apiHeaders, getSessionId, onError, inlineContainer } = options;
   const backdrop = el("div", "systemInfoBackdrop");
   backdrop.hidden = true;
   const panel = el("aside", "systemInfoPanel");
@@ -120,7 +121,14 @@ export function createSystemInfo(options: {
   const content = el("div", "systemInfoContent");
   body.append(status, content);
   panel.append(header, body);
-  document.body.append(backdrop, panel);
+  if (inlineContainer) {
+    panel.classList.add("systemInfoPanel--inline");
+    panel.hidden = false;
+    closeButton.hidden = true;
+    inlineContainer.replaceChildren(panel);
+  } else {
+    document.body.append(backdrop, panel);
+  }
 
   let panelHandle: RightPanelHandle | undefined;
 
@@ -312,6 +320,11 @@ export function createSystemInfo(options: {
 
   function init() {
     refreshButton.addEventListener("click", () => void refresh());
+    if (inlineContainer) {
+      trigger.addEventListener("click", () => void refresh());
+      void refresh();
+      return;
+    }
     panelHandle = rightPanels?.register({
       id: "system-info",
       side: "right",

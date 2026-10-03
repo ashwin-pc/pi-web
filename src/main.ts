@@ -42,6 +42,7 @@ import {
   type SessionStateController,
 } from "./app/sessionState.js";
 import { createComposer, type ComposerController } from "./composer/composer.js";
+import type { ComposerCaptureDescriptor } from "./composer/composerCapture.js";
 import { initActionLauncher, type ActionLauncherController } from "./app/actionLauncher.js";
 import { createContextMeter, type ContextMeterController } from "./composer/contextMeter.js";
 import { createActiveWorkerDock, type ActiveWorkerDockController } from "./composer/activeWorkerDock.js";
@@ -52,15 +53,17 @@ import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/art
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
 import { configureArtifactPanelOpener, configureArtifactPreviewActions, createMarkdownRenderer, setArtifactPreviewActions } from "./markdown/render.js";
+import { configureImagePreviewOpener } from "./components/imageActions.js";
 import { createMessageList, type MessageActionContext, type MessageList } from "./messages/messageList.js";
 import { createQuoteReplies } from "./quotes/quoteReplies.js";
+import { createSessionDraftStore } from "./drafts/sessionDraftStore.js";
 import { createModelSettings, modelKey, modelLabel, type ModelSettings } from "./models/modelSettings.js";
 import { createRealtime, type RealtimeController } from "./realtime/realtime.js";
 import { createSessions, type SessionsController } from "./sessions/sessionDrawer.js";
 import { createSettlementDependencyStore } from "./sessions/settlementDependencies.js";
 import { createSettings, type SettingsController } from "./settings/settings.js";
-import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSystemInfo, type SystemInfoController } from "./systemInfo/systemInfo.js";
+import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSessionInfo, type SessionInfoController } from "./sessionInfo/sessionInfo.js";
 import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
@@ -71,6 +74,7 @@ initSwAutoReload();
 const elements = getAppElements();
 const state = createAppState();
 const settlementDependencies = createSettlementDependencyStore(state.settlementDependencies);
+const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
 const rightPanels = createRightPanelManager();
 const api = createApiClient(state);
@@ -313,6 +317,7 @@ const quoteReplies = createQuoteReplies({
   messagesEl: elements.messagesEl,
   composerEl: elements.formEl,
   getSessionId: () => state.currentSessionId,
+  drafts: sessionDrafts,
   onChange: () => composer?.updatePrimaryAction(),
 });
 const markdownTestOptions = (globalThis as typeof globalThis & {
@@ -412,8 +417,12 @@ function renderActiveSessionMetadata() {
   setArtifactPreviews(inSlot("artifact-preview"));
   gitPanel?.setExtensionTabs(inSlot("git-tab"));
   webPanels?.setPanels(inSlot("panel"), state.currentSessionId);
-  systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
   actionLauncher?.setExtensionActions(inSlot("fab"));
+  systemInfo?.setExtensionContributions(inSlot("system-info"), state.currentSessionId);
+  const captureContributions = inSlot("composer-input").filter((entry): entry is ComposerCaptureDescriptor =>
+    entry.kind === "capture" && entry.capture?.media === "audio" && typeof entry.capture.registrationId === "string" && typeof entry.key === "string",
+  );
+  composer?.setCaptureContributions(captureContributions);
   statusBar?.setStatusTitle(view?.name?.trim() || view?.title?.trim() || "New session");
   elements.statusPathEl.textContent = state.currentCwd;
   elements.conversationTreeButton.hidden = view?.capabilities?.tree === false;
@@ -432,6 +441,7 @@ function renderActiveSession(
 }
 
 function activateSession(sessionId: string) {
+  composer?.switchSession(sessionId);
   selectSession(state, sessionId);
   renderActiveSession();
 }
@@ -456,7 +466,10 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
   if (!view) return undefined;
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
-  if (activatesSession) selectSession(state, view.id);
+  if (activatesSession) {
+    composer?.switchSession(view.id);
+    selectSession(state, view.id);
+  }
   if (data && "sessionUiState" in data) sessions?.applySessionUiState(data.sessionUiState);
 
   const includesRuntime = Boolean(data && ["runtime", "isStreaming", "isRetrying", "isCompacting"].some((key) => key in data));
@@ -667,14 +680,16 @@ settings = createSettings({
   },
 });
 
+const systemInfoInline = document.querySelector<HTMLElement>("#systemInfoInline");
+if (!systemInfoInline) throw new Error("Missing inline system information container");
 systemInfo = createSystemInfo({
   api,
-  rightPanels,
   trigger: elements.sessionDrawerInfoButton,
-  focusOnClose: elements.sessionButton,
+  focusOnClose: elements.sessionDrawerInfoButton,
   apiHeaders: api.headers,
   getSessionId: () => state.currentSessionId,
   onError: (message) => messages.addMessage("system", message, "error"),
+  inlineContainer: systemInfoInline,
 });
 
 contextMeter = createContextMeter({ elements });
@@ -699,11 +714,17 @@ sessions = createSessions({
     }
     activeWorkerDock?.refresh();
   },
+  checkpointTranscript: () => {
+    const transcript = messages.checkpoint();
+    const toolState = tools.checkpoint();
+    return { restore() { transcript.restore(); toolState.restore(); } };
+  },
   clearMessages: () => {
     tools.clearActiveToolCards();
     messages.clear();
   },
   addMessage: messages.addMessage,
+  hasSessionDraft: (sessionId) => composer?.hasSessionDraft(sessionId) ?? false,
 });
 
 activeWorkerDock = createActiveWorkerDock({
@@ -732,10 +753,12 @@ composer = createComposer({
   refreshModels: () => modelSettings.refreshModels(),
   refreshMessages,
   refreshState,
+  startNewSession: () => sessions.startNewSession(),
   beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,
   quoteReplies,
+  drafts: sessionDrafts,
 });
 
 conversationTree = createConversationTree({
@@ -778,18 +801,19 @@ initStaticIcons();
 actionLauncher = initActionLauncher(elements, {
   onSessionDetails: () => sessionInfo.open(),
   onExtensionAction: (opensPanelKey) => webPanels.open(opensPanelKey),
+  onComposerBlurred: () => composer.syncCompactState(),
 });
 statusBar.init();
 sessions.init();
 sessionInfo.init();
-systemInfo.init();
 contextMeter.init();
 composer.init();
 conversationTree.init();
 modelSettings.init();
 settings.init();
+systemInfo.init();
 const hasBlockingShortcutOverlay = () => Boolean(document.fullscreenElement
-  || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop, .imageOverlay'));
+  || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop'));
 const canCyclePinnedSessions = () => sessions.focusedLaneSessionCount() > 1
   && elements.tokenOverlay.hidden
   && !elements.formEl.classList.contains("expanded")
@@ -940,7 +964,12 @@ filesPanel = initFilesPanel({
   getSessionId: () => state.currentSessionId,
   onError: showSystemError,
 });
-configureArtifactPanelOpener((url) => filesPanel.openArtifact(url));
+configureArtifactPanelOpener((url, opener) => filesPanel.openArtifact(url, opener));
+configureImagePreviewOpener((source, name, opener) => {
+  const pathname = new URL(source, location.href).pathname;
+  if (new URL(source, location.href).origin === location.origin && /^\/api\/(?:session-)?artifacts\//.test(pathname)) filesPanel.openArtifact(source, opener);
+  else filesPanel.openImage(source, name, opener);
+});
 gitPanel = initGitPanel({
   button: elements.gitButton,
   panel: elements.gitPanel,

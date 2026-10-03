@@ -74,12 +74,18 @@ async function boundedContents(path: string, size: number, metrics?: ShallowList
   } finally { await handle.close(); }
 }
 
-export async function shallowSessionCwd(path: string): Promise<string | undefined> {
+export async function shallowSessionCwd(path: string, options: { strict?: boolean } = {}): Promise<string | undefined> {
   try {
     const fileStat = await stat(path);
     const header = parseLines(await boundedContents(path, fileStat.size)).find((entry) => entry?.type === "session");
-    return typeof header?.cwd === "string" && header.cwd ? header.cwd : undefined;
-  } catch { return undefined; }
+    if (typeof header?.cwd === "string" && header.cwd) return header.cwd;
+    if (options.strict) throw new Error("Invalid session header: missing working directory");
+    return undefined;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    if (options.strict && code !== "ENOENT" && code !== "ENOTDIR") throw error;
+    return undefined;
+  }
 }
 
 // Stat-gated cache for the session-list scan (issue #112: message_end-driven

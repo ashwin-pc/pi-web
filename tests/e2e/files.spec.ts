@@ -133,6 +133,49 @@ test("artifacts scope browses a visual gallery, folders, and a large preview", a
   await expect(page.locator('.fileTreeFile[title="README.md"]')).toBeVisible();
 });
 
+test("artifact preview history returns to its owning gallery directory", async ({ page }) => {
+  await page.goto("/");
+  await openLauncherAction(page, "File explorer");
+  await page.locator("#filesArtifactsScope").click();
+  await page.getByRole("button", { name: "Open folder runs" }).click();
+
+  const panel = page.locator("#filesPanel");
+  const output = page.getByRole("button", { name: "Preview output.png" });
+  await output.click();
+  await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+
+  await page.goBack();
+  await expect(panel).toBeVisible();
+  await expect(panel).toHaveAttribute("data-artifact-view", "gallery");
+  await expect(page.locator("#artifactsGalleryBreadcrumb")).toContainText("runs");
+  await expect(output).toBeVisible();
+
+  await page.goForward();
+  await expect(panel).toHaveAttribute("data-artifact-view", "preview");
+  await expect(page.locator("#artifactBrowserPreviewTitle")).toHaveText("output.png");
+  await page.keyboard.press("Escape");
+  await expect(panel).toBeVisible();
+  await expect(panel).toHaveAttribute("data-artifact-view", "gallery");
+  await expect(page.locator("#artifactsGalleryBreadcrumb")).toContainText("runs");
+
+  await output.click();
+  await page.locator("#artifactBrowserPreviewBack").click();
+  await expect(panel).toBeVisible();
+  await expect(panel).toHaveAttribute("data-artifact-view", "gallery");
+  await expect(page.locator("#artifactsGalleryBreadcrumb")).toContainText("runs");
+
+  // A same-directory history restore must recover if the retained gallery DOM
+  // was cleared while its preview was active.
+  await output.click();
+  await page.locator("#artifactsTree").evaluate((tree) => tree.replaceChildren());
+  await page.goBack();
+  await expect(output).toBeVisible();
+  await expect(page.locator("#artifactsGalleryBreadcrumb")).toContainText("runs");
+
+  await page.goBack();
+  await expect(panel).toBeHidden();
+});
+
 test("large artifact preview renders interactive HTML, Markdown, and video", async ({ page }) => {
   await page.goto("/");
   await openLauncherAction(page, "File explorer");

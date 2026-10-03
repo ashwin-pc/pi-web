@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { nextRealtimeHello } from "./helpers/realtimeReady.js";
 
 const now = "2026-01-01T00:00:00.000Z";
 const runtime = (isRunning: boolean, pendingMessageCount = 0) => ({
@@ -21,6 +22,14 @@ async function runtimeEvent(page: Page, sessionId: string, value: ReturnType<typ
 
 async function dependencyEvent(page: Page, sessionId: string, childIds: string[]) {
   await page.request.post("/api/mock/event", { data: { type: "settlement_dependencies_changed", sessionId, childIds } });
+}
+
+async function pinSettlementSnapshot(page: Page, sessionId: string, expectedChildIds: string[]) {
+  const response = await page.request.get(`/api/sessions/${sessionId}/status`);
+  expect(response.ok()).toBe(true);
+  const status = await response.json();
+  expect(status.trackedWorkers.map((worker: { id: string }) => worker.id)).toEqual(expectedChildIds);
+  await page.route(`**/api/sessions/${sessionId}/status`, (route) => route.fulfill({ json: status }));
 }
 
 test.beforeEach(async ({ page }) => resetMinimal(page));
@@ -108,11 +117,17 @@ test("pinned parent restores waiting after reload before opening, then shows its
   ] } }));
 
   // Declare through the server's generic dependency event contract before the
-  // browser connects. The subsequent reload must recover it from status; there
-  // is deliberately no realtime declaration available to the new page.
+  // browser connects. The subsequent reload must recover membership from the
+  // status snapshot; there is deliberately no realtime dependency declaration
+  // available to the new page. Runtime is separately live (and mock runtime
+  // broadcasts are intentionally non-durable), so publish its current value
+  // only after the reloaded page is ready to receive it.
   await dependencyEvent(page, "mock-older", ["mock-current"]);
+  await pinSettlementSnapshot(page, "mock-older", ["mock-current"]);
   await page.goto("/?sessionId=mock-current");
   await page.reload();
+  await expect(page.locator("#prompt")).toBeVisible();
+  await runtimeEvent(page, "mock-current", runtime(true));
 
   const parentTab = page.locator('.sessionBarTab[data-session-id="mock-older"]');
   await expect(parentTab).toHaveClass(/\bpinned\b/);
@@ -141,11 +156,16 @@ test("current parent restores running dependency pills on initial reload in ever
     { id: "reload-worker", name: "Reloaded worker", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: false,
       runtime: runtime(true) },
   ] } }));
+  const initialHello = nextRealtimeHello(page);
   await page.goto("/?sessionId=mock-current");
+  await initialHello;
   await dependencyEvent(page, "mock-current", ["reload-worker"]);
+  await pinSettlementSnapshot(page, "mock-current", ["reload-worker"]);
   await runtimeEvent(page, "reload-worker", runtime(true));
   await expect(page.locator('.activeWorkerPill[data-session-id="reload-worker"]')).toBeVisible();
+  const reloadedHello = nextRealtimeHello(page);
   await page.reload();
+  await reloadedHello;
   // Re-publish runtime metadata as the mock runtime event is intentionally not
   // durable; dependency membership itself must come from the status snapshot.
   await runtimeEvent(page, "reload-worker", runtime(true));

@@ -51,6 +51,26 @@
 }
 .toolCard--thinkingEmpty .toolCardBody { display: none; }
 
+/* Failures stay as terse transcript rows regardless of the chosen density.
+   Their complete, original result remains available through the disclosure. */
+.toolCard--error:not(.runtimeErrorCard) .toolCardHeader {
+  min-height: 29px;
+  height: 29px;
+  padding: 4px 10px;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+.toolCard--error:not(.runtimeErrorCard) .toolCardExpandToggle {
+  display: inline-flex;
+}
+.toolCard--error:not(.runtimeErrorCard).toolCard--compactCollapsed {
+  height: 30px;
+  box-sizing: border-box;
+}
+.toolCard--error:not(.runtimeErrorCard).toolCard--compactCollapsed > :not(.toolCardHeader) {
+  display: none;
+}
+
 /* Keep the join clean and planar, with a short champagne stitch centered on
    the divider rather than shaping the entire edge. */
 .toolCard + .toolCard {

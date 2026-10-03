@@ -44,6 +44,7 @@ export function createRestartSettings(options: {
   let restarting = false;
 
   function show(visible: boolean) {
+    navButton.dataset.settingsAvailable = String(visible);
     navButton.hidden = !visible;
     container.hidden = !visible;
   }

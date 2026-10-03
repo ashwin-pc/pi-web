@@ -60,6 +60,16 @@ describe("SessionSettlementTracker", () => {
     });
   });
 
+  it("resets dependency snapshots between server lifecycles", async () => {
+    const { tracker } = fixture({ parent: {}, worker: { isRunning: true } });
+    tracker.report("parent", ["worker"]);
+    expect((await tracker.status("parent")).trackedWorkers).toHaveLength(1);
+
+    tracker.reset();
+
+    expect(await tracker.status("parent")).toMatchObject({ trackedWorkers: [], settled: true });
+  });
+
   it("counts direct settled children as pending wakeups", async () => {
     const { tracker } = fixture({ parent: {}, done: {}, active: { isRunning: true } });
     tracker.report("parent", ["done", "active"]);

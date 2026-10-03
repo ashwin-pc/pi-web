@@ -1,6 +1,8 @@
 import type { AttachedImage, QuoteReplyAttachment } from "../app/types.js";
+import type { SessionDraftStore, StoredQuoteDraft } from "../drafts/sessionDraftStore.js";
 
 export type QuoteReplySubmission = {
+  sessionId: string;
   message: string;
   attachments: QuoteReplyAttachment[];
   referenceIds: number[];
@@ -33,6 +35,7 @@ export type QuoteRepliesController = {
   hasDrafts: () => boolean;
   prepareSubmission: (overallInstruction: string) => QuoteReplySubmission | undefined;
   commitSubmission: (submission: QuoteReplySubmission) => void;
+  checkpoint: () => { restore: () => void };
   clear: () => void;
   restoreSubmittedReferences: (body?: HTMLElement) => void;
   renderSubmittedMessage: (body: HTMLElement, message: string, attachments: AttachedImage[]) => boolean;
@@ -79,18 +82,16 @@ export function createQuoteReplies(options: {
   messagesEl: HTMLElement;
   composerEl: HTMLFormElement;
   getSessionId: () => string;
+  drafts: SessionDraftStore;
   onChange: () => void;
 }): QuoteRepliesController {
-  const { messagesEl, composerEl, getSessionId, onChange } = options;
+  const { messagesEl, composerEl, getSessionId, drafts, onChange } = options;
   let references: QuoteReference[] = [];
   let pending: PendingSelection | undefined;
   let nextId = 1;
   let settleTimer = 0;
   const persistedReplies = new Map<string, Map<string, AttachedImage>>();
-  const draftStorageKey = "pi-web-quote-reply-drafts-v1";
-  type StoredDraft = Pick<QuoteReference, "id" | "quote" | "question" | "sourceMessageId" | "startOffset" | "endOffset">;
-  let restoredDraftSession = "";
-  let persistTimer = 0;
+  type StoredDraft = StoredQuoteDraft;
   const isMobileSelection = () => matchMedia("(pointer: coarse)").matches || innerWidth <= 760;
 
   const toolbar = document.createElement("div");
@@ -125,35 +126,19 @@ export function createQuoteReplies(options: {
     return references.filter((reference) => !reference.submitted);
   }
 
-  function readStoredDrafts() {
-    try {
-      const value = JSON.parse(localStorage.getItem(draftStorageKey) || "{}") as Record<string, StoredDraft[]>;
-      return value && typeof value === "object" ? value : {};
-    } catch {
-      return {};
-    }
-  }
-
-  function persistDrafts() {
-    window.clearTimeout(persistTimer);
-    persistTimer = 0;
-    const sessionId = getSessionId();
-    if (!sessionId) return;
-    const stored = readStoredDrafts();
-    const drafts = draftReferences().map(({ id, quote, question, sourceMessageId, startOffset, endOffset }) => ({
+  function serializedDrafts() {
+    return draftReferences().map(({ id, quote, question, sourceMessageId, startOffset, endOffset }) => ({
       id, quote, question, sourceMessageId, startOffset, endOffset,
     }));
-    if (drafts.length) stored[sessionId] = drafts;
-    else delete stored[sessionId];
-    try {
-      if (Object.keys(stored).length) localStorage.setItem(draftStorageKey, JSON.stringify(stored));
-      else localStorage.removeItem(draftStorageKey);
-    } catch { /* ignore unavailable storage */ }
+  }
+
+  function persistDrafts(immediate = false) {
+    drafts.update(getSessionId(), { quoteReplies: serializedDrafts() }, immediate);
   }
 
   function schedulePersistDrafts() {
-    window.clearTimeout(persistTimer);
-    persistTimer = window.setTimeout(persistDrafts, 120);
+    // Ownership is resolved now, never later when the shared debounce fires.
+    drafts.update(getSessionId(), { quoteReplies: serializedDrafts() });
   }
 
   function hideToolbar(clearSelection = false) {
@@ -291,7 +276,48 @@ export function createQuoteReplies(options: {
     onChange();
   }
 
+  // Animation state only: footer visibility remains derived from .editing.open.
+  let transition: ViewTransition | undefined;
+  let transcriptGeneration = 0;
+  let pendingTransitionUpdate: (() => void) | undefined;
+  function transitionEditor(update: () => void) {
+    if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      update();
+      return;
+    }
+    // Rapid interactions must not queue stale snapshots or delay an editor action.
+    if (transition) {
+      transition.skipTransition();
+      pendingTransitionUpdate?.();
+      update();
+      return;
+    }
+    document.documentElement.classList.add("quoteReplyTransition");
+    const generation = transcriptGeneration;
+    const sessionId = getSessionId();
+    let applied = false;
+    const apply = () => {
+      if (applied) return;
+      applied = true;
+      if (pendingTransitionUpdate === apply) pendingTransitionUpdate = undefined;
+      // Apply once, only to the originating transcript/session.
+      if (generation === transcriptGeneration && sessionId === getSessionId()) update();
+    };
+    pendingTransitionUpdate = apply;
+    transition = document.startViewTransition(apply);
+    // skipTransition() rejects ready during normal rapid actions and teardown.
+    void transition.ready.catch(() => {});
+    void transition.finished.catch(() => {}).finally(() => {
+      transition = undefined;
+      document.documentElement.classList.remove("quoteReplyTransition");
+    });
+  }
+
   function removeReference(reference: QuoteReference) {
+    transitionEditor(() => removeReferenceImmediately(reference));
+  }
+
+  function removeReferenceImmediately(reference: QuoteReference) {
     if (reference.submitted) return;
     reference.mark.replaceWith(...reference.mark.childNodes);
     reference.pin.remove();
@@ -302,6 +328,14 @@ export function createQuoteReplies(options: {
   }
 
   function saveReference(reference: QuoteReference) {
+    if (!reference.note.querySelector<HTMLInputElement>("input")!.value.trim()) {
+      saveReferenceImmediately(reference);
+      return;
+    }
+    transitionEditor(() => saveReferenceImmediately(reference));
+  }
+
+  function saveReferenceImmediately(reference: QuoteReference) {
     const input = reference.note.querySelector<HTMLInputElement>("input")!;
     const question = input.value.trim();
     if (!question) {
@@ -421,6 +455,7 @@ export function createQuoteReplies(options: {
       if (event.key === "Enter") { event.preventDefault(); saveReference(reference); }
     });
     note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
+    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
     note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
       note.classList.remove("saved");
       note.classList.add("editing", "open");
@@ -435,19 +470,22 @@ export function createQuoteReplies(options: {
     updateSummary();
   }
 
-  function restoreSubmittedReferences(body?: HTMLElement) {
+  function restoreSubmittedReferences(body?: HTMLElement, allowDeferredRetry = true) {
     const sessionId = getSessionId();
-    if (sessionId && restoredDraftSession !== sessionId) {
-      restoredDraftSession = sessionId;
-      const drafts = readStoredDrafts()[sessionId];
-      if (Array.isArray(drafts)) {
-        for (const draft of drafts) {
-          if (!draft || !Number.isSafeInteger(draft.id) || typeof draft.quote !== "string" || typeof draft.question !== "string" || typeof draft.sourceMessageId !== "string" || !Number.isSafeInteger(draft.startOffset) || !Number.isSafeInteger(draft.endOffset)) continue;
-          const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
-          if (sourceBody) restoreDraftReference(draft, sourceBody);
-        }
+    let hasPendingSource = false;
+    // Rendering is incremental: keep retrying drafts whose source body has not
+    // arrived yet, while existing references make each successful restore idempotent.
+    if (sessionId) {
+      for (const draft of drafts.get(sessionId).quoteReplies) {
+        if (!draft.sourceMessageId || references.some((reference) => reference.id === draft.id && reference.sourceMessageId === draft.sourceMessageId)) continue;
+        const sourceBody = messagesEl.querySelector<HTMLElement>(`.message.assistant[data-entry-id="${CSS.escape(draft.sourceMessageId)}"] > .body`);
+        if (sourceBody) restoreDraftReference(draft, sourceBody);
+        else hasPendingSource = true;
       }
     }
+    // Markdown rendering runs before message metadata is attached. Retry once
+    // after that synchronous render completes; subsequent bodies trigger fresh retries.
+    if (hasPendingSource && allowDeferredRetry) queueMicrotask(() => restoreSubmittedReferences(undefined, false));
     const bodies = body
       ? [body]
       : Array.from(messagesEl.querySelectorAll<HTMLElement>(".message.assistant > .body"));
@@ -516,6 +554,7 @@ export function createQuoteReplies(options: {
       }
     });
     note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
+    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
     note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
       if (reference.submitted) return;
       note.classList.remove("saved");
@@ -535,7 +574,7 @@ export function createQuoteReplies(options: {
   }
 
   toolbar.addEventListener("pointerdown", (event) => event.preventDefault());
-  reply.addEventListener("click", createReference);
+  reply.addEventListener("click", () => transitionEditor(createReference));
   messagesEl.addEventListener("pointerup", () => {
     if (!isMobileSelection()) window.setTimeout(showSelection);
   });
@@ -558,7 +597,6 @@ export function createQuoteReplies(options: {
   });
   messagesEl.addEventListener("scroll", () => hideToolbar(), { passive: true });
   window.addEventListener("resize", () => hideToolbar());
-  window.addEventListener("pagehide", persistDrafts);
   summaryButton.addEventListener("click", (event) => {
     event.stopPropagation();
     summaryPopover.hidden = !summaryPopover.hidden;
@@ -583,6 +621,7 @@ export function createQuoteReplies(options: {
         throw new Error("Each linked quote needs its own question.");
       }
       return {
+        sessionId: getSessionId(),
         message: overallInstruction.trim(),
         attachments: drafts.map((reference) => ({
           type: "quote-reply" as const,
@@ -601,6 +640,9 @@ export function createQuoteReplies(options: {
     },
     commitSubmission(submission) {
       const submittedIds = new Set(submission.referenceIds);
+      const remaining = drafts.get(submission.sessionId).quoteReplies.filter((reference) => !submittedIds.has(reference.id));
+      drafts.update(submission.sessionId, { quoteReplies: remaining }, true);
+      if (getSessionId() !== submission.sessionId) return;
       references.forEach((reference) => {
         if (!submittedIds.has(reference.id)) return;
         reference.submitted = true;
@@ -608,13 +650,30 @@ export function createQuoteReplies(options: {
         reference.note.classList.remove("open");
         reference.pin.classList.add("submitted");
       });
-      persistDrafts();
       updateSummary();
     },
+    checkpoint() {
+      const saved = { references: [...references], pending, nextId, persisted: new Map(persistedReplies) };
+      return { restore() {
+        references = saved.references;
+        pending = saved.pending;
+        nextId = saved.nextId;
+        persistedReplies.clear();
+        saved.persisted.forEach((value, key) => persistedReplies.set(key, value));
+        updateSummary();
+      } };
+    },
     clear() {
+      // Finish a same-session action before its draft is flushed and DOM removed.
+      // The captured session check rejects this action during a session switch.
+      pendingTransitionUpdate?.();
+      transcriptGeneration += 1;
+      transition?.skipTransition();
+      // Transcript teardown only clears rendered UI. Draft deletion is reserved
+      // for explicit submission/removal paths.
+      drafts.flush();
       references = [];
       persistedReplies.clear();
-      restoredDraftSession = "";
       pending = undefined;
       nextId = 1;
       toolbar.hidden = true;

@@ -91,6 +91,44 @@ ctx.ui.web.update("worker-status");
 
 The typed `setFooter`, `setHeaderAction`, `setArtifactAction`, `setGitTab`, `setPanel`, and `setFabAction` methods remain supported convenience wrappers over this registry.
 
+### Composer audio capture
+
+A `composer-input` / `capture` contribution adds a host-owned microphone control to the composer. The extension stays server-side: pi-web owns `getUserMedia`, `MediaRecorder`, record/stop/cancel controls, authenticated upload, temporary-file cleanup, and applying the returned browser effect. This does **not** allow extension JavaScript in the browser and does not turn audio into a durable message attachment.
+
+```ts
+ctx.ui.web.contribute("acme.dictation", {
+  slot: "composer-input",
+  kind: "capture",
+  title: "Dictate",
+  label: "Dictation",
+  icon: "mic",
+  capture: {
+    media: "audio",
+    maxSeconds: 120,
+    maxBytes: 25_000_000,
+    // Optional. The browser picks the first MediaRecorder-supported value.
+    mimeTypes: ["audio/webm", "audio/ogg"],
+  },
+  async invoke({ capture, signal }) {
+    // capture.path is a validated private temporary file available only during
+    // this invocation. Read/transcribe it before invoke() returns and propagate
+    // signal to subprocesses/network work so Cancel and disconnects stop work.
+    const text = await transcribe(capture.path, { signal });
+    return {
+      effects: [{ type: "insert-composer-text", text, placement: "selection" }],
+    };
+  },
+});
+```
+
+Limits are additive and fail closed: `maxSeconds` defaults to and is clamped to 120; `maxBytes` defaults to and is clamped to 25 MB. When omitted, `mimeTypes` keeps core's default audio policy. When specified, it must be a non-empty array of at most 20 valid `audio/*` MIME strings; entries are normalized by removing parameters, lowercasing, and de-duplicating, while any invalid entry rejects the contribution. A syntactically valid type such as `audio/x-private` can still name a container or codec unavailable in the browser or extension decoder, so extension owners must advertise only formats their complete pipeline supports. Core bounds bytes and the host-reported recording duration; extensions that decode untrusted media must also validate the actual container, codec, and decoded duration before transcription. Each upload is bound to its session, contribution key, and opaque registration revision (replacing a contribution invalidates captures from the previous registration), can be consumed by one invocation only, and is deleted when the invocation finishes (with a five-minute expiry as fallback). On POSIX it lives in a mode-0700 temporary directory as a mode-0600 file; on Windows it inherits the current user's temporary-directory ACL because POSIX mode bits do not define Windows access control. The browser-provided capture path is ignored; the server injects the validated `{ path, mimeType, size, durationMs }` record.
+
+`insert-composer-text` is intentionally browser-scoped and never submits a prompt. `placement` is `selection` (default), `cursor`, or `end`. Core applies it only if the same session, draft revision, and selection are still active; edits, selection changes, session switches, cancellation, page unload, and stale completions leave the current draft untouched.
+
+Independently distributed extensions should check that `ctx.ui.web.capabilities.slots` includes `composer-input`, `kinds` includes `capture`, and `effects` includes `insert-composer-text` before registering this contribution.
+
+The [local dictation example](../examples/pi-web-extensions/dictation/README.md) provides private, on-device transcription with explicit family/runtime selection: Parakeet or Whisper through MLX on Apple Silicon, and Whisper through faster-whisper on macOS, Linux, or Windows CPU. Runtime packages and model IDs are extension-owned and configurable; model weights remain outside the repository in a user-managed path or external cache. Core capture APIs remain model-agnostic.
+
 The [global notepad example](../examples/pi-web-extensions/notepad.ts) demonstrates a rendered panel, explicit FAB launcher, persisted cross-session data, and `update()` invalidation across every live session.
 
 ## Footer API
@@ -239,6 +277,10 @@ ctx.ui.web.contribute("gcode.viewer", {
 The context is `{ name, path, kind }`. The only accepted result field is `html`, capped at 1 MB. The browser loads it through `iframe.srcdoc` with `sandbox="allow-scripts"` and without `allow-same-origin`, so scripts may power an interactive visualization but cannot access pi-web storage or DOM. Extensions should parse large source files server-side and return compact visualization data rather than embedding the entire source.
 
 The typed convenience wrapper is `ctx.ui.web.setArtifactPreview(key, preview)`. Clear either form with `undefined` under the same key.
+
+### Example: Wavy music projects
+
+[`examples/pi-web-extensions/wavy/`](../examples/pi-web-extensions/wavy/) is an opt-in music-project extension. Its self-contained HTML preview embeds pinned ABCjs for notation and provides a piano roll, zoom/pan, passage selection, and explicitly labelled oscillator audition. Passage comments stay local and become selectable text with revision, hash, and source ranges for manual copying; the preview has no host callbacks, preview assets, authenticated audio fetching, or generated-recording playback. Tools preserve immutable revisions and takes, and return ordinary audio artifact links when recordings exist. Engines remain explicit local, non-commercial-weight integrations and never download or load models during registration or preview.
 
 ### Example: 3D modeling workflow
 

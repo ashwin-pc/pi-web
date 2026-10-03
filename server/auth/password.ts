@@ -1,4 +1,4 @@
-import { loginPageHeaders, renderLoginPage } from "./loginPage.js";
+import { loginPageHeaders, renderLoginPage, type LoginPresentation } from "./loginPage.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { trustedProxyPeer } from "./proxy.js";
@@ -61,8 +61,9 @@ export function passwordLoginPage(
   res: ServerResponse,
   methods: readonly string[],
   setupToken?: string,
+  presentation?: LoginPresentation,
 ) {
-  const html = renderLoginPage({ methods, setupToken });
+  const html = renderLoginPage({ methods, setupToken, presentation });
   res.writeHead(200, loginPageHeaders);
   res.end(html);
 }

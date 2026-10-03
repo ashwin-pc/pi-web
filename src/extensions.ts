@@ -37,13 +37,23 @@ export type PiWebFooter =
   | { kind: "html"; html: string };
 
 export type PiWebEffect =
-  | { type: "open-panel"; key: string };
+  | { type: "open-panel"; key: string }
+  | { type: "insert-composer-text"; text: string; placement?: "selection" | "cursor" | "end" };
+
+export type PiWebCaptureResult = {
+  path: string;
+  mimeType: string;
+  size: number;
+  durationMs: number;
+};
 
 export type PiWebContributionEvent = {
   action?: string;
   payload?: unknown;
   fields?: Record<string, string | string[]>;
   context?: Record<string, unknown>;
+  /** Present only for server-side capture contributions; core validates and owns this temporary file. */
+  capture?: PiWebCaptureResult;
 };
 
 export type PiWebContributionView = {
@@ -59,6 +69,15 @@ export type PiWebContributionView = {
 export type PiWebContribution =
   | { slot: "footer"; kind: "static"; view: PiWebFooter }
   | { slot: "fab"; kind: "static"; title: string; label?: string; icon?: string; opens: string }
+  | {
+      slot: "composer-input";
+      kind: "capture";
+      title: string;
+      label?: string;
+      icon?: string;
+      capture: { media: "audio"; maxSeconds?: number; maxBytes?: number; mimeTypes?: string[] };
+      invoke: (event: { capture: PiWebCaptureResult; signal: AbortSignal }) => PiWebContributionView | Promise<PiWebContributionView>;
+    }
   | {
       slot: "artifact-preview";
       kind: "rendered";

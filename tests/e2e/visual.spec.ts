@@ -360,7 +360,7 @@ test.beforeEach(async ({ page }) => {
     data: {
       appearance: { density: "comfortable", accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
-      defaults: { model: null, thinkingLevel: null },
+      defaults: { model: null, thinkingLevel: null, pinNewSessions: false },
     },
   });
   const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
@@ -492,7 +492,7 @@ test.describe("visual regression", () => {
   test("focused completion notifications", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "Preferences");
     await page.locator("#settingsNavNotifications").click();
     await expect(page.locator("#settingRunNotificationsCheckbox")).toBeVisible();
     await expect(page).toHaveScreenshot(`capability-notifications-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
@@ -507,7 +507,7 @@ test.describe("visual regression", () => {
       json: { id: "visual-grant", secret: "single-use-visual-grant", expiresAt: Date.now() + 120_000, url: "https://demo.pi-web.dev/api/auth/device?grant=single-use-visual-grant" },
     }));
     await prepareNeutralWorkspace(page, testInfo.project.name);
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     await page.getByRole("button", { name: "＋ Connect a device", exact: true }).click();
     await page.getByRole("button", { name: "Create add-device link" }).click();
@@ -703,18 +703,13 @@ test.describe("visual regression", () => {
   test("new session", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
 
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/");
     await startEmptySession(page);
     const emptyState = page.locator("#emptyCwdChooser");
-    const animation = emptyState.locator(".newChatLoadingAnimation");
     await expect(emptyState).toBeVisible();
-    await expect(animation).toBeVisible();
+    await expect(emptyState.locator("#identityNewSessionStill")).toBeVisible();
     await expect(emptyState.getByRole("button", { name: "Change working directory" })).toBeVisible();
-
-    // A PNG cannot represent motion. Wait for the one-shot animation to finish
-    // naturally, then capture its settled final frame.
-    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.ended), { timeout: 3_000 }).toBe(true);
-    await animation.evaluate((video: HTMLVideoElement) => video.pause());
 
     await expect(page).toHaveScreenshot(`new-session-${testInfo.project.name}.png`, {
       fullPage: true,
@@ -775,7 +770,8 @@ test.describe("visual regression", () => {
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 1000 });
 
     await page.goto("/");
-    await openSessionDrawerFooterAction(page, "System info");
+    await openSessionDrawerFooterAction(page, "System");
+    if (!await page.locator("#systemInfoPanel").isVisible()) await page.locator("#settingsNavOverview").click();
     await expect(page.locator("#systemInfoPanel")).toBeVisible();
     await expect(page.locator("#systemInfoPanel").getByRole("heading", { name: "Host machine" })).toBeVisible();
 

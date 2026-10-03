@@ -1,40 +1,52 @@
 import { createElement, Download, ExternalLink, Maximize2 } from "lucide";
 
-function imageActionIcon(name: "download" | "external-link" | "maximize-2") {
-  const icons = { Download, ExternalLink, Maximize2 } as const;
-  const icon = name === "download" ? icons.Download : name === "external-link" ? icons.ExternalLink : icons.Maximize2;
-  return createElement(icon, { "aria-hidden": "true" });
+// Image actions delegate presentation and lifecycle to the shared files panel.
+// The source remains the original image URL (including authenticated and blob URLs).
+let openImage: ((source: string, name: string, opener: HTMLElement) => void) | undefined;
+const enhancedImages = new WeakSet<HTMLImageElement>();
+export function configureImagePreviewOpener(open: (source: string, name: string, opener: HTMLElement) => void) { openImage = open; }
+
+export function openImagePreview(img: HTMLImageElement, opener: HTMLElement = img) {
+  const source = img.currentSrc || img.src;
+  if (source) openImage?.(source, img.alt || "Image", opener);
 }
 
-export function openImageOverlay(img: HTMLImageElement) {
-  if (!img.currentSrc && !img.src) return;
-  const overlay = document.createElement("div");
-  overlay.className = "imageOverlay";
-  const full = document.createElement("img");
-  full.src = img.currentSrc || img.src;
-  full.alt = img.alt || "image";
-  overlay.append(full);
-  overlay.addEventListener("click", () => overlay.remove());
-  document.body.append(overlay);
+// The toolbar is visibility:hidden until its frame is focused. Reveal it by
+// focusing the tabbable image before the panel manager restores its button.
+export function revealImageOpener(opener: HTMLElement) {
+  if (getComputedStyle(opener).visibility === "hidden") {
+    opener.closest(".imageFrame")?.querySelector<HTMLElement>("img[tabindex]")?.focus({ preventScroll: true });
+  }
+  return opener;
 }
 
-export function attachImageActions(img: HTMLImageElement) {
-  if (img.closest(".imageFrame")) return;
+export function attachImageActions(img: HTMLImageElement, presentation: "full" | "thumbnail" = "full") {
+  // Preview discovery must not depend on a full-size presentation wrapper.
+  img.dataset.imagePreview = "";
+  if (enhancedImages.has(img) || img.closest(".imageFrame")) return;
+  enhancedImages.add(img);
+
+  img.tabIndex = 0;
+  img.setAttribute("role", "button");
+  img.setAttribute("aria-label", `Preview ${img.alt || "image"}`);
+  img.addEventListener("click", () => openImagePreview(img));
+  img.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openImagePreview(img); }
+  });
+  if (presentation === "thumbnail") return;
 
   const frame = document.createElement("span");
   frame.className = "imageFrame";
-
   const toolbar = document.createElement("span");
   toolbar.className = "imageActions";
 
   const fullScreen = document.createElement("button");
   fullScreen.type = "button";
   fullScreen.className = "imageAction";
-  fullScreen.title = "Fullscreen";
-  fullScreen.setAttribute("aria-label", fullScreen.title);
-  fullScreen.append(imageActionIcon("maximize-2"));
-  fullScreen.addEventListener("click", () => openImageOverlay(img));
-  img.addEventListener("click", () => openImageOverlay(img));
+  fullScreen.title = "Preview";
+  fullScreen.setAttribute("aria-label", "Preview image");
+  fullScreen.append(createElement(Maximize2, { "aria-hidden": "true" }));
+  fullScreen.addEventListener("click", () => openImagePreview(img, fullScreen));
 
   const download = document.createElement("a");
   download.className = "imageAction";
@@ -42,18 +54,18 @@ export function attachImageActions(img: HTMLImageElement) {
   download.setAttribute("aria-label", download.title);
   download.href = img.currentSrc || img.src;
   download.download = img.alt || "image";
-  download.append(imageActionIcon("download"));
+  download.append(createElement(Download, { "aria-hidden": "true" }));
 
-  const open = document.createElement("a");
-  open.className = "imageAction";
-  open.title = "Open in new tab";
-  open.setAttribute("aria-label", open.title);
-  open.href = img.currentSrc || img.src;
-  open.target = "_blank";
-  open.rel = "noopener noreferrer";
-  open.append(imageActionIcon("external-link"));
+  const external = document.createElement("a");
+  external.className = "imageAction";
+  external.title = "Open in new tab";
+  external.setAttribute("aria-label", external.title);
+  external.href = img.currentSrc || img.src;
+  external.target = "_blank";
+  external.rel = "noopener noreferrer";
+  external.append(createElement(ExternalLink, { "aria-hidden": "true" }));
 
-  toolbar.append(fullScreen, download, open);
+  toolbar.append(fullScreen, download, external);
   img.before(frame);
   frame.append(img, toolbar);
 }

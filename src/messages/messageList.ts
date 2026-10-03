@@ -12,10 +12,11 @@ import { playToolCardEntry, playToolCardStateTransition } from "./entryAnimation
 import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs.js";
 import type { QuoteRepliesController } from "../quotes/quoteReplies.js";
 import type { PiWebPanelEvent } from "../extensions.js";
+import type { RuntimeErrorPresentation } from "../tools/toolCards.js";
 
 export type AddToolHistoryCard = (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
 export type AddPendingToolCard = (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
-export type AddRuntimeErrorCard = (title: string, subtitle: string, body: string) => HTMLDivElement;
+export type AddRuntimeErrorCard = (presentation: RuntimeErrorPresentation) => HTMLDivElement;
 export type MessageActionKind = "edit" | "rerun" | "continue";
 export type MessageActionContext = {
   action: MessageActionKind;
@@ -66,6 +67,7 @@ export type MessageList = {
   startStreamingThinking: (contentIndex?: number | string) => void;
   appendStreamingThinkingDelta: (delta: string, contentIndex?: number | string) => void;
   endStreamingThinking: (content?: string, contentIndex?: number | string) => void;
+  checkpoint: () => { restore: () => void };
   clear: () => void;
   beginStreamFollow: () => void;
   endStreamFollow: () => void;
@@ -128,7 +130,7 @@ function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, 
         });
     }
     item.append(image);
-    attachImageActions(image);
+    attachImageActions(image, "thumbnail");
   } else {
     item.textContent = name.includes(".") ? name.split(".").pop()!.slice(0, 3).toUpperCase() : "FILE";
   }
@@ -312,7 +314,12 @@ export function createMessageList(options: {
   let isStreaming = false;
   let shouldFollowStream = true;
   let programmaticScroll = false;
-  let userScrollIntent = false;
+  // A gesture can arrive before its corresponding scroll event. Keep that
+  // pending intent separate from the settled follow state so layout work in
+  // between cannot pull the viewport back to the tail.
+  let pendingUserScrollIntent = false;
+  let pendingUserScrollTop = 0;
+  let pendingUserScrollDirection = 0;
   let refreshSerial = 0;
   let mutationSerial = 0;
   let applyingRefresh = false;
@@ -324,7 +331,7 @@ export function createMessageList(options: {
     onLayout: () => {
       // A layout update must not cancel explicit scroll intent before the
       // browser has physically moved the viewport (e.g. the first wheel event).
-      if (userScrollIntent && !shouldFollowStream) setJumpButtonVisible(true);
+      if (!shouldFollowStream) setJumpButtonVisible(true);
       else showJumpButtonIfAwayFromBottom();
     },
   });
@@ -417,7 +424,7 @@ export function createMessageList(options: {
   function scrollToBottom() {
     if (bulkRendering) return;
     if (!shouldFollowStream) {
-      if (isAtBottom() && !userScrollIntent) {
+      if (isAtBottom() && !pendingUserScrollIntent) {
         shouldFollowStream = true;
         setJumpButtonVisible(false);
       } else {
@@ -434,7 +441,7 @@ export function createMessageList(options: {
       .find((message) => message.dataset.entryId === entryId);
     if (!target) return false;
     shouldFollowStream = false;
-    userScrollIntent = true;
+    pendingUserScrollIntent = false;
     target.scrollIntoView({ block: "center", inline: "nearest" });
     target.tabIndex = -1;
     target.classList.add("sessionCitationTarget");
@@ -450,7 +457,7 @@ export function createMessageList(options: {
     currentAssistantResponseKey = currentStreamingResponseKey;
     isStreaming = true;
     shouldFollowStream = true;
-    userScrollIntent = false;
+    pendingUserScrollIntent = false;
     activity.schedule();
     forceScrollToBottom();
     setJumpButtonVisible(false);
@@ -462,23 +469,39 @@ export function createMessageList(options: {
     // A wheel/key intent can arrive before the browser physically moves the
     // viewport. Settlement must not erase that explicit intent merely because
     // layout still reports the old bottom position.
-    if (userScrollIntent && !shouldFollowStream) setJumpButtonVisible(true);
+    if (!shouldFollowStream) setJumpButtonVisible(true);
     else if (isAtBottom()) setJumpButtonVisible(false);
   }
 
-  function isScrollIntentAwayFromBottom(event: Event) {
-    if (event instanceof WheelEvent) return event.deltaY < 0;
-    if (event instanceof KeyboardEvent) {
-      return event.key === "ArrowUp" || event.key === "PageUp" || event.key === "Home" || (event.key === " " && event.shiftKey);
-    }
-    return false;
+  function userScrollDirection(event: Event) {
+    if (event instanceof WheelEvent) return Math.sign(event.deltaY);
+    if (!(event instanceof KeyboardEvent)) return 0;
+    if (["ArrowUp", "PageUp", "Home"].includes(event.key) || (event.key === " " && event.shiftKey)) return -1;
+    if (["ArrowDown", "PageDown", "End"].includes(event.key) || event.key === " ") return 1;
+    return 0;
   }
 
   function pauseStreamFollow(event: Event) {
     if (programmaticScroll) return;
-    userScrollIntent = true;
+    const direction = userScrollDirection(event);
+    const canScroll = messagesEl.scrollHeight > messagesEl.clientHeight + 1;
+    const atPhysicalBottom = distanceFromBottom() <= 1;
+    const canMove = canScroll
+      && !(direction < 0 && messagesEl.scrollTop <= 1)
+      && !(direction > 0 && atPhysicalBottom);
+    // A no-op gesture at an edge must not leave stale intent behind.
+    if ((!canMove && direction !== 0) || !canScroll) {
+      pendingUserScrollIntent = false;
+      if (atPhysicalBottom) {
+        shouldFollowStream = true;
+        setJumpButtonVisible(false);
+      }
+      return;
+    }
+    pendingUserScrollIntent = true;
+    pendingUserScrollTop = messagesEl.scrollTop;
+    pendingUserScrollDirection = direction;
     if (!isStreaming) return;
-    if (isAtBottom() && !isScrollIntentAwayFromBottom(event)) return;
     shouldFollowStream = false;
     setJumpButtonVisible(true);
   }
@@ -506,29 +529,59 @@ export function createMessageList(options: {
     const payload = Object.fromEntries(params);
     openPanel?.(key, { action: "deep-link", payload });
   });
+  function settlePointerIntent() {
+    if (!pendingUserScrollIntent || Math.abs(messagesEl.scrollTop - pendingUserScrollTop) > 1) return;
+    pendingUserScrollIntent = false;
+    if (isAtBottom()) {
+      shouldFollowStream = true;
+      setJumpButtonVisible(false);
+    }
+  }
+
   messagesEl.addEventListener("wheel", pauseStreamFollow, { passive: true });
   messagesEl.addEventListener("touchstart", pauseStreamFollow, { passive: true });
+  messagesEl.addEventListener("touchend", settlePointerIntent, { passive: true });
+  messagesEl.addEventListener("touchcancel", settlePointerIntent, { passive: true });
   messagesEl.addEventListener("pointerdown", pauseStreamFollow);
+  messagesEl.addEventListener("pointerup", settlePointerIntent);
+  messagesEl.addEventListener("pointercancel", settlePointerIntent);
   messagesEl.addEventListener("keydown", (event) => {
     if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) pauseStreamFollow(event);
   });
   messagesEl.addEventListener("scroll", () => {
     if (!actionMenu.hidden) closeActionMenu();
     if (programmaticScroll) return;
+    // Ignore layout/anchoring events until the viewport has moved in the
+    // gesture's direction. Once it has, the settled position is authoritative.
+    if (pendingUserScrollIntent) {
+      const delta = messagesEl.scrollTop - pendingUserScrollTop;
+      if (Math.abs(delta) <= 1 || (pendingUserScrollDirection !== 0 && Math.sign(delta) !== pendingUserScrollDirection)) return;
+      if (!isAtBottom()) {
+        if (pendingUserScrollDirection === 0) pendingUserScrollDirection = Math.sign(delta);
+        // The gesture moved away. Pause now, but retain its intent so a later
+        // layout/anchoring event at the bottom cannot silently resume follow.
+        shouldFollowStream = false;
+        setJumpButtonVisible(true);
+        return;
+      }
+      // Upward intent can coincide with anchoring that changes scrollTop while
+      // remaining at the bottom; only return/toward-bottom intent may resume.
+      if (pendingUserScrollDirection < 0) return;
+      pendingUserScrollIntent = false;
+    }
+    if (isAtBottom()) {
+      shouldFollowStream = true;
+      setJumpButtonVisible(false);
+      return;
+    }
     if (shouldFollowStream && !isNearBottom()) {
       shouldFollowStream = false;
       setJumpButtonVisible(true);
-      return;
-    }
-    if (!shouldFollowStream && isAtBottom() && !userScrollIntent) {
-      shouldFollowStream = true;
-      userScrollIntent = false;
-      setJumpButtonVisible(false);
     }
   }, { passive: true });
   jumpButton.addEventListener("click", () => {
     shouldFollowStream = true;
-    userScrollIntent = false;
+    pendingUserScrollIntent = false;
     forceScrollToBottom();
     setJumpButtonVisible(false);
   });
@@ -847,6 +900,7 @@ export function createMessageList(options: {
     if (role === "user") {
       const baseline = document.createElement("div");
       baseline.className = `messageAttachmentBaseline${standardAttachments.length ? "" : " messageAttachmentBaseline--timeOnly"}`;
+      if (standardAttachments.length) div.classList.add("hasAttachments");
       if (standardAttachments.length) {
         const summary = document.createElement("button");
         summary.type = "button";
@@ -884,13 +938,13 @@ export function createMessageList(options: {
         const label = document.createElement("span");
         label.className = "messageAttachmentCount";
         label.textContent = `${standardAttachments.length} attached`;
-        summary.append(previews, label);
+        summary.append(label);
         summary.addEventListener("click", (event) => {
           event.stopPropagation();
           popover.hidden = !popover.hidden;
           summary.setAttribute("aria-expanded", String(!popover.hidden));
         });
-        baseline.append(summary, popover);
+        baseline.append(previews, summary, popover);
       }
       const time = document.createElement("time");
       const timestamp = metadata.timestamp ? new Date(metadata.timestamp) : new Date();
@@ -1168,6 +1222,28 @@ export function createMessageList(options: {
     setJumpButtonVisible(false);
   }
 
+  function checkpoint() {
+    invalidatePendingRefreshes();
+    const nodes = Array.from(messagesEl.childNodes);
+    const scrollTop = messagesEl.scrollTop;
+    const scalars = { streamingAssistant, currentStreamingTextKey, currentAssistantResponseKey, currentStreamingResponseKey, currentStreamingThinkingKey, thinkingSerial, isStreaming, shouldFollowStream };
+    const saveMap = <K, V>(map: Map<K, V>) => {
+      const entries = new Map(map);
+      return () => { map.clear(); entries.forEach((value, key) => map.set(key, value)); };
+    };
+    const restoreMaps = [saveMap(streamingTextBlocks), saveMap(streamingTextContent), saveMap(streamingTextBodies), saveMap(streamingThinkingCards), saveMap(customReportExpansion)];
+    const quotes = quoteReplies?.checkpoint();
+    return { restore() {
+      clear();
+      messagesEl.replaceChildren(...nodes);
+      ({ streamingAssistant, currentStreamingTextKey, currentAssistantResponseKey, currentStreamingResponseKey, currentStreamingThinkingKey, thinkingSerial, isStreaming, shouldFollowStream } = scalars);
+      restoreMaps.forEach((restore) => restore());
+      quotes?.restore();
+      messagesEl.scrollTop = scrollTop;
+      activity.schedule();
+    } };
+  }
+
   function clear() {
     activity.reset();
     customReportExpansion.clear();
@@ -1310,7 +1386,7 @@ export function createMessageList(options: {
 
     if (message.isError) {
       const rawError = typeof message.raw?.errorMessage === "string" ? message.raw.errorMessage : typeof message.errorMessage === "string" ? message.errorMessage : text;
-      addRuntimeErrorCard("assistant error", text, distinctAssistantErrorBody(rawError, text));
+      addRuntimeErrorCard({ title: "assistant error", subtitle: text, technicalDetails: distinctAssistantErrorBody(rawError, text) });
       return;
     }
 
@@ -1485,7 +1561,7 @@ export function createMessageList(options: {
           index += retryGroup.length - 1;
           if (index === allMessages.length - 1) continue;
           const lastError = retryGroup[retryGroup.length - 1];
-          addRuntimeErrorCard("assistant error", `${lastError.text} · retried ${retryGroup.length} attempts`, retryErrorGroupBody(retryGroup));
+          addRuntimeErrorCard({ title: "assistant error", subtitle: `${lastError.text} · retried ${retryGroup.length} attempts`, technicalDetails: retryErrorGroupBody(retryGroup) });
           continue;
         }
 
@@ -1533,6 +1609,7 @@ export function createMessageList(options: {
     endStreamFollow,
     endStreamingThinking,
     refreshMessages,
+    checkpoint,
     resetStreamingAssistant,
     invalidateRefreshes: invalidateExternalRefreshes,
     reconcileActivity: activity.schedule,

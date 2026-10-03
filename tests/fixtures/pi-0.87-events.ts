@@ -4,8 +4,8 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 const message = { role: "assistant", content: [{ type: "text", text: "hello" }], timestamp: 1, stopReason: "stop" } as AssistantMessage;
 const partial = { ...message, content: [{ type: "text", text: "x".repeat(1_000) }] } as AssistantMessage;
 
-/** Captured shapes from the in-process pi 0.84.1 AgentSessionEvent surface. */
-export const pi084Events = [
+/** Captured shapes from the in-process pi 0.87.1 AgentSessionEvent surface. */
+export const pi087Events = [
   { type: "agent_start" },
   { type: "agent_end", messages: [message], willRetry: false },
   { type: "agent_settled" },

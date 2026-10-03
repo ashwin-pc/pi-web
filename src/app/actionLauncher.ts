@@ -38,7 +38,11 @@ export type ActionLauncherController = {
 
 export function initActionLauncher(
   elements: AppElements,
-  options: { onSessionDetails?: () => void; onExtensionAction?: (opensPanelKey: string) => void } = {},
+  options: {
+    onSessionDetails?: () => void;
+    onExtensionAction?: (opensPanelKey: string) => void;
+    onComposerBlurred?: () => void;
+  } = {},
 ): ActionLauncherController {
   const root = document.createElement("div");
   root.className = "actionLauncher";
@@ -63,6 +67,7 @@ export function initActionLauncher(
     if (menuHideTimer !== undefined) window.clearTimeout(menuHideTimer);
     if (open) {
       menu.hidden = false;
+      layoutActions();
       // Start from the collapsed styles even when reopening shortly after close.
       requestAnimationFrame(() => root.classList.add("open"));
     } else {
@@ -79,8 +84,6 @@ export function initActionLauncher(
 
   function renderActions() {
     menu.textContent = "";
-    const measure = document.createElement("canvas").getContext("2d");
-    if (measure) measure.font = "13px system-ui";
     const actions: LauncherAction[] = [
       ...builtInActions,
       ...extensionActions.map((action) => ({
@@ -88,11 +91,8 @@ export function initActionLauncher(
         icon: action.icon,
         run: () => options.onExtensionAction?.(action.opens),
       })),
-    ].map((action, index) => ({ action, index, width: measure?.measureText(action.label).width || action.label.length }))
-      .sort((a, b) => a.width - b.width || a.index - b.index)
-      .map(({ action }) => action);
-    const lastIndex = Math.max(0, actions.length - 1);
-    actions.forEach((action, index) => {
+    ];
+    actions.forEach((action) => {
       const button = document.createElement("button");
       button.className = "actionLauncherItem";
       button.type = "button";
@@ -103,31 +103,39 @@ export function initActionLauncher(
       label.textContent = action.label;
       button.append(label);
 
-      const fromBottom = lastIndex - index;
-      const arc = lastIndex > 0 ? fromBottom / lastIndex : 0;
-      const defaultX = [-5, -18, -36, -51, -59];
-      const defaultY = [-254, -204, -154, -103, -52];
-      const defaultFocusedY = [-202, -152, -102, -51, 0];
-      const fanX = actions.length === 5 ? defaultX[index] : Math.round(-59 + 54 * arc);
-      const fanY = actions.length === 5 ? defaultY[index] : Math.round(-52 - 50.5 * fromBottom);
-      const focusedY = actions.length === 5 ? defaultFocusedY[index] : Math.round(-50.5 * fromBottom);
-      button.style.setProperty("--fan-x", `${fanX}px`);
-      button.style.setProperty("--fan-y", `${fanY}px`);
-      button.style.setProperty("--fan-focused-y", `${focusedY}px`);
-      button.style.setProperty("--fan-open-delay", `${(fromBottom * 0.035).toFixed(3)}s`);
-      button.style.setProperty("--fan-close-delay", `${(index * 0.035).toFixed(3)}s`);
-
       // The launcher lives inside the form, so do not let an action take focus
       // and temporarily activate/expand the composer before opening its panel.
       button.addEventListener("pointerdown", (event) => event.preventDefault());
       button.addEventListener("click", () => {
         button.blur();
         elements.promptEl.blur();
-        elements.formEl.classList.add("compactInactive");
+        options.onComposerBlurred?.();
         setOpen(false);
         action.run();
       });
       menu.append(button);
+    });
+    if (!menu.hidden) layoutActions();
+  }
+
+  function layoutActions() {
+    // Computed layout width is fractional and independent of the fan transform and
+    // staggered animation. Measure the actual buttons with their inherited CSS.
+    const buttons = Array.from(menu.querySelectorAll<HTMLButtonElement>(".actionLauncherItem"));
+    buttons.sort((a, b) => parseFloat(getComputedStyle(a).width) - parseFloat(getComputedStyle(b).width));
+    const lastIndex = Math.max(0, buttons.length - 1);
+    buttons.forEach((button, index) => {
+      menu.append(button);
+      const fromBottom = lastIndex - index;
+      const arc = lastIndex > 0 ? fromBottom / lastIndex : 0;
+      const defaultX = [-5, -18, -36, -51, -59];
+      const defaultY = [-254, -204, -154, -103, -52];
+      const defaultFocusedY = [-202, -152, -102, -51, 0];
+      button.style.setProperty("--fan-x", `${buttons.length === 5 ? defaultX[index] : Math.round(-59 + 54 * arc)}px`);
+      button.style.setProperty("--fan-y", `${buttons.length === 5 ? defaultY[index] : Math.round(-52 - 50.5 * fromBottom)}px`);
+      button.style.setProperty("--fan-focused-y", `${buttons.length === 5 ? defaultFocusedY[index] : Math.round(-50.5 * fromBottom)}px`);
+      button.style.setProperty("--fan-open-delay", `${(fromBottom * 0.035).toFixed(3)}s`);
+      button.style.setProperty("--fan-close-delay", `${(index * 0.035).toFixed(3)}s`);
     });
   }
 
@@ -139,7 +147,7 @@ export function initActionLauncher(
   toggle.setAttribute("aria-expanded", "false");
   toggle.title = "Session actions";
   const mascot = document.createElement("img");
-  mascot.src = "/pi-mascot-avatar.png";
+  // The saved identity is asynchronous; do not request/display Pi before it arrives.
   mascot.alt = "";
   toggle.append(mascot);
 
@@ -149,8 +157,8 @@ export function initActionLauncher(
   toggle.addEventListener("click", () => {
     setOpen(!root.classList.contains("open"));
     elements.promptEl.blur();
-    elements.formEl.classList.add("compactInactive");
     toggle.blur();
+    options.onComposerBlurred?.();
   });
   elements.promptEl.addEventListener("focus", () => setOpen(false));
   document.addEventListener("pointerdown", (event) => {
@@ -163,9 +171,9 @@ export function initActionLauncher(
     }
   });
 
-  renderActions();
   root.append(menu, toggle);
   elements.formEl.append(root);
+  renderActions();
 
   return {
     setExtensionActions(value) {

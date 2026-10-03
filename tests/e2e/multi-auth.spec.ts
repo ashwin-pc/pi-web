@@ -93,7 +93,7 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
     await page.goto(`${origin}/?token=owner-token`);
     await expect(page.locator("#prompt")).toBeVisible();
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     const security = page.locator("#securitySettings");
     await security.getByRole("button", { name: "Set up", exact: true }).click();
@@ -138,7 +138,7 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
     await expect(login.locator("#prompt")).toBeVisible();
     await page.locator("#settingsCloseButton").click();
     await page.locator("#sessionButton").click();
-    await openSessionDrawerFooterAction(page, "Settings");
+    await openSessionDrawerFooterAction(page, "System");
     await page.locator("#settingsNavAccess").click();
     await security.getByRole("button", { name: "Sign-in options & legacy retirement", exact: true }).click();
     const methods = security.locator("section", {

@@ -18,16 +18,30 @@ describe("shared sign-in presentation", () => {
     expect(html).toContain('<h1>Pi Web</h1>');
     for (const removed of ['Private workspace', '<header', '<footer', '<h1>Sign in', 'class="logo"', 'Sign in to continue']) expect(html).not.toContain(removed);
     const app = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-    for (const asset of ['/new-chat-loading.webm', '/new-chat-loading.mp4', '/new-chat-animation.css']) {
-      expect(app).toContain(asset);
-      expect(html).toContain(asset);
-    }
+    expect(app).not.toContain('/avatars/current-pi/new-session.apng');
+    expect(app).toContain('id="identityNewSessionMedia"');
+    expect(html).toContain('/avatars/current-pi/new-session.apng');
+    expect(app).toContain('/new-chat-animation.css');
+    expect(html).toContain('/new-chat-animation.css');
     expect(html).toContain("motion.addEventListener('change',syncMotion)");
-    expect(html).toContain('if(motion.matches)avatar.pause()');
-    expect(html).toContain('src="/new-chat-still.png"');
+    expect(html).toContain("const animate=avatarHasMotion&&!motion.matches");
+    expect(html).not.toContain('motion.sprite');
+    expect(html).toContain('src="/avatars/current-pi/still.png"');
+    expect(html).not.toContain("fetch('/identity/config.json')");
     expect(loginPageHeaders['content-security-policy']).toContain("media-src 'self'");
     expect(loginPageHeaders['content-security-policy']).toContain("style-src 'self' 'unsafe-inline'");
     expect(html).not.toContain('class="glow"');
+  });
+  it("renders the saved identity initially without unsafe markup or default animation", () => {
+    const html = renderLoginPage({ methods: ["password"], presentation: {
+      name: '<img src=x onerror="alert(1)">',
+      assets: { still: "/identity/avatar.png?v=4", fab: "/identity/avatar.png?v=4", icon: "/identity/icon.png?v=4", fallback: "/identity/avatar.png?v=4" },
+    } });
+    expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
+    expect(html).not.toContain('<img src=x onerror="alert(1)">');
+    expect(html).toContain('src="/identity/avatar.png?v=4"');
+    expect(html).not.toContain('src="/avatars/current-pi/new-session.apng"');
+    expect(html).not.toContain('class="newChatLoadingAnimation avatarAnimation"');
   });
   it("prioritizes direct passkey authentication and discloses enabled alternatives", () => {
     const html = renderLoginPage({ methods: ["password", "passkey", "legacy", "external"] });

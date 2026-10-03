@@ -197,6 +197,13 @@ describe("tool card expand chevrons", () => {
     expect(toolCardsTs).toContain('toggle.textContent = "";');
     expect(messagesTs).toContain('toggle.textContent = "";');
   });
+
+  it("keeps error disclosure operable outside compact density", () => {
+    expect(css).toContain(".toolCard--error:not(.runtimeErrorCard) .toolCardExpandToggle");
+    expect(css).toContain("display: inline-flex;");
+    expect(toolCardsTs).toContain('!card.classList.contains("toolCard--error")');
+    expect(toolCardsTs).toContain('expandToggle.type = "button"');
+  });
 });
 
 describe("connected transcript and header styling", () => {
@@ -329,14 +336,18 @@ describe("new session empty state", () => {
   const sessionsTs = readFileSync(new URL("../src/sessions/sessionDrawer.ts", import.meta.url), "utf8");
 
   it("shows and replays the restored new-chat animation after transcript loading", () => {
-    expect(statSync(new URL("../public/new-chat-loading.mp4", import.meta.url)).size).toBeGreaterThan(0);
+    expect(statSync(new URL("../public/avatars/current-pi/new-session.apng", import.meta.url)).size).toBeGreaterThan(0);
     expect(html).toContain('class="newChatLoadingAnimation"');
-    expect(html).toContain('src="/new-chat-loading.mp4"');
-    expect(readFileSync(new URL("../public/new-chat-animation.css", import.meta.url), "utf8")).toContain(".newChatLoadingAnimation.resetting");
+    expect(html).not.toContain('src="/avatars/current-pi/new-session.apng"');
+    expect(html).toContain('id="identityNewSessionMedia"');
+    expect(readFileSync(new URL("../public/new-chat-animation.css", import.meta.url), "utf8")).not.toContain("mask-image:");
     expect(html).toContain('href="/new-chat-animation.css"');
     expect(sessionsTs).toContain("function finishTranscriptLoading()");
-    expect(sessionsTs).toContain("video.currentTime = 0;");
-    expect(sessionsTs).toContain("void video.play()");
+    expect(sessionsTs).toContain("#identityNewSessionAnimation");
+    expect(sessionsTs).toContain("URL.createObjectURL(blob)");
+    expect(sessionsTs).toContain("const download = fetch(canonicalUrl)");
+    expect(sessionsTs).toContain("current !== animation");
+    expect(sessionsTs).not.toContain("?replay=");
   });
 
   it("makes the working directory a compact accessible control", () => {
@@ -409,7 +420,7 @@ describe("compact inactive composer styling", () => {
     expect(css).toContain(".modelSettingsModelName,");
     expect(css).toContain(".modelSettingsCurrent {");
     expect(css).toContain(".modelSettingsCurrentValue {");
-    expect(css).toContain(`${compactSelector} #attachButton,\n${compactSelector} #stopButton {`);
+    expect(css).toContain(`${compactSelector} #attachButton,\n${compactSelector} .composerCaptureButton,\n${compactSelector} .composerCaptureCancel,\n${compactSelector} #stopButton {`);
     expect(css).not.toContain(`${compactSelector} #stopButton {\n  display: none !important;`);
   });
 
@@ -433,7 +444,8 @@ describe("compact inactive composer styling", () => {
   it("sets or restores the compact inactive state during composer initialization", () => {
     const composer = readFileSync(new URL("../src/composer/composer.ts", import.meta.url), "utf8");
     expect(composer).toContain("function updateCompactInactive()");
-    expect(composer).toContain("applyCompactInactive(restoreFocus ? false : !elements.formEl.contains(document.activeElement));");
+    expect(composer).toContain("applyCompactInactive(unfocused && !elements.promptEl.value.trim());");
+    expect(composer).toContain("if (restoreFocus) applyCompactInactive(false);\n    else updateCompactInactive();");
   });
 
   it("routes compact actions through press handlers before focus expands the composer", () => {

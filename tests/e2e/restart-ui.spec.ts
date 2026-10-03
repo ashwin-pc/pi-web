@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 
 async function openServerSettings(page: Page) {
-  await openSessionDrawerFooterAction(page, "Settings");
+  await openSessionDrawerFooterAction(page, "System");
   await expect(page.locator("#settingsNavServer")).toBeVisible();
   await page.locator("#settingsNavServer").click();
 }
@@ -21,8 +21,17 @@ test.beforeEach(async ({ page }) => {
 
 test("restart settings is hidden without a supervisor", async ({ page }) => {
   await page.goto("/");
-  await openSessionDrawerFooterAction(page, "Settings");
-  await expect(page.locator("#settingsNavServer")).toBeHidden();
+  await openSessionDrawerFooterAction(page, "System");
+  const serverNav = page.locator("#settingsNavServer");
+  await expect(serverNav).toBeHidden();
+  await expect(serverNav).toHaveJSProperty("hidden", true);
+  await page.locator("#settingsSearchInput").fill("server");
+  await expect(serverNav).toHaveJSProperty("hidden", true);
+  await page.locator("#settingsCloseButton").click();
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsCloseButton").click();
+  await openSessionDrawerFooterAction(page, "System");
+  await expect(serverNav).toHaveJSProperty("hidden", true);
 });
 
 test("restart cancellation sends no request", async ({ page }) => {

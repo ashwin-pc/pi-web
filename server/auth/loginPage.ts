@@ -1,3 +1,5 @@
+import { defaultAppIdentity, resolveAvatarBundle, type AvatarBundle } from "../shared/appIdentity.js";
+
 // Shared presentation and browser ceremony for all public sign-in/setup routes.
 // Authentication policy, challenges, and session creation remain in their route handlers.
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
@@ -16,16 +18,25 @@ const styles = `
    Defaults mirror src/styles/base.css; geometry follows native settings panels. */
 :root{color-scheme:dark;--bg:#030303;--panel:#0a0a0a;--panel-2:#131313;--border:#242424;--text:#f2f2f2;--muted:#a3a3a3;--accent:#e2b15f;--danger:#fb7185}
 *{box-sizing:border-box}body{margin:0;background:radial-gradient(circle at 50% -12rem,rgba(54,54,54,.62),transparent 44rem),var(--bg);color:var(--text);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100svh;display:grid;place-items:center;padding:32px 16px}
-main{width:min(420px,100%);min-width:0;padding:28px}.newChatLoadingAnimation{display:block;margin:0 auto}.avatarStill{display:none}
+main{width:min(420px,100%);min-width:0;padding:28px}.loginAvatar{width:136px;height:136px;margin:auto;position:relative}.newChatLoadingAnimation{display:block;margin:0 auto}.avatarStill{display:none}
 label{color:var(--muted);font-size:12px}h1{font-size:24px;line-height:1.12;letter-spacing:-.025em;margin:12px 0 32px;text-align:center}h2{font-size:17px;margin:0 0 8px}p{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 22px}
 button,input,.button{width:100%;min-height:44px;font:inherit;font-size:13px;border-radius:9px;padding:10px 12px;border:1px solid var(--border);background:var(--panel-2);color:var(--text)}button,.button{cursor:pointer;font-weight:650;text-align:center;display:block;text-decoration:none}button:hover:not(:disabled),.button:hover{border-color:var(--accent)}
 .primary{background:color-mix(in srgb,var(--accent) 12%,var(--panel));border-color:color-mix(in srgb,var(--accent) 48%,var(--border));color:var(--accent)}.primary:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 18%,var(--panel))}.secondary{margin-top:10px}button:disabled{opacity:.45;cursor:wait}button:focus-visible,a:focus-visible,summary:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
 input{display:block;margin:6px 0 12px;background:var(--bg);font-size:16px}form{margin-top:16px}form[hidden]{display:none}#status{color:var(--accent);font-size:12px;margin:12px 0 0;overflow-wrap:anywhere}#status:empty{display:none}#status.error{color:var(--danger)}details{margin-top:12px;color:var(--muted);font-size:12px}summary{cursor:pointer;padding:12px;text-align:center}details button{margin-top:8px}.back{display:block;color:var(--accent);font-size:12px;text-align:center;margin-top:16px}noscript{display:block;color:var(--danger);margin-top:16px}
-@media(max-width:480px){body{padding:20px 16px}main{padding:22px}}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}video.newChatLoadingAnimation{display:none}.avatarStill{display:block}}
+@media(max-width:480px){body{padding:20px 16px}main{padding:22px}}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}img.avatarAnimation{display:none}.avatarStill{display:block}}
 `;
 
-export function renderLoginPage(options: { methods: readonly string[]; setupToken?: string; passkeyOnly?: boolean }) {
+export type LoginPresentation = { name: string; assets: AvatarBundle };
+
+export function renderLoginPage(options: { methods: readonly string[]; setupToken?: string; passkeyOnly?: boolean; presentation?: LoginPresentation }) {
   const { methods, setupToken, passkeyOnly = false } = options;
+  const presentation = options.presentation ?? { name: defaultAppIdentity.name, assets: resolveAvatarBundle(defaultAppIdentity) };
+  const name = escapeHtml(presentation.name);
+  const still = escapeHtml(presentation.assets.still);
+  const icon = escapeHtml(presentation.assets.icon);
+  const animation = presentation.assets.newSession?.apng
+    ? `<img class="newChatLoadingAnimation avatarAnimation" src="${escapeHtml(presentation.assets.newSession.apng)}" alt="" aria-hidden="true">`
+    : "";
   const setup = setupToken !== undefined;
   const hasPasskey = methods.includes("passkey");
   const hasPassword = methods.includes("password") && !passkeyOnly;
@@ -37,12 +48,14 @@ export function renderLoginPage(options: { methods: readonly string[]; setupToke
     methods.includes("external") ? '<form data-method="external"><button>Continue with trusted proxy</button></form>' : "",
     methods.includes("legacy") ? form("legacy", "Legacy token (deprecated)") : "",
   ].join("") : "";
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>Pi Web</title><link rel="stylesheet" href="/new-chat-animation.css"><style>${styles}</style></head><body><main><video class="newChatLoadingAnimation" muted playsinline preload="auto" aria-hidden="true"><source src="/new-chat-loading.webm" type='video/webm; codecs="vp8"'><source src="/new-chat-loading.mp4" type='video/mp4; codecs="avc1.64001e"'></video><img class="newChatLoadingAnimation avatarStill" src="/new-chat-still.png" alt="" aria-hidden="true"><h1>Pi Web</h1>${setup ? `<h2>${passkeyOnly ? "Enroll a passkey" : "Set up your workspace"}</h2><p>Choose a sign-in method for your private workspace. Keep a backup credential and terminal recovery access.</p>` : ""}${passkey}${hasPassword && hasPasskey && !setup ? '<button class="secondary" id="passwordToggle" aria-expanded="false" aria-controls="password">Use a password</button>' : ""}${hasPassword ? form("password", setup ? "New password (12+ characters)" : "Password", hasPasskey && !setup) : ""}${alternatives ? `<details><summary>Other ways to sign in</summary>${alternatives}</details>` : ""}${!methods.length ? '<p>No sign-in method is available. Use terminal recovery to restore access.</p>' : ""}${passkeyOnly && !setup ? '<a class="back" href="/api/auth/login">Other sign-in methods</a>' : ""}<p id="status" role="status" aria-live="polite" aria-atomic="true"></p><noscript>JavaScript is required to sign in. Enable it and reload this page.</noscript></main><script>
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>${name}</title><link rel="icon" href="${icon}"><link rel="stylesheet" href="/new-chat-animation.css"><style>${styles}</style></head><body><main><div class="loginAvatar">${animation}<img class="newChatLoadingAnimation avatarStill" src="${still}" alt="" aria-hidden="true"></div><h1>${name}</h1>${setup ? `<h2>${passkeyOnly ? "Enroll a passkey" : "Set up your workspace"}</h2><p>Choose a sign-in method for your private workspace. Keep a backup credential and terminal recovery access.</p>` : ""}${passkey}${hasPassword && hasPasskey && !setup ? '<button class="secondary" id="passwordToggle" aria-expanded="false" aria-controls="password">Use a password</button>' : ""}${hasPassword ? form("password", setup ? "New password (12+ characters)" : "Password", hasPasskey && !setup) : ""}${alternatives ? `<details><summary>Other ways to sign in</summary>${alternatives}</details>` : ""}${!methods.length ? '<p>No sign-in method is available. Use terminal recovery to restore access.</p>' : ""}${passkeyOnly && !setup ? '<a class="back" href="/api/auth/login">Other sign-in methods</a>' : ""}<p id="status" role="status" aria-live="polite" aria-atomic="true"></p><noscript>JavaScript is required to sign in. Enable it and reload this page.</noscript></main><script>
 const statusElement=document.getElementById('status'),go=document.getElementById('go'),setup=${scriptValue(setup)},setupToken=${scriptValue(setupToken || "")};
 const report=(message,error=false)=>{statusElement.textContent=message;statusElement.classList.toggle('error',error)};
 // The same entry video and presentation as New Session; no app bootstrap or API dependency.
-const avatar=document.querySelector('video'),motion=matchMedia('(prefers-reduced-motion: reduce)');
-const syncMotion=()=>{if(motion.matches)avatar.pause();else void avatar.play().catch(()=>{})};
+const avatar=document.querySelector('.avatarAnimation'),motion=matchMedia('(prefers-reduced-motion: reduce)');
+let avatarHasMotion=!!avatar;
+const syncMotion=()=>{const still=document.querySelector('.avatarStill');const animate=avatarHasMotion&&!motion.matches;if(avatar)avatar.style.display=animate?'block':'none';still.style.display=animate?'none':'block'};
+if(avatar)avatar.onerror=()=>{avatarHasMotion=false;syncMotion()};
 motion.addEventListener('change',syncMotion);syncMotion();
 if(!window.isSecureContext)report('Unencrypted connection. Use HTTPS for remote sign-in.',true);
 const toggle=document.getElementById('passwordToggle');if(toggle)toggle.onclick=()=>{const f=document.getElementById('password');f.hidden=!f.hidden;toggle.setAttribute('aria-expanded',String(!f.hidden));if(!f.hidden)f.elements.secret.focus()};

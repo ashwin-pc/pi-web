@@ -25,31 +25,23 @@
 .sessionDrawer[hidden], .sessionBackdrop[hidden] { display: none; }
 .sessionDrawerHeader {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  height: 40px;
+  min-width: 0;
   flex-shrink: 0;
-  padding: 0 8px 0 16px;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 6px 12px;
   border-bottom: 1px solid var(--border);
 }
-.sessionDrawerHeader h2 {
-  margin: 0;
-  font-size: 12px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.sessionDrawerHeaderActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
 }
 .sessionDrawerFilters {
-  flex: 1 1 auto;
-  min-width: 0;
   display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
   align-items: center;
   gap: 6px;
 }
@@ -125,35 +117,41 @@
   height: 6px;
 }
 @media (max-width: 420px) {
-  .sessionDrawerHeader {
-    padding-left: 10px;
-  }
-  .sessionColorFilterButton {
-    max-width: 58px;
-  }
+  .sessionDrawerHeader { padding: 4px 4px 4px 12px; }
+  .sessionColorFilterButton { max-width: 58px; }
 }
 .sessionDrawerSearch:focus {
   outline: none;
   border-color: var(--accent);
 }
-.sessionDrawerHeader .iconButton {
-  width: 24px;
-  min-width: 24px;
-  height: 24px;
-  min-height: 24px;
+.sessionDrawerHeader .sessionDrawerHeaderAction {
+  display: inline-grid;
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  min-height: 32px;
+  place-items: center;
+  margin: 0;
+  padding: 0;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: var(--muted);
+  line-height: 1;
 }
-.sessionDrawerHeader .iconButton svg {
+.sessionDrawerHeader .sessionDrawerHeaderAction svg {
   width: 15px;
   height: 15px;
 }
-.sessionDrawerHeader .iconButton:hover {
+.sessionDrawerHeader .sessionDrawerHeaderAction:hover,
+.sessionDrawerHeader .sessionDrawerHeaderAction:focus-visible {
   border: 0;
+  outline: none;
   background: var(--panel-2);
   color: var(--text);
+}
+.sessionDrawerHeader .sessionDrawerHeaderAction:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 .sessionDrawerFooter {
   display: flex;
@@ -180,9 +178,25 @@
   font-size: 12px;
   white-space: nowrap;
 }
-.sessionDrawerFooter .sessionDrawerFooterButton svg {
-  width: 15px;
-  height: 15px;
+.sessionDrawerFooter .sessionDrawerFooterButton svg { width: 15px; height: 15px; }
+@media (max-width: 420px) {
+  .sessionDrawerHeader .sessionDrawerHeaderAction,
+  .sessionDrawerHeader .sessionDrawerSearch,
+  .sessionDrawerHeader .sessionWorkerCollapseAllButton {
+    height: 44px;
+    min-height: 44px;
+  }
+  .sessionDrawerHeader .sessionDrawerHeaderAction {
+    width: 44px;
+    min-width: 44px;
+  }
+}
+.systemStatusButton .systemStatusIcon { display: grid; place-items: center; }
+.systemStatusButton[data-status="extension-issue"] .systemStatusIcon { color: var(--warning, #e2b15f); }
+.systemStatusButton[data-status="disconnected"] .systemStatusIcon { color: var(--danger, #ef767a); }
+.systemStatusButton[data-status="checking"] .systemStatusIcon svg { animation: sessionSpin .9s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .systemStatusButton[data-status="checking"] .systemStatusIcon svg { animation: none; }
 }
 .sessionList {
   display: flex;
@@ -727,9 +741,9 @@
   transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease, transform 0.2s cubic-bezier(0.2, 0, 0, 1);
 }
 .sessionBarTab.laned {
-  /* The bar arbitrates vertical lane swipes, horizontal scrolling, and held
-     reorders itself; pan-y lets the browser cancel downward pointer gestures. */
-  touch-action: none;
+  /* Unarmed movement belongs to native scrolling. A stationary hold is claimed
+     by the gesture state machine before deliberate reorder movement begins. */
+  touch-action: auto;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;
@@ -746,6 +760,9 @@
 .sessionBarTab.dragging {
   cursor: grabbing;
   transition: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sessionBarTab { transition: none; }
 }
 .sessionBarTab:hover {
   background: color-mix(in srgb, var(--text) 6%, transparent);
@@ -1197,7 +1214,7 @@ body.hasPinnedSessions .app {
 .sessionStaleBadge { color:#f07b72;border:1px solid color-mix(in srgb,#f07b72 50%,transparent);border-radius:999px;padding:1px 5px;font-size:9px;text-transform:uppercase;letter-spacing:.04em }
 .sessionFolderMatchCount { color:var(--muted);font-size:10px;margin-left:6px }
 @media(max-width:640px){.sessionLayersButton{flex-basis:34px}.sessionLaneFilters{overflow:visible}}
-.sessionDrawerFilters .sessionDrawerSearch { flex:1; width:100% }
+.sessionDrawerFilters .sessionDrawerSearch { flex:1 1 auto; width:auto; min-width:0 }
 .sessionWorkerCollapseAllButton {
   flex: 0 0 auto;
   box-sizing: border-box;
@@ -1262,8 +1279,13 @@ body.hasPinnedSessions .app {
 .sessionLaneDrawerEmpty{margin:0 4px 7px;padding:9px 11px;border:1px dashed var(--border);border-radius:10px}
 .sessionLaneDrawer>footer { flex:0 0 auto;border-top:1px solid var(--border);padding:9px 16px 14px;display:flex;align-items:center;justify-content:space-between;color:var(--muted);font-size:10.5px }.sessionLaneDrawer>footer button{min-height:0!important;padding:0;border:0;background:transparent;color:var(--accent,#d8a657);font:600 10.5px inherit}
 /* Lane drawer interaction fixes */
-.sessionLaneDrawerCard { touch-action:pan-y;transition:transform .12s ease,opacity .12s ease }
-.sessionLaneDrawerCard.dragging { z-index:2;opacity:.78;transform:scale(.985);box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none }
+.sessionLaneDrawerCard { touch-action:pan-y;transition:transform .12s ease,opacity .12s ease,background .12s ease,border-color .12s ease }
+.sessionLaneDrawerCard.reorder-pressed .sessionLaneDragHandle { color:var(--accent,#d8a657);cursor:grabbing }
+.sessionLaneDrawerCard.dragging { z-index:10;opacity:.88;border:1px solid var(--accent,#d8a657);border-radius:9px;background:color-mix(in srgb,var(--accent,#d8a657) 10%,var(--panel,#111));box-shadow:0 8px 24px rgba(0,0,0,.35);touch-action:none;pointer-events:none;will-change:transform;transition:none }
+.sessionLaneDrawerCard.dragging .sessionLaneDragHandle { color:var(--accent,#d8a657);cursor:grabbing }
+.sessionLaneDrawerDropSlot { box-sizing:border-box;flex:0 0 auto;border-bottom:1px solid transparent }
+.sessionLaneDrawerCard.settling { z-index:2;transition:transform .18s cubic-bezier(.2,.8,.2,1),opacity .18s ease }
+@media (prefers-reduced-motion:reduce){.sessionLaneDrawerCard{transition:none!important}}
 .sessionLaneDrawerItem,.sessionLaneDrawerItemCopy { min-width:0;overflow:visible }
 .sessionLaneDrawerItemTitle,.sessionLaneDrawerItemNote { white-space:normal;overflow:visible;text-overflow:clip;overflow-wrap:anywhere;line-height:1.3 }
 .sessionLaneDrawerItemMeta { overflow:visible;white-space:normal;flex-wrap:wrap }

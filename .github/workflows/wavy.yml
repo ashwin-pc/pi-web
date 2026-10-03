@@ -1,0 +1,78 @@
+name: Wavy extension
+
+on:
+  pull_request:
+    paths:
+      - "examples/pi-web-extensions/wavy/**"
+      - "src/**"
+      - "server/**"
+      - "server.ts"
+      - "vite.config.ts"
+      - "playwright.config.ts"
+      - "tests/auth-isolation.*"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/wavy.yml"
+  push:
+    branches: [main]
+    paths:
+      - "examples/pi-web-extensions/wavy/**"
+      - "src/**"
+      - "server/**"
+      - "server.ts"
+      - "vite.config.ts"
+      - "playwright.config.ts"
+      - "tests/auth-isolation.*"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/wavy.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            examples/pi-web-extensions/wavy/package-lock.json
+      - name: Install host integration dependencies
+        run: npm ci
+      - name: Install Wavy dependencies
+        working-directory: examples/pi-web-extensions/wavy
+        run: npm ci
+      - name: Install media validation tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes ffmpeg
+          ffprobe -version
+      - name: Install Wavy Chromium and system dependencies
+        working-directory: examples/pi-web-extensions/wavy
+        run: npx playwright install --with-deps chromium
+      - name: Build Wavy browser bundle
+        working-directory: examples/pi-web-extensions/wavy
+        run: npm run build
+      - name: Typecheck Wavy
+        working-directory: examples/pi-web-extensions/wavy
+        run: npm run typecheck
+      - name: Unit test Wavy
+        working-directory: examples/pi-web-extensions/wavy
+        run: npm run test:unit
+      - name: Test native engine adapter
+        working-directory: examples/pi-web-extensions/wavy
+        run: python3 -m unittest -v engine/test_sheetsage.py
+      - name: Build host for integration tests
+        run: npm run build
+      - name: E2E test Wavy
+        working-directory: examples/pi-web-extensions/wavy
+        run: npm run test:e2e
+      - name: Verify independent package
+        working-directory: examples/pi-web-extensions/wavy
+        run: npm run verify:package

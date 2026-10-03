@@ -36,6 +36,7 @@ export type AppElements = {
   sessionListEl: HTMLDivElement;
   sessionBarEl: HTMLDivElement;
   queueToggle: HTMLButtonElement;
+  composerExtensionInputs: HTMLDivElement;
   attachButton: HTMLButtonElement;
   imageInput: HTMLInputElement;
   attachmentsEl: HTMLDivElement;
@@ -75,6 +76,7 @@ export type AppElements = {
   settingRunNotificationsStatus: HTMLParagraphElement;
   settingRunNotificationsTestButton: HTMLButtonElement;
   settingDefaultBucketColorSelect: HTMLSelectElement;
+  settingPinNewSessionsCheckbox: HTMLInputElement;
   settingModelDefaultsValue: HTMLSpanElement;
   settingSaveModelDefaultsButton: HTMLButtonElement;
   settingClearModelDefaultsButton: HTMLButtonElement;
@@ -137,6 +139,7 @@ export function getAppElements(): AppElements {
     sessionListEl: requiredElement<HTMLDivElement>("#sessionList"),
     sessionBarEl: requiredElement<HTMLDivElement>("#sessionBar"),
     queueToggle: requiredElement<HTMLButtonElement>("#queueToggle"),
+    composerExtensionInputs: requiredElement<HTMLDivElement>("#composerExtensionInputs"),
     attachButton: requiredElement<HTMLButtonElement>("#attachButton"),
     imageInput: requiredElement<HTMLInputElement>("#imageInput"),
     attachmentsEl: requiredElement<HTMLDivElement>("#attachments"),
@@ -176,6 +179,7 @@ export function getAppElements(): AppElements {
     settingRunNotificationsStatus: requiredElement<HTMLParagraphElement>("#settingRunNotificationsStatus"),
     settingRunNotificationsTestButton: requiredElement<HTMLButtonElement>("#settingRunNotificationsTestButton"),
     settingDefaultBucketColorSelect: requiredElement<HTMLSelectElement>("#settingDefaultBucketColorSelect"),
+    settingPinNewSessionsCheckbox: requiredElement<HTMLInputElement>("#settingPinNewSessionsCheckbox"),
     settingModelDefaultsValue: requiredElement<HTMLSpanElement>("#settingModelDefaultsValue"),
     settingSaveModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingSaveModelDefaultsButton"),
     settingClearModelDefaultsButton: requiredElement<HTMLButtonElement>("#settingClearModelDefaultsButton"),

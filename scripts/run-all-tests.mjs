@@ -37,10 +37,16 @@ const e2eTasks = e2eProjects.flatMap((project) =>
   }),
 );
 
+// Packaging requires completed dist assets. Running this beside Vite in the
+// preflight phase can pack a half-built tree (or no dist on a clean CI runner).
+const packedStartupTask = { name: "package-startup", command: isWin ? "npm.cmd" : "npm", args: ["run", "test:package"], kind: "static" };
+
 const preflightTasks = [
   { name: "typecheck", command: bin("tsc"), args: ["--noEmit"], kind: "static" },
   { name: "unit", command: bin("vitest"), args: ["run"], kind: "unit" },
-  { name: "build", command: bin("vite"), args: ["build"], kind: "static" },
+  // Match the production server even when the caller is a development shell.
+  // NODE_ENV=development would otherwise compile out SW activation reloads.
+  { name: "build", command: bin("vite"), args: ["build"], env: { NODE_ENV: "production", PI_WEB_DEV: "0" }, kind: "static" },
 ];
 
 const colors = ["\x1b[36m", "\x1b[35m", "\x1b[32m", "\x1b[34m", "\x1b[33m", "\x1b[95m"];
@@ -131,7 +137,7 @@ async function runE2eTasks() {
 if (e2eOnly) {
   const buildTask = skipBuild ? [] : preflightTasks.filter((task) => task.name === "build");
   if (buildTask.length === 0 || await runPhase(buildTask)) await runE2eTasks();
-} else if (await runPhase(preflightTasks)) await runE2eTasks();
+} else if (await runPhase(preflightTasks) && await runPhase([packedStartupTask])) await runE2eTasks();
 
 const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 const failed = results.filter((result) => result.code !== 0);

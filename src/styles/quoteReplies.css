@@ -130,6 +130,21 @@
   box-shadow: 0 10px 28px rgba(0, 0, 0, .22);
   white-space: normal;
 }
+/* Derive footer visibility from the existing editor state, not a second flag.
+   Keep the composer mounted so its draft, attachments and focus state survive. */
+body:has(#messages .quoteFootnote.editing.open) .composer,
+body:has(#messages .quoteFootnote.editing.open) #extensionFooter {
+  display: none;
+}
+
+/* Only local editor/composer snapshots animate; the transcript and tabs stay live. */
+html.quoteReplyTransition .composer { view-transition-name: quote-composer; }
+html.quoteReplyTransition .quoteFootnote { view-transition-name: match-element; }
+html.quoteReplyTransition::view-transition { pointer-events: none; }
+html.quoteReplyTransition::view-transition-group(*) { animation-duration: 140ms; }
+html.quoteReplyTransition::view-transition-old(root),
+html.quoteReplyTransition::view-transition-new(root) { animation: none; }
+
 .quoteFootnote.saved:not(.open) { display: none; }
 .quoteFootnoteNumber {
   display: inline-grid;

@@ -21,19 +21,15 @@ It keeps the surrounding work visible—sessions, rich artifacts, files, diagram
 - Session-oriented: organize ongoing work with reorderable pinned tabs, drawers, colors, filters, metadata, and conversation navigation
 - Rich output: preview artifacts and open Mermaid diagrams in a full-screen viewer
 
-## What changed in 0.6.0?
+## What changed in 0.6.1?
 
-0.6.0 adds native browser login and Security management, including password and passkey enrollment, revocable browser sessions, device handoff, and named API tokens. New installations default to authenticated access and print a single-use setup link; existing authentication policy is not changed automatically.
+0.6.1 updates pi-web's bundled Pi runtime to Pi 0.87.1. No separate global Pi installation is required.
 
-Trusted server-side extensions can now request short-lived, route- and session-scoped HTTP clients from core. The bundled session orchestrator uses this facility instead of a legacy browser token, so password/passkey-only deployments can spawn, monitor, steer, and interrupt visible worker sessions.
-
-The workspace also gains Minimal transcript density, prompt provenance and session details, customizable buckets, worker grouping, persistent notes, mark-unread actions, inline audio previews, and authenticated artifact downloads.
-
-See the [0.6.0 release notes](docs/releases/0.6.0.md), [authentication guide](docs/passkey-auth.md), and [scoped extension HTTP guide](docs/extension-http.md) for details.
+See the [0.6.1 release notes](docs/releases/0.6.1.md). For the preceding feature release, see [0.6.0](docs/releases/0.6.0.md).
 
 ## Install
 
-Requires Node.js 24 or newer. pi-web currently uses [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) as its agent harness; pi-web 0.6.0 bundles Pi 0.84.1, so a separate global Pi install is not required.
+Requires Node.js 24 or newer. pi-web currently uses [`pi`](https://www.npmjs.com/package/@earendil-works/pi-coding-agent) as its agent harness; pi-web 0.6.1 bundles Pi 0.87.1, so a separate global Pi install is not required.
 
 Install and run pi-web from npm:
 
