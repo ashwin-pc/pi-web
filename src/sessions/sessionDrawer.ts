@@ -40,7 +40,7 @@ export type SessionsController = {
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
-  applySessionList: (sessions: SessionInfo[], complete?: boolean) => void;
+  applySessionList: (sessions: SessionInfo[], complete?: boolean, coveredCwds?: string[]) => void;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
   activeWorkersFor: (sessionId: string) => ActiveWorker[];
@@ -565,10 +565,11 @@ export function createSessions(options: {
     });
   }
 
-  function applySessionList(value: SessionInfo[], complete = true) {
+  function applySessionList(value: SessionInfo[], complete = true, coveredCwds: string[] = []) {
     if (!complete) {
       const incoming = new Set(value.map((item) => item.id));
-      value = [...cachedSessions.filter((item) => !incoming.has(item.id)), ...value];
+      const covered = new Set(coveredCwds);
+      value = [...cachedSessions.filter((item) => !incoming.has(item.id) && !covered.has(item.cwd || "")), ...value];
     }
     cachedSessions = value.map((item) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
     for (const session of cachedSessions) sessionState.mergeSessionInfo(session);

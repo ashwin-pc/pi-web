@@ -181,6 +181,17 @@ describe("LocalSessionService contract", () => {
     expect((await service.recover(initial.sessionId)).sessionId).toBe(initial.sessionId);
   });
 
+  it("lists coverage only for successful CWD scans", async () => {
+    const { service, cwd } = await fixtureService({ list: async (path) => {
+      if (path === "/unavailable") throw new Error("unavailable");
+      return [];
+    } });
+    const snapshot = await service.listSnapshot(["/unavailable"]);
+    expect(snapshot.sessions).toEqual([]);
+    expect(snapshot.coveredCwds).toContain(cwd);
+    expect(snapshot.coveredCwds).not.toContain("/unavailable");
+  });
+
   it("recovers compaction without a preceding agent start", async () => {
     const { service, initial, fixture } = await fixtureService();
     fixture.session.isCompacting = true;
@@ -212,11 +223,17 @@ describe("LocalSessionService contract", () => {
     const first = await service.recover(initial.sessionId);
     expect(first.pendingInteractions).toHaveLength(1);
     const request = first.pendingInteractions[0]!;
+    const liveEvents: SessionServiceEvent[] = [];
+    const unsubscribe = service.subscribe((event) => liveEvents.push(event));
+    const liveDecision = fixture.extensionOptions.uiContext.confirm("Live?", "Recovery", { timeout: 1_000 });
+    expect(liveEvents.find((event) => event.type === "interaction")).toMatchObject({ request: { expiresAt: request.expiresAt } });
+    unsubscribe();
     await vi.advanceTimersByTimeAsync(300);
     const second = await service.recover(initial.sessionId);
     expect(second.pendingInteractions[0]).toEqual(request);
     await vi.advanceTimersByTimeAsync(701);
     expect(await decision).toBe(false);
+    expect(await liveDecision).toBe(false);
     expect(service.respondInteraction({ id: request.id, confirmed: true })).toBe(false);
     expect((await service.recover(initial.sessionId)).pendingInteractions).toEqual([]);
   });

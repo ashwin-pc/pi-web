@@ -240,6 +240,7 @@ function interactionRequestFromWire(value: Record<string, unknown>): Interaction
     sessionId: value.sessionId,
     sessionFile: value.sessionFile,
     timeout: Number(value.timeout) || 120_000,
+    ...(typeof value.expiresAt === "number" ? { expiresAt: value.expiresAt } : {}),
   };
 }
 
@@ -316,7 +317,7 @@ export class LocalSessionService implements SessionService {
   private readonly sessionNamesByPath = new Map<string, string | undefined>();
   private readonly sessionLocations = new Map<string, { path: string; cwd: string }>();
   private readonly openingById = new Map<string, Promise<PiWebSession | undefined>>();
-  private readonly sessionListRequests = new Map<string, Promise<SessionInfoDto[]>>();
+  private readonly sessionListRequests = new Map<string, Promise<{ sessions: SessionInfoDto[]; coveredCwds: string[] }>>();
   private readonly viewerLeases = new Map<string, ViewerLease>();
   private readonly viewerConnections = new Map<symbol, string>();
   private readonly productionFactory: PiSessionFactory;
@@ -786,7 +787,11 @@ export class LocalSessionService implements SessionService {
   }
 
   async list(extraCwds: string[] = []): Promise<SessionInfoDto[]> {
-    if (this.noSession) return [];
+    return (await this.listSnapshot(extraCwds)).sessions;
+  }
+
+  async listSnapshot(extraCwds: string[] = []): Promise<{ sessions: SessionInfoDto[]; coveredCwds: string[] }> {
+    if (this.noSession) return { sessions: [], coveredCwds: [] };
     const cwds = this.knownCwds();
     for (const cwd of extraCwds) if (typeof cwd === "string" && cwd.trim()) cwds.add(resolve(cwd));
     const orderedCwds = Array.from(cwds).sort();
@@ -794,14 +799,16 @@ export class LocalSessionService implements SessionService {
     const pending = this.sessionListRequests.get(key);
     if (pending) return pending;
     const request = (async () => {
+      const coveredCwds: string[] = [];
       const groups = await Promise.all(orderedCwds.map(async (cwd) => {
         try {
           const factory = this.deps.sessionFactory?.list ? this.deps.sessionFactory : this.productionFactory;
           const infos = await factory.list!(cwd);
+          coveredCwds.push(cwd);
           return infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
         } catch { return []; }
       }));
-      return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+      return { sessions: groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified)), coveredCwds: coveredCwds.sort() };
     })();
     this.sessionListRequests.set(key, request);
     try { return await request; }

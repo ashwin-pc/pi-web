@@ -792,12 +792,13 @@ export function createRealtime(options: {
           throw new Error(snapshot.liveEventsComplete === false ? "Live recovery suffix exceeded its safety bound" : "Invalid recovery snapshot");
         }
         const buffered = recoveryBuffer || [];
+        const sourcePosition = (event: any) => event.serviceSource || event.source;
         const sourceCovered = (event: any) => coveredByCurrentSessionSnapshot(event, sessionId)
           || ((event.type === "state_changed" || event.type === "session_runtime_changed")
             && snapshot.activeStates?.some((active: any) => active.sessionId === event.sessionId));
         if (buffered.length >= maxRecoveryBuffer) throw new Error("Realtime recovery buffer overflow");
         if (snapshot.sourceGeneration && buffered.some((event) => sourceCovered(event)
-          && (!event.source || event.source.generation !== snapshot.sourceGeneration))) {
+          && (!sourcePosition(event) || sourcePosition(event).generation !== snapshot.sourceGeneration))) {
           // A source restart can leave two generations in this host's log.
           // Re-read the authoritative source after observing the mismatch;
           // retain global-domain events, not a poisoned old source prefix.
@@ -822,7 +823,7 @@ export function createRealtime(options: {
           if (sourceCovered(event) && snapshot.sourceGeneration) {
             // A remote source may advance while its RPC response is in flight.
             // Host end.seq is not a source cut and must not discard those events.
-            if (event.source.cursor > snapshot.sourceCursor) handleRealtimeData(event);
+            if (sourcePosition(event).cursor > snapshot.sourceCursor) handleRealtimeData(event);
           } else if (event.seq > start.seq) handleRealtimeData(event);
         }
         status.markWebSocketOpen();
@@ -915,6 +916,10 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "interaction_request" || data.type === "interaction_effect") {
+        if (data.type === "interaction_request" && typeof data.expiresAt === "number") {
+          if (data.expiresAt <= Date.now()) return;
+          data = { ...data, timeout: data.expiresAt - Date.now() };
+        }
         handleInteractionRequest(data);
         return;
       }

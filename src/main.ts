@@ -552,6 +552,7 @@ async function applyRecoverySnapshot(snapshot: {
   liveEvents: any[];
   liveEventsComplete: boolean;
   listingComplete?: boolean;
+  listingCoveredCwds?: string[];
   activeStates?: import("../server/session/dto.js").BaseSessionStateDto[];
 }) {
   const sessionId = state.currentSessionId;
@@ -559,7 +560,7 @@ async function applyRecoverySnapshot(snapshot: {
   settings.applySettings(snapshot.settings);
   settings.applyWebSettingsSchemas(snapshot.webSettingsSchemas);
   sessions.applySessionUiState(snapshot.sessionUiState);
-  sessions.applySessionList(snapshot.sessions, snapshot.listingComplete !== false);
+  sessions.applySessionList(snapshot.sessions, snapshot.listingComplete !== false, snapshot.listingCoveredCwds);
   for (const active of snapshot.activeStates || []) sessionState.applySnapshot(active);
   sessionState.applySnapshot(snapshot.state, { activate: true });
   modelSettings.populateModelSelect(snapshot.models?.models || [], state.currentModelKey);
@@ -576,6 +577,7 @@ async function applyRecoverySnapshot(snapshot: {
     onTranscriptRuntimeState: (transcriptState) => realtime?.applyTranscriptRuntimeState(transcriptState),
     snapshotMessages: snapshot.messages,
   });
+  refreshSettlementDependencies(sessionId);
   state.initialSyncComplete = true;
   composer.updatePrimaryAction();
 }

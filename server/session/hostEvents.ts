@@ -97,7 +97,7 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         return;
       }
       case "interaction":
-        deps.broadcast({ type: "interaction_request", ...serviceEvent.request });
+        deps.broadcast({ type: "interaction_request", ...serviceEvent.request, serviceSource: serviceEvent.source });
         return;
       case "settlement_dependencies":
         // Consumed by the host's settlement tracker; this internal bridge event

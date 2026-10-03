@@ -248,6 +248,8 @@ test.describe("composer layout", () => {
     let releaseSnapshot!: () => void;
     const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
     let snapshotStarted = false;
+    let statusReads = 0;
+    await page.route("**/api/sessions/mock-current/status", async (route) => { statusReads++; await route.continue(); });
     await page.route("**/api/recovery-snapshot**", async (route) => {
       snapshotStarted = true;
       await snapshotGate;
@@ -256,6 +258,8 @@ test.describe("composer layout", () => {
       await route.fulfill({ response, json: {
         ...body,
         state: { ...body.state, model: { provider: "mock", id: "other" } },
+        sessions: body.sessions.filter((session: { id: string }) => session.id !== "mock-older"),
+        listingCoveredCwds: body.sessions.filter((session: { id: string }) => session.id === "mock-older").map((session: { cwd: string }) => session.cwd),
         startCheckpoint: { epoch: "test", seq: 100 },
         endCheckpoint: { epoch: "test", seq: 200 },
         sourceGeneration: "test-source",
@@ -275,17 +279,19 @@ test.describe("composer layout", () => {
     await page.locator("#messages").evaluate((element) => { element.style.height = "80px"; element.scrollTop = 17; });
     const scrollBefore = await page.locator("#messages").evaluate((element) => element.scrollTop);
 
+    const statusReadsBefore = statusReads;
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "test" }));
     await expect.poll(() => snapshotStarted).toBe(true);
     await page.evaluate(() => {
       const socket = (window as any).__recoverySockets.at(-1);
+      socket.emit({ type: "interaction_request", id: "expired-buffered", source: "extension", serviceSource: { generation: "test-source", cursor: 201 }, kind: "set_editor_text", sessionId: "mock-current", payload: { text: "expired prompt must not apply" }, expiresAt: Date.now() - 1, seq: 301 });
       for (let seq = 101; seq <= 300; seq++) socket.emit({ type: "session_stats_changed", sessionId: "mock-current", stats: { inputTokens: seq }, seq });
-      socket.emit({ type: "session_deleted", sessionId: "mock-older", seq: 150, replay: true });
       socket.emit({ type: "state_changed", sessionId: "mock-current", sessionName: "Changed during recovery", seq: 160, source: { generation: "test-source", cursor: 201 }, replay: true });
     });
     releaseSnapshot();
 
     await expect(page.locator("#connectionStatus")).toBeHidden();
+    await expect.poll(() => statusReads).toBeGreaterThan(statusReadsBefore);
     await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
     await expect(page.locator("#prompt")).toHaveValue("draft survives background recovery");
     await expect(page.locator("#promptForm")).toHaveClass(/expanded/);

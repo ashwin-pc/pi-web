@@ -998,10 +998,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const startCheckpoint = realtimeHub.checkpoint();
         const sessionUiState = await sessionUiStateStore.read();
         const recoveryCwds = [...new Set((sessionUiState.lanes || []).map((lane) => lane.cwd).filter((cwd): cwd is string => Boolean(cwd)))];
-        const [settings, models, sessionInfos] = await Promise.all([
+        const [settings, models, listing] = await Promise.all([
           settingsStore.read(),
           sessionService.models(target.sessionId),
-          sessionService.list(recoveryCwds),
+          sessionService.listSnapshot(recoveryCwds),
         ]);
         const recovery = await sessionService.recover(target.sessionId);
         const state = decorateState(recovery.state, target, true);
@@ -1019,6 +1019,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           activeStates: recovery.activeStates,
           coverage: recovery.coverage,
           listingComplete: false,
+          listingCoveredCwds: listing.coveredCwds,
           pendingInteractions: recovery.pendingInteractions,
           liveEvents: recovery.transientEvents.flatMap((event) => event.type === "agent" ? [{ type: "agent_event", sessionId: event.sessionId, sessionFile: event.sessionFile, event: event.event, source: event.source, clientMessageId: event.clientMessageId, sourceClientId: event.sourceClientId }] : []),
           liveEventsComplete: recovery.transientComplete,
@@ -1026,7 +1027,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           webSettingsSchemas: sessionService.settingsSchemas(),
           models,
           sessionUiState,
-          sessions: applySessionUnreadState(decorateSessionInfos(sessionInfos), sessionUiState),
+          sessions: applySessionUnreadState(decorateSessionInfos(listing.sessions), sessionUiState),
           startCheckpoint,
           endCheckpoint,
         });
