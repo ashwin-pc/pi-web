@@ -1238,8 +1238,10 @@ test.describe("tool cards", () => {
   });
 
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
+    const settingsLoaded = page.waitForResponse((response) => response.url().includes("/api/settings") && response.ok());
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await settingsLoaded;
     await page.evaluate(() => { document.documentElement.dataset.density = "compact"; });
     await page.locator("#prompt").fill("use tool");
     await page.locator("#primaryButton").click();
