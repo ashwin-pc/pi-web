@@ -104,9 +104,13 @@ describe("session state store", () => {
     const state = stateWithActive();
     reduceSessionSnapshot(state, snapshot("session-a", true, 82));
 
-    setSessionStats(state, "session-a", { contextUsage: { tokens: 10, contextWindow: 100, percent: 10 } });
+    setSessionStats(state, "session-a", {
+      contextUsage: { tokens: 10, contextWindow: 100, percent: 10 },
+      conversationMessages: 1,
+    });
 
     expect(activeSessionStats(state)?.contextUsage?.percent).toBe(10);
+    expect(activeSessionStats(state)?.conversationMessages).toBe(1);
     expect(sessionRuntime(state).isCompacting).toBe(true);
   });
 

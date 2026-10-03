@@ -81,6 +81,8 @@ export type PiWebSettings = {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
     sessionBucketColor?: SessionMarkerColorId;
+    /** Opt in to pinning sessions created after this preference is saved. */
+    pinNewSessions?: boolean;
   };
   /**
    * Extension-contributed settings, keyed by namespaced owner id. Carried
@@ -106,6 +108,7 @@ export type PiWebSettingsPatch = Partial<{
     model: unknown;
     thinkingLevel: unknown;
     sessionBucketColor: unknown;
+    pinNewSessions: unknown;
   }>;
 }>;
 
@@ -338,6 +341,8 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   }
   const sessionBucketColor = normalizeSessionBucketColor(defaults?.sessionBucketColor);
   if (sessionBucketColor) settings.defaults.sessionBucketColor = sessionBucketColor;
+  // Omitted on older settings files means false; retain the optional shape.
+  if (typeof defaults?.pinNewSessions === "boolean") settings.defaults.pinNewSessions = defaults.pinNewSessions;
 
   const extensions = normalizeExtensionSettings(value.extensions);
   if (extensions) settings.extensions = extensions;
@@ -393,6 +398,9 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
       const sessionBucketColor = normalizeSessionBucketColor(patch.defaults.sessionBucketColor);
       if (sessionBucketColor) next.defaults.sessionBucketColor = sessionBucketColor;
       else delete next.defaults.sessionBucketColor;
+    }
+    if (typeof patch.defaults.pinNewSessions === "boolean") {
+      next.defaults.pinNewSessions = patch.defaults.pinNewSessions;
     }
   }
 

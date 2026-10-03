@@ -232,7 +232,7 @@
                   <span class="settingsNavCopy"><span class="settingsNavTitle">Buckets</span><span class="settingsNavSummary">Names and display order</span></span>
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
                 </button>
-                <button id="settingsNavNewSessions" class="settingsNavButton" type="button" data-settings-page-target="new-sessions" data-settings-search="new sessions defaults model reasoning thinking default bucket color" aria-controls="settingsPageNewSessions">
+                <button id="settingsNavNewSessions" class="settingsNavButton" type="button" data-settings-page-target="new-sessions" data-settings-search="new sessions defaults model reasoning thinking default bucket color pin pinned tabs reuse empty session" aria-controls="settingsPageNewSessions">
                   <span class="settingsNavIcon" data-settings-icon="square-pen" aria-hidden="true"></span>
                   <span class="settingsNavCopy"><span class="settingsNavTitle">New sessions</span><span class="settingsNavSummary">Model and bucket defaults</span></span>
                   <span class="settingsNavChevron" aria-hidden="true">›</span>
@@ -427,6 +427,11 @@
             <span>Default bucket</span>
             <select id="settingDefaultBucketColorSelect" aria-label="Default session bucket color"></select>
           </label>
+          <label class="settingsCheckbox">
+            <input id="settingPinNewSessionsCheckbox" type="checkbox" />
+            <span>Pin new sessions by default</span>
+          </label>
+          <p class="settingsHint">When enabled, new tabs stay pinned until you close or unpin them. New session reuses an empty tab in the same folder; drafts count as work.</p>
           <p class="settingsHint">Choose a bucket color and saved model defaults for sessions you start from now on. Existing sessions are unchanged.</p>
           <div class="settingsValue" id="settingModelDefaultsValue">No default model saved</div>
           <div class="settingsActions">

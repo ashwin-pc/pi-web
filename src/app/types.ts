@@ -89,6 +89,8 @@ export type SessionStats = {
   assistantMessages?: number;
   toolResults?: number;
   totalMessages?: number;
+  /** Exact transcript-message count, excluding SDK branch metadata. */
+  conversationMessages?: number;
   tokens?: {
     input?: number;
     output?: number;
@@ -121,6 +123,8 @@ export type PiWebSettings = {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
     sessionBucketColor?: SessionMarkerColorId;
+    /** Opt in to pinning sessions created after this preference is saved. */
+    pinNewSessions?: boolean;
   };
   extensions?: Record<string, StoredExtensionSettings>;
 };

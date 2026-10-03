@@ -360,7 +360,7 @@ test.beforeEach(async ({ page }) => {
     data: {
       appearance: { density: "comfortable", accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
-      defaults: { model: null, thinkingLevel: null },
+      defaults: { model: null, thinkingLevel: null, pinNewSessions: false },
     },
   });
   const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");

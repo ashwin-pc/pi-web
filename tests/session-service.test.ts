@@ -4,10 +4,11 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { jsonRoundTrip, type MessageDto, type SessionServiceEvent } from "../server/session/dto.js";
 import { SessionActivity } from "../server/session/activity.js";
+import { shallowSessionCwd } from "../server/session/shallowList.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
 import { mapPiEvent } from "../server/session/piEventMap.js";
 import { pi087Events } from "./fixtures/pi-0.87-events.js";
-import { LocalSessionService, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
+import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 
 const tempDirs: string[] = [];
@@ -81,6 +82,7 @@ type FixtureServiceOptions = {
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: LocalSessionFactory["list"];
+  openError?: Error;
   clientCount?: number | (() => number);
 };
 
@@ -92,6 +94,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
   const factory: LocalSessionFactory = {
     isMock: options.isMock,
     async create(input) {
+      if (input.path && options.openError) throw options.openError;
       creates.push({ cwd: input.cwd, path: input.path, reason: input.sessionStartEvent?.reason, previous: input.sessionStartEvent?.previousSessionFile });
       const id = input.path ? input.path.split("/").at(-1)?.replace(/\.jsonl$/, "") || "opened" : creates.length === 1 ? "current" : `factory-${creates.length}`;
       const value = fixtureSession(input.cwd, id, input.path);
@@ -117,6 +120,63 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
 }
 
 describe("LocalSessionService contract", () => {
+  it.each([
+    "not json\n",
+    JSON.stringify({ type: "message" }),
+    JSON.stringify({ type: "session" }),
+    JSON.stringify({ type: "session", cwd: "" }),
+    JSON.stringify({ type: "session", cwd: 123 }),
+  ])("rejects invalid headers in strict lookup but keeps tolerant reads", async (contents) => {
+    const cwd = await mkdtemp(join(tmpdir(), "pi-web-header-"));
+    tempDirs.push(cwd);
+    const path = join(cwd, "broken.jsonl");
+    await writeFile(path, contents);
+    await expect(shallowSessionCwd(path)).resolves.toBeUndefined();
+    await expect(shallowSessionCwd(path, { strict: true })).rejects.toThrow("Invalid session header");
+  });
+
+  it("returns 404 only for a genuinely absent session", async () => {
+    const { service, creates } = await fixtureService();
+    await expect(service.open("missing")).rejects.toMatchObject({ status: 404 });
+    expect(creates).toHaveLength(1);
+  });
+
+  it.each([
+    new Error("SDK hydration failed"),
+    Object.assign(new Error("permission denied"), { code: "EACCES" }),
+    Object.assign(new Error("unrelated SDK file missing"), { code: "ENOENT" }),
+  ])("does not classify hydration failure %s as absence", async (openError) => {
+    const { service, cwd, creates } = await fixtureService({
+      openError,
+      list: async () => [{ id: "cold", path: "/cold.jsonl", cwd: "/", created: new Date(), modified: new Date(), messageCount: 0, firstMessage: "" }],
+    });
+    await expect(service.open("cold", cwd)).rejects.toMatchObject({ status: 500, message: openError.message });
+    expect(creates).toHaveLength(1);
+  });
+
+  it("does not retry a remembered location after a hydration failure", async () => {
+    const list = vi.fn(async () => [{ id: "cold", path: "/cold.jsonl", cwd: "/", created: new Date(), modified: new Date(), messageCount: 0, firstMessage: "" }]);
+    const { service } = await fixtureService({ list, openError: new Error("hydration failed") });
+    await expect(service.open("cold")).rejects.toMatchObject({ status: 500 });
+    await expect(service.open("cold")).rejects.toMatchObject({ status: 500 });
+    expect(list).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an existing service error status", async () => {
+    const openError = new SessionServiceError("busy", 409);
+    const { service } = await fixtureService({
+      openError,
+      list: async () => [{ id: "cold", path: "/cold.jsonl", cwd: "/", created: new Date(), modified: new Date(), messageCount: 0, firstMessage: "" }],
+    });
+    await expect(service.open("cold")).rejects.toBe(openError);
+  });
+
+  it.each(["EACCES", "EIO"])("propagates lookup %s instead of claiming absence", async (code) => {
+    const error = Object.assign(new Error("lookup failed"), { code });
+    const { service } = await fixtureService({ list: async () => { throw error; } });
+    await expect(service.open("cold")).rejects.toMatchObject({ status: 500 });
+  });
+
   it("projects effective context and persisted tool call counts", async () => {
     const { service, initial } = await fixtureService();
     const context = await service.context(initial.sessionId);
@@ -603,6 +663,43 @@ describe("LocalSessionService standalone lifecycle", () => {
     await navigation;
     expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
     expect(events.filter((event) => event.type === "runtime" && event.action === "changed")).toHaveLength(changedAfterAbort);
+  });
+
+  it("orders viewer acquisitions per client and retains legacy acquisitions", async () => {
+    const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
+    service.acquireViewer(initial.sessionId, "client", 20);
+    const connection = service.connectViewer("client")!;
+    const snapshot = () => service.lifecycleSnapshot().liveSessions;
+    service.acquireViewer(second.sessionId, "client", 19);
+    expect(snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 1 }),
+      expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 0 }),
+    ]));
+    service.acquireViewer(second.sessionId, "client", 21);
+    expect(snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 0 }),
+      expect.objectContaining({ sessionId: second.sessionId, viewerLeases: 1 }),
+    ]));
+    service.acquireViewer(initial.sessionId, "other-client", 0);
+    expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(1);
+    service.acquireViewer(initial.sessionId, "client");
+    service.acquireViewer(second.sessionId, "client", 20);
+    expect(snapshot().find((entry) => entry.sessionId === initial.sessionId)?.viewerLeases).toBe(2);
+    service.disconnectViewer(connection);
+    service.releaseViewer("other-client");
+  });
+
+  it("does not let an obsolete acquisition extend the viewer release timer", async () => {
+    vi.stubEnv("PI_WEB_VIEWER_LEASE_GRACE_MS", "100");
+    const { service, initial } = await fixtureService();
+    vi.useFakeTimers();
+    service.acquireViewer(initial.sessionId, "client", 2);
+    await vi.advanceTimersByTimeAsync(75);
+    service.acquireViewer(initial.sessionId, "client", 1);
+    await vi.advanceTimersByTimeAsync(25);
+    expect(service.lifecycleSnapshot().viewerLeases).toEqual([]);
+    await service.disposeAll("reset");
   });
 
   it("does not let a stale socket release a replacement viewer lease", async () => {

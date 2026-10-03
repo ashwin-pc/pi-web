@@ -356,9 +356,15 @@ function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
   return cleanClientId(headerValue) || cleanClientId(fallback);
 }
 
+function parseViewerSeq(value: unknown): number | undefined {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) return undefined;
+  const seq = Number(value);
+  return Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
+}
+
 function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, fallbackClientId?: unknown) {
   const clientId = clientIdFromRequest(req, fallbackClientId);
-  if (clientId) sessionService.acquireViewer(value.sessionId, clientId);
+  if (clientId) sessionService.acquireViewer(value.sessionId, clientId, parseViewerSeq(req.headers["x-pi-web-viewer-seq"]));
 }
 
 function bindViewerSocket(clientId: string, ws: WebSocket) {
@@ -1387,7 +1393,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   }
   const clientId = cleanClientId(url.searchParams.get("clientId") || "");
   if (clientId) {
-    sessionService.acquireViewer((targetSession || session).sessionId, clientId);
+    sessionService.acquireViewer((targetSession || session).sessionId, clientId, parseViewerSeq(url.searchParams.get("viewerSeq")));
     bindViewerSocket(clientId, realtimeWs);
   }
   const helloState = targetSession ? currentState(targetSession) : currentState();
