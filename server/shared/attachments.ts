@@ -81,6 +81,14 @@ export function attachmentContentUrl(id: string, name: string) {
   return `/api/attachments/${encodeURIComponent(id)}/${encodeURIComponent(name)}`;
 }
 
+/** Provides an instruction only when an attachment-only submission has no user text. */
+export function defaultPromptForAttachments(attachments: MessageAttachment[]) {
+  const hasComments = attachments.some((attachment) => attachment.type === "quote-reply");
+  if (!hasComments) return "Please review the attached file.";
+  if (attachments.every((attachment) => attachment.type === "quote-reply")) return "Please review the submitted comments.";
+  return "Please review the attachments and submitted comments.";
+}
+
 export function serializeAttachmentMarkup(text: string, attachments: MessageAttachment[] = []) {
   if (!attachments.length) return text;
   const stored = attachments.map((attachment) => attachment.type !== "file"

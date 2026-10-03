@@ -13,7 +13,7 @@ import {
   SessionManager,
   type SessionStartEvent,
 } from "@earendil-works/pi-coding-agent";
-import { serializeAttachmentMarkup } from "../shared/attachments.js";
+import { defaultPromptForAttachments, serializeAttachmentMarkup } from "../shared/attachments.js";
 import { isSessionReferenceId, type SessionReference } from "../shared/sessionReference.js";
 import { assertDirectory } from "../shared/fsList.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
@@ -1487,7 +1487,7 @@ export class LocalSessionService implements SessionService {
   }
 
   private async startSessionPrompt(value: PiWebSession, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }) {
-    const promptText = serializeAttachmentMarkup(input.message || "Please review the attached file.", input.attachments);
+    const promptText = serializeAttachmentMarkup(input.message || defaultPromptForAttachments(input.attachments), input.attachments);
     if (!this.deps.sessionFactory?.isMock && input.clientMessageId && input.sourceClientId) this.rememberPromptCorrelation(sessionPathKey(value), { clientMessageId: input.clientMessageId, sourceClientId: input.sourceClientId, createdAt: Date.now() });
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
-import { attachmentContentUrl, normalizeSubmittedAttachments, parseAttachmentMarkup, serializeAttachmentMarkup } from "../server/shared/attachments.js";
+import { attachmentContentUrl, defaultPromptForAttachments, normalizeSubmittedAttachments, parseAttachmentMarkup, serializeAttachmentMarkup } from "../server/shared/attachments.js";
 
 const cwd = "/project";
 const attachment = {
@@ -53,6 +53,21 @@ describe("attachment message markup", () => {
     const message = serializeAttachmentMarkup("Keep the answer concise.", [quoteReply]);
     expect(parseAttachmentMarkup(message, cwd)).toEqual({ text: "Keep the answer concise.", attachments: [quoteReply] });
     expect(normalizeSubmittedAttachments(cwd, [quoteReply])).toEqual([quoteReply]);
+  });
+
+  it("uses an accurate fallback for comments-only and mixed attachment submissions", () => {
+    const comment = {
+      type: "quote-reply" as const,
+      id: "quote-reply-1",
+      label: "Excerpt 1",
+      quote: "Use the shared attachment lifecycle.",
+      question: "Why is this important?",
+      source: { messageId: "entry-42", startOffset: 12, endOffset: 48 },
+    };
+
+    expect(defaultPromptForAttachments([comment])).toBe("Please review the submitted comments.");
+    expect(defaultPromptForAttachments([attachment, comment])).toBe("Please review the attachments and submitted comments.");
+    expect(defaultPromptForAttachments([attachment])).toBe("Please review the attached file.");
   });
 
   it("leaves malformed or non-trailing markup visible", () => {
