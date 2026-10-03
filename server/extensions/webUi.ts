@@ -37,6 +37,8 @@ const plainExtensionTheme = {
 type PendingInteractionRequest = {
   resolve: (response: Record<string, unknown>) => void;
   cleanup: () => void;
+  request: Record<string, unknown>;
+  expiresAt: number;
 };
 const pendingInteractionRequests = new Map<string, PendingInteractionRequest>();
 
@@ -638,12 +640,8 @@ function requestInteraction<T>(
     timeoutId = setTimeout(() => finish(defaultValue), timeoutMs);
     timeoutId.unref?.();
 
-    pendingInteractionRequests.set(id, {
-      cleanup,
-      resolve: (response) => finish(parse(response)),
-    });
-
-    deps.emit({
+    const expiresAt = Date.now() + timeoutMs;
+    const request = {
       type: "interaction_request",
       id,
       source: "extension",
@@ -652,7 +650,13 @@ function requestInteraction<T>(
       sessionId: value.sessionId,
       sessionFile: value.sessionFile,
       timeout: timeoutMs,
+      expiresAt,
+    };
+    pendingInteractionRequests.set(id, {
+      cleanup, request, expiresAt,
+      resolve: (response) => finish(parse(response)),
     });
+    deps.emit(request);
   }));
 }
 
@@ -973,12 +977,18 @@ async function bindWebExtensions(value: any) {
   function respond(id: string, response: Record<string, unknown>): boolean {
     const pending = pendingInteractionRequests.get(id);
     if (!pending) return false;
+    if (pending.expiresAt <= Date.now()) {
+      pending.resolve({ cancelled: true });
+      return false;
+    }
     pending.resolve(response);
     return true;
   }
 
-  function cancelPendingInteractions() {
-    for (const pending of [...pendingInteractionRequests.values()]) pending.resolve({ cancelled: true });
+  function cancelPendingInteractions(sessionId?: string) {
+    for (const pending of [...pendingInteractionRequests.values()]) {
+      if (!sessionId || pending.request.sessionId === sessionId) pending.resolve({ cancelled: true });
+    }
   }
 
   return {
@@ -991,6 +1001,9 @@ async function bindWebExtensions(value: any) {
     invokePanel,
     invokeSystemInfo,
     respond,
+    pendingInteractions: (sessionId: string) => [...pendingInteractionRequests.values()]
+      .filter((pending) => pending.request.sessionId === sessionId && pending.expiresAt > Date.now())
+      .map((pending) => ({ ...pending.request })),
     cancelPendingInteractions,
     runtimeErrors: (value: object) => [...(extensionRuntimeErrors.get(value) || [])],
     registerSettings: (session: any, schema: PiWebSettingsRegistration) => registerSessionSettings(session, schema),

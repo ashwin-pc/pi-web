@@ -206,6 +206,8 @@ export interface InteractionRequestDto {
   sessionId: string;
   sessionFile: string;
   timeout: number;
+  /** Absolute source-owned deadline; recovery never renews a request. */
+  expiresAt?: number;
 }
 
 export interface InteractionResponseDto {
@@ -219,7 +221,23 @@ export interface DeleteSessionResultDto {
   disposition: "trashed" | "deleted";
 }
 
-export type SessionServiceEvent =
+export interface SessionRecoverySnapshotDto {
+  sessionId: string;
+  sourceGeneration: string;
+  sourceCursor: number;
+  durableCursor: number;
+  state: BaseSessionStateDto;
+  messages: MessageDto[];
+  transientEvents: SessionServiceEvent[];
+  transientComplete: boolean;
+  pendingInteractions: InteractionRequestDto[];
+  /** All currently loaded sessions in this service, not an all-provider listing. */
+  activeStates: BaseSessionStateDto[];
+  coverage: "loaded-local-sessions";
+}
+
+export type SessionServiceEvent = SessionServiceEventPayload & { source?: { generation: string; cursor: number } };
+type SessionServiceEventPayload =
   | { type: "agent"; sessionId: string; sessionFile: string; event: HarnessEventDto; clientMessageId?: string; sourceClientId?: string }
   | { type: "interaction"; request: InteractionRequestDto }
   | { type: "settlement_dependencies"; sessionId: string; childIds: string[] }
@@ -239,6 +257,8 @@ export type NavigationResult = {
 };
 
 export interface SessionService {
+  /** Source-owned capture. Implementations must not compose independent asynchronous state/message reads. */
+  recover(sessionId: string): Promise<SessionRecoverySnapshotDto>;
   state(sessionId: string): Promise<BaseSessionStateDto>;
   context(sessionId: string): Promise<SessionContextDto>;
   stats(sessionId: string): Promise<{ sessionId: string; stats: SessionStatsDto }>;

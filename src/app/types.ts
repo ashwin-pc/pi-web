@@ -482,6 +482,7 @@ export type AppState = {
   wsDisconnected: boolean;
   initialSyncComplete: boolean;
   lastRealtimeSeq: number;
+  lastRealtimeEpoch: string;
   reconnectNoticeTimer: number | undefined;
   connectionLostTimer: number | undefined;
   reconnectedClearTimer: number | undefined;
@@ -638,6 +639,7 @@ export function createAppState(): AppState {
     wsDisconnected: false,
     initialSyncComplete: false,
     lastRealtimeSeq: 0,
+    lastRealtimeEpoch: "",
     reconnectNoticeTimer: undefined,
     connectionLostTimer: undefined,
     reconnectedClearTimer: undefined,
