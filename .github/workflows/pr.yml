@@ -76,6 +76,10 @@ jobs:
       - name: TypeScript worker tests
         run: npx vitest run --config examples/pi-web-extensions/dictation/vitest.config.ts
 
+      - name: Verify Vite cache path portability on Windows
+        if: runner.os == 'Windows' && matrix.python == '3.13'
+        run: npx vitest run tests/vite-cache-isolation.test.ts
+
       - name: Build and smoke-test the npm package on Windows
         if: runner.os == 'Windows' && matrix.python == '3.13'
         run: |

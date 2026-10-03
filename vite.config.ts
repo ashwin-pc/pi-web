@@ -2,7 +2,8 @@ import { defineConfig } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import type { ConfigEnv } from "vite";
 import { fileURLToPath } from "node:url";
 
 // A content-derived revision keeps cached motion offline across unchanged
@@ -21,7 +22,21 @@ export function avatarAssetRevision(root = fileURLToPath(new URL("./public/avata
   return hash.digest("hex").slice(0, 16);
 }
 
-export default defineConfig({
+// Dependencies may be symlinked between worktrees. Vite's default cache in
+// node_modules/.vite would then be replaced by another worktree's optimizer.
+export function viteCacheDir(
+  { command, mode }: Pick<ConfigEnv, "command" | "mode">,
+  port = process.env.PORT,
+  root = fileURLToPath(new URL(".", import.meta.url)),
+) {
+  // Embedded dev servers use PORT; builds and test-mode Vite get separate caches.
+  const modeKey = `${mode.replace(/[^a-zA-Z0-9_-]/g, "_")}-${createHash("sha256").update(mode).digest("hex").slice(0, 8)}`;
+  const instance = command === "serve" ? `serve-${modeKey}-${port && /^\d+$/.test(port) ? port : "default"}` : `build-${modeKey}`;
+  return resolve(root, ".vite-cache", instance);
+}
+
+export default defineConfig((env) => ({
+  cacheDir: viteCacheDir(env),
   appType: "spa",
   define: { __PI_WEB_AVATAR_CACHE_REVISION__: JSON.stringify(avatarAssetRevision()) },
   build: {
@@ -59,4 +74,4 @@ export default defineConfig({
     // Tailscale MagicDNS names like http://studio:8787.
     allowedHosts: true,
   },
-});
+}));
