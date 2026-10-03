@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { accessSync, constants } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { findNativeExecutable } from "../nativeExecutable.js";
 import type { AdapterCreateInput, AdapterOpenInput, AdapterPromptInput, AdapterSessionInfo, SessionAdapter, SessionHandle } from "../../adapter.js";
 import { jsonRoundTrip, type ActiveExecutionDto, type HarnessCapabilitiesDto, type InteractionRequestDto, type InteractionResponseDto, type InterruptReceiptDto, type JsonValue, type MessageDto, type MessagePartDto, type NativeSessionRefDto, type PromptReceiptDto, type SessionServiceEvent, type SessionSnapshotDto, type TranscriptMessageDto } from "../../dto.js";
 import { codexApproval, unsupportedControlResponse, type CodexApproval } from "./approvals.js";
@@ -576,14 +575,11 @@ class CodexHandle implements SessionHandle {
   }
 }
 
-function executableAvailable(command: string, env: NodeJS.ProcessEnv): boolean {
-  const paths = isAbsolute(command) || command.includes("/") ? [command] : (env.PATH ?? "").split(delimiter).map((path) => join(path, command));
-  return paths.some((path) => { try { accessSync(path, constants.X_OK); return true; } catch { return false; } });
-}
-
-export function createCodexAdapter(options: CodexAdapterOptions = {}): SessionAdapter {
+export function createCodexAdapter(inputOptions: CodexAdapterOptions = {}): SessionAdapter {
+  const executable = findNativeExecutable(inputOptions.command ?? "codex", inputOptions.env ?? process.env);
+  const options = { ...inputOptions, command: executable ?? inputOptions.command };
   const registrationId = options.registrationId ?? "codex";
-  const available = executableAvailable(options.command ?? "codex", options.env ?? process.env);
+  const available = executable !== undefined;
   return {
     webIdentity: "host",
     harness: { id: registrationId, name: "Codex", enabled: true, available, capabilities: { ...capabilities, harness: registrationId },
