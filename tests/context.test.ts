@@ -36,8 +36,8 @@ describe("agent context organization", () => {
     expect(existsSync(join(root, "contexts/pi-web-development.md"))).toBe(false);
   });
 
-  it("the self-contained session service injects only generic web UI context and relies on Pi to load AGENTS.md", async () => {
-    const service = await text("server/session/service.ts");
+  it("the Pi resource factory injects only generic web UI context and relies on Pi to load AGENTS.md", async () => {
+    const service = await text("server/session/piFactory.ts");
 
     expect(service).toContain('new URL("../../contexts/web-ui.md", import.meta.url)');
     expect(service).toContain("appendSystemPromptOverride");
