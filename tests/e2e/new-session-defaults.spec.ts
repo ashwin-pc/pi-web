@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 async function activeSessionId(page: Page) {
   const tab = page.locator(".sessionBarTab.active");
@@ -203,7 +204,7 @@ test.describe("new-session defaults", () => {
     test(`rolls overlapping opens back to stable history after ${failure}`, async ({ page }) => {
       await setPinNewSessions(page, true);
       const c = await createNewSession(page);
-      await page.request.patch("/api/session-ui-state", { data: { lanes: ["mock-current", "mock-older", c].map((sessionId) => ({ sessionId, lane: "pinned", since: "2026-01-01T00:00:00.000Z" })) } });
+      await seedSessionUiState(page, { lanes: ["mock-current", "mock-older", c].map((sessionId) => ({ sessionId, lane: "pinned", since: "2026-01-01T00:00:00.000Z" })) });
       await page.goto("/?sessionId=mock-current");
       await expect(page.locator("#messages")).toContainText("Can you add image attachments?");
       await page.locator("#prompt").fill("stable A draft");
@@ -513,10 +514,10 @@ test.describe("new-session defaults", () => {
     await expect(page.locator("#prompt")).toHaveValue("keep this draft");
 
     // A parked empty tab and an empty worker are both excluded candidates.
-    await page.request.patch("/api/session-ui-state", { data: {
+    await seedSessionUiState(page, {
       lanes: [{ sessionId: draftSafeId, lane: "parked", since: "2026-01-01T00:00:00.000Z" }],
       sessionOrigins: [{ sessionId: firstId, originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
-    } });
+    });
     await page.reload();
     const replacementId = await createNewSession(page);
     expect(replacementId).not.toBe(draftSafeId);

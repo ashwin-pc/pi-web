@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; cwd?: string }>;
@@ -10,7 +11,7 @@ async function seedServerSessionUiState(page: import("@playwright/test").Page, s
   sessionOrigins?: Array<{ sessionId: string; originSessionId: string; kind: string; updatedAt: string }>;
   bucketLabels?: Record<string, string>;
 }) {
-  await page.request.patch("/api/session-ui-state", { data: state });
+  await seedSessionUiState(page, state);
 }
 
 async function seedServerPinned(page: import("@playwright/test").Page, ...sessions: Array<{ id: string; cwd?: string }>) {
@@ -66,13 +67,18 @@ test.describe("session quick bar", () => {
     await older.click();
     await held.seen;
     await older.locator(".sessionBarTabAction").click();
+    try {
+      // The mark-read response is held, so the queued unpin cannot persist yet.
+      // The projected tab must still reflect the newer gesture immediately.
+      await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(0);
+    } finally {
+      held.release();
+    }
+    await held.delivery;
     await expect.poll(async () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.some((entry: { sessionId: string }) => entry.sessionId === "mock-older");
     }).toBe(false);
-
-    held.release();
-    await held.delivery;
     await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(0);
   });
 
@@ -83,13 +89,16 @@ test.describe("session quick bar", () => {
     await page.locator(".sessionItem").filter({ hasText: "Older mock session" }).locator(".sessionItemNavBtn").click();
     await held.seen;
     await page.locator(".sessionBarTab.temporary .sessionBarTabAction").click();
+    try {
+      await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(1);
+    } finally {
+      held.release();
+    }
+    await held.delivery;
     await expect.poll(async () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.some((entry: { sessionId: string; lane: string }) => entry.sessionId === "mock-older" && entry.lane === "pinned");
     }).toBe(true);
-
-    held.release();
-    await held.delivery;
     await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(1);
   });
 
@@ -667,6 +676,37 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionLaneDrawerCard")).toHaveCount(2);
   });
 
+  test("moving a parked session to Pinned appends after existing pinned sessions, including after reload", async ({ page }) => {
+    const created = await page.request.post("/api/sessions/new", { data: {} });
+    expect(created.ok()).toBe(true);
+    const extraPinned = (await created.json()).sessionId as string;
+    expect((await page.request.post("/api/sessions/open", { data: { sessionId: "mock-current" } })).ok()).toBe(true);
+    const since = "2026-01-01T00:00:00.000Z";
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since },
+      { sessionId: extraPinned, lane: "pinned", since },
+      { sessionId: "mock-older", lane: "parked", since },
+    ] });
+    const expected = ["mock-current", extraPinned, "mock-older"];
+    const pinned = page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerCard');
+    const pinnedOrder = () => pinned.evaluateAll((cards) => cards.map((card) => card.getAttribute("data-session-id")));
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+    await expect.poll(pinnedOrder).toEqual(expected.slice(0, 2));
+    await page.locator('.sessionLaneDrawerSection[data-lane="parked"] [data-session-id="mock-older"] .sessionLaneDrawerActions').click();
+    await page.getByRole("button", { name: "Move to Pinned" }).click();
+    await expect.poll(pinnedOrder).toEqual(expected);
+    await expect.poll(async () => {
+      const response = await page.request.get("/api/session-ui-state");
+      const data = await response.json();
+      return data.sessionUiState.lanes.filter((entry: { lane: string }) => entry.lane === "pinned")
+        .map((entry: { sessionId: string }) => entry.sessionId);
+    }).toEqual(expected);
+    await page.reload();
+    await page.locator(".sessionLayersButton").click();
+    await expect.poll(pinnedOrder).toEqual(expected);
+  });
+
   test("a stale mark-read response cannot revert a lane drawer move", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     const held = await holdSessionReadSnapshot(page, "mock-older");
@@ -678,13 +718,16 @@ test.describe("session quick bar", () => {
     const row = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]');
     await row.locator(".sessionLaneDrawerActions").click();
     await page.getByRole("button", { name: "Move to Bookmarks" }).click();
+    try {
+      await expect(page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] [data-session-id="mock-older"]')).toHaveCount(1);
+    } finally {
+      held.release();
+    }
+    await held.delivery;
     await expect.poll(async () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.find((entry: { sessionId: string; lane: string }) => entry.sessionId === "mock-older")?.lane;
     }).toBe("bookmarks");
-
-    held.release();
-    await held.delivery;
     await page.keyboard.press("Escape");
     await page.locator(".sessionLayersButton").click();
     await expect(page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] [data-session-id="mock-older"]')).toHaveCount(1);

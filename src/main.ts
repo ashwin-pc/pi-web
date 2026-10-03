@@ -21,6 +21,7 @@ import {
   readActiveSessionIdFromUrl,
   readSessionCitationFromUrl,
   sessionCitationHref,
+  sessionUiUnavailableWarning,
   syncActiveSessionIdHistoryState,
   writeSessionCitationToUrl,
   type SessionCitation,
@@ -73,6 +74,19 @@ initSwAutoReload();
 
 const elements = getAppElements();
 const state = createAppState();
+let preferencesWarningShown = false;
+function showPreferencesWarning(warning: string) {
+  if (preferencesWarningShown) return;
+  preferencesWarningShown = true;
+  const notice = document.createElement("div");
+  notice.id = "sessionPreferencesWarning";
+  notice.setAttribute("role", "status");
+  notice.className = "sessionPreferencesWarning";
+  notice.textContent = `Session preferences are read-only. Chat remains available. ${warning} Reload to retry.`;
+  // Inside the existing composer grid row, not a new implicit .app row that
+  // can fall outside its fixed-height viewport.
+  elements.formEl.prepend(notice);
+}
 const settlementDependencies = createSettlementDependencyStore(state.settlementDependencies);
 const sessionDrafts = createSessionDraftStore();
 initDebugDiagnostics(state);
@@ -87,6 +101,10 @@ let contextMeter: ContextMeterController;
 let activeWorkerDock: ActiveWorkerDockController;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
+function handleSessionUiStateWarning(warning: string) {
+  sessions.markUiStateUnavailable();
+  showPreferencesWarning(warning);
+}
 let settings: SettingsController;
 let systemInfo: SystemInfoController;
 let sessionInfo: SessionInfoController;
@@ -573,11 +591,16 @@ async function refreshState() {
   }
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
+  const preferencesWarning = sessionUiUnavailableWarning(data);
+  if (preferencesWarning) handleSessionUiStateWarning(preferencesWarning);
   if (requestedSessionId && requestedSessionId !== state.currentSessionId) {
     sessionState.applySnapshot(data);
     return;
   }
   sessionState.applySnapshot(data, { activate: true });
+  // The first authorized /api/state is the auth gate for UI-state bootstrap.
+  // Do not turn a pre-login 401 into a permanent preferences-store failure.
+  const uiStateReady = sessions.startUiStateAfterAuth();
   syncActiveSessionIdHistoryState(state.currentSessionId);
   const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
   refreshSettlementDependencies(dependencySessionId);
@@ -590,7 +613,11 @@ async function refreshState() {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
-  if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  // A slow or unavailable preferences store must not delay chat setup.
+  void uiStateReady.then((ready) => {
+    if (!ready) showPreferencesWarning("Preference storage could not be loaded.");
+    else if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  });
   composer.updatePrimaryAction();
 }
 
@@ -634,6 +661,8 @@ settings = createSettings({
   api,
   rightPanels,
   addMessage: messages.addMessage,
+  saveBucketPreference: (patch, order) => sessions.saveBucketPreference(patch, order),
+  canEditBucketPreference: () => sessions.canEditUiState(),
   onAppearanceChange: () => {
     activeWorkerDock?.refresh();
     messages.reconcileActivity();
@@ -666,6 +695,7 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
+  onUiStateUnavailable: handleSessionUiStateWarning,
   onDerivedSessionStateChanged: () => {
     // Rehydrate inactive pinned parents too. Realtime dependency declarations
     // are not replayed after a browser reconnect, while pinned indicators must
@@ -715,6 +745,7 @@ composer = createComposer({
   refreshMessages,
   refreshState,
   startNewSession: () => sessions.startNewSession(),
+  onSessionUiStateWarning: handleSessionUiStateWarning,
   beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,

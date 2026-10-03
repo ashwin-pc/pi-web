@@ -6,7 +6,8 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { sessionDrawerAutoCloseQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, writeActiveSessionIdToUrl } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, sessionUiMutationWarning, sessionUiUnavailableWarning, writeActiveSessionIdToUrl } from "../app/types.js";
+import { SessionUiCoordinator, type UiIntent } from "./sessionUiSync.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
@@ -40,6 +41,10 @@ export type SessionsController = {
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
+  startUiStateAfterAuth: () => Promise<boolean>;
+  markUiStateUnavailable: () => void;
+  canEditUiState: () => boolean;
+  saveBucketPreference: (patch: Pick<Partial<SessionUiState>, "bucketLabels" | "bucketOrder">, order?: UiIntent) => Promise<boolean>;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
   activeWorkersFor: (sessionId: string) => ActiveWorker[];
@@ -176,6 +181,7 @@ export function createSessions(options: {
   hasSessionDraft: (sessionId: string) => boolean;
   /** Called whenever derived per-session state (e.g. waiting-on-spawned/active workers) may have changed. */
   onDerivedSessionStateChanged?: () => void;
+  onUiStateUnavailable?: (warning: string) => void;
 }): SessionsController {
   const initialSessionDeepLink = new URLSearchParams(window.location.search).get("sessionId")?.trim();
   const {
@@ -195,6 +201,8 @@ export function createSessions(options: {
   const onDerivedSessionStateChanged = options.onDerivedSessionStateChanged;
 
   let cachedSessions: SessionInfo[] = [];
+  const pendingAutoPins = new Map<string, string>();
+  let uiStateInitialization: Promise<boolean> | undefined;
   const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
   // TTL dedupe (issue #112): a message_end-driven refetch arriving within a short
@@ -215,6 +223,21 @@ export function createSessions(options: {
   let closeSessionColorFilterMenu: (() => void) | undefined;
   let closeCurrentSessionBucketMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
+  // Capture legacy input once, synchronously at construction. /api/state or
+  // realtime may update AppState before auth permits the preferences GET.
+  const legacyBootSeed = normalizeSessionUiState({
+    lanes: state.lanes,
+    sessionNotes: state.sessionNotes,
+    pinnedFolders: state.pinnedFolders,
+    favoriteFolders: state.favoriteFolders,
+    sessionMarkers: state.sessionMarkers,
+    sessionUnreadStates: state.sessionUnreadStates,
+    sessionOrigins: state.sessionOrigins,
+    selectedMarkerColor: state.selectedMarkerColor,
+    allowedMarkerColors: [],
+    bucketLabels: state.bucketLabels,
+    bucketOrder: state.bucketOrder,
+  });
   let quickBucketColor: SessionMarkerColorId | undefined;
   let unreadFilterActive = false;
   let transcriptLoading = true;
@@ -245,9 +268,10 @@ export function createSessions(options: {
   function noteForSession(sessionId: string) { return state.sessionNotes.find((entry) => entry.sessionId === sessionId)?.note; }
   function sessionsInLane(lane: SessionLaneId) { return state.lanes.filter((entry) => entry.lane === lane); }
   function syncPinnedProjection() { state.pinnedSessions = sessionsInLane("pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) })); }
-  function commitLanes() { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
+  function commitLanes(order?: UiIntent) { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }, order); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function commitSessionNotes() { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; persistSessionUiState({ sessionNotes: state.sessionNotes }); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function setSessionNote(sessionId: string, value: string) {
+    if (!uiSync.ready) return;
     const note = value.trim();
     if (note === (noteForSession(sessionId) || "")) return;
     state.sessionNotes = note
@@ -280,14 +304,21 @@ export function createSessions(options: {
   }
   function editSessionNote(sessionId: string) { openSessionNoteEditor("Session note", noteForSession(sessionId) || "", (note) => setSessionNote(sessionId, note)); }
   function moveToLane(sessionId: string, lane: SessionLaneId, opts: { cwd?: string } = {}) {
+    // A successful new chat can report a failed metadata write. Do not update
+    // local pins or focus when the authoritative preferences writer is read-only.
+    if (!uiSync.ready) return;
     const previous = laneEntry(sessionId);
     const entry: SessionLaneEntry = { sessionId, lane, ...(opts.cwd || previous?.cwd ? { cwd: opts.cwd || previous?.cwd } : {}), since: previous?.lane === lane ? previous.since : new Date().toISOString() };
     const promptForNote = lane === "parked" && previous?.lane !== "parked" && !noteForSession(sessionId);
     const isActive = sessionId === state.currentSessionId;
     if (isActive) { focusedLane = lane; focusedSessionByLane[lane] = sessionId; }
+    // The gesture appends within its destination lane. Capture that placement
+    // separately from the entry update so a CAS rebase cannot leave an existing
+    // source entry at its old global index (ahead of the destination's pins).
+    const after = sessionsInLane(lane).filter((item) => item.sessionId !== sessionId).at(-1)?.sessionId;
     state.lanes = [...state.lanes.filter((item) => item.sessionId !== sessionId), entry];
     if (previous && previous.lane !== lane && focusedSessionByLane[previous.lane] === sessionId) delete focusedSessionByLane[previous.lane];
-    saveLaneFocus(); commitLanes();
+    saveLaneFocus(); commitLanes({ kind: "order", field: "lanes", id: sessionId, ...(after ? { after } : {}) });
     if (promptForNote) requestAnimationFrame(() => promptForParkedNote(sessionId));
   }
   function promptForParkedNote(sessionId: string) {
@@ -297,7 +328,7 @@ export function createSessions(options: {
       setSessionNote(sessionId, note);
     });
   }
-  function removeFromLanes(sessionId: string) { const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; const lane = laneOf(sessionId); state.lanes = next; if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane]; saveLaneFocus(); commitLanes(); }
+  function removeFromLanes(sessionId: string) { if (!uiSync.ready) return; const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; const lane = laneOf(sessionId); state.lanes = next; if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane]; saveLaneFocus(); commitLanes(); }
   function isStale(entry: SessionLaneEntry) { return entry.lane === "parked" && Date.now() - new Date(entry.since).getTime() > 14 * 864e5; }
   const sessionInspector = buildSessionInspector({
     item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: noteForSession(sessionId), unread: Boolean(unreadStateForSession(sessionId)) }; },
@@ -414,10 +445,13 @@ export function createSessions(options: {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    const nextState = data.state && typeof data.state === "object" ? data.state : data;
     rememberSessionCwd(cwd);
-    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
-    sessionState.applySnapshot(data, { activate: true });
-    if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
+    if (nextState.sessionId) writeActiveSessionIdToUrl(nextState.sessionId);
+    sessionState.applySnapshot(nextState, { activate: true });
+    if (nextState.thinkingLevels) updateThinkingOptions(nextState.thinkingLevels);
+    const warning = sessionUiMutationWarning(data);
+    if (warning) options.onUiStateUnavailable?.(warning);
     await refreshModels();
     await refreshMessages();
     refreshSessionTitle();
@@ -429,6 +463,7 @@ export function createSessions(options: {
       startPath,
       getBookmarks: () => state.favoriteFolders,
       setBookmarks: (favoriteFolders) => {
+        if (!uiSync.ready) return;
         state.favoriteFolders = favoriteFolders;
         persistSessionUiState({ favoriteFolders });
       },
@@ -513,7 +548,12 @@ export function createSessions(options: {
       beginTranscriptLoading();
       clearMessages();
       sessionState.applySnapshot(data, { activate: true });
-      if (pinNewSessions && data.sessionId) moveToLane(data.sessionId, "pinned", { cwd: data.cwd || targetCwd });
+      const warning = sessionUiMutationWarning(data);
+      if (warning) options.onUiStateUnavailable?.(warning);
+      if (pinNewSessions && data.sessionId) {
+        if (uiSync.ready) moveToLane(data.sessionId, "pinned", { cwd: data.cwd || targetCwd });
+        else if (!uiSync.unavailable) pendingAutoPins.set(data.sessionId, data.cwd || targetCwd);
+      }
       await refreshState();
       finishTranscriptLoading();
     }
@@ -575,6 +615,8 @@ export function createSessions(options: {
       const res = await fetchSessionList(url, api.headers());
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
+      const warning = sessionUiUnavailableWarning(data);
+      if (warning) { uiSync.markUnavailable(); options.onUiStateUnavailable?.(warning); }
       cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
       for (const session of cachedSessions) sessionState.mergeSessionInfo(session);
       let laneCwdsChanged = false;
@@ -588,7 +630,7 @@ export function createSessions(options: {
       });
       if (laneCwdsChanged) {
         syncPinnedProjection();
-        persistSessionUiState({ lanes: state.lanes });
+        if (uiSync.ready) persistSessionUiState({ lanes: state.lanes });
       }
       scheduleSessionListRender();
       renderSessionBar();
@@ -672,17 +714,8 @@ export function createSessions(options: {
 
   // ── Markers and pinning ────────────────────────────────────────────────────
 
-  let sessionUiWritePending = 0;
-  let sessionUiWriteSequence = 0;
-  let latestSessionUiRevision = 0;
-  let sessionUiStateInitialized = false;
   let restoredPersistedLaneFocus = false;
-  let sessionUiWriteQueue = Promise.resolve();
-  function applySessionUiStateValue(value: unknown) {
-    const next = normalizeSessionUiState(value);
-    if (sessionUiStateInitialized && next.revision <= latestSessionUiRevision) return;
-    sessionUiStateInitialized = true;
-    latestSessionUiRevision = next.revision;
+  function applySessionUiStateValue(next: SessionUiState) {
     state.lanes = next.lanes;
     state.sessionNotes = next.sessionNotes;
     state.pinnedSessions = next.lanes.filter((entry) => entry.lane === "pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) }));
@@ -693,8 +726,11 @@ export function createSessions(options: {
     state.sessionOrigins = next.sessionOrigins;
     syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
+    const bucketsChanged = JSON.stringify(state.bucketLabels) !== JSON.stringify(next.bucketLabels)
+      || JSON.stringify(state.bucketOrder) !== JSON.stringify(next.bucketOrder);
     state.bucketLabels = next.bucketLabels;
     state.bucketOrder = next.bucketOrder;
+    if (bucketsChanged) document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
     allowedMarkerColors.clear();
     for (const color of next.allowedMarkerColors) allowedMarkerColors.add(color);
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
@@ -724,87 +760,51 @@ export function createSessions(options: {
     }
   }
 
-  function hasAnySessionUiState(value: SessionUiState) {
-    return value.lanes.length > 0
-      || value.sessionNotes.length > 0
-      || value.pinnedFolders.length > 0
-      || value.favoriteFolders.length > 0
-      || value.sessionMarkers.length > 0
-      || value.sessionUnreadStates.length > 0
-      // Lineage counts as state: without it, a server holding ONLY origins looks
-      // "empty" and a legacy-localStorage push would wipe every recorded origin.
-      || (value.sessionOrigins?.length ?? 0) > 0
-      || value.allowedMarkerColors.length > 0
-      || Object.keys(value.bucketLabels).length > 0
-      || value.bucketOrder.some((color, index) => color !== defaultSessionUiState.bucketOrder[index])
-      || value.selectedMarkerColor !== defaultSessionUiState.selectedMarkerColor;
-  }
 
-  function applySessionUiState(value: unknown) {
-    // Realtime snapshots emitted before our PATCH response can contain the old
-    // lane projection. Let the mutation response remain authoritative while a
-    // local write is in flight so a newly pinned tab cannot immediately revert.
-    if (sessionUiWritePending > 0) return;
-    applySessionUiStateValue(value);
-  }
+  function applySessionUiState(value: unknown) { uiSync.accept(value); }
 
-  async function patchSessionUiState(patch: Partial<SessionUiState>) {
-    const writeSequence = ++sessionUiWriteSequence;
-    sessionUiWritePending += 1;
-    const write = async () => {
-      const res = await fetch("/api/session-ui-state", {
-        method: "PATCH",
-        headers: api.headers(),
-        body: JSON.stringify(patch),
+  const uiSync = new SessionUiCoordinator({
+    async read() {
+      const res = await fetch("/api/session-ui-state", { headers: api.headers() });
+      const data = await res.json().catch(() => ({}));
+      return sessionUiStateFromResponse({ ok: res.ok && data.ok === true, status: res.status, sessionUiState: data.sessionUiState });
+    },
+    async patch(patch) {
+      const res = await fetch("/api/session-ui-state", { method: "PATCH", headers: api.headers(), body: JSON.stringify(patch) });
+      const data = await res.json().catch(() => ({}));
+      return { status: res.status, state: sessionUiStateFromResponse({ ok: res.ok && data.ok === true, sessionUiState: data.sessionUiState }), error: data.error as string | undefined };
+    },
+    async postUnread(sessionId, unread) {
+      const res = await fetch(`/api/session-ui-state/${unread ? "unread" : "read"}`, {
+        method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-      // Keep newer optimistic mutations rendered until their queued write is
-      // confirmed; intermediate full-state responses would otherwise revert UI.
-      if (writeSequence === sessionUiWriteSequence) applySessionUiStateValue(data.sessionUiState);
-    };
-    const result = sessionUiWriteQueue.then(write, write);
-    sessionUiWriteQueue = result.then(() => undefined, () => undefined);
-    try {
-      await result;
-    } finally {
-      sessionUiWritePending -= 1;
-    }
-  }
+      return { status: res.status, state: sessionUiStateFromResponse({ ok: res.ok && data.ok === true, sessionUiState: data.sessionUiState }), error: data.error as string | undefined };
+    },
+  }, applySessionUiStateValue, (message) => {
+    if (uiSync.unavailable) options.onUiStateUnavailable?.(message);
+    else addMessage("system", message, "error");
+  });
 
-  function persistSessionUiState(patch: Partial<SessionUiState>) {
-    patchSessionUiState(patch).catch((error) => {
-      addMessage("system", error instanceof Error ? error.message : String(error), "error");
-    });
-  }
+  function persistSessionUiState(patch: Partial<SessionUiState>, order?: UiIntent) { return uiSync.mutate(patch, order); }
 
   function persistAllowedMarkerColors() {
     persistSessionUiState({ allowedMarkerColors: Array.from(allowedMarkerColors) });
   }
 
-  async function refreshSessionUiState() {
-    const res = await fetch("/api/session-ui-state", { headers: api.headers() });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    const serverState = normalizeSessionUiState(data.sessionUiState);
-    const localState = normalizeSessionUiState({
-      lanes: state.lanes,
-      sessionNotes: state.sessionNotes,
-      pinnedFolders: state.pinnedFolders,
-      favoriteFolders: state.favoriteFolders,
-      sessionMarkers: state.sessionMarkers,
-      sessionUnreadStates: state.sessionUnreadStates,
-      selectedMarkerColor: state.selectedMarkerColor,
-      allowedMarkerColors: Array.from(allowedMarkerColors),
-      bucketLabels: state.bucketLabels,
-      bucketOrder: state.bucketOrder,
+  function startUiStateAfterAuth(): Promise<boolean> {
+    // The authorized /api/state path alone starts the existing coordinator.
+    // A new chat may finish while its first GET is pending: drain only after
+    // that same initialization settles, without holding up chat setup.
+    uiStateInitialization ??= uiSync.start(legacyBootSeed).then(() => {
+      const ready = uiSync.ready;
+      for (const [sessionId, cwd] of pendingAutoPins) {
+        pendingAutoPins.delete(sessionId);
+        if (ready && uiSync.ready && state.sessionsById[sessionId] && !laneEntry(sessionId)) moveToLane(sessionId, "pinned", { cwd });
+      }
+      return uiSync.ready;
     });
-    if (!hasAnySessionUiState(serverState) && hasAnySessionUiState(localState)) {
-      await patchSessionUiState(localState);
-      return;
-    }
-    applySessionUiState(serverState);
+    return uiStateInitialization.then(() => uiSync.ready);
   }
 
   function unreadStateForSession(sessionId: string) {
@@ -922,49 +922,14 @@ export function createSessions(options: {
     renderSessionColorFilterButton();
   }
 
-  function clearLocalUnread(sessionId: string) {
-    const next = state.sessionUnreadStates.filter((item) => item.sessionId !== sessionId);
-    if (next.length === state.sessionUnreadStates.length) return;
-    state.sessionUnreadStates = next;
-    syncCachedUnreadFromState();
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
-  }
-
   async function markSessionRead(sessionId = state.currentSessionId) {
     const id = sessionId.trim();
-    if (!id) return;
-    clearLocalUnread(id);
-    const res = await fetch("/api/session-ui-state/read", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ sessionId: id }),
-    });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    applySessionUiState(data.sessionUiState);
+    if (id) await uiSync.setUnread(id, false);
   }
 
   async function markSessionUnread(sessionId = state.currentSessionId) {
     const id = sessionId.trim();
-    if (!id) return;
-    const now = new Date().toISOString();
-    state.sessionUnreadStates = [...state.sessionUnreadStates.filter((item) => item.sessionId !== id), { sessionId: id, unreadAt: now, updatedAt: now }];
-    syncCachedUnreadFromState();
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
-    const res = await fetch("/api/session-ui-state/unread", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ sessionId: id }),
-    });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    applySessionUiState(data.sessionUiState);
+    if (id) await uiSync.setUnread(id, true);
   }
 
   function markSessionReadBestEffort(sessionId?: string) {
@@ -1034,6 +999,7 @@ export function createSessions(options: {
   }
 
   function setSessionMarker(sessionId: string, color: SessionMarkerColorId) {
+    if (!uiSync.ready) return;
     const next = { sessionId, color, updatedAt: new Date().toISOString() };
     state.sessionMarkers = [next, ...state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId)];
     renderSessionList(cachedSessions);
@@ -1043,6 +1009,7 @@ export function createSessions(options: {
   }
 
   function clearSessionMarker(sessionId: string) {
+    if (!uiSync.ready) return;
     const count = state.sessionMarkers.length;
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId);
     if (state.sessionMarkers.length === count) return;
@@ -1375,13 +1342,14 @@ export function createSessions(options: {
   }
 
   function pinFolder(cwd: string) {
-    if (isFolderPinned(cwd)) return;
+    if (!uiSync.ready || isFolderPinned(cwd)) return;
     state.pinnedFolders = [...state.pinnedFolders, cwd];
     persistSessionUiState({ pinnedFolders: state.pinnedFolders });
     renderSessionList(cachedSessions);
   }
 
   function unpinFolder(cwd: string) {
+    if (!uiSync.ready) return;
     const pinnedCount = state.pinnedFolders.length;
     state.pinnedFolders = state.pinnedFolders.filter((folder) => folder !== cwd);
     if (state.pinnedFolders.length === pinnedCount) return;
@@ -1602,7 +1570,7 @@ export function createSessions(options: {
     const settleDurationMs = reducedMotion ? 0 : 180;
 
     tab.addEventListener("pointerdown", (downEvent) => {
-      if (sessionBarGestureInFlight || !downEvent.isPrimary) return;
+      if (!uiSync.ready || sessionBarGestureInFlight || !downEvent.isPrimary) return;
       if (downEvent.pointerType === "mouse" && downEvent.button !== 0) return;
       if ((downEvent.target as Element | null)?.closest(".sessionBarTabAction")) return;
 
@@ -1729,6 +1697,7 @@ export function createSessions(options: {
 
       const settle = (commit: boolean) => {
         if (!pressActive) return;
+        commit = commit && uiSync.ready;
         pressActive = false;
         clearListeners();
         suppressTabClickUntil = performance.now() + 400;
@@ -1749,7 +1718,7 @@ export function createSessions(options: {
         }
 
         window.setTimeout(() => {
-          if (commit && newIndex !== originalIndex) {
+          if (commit && uiSync.ready && newIndex !== originalIndex) {
             const visualIds = tabs.map((item) => item.dataset.sessionId).filter((id): id is string => Boolean(id));
             const [draggedId] = visualIds.splice(originalIndex, 1);
             if (draggedId) visualIds.splice(newIndex, 0, draggedId);
@@ -1762,7 +1731,10 @@ export function createSessions(options: {
             });
             state.lanes = [...reordered, ...entriesById.values(), ...state.lanes.filter((entry) => entry.lane !== focusedLane)];
             syncPinnedProjection();
-            persistSessionUiState({ lanes: state.lanes });
+            persistSessionUiState({ lanes: state.lanes }, draggedId ? {
+              kind: "order", field: "lanes", id: draggedId,
+              before: visualIds[newIndex + 1], after: visualIds[newIndex - 1],
+            } : undefined);
           }
           tab.classList.remove("settling");
           flushQueuedSessionBarRender(true);
@@ -1911,7 +1883,7 @@ export function createSessions(options: {
         copy.append(meta); open.append(copy);
         open.addEventListener("click", () => { if (performance.now() < suppressOpenUntil) return; closeLaneDrawer?.(); void openSessionTab(entry.sessionId, live?.cwd || entry.cwd || state.currentCwd); });
         card.append(open);
-        const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter); dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
+        const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter) || !uiSync.ready; dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
         let dragPointer: number | undefined; let dragStartY = 0; let dragClientY = 0; let dragScrollTop = 0; let dragging = false; let originLane: SessionLaneId = lane;
         let dragRect: DOMRect | undefined; let destinationSlot: HTMLElement | undefined; let dragFrame: number | undefined;
         const reducedReorderMotion = prefersReducedReorderMotion();
@@ -1921,6 +1893,7 @@ export function createSessions(options: {
         };
         const finishDrag = () => {
           if (dragPointer === undefined) return;
+          if (!uiSync.ready) { cancelDrag(); return; }
           clearDragFrame();
           if (dragging && destinationSlot) {
             suppressOpenUntil = performance.now() + 350;
@@ -1951,7 +1924,12 @@ export function createSessions(options: {
               }
               saveLaneFocus();
             }
-            state.lanes = nextLanes; commitLanes();
+            state.lanes = nextLanes;
+            const movedIndex = nextLanes.findIndex((item) => item.sessionId === entry.sessionId);
+            commitLanes(movedIndex >= 0 ? {
+              kind: "order", field: "lanes", id: entry.sessionId,
+              before: nextLanes[movedIndex + 1]?.sessionId, after: nextLanes[movedIndex - 1]?.sessionId,
+            } : undefined);
             if (moved?.lane === "parked" && entry.lane !== "parked" && !noteForSession(entry.sessionId)) requestAnimationFrame(() => promptForParkedNote(entry.sessionId));
           }
           card.classList.remove("reorder-pressed");
@@ -2012,7 +1990,7 @@ export function createSessions(options: {
         };
         card.addEventListener("session-inspector-open", () => cancelDrag());
         dragHandle.addEventListener("pointerdown", (event) => {
-          if (dragPointer !== undefined || (event.pointerType === "mouse" && event.button !== 0)) return;
+          if (!uiSync.ready || dragPointer !== undefined || (event.pointerType === "mouse" && event.button !== 0)) return;
           dragPointer = event.pointerId; dragStartY = dragClientY = event.clientY; originLane = card.dataset.lane as SessionLaneId || lane; card.classList.add("reorder-pressed");
           window.addEventListener("pointermove", moveDrag, { passive: false }); window.addEventListener("pointerup", endDrag); window.addEventListener("pointercancel", cancelDrag);
         });
@@ -2255,13 +2233,17 @@ export function createSessions(options: {
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
 
     cachedSessions = cachedSessions.filter((session) => session.id !== item.id);
+    pendingAutoPins.delete(item.id);
     sessionState.remove(item.id);
     state.lanes = state.lanes.filter((entry) => entry.sessionId !== item.id);
     state.sessionNotes = state.sessionNotes.filter((entry) => entry.sessionId !== item.id);
     syncPinnedProjection();
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== item.id);
+    if (data.id === item.id) uiSync.hideDeletedSession(item.id);
     renderSessionList(cachedSessions);
     renderSessionBar();
+    const warning = sessionUiMutationWarning(data);
+    if (warning) options.onUiStateUnavailable?.(warning);
     addMessage("system", data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
   }
 
@@ -2963,7 +2945,6 @@ export function createSessions(options: {
     // Render immediately from any legacy local pins, then replace with server state.
     renderSessionBar();
     renderCurrentSessionBucketButton();
-    refreshSessionUiState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
     // Restore the drawer state after wiring handlers and footer content.
     if (readPersistedSessionDrawerOpen()) {
       setSessionDrawerOpen(true);
@@ -2993,6 +2974,10 @@ export function createSessions(options: {
     renderSessionBar,
     renderCurrentSessionBucketButton,
     applySessionUiState,
+    startUiStateAfterAuth,
+    markUiStateUnavailable: () => uiSync.markUnavailable(),
+    canEditUiState: () => uiSync.ready,
+    saveBucketPreference: (patch, order) => persistSessionUiState(patch, order),
     markSessionRead,
     waitingInfoFor,
     activeWorkersFor,

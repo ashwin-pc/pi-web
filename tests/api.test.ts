@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
-import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { request as httpRequest } from "node:http";
@@ -111,10 +111,12 @@ describe("pi-web mock API", () => {
 
   it("deletes a requested session and its independent note", async () => {
     try {
+      const beforeSeed = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
       const seedUiState = await fetch(`${baseUrl}/api/session-ui-state`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          expectedRevision: beforeSeed.revision,
           sessionNotes: [{ sessionId: "mock-older", note: "Delete with session", updatedAt: "2026-01-01T00:00:00.000Z" }],
         }),
       });
@@ -356,6 +358,60 @@ describe("pi-web mock API", () => {
     expect(current.settings.appearance.loadingAnimation).toBe("pulse");
   });
 
+  it("keeps chat reads and prompts available without fabricating UI state when its storage is unreadable", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    const file = join(settingsDir, "session-ui-state.json");
+    const historyFile = `${file}.history.json`;
+    const baseline = await readFile(file, "utf8");
+    const history = await readFile(historyFile, "utf8");
+    const before = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+    expect(before.initialized).toBe(true);
+    await rm(historyFile);
+    await mkdir(historyFile);
+    await writeFile(join(historyFile, "keep"), "block history replacement");
+    try {
+      // A failed write invalidates the in-process cache; the next read now sees
+      // damaged history and must fail closed rather than supplying revision zero.
+      const attempted = await fetch(`${baseUrl}/api/session-ui-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: before.revision, lanes: [] }) });
+      expect(attempted.ok).toBe(false);
+      const { readdir } = await import("node:fs/promises");
+      const backups = (await readdir(settingsDir)).filter((name) => name.startsWith("session-ui-state.json.bak-")).sort();
+      const snapshotBackups = await Promise.all(backups.map((name) => readFile(join(settingsDir, name), "utf8")));
+      const unavailable = await fetch(`${baseUrl}/api/session-ui-state`);
+      expect(unavailable.status).toBe(503);
+      const refused = await fetch(`${baseUrl}/api/session-ui-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: before.revision, lanes: [] }) });
+      expect(refused.status).toBe(503);
+      for (const action of ["read", "unread"]) {
+        const targeted = await fetch(`${baseUrl}/api/session-ui-state/${action}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "mock-older" }) });
+        expect(targeted.status).toBe(503);
+      }
+      const stateResponse = await fetch(`${baseUrl}/api/state`);
+      expect(stateResponse.status).toBe(200);
+      const state = await stateResponse.json();
+      expect(state).toMatchObject({ ok: true, sessionId: "mock-current", sessionUiStateAvailability: "unavailable", sessionUiStateWarning: expect.any(String) });
+      expect(Object.hasOwn(state, "sessionUiState")).toBe(false);
+      const listResponse = await fetch(`${baseUrl}/api/sessions`);
+      expect(listResponse.status).toBe(200);
+      const listed = await listResponse.json();
+      expect(listed).toMatchObject({ ok: true, sessionUiStateAvailability: "unavailable", sessionUiStateWarning: expect.any(String) });
+      expect(Object.hasOwn(listed, "sessionUiState")).toBe(false);
+      expect(listed.sessions.map((item: { id: string }) => item.id)).toEqual(expect.arrayContaining(["mock-current", "mock-older"]));
+      expect(listed.sessions.every((item: { unread?: boolean }) => !Object.hasOwn(item, "unread"))).toBe(true);
+      const prompt = await fetch(`${baseUrl}/api/prompt`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "synthetic healthy chat while preferences unavailable" }) });
+      expect(prompt.status).toBe(202);
+      const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
+      expect(messages.messages.map((item: { text?: string }) => item.text)).toContain("synthetic healthy chat while preferences unavailable");
+      expect(await readFile(file, "utf8")).toBe(baseline);
+      expect(await readFile(join(historyFile, "keep"), "utf8")).toBe("block history replacement");
+      expect((await readdir(settingsDir)).filter((name) => name.startsWith("session-ui-state.json.bak-")).sort()).toEqual(backups);
+      expect(await Promise.all(backups.map((name) => readFile(join(settingsDir, name), "utf8")))).toEqual(snapshotBackups);
+    } finally {
+      await rm(historyFile, { recursive: true });
+      await writeFile(historyFile, history);
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    }
+  });
+
   it("persists and returns server session UI state", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     const initial = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
@@ -371,6 +427,7 @@ describe("pi-web mock API", () => {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        expectedRevision: initial.sessionUiState.revision,
         pinnedSessions: [{ id: "mock-current", cwd: "." }],
         sessionNotes: [{ sessionId: "mock-current", note: "  Keep after unpin  ", updatedAt: "2026-01-01T00:00:00.000Z" }],
         pinnedFolders: ["/tmp/pi-web", "/tmp/pi-web", ""],
@@ -424,6 +481,137 @@ describe("pi-web mock API", () => {
     expect(current.sessionUiState.sessionUnreadStates).toEqual([
       expect.objectContaining({ sessionId: "mock-older", unreadAt: expect.any(String) }),
     ]);
+  });
+
+  it("rejects unversioned/malformed/stale PATCH, allows current-revision clear, and preserves targeted unread", async () => {
+    const initial = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+    const lanes = Array.from({ length: 5 }, (_, index) => ({ sessionId: `cas-${index}`, lane: "pinned", since: "2026-01-01T00:00:00.000Z" }));
+    const patch = async (body: unknown) => fetch(`${baseUrl}/api/session-ui-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    try {
+      expect((await patch({ lanes })).status).toBe(428);
+      expect((await patch({ expectedRevision: "0", lanes })).status).toBe(400);
+      const seeded = await patch({ expectedRevision: initial.revision, lanes });
+      expect(seeded.status).toBe(200);
+      const current = (await seeded.json()).sessionUiState;
+      const invalid = await patch({ expectedRevision: current.revision, sessionNotes: [{ sessionId: "cas-0", note: "keep", updatedAt: "not-a-timestamp" }] });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({ error: "Invalid session UI state payload" });
+      expect((await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState.revision).toBe(current.revision);
+      const stale = await patch({ expectedRevision: initial.revision, lanes: [], force: true });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ revision: current.revision });
+      expect((await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState.lanes).toHaveLength(5);
+      const unread = await fetch(`${baseUrl}/api/session-ui-state/unread`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "cas-0" }) });
+      expect(unread.status).toBe(200);
+      const next = (await unread.json()).sessionUiState;
+      expect((await patch({ expectedRevision: current.revision, lanes: [] })).status).toBe(409);
+      const cleared = await patch({ expectedRevision: next.revision, lanes: [] });
+      expect(cleared.status).toBe(200);
+      expect((await cleared.json()).sessionUiState.sessionUnreadStates).toEqual(next.sessionUnreadStates);
+    } finally {
+      const current = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+      expect((await patch({ expectedRevision: current.revision, lanes: initial.lanes, sessionUnreadStates: initial.sessionUnreadStates })).status).toBe(200);
+    }
+  });
+
+  it("returns created/deleted/cleared session IDs when post-effect UI metadata persistence fails", async () => {
+    const file = join(settingsDir, "session-ui-state.json");
+    const historyPath = `${file}.history.json`;
+    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const withFailedUiWrites = async <T>(operation: () => Promise<T>) => {
+      const history = await readFile(historyPath, "utf8");
+      await rm(historyPath);
+      await mkdir(historyPath);
+      await writeFile(join(historyPath, "keep"), "block atomic history replacement");
+      try { return await operation(); }
+      finally { await rm(historyPath, { recursive: true }); await writeFile(historyPath, history); }
+    };
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    await fetch(`${baseUrl}/api/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { sessionBucketColor: "red" } }) });
+    try {
+      const created = await withFailedUiWrites(() => post("/api/sessions/new", {}));
+      expect(created.status).toBe(200);
+      const createdBody = await created.json();
+      expect(createdBody.sessionId).toEqual(expect.any(String));
+      expect(createdBody.sessionUiStateWarning).toEqual(expect.any(String));
+
+      const deleted = await withFailedUiWrites(() => post("/api/sessions/delete", { sessionId: "mock-older" }));
+      expect(deleted.status).toBe(200);
+      expect(await deleted.json()).toMatchObject({ ok: true, id: "mock-older", sessionUiStateWarning: expect.any(String) });
+
+      const current = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+      expect((await fetch(`${baseUrl}/api/session-ui-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: current.revision, lanes: [{ sessionId: "mock-current", lane: "pinned", since: "2025-01-01T00:00:00.000Z" }] }) })).status).toBe(200);
+      const cleared = await withFailedUiWrites(() => post("/api/command", { sessionId: "mock-current", command: "/clear" }));
+      expect(cleared.status).toBe(200);
+      const clearBody = await cleared.json();
+      expect(clearBody.state.sessionId).toEqual(expect.any(String));
+      expect(clearBody.sessionUiStateWarning).toEqual(expect.any(String));
+    } finally {
+      await fetch(`${baseUrl}/api/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { sessionBucketColor: null } }) });
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    }
+  });
+
+  it("lists each mock session once after switching to a second known cwd and resetting", async () => {
+    const alternateCwd = await mkdtemp(join(settingsDir, "alternate-cwd-"));
+    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    await post("/api/mock/reset", {});
+    const createdResponse = await post("/api/sessions/new", {});
+    expect(createdResponse.status).toBe(200);
+    const created = await createdResponse.json();
+    const switched = await post("/api/session/cwd", { sessionId: created.sessionId, cwd: alternateCwd });
+    expect(switched.status).toBe(200);
+    expect((await switched.json()).sessionId).not.toBe(created.sessionId);
+    expect((await post("/api/mock/reset", {})).status).toBe(200);
+    const listedResponse = await fetch(`${baseUrl}/api/sessions?cwd=${encodeURIComponent(alternateCwd)}`);
+    expect(listedResponse.status).toBe(200);
+    const listed = await listedResponse.json();
+    const ids = listed.sessions.map((item: { id: string }) => item.id);
+    expect(ids).toEqual(expect.arrayContaining(["mock-current", "mock-older"]));
+    expect(ids.filter((id: string) => id === "mock-current")).toHaveLength(1);
+    expect(ids.filter((id: string) => id === "mock-older")).toHaveLength(1);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it("reports a failed default bucket after cwd replacement without hiding the new chat", async () => {
+    const file = join(settingsDir, "session-ui-state.json");
+    const historyPath = `${file}.history.json`;
+    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    await post("/api/mock/reset", {});
+    await fetch(`${baseUrl}/api/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { sessionBucketColor: "red" } }) });
+    try {
+      const empty = await post("/api/sessions/new", {});
+      expect(empty.status).toBe(200);
+      const previous = await empty.json();
+      // The mock factory projects its fixed cwd regardless of requested cwd.
+      // Replacing at that cwd still exercises the new-session warning hand-off.
+      const cwd = previous.cwd as string;
+      const primary = await readFile(file, "utf8");
+      const history = await readFile(historyPath, "utf8");
+      await rm(historyPath);
+      await mkdir(historyPath);
+      await writeFile(join(historyPath, "keep"), "block persisted revision");
+      try {
+        const response = await post("/api/session/cwd", { sessionId: previous.sessionId, cwd });
+        expect(response.status).toBe(200);
+        const replacement = await response.json();
+        expect(replacement).toMatchObject({ ok: true, cwd, sessionId: expect.any(String), sessionUiStateWarning: expect.any(String) });
+        expect(replacement.sessionId).not.toBe(previous.sessionId);
+        expect(Object.hasOwn(replacement, "sessionUiState")).toBe(false);
+        expect(await readFile(file, "utf8")).toBe(primary);
+        expect(await readFile(join(historyPath, "keep"), "utf8")).toBe("block persisted revision");
+        const prompt = await post("/api/prompt", { sessionId: replacement.sessionId, message: "synthetic cwd replacement prompt" });
+        expect(prompt.status).toBe(202);
+        const messages = await (await fetch(`${baseUrl}/api/messages?sessionId=${encodeURIComponent(replacement.sessionId)}`)).json();
+        expect(messages.messages.map((message: { text?: string }) => message.text)).toContain("synthetic cwd replacement prompt");
+      } finally {
+        await rm(historyPath, { recursive: true });
+        await writeFile(historyPath, history);
+      }
+    } finally {
+      await fetch(`${baseUrl}/api/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { sessionBucketColor: null } }) });
+      await post("/api/mock/reset", {});
+    }
   });
 
   it("applies saved defaults to new sessions", async () => {

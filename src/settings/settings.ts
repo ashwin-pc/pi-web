@@ -3,7 +3,7 @@ import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
 import { setIcon } from "../app/icons.js";
-import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, orderedSessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings, type SessionMarkerColorId, type WebSettingsSchema } from "../app/types.js";
+import { defaultAccentColor, defaultLoadingAnimation, defaultPiWebSettings, normalizeMarkerColor, orderedSessionMarkerColors, type AppState, type LoadingAnimation, type PiWebModelSetting, type PiWebSettings, type SessionMarkerColorId, type SessionUiState, type WebSettingsSchema } from "../app/types.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
 import { createExtensionSettings, type ExtensionSettingsController } from "./extensionSettings.js";
 import { createRunNotifications } from "./runNotifications.js";
@@ -11,6 +11,7 @@ import { createRestartSettings } from "./restartSettings.js";
 import { createSettingsShell, type SettingsShellController } from "./settingsShell.js";
 import { edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 import { createSecuritySettings, type AuthMode } from "./securitySettings.js";
+import type { UiIntent } from "../sessions/sessionUiSync.js";
 
 export type SettingsController = {
   init: () => void;
@@ -115,10 +116,12 @@ export function createSettings(options: {
   api: ApiClient;
   rightPanels?: RightPanelManager;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
+  saveBucketPreference: (patch: Pick<Partial<SessionUiState>, "bucketLabels" | "bucketOrder">, order?: UiIntent) => Promise<boolean>;
+  canEditBucketPreference: () => boolean;
   /** Called after an applied settings response changes the UI density. */
   onAppearanceChange?: (density: PiWebSettings["appearance"]["density"]) => void;
 }): SettingsController {
-  const { state, elements, api, rightPanels, addMessage, onAppearanceChange } = options;
+  const { state, elements, api, rightPanels, addMessage, saveBucketPreference, canEditBucketPreference, onAppearanceChange } = options;
   const expandedStorageKey = "pi-web-composer-expanded";
   let hasAppliedSettings = false;
   let settingsPanelHandle: RightPanelHandle | undefined;
@@ -426,14 +429,6 @@ export function createSettings(options: {
     await refreshExtensionStatus().catch(renderExtensionStatusError);
   }
 
-  async function saveBucketOrder(bucketOrder: SessionMarkerColorId[]) {
-    const res = await fetch("/api/session-ui-state", { method: "PATCH", headers: api.headers(), body: JSON.stringify({ bucketOrder }) });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    state.bucketOrder = data.sessionUiState?.bucketOrder || bucketOrder;
-    document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
-  }
-
   function renderBucketNames() {
     const container = elements.settingsPanel.querySelector<HTMLElement>("#settingBucketNames");
     if (!container) return;
@@ -456,21 +451,21 @@ export function createSettings(options: {
 
     const orderFromRows = () => Array.from(container.querySelectorAll<HTMLElement>(".settingsBucketNameRow"))
       .map((item) => item.dataset.bucketColor as SessionMarkerColorId);
-    const commitOrder = async (next: SessionMarkerColorId[], previous: SessionMarkerColorId[], focusColor?: SessionMarkerColorId, focusOwner?: HTMLElement) => {
+    const commitOrder = async (next: SessionMarkerColorId[], previous: SessionMarkerColorId[], movedColor: SessionMarkerColorId, focusOwner?: HTMLElement, delayMs = 0) => {
+      if (!canEditBucketPreference()) { setSettingsStatus("Session preferences are read-only; reload before editing buckets.", true); renderBucketNames(); return; }
+      if (next.every((id, index) => id === previous[index])) return;
       state.bucketOrder = next;
-      try {
-        await saveBucketOrder(next);
-        const restoreFocus = Boolean(focusColor && focusOwner && document.activeElement === focusOwner);
-        renderBucketNames();
-        if (restoreFocus) container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${focusColor}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
-        setSettingsStatus("Bucket order saved");
-      } catch (error) {
-        state.bucketOrder = previous;
-        const restoreFocus = Boolean(focusColor && focusOwner && document.activeElement === focusOwner);
-        renderBucketNames();
-        if (restoreFocus) container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${focusColor}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
-        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
-      }
+      const index = next.indexOf(movedColor);
+      const savedPromise = saveBucketPreference({ bucketOrder: next }, {
+        kind: "order", field: "bucketOrder", id: movedColor, before: next[index + 1], after: next[index - 1],
+      });
+      const [saved] = await Promise.all([savedPromise, new Promise<void>((resolve) => window.setTimeout(resolve, delayMs))]);
+      // On failure the coordinator restores canonical state, not an obsolete
+      // pre-gesture snapshot that could erase another client's newer order.
+      const restoreFocus = Boolean(focusOwner && document.activeElement === focusOwner);
+      renderBucketNames();
+      if (restoreFocus) container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${movedColor}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
+      setSettingsStatus(saved ? "Bucket order saved" : "Bucket order was not saved. Reload before retrying.", !saved);
     };
 
     colors.forEach((color) => {
@@ -487,31 +482,23 @@ export function createSettings(options: {
       input.type = "text";
       input.maxLength = 40;
       input.value = state.bucketLabels[color.id] || "";
+      input.disabled = !canEditBucketPreference();
       input.placeholder = color.label;
       input.setAttribute("aria-label", `${color.label} bucket name`);
       input.addEventListener("change", async () => {
+        if (!canEditBucketPreference()) { setSettingsStatus("Session preferences are read-only; reload before editing buckets.", true); renderBucketNames(); return; }
         const label = input.value.trim().slice(0, 40);
         input.value = label;
-        const previousBucketLabels = state.bucketLabels;
-        const bucketLabels = { ...previousBucketLabels };
+        const bucketLabels = { ...state.bucketLabels };
         if (!label || label === color.label) delete bucketLabels[color.id];
         else bucketLabels[color.id] = label;
         state.bucketLabels = bucketLabels;
         try {
-          const res = await fetch("/api/session-ui-state", { method: "PATCH", headers: api.headers(), body: JSON.stringify({ bucketLabels }) });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-          state.bucketLabels = data.sessionUiState?.bucketLabels || bucketLabels;
-          document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
-          populateBucketColorSelect(elements.settingDefaultBucketColorSelect, state);
-          const customCount = Object.keys(state.bucketLabels).length;
-          const hasCustomOrder = state.bucketOrder.some((id, index) => id !== defaultColors[index]?.id);
-          settingsShell?.setSummary("buckets", [customCount ? `${customCount} custom` : "", hasCustomOrder ? "Custom order" : ""].filter(Boolean).join(" · ") || "Names and display order");
-          settingsShell?.setSearchTerms("buckets", Object.values(state.bucketLabels).filter((value): value is string => Boolean(value)));
-          updateHandleLabel();
+          const saved = await saveBucketPreference({ bucketLabels });
+          if (!saved) throw new Error("Bucket names were not saved. Reload before retrying.");
+          renderBucketNames();
           setSettingsStatus("Bucket names saved");
         } catch (error) {
-          state.bucketLabels = previousBucketLabels;
           setSettingsStatus(error instanceof Error ? error.message : String(error), true);
           renderBucketNames();
         }
@@ -519,6 +506,7 @@ export function createSettings(options: {
 
       const handle = document.createElement("button");
       handle.type = "button";
+      handle.disabled = !canEditBucketPreference();
       handle.className = "settingsBucketDragHandle";
       handle.textContent = "⠿";
       handle.setAttribute("aria-describedby", instructions.id ||= "bucketOrderInstructions");
@@ -629,10 +617,9 @@ export function createSettings(options: {
         next.splice(next.indexOf(color.id), 1);
         next.splice(pointerIndex, 0, color.id);
         live.textContent = `${input.value.trim() || color.label} bucket dropped.`;
-        window.setTimeout(() => {
-          clearDragStyles();
-          void commitOrder(next, originalOrder);
-        }, reducedMotion ? 0 : 180);
+        const delay = reducedMotion ? 0 : 180;
+        void commitOrder(next, originalOrder, color.id, undefined, delay);
+        window.setTimeout(clearDragStyles, delay);
       });
       handle.addEventListener("pointercancel", cancelDrag);
       handle.addEventListener("lostpointercapture", () => { if (pointerId !== undefined) cancelDrag(); });
@@ -667,7 +654,6 @@ export function createSettings(options: {
           event.preventDefault();
           event.stopPropagation();
           keyboardGrabbed = false;
-          state.bucketOrder = originalOrder;
           live.textContent = "Reordering cancelled.";
           renderBucketNames();
           container.querySelector<HTMLElement>(`.settingsBucketNameRow[data-bucket-color="${color.id}"] .settingsBucketDragHandle`)?.focus({ preventScroll: true });
@@ -754,6 +740,9 @@ export function createSettings(options: {
     settingsShell = createSettingsShell(elements.settingsPanel);
     identitySettings = createIdentitySettings(elements.settingsPanel, api, value => applySettings(value as PiWebSettings), message => setSettingsStatus(message, true), message => setSettingsStatus(message, false));
     settingsShell.init();
+    document.addEventListener("pi-web-bucket-labels-changed", () => {
+      if (!elements.settingsPanel.hidden && !elements.settingsPanel.contains(document.activeElement)) renderBucketNames();
+    });
     securitySettings = createSecuritySettings({ container: elements.securitySettings, api, setStatus: setSettingsStatus });
     const restartContainer = elements.settingsPanel.querySelector<HTMLElement>("#settingsPageServer");
     const restartNavButton = elements.settingsPanel.querySelector<HTMLButtonElement>("#settingsNavServer");

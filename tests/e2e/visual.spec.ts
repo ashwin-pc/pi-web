@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { ensurePreviewArtifact } from "./helpers/artifacts.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -44,7 +45,7 @@ async function seedSessionShowcaseState(page: import("@playwright/test").Page, c
   for (const [sessionId, name] of [[currentSessionId, currentLabel], ["mock-older", "Customer evidence"], ["mock-release", "Release handoff"], ["mock-git", "Reference implementation"]] as const) {
     await page.request.post("/api/session/name", { data: { sessionId, name } });
   }
-  await page.request.patch("/api/session-ui-state", { data: {
+  await seedSessionUiState(page, {
     lanes: [
       { sessionId: currentSessionId, lane: "pinned", since: "2026-01-04T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "pinned", since: "2026-01-03T00:00:00.000Z" },
@@ -63,7 +64,7 @@ async function seedSessionShowcaseState(page: import("@playwright/test").Page, c
       { sessionId: "mock-git", color: "yellow", updatedAt: "2026-01-01T00:00:00.000Z" },
     ],
     selectedMarkerColor: "green",
-  } });
+  });
 }
 
 async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, projectName: string) {
@@ -95,7 +96,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   const state = await (await page.request.get("/api/state")).json();
   const sessionId = state.sessionId as string;
   await page.request.post("/api/session/name", { data: { sessionId: "mock-older", name: "Customer evidence library" } });
-  await page.request.patch("/api/session-ui-state", { data: {
+  await seedSessionUiState(page, {
     lanes: [
       { sessionId, lane: "pinned", since: "2026-05-07T08:00:00.000Z" },
       { sessionId: "mock-older", lane: "pinned", since: "2026-05-06T08:00:00.000Z" },
@@ -109,7 +110,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
       { sessionId: "mock-older", color: "green", updatedAt: "2026-05-06T08:00:00.000Z" },
     ],
     selectedMarkerColor: "blue",
-  } });
+  });
   await sendPrompt(page, "Create the launch brief story from the interview and research notes.");
   await expect(page.locator(".message.assistant", { hasText: "Launch brief ready" })).toBeVisible();
   await expect(page.locator(".toolCard.toolCard--success", { hasText: "read" })).toBeVisible();
@@ -567,7 +568,7 @@ test.describe("visual regression", () => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
     await page.setViewportSize(testInfo.project.name === "desktop" ? { width: 1440, height: 1000 } : { width: 390, height: 844 });
     await page.request.post("/api/mock/reset");
-    await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }] } });
+    await seedSessionUiState(page, { sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }] });
     await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
       const response = await route.fetch();
       const body = await response.json();
@@ -722,10 +723,10 @@ test.describe("visual regression", () => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
     if (testInfo.project.name === "desktop") await page.setViewportSize({ width: 1280, height: 900 });
 
-    await page.request.patch("/api/session-ui-state", { data: {
+    await seedSessionUiState(page, {
       sessionOrigins: [{ sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: "2026-01-01T00:00:00.000Z" }],
       sessionMarkers: [{ sessionId: "mock-current", color: "yellow", updatedAt: "2026-01-01T00:00:00.000Z" }],
-    } });
+    });
     await page.goto("/");
     await page.locator("#sessionButton").click();
     const drawer = page.locator("#sessionDrawer");

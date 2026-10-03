@@ -11,7 +11,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { HttpError } from "./server/shared/httpError.js";
-import { createSessionUiStateStore, defaultSessionUiState } from "./server/sessionUiState.js";
+import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
@@ -247,6 +247,18 @@ function resolveSessionId(value: unknown) {
   return typeof value === "string" && value.length > 0 ? value : session.sessionId;
 }
 
+type OptionalSessionUiState =
+  | { sessionUiState: Awaited<ReturnType<typeof sessionUiStateStore.read>>; sessionUiStateAvailability?: never; sessionUiStateWarning?: never }
+  | { sessionUiState?: never; sessionUiStateAvailability: "unavailable"; sessionUiStateWarning: string };
+
+async function readOptionalSessionUiState(): Promise<OptionalSessionUiState> {
+  try { return { sessionUiState: await sessionUiStateStore.read() }; }
+  catch (error) {
+    console.warn("Session UI state unavailable during chat read:", error);
+    return { sessionUiStateAvailability: "unavailable", sessionUiStateWarning: "Session preferences are unavailable. Chat remains available; preferences are read-only until storage is repaired." };
+  }
+}
+
 function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessionUiState: { sessionUnreadStates?: Array<{ sessionId: string; unreadAt: string }> }) {
   const unreadById = new Map((sessionUiState.sessionUnreadStates || []).map((item) => [item.sessionId, item]));
   return sessions.map((item) => {
@@ -373,6 +385,13 @@ function bindViewerSocket(clientId: string, ws: WebSocket) {
   if (connection) ws.on("close", () => sessionService.disconnectViewer(connection));
 }
 
+const createdSessionUiWarnings = new Map<string, string>();
+function takeCreatedSessionUiWarning(sessionId: string): string | undefined {
+  const warning = createdSessionUiWarnings.get(sessionId);
+  createdSessionUiWarnings.delete(sessionId);
+  return warning;
+}
+
 const mockHarness = createMockHarness({
   piCwd,
   broadcast,
@@ -390,12 +409,12 @@ function additionalExtensionPaths(cwd = piCwd) {
 
 async function transferCurrentTabUiState(oldSessionId: string, newSessionId: string, _newLabel: string, cwd: string) {
   if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return sessionUiStateStore.read();
-  const current = await sessionUiStateStore.read();
+  const next = await sessionUiStateStore.update((current) => {
   const oldLaneIndex = current.lanes.findIndex((item) => item.sessionId === oldSessionId);
   const oldNote = current.sessionNotes.find((item) => item.sessionId === oldSessionId);
   const oldMarker = current.sessionMarkers.find((item) => item.sessionId === oldSessionId);
   const hasUnreadState = current.sessionUnreadStates.some((item) => item.sessionId === oldSessionId || item.sessionId === newSessionId);
-  if (oldLaneIndex === -1 && !oldNote && !oldMarker && !hasUnreadState) return current;
+  if (oldLaneIndex === -1 && !oldNote && !oldMarker && !hasUnreadState) return undefined;
 
   const lanes = current.lanes.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
   if (oldLaneIndex !== -1) {
@@ -413,7 +432,8 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   }
   const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
 
-  const next = await sessionUiStateStore.write({ ...current, lanes, sessionNotes, sessionMarkers, sessionUnreadStates });
+  return { ...current, lanes, sessionNotes, sessionMarkers, sessionUnreadStates };
+  });
   broadcast({ type: "session_ui_state_changed", sessionUiState: next });
   return next;
 }
@@ -421,12 +441,11 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
 async function applyDefaultSessionBucket(sessionId: string) {
   const color = (await settingsStore.read()).defaults.sessionBucketColor;
   if (!sessionId || !color) return undefined;
-  const current = await sessionUiStateStore.read();
-  if (current.sessionMarkers.some((marker) => marker.sessionId === sessionId)) return current;
-  const sessionUiState = await sessionUiStateStore.write({
-    ...current,
-    sessionMarkers: [{ sessionId, color, updatedAt: new Date().toISOString() }, ...current.sessionMarkers],
-  });
+  const sessionUiState = await sessionUiStateStore.update((current) =>
+    current.sessionMarkers.some((marker) => marker.sessionId === sessionId) ? undefined : {
+      ...current,
+      sessionMarkers: [{ sessionId, color, updatedAt: new Date().toISOString() }, ...current.sessionMarkers],
+    });
   broadcast({ type: "session_ui_state_changed", sessionUiState });
   return sessionUiState;
 }
@@ -453,7 +472,7 @@ const handleSessionServiceEvent = createHostSessionEventHandler({
 const mockSessionFactory = mockMode ? {
   isMock: true,
   create: async ({ path }: { path?: string }) => ({ session: createMockSession(path) }),
-  list: async () => mockSessions,
+  list: async (cwd: string) => mockSessions.filter((item) => resolve(item.cwd || piCwd) === resolve(cwd)),
   remove: async (id: string) => {
     const index = mockSessions.findIndex((item) => item.id === id);
     if (index >= 0) mockSessions.splice(index, 1);
@@ -471,7 +490,14 @@ sessionService = new LocalSessionService({
       const defaults = (await settingsStore.read()).defaults;
       return { model: defaults.model, thinkingLevel: defaults.thinkingLevel };
     },
-    finalizeCreatedSession: applyDefaultSessionBucket,
+    finalizeCreatedSession: async (sessionId) => {
+      try { await applyDefaultSessionBucket(sessionId); }
+      catch (error) {
+        if (createdSessionUiWarnings.size >= 128) createdSessionUiWarnings.delete(createdSessionUiWarnings.keys().next().value!);
+        createdSessionUiWarnings.set(sessionId, error instanceof Error ? error.message : String(error));
+        console.warn(`Could not apply default session bucket for ${sessionId}:`, error);
+      }
+    },
   },
   globalCwd: () => piCwd,
   clientCount: () => realtimeHub.clientCount,
@@ -642,9 +668,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         setRecommendedAddonsExtensionEnabled(body.recommendedAddonsExtension === true);
         resetMockSessions();
         settlementTracker.reset();
-        await sessionUiStateStore.write(defaultSessionUiState);
+        const resetUiState = await sessionUiStateStore.reset();
         session = await sessionService.initialize();
-        broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
+        broadcast({ type: "session_ui_state_changed", sessionUiState: resetUiState });
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
       }
@@ -852,7 +878,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, {
           ok: true,
           ...await decorateServiceState(await sessionService.state(requestedSessionId)),
-          sessionUiState: await sessionUiStateStore.read(),
+          ...await readOptionalSessionUiState(),
           tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
@@ -999,8 +1025,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "GET" && url.pathname === "/api/sessions") {
         const extraCwds = url.searchParams.getAll("cwd");
-        const sessionUiState = await sessionUiStateStore.read();
-        return sendJson(res, 200, { ok: true, sessions: applySessionUnreadState(decorateSessionInfos(await sessionService.list(extraCwds)), sessionUiState) });
+        const sessions = decorateSessionInfos(await sessionService.list(extraCwds));
+        const optionalUi = await readOptionalSessionUiState();
+        return sendJson(res, 200, {
+          ok: true,
+          sessions: optionalUi.sessionUiState ? applySessionUnreadState(sessions, optionalUi.sessionUiState) : sessions,
+          ...optionalUi,
+        });
       }
 
       if (method === "GET" && url.pathname === "/api/session-ui-state") {
@@ -1008,9 +1039,16 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
-        const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
-        broadcast({ type: "session_ui_state_changed", sessionUiState });
-        return sendJson(res, 200, { ok: true, sessionUiState });
+        try {
+          const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+          broadcast({ type: "session_ui_state_changed", sessionUiState });
+          return sendJson(res, 200, { ok: true, sessionUiState });
+        } catch (error) {
+          if (error instanceof SessionUiStateConflictError) return sendJson(res, 409, { ok: false, error: error.message, revision: error.revision });
+          if (error instanceof SessionUiStatePreconditionError) return sendJson(res, error.status, { ok: false, error: error.message });
+          if (error instanceof SessionUiStateUnavailableError) return sendJson(res, 503, { ok: false, error: error.message });
+          throw error;
+        }
       }
 
       if (method === "POST" && (url.pathname === "/api/session-ui-state/read" || url.pathname === "/api/session-ui-state/unread")) {
@@ -1031,11 +1069,17 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
         try {
           const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
-          const sessionUiState = await sessionUiStateStore.removeSession(result.id);
+          let sessionUiStateWarning: string | undefined;
+          try {
+            const sessionUiState = await sessionUiStateStore.removeSession(result.id);
+            broadcast({ type: "session_ui_state_changed", sessionUiState });
+          } catch (error) {
+            sessionUiStateWarning = error instanceof Error ? error.message : String(error);
+            console.warn(`Could not remove session UI metadata for ${result.id}:`, error);
+          }
           settlementTracker.clear(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
-          broadcast({ type: "session_ui_state_changed", sessionUiState });
-          return sendJson(res, 200, { ok: true, ...result });
+          return sendJson(res, 200, { ok: true, ...result, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
         } catch (error: any) {
           return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -1176,11 +1220,18 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const result = await sessionService.executeCommand(target.sessionId, command);
         const created = result.state.sessionId !== target.sessionId;
         const decorated = await decorateServiceState(result.state);
-        const state = created && /^\/+clear(?:\s|$)/i.test(command)
-          ? { ...decorated, sessionUiState: await transferCurrentTabUiState(target.sessionId, decorated.sessionId, decorated.sessionTitle || "New session", decorated.cwd) }
-          : decorated;
+        let state: typeof decorated & { sessionUiState?: Awaited<ReturnType<typeof sessionUiStateStore.read>> } = decorated;
+        let sessionUiStateWarning = created ? takeCreatedSessionUiWarning(decorated.sessionId) : undefined;
+        if (created && /^\/+clear(?:\s|$)/i.test(command)) {
+          try {
+            state = { ...decorated, sessionUiState: await transferCurrentTabUiState(target.sessionId, decorated.sessionId, decorated.sessionTitle || "New session", decorated.cwd) };
+          } catch (error) {
+            sessionUiStateWarning = error instanceof Error ? error.message : String(error);
+            console.warn(`Could not transfer session UI metadata for ${decorated.sessionId}:`, error);
+          }
+        }
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
-        return sendJson(res, 200, { ok: true, message: result.message, state });
+        return sendJson(res, 200, { ok: true, message: result.message, state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
       if (method === "POST" && url.pathname === "/api/shell") {
@@ -1299,7 +1350,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           }
         }
         broadcast({ type: "state_changed", ...state });
-        return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}) });
+        const sessionUiStateWarning = takeCreatedSessionUiWarning(state.sessionId);
+        return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}), ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
       if (method === "POST" && url.pathname === "/api/session/cwd") {
@@ -1307,11 +1359,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const cwd = String(body.cwd || "").trim();
         if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
         try {
-          const baseState = await sessionService.switchCwd(resolveSessionId(body.sessionId), cwd);
+          const previousSessionId = resolveSessionId(body.sessionId);
+          const baseState = await sessionService.switchCwd(previousSessionId, cwd);
           const state = await decorateServiceState(baseState);
           noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
           broadcast({ type: "state_changed", ...state });
-          return sendJson(res, 200, { ok: true, ...state });
+          const sessionUiStateWarning = state.sessionId !== previousSessionId ? takeCreatedSessionUiWarning(state.sessionId) : undefined;
+          return sendJson(res, 200, { ok: true, ...state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
         } catch (error) {
           const status = error instanceof SessionServiceError ? error.status : 400;
           return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -1340,7 +1394,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
+    const status = error instanceof SessionUiStateUnavailableError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));

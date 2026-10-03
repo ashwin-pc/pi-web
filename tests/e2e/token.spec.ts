@@ -207,13 +207,54 @@ test.describe("token overlay", () => {
     await expect(page.locator("#messages")).toBeVisible();
   });
 
+  test("loads session preferences only after authentication and persists a pin without availability errors", async ({ page }) => {
+    const uiReads: number[] = [];
+    page.on("response", (response) => {
+      if (response.request().method() === "GET" && new URL(response.url()).pathname === "/api/session-ui-state") {
+        uiReads.push(response.status());
+      }
+    });
+    const initialState = page.waitForResponse((response) =>
+      response.request().method() === "GET" && new URL(response.url()).pathname === "/api/state" && response.status() === 401);
+    const challenge = page.waitForResponse((response) =>
+      response.request().method() === "GET" && new URL(response.url()).pathname === "/api/auth/challenge");
+    await page.goto("/");
+    await Promise.all([initialState, challenge]);
+    await expect(page.locator("#tokenOverlay")).toBeVisible();
+    expect(uiReads).toEqual([]);
+
+    const authorizedState = page.waitForResponse((response) =>
+      response.request().method() === "GET" && new URL(response.url()).pathname === "/api/state" && response.status() === 200);
+    await page.locator("#tokenInput").fill(CORRECT_TOKEN);
+    await page.locator("#tokenForm button[type=submit]").click();
+    await authorizedState;
+    await expect(page.locator("#tokenOverlay")).toBeHidden();
+    await expect.poll(() => uiReads).toEqual([200]);
+
+    await page.locator(".sessionBarTab.temporary .sessionBarTabAction").click();
+    await expect(page.locator(".sessionBarTab.pinned")).toHaveCount(1);
+    await expect.poll(async () => {
+      const response = await page.request.get("/api/session-ui-state");
+      const data = await response.json();
+      return data.sessionUiState?.lanes.some((entry: { sessionId: string; lane: string }) =>
+        entry.sessionId === "mock-current" && entry.lane === "pinned");
+    }).toBe(true);
+    expect(uiReads).toEqual([200]);
+    await expect(page.locator("#messages")).not.toContainText(/Session preferences unavailable/i);
+  });
+
   test("mints a session cookie and renders a sandboxed HTML artifact through srcdoc", async ({ page }) => {
     await ensurePreviewArtifact();
     await page.goto("/");
+    const sessionResponse = page.waitForResponse((response) =>
+      response.request().method() === "GET"
+      && new URL(response.url()).pathname === "/api/state"
+      && response.status() === 200);
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
     await page.locator("#tokenForm button[type=submit]").click();
+    expect(await (await sessionResponse).headerValue("set-cookie")).toContain("pi_web_session=");
     await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
-    expect((await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
+    await expect.poll(async () => (await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
 
     await expect(page.locator("#prompt")).toBeEnabled();
     await page.waitForTimeout(500);

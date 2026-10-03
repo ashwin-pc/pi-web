@@ -1,9 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 async function seedPinned(page: Page) {
-  await page.request.patch("/api/session-ui-state", {
-    data: { pinnedSessions: [{ id: "mock-current" }, { id: "mock-older" }] },
-  });
+  await seedSessionUiState(page, { pinnedSessions: [{ id: "mock-current" }, { id: "mock-older" }] });
 }
 
 async function switchToOlder(page: Page) {

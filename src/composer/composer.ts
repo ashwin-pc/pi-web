@@ -1,6 +1,6 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
-import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
+import { clearToken, saveToken, sessionUiMutationWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
 import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
@@ -51,6 +51,7 @@ export function createComposer(options: {
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   startNewSession: () => Promise<void>;
+  onSessionUiStateWarning: (warning: string) => void;
   beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
@@ -710,6 +711,8 @@ export function createComposer(options: {
       if (resetsSession && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
     }
+    const sessionUiStateWarning = sessionUiMutationWarning(data);
+    if (sessionUiStateWarning) options.onSessionUiStateWarning(sessionUiStateWarning);
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
     if (resetsSession) await refreshMessages();

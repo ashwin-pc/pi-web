@@ -1,11 +1,12 @@
 import { expect, test, type Page } from "@playwright/test";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 async function openShortcutTestApp(page: Page, pinnedSessions: Array<{ id: string }> = []) {
   await page.goto("about:blank");
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", { data: { composer: { expanded: false } } });
   if (pinnedSessions.length > 0) {
-    await page.request.patch("/api/session-ui-state", { data: { pinnedSessions } });
+    await seedSessionUiState(page, { pinnedSessions });
   }
   await page.goto("/");
   await expect(page.locator("#connectionStatus")).toBeHidden();
@@ -124,10 +125,10 @@ test.describe("keyboard shortcuts", () => {
   test("ctrl/cmd+shift+arrows cycle sessions in the focused lane", async ({ page }) => {
     await page.goto("about:blank");
     await page.request.post("/api/mock/reset");
-    await page.request.patch("/api/session-ui-state", { data: { lanes: [
+    await seedSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
-    ] } });
+    ] });
     await page.goto("/");
     await page.locator(".sessionLayersButton").click();
     await page.locator('.sessionLaneDrawerCard[data-session-id="mock-current"] .sessionLaneDrawerItem').click();

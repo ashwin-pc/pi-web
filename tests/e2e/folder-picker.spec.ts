@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 async function openPicker(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -13,7 +14,7 @@ async function openPicker(page: import("@playwright/test").Page) {
 
 test.describe("folder picker", () => {
   test("supports keyboard browse, favorites, recents, and successful selection", async ({ page }) => {
-    await page.request.patch("/api/session-ui-state", { data: { favoriteFolders: [] } });
+    await seedSessionUiState(page, { favoriteFolders: [] });
     const trigger = await openPicker(page);
     const search = page.getByRole("searchbox", { name: "Search saved folders" });
     if ((page.viewportSize()?.width || 0) > 640) await expect(search).toBeFocused();
@@ -75,7 +76,7 @@ test.describe("folder picker", () => {
   });
 
   test("shows quick-select errors and commits only one selection", async ({ page }) => {
-    await page.request.patch("/api/session-ui-state", { data: { favoriteFolders: ["/saved/favorite"] } });
+    await seedSessionUiState(page, { favoriteFolders: ["/saved/favorite"] });
     let requests = 0;
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });

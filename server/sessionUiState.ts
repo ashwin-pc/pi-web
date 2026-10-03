@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 export type SessionMarkerColorId = "blue" | "purple" | "yellow" | "red" | "green" | "orange" | "cyan" | "pink";
@@ -39,6 +39,7 @@ export type SessionOrigin = {
 export type SessionUiState = {
   version: 3;
   revision: number;
+  initialized: boolean;
   lanes: SessionLaneEntry[];
   sessionNotes: SessionNote[];
   pinnedFolders: string[];
@@ -65,7 +66,20 @@ export type SessionUiStatePatch = Partial<{
   allowedMarkerColors: unknown;
   bucketLabels: unknown;
   bucketOrder: unknown;
+  expectedRevision: unknown;
+  initialize: unknown;
+  force: unknown; // ignored: never bypasses revision checks
 }>;
+
+export class SessionUiStatePreconditionError extends Error {
+  constructor(readonly status: 428 | 400, message: string) { super(message); this.name = "SessionUiStatePreconditionError"; }
+}
+export class SessionUiStateConflictError extends Error {
+  constructor(readonly revision: number, message = "Session UI state revision conflict") { super(message); this.name = "SessionUiStateConflictError"; }
+}
+export class SessionUiStateUnavailableError extends Error {
+  constructor(message: string) { super(message); this.name = "SessionUiStateUnavailableError"; }
+}
 
 const defaultBucketOrder: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
 const markerColors = new Set<SessionMarkerColorId>(defaultBucketOrder);
@@ -80,6 +94,7 @@ const legacyBucketToColor: Record<string, SessionMarkerColorId> = {
 export const defaultSessionUiState: SessionUiState = {
   version: 3,
   revision: 0,
+  initialized: false,
   lanes: [],
   sessionNotes: [],
   pinnedFolders: [],
@@ -239,6 +254,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   if (!isRecord(value)) return state;
 
   if (typeof value.revision === "number" && Number.isSafeInteger(value.revision) && value.revision >= 0) state.revision = value.revision;
+  if (typeof value.initialized === "boolean") state.initialized = value.initialized;
 
   if (Array.isArray(value.lanes)) state.lanes = uniqueBy(value.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
 
@@ -322,99 +338,220 @@ export function applySessionUiStatePatch(current: SessionUiState, patch: unknown
   return normalizeSessionUiState(next);
 }
 
-export function createSessionUiStateStore(file: string) {
-  let cached: SessionUiState | undefined;
-  let futureVersion: number | undefined;
-  let writeQueue = Promise.resolve();
+function validPersistedState(raw: unknown): SessionUiState {
+  if (!isRecord(raw)) throw new Error("Invalid session UI state object");
+  const version = raw.version === undefined ? 1 : raw.version;
+  // Persisted v2/v3 always include lanes; legacy v1 always includes pinnedSessions.
+  // Revision-only and preference-only fragments are damaged files, not empty history.
+  if ((version === 1 && !Array.isArray(raw.pinnedSessions)) || ((version === 2 || version === 3) && !Array.isArray(raw.lanes))) throw new Error("Incomplete session UI state");
+  if (!Number.isSafeInteger(version) || (version as number) < 1 || (version as number) > 3) throw new Error(`Unsupported session UI state version ${String(version)}`);
+  if (raw.revision !== undefined && (!Number.isSafeInteger(raw.revision) || (raw.revision as number) < 0)) throw new Error("Invalid session UI state revision");
+  if (raw.initialized !== undefined && raw.initialized !== true) throw new Error("Invalid persisted initialization marker");
+  const arrays = ["lanes", "sessionNotes", "pinnedFolders", "favoriteFolders", "sessionMarkers", "sessionUnreadStates", "sessionOrigins", "allowedMarkerColors", "bucketOrder"];
+  for (const key of arrays) if (key in raw && !Array.isArray(raw[key])) throw new Error(`Invalid ${key}`);
+  if ("pinnedSessions" in raw && !Array.isArray(raw.pinnedSessions)) throw new Error("Invalid pinnedSessions");
+  for (const key of ["pinnedFolders", "favoriteFolders"]) if (Array.isArray(raw[key]) && !raw[key].every((item) => typeof item === "string" && item.trim())) throw new Error(`Invalid ${key} entry`);
+  if ("selectedMarkerColor" in raw && !normalizeMarkerColor(raw.selectedMarkerColor)) throw new Error("Invalid selectedMarkerColor");
+  for (const key of ["allowedMarkerColors", "bucketOrder"]) if (Array.isArray(raw[key]) && !raw[key].every((item) => normalizeMarkerColor(item))) throw new Error(`Invalid ${key} entry`);
+  if ("bucketLabels" in raw && (!isRecord(raw.bucketLabels) || !Object.entries(raw.bucketLabels).every(([key, label]) => normalizeMarkerColor(key) && typeof label === "string"))) throw new Error("Invalid bucketLabels");
+  const migrated = migrateSessionUiState(raw);
+  if (!isRecord(migrated)) throw new Error("Invalid migrated state");
+  const timestamp = (value: unknown) => value === undefined || (typeof value === "string" && !Number.isNaN(Date.parse(value)));
+  const entries: [string, (item: unknown) => boolean][] = [
+    ["lanes", (item) => Boolean(normalizeLaneEntry(item)) && isRecord(item) && typeof item.since === "string" && timestamp(item.since) && (item.cwd === undefined || typeof item.cwd === "string")],
+    ["sessionNotes", (item) => Boolean(normalizeSessionNote(item)) && isRecord(item) && timestamp(item.updatedAt)],
+    ["sessionMarkers", (item) => Boolean(normalizeSessionMarker(item)) && isRecord(item) && timestamp(item.updatedAt)],
+    ["sessionUnreadStates", (item) => Boolean(normalizeSessionUnreadState(item)) && isRecord(item) && timestamp(item.unreadAt) && timestamp(item.updatedAt)],
+    ["sessionOrigins", (item) => Boolean(normalizeSessionOrigin(item)) && isRecord(item) && timestamp(item.updatedAt)],
+  ];
+  for (const [key, valid] of entries) if (key in migrated && (!Array.isArray(migrated[key]) || !migrated[key].every(valid))) throw new Error(`Invalid ${key} entry`);
+  if (version === 1 && (raw.pinnedSessions !== undefined && (!Array.isArray(raw.pinnedSessions) || !raw.pinnedSessions.every((item) => isRecord(item) && typeof item.id === "string" && item.id.trim() && (item.cwd === undefined || typeof item.cwd === "string"))))) throw new Error("Invalid pinnedSessions entry");
+  return { ...normalizeSessionUiState(migrated), initialized: true };
+}
 
+export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: () => Promise<void>; beforePrimaryCommit?: () => Promise<void>; beforeMirror?: () => Promise<void> } = {}) {
+  let cached: SessionUiState | undefined;
+  let loadPromise: Promise<SessionUiState> | undefined;
+  let highWater = 0;
+  let writeQueue = Promise.resolve();
+  const historyFile = `${file}.history.json`;
+  const backup = (index: number) => `${file}.bak-${index}.json`;
+  const missing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
+  let tempSequence = 0;
+  const tempPath = (target: string) => `${target}.${process.pid}.${++tempSequence}.tmp`;
+
+  async function atomicFile(target: string, contents: string) {
+    const temp = tempPath(target);
+    try { await writeFile(temp, contents, { flag: "wx" }); await rename(temp, target); }
+    catch (error) { await rm(temp, { force: true }).catch(() => undefined); throw error; }
+  }
+  async function reserveRevision(revision: number) {
+    await atomicFile(historyFile, `${JSON.stringify({ highWater: revision })}\n`);
+    highWater = revision;
+  }
   async function serializeWrite<T>(operation: () => Promise<T>) {
     const result = writeQueue.then(operation, operation);
     writeQueue = result.then(() => undefined, () => undefined);
     return result;
   }
-
-  async function read() {
+  async function readValidated(path: string) {
+    return validPersistedState(JSON.parse(await readFile(path, "utf-8")));
+  }
+  async function loadCommitted() {
     if (cached) return cloneState(cached);
+    if (loadPromise) return cloneState(await loadPromise);
+    loadPromise = loadFromDisk();
+    try { return cloneState(await loadPromise); }
+    finally { loadPromise = undefined; }
+  }
+  async function read() { return serializeWrite(loadCommitted); }
+  async function loadFromDisk(): Promise<SessionUiState> {
+    await hooks.beforeLoad?.();
+    let historyExists = false;
     try {
-      const raw = JSON.parse(await readFile(file, "utf-8"));
-      if (isRecord(raw) && typeof raw.version === "number" && raw.version > 3) {
-        futureVersion = raw.version;
-        console.warn(`Refusing to read future session UI state version ${raw.version} at ${file}`);
-        cached = cloneState(defaultSessionUiState);
-      } else cached = normalizeSessionUiState(migrateSessionUiState(raw));
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.warn(`Could not read pi-web session UI state at ${file}:`, error);
-      }
-      cached = cloneState(defaultSessionUiState);
+      const history = JSON.parse(await readFile(historyFile, "utf-8"));
+      if (!isRecord(history) || !Number.isSafeInteger(history.highWater) || (history.highWater as number) < 0) throw new Error("Invalid revision history");
+      highWater = history.highWater as number;
+      historyExists = true;
+    } catch (error) { if (!missing(error)) throw new SessionUiStateUnavailableError(`Cannot read session UI history: ${String(error)}`); }
+    let primaryMissing = false;
+    let primaryError: unknown;
+    try {
+      const primary = await readValidated(file);
+      if (primary.revision > highWater) { await reserveRevision(primary.revision); }
+      cached = primary;
+      return cloneState(primary);
+    } catch (error) { primaryMissing = missing(error); primaryError = error; }
+    // Never use backups to downgrade an unsupported future-format primary.
+    if (!primaryMissing) {
+      try {
+        const raw = JSON.parse(await readFile(file, "utf-8"));
+        if (isRecord(raw) && typeof raw.version === "number" && raw.version > 3) throw new SessionUiStateUnavailableError(`Unsupported session UI state version ${raw.version}`);
+      } catch (error) { if (error instanceof SessionUiStateUnavailableError) throw error; }
     }
-    return cloneState(cached);
+    let recovered: SessionUiState | undefined;
+    let backupExists = false;
+    for (let index = 1; index <= 5; index++) {
+      try {
+        const candidate = await readValidated(backup(index));
+        backupExists = true;
+        if (!recovered || candidate.revision > recovered.revision) recovered = candidate;
+      } catch (error) {
+        if (!missing(error)) backupExists = true;
+      }
+    }
+    if (!recovered) {
+      if (primaryMissing && !historyExists && !backupExists) return cloneState(cached = cloneState(defaultSessionUiState));
+      throw new SessionUiStateUnavailableError(`Session UI state unavailable; no valid backup (${String(primaryError)})`);
+    }
+    // Preserve damaged primary bytes for investigation; recovery is a new, strictly higher revision.
+    if (!primaryMissing) await rename(file, `${file}.corrupt-${Date.now()}-${process.pid}`);
+    const revision = Math.max(highWater, recovered.revision) + 1;
+    if (!Number.isSafeInteger(revision)) throw new SessionUiStateUnavailableError("Session UI state revision exhausted");
+    const next = { ...recovered, initialized: true, revision };
+    try {
+      await reserveRevision(next.revision);
+      await atomicFile(file, `${JSON.stringify(next, null, 2)}\n`);
+    } catch (error) { throw new SessionUiStateUnavailableError(`Cannot restore session UI state: ${String(error)}`); }
+    cached = next;
+    return cloneState(next);
   }
 
+  async function rotateBackups(current: SessionUiState) {
+    // Back up validated state only; preserve the immediately preceding commit before replacing primary.
+    for (let index = 5; index >= 2; index--) {
+      try { await rename(backup(index - 1), backup(index)); }
+      catch (error) { if (!missing(error)) throw error; }
+    }
+    await atomicFile(backup(1), `${JSON.stringify(current, null, 2)}\n`);
+  }
   async function writeState(state: SessionUiState) {
-    if (futureVersion !== undefined) throw new Error(`Session UI state version ${futureVersion} is newer than this build; refusing to overwrite ${file}`);
-    const normalized = normalizeSessionUiState(state);
-    cached = { ...normalized, revision: Math.max(cached?.revision || 0, normalized.revision) + 1 };
+    const current = await loadCommitted();
+    const revision = Math.max(current.revision, highWater) + 1;
+    if (!Number.isSafeInteger(revision)) throw new SessionUiStateUnavailableError("Session UI state revision exhausted");
+    const next: SessionUiState = { ...normalizeSessionUiState(state), initialized: true, revision };
+    // The same validator used on restart must accept every state we commit.
+    // Validate before touching history, backups, temp files, or the cache.
+    try { validPersistedState(next); }
+    catch { throw new SessionUiStatePreconditionError(400, "Invalid session UI state payload"); }
     await mkdir(dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(cached, null, 2)}\n`, "utf-8");
-    await rename(tmp, file);
-    return cloneState(cached);
+    const temp = tempPath(file);
+    try {
+      await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`, { flag: "wx" });
+      if (current.initialized) await rotateBackups(current);
+      await reserveRevision(next.revision);
+      await hooks.beforePrimaryCommit?.();
+      // Atomic primary rename is the commit point. No fallible work after it before cache publish.
+      await rename(temp, file);
+      cached = next;
+      // Mirror latest committed state inside the five slots, including on the first write.
+      // Post-commit mirror failure is logged, never reported as a failed PATCH.
+      try {
+        await hooks.beforeMirror?.();
+        await atomicFile(backup(1), `${JSON.stringify(next, null, 2)}\n`);
+      } catch (error) { console.warn(`Could not mirror committed session UI state at ${file}:`, error); }
+      return cloneState(next);
+    } catch (error) {
+      // A reserved revision without a committed primary must be re-evaluated from disk.
+      cached = undefined;
+      await rm(temp, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
-
-  async function write(state: SessionUiState) {
-    return serializeWrite(() => writeState(state));
+  async function update(reducer: (current: SessionUiState) => SessionUiState | undefined) {
+    return serializeWrite(async () => {
+      const current = await loadCommitted();
+      const next = reducer(current);
+      return next ? writeState(next) : current;
+    });
   }
-
+  async function reset() { return update(() => cloneState(defaultSessionUiState)); }
   async function patch(value: SessionUiStatePatch | unknown) {
-    return serializeWrite(async () => writeState(applySessionUiStatePatch(await read(), value)));
+    if (!isRecord(value) || !Object.hasOwn(value, "expectedRevision")) throw new SessionUiStatePreconditionError(428, "expectedRevision is required");
+    if (!Number.isSafeInteger(value.expectedRevision) || (value.expectedRevision as number) < 0) throw new SessionUiStatePreconditionError(400, "expectedRevision must be a safe nonnegative integer");
+    if ("initialize" in value && value.initialize !== true) throw new SessionUiStatePreconditionError(400, "initialize must be true when provided");
+    return update((current) => {
+      if (value.expectedRevision !== current.revision) throw new SessionUiStateConflictError(current.revision);
+      if (value.initialize === true && (current.initialized || current.revision !== 0)) throw new SessionUiStateConflictError(current.revision, "Session UI state already initialized");
+      return applySessionUiStatePatch(current, value);
+    });
   }
 
   async function markUnread(sessionId: string, unreadAt = new Date().toISOString()) {
     const id = sessionId.trim();
     if (!id) return read();
-    return serializeWrite(async () => {
-      const current = await read();
-      if (current.sessionUnreadStates.some((item) => item.sessionId === id)) return current;
+    return update((current) => {
+      if (current.sessionUnreadStates.some((item) => item.sessionId === id)) return undefined;
       const next: SessionUnreadState = { sessionId: id, unreadAt, updatedAt: new Date().toISOString() };
-      return writeState({ ...current, sessionUnreadStates: [next, ...current.sessionUnreadStates] });
+      return { ...current, sessionUnreadStates: [next, ...current.sessionUnreadStates] };
     });
   }
 
   async function markRead(sessionId: string) {
     const id = sessionId.trim();
     if (!id) return read();
-    return serializeWrite(async () => {
-      const current = await read();
+    return update((current) => {
       const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== id);
-      if (sessionUnreadStates.length === current.sessionUnreadStates.length) return current;
-      return writeState({ ...current, sessionUnreadStates });
+      return sessionUnreadStates.length === current.sessionUnreadStates.length ? undefined : { ...current, sessionUnreadStates };
     });
   }
 
   async function setSessionOrigin(sessionId: string, originSessionId: string, kind = "spawn") {
     const origin = normalizeSessionOrigin({ sessionId, originSessionId, kind });
     if (!origin) return read();
-    return serializeWrite(async () => {
-      const current = await read();
-      const sessionOrigins = [origin, ...current.sessionOrigins.filter((item) => item.sessionId !== origin.sessionId)];
-      return writeState({ ...current, sessionOrigins });
-    });
+    return update((current) => ({ ...current, sessionOrigins: [origin, ...current.sessionOrigins.filter((item) => item.sessionId !== origin.sessionId)] }));
   }
 
   async function removeSession(sessionId: string) {
-    return serializeWrite(async () => {
-      const current = await read();
-      return writeState({
-        ...current,
-        lanes: current.lanes.filter((item) => item.sessionId !== sessionId),
-        sessionNotes: current.sessionNotes.filter((item) => item.sessionId !== sessionId),
-        sessionMarkers: current.sessionMarkers.filter((item) => item.sessionId !== sessionId),
-        sessionUnreadStates: current.sessionUnreadStates.filter((item) => item.sessionId !== sessionId),
-        sessionOrigins: current.sessionOrigins.filter((item) => item.sessionId !== sessionId && item.originSessionId !== sessionId),
-      });
-    });
+    return update((current) => ({
+      ...current,
+      lanes: current.lanes.filter((item) => item.sessionId !== sessionId),
+      sessionNotes: current.sessionNotes.filter((item) => item.sessionId !== sessionId),
+      sessionMarkers: current.sessionMarkers.filter((item) => item.sessionId !== sessionId),
+      sessionUnreadStates: current.sessionUnreadStates.filter((item) => item.sessionId !== sessionId),
+      sessionOrigins: current.sessionOrigins.filter((item) => item.sessionId !== sessionId && item.originSessionId !== sessionId),
+    }));
   }
 
-  return { file, read, write, patch, markUnread, markRead, removeSession, setSessionOrigin };
+  return { file, read, update, reset, patch, markUnread, markRead, removeSession, setSessionOrigin };
 }
