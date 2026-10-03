@@ -1,0 +1,155 @@
+.identityFields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 12px;
+  margin: 16px 0;
+}
+.identityFields label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; }
+.identityFields input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+.identityGallery {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-auto-rows: clamp(135px, 24vw, 225px);
+  max-width: 600px;
+  gap: 10px;
+  margin: 16px 0;
+}
+.identityChoice {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  height: 100%;
+  padding: 7px 7px 8px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--panel-2);
+  color: var(--muted);
+  cursor: pointer;
+}
+.identityChoice:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); color: var(--text); }
+.identityChoice[aria-pressed="true"] {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel-2));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.identityChoice[aria-pressed="true"]::after {
+  content: "✓";
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  display: grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  border: 2px solid var(--panel-2);
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--panel);
+  font-size: 11px;
+  font-weight: 800;
+}
+.identityChoiceImage {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 0;
+  background: transparent;
+}
+.identityChoiceLabel { overflow: hidden; font-size: 11px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.identityChoiceCustom { aspect-ratio: auto; flex-direction: row; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 54px; margin: 10px 0; border-style: dashed; }
+.identityChoiceCustomIcon { display: grid; place-items: center; font-size: 28px; font-weight: 300; }
+.identityUploadLabel { display: block; color: var(--muted); font-size: 11px; }
+.identityUploadLabel input { display: block; width: 100%; margin-top: 7px; color: var(--muted); }
+.identityPreviewModes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin: 20px 0 10px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--panel) 78%, #000);
+}
+.identityPreviewModes button { min-height: 34px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); }
+.identityPreviewModes button[aria-selected="true"] { background: var(--panel-2); color: var(--text); box-shadow: 0 2px 8px rgba(0, 0, 0, .24); }
+.identityPreview {
+  min-height: 300px;
+  padding: 14px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: radial-gradient(circle at 50% 34%, color-mix(in srgb, var(--accent) 8%, var(--panel-2)), var(--panel) 70%);
+}
+.identityPhone {
+  width: min(220px, 82%);
+  height: 272px;
+  margin: auto;
+  padding: 14px;
+  border: 4px solid color-mix(in srgb, var(--panel) 70%, #000);
+  border-radius: 27px;
+  background: radial-gradient(circle at 78% 24%, color-mix(in srgb, var(--accent) 20%, transparent), transparent 58%), #151a17;
+  box-shadow: 0 14px 35px rgba(0, 0, 0, .35);
+}
+.identityPhoneStatus { display: flex; justify-content: space-between; color: var(--text); font-size: 9px; }
+.identityPhoneApps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; margin-top: 34px; text-align: center; }
+.identityPhoneApp { min-width: 0; }
+.identityPhoneIcon, .identityPhonePlaceholder { display: block; width: 48px; max-width: 100%; aspect-ratio: 1; margin: 0 auto 5px; border-radius: 13px; }
+.identityPhoneIcon { object-fit: cover; box-shadow: 0 5px 12px rgba(0, 0, 0, .35); }
+.identityPhonePlaceholder { background: rgba(255, 255, 255, .06); }
+.identityPhoneApp span { display: block; overflow: hidden; color: var(--text); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.identityPhoneDock { display: flex; justify-content: center; gap: 10px; margin-top: 102px; padding: 9px; border-radius: 16px; background: rgba(255, 255, 255, .05); }
+.identityPhoneDock span { width: 32px; height: 32px; border-radius: 10px; background: rgba(255, 255, 255, .07); }
+.identitySessionShell {
+  position: relative;
+  height: 270px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--panel) 90%, #000);
+}
+.identitySessionTop { display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 11px; border-bottom: 1px solid var(--border); color: var(--muted); font-size: 10px; }
+.identitySessionDot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.identitySessionTitle { margin-left: auto; }
+.identitySessionEmpty { position: absolute; inset: 38px 0 66px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.identitySessionAvatar { width: 92px; height: 92px; }
+.identitySessionDirectory { margin-top: 4px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); background: var(--panel-2); font: 9px ui-monospace, monospace; }
+.identityComposerPreview { position: absolute; right: 13px; bottom: 13px; left: 13px; height: 46px; padding: 15px 13px; border: 1px solid var(--border); border-radius: 15px; color: var(--muted); background: var(--panel-2); font-size: 10px; }
+.identityPreviewFab { position: absolute; top: -10px; right: -7px; width: 54px; height: 54px; border-radius: 50%; object-fit: contain; filter: drop-shadow(0 7px 10px rgba(0, 0, 0, .5)); }
+.identityActions { display: flex; gap: 10px; margin: 16px 0 0; }
+.identityActions button { min-height: 38px; padding: 0 14px; border-radius: 9px; }
+#identitySave { border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); background: color-mix(in srgb, var(--accent) 16%, var(--panel)); color: var(--text); }
+.avatarMedia { position: relative; display: block; overflow: hidden; flex: 0 0 auto; }
+.avatarMediaStill, .avatarMediaViewport { position: absolute; inset: 0; width: 100%; height: 100%; }
+.avatarMediaStill { object-fit: contain; }
+.avatarMediaViewport { opacity: 0; }
+.avatarMediaPlaying .avatarMediaViewport { opacity: 1; }
+.avatarMediaPlaying .avatarMediaStill { opacity: 0; }
+.avatarMediaVideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: fill; }
+#emptyCwdChooser .newChatLoadingAnimation { mix-blend-mode: normal; opacity: 1; mask-image: none; -webkit-mask-image: none; }
+@media (prefers-reduced-motion: reduce) { .avatarMediaViewport { display: none; } }
+.identitySpring { animation: identitySpring .62s cubic-bezier(.18, .88, .28, 1.2) both; }
+@keyframes identitySpring {
+  0% { opacity: 0; filter: brightness(1); transform: translateY(70%) scale(.96); }
+  68% { opacity: 1; filter: brightness(1.18) drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 38%, transparent)); transform: translateY(-7%) scale(1.02); }
+  84% { filter: brightness(1.06); transform: translateY(3%) scale(.995); }
+  100% { opacity: 1; filter: brightness(1); transform: translateY(0) scale(1); }
+}
+#emptyCwdChooser .newChatLoadingAnimation[hidden] { display: none; }
+@media (max-width: 720px) {
+  .identityFields { grid-template-columns: 1fr; }
+  .identityGallery { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  #emptyCwdChooser .identityNewSessionStill { width: 92px; height: 92px; }
+}
+@media (prefers-reduced-motion: reduce) { .identitySpring { animation: none; } }

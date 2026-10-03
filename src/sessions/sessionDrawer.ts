@@ -3,7 +3,7 @@ import type { AppElements } from "../app/elements.js";
 import { iconElement, setIcon, type IconName } from "../app/icons.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.js";
-import { panelOverlayModeQuery } from "../layout/responsive.js";
+import { sessionDrawerAutoCloseQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, shouldMigrateLocalUiState, writeActiveSessionIdToUrl } from "../app/types.js";
@@ -11,6 +11,7 @@ import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfo
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
 import { sessionLaneIcon, sessionLaneMeta } from "./lanes.js";
+import { emptySessionCandidates, queueNewSession, reusableEmptySession } from "./newSession.js";
 import { animateReorderLayout, edgeScrollVelocity, insertionIndex, prefersReducedReorderMotion } from "../components/reorderMotion.js";
 import { openFolderPicker as showFolderPicker, type FolderListing } from "../files/folderPicker.js";
 
@@ -42,7 +43,7 @@ export type SessionsController = {
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
   activeWorkersFor: (sessionId: string) => ActiveWorker[];
-  openSessionTab: (sessionId: string, cwd: string) => Promise<void>;
+  openSessionTab: (sessionId: string, cwd: string) => Promise<"opened" | "missing" | "failed">;
   openSessionById: (sessionId: string) => Promise<void>;
 };
 
@@ -101,7 +102,7 @@ function folderDisplayNames(cwds: string[]) {
 }
 
 function shouldCloseDrawerAfterSessionSwitch() {
-  return window.matchMedia(`${panelOverlayModeQuery}, (max-height: 520px)`).matches;
+  return window.matchMedia(sessionDrawerAutoCloseQuery).matches;
 }
 
 const knownSessionCwdsStorageKey = "pi-web-known-session-cwds";
@@ -169,8 +170,10 @@ export function createSessions(options: {
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   refreshSessionTitle: () => Promise<void>;
+  checkpointTranscript: () => { restore: () => void };
   clearMessages: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => void;
+  hasSessionDraft: (sessionId: string) => boolean;
   /** Called whenever derived per-session state (e.g. waiting-on-spawned/active workers) may have changed. */
   onDerivedSessionStateChanged?: () => void;
 }): SessionsController {
@@ -217,7 +220,16 @@ export function createSessions(options: {
   let transcriptLoading = true;
   let transcriptLoadGeneration = 0;
   let lastReplayedGeneration = -1;
-  const newChatAnimationPlaybackRate = 1.2;
+  // Every open is a navigation intent, including refreshes of the active tab.
+  let sessionOpenGeneration = 0;
+  // One stable rollback source per navigation transaction, never the blank
+  // optimistic transcript of an earlier pending click.
+  let pendingOpen: {
+    sessionId: string;
+    lane: SessionLaneId;
+    checkpoint: ReturnType<typeof options.checkpointTranscript>;
+    targetId: string;
+  } | undefined;
   let sessionBarGestureInFlight = false;
   let sessionBarRenderQueued = false;
   let sessionListRenderFrame: number | undefined;
@@ -309,6 +321,13 @@ export function createSessions(options: {
   };
 
   function beginTranscriptLoading() {
+    // New/clear and other external transcript navigation supersede tab opens.
+    ++sessionOpenGeneration;
+    pendingOpen = undefined;
+    markTranscriptLoading();
+  }
+
+  function markTranscriptLoading() {
     transcriptLoading = true;
     transcriptLoadGeneration += 1;
     updateEmptyCwdChooser();
@@ -336,36 +355,55 @@ export function createSessions(options: {
     updateEmptyCwdChooser();
   }
 
+  let animationBlob: Promise<Blob> | undefined;
+  let animationBlobSource: string | undefined;
+  let animationObjectUrl: string | undefined;
+  // Avatar switches (including reduced-motion changes) replace the media node.
+  // Release a replay URL as soon as its image is no longer the current media.
+  new MutationObserver(() => {
+    if (!animationObjectUrl) return;
+    const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+    if (current?.src === animationObjectUrl) return;
+    URL.revokeObjectURL(animationObjectUrl);
+    animationObjectUrl = undefined;
+  }).observe(elements.emptyCwdChooserEl, { childList: true, subtree: true, attributes: true, attributeFilter: ["src"] });
   async function restartNewChatAnimation(generation: number) {
-    const video = elements.emptyCwdChooserEl.querySelector<HTMLVideoElement>(".newChatLoadingAnimation");
-    if (!video) {
-      if (generation !== transcriptLoadGeneration) return;
-      transcriptLoading = false;
-      updateEmptyCwdChooser();
-      return;
-    }
-
-    video.classList.add("resetting");
-    video.pause();
-    video.playbackRate = newChatAnimationPlaybackRate;
-    video.currentTime = 0;
-    if (video.seeking) {
-      await new Promise<void>((resolve) => {
-        const timeout = window.setTimeout(resolve, 150);
-        video.addEventListener("seeked", () => {
-          window.clearTimeout(timeout);
-          resolve();
-        }, { once: true });
-      });
-    }
     if (generation !== transcriptLoadGeneration) return;
-
     transcriptLoading = false;
     updateEmptyCwdChooser();
-    // Visibility must not depend on codec support: nested source failures can
-    // leave play() pending forever in Chromium builds without H.264.
-    video.classList.remove("resetting");
-    void video.play().catch(() => undefined);
+    const animation = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+    if (!animation) return;
+    const canonicalUrl = animation.dataset.canonicalUrl || animation.src.split("?")[0];
+    if (animationBlobSource !== canonicalUrl) {
+      animationBlobSource = canonicalUrl;
+      animationBlob = undefined;
+    }
+    try {
+      if (!animationBlob) {
+        const download = fetch(canonicalUrl).then(response => {
+          if (!response.ok) throw new Error(`Avatar animation failed (${response.status})`);
+          return response.blob();
+        });
+        const pending = download.catch(error => {
+          if (animationBlob === pending) animationBlob = undefined;
+          throw error;
+        });
+        animationBlob = pending;
+      }
+      const blob = await animationBlob;
+      if (generation !== transcriptLoadGeneration || animationBlobSource !== canonicalUrl) return;
+      // Settings may replace the media node while the first download is in flight.
+      const current = elements.emptyCwdChooserEl.querySelector<HTMLImageElement>("#identityNewSessionAnimation");
+      if (current !== animation || (current.dataset.canonicalUrl || current.src.split("?")[0]) !== canonicalUrl) return;
+      const next = URL.createObjectURL(blob);
+      const previous = animationObjectUrl;
+      animationObjectUrl = next;
+      current.dataset.canonicalUrl = canonicalUrl;
+      current.src = next;
+      if (previous) URL.revokeObjectURL(previous);
+    } catch {
+      // The original image remains visible when offline or unavailable.
+    }
   }
 
   async function selectSessionCwd(cwd: string) {
@@ -412,22 +450,73 @@ export function createSessions(options: {
     });
   }
 
-  async function startNewSession(cwd?: string) {
+  const startNewSession = queueNewSession(
+    () => state.currentCwd,
+    (cwd) => startOrReuseSession(cwd, cwd || state.currentCwd, state.currentSessionId),
+  );
+
+  async function startOrReuseSession(cwd: string | undefined, targetCwd: string, previousSessionId: string) {
     const wasDrawerOpen = !elements.sessionDrawer.hidden;
-    const res = await fetch("/api/sessions/new", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: state.currentSessionId }),
-    });
-    if (!res.ok) throw new Error(await res.text());
-    const data = await res.json();
-    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
-    rememberSessionCwd(cwd || data.cwd || state.currentCwd);
-    beginTranscriptLoading();
-    clearMessages();
-    sessionState.applySnapshot(data, { activate: true });
-    await refreshState();
-    updateEmptyCwdChooser();
+    const pinNewSessions = state.settings.defaults.pinNewSessions === true;
+    let reusable: ReturnType<typeof reusableEmptySession>;
+    if (pinNewSessions) {
+      // Validate even the active tab: a recent prompt or external edit can make
+      // its previously empty snapshot stale before realtime stats arrive.
+      await refreshSessions(true);
+      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+      if (!reusable) {
+        // Cold listings deliberately omit counts. Read candidate snapshots without
+        // moving this browser's viewer lease or opening/changing the active tab.
+        const headers = api.headers();
+        delete headers["x-pi-web-client-id"];
+        // Local slash-command output can make the active tab's optimistic
+        // projection look non-empty even though its authoritative transcript is
+        // blank. Validate it alongside ordinary empty candidates.
+        const activeCandidate = state.sessionsById[state.currentSessionId];
+        const candidates = [
+          ...(activeCandidate && activeCandidate.cwd === targetCwd && !options.hasSessionDraft(activeCandidate.id) ? [activeCandidate] : []),
+          ...emptySessionCandidates(state, targetCwd, options.hasSessionDraft),
+        ];
+        for (const candidate of Array.from(new Map(candidates.map((item) => [item.id, item])).values())) {
+          const res = await fetch(`/api/state?sessionId=${encodeURIComponent(candidate.id)}`, { headers });
+          if (res.status === 404) {
+            discardMissingSession(candidate.id);
+            continue; // A stale pin may point at a deleted session.
+          }
+          if (!res.ok) throw new Error(await res.text());
+          sessionState.applySnapshot(await res.json());
+          reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+          if (reusable) break;
+        }
+      }
+    }
+    while (reusable) {
+      // Opening is the authoritative existence check and also refreshes an
+      // already-active candidate, which removes transient local-only output.
+      // A cached pin can disappear or gain a message between discovery and open.
+      const openedId = reusable.id;
+      const result = await openSessionTab(openedId, targetCwd);
+      if (result === "failed") return; // Never create a duplicate after a network/server failure.
+      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+      if (result === "opened" && reusable?.id === openedId) break;
+    }
+    if (!reusable) {
+      const res = await fetch("/api/sessions/new", {
+        method: "POST",
+        headers: api.headers(),
+        body: JSON.stringify({ ...(cwd ? { cwd } : {}), sessionId: previousSessionId }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
+      rememberSessionCwd(cwd || data.cwd || state.currentCwd);
+      beginTranscriptLoading();
+      clearMessages();
+      sessionState.applySnapshot(data, { activate: true });
+      if (pinNewSessions && data.sessionId) moveToLane(data.sessionId, "pinned", { cwd: data.cwd || targetCwd });
+      await refreshState();
+      finishTranscriptLoading();
+    }
     if (shouldCloseDrawerAfterSessionSwitch()) {
       setSessionDrawerOpen(false);
     } else if (wasDrawerOpen) {
@@ -510,14 +599,16 @@ export function createSessions(options: {
     return sessionRefreshPromise;
   }
 
-  async function applyOpenedSession(openRes: Response) {
+  async function applyOpenedSession(openRes: Response, ownsOpen: () => boolean) {
+    if (!ownsOpen()) return false;
     const data = await openRes.json();
+    if (!ownsOpen()) return false;
     const responseSessionId = typeof data.sessionId === "string" ? data.sessionId : "";
     sessionState.applySnapshot(data, { activate: Boolean(responseSessionId && responseSessionId === state.currentSessionId) });
     if (responseSessionId && responseSessionId !== state.currentSessionId) return false;
     if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
     await Promise.all([refreshModels(), refreshMessages()]);
-    return !responseSessionId || responseSessionId === state.currentSessionId;
+    return ownsOpen() && (!responseSessionId || responseSessionId === state.currentSessionId);
   }
 
   function markCachedCurrentSession(sessionId: string, cwd: string) {
@@ -1313,37 +1404,85 @@ export function createSessions(options: {
     return "Session";
   }
 
-  async function openSessionTab(sessionId: string, cwd: string) {
-    const previousSessionId = state.currentSessionId;
-    const previousFocusedLane = focusedLane;
+  function discardMissingSession(sessionId: string) {
+    cachedSessions = cachedSessions.filter((session) => session.id !== sessionId);
+    sessionState.remove(sessionId);
+    const lane = laneOf(sessionId);
+    state.lanes = state.lanes.filter((entry) => entry.sessionId !== sessionId);
+    if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane];
+    saveLaneFocus();
+    // Preserve notes, markers, and all other preferences: only the vanished
+    // session's cached projection and lane are no longer meaningful.
+    if (lane) persistSessionUiState({ lanes: state.lanes });
+    syncPinnedProjection();
+    renderSessionList(cachedSessions);
+    renderSessionBar();
+  }
+
+  async function openSessionTab(sessionId: string, cwd: string): Promise<"opened" | "missing" | "failed"> {
+    const openGeneration = ++sessionOpenGeneration;
+    if (pendingOpen && pendingOpen.targetId !== state.currentSessionId) pendingOpen = undefined;
+    const transaction = pendingOpen ?? {
+      sessionId: state.currentSessionId,
+      lane: focusedLane,
+      checkpoint: options.checkpointTranscript(),
+      targetId: sessionId,
+    };
+    pendingOpen = transaction;
+    transaction.targetId = sessionId;
     const targetLane = laneOf(sessionId);
-    const switchingSessions = state.currentSessionId !== sessionId;
+    let missing = false;
+    const ownsOpen = () => openGeneration === sessionOpenGeneration && pendingOpen === transaction && state.currentSessionId === sessionId;
     if (targetLane) focusedLane = targetLane;
-    if (switchingSessions) {
-      sessionState.activate(sessionId);
-      beginTranscriptLoading();
-      clearMessages();
-    }
+    sessionState.activate(sessionId);
+    markTranscriptLoading();
+    clearMessages();
+    renderSessionBar();
     try {
       const openRes = await fetch("/api/sessions/open", {
         method: "POST",
         headers: api.headers(),
         body: JSON.stringify({ sessionId, cwd, clientId: api.clientId }),
       });
-      if (!openRes.ok) throw new Error(await openRes.text());
-      if (!await applyOpenedSession(openRes)) { focusedLane = previousFocusedLane; renderSessionBar(); return; }
+      if (!openRes.ok) {
+        missing = openRes.status === 404;
+        throw new Error(await openRes.text());
+      }
+      if (!ownsOpen()) return "failed";
+      const applied = await applyOpenedSession(openRes, ownsOpen);
+      if (openGeneration !== sessionOpenGeneration || state.currentSessionId !== sessionId) return "failed";
+      if (!applied) throw new Error("Unable to load session");
       writeActiveSessionIdToUrl(sessionId);
       rememberSessionCwd(cwd);
       markCachedCurrentSession(sessionId, cwd);
       if (targetLane) { focusedSessionByLane[targetLane] = sessionId; saveLaneFocus(); }
       markSessionReadBestEffort(sessionId);
+      pendingOpen = undefined; // Release retained DOM/controller state after hydration.
       options.onDerivedSessionStateChanged?.();
+      return "opened";
     } catch (error) {
-      if (state.currentSessionId === sessionId) sessionState.activate(previousSessionId);
-      focusedLane = previousFocusedLane;
+      if (!ownsOpen()) return "failed";
+      // Any earlier pending open may already have acquired the viewer lease,
+      // even when this latest request failed before acceptance. A fresh sequence
+      // restores the stable lease and fences out older requests still in flight.
+      if (transaction.sessionId) {
+        try { await fetch(`/api/state?sessionId=${encodeURIComponent(transaction.sessionId)}`, { headers: api.headers() }); } catch { /* Offline rollback still preserves local history. */ }
+        if (!ownsOpen()) return "failed";
+      }
+      sessionState.activate(transaction.sessionId);
+      focusedLane = transaction.lane;
+      transaction.checkpoint.restore();
+      pendingOpen = undefined;
+      finishTranscriptLoading();
       renderSessionBar();
+      if (missing) discardMissingSession(sessionId);
+      else addMessage("system", error instanceof Error ? error.message : String(error), "error");
       options.onDerivedSessionStateChanged?.();
-      addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      return missing ? "missing" : "failed";
+    } finally {
+      // External activation can bypass beginTranscriptLoading. Do not retain
+      // its obsolete checkpoint, or release one owned by a newer tab click.
+      if (openGeneration === sessionOpenGeneration && pendingOpen === transaction && state.currentSessionId !== sessionId) pendingOpen = undefined;
     }
   }
 
@@ -2698,34 +2837,9 @@ export function createSessions(options: {
       navBtn.append(meta);
     }
     navBtn.addEventListener("click", async () => {
-      const previousSessionId = state.currentSessionId;
-      const nextCwd = item.cwd || cwd;
-      const switchingSessions = state.currentSessionId !== item.id;
-      if (switchingSessions) {
-        sessionState.activate(item.id);
-        beginTranscriptLoading();
-        clearMessages();
-      }
-      try {
-        const openRes = await fetch("/api/sessions/open", {
-          method: "POST",
-          headers: api.headers(),
-          body: JSON.stringify({ sessionId: item.id, cwd: nextCwd, clientId: api.clientId }),
-        });
-        if (!openRes.ok) throw new Error(await openRes.text());
-        if (!await applyOpenedSession(openRes)) return;
-        writeActiveSessionIdToUrl(item.id);
-        rememberSessionCwd(nextCwd);
-        markCachedCurrentSession(item.id, nextCwd);
-        markSessionReadBestEffort(item.id);
-        onDerivedSessionStateChanged?.();
-        if (shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
-      } catch (error) {
-        if (switchingSessions && state.currentSessionId === item.id) sessionState.activate(previousSessionId);
-        onDerivedSessionStateChanged?.();
-        addMessage("system", error instanceof Error ? error.message : String(error), "error");
-        if (!elements.sessionDrawer.hidden) refreshSessions().catch(() => undefined);
-      }
+      const result = await openSessionTab(item.id, item.cwd || cwd);
+      if (result === "opened" && shouldCloseDrawerAfterSessionSwitch()) setSessionDrawerOpen(false);
+      else if (result === "failed" && !elements.sessionDrawer.hidden) void refreshSessions().catch(() => undefined);
     });
 
     const actionsBtn = document.createElement("button");

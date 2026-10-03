@@ -18,6 +18,7 @@ export type ToolCards = {
   startTool: (toolCallId: string | undefined, toolName: string, args: Record<string, unknown>, startedAt?: string | number | Date) => void;
   updateToolProgress: (toolCallId: string | undefined, toolName: string, partialResult?: unknown, args?: Record<string, unknown>, startedAt?: string | number | Date) => void;
   endTool: (toolCallId: string | undefined, toolName: string, isError: boolean, result?: unknown) => void;
+  checkpoint: () => { restore: () => void };
   clearActiveToolCards: () => void;
 };
 
@@ -578,6 +579,11 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     knownToolStartedAts.delete(cardKey);
   }
 
+  function clearActiveToolCards() {
+    for (const card of activeToolCards.values()) stopRunningToolProgress(card);
+    activeToolCards.clear();
+  }
+
   return {
     addToolCard,
     updateToolCard,
@@ -586,9 +592,19 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     startTool,
     updateToolProgress,
     endTool,
-    clearActiveToolCards() {
-      for (const card of activeToolCards.values()) stopRunningToolProgress(card);
-      activeToolCards.clear();
+    checkpoint() {
+      const saved = new Map(activeToolCards);
+      const starts = new Map(knownToolStartedAts);
+      return { restore() {
+        clearActiveToolCards();
+        saved.forEach((card, key) => {
+          activeToolCards.set(key, card);
+          startRunningToolProgress(card, starts.get(key));
+        });
+        knownToolStartedAts.clear();
+        starts.forEach((value, key) => knownToolStartedAts.set(key, value));
+      } };
     },
+    clearActiveToolCards,
   };
 }

@@ -254,6 +254,7 @@ test.describe("session quick bar", () => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     await page.goto("/");
     const tab = page.locator('.sessionBarTab[data-session-id="mock-current"]');
+    await expect(tab).toBeVisible();
     const box = await tab.boundingBox(); expect(box).toBeTruthy();
     const cdp = await page.context().newCDPSession(page);
     const point = { x: box!.x + box!.width / 2, y: box!.y + box!.height / 2 };
@@ -288,6 +289,7 @@ test.describe("session quick bar", () => {
     const draggedTab = tabs.filter({ hasText: "Current mock session" });
     const targetTab = tabs.filter({ hasText: "Older mock session" });
     await expect(draggedTab).toBeVisible();
+    await expect(targetTab).toBeVisible();
     const firstBox = await draggedTab.boundingBox();
     const secondBox = await targetTab.boundingBox();
     expect(firstBox).toBeTruthy(); expect(secondBox).toBeTruthy();
@@ -436,10 +438,9 @@ test.describe("session quick bar", () => {
     await expect(page.getByText("Cleared tab. Previous session remains in history.")).toHaveCount(0);
     const emptyState = page.locator("#emptyCwdChooser");
     await expect(emptyState).toBeVisible();
-    const animation = emptyState.locator(".newChatLoadingAnimation");
+    const animation = emptyState.locator("#identityNewSessionAnimation");
     await expect(animation).toBeVisible();
-    await expect(animation).not.toHaveClass(/resetting/);
-    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+    await expect.poll(() => animation.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
 
     const folderButton = emptyState.getByRole("button", { name: "Change working directory" });
     await expect(folderButton.locator(".emptyCwdPath")).toHaveText(currentCwd);
@@ -751,17 +752,25 @@ test.describe("session quick bar", () => {
   });
 
   test("dragging a background session clears stale source focus without replacing destination focus", async ({ page }) => {
+    const created = await page.request.post("/api/sessions/new", { data: {} });
+    expect(created.ok()).toBe(true);
+    const destinationFocus = (await created.json()).sessionId as string;
+    expect((await page.request.post("/api/sessions/open", { data: { sessionId: "mock-current" } })).ok()).toBe(true);
     await seedServerSessionUiState(page, { lanes: [
       { sessionId: "mock-current", lane: "pinned", since: "2026-01-01T00:00:00.000Z" },
       { sessionId: "mock-older", lane: "parked", since: "2026-01-01T00:00:00.000Z" },
-      { sessionId: "destination-focus", lane: "bookmarks", cwd: "/saved/workspace", since: "2026-01-01T00:00:00.000Z" },
+      { sessionId: destinationFocus, lane: "bookmarks", since: "2026-01-01T00:00:00.000Z" },
     ] });
-    await page.addInitScript(() => localStorage.setItem("pi-web-session-lane-focus", JSON.stringify({ lane: "pinned", sessions: { pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" } })));
     await page.goto("/");
     await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toBeVisible();
+    // Establish focus through the live UI after lane state has loaded; an
+    // invented ID in localStorage is pruned during asynchronous boot.
+    for (const sessionId of [destinationFocus, "mock-older", "mock-current"]) {
+      await page.locator(".sessionLayersButton").click();
+      await page.locator(`.sessionLaneDrawerCard[data-session-id="${sessionId}"] .sessionLaneDrawerItem`).click();
+    }
     await page.locator(".sessionLayersButton").click();
-    await expect(page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] .sessionLaneDrawerCard[data-session-id="destination-focus"]')).toBeVisible();
-    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", parked: "mock-older", bookmarks: "destination-focus" });
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", parked: "mock-older", bookmarks: destinationFocus });
     const handle = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"] .sessionLaneDragHandle');
     const destination = page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"]');
     const handleBox = await handle.boundingBox(); const destinationBox = await destination.boundingBox();
@@ -772,9 +781,8 @@ test.describe("session quick bar", () => {
     await expect(destination.locator(".sessionLaneDrawerDropSlot")).toHaveCount(1);
     await page.locator("body").dispatchEvent("pointerup", { ...pointer, clientX: destinationBox!.x + 20, clientY: destinationBox!.y + destinationBox!.height / 2 });
     await expect(destination.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]')).toHaveCount(1);
-
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", bookmarks: "destination-focus" });
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-lane-focus") || "{}").sessions)).toEqual({ pinned: "mock-current", bookmarks: destinationFocus });
   });
 
   test("removing the active lane entry keeps it visible as a temporary tab", async ({ page }) => {
@@ -912,6 +920,15 @@ test.describe("session quick bar", () => {
       await route.continue();
     });
     await page.goto("/");
+    // A navigation can finish before the async session UI-state read has
+    // populated both lanes. Swipe only once the source and destination are
+    // rendered; otherwise this tests startup timing instead of touch behavior.
+    await page.locator(".sessionLayersButton").click();
+    await expect(page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerCard[data-session-id="mock-current"]')).toBeVisible();
+    await expect(page.locator('.sessionLaneDrawerSection[data-lane="parked"] .sessionLaneDrawerCard[data-session-id="mock-older"]')).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".sessionLaneDrawer")).toBeHidden();
+    await expect(page.locator('.sessionBarTab.laned[data-session-id="mock-current"]')).toBeVisible();
     const tabBox = await page.locator('.sessionBarTab.laned[data-session-id="mock-current"]').boundingBox();
     expect(tabBox).not.toBeNull();
     const x = tabBox!.x + tabBox!.width / 2;

@@ -119,6 +119,17 @@ describe("pure session projections", () => {
     expect(projected).toMatchObject({ entryId: "entry-1", role: "assistant", toolCalls: [{ id: "tool-1", toolName: "read", startedAt: "then" }] });
   });
 
+  it("reports transcript messages separately from branch metadata", () => {
+    const session = fixtureSession();
+    session.sessionManager.getBranch = () => [
+      { type: "model_change" },
+      ...session.messages.map((message) => ({ type: "message", message })),
+      { type: "thinking_level_change" },
+    ];
+    expect(sessionStats(session)).toMatchObject({ totalMessages: 4, conversationMessages: 2 });
+    expect(projectSessionState(session, "/tmp").stats).toMatchObject({ conversationMessages: 2 });
+  });
+
   it("returns wire-stable state, stats, tree, and command DTOs", () => {
     const session = fixtureSession();
     const results = [

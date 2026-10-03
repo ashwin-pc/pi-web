@@ -675,11 +675,17 @@ sessions = createSessions({
     }
     activeWorkerDock?.refresh();
   },
+  checkpointTranscript: () => {
+    const transcript = messages.checkpoint();
+    const toolState = tools.checkpoint();
+    return { restore() { transcript.restore(); toolState.restore(); } };
+  },
   clearMessages: () => {
     tools.clearActiveToolCards();
     messages.clear();
   },
   addMessage: messages.addMessage,
+  hasSessionDraft: (sessionId) => composer?.hasSessionDraft(sessionId) ?? false,
 });
 
 activeWorkerDock = createActiveWorkerDock({
@@ -708,6 +714,7 @@ composer = createComposer({
   refreshModels: () => modelSettings.refreshModels(),
   refreshMessages,
   refreshState,
+  startNewSession: () => sessions.startNewSession(),
   beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,

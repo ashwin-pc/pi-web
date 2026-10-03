@@ -147,7 +147,7 @@ export function initActionLauncher(
   toggle.setAttribute("aria-expanded", "false");
   toggle.title = "Session actions";
   const mascot = document.createElement("img");
-  mascot.src = "/pi-mascot-avatar.png";
+  // The saved identity is asynchronous; do not request/display Pi before it arrives.
   mascot.alt = "";
   toggle.append(mascot);
 

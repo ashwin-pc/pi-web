@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join, resolve } from "node:path";
@@ -56,6 +56,11 @@ import {
   sessionStats,
   simplifyModel,
 } from "./projection.js";
+
+function isMissingPath(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code;
+  return code === "ENOENT" || code === "ENOTDIR";
+}
 
 export class SessionServiceError extends Error {
   constructor(message: string, readonly status = 400) { super(message); }
@@ -118,6 +123,7 @@ type LiveSessionEntry = {
 
 type ViewerLease = {
   sessionKey: string;
+  lastAcceptedSeq?: number;
   sockets: Set<symbol>;
   releaseTimer?: ReturnType<typeof setTimeout>;
 };
@@ -779,9 +785,12 @@ export class LocalSessionService implements SessionService {
   async open(sessionId: string, cwd?: string) {
     try {
       const value = await this.getOrCreateLiveSessionById(sessionId, cwd);
-      if (!value) throw new Error("Session not found");
+      if (!value) throw new SessionServiceError("Session not found", 404);
       return this.projectState(value);
-    } catch (error) { throw new SessionServiceError(errorMessage(error), 404); }
+    } catch (error) {
+      if (error instanceof SessionServiceError) throw error;
+      throw new SessionServiceError(errorMessage(error), 500);
+    }
   }
 
   async delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto> {
@@ -806,13 +815,16 @@ export class LocalSessionService implements SessionService {
     return this.projectState(await this.createNewLiveSession(cwd, value.sessionFile));
   }
 
-  acquireViewer(sessionId: string, clientId: string) {
+  acquireViewer(sessionId: string, clientId: string, seq?: number) {
     const value = this.liveById.get(sessionId);
     if (!clientId || !value) return;
     const key = sessionPathKey(value);
     const entry = this.liveSessions.get(key);
     if (!entry) return;
     let lease = this.viewerLeases.get(clientId);
+    // Check before touching timers or either session's lease membership.
+    const validSeq = seq !== undefined && Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
+    if (validSeq !== undefined && lease?.lastAcceptedSeq !== undefined && validSeq < lease.lastAcceptedSeq) return;
     this.clearTimer(lease?.releaseTimer);
     if (!lease) {
       lease = { sessionKey: key, sockets: new Set() };
@@ -823,6 +835,7 @@ export class LocalSessionService implements SessionService {
       this.scheduleLiveSessionCleanup(previousKey);
       lease.sessionKey = key;
     }
+    if (validSeq !== undefined) lease.lastAcceptedSeq = validSeq;
     entry.viewerClientIds.add(clientId);
     this.cancelLiveSessionCleanup(entry);
     if (lease.sockets.size === 0) this.scheduleViewerLeaseRelease(clientId);
@@ -1278,7 +1291,11 @@ export class LocalSessionService implements SessionService {
       const directory = this.defaultSessionDir(resolvedCwd);
       checkedDirectories.add(directory);
       let names: string[];
-      try { names = await readdir(directory); } catch { continue; }
+      try { names = await readdir(directory); }
+      catch (error) {
+        if (isMissingPath(error)) continue;
+        throw error;
+      }
       const name = names.find((entry) => entry.endsWith(suffix));
       if (!name) continue;
       const location = { path: join(directory, name), cwd: resolvedCwd };
@@ -1291,17 +1308,26 @@ export class LocalSessionService implements SessionService {
     // Scan directory names and filenames only, then read the one matching header.
     const sessionsRoot = join(getAgentDir(), "sessions");
     let directories: string[];
-    try { directories = await readdir(sessionsRoot); } catch { return undefined; }
+    try { directories = await readdir(sessionsRoot); }
+    catch (error) {
+      if (isMissingPath(error)) return undefined;
+      throw error;
+    }
     for (const directoryName of directories) {
       const directory = join(sessionsRoot, directoryName);
       if (checkedDirectories.has(directory)) continue;
       let names: string[];
-      try { names = await readdir(directory); } catch { continue; }
+      try { names = await readdir(directory); }
+      catch (error) {
+        if (isMissingPath(error)) continue;
+        throw error;
+      }
       const name = names.find((entry) => entry.endsWith(suffix));
       if (!name) continue;
       const path = join(directory, name);
-      const sessionCwd = await shallowSessionCwd(path);
-      if (!sessionCwd || this.defaultSessionDir(sessionCwd) !== directory) continue;
+      const sessionCwd = await shallowSessionCwd(path, { strict: true });
+      if (!sessionCwd) continue; // The matching file disappeared during lookup.
+      if (this.defaultSessionDir(sessionCwd) !== directory) throw new Error("Session working directory does not match its location");
       const location = { path, cwd: resolve(sessionCwd) };
       this.sessionLocations.set(id, location);
       this.knownSessionCwds.add(location.cwd);
@@ -1312,6 +1338,14 @@ export class LocalSessionService implements SessionService {
 
   private async openSessionAtLocation(id: string, location: { path: string; cwd: string }) {
     if (!this.deps.sessionFactory && dirname(resolve(location.path)) !== this.defaultSessionDir(location.cwd)) throw new Error("Invalid session location");
+    // SDK failures may concern unrelated files; only absence of this file is a 404.
+    if (!this.deps.sessionFactory) {
+      try { await stat(location.path); }
+      catch (error) {
+        if (isMissingPath(error)) throw new SessionServiceError("Session not found", 404);
+        throw error;
+      }
+    }
     const value = await this.getOrCreateLiveSession(location.path);
     if (value.sessionId !== id) {
       if (!this.protectedSessionIds.has(value.sessionId)) await this.disposeLiveSession(sessionPathKey(value), "reset", true);
@@ -1338,7 +1372,10 @@ export class LocalSessionService implements SessionService {
       const remembered = this.sessionLocations.get(id);
       if (remembered) {
         try { return await this.openSessionAtLocation(id, remembered); }
-        catch { this.sessionLocations.delete(id); }
+        catch (error) {
+          if (!(error instanceof SessionServiceError) || error.status !== 404) throw error;
+          this.sessionLocations.delete(id);
+        }
       }
       const location = await this.resolveSessionLocation(id, cwd);
       return location ? this.openSessionAtLocation(id, location) : undefined;

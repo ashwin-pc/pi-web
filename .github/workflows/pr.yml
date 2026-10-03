@@ -76,6 +76,16 @@ jobs:
       - name: TypeScript worker tests
         run: npx vitest run --config examples/pi-web-extensions/dictation/vitest.config.ts
 
+      - name: Verify Vite cache path portability on Windows
+        if: runner.os == 'Windows' && matrix.python == '3.13'
+        run: npx vitest run tests/vite-cache-isolation.test.ts
+
+      - name: Build and smoke-test the npm package on Windows
+        if: runner.os == 'Windows' && matrix.python == '3.13'
+        run: |
+          npm run build
+          npm run test:package
+
   test:
     runs-on: macos-latest
 
@@ -102,9 +112,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Verify packed server startup and assets
+        run: npm run test:package
+
       - name: Complete E2E matrix
         env:
           PI_WEB_E2E_SHARDS: 2
+          # Run two concurrent E2E servers/shards; realtime event tests wait
+          # for the server hello before publishing nondurable mock events.
           PI_WEB_E2E_CONCURRENCY: 2
         run: node scripts/run-all-tests.mjs --e2e-only --skip-build
 

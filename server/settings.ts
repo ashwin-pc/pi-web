@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import { defaultAppIdentity, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
 
 export type PiWebModelSetting = {
   provider: string;
@@ -66,6 +67,7 @@ const loadingAnimations = new Set<LoadingAnimation>(["fireworks", "glow", "pulse
 
 export type PiWebSettings = {
   version: 1;
+  identity: AppIdentity;
   appearance: {
     density: "comfortable" | "compact" | "minimal";
     accentColor: string;
@@ -79,6 +81,8 @@ export type PiWebSettings = {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
     sessionBucketColor?: SessionMarkerColorId;
+    /** Opt in to pinning sessions created after this preference is saved. */
+    pinNewSessions?: boolean;
   };
   /**
    * Extension-contributed settings, keyed by namespaced owner id. Carried
@@ -90,6 +94,7 @@ export type PiWebSettings = {
 };
 
 export type PiWebSettingsPatch = Partial<{
+  identity: Partial<{ name: unknown; shortName: unknown; avatar: unknown }>;
   appearance: Partial<{
     density: unknown;
     accentColor: unknown;
@@ -103,11 +108,13 @@ export type PiWebSettingsPatch = Partial<{
     model: unknown;
     thinkingLevel: unknown;
     sessionBucketColor: unknown;
+    pinNewSessions: unknown;
   }>;
 }>;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
+  identity: structuredClone(defaultAppIdentity),
   appearance: {
     density: "comfortable",
     accentColor: defaultAccentColor,
@@ -287,9 +294,31 @@ export function normalizeLoadingAnimation(value: unknown): LoadingAnimation | un
     : undefined;
 }
 
+function validIdentityName(value: unknown, max: number): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text.length > 0 && text.length <= max ? text : undefined;
+}
+
+function validAvatar(value: unknown): AppIdentity["avatar"] | undefined {
+  if (!isRecord(value)) return undefined;
+  if (value.type === "preset" && isAvatarPresetId(value.id)) return { type: "preset", id: value.id };
+  if (value.type === "custom") return { type: "custom" };
+  return undefined;
+}
+
 export function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
+
+  const identity = isRecord(value.identity) ? value.identity : undefined;
+  const name = validIdentityName(identity?.name, 64);
+  const shortName = validIdentityName(identity?.shortName, 24);
+  if (name) settings.identity.name = name;
+  if (shortName) settings.identity.shortName = shortName;
+  const avatar = validAvatar(identity?.avatar);
+  if (avatar) settings.identity.avatar = avatar;
+  if (typeof identity?.revision === "number" && Number.isSafeInteger(identity.revision) && identity.revision >= 0) settings.identity.revision = identity.revision;
 
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
   if (appearance?.density === "compact" || appearance?.density === "comfortable" || appearance?.density === "minimal") {
@@ -312,6 +341,8 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   }
   const sessionBucketColor = normalizeSessionBucketColor(defaults?.sessionBucketColor);
   if (sessionBucketColor) settings.defaults.sessionBucketColor = sessionBucketColor;
+  // Omitted on older settings files means false; retain the optional shape.
+  if (typeof defaults?.pinNewSessions === "boolean") settings.defaults.pinNewSessions = defaults.pinNewSessions;
 
   const extensions = normalizeExtensionSettings(value.extensions);
   if (extensions) settings.extensions = extensions;
@@ -322,6 +353,16 @@ export function normalizeSettings(value: unknown): PiWebSettings {
 export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWebSettings {
   if (!isRecord(patch)) return cloneSettings(current);
   const next = cloneSettings(current);
+
+  if (isRecord(patch.identity)) {
+    const name = validIdentityName(patch.identity.name, 64);
+    const shortName = validIdentityName(patch.identity.shortName, 24);
+    const avatar = validAvatar(patch.identity.avatar);
+    if (name) next.identity.name = name;
+    if (shortName) next.identity.shortName = shortName;
+    if (avatar) next.identity.avatar = avatar;
+    if (name || shortName || avatar) next.identity.revision = Math.min(Number.MAX_SAFE_INTEGER, next.identity.revision + 1);
+  }
 
   if (isRecord(patch.appearance)) {
     if (patch.appearance.density === "comfortable" || patch.appearance.density === "compact" || patch.appearance.density === "minimal") {
@@ -357,6 +398,9 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
       const sessionBucketColor = normalizeSessionBucketColor(patch.defaults.sessionBucketColor);
       if (sessionBucketColor) next.defaults.sessionBucketColor = sessionBucketColor;
       else delete next.defaults.sessionBucketColor;
+    }
+    if (typeof patch.defaults.pinNewSessions === "boolean") {
+      next.defaults.pinNewSessions = patch.defaults.pinNewSessions;
     }
   }
 

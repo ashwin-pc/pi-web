@@ -1,3 +1,4 @@
+import { applyIdentity, createIdentitySettings, normalizeIdentity } from "./identitySettings.js";
 import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
 import type { AppElements } from "../app/elements.js";
@@ -55,6 +56,7 @@ function normalizeSettings(value: unknown): PiWebSettings {
   const settings = cloneSettings(defaultPiWebSettings);
   if (!isRecord(value)) return settings;
 
+  settings.identity = normalizeIdentity(value.identity);
   const appearance = isRecord(value.appearance) ? value.appearance : undefined;
   if (appearance?.density === "compact" || appearance?.density === "comfortable" || appearance?.density === "minimal") settings.appearance.density = appearance.density;
   settings.appearance.accentColor = normalizeAccentColor(appearance?.accentColor) || settings.appearance.accentColor;
@@ -72,6 +74,8 @@ function normalizeSettings(value: unknown): PiWebSettings {
   if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim()) settings.defaults.thinkingLevel = defaults.thinkingLevel.trim();
   const sessionBucketColor = normalizeMarkerColor(defaults?.sessionBucketColor);
   if (sessionBucketColor) settings.defaults.sessionBucketColor = sessionBucketColor;
+  // Omitted on older settings files means false; retain the optional shape.
+  if (typeof defaults?.pinNewSessions === "boolean") settings.defaults.pinNewSessions = defaults.pinNewSessions;
 
   // Carry the extension-settings blob through verbatim (server owns validation).
   if (isRecord(value.extensions)) settings.extensions = value.extensions as PiWebSettings["extensions"];
@@ -120,6 +124,7 @@ export function createSettings(options: {
   let settingsPanelHandle: RightPanelHandle | undefined;
   let extSettings: ExtensionSettingsController | undefined;
   let settingsShell: SettingsShellController | undefined;
+  let identitySettings: ReturnType<typeof createIdentitySettings> | undefined;
   let securitySettings: ReturnType<typeof createSecuritySettings> | undefined;
   let restartSettings: ReturnType<typeof createRestartSettings> | undefined;
   let extensionHealth: "loading" | "ready" | "degraded" = "loading";
@@ -140,6 +145,7 @@ export function createSettings(options: {
   const runNotifications = createRunNotifications({
     elements,
     api,
+    getAppName: () => state.settings.identity.name,
     onError: (error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"),
   });
 
@@ -246,7 +252,7 @@ export function createSettings(options: {
     return true;
   }
 
-  function applySettings(rawSettings: PiWebSettings) {
+  function applySettings(rawSettings: PiWebSettings, { applySavedIdentity = true } = {}) {
     const previousDensity = state.settings.appearance.density;
     const settings = normalizeSettings(rawSettings);
     const storedExpanded = (() => {
@@ -259,6 +265,11 @@ export function createSettings(options: {
     })();
     const shouldInitializeExpanded = !hasAppliedSettings;
     state.settings = settings;
+    if (applySavedIdentity) {
+      applyIdentity(settings.identity);
+      identitySettings?.update(settings.identity);
+    }
+    settingsShell?.setSummary("identity", settings.identity.name);
     state.queueMode = settings.composer.queueMode;
     if (shouldInitializeExpanded) state.editorExpanded = storedExpanded ?? settings.composer.expanded;
     hasAppliedSettings = true;
@@ -273,6 +284,7 @@ export function createSettings(options: {
     elements.settingQueueModeSelect.value = settings.composer.queueMode;
     elements.settingComposerExpandedCheckbox.checked = settings.composer.expanded;
     elements.settingDefaultBucketColorSelect.value = settings.defaults.sessionBucketColor || "";
+    elements.settingPinNewSessionsCheckbox.checked = settings.defaults.pinNewSessions === true;
     elements.settingModelDefaultsValue.textContent = settingsLabel(settings);
 
     const density = settings.appearance.density === "minimal" ? "Minimal" : settings.appearance.density === "compact" ? "Compact" : "Comfortable";
@@ -280,7 +292,11 @@ export function createSettings(options: {
     const model = settings.defaults.model;
     settingsShell?.setSummary("appearance", `${density} · ${accentName(accentColor)}`);
     settingsShell?.setSummary("composer", `${queueMode} · ${settings.composer.expanded ? "Expanded" : "Collapsed"}`);
-    settingsShell?.setSummary("new-sessions", model ? `${model.provider}/${model.id}` : settings.defaults.sessionBucketColor ? "Bucket default set" : "No defaults set");
+    settingsShell?.setSummary("new-sessions", [
+      model ? `${model.provider}/${model.id}` : undefined,
+      settings.defaults.sessionBucketColor ? "Bucket default set" : undefined,
+      settings.defaults.pinNewSessions ? "Pinned by default" : undefined,
+    ].filter(Boolean).join(" · ") || "No defaults set");
     settingsShell?.setSummary("access", "Credentials and devices");
     updateExtensionSearchTerms();
     updateQueueToggle();
@@ -736,6 +752,7 @@ export function createSettings(options: {
   function init() {
     populateBucketColorSelect(elements.settingDefaultBucketColorSelect, state);
     settingsShell = createSettingsShell(elements.settingsPanel);
+    identitySettings = createIdentitySettings(elements.settingsPanel, api, value => applySettings(value as PiWebSettings), message => setSettingsStatus(message, true), message => setSettingsStatus(message, false));
     settingsShell.init();
     securitySettings = createSecuritySettings({ container: elements.securitySettings, api, setStatus: setSettingsStatus });
     const restartContainer = elements.settingsPanel.querySelector<HTMLElement>("#settingsPageServer");
@@ -755,7 +772,10 @@ export function createSettings(options: {
       setStatus: setSettingsStatus,
       notifyError: (message) => addMessage("system", message, "error"),
     });
-    applySettings(state.settings);
+    // Initialize non-identity controls without fetching the default avatar.
+    // The saved identity arrives asynchronously from /api/settings; the shell
+    // stays unbranded until then rather than flashing Pi for Fox/custom users.
+    applySettings(state.settings, { applySavedIdentity: false });
 
     settingsPanelHandle = rightPanels?.register({
       id: "settings",
@@ -844,6 +864,13 @@ export function createSettings(options: {
 
     elements.settingDefaultBucketColorSelect.addEventListener("change", () => {
       patchSettings({ defaults: { sessionBucketColor: elements.settingDefaultBucketColorSelect.value || null } }).catch((error) => {
+        setSettingsStatus(error instanceof Error ? error.message : String(error), true);
+        addMessage("system", error instanceof Error ? error.message : String(error), "error");
+      });
+    });
+
+    elements.settingPinNewSessionsCheckbox.addEventListener("change", () => {
+      patchSettings({ defaults: { pinNewSessions: elements.settingPinNewSessionsCheckbox.checked } }).catch((error) => {
         setSettingsStatus(error instanceof Error ? error.message : String(error), true);
         addMessage("system", error instanceof Error ? error.message : String(error), "error");
       });

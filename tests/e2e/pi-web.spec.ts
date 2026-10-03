@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
-import { ensurePreviewArtifact } from "./helpers/artifacts.js";
-import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
+import { ensureMarkdownPreviewArtifact, ensurePreviewArtifact } from "./helpers/artifacts.js";
+import { openSessionDrawerFooterAction, shouldCloseSessionDrawerAfterSwitch } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -797,8 +797,8 @@ test.describe("sessions drawer", () => {
     await expect(page.locator(".sessionItem", { hasText: "Current mock session" }).locator(".sessionSpinner")).toBeVisible();
 
     await page.getByText("Older mock session").click();
-    const isMobile = (page.viewportSize()?.width || 0) <= 700;
-    if (isMobile) {
+    const closesAfterSwitch = await shouldCloseSessionDrawerAfterSwitch(page);
+    if (closesAfterSwitch) {
       await expect(page.locator("#sessionDrawer")).toBeHidden();
       await page.locator("#sessionButton").click();
     } else {
@@ -898,21 +898,20 @@ test.describe("sessions drawer", () => {
     await expect(drawer.getByText("Older mock session")).toBeVisible();
 
     await drawer.getByText("Older mock session").click();
-    const isOverlayMode = (page.viewportSize()?.width || 0) <= 1024;
-    if (isOverlayMode) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    const closesAfterSwitch = await shouldCloseSessionDrawerAfterSwitch(page);
+    if (closesAfterSwitch) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     await expect(page.getByText("Resumed older session.")).toBeVisible();
 
-    if (isOverlayMode) await page.locator("#sessionButton").click();
+    if (closesAfterSwitch) await page.locator("#sessionButton").click();
     await page.locator("#sessionNewButton").click();
-    if (isOverlayMode) await expect(page.locator("#sessionDrawer")).toBeHidden();
+    if (closesAfterSwitch) await expect(page.locator("#sessionDrawer")).toBeHidden();
     else await expect(page.locator("#sessionDrawer")).toBeVisible();
     const emptyState = page.locator(".emptyCwdChooser", { hasText: "Working directory" });
     await expect(emptyState).toBeVisible();
-    const animation = emptyState.locator(".newChatLoadingAnimation");
+    const animation = emptyState.locator("#identityNewSessionAnimation");
     await expect(animation).toBeVisible();
-    await expect(animation).not.toHaveClass(/resetting/);
-    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.currentTime)).toBeGreaterThan(0);
+    await expect.poll(() => animation.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     const cwdButton = emptyState.getByRole("button", { name: "Change working directory" });
     await expect(cwdButton).toContainText(/pi-web/);
     const trailingSpace = await cwdButton.evaluate((button) => {
@@ -1239,8 +1238,10 @@ test.describe("tool cards", () => {
   });
 
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
+    const settingsLoaded = page.waitForResponse((response) => response.url().includes("/api/settings") && response.ok());
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await settingsLoaded;
     await page.evaluate(() => { document.documentElement.dataset.density = "compact"; });
     await page.locator("#prompt").fill("use tool");
     await page.locator("#primaryButton").click();
@@ -1401,6 +1402,19 @@ test.describe("assistant markdown rendering", () => {
     });
     expect(await labelColor("Default dark node")).toBe("rgb(242, 242, 242)");
     expect(await labelColor("Pastel node")).toBe("rgb(17, 24, 39)");
+  });
+
+  test("shows Mermaid rendering errors alongside the source", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return invalid mermaid");
+    await page.locator("#primaryButton").click();
+
+    const latestAssistant = page.locator(".message.assistant", { hasText: "Here is an invalid Mermaid diagram" }).last();
+    const diagram = latestAssistant.locator(".mermaidDiagram--error");
+    await expect(diagram).toBeVisible({ timeout: 10_000 });
+    await expect(diagram.getByRole("alert")).toContainText("Diagram couldn't be rendered:");
+    await expect(diagram.locator("pre > code.language-mermaid")).toContainText("A -->");
+    await expect(diagram.locator(":scope > svg")).toHaveCount(0);
   });
 
   test("opens and operates the full-screen Mermaid viewer", async ({ page }) => {
@@ -1624,7 +1638,7 @@ test.describe("image rendering", () => {
     const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
     await mkdir(artifactDir, { recursive: true });
     await writeFile(join(artifactDir, "e2e-test.png"), VALID_PNG);
-    await writeFile(join(artifactDir, "report.md"), "# Artifact report\n\nThis **markdown** artifact renders inline.\n\n[Self reference](/api/artifacts/report.md)\n\n[Open HTML](/api/artifacts/preview.html)\n\n[External docs](https://example.com/)\n\n```ts\nconst preview = true;\n```\n");
+    await ensureMarkdownPreviewArtifact();
     await writeFile(join(artifactDir, "long-report.md"), `# Long artifact report\n\n${Array.from({ length: 80 }, (_, index) => `## Section ${index + 1}\n\nLong artifact content stays in the conversation scrollbar.`).join("\n\n")}\n`);
     await ensurePreviewArtifact();
     await writeFile(join(artifactDir, "e2e-video-artifact.webm"), Buffer.from([]));

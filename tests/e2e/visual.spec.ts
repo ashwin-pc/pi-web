@@ -360,7 +360,7 @@ test.beforeEach(async ({ page }) => {
     data: {
       appearance: { density: "comfortable", accentColor: "#e2b15f", loadingAnimation: "fireworks" },
       composer: { queueMode: "steer", expanded: false },
-      defaults: { model: null, thinkingLevel: null },
+      defaults: { model: null, thinkingLevel: null, pinNewSessions: false },
     },
   });
   const artifactDir = join(process.cwd(), ".pi", "web", "artifacts");
@@ -703,18 +703,13 @@ test.describe("visual regression", () => {
   test("new session", async ({ page }, testInfo) => {
     test.skip(testInfo.project.name === "tablet", "Covered by mobile and desktop visual snapshots");
 
+    await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto("/");
     await startEmptySession(page);
     const emptyState = page.locator("#emptyCwdChooser");
-    const animation = emptyState.locator(".newChatLoadingAnimation");
     await expect(emptyState).toBeVisible();
-    await expect(animation).toBeVisible();
+    await expect(emptyState.locator("#identityNewSessionStill")).toBeVisible();
     await expect(emptyState.getByRole("button", { name: "Change working directory" })).toBeVisible();
-
-    // A PNG cannot represent motion. Wait for the one-shot animation to finish
-    // naturally, then capture its settled final frame.
-    await expect.poll(() => animation.evaluate((video: HTMLVideoElement) => video.ended), { timeout: 3_000 }).toBe(true);
-    await animation.evaluate((video: HTMLVideoElement) => video.pause());
 
     await expect(page).toHaveScreenshot(`new-session-${testInfo.project.name}.png`, {
       fullPage: true,

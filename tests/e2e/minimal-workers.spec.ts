@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { nextRealtimeHello } from "./helpers/realtimeReady.js";
 
 const now = "2026-01-01T00:00:00.000Z";
 const runtime = (isRunning: boolean, pendingMessageCount = 0) => ({
@@ -155,12 +156,16 @@ test("current parent restores running dependency pills on initial reload in ever
     { id: "reload-worker", name: "Reloaded worker", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: false,
       runtime: runtime(true) },
   ] } }));
+  const initialHello = nextRealtimeHello(page);
   await page.goto("/?sessionId=mock-current");
+  await initialHello;
   await dependencyEvent(page, "mock-current", ["reload-worker"]);
   await pinSettlementSnapshot(page, "mock-current", ["reload-worker"]);
   await runtimeEvent(page, "reload-worker", runtime(true));
   await expect(page.locator('.activeWorkerPill[data-session-id="reload-worker"]')).toBeVisible();
+  const reloadedHello = nextRealtimeHello(page);
   await page.reload();
+  await reloadedHello;
   // Re-publish runtime metadata as the mock runtime event is intentionally not
   // durable; dependency membership itself must come from the status snapshot.
   await runtimeEvent(page, "reload-worker", runtime(true));

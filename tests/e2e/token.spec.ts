@@ -22,14 +22,13 @@ test.describe("token overlay", () => {
     await expect(page).toHaveTitle('Pi Web');
     await expect(page.getByRole('heading', { name: 'Pi Web', exact: true })).toBeVisible();
     await expect(page.locator('header, footer')).toHaveCount(0);
-    const video = page.locator('video');
-    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeGreaterThan(0);
+    const animation = page.locator('.avatarAnimation');
+    await expect(animation).toBeVisible();
+    await expect.poll(() => animation.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     expect(await page.context().cookies()).toEqual([]);
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.reload();
-    await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.readyState)).toBeGreaterThanOrEqual(2);
-    expect(await video.evaluate((v: HTMLVideoElement) => v.paused)).toBe(true);
-    await expect(video).toBeHidden();
+    await expect(animation).toBeHidden();
     await expect(page.locator('.avatarStill')).toBeVisible();
     expect(await page.locator('.avatarStill').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     expect((await page.request.get('/api/state')).status()).toBe(401);

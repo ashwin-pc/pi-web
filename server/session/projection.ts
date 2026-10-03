@@ -538,6 +538,8 @@ export function sessionStats(targetSession: PiWebSession): SessionStatsDto {
     assistantMessages,
     toolResults,
     totalMessages: entries.length,
+    // messages excludes branch metadata such as model/thinking-level changes.
+    conversationMessages: targetSession.messages.length,
     tokens: {
       input,
       output,

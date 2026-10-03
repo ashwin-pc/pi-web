@@ -1,3 +1,4 @@
+import { defaultAppIdentity, type AppIdentity } from "../../server/shared/appIdentity.js";
 import { parseSessionReference, sessionReferenceHref, type SessionReference } from "../../server/shared/sessionReference.js";
 
 export type Role = "user" | "assistant" | "tool" | "system";
@@ -88,6 +89,8 @@ export type SessionStats = {
   assistantMessages?: number;
   toolResults?: number;
   totalMessages?: number;
+  /** Exact transcript-message count, excluding SDK branch metadata. */
+  conversationMessages?: number;
   tokens?: {
     input?: number;
     output?: number;
@@ -106,6 +109,7 @@ export type LoadingAnimation = "fireworks" | "glow" | "pulse";
 
 export type PiWebSettings = {
   version: 1;
+  identity: AppIdentity;
   appearance: {
     density: "comfortable" | "compact" | "minimal";
     accentColor: string;
@@ -119,6 +123,8 @@ export type PiWebSettings = {
     model?: PiWebModelSetting;
     thinkingLevel?: string;
     sessionBucketColor?: SessionMarkerColorId;
+    /** Opt in to pinning sessions created after this preference is saved. */
+    pinNewSessions?: boolean;
   };
   extensions?: Record<string, StoredExtensionSettings>;
 };
@@ -560,6 +566,7 @@ export const sessionFolderPreviewLimit = 8;
 
 export const defaultPiWebSettings: PiWebSettings = {
   version: 1,
+  identity: structuredClone(defaultAppIdentity),
   appearance: { density: "comfortable", accentColor: defaultAccentColor, loadingAnimation: defaultLoadingAnimation },
   composer: { queueMode: "steer", expanded: false },
   defaults: {},

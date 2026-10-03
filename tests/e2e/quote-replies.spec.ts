@@ -23,6 +23,24 @@ async function switchSession(page: Page, sessionName: string) {
   await expect(page.locator("#statusTitle")).toHaveText(sessionName);
 }
 
+async function deferQuoteTransition(page: Page) {
+  await page.evaluate(() => {
+    document.documentElement.dataset.quoteTransitionRejections = "0";
+    window.addEventListener("unhandledrejection", () => {
+      document.documentElement.dataset.quoteTransitionRejections = String(Number(document.documentElement.dataset.quoteTransitionRejections) + 1);
+    });
+    Object.defineProperty(document, "startViewTransition", { value: (update: () => void) => {
+      let finish!: () => void;
+      let readyResolve!: () => void;
+      let readyReject!: (error: Error) => void;
+      const finished = new Promise<void>((resolve) => { finish = resolve; });
+      const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+      document.addEventListener("release-quote-transition", () => { update(); readyResolve(); finish(); }, { once: true });
+      return { finished, ready, skipTransition() { readyReject(new Error("Transition skipped")); } };
+    } });
+  });
+}
+
 async function delayQuoteDraftPersistence(page: Page) {
   await page.evaluate((debounceMs) => {
     const nativeSetTimeout = window.setTimeout.bind(window);
@@ -107,6 +125,182 @@ test("keeps one reply action tethered to the highlighted text and dismisses it w
   await page.keyboard.press("Escape");
   await expect(action).toBeHidden();
   await expect.poll(() => page.evaluate(() => getSelection()?.isCollapsed)).toBe(true);
+});
+
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  test(`quote editing hides footer chrome without losing the draft (${viewport.width}px)`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.routeWebSocket("**/ws**", () => {});
+    await page.route("**/api/state**", async (route) => {
+      const response = await route.fetch();
+      const state = await response.json();
+      state.webContributions = [{ version: 1, key: "test-footer", slot: "footer", kind: "static",
+        view: { kind: "text", lines: ["Preserved extension footer"] } }];
+      await route.fulfill({ response, json: state });
+    });
+    await page.goto("/");
+    const composer = page.locator(".composer");
+    const tabs = page.locator("#sessionBar");
+    const footer = page.locator("#extensionFooter");
+    await expect(footer).toBeVisible();
+    await page.locator("#prompt").fill("Preserved main composer draft");
+    await expect(tabs).toBeVisible();
+    await page.locator("#prompt").blur();
+    await selectAssistantExcerpt(page, "Image attachment support");
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    const input = page.getByRole("textbox", { name: "Question for quote 1" });
+    await expect(input).toBeVisible();
+    await expect(composer).toBeHidden();
+    await expect(footer).toBeHidden();
+    await expect(tabs).toBeVisible();
+    await input.fill("A linked question");
+    await input.press("Enter");
+    await expect(composer).toBeVisible();
+    await expect(tabs).toBeVisible();
+    await expect(page.locator("#prompt")).toHaveValue("Preserved main composer draft");
+
+    await page.locator(".quoteReplyPin").click();
+    await expect(composer).toBeVisible(); // Reading a saved comment is not editing.
+    await page.getByRole("button", { name: "Edit question" }).click();
+    await expect(composer).toBeHidden();
+    await expect(footer).toBeHidden();
+    await expect(tabs).toBeVisible();
+    await page.locator(".quoteReplyPin").click(); // Close the editor.
+    await expect(composer).toBeVisible();
+    await expect(tabs).toBeVisible();
+    await page.locator(".quoteReplyPin").click();
+    await expect(composer).toBeHidden();
+    await page.getByRole("button", { name: "Remove quote" }).first().click();
+    await expect(composer).toBeVisible();
+    await expect(tabs).toBeVisible();
+    await expect(page.locator("#prompt")).toHaveValue("Preserved main composer draft");
+    await expect(footer).toBeVisible();
+    await expect(footer).toHaveText("Preserved extension footer");
+  });
+}
+
+for (const mode of ["animated", "reduced", "unsupported"] as const) {
+  test(`quote editor transition progressively enhances ${mode} browsers`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: mode === "reduced" ? "reduce" : "no-preference" });
+    await page.goto("/");
+    await page.evaluate((mode) => {
+      document.documentElement.dataset.quoteTransitionCalls = "0";
+      if (mode === "unsupported") {
+        Object.defineProperty(document, "startViewTransition", { value: undefined });
+      } else {
+        // A synchronous implementation makes gating independent of browser support.
+        Object.defineProperty(document, "startViewTransition", { value: (update: () => void) => {
+          document.documentElement.dataset.quoteTransitionCalls = String(Number(document.documentElement.dataset.quoteTransitionCalls) + 1);
+          update();
+          return { finished: Promise.resolve(), ready: Promise.resolve(), skipTransition() {} };
+        } });
+      }
+    }, mode);
+    await selectAssistantExcerpt(page, "Image attachment support");
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Question for quote 1" })).toBeVisible();
+    await expect(page.locator(".composer")).toBeHidden();
+    await expect(page.locator("#sessionBar")).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("data-quote-transition-calls", mode === "animated" ? "1" : "0");
+    await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+  });
+}
+
+for (const action of ["Confirm question", "Remove quote"] as const) {
+  for (const returnToSource of [false, true]) {
+    test(`discards deferred ${action} after transcript teardown (return=${returnToSource})`, async ({ page }) => {
+      const destinationDraft = [{ id: 7, quote: "Resumed older session.", question: "Keep destination", sourceMessageId: "destination-entry", startOffset: 0, endOffset: 22 }];
+      await page.addInitScript((draft) => localStorage.setItem("pi-web-session-drafts-v1", JSON.stringify({ version: 1, sessions: {
+        "mock-older": { text: "", attachments: [], quoteReplies: draft },
+      } })), destinationDraft);
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await page.goto("/");
+      await selectAssistantExcerpt(page, "Image attachment support");
+      await page.getByRole("button", { name: "Reply", exact: true }).click();
+      await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Preserve source");
+      await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+      await deferQuoteTransition(page);
+      await page.getByRole("button", { name: action }).first().click();
+      await expect(page.locator("html")).toHaveClass(/quoteReplyTransition/);
+      await switchSession(page, "Older mock session");
+      if (returnToSource) await switchSession(page, "Current mock session");
+      await page.evaluate(() => document.dispatchEvent(new Event("release-quote-transition")));
+      await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+      await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-older"]?.quoteReplies)).toEqual(destinationDraft);
+      await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-current"]?.quoteReplies?.[0]?.question)).toBe("Preserve source");
+    });
+  }
+}
+
+for (const action of ["Reply", "Confirm question", "Remove quote"] as const) {
+  test(`preserves deferred ${action} during same-session transcript refresh`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.goto("/");
+    await selectAssistantExcerpt(page, "Image attachment support");
+    if (action !== "Reply") {
+      await page.getByRole("button", { name: "Reply", exact: true }).click();
+      await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Preserve this action");
+      await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+    }
+    await deferQuoteTransition(page);
+    await page.getByRole("button", { name: action, exact: true }).first().click();
+    await page.locator(".message.assistant").first().evaluate((message) => { message.dataset.beforeRefresh = "true"; });
+    // Appearance changes perform a fresh same-session refreshMessages().
+    await page.locator("#settingDensitySelect").evaluate((select: HTMLSelectElement) => {
+      select.value = "compact";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await expect(page.locator('[data-before-refresh="true"]')).toHaveCount(0);
+    await page.evaluate(() => document.dispatchEvent(new Event("release-quote-transition")));
+    await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+    await expect(page.locator(".quoteReplyMark")).toHaveCount(action === "Remove quote" ? 0 : 1);
+    await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-current"]?.quoteReplies?.length || 0)).toBe(action === "Remove quote" ? 0 : 1);
+    if (action === "Confirm question") await expect(page.locator(".quoteFootnoteQuestion")).toHaveText("Preserve this action");
+  });
+}
+
+test("applies rapid editor actions in order and only once", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Confirm then remove");
+  await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+  await deferQuoteTransition(page);
+  await page.locator(".quoteFootnote").evaluate((note) => {
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.click();
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteRemove")!.click();
+  });
+  await page.evaluate(() => document.dispatchEvent(new Event("release-quote-transition")));
+  await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+  await expect(page.locator(".quoteReplyMark")).toHaveCount(0);
+  await expect(page.locator(".composer")).toBeVisible();
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  await expect(page.locator("html")).toHaveAttribute("data-quote-transition-rejections", "0");
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-current"]?.quoteReplies?.length || 0)).toBe(0);
+});
+
+test("opens and edits saved comments synchronously without a deferred transition", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Saved comment");
+  await page.getByRole("button", { name: "Confirm question" }).click();
+  await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+  await page.evaluate(() => {
+    document.documentElement.dataset.deferredDomActionCalls = "0";
+    Object.defineProperty(document, "startViewTransition", { value: () => {
+      document.documentElement.dataset.deferredDomActionCalls = "1";
+      return { ready: Promise.resolve(), finished: Promise.resolve(), skipTransition() {} };
+    } });
+  });
+  await page.locator(".quoteReplyPin").click();
+  await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("Saved comment");
+  await page.getByRole("button", { name: "Edit question" }).click();
+  await expect(page.getByRole("textbox", { name: "Question for quote 1" })).toBeVisible();
+  await expect(page.locator(".composer")).toBeHidden();
+  await expect(page.locator("html")).toHaveAttribute("data-deferred-dom-action-calls", "0");
 });
 
 test("migrates legacy composer and session quote drafts", async ({ page }) => {
