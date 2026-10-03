@@ -44,6 +44,15 @@ test("native browser lifecycle through the production UI and owned native protoc
     const id = new URL(page.url()).searchParams.get("sessionId")!;
     const state = await json(`/api/state?sessionId=${id}`);
     const peer = await peerForThread(peers, state.nativeSession.sessionId);
+    await page.evaluate(async () => { await fetch("/api/settings", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { pinNewSessions: true } }) }); });
+    await page.reload();
+    await page.locator(".agentChoice").selectOption("pi");
+    if (!await page.locator("#sessionNewButton").isVisible()) await page.locator("#sessionButton").click();
+    await page.locator("#sessionNewButton").click();
+    await expect.poll(async () => (await json("/api/state" + new URL(page.url()).search)).harnessId).toBe("pi");
+    expect(new URL(page.url()).searchParams.get("sessionId")).not.toBe(id);
+    await page.goto(`${origin}/?sessionId=${id}`);
+    await expect.poll(async () => (await json("/api/state" + new URL(page.url()).search)).harnessId).toBe("codex");
     expect(id).not.toBe(state.nativeSession.sessionId);
     expect(await page.locator("#attachButton").isVisible()).toBe(false);
     expect(await page.locator("#modelSettingsButton").isDisabled()).toBe(true);
@@ -56,6 +65,18 @@ test("native browser lifecycle through the production UI and owned native protoc
     await controlPeer(peer, { action: "text", itemId: "answer", delta: "answer", done: true });
     await controlPeer(peer, { action: "tool", itemId: "command", command: "printf peer" });
     await controlPeer(peer, { action: "tool", itemId: "command", delta: "Owned native output", done: true });
+    for (const item of [
+      { id: "diff", type: "fileChange", status: "completed", changes: [{ path: "owned.txt", kind: { type: "add" }, diff: "+DIFF_SENTINEL <img src=x onerror=window.__nativeInjected=1>" }] },
+      { id: "structured", type: "mcpToolCall", status: "completed", server: "peer", tool: "structured", arguments: {}, result: { content: [], structuredContent: { sentinel: "STRUCTURED_SENTINEL <script>window.__nativeInjected=1</script>" } } },
+    ]) await controlPeer(peer, { action: "emit", message: { method: "item/completed", params: { threadId: state.nativeSession.sessionId, turnId: turn.turnId, item } } });
+    await expect.poll(() => page.locator("#messages").textContent()).toContain("DIFF_SENTINEL");
+    await expect.poll(() => page.locator("#messages").textContent()).toContain("STRUCTURED_SENTINEL");
+    await page.locator("#messages details").evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLDetailsElement).open = true; }));
+    expect(await page.locator("#messages").innerText()).toContain("DIFF_SENTINEL");
+    expect(await page.locator("#messages").innerText()).toContain("STRUCTURED_SENTINEL");
+    expect(await page.locator("#messages img").count()).toBe(0);
+    expect(await page.evaluate(() => (window as any).__nativeInjected)).toBeUndefined();
+    await page.locator("#messages details").evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLDetailsElement).open = false; }));
     await controlPeer(peer, { action: "approval", requestId: 0, decisions: ["accept", "decline", "cancel"] });
     await expect.poll(() => page.locator(".pendingInteractions").innerText()).toContain("Decline");
     await page.locator(".pendingInteractions button").filter({ hasText: "Decline" }).click();
@@ -64,6 +85,28 @@ test("native browser lifecycle through the production UI and owned native protoc
     const interrupt = await waitObserved(peer, (row) => row.direction === "client" && row.message.method === "turn/interrupt");
     expect(interrupt.message.params).toEqual({ threadId: state.nativeSession.sessionId, turnId: turn.turnId });
     await expect.poll(async () => (await json(`/api/state?sessionId=${id}`)).phase).toBe("idle");
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+    await page.evaluate(() => { (window as any).__stopRejections = []; window.addEventListener("unhandledrejection", (event) => (window as any).__stopRejections.push(String(event.reason))); });
+    await page.locator("#prompt").fill("Second protocol-peer turn");
+    await page.locator("#primaryButton").click();
+    await acceptedTurn(peer, turn.turnId);
+    const guarded = await json(`/api/state?sessionId=${id}`);
+    const stopBodies: any[] = [];
+    await page.route("**/api/abort", async (route) => {
+      stopBodies.push(route.request().postDataJSON());
+      await controlPeer(peer, { action: "complete" });
+      await expect.poll(async () => (await json(`/api/state?sessionId=${id}`)).phase).toBe("idle");
+      await route.continue(); // genuine host 409; never retry against a new execution
+    });
+    const rejectedStop = page.waitForResponse((response) => response.url().endsWith("/api/abort"));
+    await page.locator("#stopButton").click();
+    expect((await rejectedStop).status()).toBe(409);
+    await expect.poll(() => page.locator("#messages").textContent()).toContain("Stop failed:");
+    expect(stopBodies).toEqual([{ sessionId: id, expectedExecutionId: guarded.activeExecution.id }]);
+    expect(pageErrors).toEqual([]);
+    expect(await page.evaluate(() => (window as any).__stopRejections)).toEqual([]);
+    await page.unroute("**/api/abort");
     await controlPeer(peer, { action: "exit", code: 17 });
     await expect.poll(async () => (await json(`/api/state?sessionId=${id}`)).phase).toBe("unavailable");
     const reopened = await page.evaluate(async (sessionId) => {
@@ -73,7 +116,13 @@ test("native browser lifecycle through the production UI and owned native protoc
     expect(reopened).toBe(200);
     await page.reload();
     await expect.poll(() => page.locator("#messages").innerText()).toContain("Visible streamed answer");
-    expect(await page.locator("#messages .user").count()).toBe(1);
+    expect(await page.locator("#messages .user").count()).toBe(2);
+    await expect.poll(() => page.locator("#messages").textContent()).toContain("DIFF_SENTINEL");
+    await expect.poll(() => page.locator("#messages").textContent()).toContain("STRUCTURED_SENTINEL");
+    await page.locator("#messages details").evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLDetailsElement).open = true; }));
+    expect(await page.locator("#messages").innerText()).toContain("DIFF_SENTINEL");
+    expect(await page.locator("#messages").innerText()).toContain("STRUCTURED_SENTINEL");
+    expect(await page.locator("#messages img").count()).toBe(0);
     expect(await page.locator("#messages .user time[datetime]").count()).toBe(0);
     expect((await json(`/api/state?sessionId=${id}`)).nativeSession.sessionId).toBe(state.nativeSession.sessionId);
   } finally {

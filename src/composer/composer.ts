@@ -1,4 +1,5 @@
 import type { ApiClient } from "../app/api.js";
+import { exactStop } from "./exactStop.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, sessionUiMutationWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
@@ -180,9 +181,14 @@ export function createComposer(options: {
   }
 
   async function stopStreaming() {
-    if (!state.currentSessionId) return;
-    const response = await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId: state.currentSessionId, expectedExecutionId: activeSessionState(state)?.activeExecution?.id }) });
-    if (!response.ok) throw new Error(await response.text());
+    const sessionId = state.currentSessionId;
+    const expectedExecutionId = activeSessionState(state)?.activeExecution?.id;
+    if (!sessionId) return;
+    await exactStop(
+      () => fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId, expectedExecutionId }) }),
+      (message) => addMessage("system", message, "error"),
+      refreshState,
+    );
   }
 
   function persistDraft(immediate = false) {

@@ -8,6 +8,25 @@ import { CodexRpcError, CodexTransport, diagnostic, type NativeNotification, typ
 import { controlPeer, findPeer, readObserved, waitObserved } from "./fixtures/codex-peer-control.js";
 
 const cleanups: Array<() => Promise<void>> = [];
+
+it.each(["eof", "natural"])("cleans an independently surviving wrapper descendant on %s", async (mode) => {
+  if (process.platform === "win32") return;
+  const root = await mkdtemp(join(tmpdir(), "pi-web-codex-descendant-"));
+  let descendant: number | undefined;
+  const transport = new CodexTransport({ cwd: root, command: process.execPath,
+    args: [fileURLToPath(new URL("./fixtures/codex-wrapper-descendant.mjs", import.meta.url)), join(root, "pid"), mode] },
+    { notification() {}, request() {}, closed() {}, observation() {} });
+  cleanups.push(async () => {
+    await transport.dispose();
+    if (descendant) { try { process.kill(descendant, "SIGKILL"); } catch {} }
+    await rm(root, { recursive: true, force: true });
+  });
+  await transport.request("probe");
+  descendant = Number(await readFile(join(root, "pid"), "utf8"));
+  if (mode === "eof") await transport.dispose();
+  else await expect.poll(() => transport.closed).toBe(true);
+  await expect.poll(() => { try { process.kill(descendant!, 0); return true; } catch { return false; } }, { timeout: 3000 }).toBe(false);
+});
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 
 async function connection(options: { requestTimeoutMs?: number; maxFrameBytes?: number } = {}) {

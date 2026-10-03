@@ -15,6 +15,7 @@ import { PiSessionHandle, type PiAdapterDependencies, type PiAdapterHost } from 
 /** Pi resources retain the current factory; only handle binding lives here. */
 export class PiAdapter implements SessionAdapter {
   readonly webIdentity = "native" as const;
+  readonly piCompatibility: import("../../adapter.js").PiCompatibility = this;
   readonly harness: HarnessDescriptorDto = {
     id: "pi", name: "Pi", enabled: true, available: true,
     capabilities: { harness: "pi", queue: true, steering: true, followUp: true, thinkingLevel: true,

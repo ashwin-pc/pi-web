@@ -7,6 +7,11 @@ export function createNativeTranscript(addMessage: MessageList["addMessage"], ma
   const messages = new Map<string, TranscriptMessageDto>();
   const cards = new Map<string, HTMLDivElement>();
   const nodes = new Map<string, HTMLElement>();
+  function textBlock(text: string) {
+    const pre = document.createElement("pre"); pre.textContent = text;
+    pre.style.whiteSpace = "pre-wrap"; pre.style.overflowWrap = "anywhere"; pre.style.maxWidth = "100%";
+    return pre;
+  }
   function renderPart(part: MessagePartDto, node: HTMLElement, final: boolean) {
     node.dataset.partId = part.id;
     if (part.type === "text") {
@@ -15,15 +20,25 @@ export function createNativeTranscript(addMessage: MessageList["addMessage"], ma
     } else if (part.type === "thinking") {
       const details = document.createElement("details");
       const summary = document.createElement("summary"); summary.textContent = "Thinking";
-      const text = document.createElement("pre"); text.textContent = part.text;
+      const text = textBlock(part.text);
       details.append(summary, text); node.replaceChildren(details);
     } else if (part.type === "toolCall") {
       const details = document.createElement("details"); details.open = part.status === "running";
       const summary = document.createElement("summary"); summary.textContent = `${part.toolName} · ${part.status}`;
-      const args = document.createElement("pre"); args.textContent = JSON.stringify(part.args, null, 2);
+      const args = textBlock(JSON.stringify(part.args, null, 2));
       details.append(summary, args);
       for (const result of part.result?.parts || []) {
         const child = document.createElement("div"); renderPart(result, child, final); details.append(child);
+      }
+      const metadata = part.result?.details;
+      if (metadata !== undefined) {
+        const entries: [string, unknown][] = metadata && typeof metadata === "object" && !Array.isArray(metadata) ? Object.entries(metadata) : [["Result details", metadata]];
+        for (const [key, value] of entries) {
+          const section = document.createElement("details");
+          const label = document.createElement("summary"); label.textContent = key === "diff" ? "File diff" : key === "structuredContent" ? "Structured result" : key;
+          const content = textBlock(typeof value === "string" ? value : JSON.stringify(value, null, 2));
+          section.append(label, content); details.append(section);
+        }
       }
       node.replaceChildren(details);
     } else if (part.type === "image") {

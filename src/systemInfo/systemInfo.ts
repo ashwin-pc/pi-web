@@ -299,7 +299,13 @@ export function createSystemInfo(options: {
       : `Updated ${new Date(info.capturedAt).toLocaleString()}`;
   }
 
-  async function refresh() {
+  let pendingRefresh: Promise<void> | undefined;
+  function refresh(): Promise<void> {
+    // Initialization and opening the settings page can overlap. One refresh owns
+    // contribution rendering, otherwise a late duplicate replaces user input.
+    return pendingRefresh ??= runRefresh().finally(() => { pendingRefresh = undefined; });
+  }
+  async function runRefresh() {
     status.textContent = "Loading system information…";
     refreshButton.disabled = true;
     try {

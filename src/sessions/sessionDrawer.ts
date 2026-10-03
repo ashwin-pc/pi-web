@@ -517,11 +517,12 @@ export function createSessions(options: {
     const pinNewSessions = state.settings.defaults.pinNewSessions === true;
     let reusable: ReturnType<typeof reusableEmptySession>;
     const harnessId = agentChoice.value || state.harnessCatalog?.defaultHarnessId;
+    const selection = { harnessId: harnessId || "", defaultHarnessId: state.harnessCatalog?.defaultHarnessId };
     if (pinNewSessions && (!harnessId || harnessId === state.harnessCatalog?.defaultHarnessId)) {
       // Validate even the active tab: a recent prompt or external edit can make
       // its previously empty snapshot stale before realtime stats arrive.
       await refreshSessions(true);
-      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft, selection);
       if (!reusable) {
         // Cold listings deliberately omit counts. Read candidate snapshots without
         // moving this browser's viewer lease or opening/changing the active tab.
@@ -530,11 +531,7 @@ export function createSessions(options: {
         // Local slash-command output can make the active tab's optimistic
         // projection look non-empty even though its authoritative transcript is
         // blank. Validate it alongside ordinary empty candidates.
-        const activeCandidate = state.sessionsById[state.currentSessionId];
-        const candidates = [
-          ...(activeCandidate && activeCandidate.cwd === targetCwd && !options.hasSessionDraft(activeCandidate.id) ? [activeCandidate] : []),
-          ...emptySessionCandidates(state, targetCwd, options.hasSessionDraft),
-        ];
+        const candidates = emptySessionCandidates(state, targetCwd, options.hasSessionDraft, { ...selection, hydrateActive: true });
         for (const candidate of Array.from(new Map(candidates.map((item) => [item.id, item])).values())) {
           const res = await fetch(`/api/state?sessionId=${encodeURIComponent(candidate.id)}`, { headers });
           if (res.status === 404) {
@@ -543,7 +540,7 @@ export function createSessions(options: {
           }
           if (!res.ok) throw new Error(await res.text());
           sessionState.applySnapshot(await res.json());
-          reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+          reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft, selection);
           if (reusable) break;
         }
       }
@@ -555,7 +552,7 @@ export function createSessions(options: {
       const openedId = reusable.id;
       const result = await openSessionTab(openedId, targetCwd);
       if (result === "failed") return; // Never create a duplicate after a network/server failure.
-      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
+      reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft, selection);
       if (result === "opened" && reusable?.id === openedId) break;
     }
     if (!reusable) {

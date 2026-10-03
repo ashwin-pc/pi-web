@@ -1,6 +1,8 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { nativeChildEnvironment } from "../nativeEnvironment.js";
+import { processGuardian } from "./processGuardian.js";
+import { setTimeout as delay } from "node:timers/promises";
 
 export type RpcId = string | number;
 export type NativeObject = Record<string, unknown>;
@@ -71,25 +73,37 @@ export class CodexTransport {
   private ended = false;
   private disposing?: Promise<void>;
   private readonly exited: Promise<void>;
+  private readonly nativeExited: Promise<void>;
+  private leaderClosed = false;
 
   constructor(options: CodexLaunchOptions, private readonly callbacks: CodexTransportCallbacks) {
     this.maxFrameBytes = options.maxFrameBytes ?? 8 * 1024 * 1024;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 45_000;
-    this.child = spawn(options.command ?? "codex", options.args ?? ["app-server", "--listen", "stdio://"], {
+    const guarded = process.platform !== "win32";
+    const command = options.command ?? "codex";
+    const args = options.args ?? ["app-server", "--listen", "stdio://"];
+    this.child = spawn(guarded ? process.execPath : command, guarded ? ["-e", processGuardian, command, JSON.stringify(args)] : args, {
       cwd: options.cwd,
       // Preserve native auth/config and explicit-env semantics, not the host control token.
       env: nativeChildEnvironment(options.env ?? process.env),
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: guarded ? ["pipe", "pipe", "pipe", "ipc"] : ["pipe", "pipe", "pipe"],
       // Own a process group so a wrapper's children cannot outlive explicit disposal.
       detached: process.platform !== "win32",
-    });
-    this.exited = new Promise((resolve) => this.child.once("close", () => resolve()));
+    }) as ChildProcessWithoutNullStreams;
+    this.exited = new Promise((resolve) => this.child.once("close", () => { this.leaderClosed = true; resolve(); }));
+    this.nativeExited = guarded ? new Promise((resolve) => this.child.on("message", (value: unknown) => {
+      const message = object(value);
+      if (message?.type !== "native-exit") return;
+      resolve();
+      this.fail(new CodexRpcError(message.launchError ? "Could not launch Codex app-server; check the configured executable and native setup" : `Codex app-server exited (${message.signal ?? message.code ?? "unknown"})`, "closed", true));
+    })) : this.exited;
     this.child.stdout.on("data", (chunk: Buffer) => this.receive(this.decoder.write(chunk)));
     this.child.stderr.resume(); // Native stderr may contain private diagnostics; do not forward it.
     this.child.stdin.on("error", () => this.fail(new CodexRpcError("Codex input closed", "closed", true)));
     this.child.once("error", () => this.fail(new CodexRpcError("Could not launch Codex app-server; check the configured executable and native setup", "closed")));
+    this.child.once("exit", () => { this.leaderClosed = true; });
     this.child.once("close", (code, signal) => {
-      this.finish(new CodexRpcError(`Codex app-server exited (${signal ?? code ?? "unknown"})`, "closed", true));
+      this.fail(new CodexRpcError(`Codex app-server exited (${signal ?? code ?? "unknown"})`, "closed", true));
     });
   }
 
@@ -211,17 +225,16 @@ export class CodexTransport {
   private async stop(): Promise<void> {
     this.finish(new CodexRpcError("Codex connection disposed", "closed"));
     this.child.stdin.end();
-    const terminate = setTimeout(() => this.signal("SIGTERM"), 1_000);
-    const kill = setTimeout(() => this.signal("SIGKILL"), 2_000);
-    terminate.unref?.();
-    kill.unref?.();
+    await Promise.race([this.nativeExited, this.exited, delay(1_000)]);
+    this.signal("SIGTERM");
+    await delay(100);
+    this.signal("SIGKILL");
     await this.exited;
-    clearTimeout(terminate);
-    clearTimeout(kill);
   }
 
   private signal(signal: NodeJS.Signals): void {
-    if (!this.child.pid) return;
+    // Never signal a PGID after the owned anchor has been reaped/recycled.
+    if (!this.child.pid || this.leaderClosed) return;
     try {
       if (process.platform === "win32") this.child.kill(signal);
       else process.kill(-this.child.pid, signal);

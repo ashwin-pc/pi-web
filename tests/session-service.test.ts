@@ -696,6 +696,35 @@ describe("LocalSessionService contract", () => {
 });
 
 describe("LocalSessionService standalone lifecycle", () => {
+  it("does not let A's late prompt/abort cleanup clear B's startup identity or lease", async () => {
+    const { service, fixture, initial } = await fixtureService();
+    let releaseA!: () => void; let releaseB!: () => void; let releaseAbort!: () => void;
+    const a = new Promise<void>((resolve) => { releaseA = resolve; });
+    const b = new Promise<void>((resolve) => { releaseB = resolve; });
+    const aborted = new Promise<void>((resolve) => { releaseAbort = resolve; });
+    initial.prompt = vi.fn().mockImplementationOnce(() => a).mockImplementationOnce(() => b);
+    initial.abort = vi.fn(() => aborted);
+    initial.isStreaming = true;
+    const first = await service.prompt(initial.sessionId, { message: "A", mode: "prompt" });
+    fixture.emit({ type: "agent_start" });
+    const stopping = service.abort(initial.sessionId, first.executionId);
+    await expect.poll(() => vi.mocked(initial.abort).mock.calls.length).toBe(1);
+    initial.isStreaming = false;
+    fixture.emit({ type: "agent_settled" });
+    const second = await service.prompt(initial.sessionId, { message: "B", mode: "prompt" });
+    expect(second.executionId).not.toBe(first.executionId);
+    releaseA();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    releaseAbort(); await stopping;
+    expect((await service.state(initial.sessionId)).activeExecution?.id).toBe(second.executionId);
+    expect(service.hasActiveWorkForPath(initial.sessionId)).toBe(true);
+    expect(initial.abort).toHaveBeenCalledTimes(1);
+    initial.abort = vi.fn(async () => undefined);
+    await expect(service.abort(initial.sessionId, second.executionId)).resolves.toMatchObject({ acknowledged: true });
+    releaseB();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(service.hasActiveWorkForPath(initial.sessionId)).toBe(false);
+  });
   it("keeps agent_end running and uses agent_settled as the idle boundary", async () => {
     const { service, fixture, initial } = await fixtureService();
     const activity = new SessionActivity(

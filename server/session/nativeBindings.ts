@@ -65,14 +65,25 @@ export class NativeBindings {
     const input = copy(row);
     return this.update(input.id, () => input).then(() => undefined);
   }
+  /** Identity lookup and allocation share the same queue as every binding write. */
+  getOrCreateNative(ref: NativeSessionRefDto, change: (id: string, current: NativeBinding | undefined) => NativeBinding, preferredId?: string): Promise<NativeBinding | undefined> {
+    return this.enqueue(async () => {
+      const existing = this.byNative(ref);
+      if (existing?.deleted) return;
+      return this.commit(change(existing?.id || preferredId || randomUUID(), existing));
+    });
+  }
   /** Read, merge and commit in the same queue; callers never merge a stale get(). */
   update(id: string, change: (current: NativeBinding | undefined) => NativeBinding | undefined): Promise<NativeBinding | undefined> {
-    const commit = async () => {
-      await this.ready;
+    return this.enqueue(async () => {
       const changed = change(this.get(id));
       if (!changed) return;
+      if (changed.id !== id) throw new Error("Cannot change a native binding's web identity");
+      return this.commit(changed);
+    });
+  }
+  private async commit(changed: NativeBinding): Promise<NativeBinding> {
       const input = copy(changed);
-      if (input.id !== id) throw new Error("Cannot change a native binding's web identity");
       validate(input, this.rows);
       const candidate = new Map(this.rows);
       candidate.set(input.id, input);
@@ -89,7 +100,9 @@ export class NativeBindings {
       }
       this.rows = candidate;
       return copy(input);
-    };
+  }
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const commit = async () => { await this.ready; return operation(); };
     const pending = this.tail.then(commit, commit);
     this.tail = pending;
     return pending;

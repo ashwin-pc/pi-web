@@ -12,7 +12,11 @@ const capabilities: HarnessCapabilitiesDto = {
   tree: false, compaction: false, retry: false, bash: false, extensions: false, interactions: true, executionPhases: true, cwdChange: false, historyRemoval: "binding",
   models: false, context: false, attachments: false, historyFork: false,
 };
-export interface CodexAdapterOptions extends Omit<CodexLaunchOptions, "cwd"> { interactionTimeoutMs?: number }
+export interface CodexAdapterOptions extends Omit<CodexLaunchOptions, "cwd"> {
+  interactionTimeoutMs?: number;
+  /** Trusted host registration identity; never changes native auth/config/policy. */
+  registrationId?: string;
+}
 type Turn = { executionId?: string; status: "inProgress" | "completed" | "interrupted" | "failed" };
 type Item = { native: NativeObject; timestamp?: string; completed: boolean };
 type PendingControl = { native: NativeRequest; turnId: string; approval: CodexApproval; request: InteractionRequestDto; timer: ReturnType<typeof setTimeout> };
@@ -43,7 +47,7 @@ async function initialize(rpc: CodexTransport): Promise<void> {
 }
 
 class CodexHandle implements SessionHandle {
-  readonly harnessId = "codex" as const;
+  readonly harnessId: string;
   readonly sessionId: string;
   private snapshot: SessionSnapshotDto;
   private rpc?: CodexTransport;
@@ -63,8 +67,9 @@ class CodexHandle implements SessionHandle {
 
   constructor(private readonly cwd: string, sessionId: string, nativeSession: NativeSessionRefDto, private readonly options: CodexAdapterOptions) {
     this.sessionId = sessionId;
-    this.snapshot = { cwd, sessionId, sessionTitle: "Codex session", harnessId: "codex", nativeSession,
-      phase: "starting", activity: "idle", pendingInteractions: [], capabilities: { ...capabilities },
+    this.harnessId = options.registrationId ?? "codex";
+    this.snapshot = { cwd, sessionId, sessionTitle: "Codex session", harnessId: this.harnessId, nativeSession,
+      phase: "starting", activity: "idle", pendingInteractions: [], capabilities: { ...capabilities, harness: this.harnessId },
       isStreaming: false, isRetrying: false, isCompacting: false, stats: emptyStats() };
   }
 
@@ -210,7 +215,7 @@ class CodexHandle implements SessionHandle {
   private hydrate(thread: NativeObject, settings: NativeObject, opening: boolean): void {
     const id = requiredString(thread.id, "thread ID");
     const ephemeral = thread.ephemeral === true;
-    this.snapshot.nativeSession = { harnessId: "codex", sessionId: id, persistence: ephemeral ? "ephemeral" : "persistent",
+    this.snapshot.nativeSession = { harnessId: this.harnessId, sessionId: id, persistence: ephemeral ? "ephemeral" : "persistent",
       status: ephemeral ? "live-only" : opening ? "resumable" : "unmaterialized" };
     const model = typeof settings.model === "string" ? settings.model : typeof thread.model === "string" ? thread.model : undefined;
     const provider = typeof settings.modelProvider === "string" ? settings.modelProvider : String(thread.modelProvider ?? "codex");
@@ -475,7 +480,7 @@ class CodexHandle implements SessionHandle {
     const id = randomUUID();
     const timeout = this.options.interactionTimeoutMs ?? 120_000;
     const request: InteractionRequestDto = { id, sessionId: this.sessionId, source: "approval", kind: "approval", title: approval.title,
-      body: approval.description, payload: { harness: "codex", ...(item && turnId ? { messageId: itemMessageId(turnId, String(item.native.id)) } : {}) },
+      body: approval.description, payload: { harness: this.harnessId, ...(item && turnId ? { messageId: itemMessageId(turnId, String(item.native.id)) } : {}) },
       choices: approval.choices.map((choice) => ({ ...choice, meaning: choice.id === "decline" ? "decline" : choice.id === "cancel" ? "cancel" : "accept" })),
       timeout, expiresAt: new Date(Date.now() + timeout).toISOString() };
     const timer = setTimeout(() => this.cancelControl(id, "expired"), timeout); timer.unref?.();
@@ -543,7 +548,7 @@ class CodexHandle implements SessionHandle {
   }
   private observe(method: string, value?: unknown, bytes?: number): void {
     if (this.observations.length >= 32) return;
-    const observation: JsonValue = { type: "harness_observation", harnessId: "codex", sessionId: this.sessionId,
+    const observation: JsonValue = { type: "harness_observation", harnessId: this.harnessId, sessionId: this.sessionId,
       method: /^[\w/.: -]{1,96}$/.test(method) ? diagnostic(method) : "[unrecognized method]",
       bytes: bytes ?? Buffer.byteLength(JSON.stringify(value ?? null)), payloadOmitted: true };
     this.observations.push(observation); this.emit({ type: "wire", value: observation });
@@ -577,15 +582,16 @@ function executableAvailable(command: string, env: NodeJS.ProcessEnv): boolean {
 }
 
 export function createCodexAdapter(options: CodexAdapterOptions = {}): SessionAdapter {
+  const registrationId = options.registrationId ?? "codex";
   const available = executableAvailable(options.command ?? "codex", options.env ?? process.env);
   return {
     webIdentity: "host",
-    harness: { id: "codex", name: "Codex", enabled: true, available, capabilities: { ...capabilities },
+    harness: { id: registrationId, name: "Codex", enabled: true, available, capabilities: { ...capabilities, harness: registrationId },
       ...(!available ? { unavailableReason: "Codex executable is not available on PATH" } : {}) },
-    create: (input) => new CodexHandle(input.cwd, input.sessionId ?? randomUUID(), { harnessId: "codex", persistence: input.persistence ?? "persistent", status: input.persistence === "ephemeral" ? "live-only" : "unmaterialized" }, options).start(input),
+    create: (input) => new CodexHandle(input.cwd, input.sessionId ?? randomUUID(), { harnessId: registrationId, persistence: input.persistence ?? "persistent", status: input.persistence === "ephemeral" ? "live-only" : "unmaterialized" }, options).start(input),
     // Cached metadata is only a last observation. Probe every persistent native ID, including
     // one marked unmaterialized just before a host crash; never recreate or replay its prompt.
-    open: (input) => input.nativeSession.harnessId !== "codex"
+    open: (input) => input.nativeSession.harnessId !== registrationId
       ? Promise.reject(new Error("Cannot open another harness's native reference with Codex"))
       : new CodexHandle(input.cwd, input.sessionId, { ...input.nativeSession }, options).start(input),
     async list(cwd): Promise<AdapterSessionInfo[]> {
@@ -606,7 +612,7 @@ export function createCodexAdapter(options: CodexAdapterOptions = {}): SessionAd
             const nativeId = requiredString(thread.id, "listed thread ID");
             const created = Number(thread.createdAt); const modified = Number(thread.updatedAt);
             if (!Number.isFinite(created) || !Number.isFinite(modified)) throw new CodexRpcError("Invalid Codex thread timestamps", "protocol");
-            sessions.push({ nativeSession: { harnessId: "codex", sessionId: nativeId, persistence: "persistent", status: "resumable" },
+            sessions.push({ nativeSession: { harnessId: registrationId, sessionId: nativeId, persistence: "persistent", status: "resumable" },
               cwd: typeof thread.cwd === "string" ? thread.cwd : cwd, ...(typeof thread.name === "string" ? { name: thread.name } : {}),
               ...(typeof thread.preview === "string" ? { firstMessage: thread.preview } : {}), created: new Date(created * 1_000).toISOString(), modified: new Date(modified * 1_000).toISOString() });
           }

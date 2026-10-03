@@ -44,7 +44,8 @@ export interface PiAdapterHost {
   failed(handle: PiSessionHandle): void;
   create(cwd: string, previousSessionFile?: string): Promise<SessionSnapshotDto>;
   withWorkLease<T>(handle: SessionHandle, label: string, kind: "general" | "retry", operation: () => T | Promise<T>): Promise<T>;
-  clearWorkLeases(handle: SessionHandle, reason: string): void;
+  workLeaseKeys(handle: SessionHandle): ReadonlySet<symbol>;
+  clearWorkLeases(handle: SessionHandle, reason: string, keys: ReadonlySet<symbol>): void;
   hasWork(sessionId: string): boolean;
 }
 
@@ -130,6 +131,7 @@ export class PiSessionHandle implements SessionHandle {
   private readonly pendingPromptCorrelations = new Map<string, PendingPromptCorrelation[]>();
   private readonly pendingInteractions = new Map<string, InteractionRequestDto>();
   private activeExecution?: ActiveExecutionDto;
+  private sdkExecution?: ActiveExecutionDto;
   private readonly runtime: PiRuntime;
   private disposal?: Promise<void>;
   private disposed = false;
@@ -184,21 +186,23 @@ export class PiSessionHandle implements SessionHandle {
   }
   async prompt(input: AdapterPromptInput): Promise<PromptReceiptDto> {
     if (!this.activeExecution) this.activeExecution = { id: input.executionId, owner: "host" };
+    const execution = this.activeExecution;
     await this.startSessionPrompt(this.raw, input);
-    return { sessionId: this.sessionId, executionId: this.activeExecution?.id || input.executionId, acknowledgement: "not-exposed" };
+    return { sessionId: this.sessionId, executionId: execution.id, acknowledgement: "not-exposed" };
   }
   async interrupt(expectedExecutionId: string): Promise<InterruptReceiptDto> {
     if (expectedExecutionId && this.activeExecution?.id !== expectedExecutionId) throw new SessionServiceError("Execution is no longer active", 409);
     const executionId = this.activeExecution?.id || expectedExecutionId;
     await this.abortSession(this.raw);
-    if (!this.raw.isStreaming && !this.raw.isCompacting) this.activeExecution = undefined;
+    if (this.activeExecution?.id === executionId && !this.raw.isStreaming && !this.raw.isCompacting) this.activeExecution = undefined;
     this.emit({ type: "state", state: this.state() });
     return { sessionId: this.sessionId, executionId, acknowledged: true };
   }
   async retry() {
     try { this.assertCanRetry(this.raw); } catch (error) { throw new SessionServiceError(errorMessage(error), 409); }
     this.activeExecution = { id: randomUUID(), owner: "host" };
-    try { await this.startSessionRetry(this.raw); } catch (error) { this.activeExecution = undefined; throw error; }
+    const execution = this.activeExecution;
+    try { await this.startSessionRetry(this.raw); } catch (error) { if (this.activeExecution === execution) this.activeExecution = undefined; throw error; }
     return { sessionId: this.sessionId };
   }
   respondInteraction(response: InteractionResponseDto) {
@@ -446,8 +450,14 @@ export class PiSessionHandle implements SessionHandle {
     const sessionFile = value.sessionFile;
     const mapped = mapPiEvent(e);
     const raw = event as any;
-    if (raw?.type === "agent_start" && !this.activeExecution) this.activeExecution = { id: randomUUID(), owner: "host" };
-    if (raw?.type === "agent_settled") this.activeExecution = undefined;
+    if (raw?.type === "agent_start") {
+      this.activeExecution ??= { id: randomUUID(), owner: "host" };
+      this.sdkExecution = this.activeExecution;
+    }
+    if (raw?.type === "agent_settled") {
+      if (this.activeExecution === this.sdkExecution) this.activeExecution = undefined;
+      this.sdkExecution = undefined;
+    }
     if (mapped.kind === "entry") {
       this.emit({ type: "entry", sessionId, sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, entryKind: mapped.entryKind });
       return;
@@ -620,11 +630,12 @@ export class PiSessionHandle implements SessionHandle {
   }
 
   private abortSession(value: PiWebSession) {
+    const leases = this.adapter.host.workLeaseKeys(this);
     const wasSdkActive = Boolean(value.isStreaming || value.isCompacting);
     const aborting = value.abort().catch((error) => this.emitError(value, error));
-    if (!wasSdkActive) this.adapter.host.clearWorkLeases(this, "abort while SDK idle");
+    if (!wasSdkActive) this.adapter.host.clearWorkLeases(this, "abort while SDK idle", leases);
     else void aborting.then(() => {
-      if (!value.isStreaming && !value.isCompacting) this.adapter.host.clearWorkLeases(this, "active abort settled");
+      if (!value.isStreaming && !value.isCompacting) this.adapter.host.clearWorkLeases(this, "active abort settled", leases);
     });
     return aborting;
   }
@@ -634,6 +645,7 @@ export class PiSessionHandle implements SessionHandle {
     if (input.clientMessageId && input.sourceClientId) this.rememberPromptCorrelation(this.sessionId, { clientMessageId: input.clientMessageId, sourceClientId: input.sourceClientId, createdAt: Date.now() });
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;
+    const execution = this.activeExecution;
     void this.adapter.host.withWorkLease(this, "prompt", "general", () => value.prompt(promptText, {
       ...(value.isStreaming ? { streamingBehavior: input.mode } : {}),
     })).catch((error) => {
@@ -641,8 +653,10 @@ export class PiSessionHandle implements SessionHandle {
       this.emitError(value, error, input.clientMessageId);
     }).finally(() => {
       const lastMessage = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages.at(-1) : undefined;
-      if (!value.isStreaming && !value.isCompacting) this.activeExecution = undefined;
-      this.emitRuntime(value, "completed", promptSessionFile, isAssistantAbortedMessage(lastMessage));
+      if (!this.activeExecution || this.activeExecution === execution) {
+        if (!value.isStreaming && !value.isCompacting) this.activeExecution = undefined;
+        this.emitRuntime(value, "completed", promptSessionFile, isAssistantAbortedMessage(lastMessage));
+      }
       this.emit({ type: "state", state: this.state() });
     });
   }
@@ -712,18 +726,24 @@ export class PiSessionHandle implements SessionHandle {
     try { this.assertCanRetry(value); } catch (error) { throw new SessionServiceError(errorMessage(error), 409); }
     this.emitRuntime(value, "ensure");
     const retrySessionFile = value.sessionFile;
+    const execution = this.activeExecution;
     const usesCompatibilityFallback = !value.retryFromFailure;
     void this.adapter.host.withWorkLease(this, "retry", "retry", () => this.retryFromFailure(value)).catch((error) => {
-      this.emitRuntime(value, "clear", retrySessionFile);
+      if (this.activeExecution === execution) this.emitRuntime(value, "clear", retrySessionFile);
       this.emitError(value, error);
     }).finally(() => {
       // The private SDK fallback bypasses AgentSession._runAgentPrompt(), so it
       // cannot emit pi's authoritative idle event itself. Translate settlement
       // only after releasing the compatibility lease.
-      if (usesCompatibilityFallback) this.handlePiEvent(value, { type: "agent_settled" });
+      if (usesCompatibilityFallback && this.activeExecution === execution) {
+        this.sdkExecution = execution;
+        this.handlePiEvent(value, { type: "agent_settled" });
+      }
       const lastMessage = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages.at(-1) : undefined;
-      if (!value.isStreaming && !value.isCompacting) this.activeExecution = undefined;
-      this.emitRuntime(value, "completed", retrySessionFile, isAssistantAbortedMessage(lastMessage));
+      if (!this.activeExecution || this.activeExecution === execution) {
+        if (!value.isStreaming && !value.isCompacting) this.activeExecution = undefined;
+        this.emitRuntime(value, "completed", retrySessionFile, isAssistantAbortedMessage(lastMessage));
+      }
       this.emit({ type: "state", state: this.state() });
     });
   }

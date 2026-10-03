@@ -19,6 +19,7 @@ export interface LocalSessionServiceDependencies {
   adapters?: SessionAdapter[];
   nativeBindingsFile: string;
   multiHarnessEnabled?: boolean;
+  defaultHarnessId?: HarnessId;
   finalizeCreatedSession(sessionId: string): Promise<unknown>;
   globalCwd(): string;
 }
@@ -74,16 +75,17 @@ export class LocalSessionService implements SessionService {
     void this.bindings.ready.catch(() => undefined);
     this.settingsStore = deps.pi.settingsStore;
     this.knownSessionCwds.add(resolve(deps.globalCwd()));
-    this.adapters = new SessionRegistry([deps.pi, ...(deps.adapters || [])], Boolean(deps.multiHarnessEnabled));
+    this.adapters = new SessionRegistry([deps.pi, ...(deps.adapters || [])], Boolean(deps.multiHarnessEnabled), deps.defaultHarnessId || deps.pi.harness.id);
     deps.pi.bindHost({
       captureStore: this.captureStore,
       rememberCwd: (cwd) => { this.knownSessionCwds.add(resolve(cwd)); },
       readSession: (reference, tail) => this.readSession(reference, tail),
       register: (handle, initializing) => { this.register(handle, initializing); },
       failed: (handle) => { void this.disposeLiveSession(handle.sessionId, "reset", true); },
-      create: (cwd, previousSessionFile) => this.createWithAdapter("pi", cwd, previousSessionFile),
+      create: (cwd, previousSessionFile) => this.createWithAdapter(deps.pi.harness.id, cwd, previousSessionFile),
       withWorkLease: (handle, label, kind, operation) => this.withWorkLease(handle, label, kind, operation),
-      clearWorkLeases: (handle, reason) => this.clearWorkLeases(handle, reason),
+      workLeaseKeys: (handle) => new Set(this.liveSessions.get(handle.sessionId)?.workLeases.keys()),
+      clearWorkLeases: (handle, reason, keys) => this.clearWorkLeases(handle, reason, keys),
       hasWork: (id) => this.hasActiveWorkForPath(id),
     });
   }
@@ -102,8 +104,9 @@ export class LocalSessionService implements SessionService {
     if (existing?.handle === handle) return handle;
     if (existing) throw new SessionServiceError("Session is already open", 409);
     const state = handle.state();
+    if (this.adapters.get(handle.harnessId)?.webIdentity === "native" && state.nativeSession.sessionId !== handle.sessionId) throw new Error("Native web identity must match the adapter's native session identity");
     if (state.sessionId !== handle.sessionId || state.harnessId !== handle.harnessId || state.nativeSession.harnessId !== handle.harnessId
-      || handle.harnessId !== "pi" && state.sessionFile !== undefined) throw new Error("Adapter identity mismatch");
+      || !this.adapters.get(handle.harnessId)?.piCompatibility && state.sessionFile !== undefined) throw new Error("Adapter identity mismatch");
     const entry: LiveSessionEntry = { handle, viewerClientIds: new Set(), workLeases: new Map(), initializing, deferredEvents: [] };
     this.liveSessions.set(handle.sessionId, entry);
     this.remember(state, false);
@@ -141,7 +144,7 @@ export class LocalSessionService implements SessionService {
   }
   private remember(state: BaseSessionStateDto, persistNative = true) {
     this.knownSessionCwds.add(resolve(state.cwd));
-    if (state.harnessId === "pi") {
+    if (state.harnessId && this.adapters.get(state.harnessId)?.piCompatibility) {
       if (state.sessionFile) {
         this.piLocations.set(state.sessionId, { sessionId: state.sessionId, cwd: state.cwd, sessionFile: state.sessionFile, nativeSession: state.nativeSession! });
         this.piNames.set(state.sessionFile, state.sessionName);
@@ -165,7 +168,8 @@ export class LocalSessionService implements SessionService {
   }
   async initialize(path?: string) {
     await this.bindings.ready;
-    const handle = await this.deps.pi.initialize(path);
+    const adapter = this.adapter(this.adapters.defaultHarnessId);
+    const handle = adapter.piCompatibility ? await adapter.piCompatibility.initialize(path) : await this.require((await this.createWithAdapter(adapter.harness.id, this.deps.globalCwd())).sessionId);
     this.setCurrentSession(handle);
     return handle;
   }
@@ -179,7 +183,7 @@ export class LocalSessionService implements SessionService {
   sessionForId(id: string) { return this.liveSessions.get(id)?.handle; }
   /** Pi-only compatibility lookup for existing tool timing/extension callers. Native routing is ID-only. */
   sessionForPath(path: string) {
-    return this.sessionForId(path) || [...this.liveSessions.values()].find((entry) => entry.handle.harnessId === "pi" && entry.handle.state().sessionFile === path)?.handle;
+    return this.sessionForId(path) || [...this.liveSessions.values()].find((entry) => entry.handle.piOperations && entry.handle.state().sessionFile === path)?.handle;
   }
   private keyFor(value: string) { return this.sessionForPath(value)?.sessionId || value; }
   hasActiveWorkForPath(key: string) { return Boolean(this.liveSessions.get(this.keyFor(key))?.workLeases.size); }
@@ -195,7 +199,7 @@ export class LocalSessionService implements SessionService {
   knownCwds() { return new Set([resolve(this.deps.globalCwd()), ...this.knownSessionCwds]); }
   projectState(handle: SessionHandle): SessionSnapshotDto {
     const state = handle.state();
-    const row = handle.harnessId === "pi" ? undefined : this.bindings.get(handle.sessionId);
+    const row = this.adapters.get(handle.harnessId)?.piCompatibility ? undefined : this.bindings.get(handle.sessionId);
     return jsonRoundTrip(row?.name !== undefined ? { ...state, sessionName: row.name || undefined, sessionTitle: row.name || state.sessionTitle } : state);
   }
   async find(id: string): Promise<SessionHandle | undefined> {
@@ -222,8 +226,8 @@ export class LocalSessionService implements SessionService {
         if (handle.sessionId !== location.sessionId || handle.harnessId !== location.nativeSession.harnessId) {
           throw new SessionServiceError("Adapter returned a different session identity", 409);
         }
-        this.register(handle, handle.harnessId !== "pi");
-        if (handle.harnessId !== "pi") {
+        this.register(handle, !adapter.piCompatibility);
+        if (!adapter.piCompatibility) {
           await this.saveNative(handle.state());
           this.finishInitialization(handle);
         }
@@ -237,7 +241,7 @@ export class LocalSessionService implements SessionService {
         throw error;
       }
     } catch (error) {
-      if (location.nativeSession.harnessId !== "pi") {
+      if (!this.adapters.get(location.nativeSession.harnessId)?.piCompatibility) {
         this.failedNativeOpens.set(location.sessionId, new SessionServiceError(`Native session is unavailable; explicitly reopen to retry. ${error instanceof Error ? error.message : "Open failed"}`, 503));
       }
       throw error;
@@ -260,12 +264,22 @@ export class LocalSessionService implements SessionService {
     }
     const known = this.piLocations.get(id);
     if (known) return known;
-    const info = await this.deps.pi.find(id, [...new Set([...(cwd ? [resolve(cwd)] : []), ...this.knownCwds()])]);
-    if (!info) return;
-    const location = { sessionId: id, cwd: info.cwd, nativeSession: info.nativeSession, sessionFile: info.sessionFile };
-    this.piLocations.set(id, location);
-    this.knownSessionCwds.add(info.cwd);
-    return location;
+    const cwds = [...new Set([...(cwd ? [resolve(cwd)] : []), ...this.knownCwds()])];
+    for (const adapter of this.adapters.values()) {
+      if (adapter.piCompatibility) {
+        const info = await adapter.piCompatibility.find(id, cwds);
+        if (!info) continue;
+        const location = { sessionId: id, cwd: info.cwd, nativeSession: info.nativeSession, sessionFile: info.sessionFile };
+        this.piLocations.set(id, location);
+        this.knownSessionCwds.add(info.cwd);
+        return location;
+      }
+      if (adapter.webIdentity === "native") for (const cwd of cwds) {
+        const info = (await adapter.list(cwd)).find((item) => item.nativeSession.sessionId === id);
+        if (!info || !await this.listInfo(adapter, info)) continue;
+        return { sessionId: id, cwd: info.cwd, nativeSession: info.nativeSession };
+      }
+    }
   }
   async state(id: string) { return this.projectState(await this.require(id)); }
   async messages(id: string) { return jsonRoundTrip(await (await this.require(id)).messages()); }
@@ -276,9 +290,10 @@ export class LocalSessionService implements SessionService {
     const location = live ? undefined : await this.location(reference.sessionId);
     let source: SessionReadResult["source"] = "active branch";
     let messages;
-    if (!live && location?.nativeSession.harnessId === "pi") {
+    const compatibility = location && this.adapters.get(location.nativeSession.harnessId)?.piCompatibility;
+    if (!live && location && compatibility) {
       source = "saved history (may include alternate branches)";
-      messages = await this.deps.pi.readHistory(location);
+      messages = await compatibility.readHistory(location);
     } else if (live?.piOperations && reference.entryId) {
       source = "saved history (may include alternate branches)";
       messages = live.piOperations!.readHistoryEntry(reference.entryId);
@@ -330,7 +345,7 @@ export class LocalSessionService implements SessionService {
     entry.dispatching = true;
     try {
       const receipt = await handle.prompt({ ...input, attachments, executionId });
-      if (!handle.piOperations) {
+      if (!this.adapters.get(handle.harnessId)?.piCompatibility) {
         try {
           await this.saveNative(handle.state(), { firstMessage: input.message.slice(0, 500) });
         } catch {
@@ -390,10 +405,10 @@ export class LocalSessionService implements SessionService {
   extensionStatus(id: string) { const handle = this.sessionForId(id); if (!handle) throw new SessionServiceError("Session is not currently open", 404); return this.pi(handle, "extensions").extensionStatus(); }
   async reloadExtensions(id: string) { return this.pi(await this.require(id), "extensions").reloadExtensions(); }
 
-  async create(previousId: string | undefined, cwd?: string, harnessId: HarnessId = "pi") {
+  async create(previousId: string | undefined, cwd?: string, harnessId: HarnessId = this.adapters.defaultHarnessId) {
     this.adapter(harnessId); // Validate before creating/looking up anything; no fallback.
     const previous = previousId ? await this.find(previousId) : this.currentSessionId ? this.sessionForId(this.currentSessionId) : undefined;
-    return this.createWithAdapter(harnessId, cwd || previous?.state().cwd || this.deps.globalCwd(), previous?.harnessId === "pi" ? previous.state().sessionFile : undefined);
+    return this.createWithAdapter(harnessId, cwd || previous?.state().cwd || this.deps.globalCwd(), previous?.piOperations ? previous.state().sessionFile : undefined);
   }
   private async createWithAdapter(id: HarnessId, cwd: string, previousSessionFile?: string) {
     const adapter = this.adapter(id);
@@ -404,7 +419,7 @@ export class LocalSessionService implements SessionService {
       if (handle.harnessId !== id || webId && handle.sessionId !== webId) throw new Error("Adapter returned a different session identity");
       this.register(handle, true);
       await this.deps.finalizeCreatedSession(handle.sessionId);
-      if (adapter.webIdentity === "host") await this.saveNative(handle.state());
+      if (!adapter.piCompatibility) await this.saveNative(handle.state());
       this.finishInitialization(handle);
       return this.projectState(handle);
     } catch (error) {
@@ -431,7 +446,7 @@ export class LocalSessionService implements SessionService {
     const entry = this.liveSessions.get(id);
     if (entry?.initializing || entry?.disposing) throw new SessionServiceError("Session is not ready to open", 409);
     const snapshot = current?.state();
-    if (current && current.harnessId !== "pi" && snapshot?.phase === "unavailable") {
+    if (current && !this.adapters.get(current.harnessId)?.piCompatibility && snapshot?.phase === "unavailable") {
       if (snapshot.nativeSession.persistence === "ephemeral") throw new SessionServiceError("Ephemeral native session expired; it cannot resume after process loss", 410);
       if (!snapshot.nativeSession.sessionId) throw new SessionServiceError("Native session did not materialize before process loss", 410);
       const recovery = (async () => {
@@ -455,7 +470,7 @@ export class LocalSessionService implements SessionService {
     if (!handle.piOperations) throw new SessionServiceError("Choose a working directory when creating this session", 400);
     if (running(handle.state())) throw new SessionServiceError("Wait for the current response to finish before changing the working directory", 409);
     if ((await handle.messages()).some((message) => message.role === "user")) throw new SessionServiceError("Working directory can only be changed before the first message", 400);
-    return this.createWithAdapter("pi", cwd, handle.state().sessionFile);
+    return this.createWithAdapter(handle.harnessId, cwd, handle.state().sessionFile);
   }
   async delete(id: string, cwd?: string): Promise<DeleteSessionResultDto> {
     if (process.env.PI_WEB_NO_SESSION === "1") throw new SessionServiceError("Sessions are disabled.");
@@ -464,8 +479,9 @@ export class LocalSessionService implements SessionService {
     const live = this.liveSessions.get(id);
     if (live && this.isLiveSessionBusy(live)) throw new SessionServiceError("Wait for the session to finish before deleting it.", 409);
     if (live) await this.disposeLiveSession(id, "delete", true);
-    if (location.nativeSession.harnessId === "pi") {
-      const disposition = await this.deps.pi.remove(location);
+    const compatibility = this.adapters.get(location.nativeSession.harnessId)?.piCompatibility;
+    if (compatibility) {
+      const disposition = await compatibility.remove(location);
       this.piLocations.delete(id); if (location.sessionFile) this.piNames.delete(location.sessionFile);
       return { id, disposition };
     }
@@ -480,24 +496,21 @@ export class LocalSessionService implements SessionService {
     let name = info.name;
     let firstMessage = info.firstMessage;
     let created = info.created;
-    if (adapter.harness.id === "pi") {
+    if (adapter.piCompatibility) {
       this.piLocations.set(id, { sessionId: id, cwd: info.cwd, nativeSession: info.nativeSession, sessionFile: info.sessionFile });
       if (info.sessionFile && this.piNames.has(info.sessionFile)) name = this.piNames.get(info.sessionFile);
     } else {
-      const existing = this.bindings.byNative(info.nativeSession);
-      if (existing?.deleted) return;
-      id = existing?.id || randomUUID();
-      const binding = await this.bindings.update(id, (previous) => previous?.deleted ? undefined : {
-        id, nativeSession: info.nativeSession, cwd: info.cwd, name: previous?.name ?? info.name,
+      const binding = await this.bindings.getOrCreateNative(info.nativeSession, (canonicalId, previous) => ({
+        id: canonicalId, nativeSession: info.nativeSession, cwd: info.cwd, name: previous?.name ?? info.name,
         firstMessage: previous?.firstMessage || info.firstMessage, created: previous?.created || info.created, modified: info.modified,
-      });
+      }), adapter.webIdentity === "native" ? info.nativeSession.sessionId : undefined);
       if (!binding) return;
-      ({ name, firstMessage, created } = binding);
+      ({ id, name, firstMessage, created } = binding);
     }
     const candidate = this.sessionForId(id)?.state();
-    const live = adapter.harness.id !== "pi" || candidate?.sessionFile === info.sessionFile ? candidate : undefined;
-    return { id, ...(info.sessionFile && adapter.harness.id === "pi" ? { path: info.sessionFile } : {}), harnessId: adapter.harness.id,
-      nativeSession: live?.nativeSession || info.nativeSession, name: live && adapter.harness.id === "pi" ? live.sessionName : name,
+    const live = !adapter.piCompatibility || candidate?.sessionFile === info.sessionFile ? candidate : undefined;
+    return { id, ...(info.sessionFile && adapter.piCompatibility ? { path: info.sessionFile } : {}), harnessId: adapter.harness.id,
+      nativeSession: live?.nativeSession || info.nativeSession, name: live && adapter.piCompatibility ? live.sessionName : name,
       firstMessage, created, modified: info.modified, cwd: live?.cwd || info.cwd,
       messageCount: live?.stats.totalMessages ?? info.messageCount, isCurrent: false };
   }
@@ -509,13 +522,13 @@ export class LocalSessionService implements SessionService {
     const request = (async () => {
       const rows: SessionInfoDto[] = [];
       for (const adapter of this.adapters.values()) {
-        if (adapter.harness.id !== "pi" && !this.deps.multiHarnessEnabled) continue;
+        if (!this.catalog().harnesses.find((item) => item.id === adapter.harness.id)?.enabled) continue;
         for (const cwd of cwds) {
           try { for (const info of await adapter.list(cwd)) { const row = await this.listInfo(adapter, info); if (row) rows.push(row); } }
-          catch (error) { if (adapter.harness.id !== "pi") console.warn(`Could not list ${adapter.harness.id} sessions:`, error instanceof Error ? error.message : "unavailable"); }
+          catch (error) { if (!adapter.piCompatibility) console.warn(`Could not list ${adapter.harness.id} sessions:`, error instanceof Error ? error.message : "unavailable"); }
         }
       }
-      const seen = new Set(rows.filter((row) => row.harnessId !== "pi").map((row) => row.id));
+      const seen = new Set(rows.map((row) => row.id));
       for (const binding of this.bindings.list()) {
         if (binding.deleted || seen.has(binding.id) || this.liveSessions.get(binding.id)?.initializing) continue;
         const live = this.sessionForId(binding.id)?.state();
@@ -570,7 +583,7 @@ export class LocalSessionService implements SessionService {
     }), viewerLeases: [...this.viewerLeases].map(([clientId, lease]) => ({ clientId, sessionKey: lease.sessionKey, sockets: lease.sockets.size, hasReleaseTimer: Boolean(lease.releaseTimer) })) };
   }
   private acquireWorkLease(handle: SessionHandle, label: string, kind: WorkLeaseKind): WorkLeaseToken | undefined {
-    const entry = this.liveSessions.get(handle.sessionId); if (!entry) return;
+    const entry = this.liveSessions.get(handle.sessionId); if (!entry || entry.handle !== handle) return;
     const key = Symbol(label); const lease: WorkLease = { id: this.nextWorkLeaseId++, label, kind, acquiredAt: Date.now() };
     if (this.workLeaseWatchdogMs > 0) {
       lease.watchdogTimer = setTimeout(() => { if (entry.workLeases.has(key)) console.warn("Session work lease watchdog: lease remains active", { sessionId: handle.sessionId, leaseId: lease.id, label, kind, acquiredAt: new Date(lease.acquiredAt).toISOString(), heldForMs: Date.now() - lease.acquiredAt }); }, this.workLeaseWatchdogMs);
@@ -581,22 +594,25 @@ export class LocalSessionService implements SessionService {
   }
   private releaseWorkLease(handle: SessionHandle, token?: WorkLeaseToken) {
     if (!token) return;
-    const entry = this.liveSessions.get(token.sessionKey); const lease = entry?.workLeases.get(token.key); if (!entry || !lease) return;
+    const entry = this.liveSessions.get(token.sessionKey); const lease = entry?.workLeases.get(token.key); if (!entry || entry.handle !== handle || !lease) return;
     this.clearTimer(lease.watchdogTimer); entry.workLeases.delete(token.key); this.scheduleLiveSessionCleanup(token.sessionKey); this.emitWorkRuntime(handle);
   }
   private async withWorkLease<T>(handle: SessionHandle, label: string, kind: WorkLeaseKind, operation: () => T | Promise<T>) {
     const token = this.acquireWorkLease(handle, label, kind);
     try { return await operation(); } finally { this.releaseWorkLease(handle, token); }
   }
-  private clearWorkLeases(handle: SessionHandle, reason: string) {
-    const entry = this.liveSessions.get(handle.sessionId); if (!entry?.workLeases.size) return;
-    for (const lease of entry.workLeases.values()) this.clearTimer(lease.watchdogTimer);
-    entry.workLeases.clear(); console.warn("Cleared session work leases", { sessionId: handle.sessionId, reason }); this.scheduleLiveSessionCleanup(handle.sessionId); this.emitWorkRuntime(handle);
+  private clearWorkLeases(handle: SessionHandle, reason: string, keys: ReadonlySet<symbol>) {
+    const entry = this.liveSessions.get(handle.sessionId); if (!entry?.workLeases.size || entry.handle !== handle) return;
+    for (const key of keys) {
+      const lease = entry.workLeases.get(key);
+      if (lease) { this.clearTimer(lease.watchdogTimer); entry.workLeases.delete(key); }
+    }
+    console.warn("Cleared session work leases", { sessionId: handle.sessionId, reason }); this.scheduleLiveSessionCleanup(handle.sessionId); this.emitWorkRuntime(handle);
   }
   private emitWorkRuntime(handle: SessionHandle) {
     const state = handle.state();
     const entry = this.liveSessions.get(handle.sessionId);
-    if (entry && handle.harnessId === "pi") this.publish(entry, { type: "runtime", sessionId: handle.sessionId, sessionFile: state.sessionFile || "", action: "changed" });
+    if (entry && handle.piOperations) this.publish(entry, { type: "runtime", sessionId: handle.sessionId, sessionFile: state.sessionFile || "", action: "changed" });
   }
   private clearTimer(timer?: ReturnType<typeof setTimeout>) { if (timer) clearTimeout(timer); }
   private cancelLiveSessionCleanup(entry: LiveSessionEntry) { this.clearTimer(entry.disposeTimer); entry.disposeTimer = undefined; }
@@ -621,7 +637,7 @@ export class LocalSessionService implements SessionService {
     const state = entry.handle.state();
     try { await entry.handle.dispose(); } catch (error) { console.warn(`Could not dispose session after ${reason}:`, error); }
     entry.unsubscribe?.(); this.liveSessions.delete(id);
-    if (entry.handle.harnessId !== "pi" && state.nativeSession?.persistence === "ephemeral") {
+    if (!this.adapters.get(entry.handle.harnessId)?.piCompatibility && state.nativeSession?.persistence === "ephemeral") {
       await this.bindings.update(id, (row) => row?.nativeSession.persistence === "ephemeral"
         ? { ...row, nativeSession: { ...row.nativeSession, status: "unavailable" } } : undefined);
     }

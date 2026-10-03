@@ -17,14 +17,42 @@ export interface AdapterPromptInput extends PromptInputDto {
   executionId: string;
 }
 
-import type { PiSessionHandle } from "./adapters/pi/index.js";
+import type { SessionService, BaseSessionStateDto, NavigationResult, SessionContextDto, ConversationTreeDto, ModelsResultDto, SlashCommandDto } from "./dto.js";
+import type { AudioCapturePolicy } from "../extensions/captureStore.js";
 
-/** Explicit compatibility operations; never exposes a native session or SDK object. */
-export type PiOperations = Pick<PiSessionHandle,
-  "context" | "tree" | "models" | "commands" | "setModel" | "executeShell" | "executeCommand" |
-  "retry" | "abortCompaction" | "abortBranchSummary" | "navigate" | "rename" | "readHistoryEntry" |
-  "webUiEntries" | "captureRegistration" | "invokeContribution" | "invokeHeaderAction" |
-  "invokeArtifactAction" | "invokeGitTab" | "invokePanel" | "extensionStatus" | "reloadExtensions">;
+/** Independently defined compatibility protocol, not a projection of an implementation. */
+export interface PiOperations {
+  context(): Promise<SessionContextDto>;
+  tree(): Promise<ConversationTreeDto>;
+  models(): Promise<ModelsResultDto>;
+  commands(): Promise<SlashCommandDto[]>;
+  setModel(provider: string, model: string, thinkingLevel?: string): Promise<BaseSessionStateDto>;
+  executeShell(command: string, exclude: boolean): Promise<Record<string, import("./dto.js").JsonValue | undefined>>;
+  executeCommand(command: string): Promise<{ message: string; state: BaseSessionStateDto }>;
+  retry(): Promise<{ sessionId: string }>;
+  abortCompaction(): Promise<{ sessionId: string }>;
+  abortBranchSummary(): Promise<{ sessionId: string }>;
+  navigate(target: string, options: Record<string, unknown>): Promise<NavigationResult>;
+  rename(name: string): Promise<BaseSessionStateDto>;
+  readHistoryEntry(entryId: string): MessageDto[];
+  webUiEntries(): { webContributions: unknown[] };
+  captureRegistration(key: unknown, registrationId: unknown): { key: string; policy: AudioCapturePolicy; registrationId: string } | undefined;
+  invokeContribution(input: Record<string, unknown>, signal?: AbortSignal): ReturnType<SessionService["invokeContribution"]>;
+  invokeHeaderAction(key: unknown): ReturnType<SessionService["invokeHeaderAction"]>;
+  invokeArtifactAction(input: Record<string, unknown>): ReturnType<SessionService["invokeArtifactAction"]>;
+  invokeGitTab(input: Record<string, unknown>): ReturnType<SessionService["invokeGitTab"]>;
+  invokePanel(input: Record<string, unknown>): ReturnType<SessionService["invokePanel"]>;
+  extensionStatus(): unknown;
+  reloadExtensions(): Promise<unknown>;
+}
+
+/** Optional legacy file/history compatibility, separate from identity allocation policy. */
+export interface PiCompatibility {
+  initialize(path?: string): Promise<SessionHandle>;
+  find(id: string, cwds: string[]): Promise<AdapterSessionInfo | undefined>;
+  readHistory(input: AdapterOpenInput): Promise<MessageDto[]>;
+  remove(input: AdapterOpenInput): Promise<"trashed" | "deleted">;
+}
 
 /** One owned live native session. No native SDK/session-manager object escapes this handle. */
 export interface SessionHandle {
@@ -78,6 +106,7 @@ export interface SessionAdapter {
   readonly harness: HarnessDescriptorDto;
   /** Pi preserves its legacy public UUID; native subprocess agents use host-owned UUIDs. */
   readonly webIdentity: "native" | "host";
+  readonly piCompatibility?: PiCompatibility;
   create(input: AdapterCreateInput): Promise<SessionHandle>;
   /** The service reuses an existing live handle, especially for ephemeral sessions. */
   open(input: AdapterOpenInput): Promise<SessionHandle>;

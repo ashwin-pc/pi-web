@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,7 @@ import type { ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createPiAdapter } from "../server/session/adapters/pi/index.js";
 import { createCodexAdapter } from "../server/session/adapters/codex/index.js";
 import { LocalSessionService } from "../server/session/service.js";
+import { SessionRegistry } from "../server/session/registry.js";
 import { createHostSessionEventHandler } from "../server/session/hostEvents.js";
 import { SessionActivity } from "../server/session/activity.js";
 import { controlPeer, peerForThread, readObserved, waitObserved } from "./fixtures/codex-peer-control.js";
@@ -17,19 +18,19 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function fixture() {
+async function fixture(registrationId?: string) {
   const root = await mkdtemp(join(tmpdir(), "pi-web-codex-service-"));
   const services: LocalSessionService[] = [];
   cleanups.push(async () => { await Promise.all(services.map((service) => service.disposeAll())); await rm(root, { recursive: true, force: true }); });
   vi.stubEnv("PI_WEB_SETTINGS_FILE", join(root, "pi-settings.json"));
   const piFallback = vi.fn(async () => { throw new Error("Unexpected Pi fallback"); });
-  const native = createCodexAdapter({ command: process.execPath, args: [fileURLToPath(new URL("./fixtures/codex-app-server-peer.mjs", import.meta.url))],
+  const native = createCodexAdapter({ registrationId, command: process.execPath, args: [fileURLToPath(new URL("./fixtures/codex-app-server-peer.mjs", import.meta.url))],
     env: { ...process.env, PI_WEB_CODEX_PEER_DIR: root } });
-  const makeService = () => {
+  const makeService = (options: { defaultHarnessId?: string; nativeIdentity?: boolean } = {}) => {
     // Real Pi adapter remains registered, but no Pi session/model is needed for this native test.
     const pi = createPiAdapter({ modelRuntime: { getAvailableSnapshot: () => [] } as unknown as ModelRuntime,
       peer: { create: piFallback, list: async () => [] }, additionalExtensionPaths: () => [], defaultsFor: async () => ({}), globalCwd: () => root, clientCount: () => 2 });
-    const service = new LocalSessionService({ pi, adapters: [native], nativeBindingsFile: join(root, "bindings.json"), multiHarnessEnabled: true,
+    const service = new LocalSessionService({ pi, adapters: [options.nativeIdentity ? { ...native, webIdentity: "native" } : native], defaultHarnessId: options.defaultHarnessId, nativeBindingsFile: join(root, "bindings.json"), multiHarnessEnabled: true,
       globalCwd: () => root, finalizeCreatedSession: async () => undefined });
     services.push(service);
     return service;
@@ -38,6 +39,65 @@ async function fixture() {
 }
 
 describe("Codex production service, host relay and native process ingress", () => {
+  it("routes a locally registered identity/default through the production adapter without Pi/name dispatch", async () => {
+    const id = "local-installed-agent";
+    const { root, native, makeService, piFallback } = await fixture(id);
+    const registry = new SessionRegistry([native], false, id); // no Pi requirement
+    expect(registry.require(id)).toBe(native);
+    expect(registry.catalog().defaultHarnessId).toBe(id);
+    const service = makeService({ defaultHarnessId: id });
+    expect(service.catalog().defaultHarnessId).toBe(id);
+    const handle = await service.initialize();
+    expect(handle.harnessId).toBe(id);
+    expect(handle.sessionId).not.toBe(handle.state().nativeSession.sessionId);
+    const receipt = await service.prompt(handle.sessionId, { message: "Local registration peer input", mode: "prompt" });
+    expect(receipt.acknowledgement).toBe("accepted");
+    const peer = await peerForThread(root, handle.state().nativeSession.sessionId!);
+    await controlPeer(peer, { action: "text", delta: "Registered protocol result", done: true });
+    await controlPeer(peer, { action: "complete" });
+    expect(JSON.stringify(await service.messages(handle.sessionId))).toContain("Registered protocol result");
+    expect(piFallback).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("atomically discovers overlapping cwd scopes with native identity policy=%s", async (nativeIdentity) => {
+    const { root, native, makeService } = await fixture();
+    const ids: string[] = [];
+    for (let index = 0; index < 2; index++) {
+      const handle = await native.create({ cwd: root });
+      cleanups.push(() => handle.dispose());
+      ids.push(handle.state().nativeSession.sessionId!);
+      await handle.prompt({ message: `Protocol peer ${index}`, mode: "prompt", attachments: [], executionId: `seed-${index}` });
+      const peer = await peerForThread(root, ids[index]);
+      await controlPeer(peer, { action: "complete" });
+      await handle.dispose();
+    }
+    const original = native.list;
+    let arrivals = 0; let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    native.list = async (cwd) => {
+      const result = await original(cwd);
+      if (cwd === root && ++arrivals <= 2) { if (arrivals === 2) release(); await gate; }
+      return result;
+    };
+    await mkdir(join(root, "other"));
+    const service = makeService({ nativeIdentity });
+    const warnings = vi.spyOn(console, "warn");
+    cleanups.push(async () => { warnings.mockRestore(); });
+    const lists = await Promise.all([service.list(), service.list([join(root, "other")])]);
+    for (const rows of lists) {
+      const discovered = rows.filter((row) => row.harnessId === "codex");
+      expect(new Set(discovered.map((row) => row.nativeSession?.sessionId))).toEqual(new Set(ids));
+      expect(discovered).toHaveLength(2);
+    }
+    expect(warnings.mock.calls.flat().join(" ")).not.toContain("Conflicting native session identity");
+    expect(lists[0].map((row) => row.id).sort()).toEqual(lists[1].map((row) => row.id).sort());
+    const row = lists[0][0];
+    expect(row.id === row.nativeSession?.sessionId).toBe(nativeIdentity);
+    const opened = await service.open(row.id);
+    expect(opened.sessionId).toBe(row.id);
+    expect(opened.nativeSession?.sessionId).toBe(row.nativeSession?.sessionId);
+    expect((await service.delete(row.id)).disposition).toBe("forgotten");
+  });
   it("uses the common handle lifecycle and host event path for stream, decisions and exact interrupt", async () => {
     const { root, service, piFallback } = await fixture();
     const state = await service.create(undefined, root, "codex");

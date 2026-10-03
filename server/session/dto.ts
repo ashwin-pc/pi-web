@@ -94,7 +94,7 @@ export interface HarnessDescriptorDto {
 /** GET /api/harnesses returns { ok: true, ...catalog }. */
 export interface HarnessCatalogDto {
   multiHarnessEnabled: boolean;
-  defaultHarnessId: "pi";
+  defaultHarnessId: HarnessId;
   harnesses: HarnessDescriptorDto[];
 }
 
