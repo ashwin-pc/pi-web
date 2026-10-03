@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { decorateHostSessionState } from "../server/session/hostEvents.js";
+import { createHostSessionEventHandler, decorateHostSessionState } from "../server/session/hostEvents.js";
 import type { SessionActivity } from "../server/session/activity.js";
 import type { BaseSessionStateDto } from "../server/session/dto.js";
 import type { PiWebSession } from "../server/types.js";
 
 describe("host recovery state decoration", () => {
+  it("keeps interaction semantic source separate from its service cursor", () => {
+    const events: unknown[] = [];
+    const handler = createHostSessionEventHandler({ broadcast: (event) => events.push(event) } as any);
+    handler({ type: "interaction", source: { generation: "service", cursor: 7 }, request: { id: "decision", source: "extension", kind: "confirm", payload: {}, sessionId: "background", sessionFile: "/background.jsonl", timeout: 1_000, expiresAt: 123 } });
+    expect(events[0]).toMatchObject({ source: "extension", serviceSource: { generation: "service", cursor: 7 }, expiresAt: 123 });
+  });
   it("retains queued work and host lease runtime for a non-streaming background source", () => {
     const runtime = { loaded: true, isRunning: true, isStreaming: false, isRetrying: false, isCompacting: false, pendingMessageCount: 3 };
     const activity = {

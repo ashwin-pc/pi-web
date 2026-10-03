@@ -73,7 +73,7 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
 
   const host = deps;
   return (serviceEvent: SessionServiceEvent): void => {
-    const deps = { ...host, broadcast: (value: unknown) => host.broadcast({ ...(value as Record<string, unknown>), ...(serviceEvent.source ? { source: serviceEvent.source } : {}) }) };
+    const deps = { ...host, broadcast: (value: unknown) => host.broadcast({ ...(value as Record<string, unknown>), ...(serviceEvent.source ? (typeof (value as Record<string, unknown>).source === "string" ? { serviceSource: serviceEvent.source } : { source: serviceEvent.source }) : {}) }) };
     switch (serviceEvent.type) {
       case "agent": {
         const target = deps.sessionForId(serviceEvent.sessionId);

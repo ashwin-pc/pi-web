@@ -257,6 +257,7 @@ test.describe("composer layout", () => {
       const body = await response.json();
       await route.fulfill({ response, json: {
         ...body,
+        pendingInteractions: [{ id: "resolved-during-response", source: "extension", kind: "set_editor_text", sessionId: "mock-current", payload: { text: "already answered" }, expiresAt: Date.now() + 60_000 }],
         state: { ...body.state, model: { provider: "mock", id: "other" } },
         sessions: body.sessions.filter((session: { id: string }) => session.id !== "mock-older"),
         listingCoveredCwds: body.sessions.filter((session: { id: string }) => session.id === "mock-older").map((session: { cwd: string }) => session.cwd),
@@ -284,6 +285,7 @@ test.describe("composer layout", () => {
     await expect.poll(() => snapshotStarted).toBe(true);
     await page.evaluate(() => {
       const socket = (window as any).__recoverySockets.at(-1);
+      socket.emit({ type: "interaction_resolved", id: "resolved-during-response", sessionId: "mock-current", seq: 302 });
       socket.emit({ type: "interaction_request", id: "expired-buffered", source: "extension", serviceSource: { generation: "test-source", cursor: 201 }, kind: "set_editor_text", sessionId: "mock-current", payload: { text: "expired prompt must not apply" }, expiresAt: Date.now() - 1, seq: 301 });
       for (let seq = 101; seq <= 300; seq++) socket.emit({ type: "session_stats_changed", sessionId: "mock-current", stats: { inputTokens: seq }, seq });
       socket.emit({ type: "state_changed", sessionId: "mock-current", sessionName: "Changed during recovery", seq: 160, source: { generation: "test-source", cursor: 201 }, replay: true });
@@ -434,6 +436,25 @@ test.describe("composer layout", () => {
     releaseSnapshot();
     await page.waitForTimeout(100);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+  });
+
+  test("a missing selected session recovers an available session instead of retrying forever", async ({ page }) => {
+    await installControllableWebSocket(page);
+    const requests: string[] = [];
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      const id = new URL(route.request().url()).searchParams.get("sessionId")!;
+      requests.push(id);
+      if (id === "mock-current") { await route.fulfill({ status: 404, json: { error: "deleted" } }); return; }
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body, startCheckpoint: { ...body.startCheckpoint, epoch: "test" }, endCheckpoint: { ...body.endCheckpoint, epoch: "test" } } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 10, epoch: "test" }));
+    await expect.poll(() => requests.some((id) => id !== "mock-current")).toBe(true);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    expect(requests.filter((id) => id === "mock-current")).toHaveLength(1);
   });
 
   test("a session switch invalidates an in-flight recovery snapshot", async ({ page }) => {

@@ -788,6 +788,20 @@ export function createRealtime(options: {
       const sessionId = state.currentSessionId;
       try {
         const response = await fetch(`/api/recovery-snapshot?sessionId=${encodeURIComponent(sessionId)}`, { headers: api.headers(), signal: abort.signal });
+        if (response.status === 404 && generation === socketGeneration && attempt === recoveryGeneration && sessionId === state.currentSessionId) {
+          sessions.removeSession(sessionId);
+          const listing = await fetch("/api/sessions", { headers: api.headers(), signal: abort.signal });
+          if (!listing.ok) throw new Error(await listing.text());
+          const available = await listing.json();
+          if (generation !== socketGeneration || attempt !== recoveryGeneration) return;
+          if (sessionId !== state.currentSessionId) { restartForSelectedSession(); return; }
+          sessions.applySessionList(available.sessions || []);
+          const next = (available.sessions || []).find((item: any) => item.id !== sessionId);
+          if (next) await sessions.openSessionById(next.id);
+          else await sessions.startNewSession();
+          if (generation === socketGeneration && attempt === recoveryGeneration) restartForSelectedSession();
+          return;
+        }
         if (!response.ok) throw new Error(await response.text());
         const snapshot = await response.json();
         if (generation !== socketGeneration || attempt !== recoveryGeneration || sessionId !== state.currentSessionId) {
@@ -820,7 +834,9 @@ export function createRealtime(options: {
           return;
         }
         for (const event of snapshot.liveEvents) handleRealtimeData({ ...event, replay: true });
+        const resolvedInteractions = new Set(buffered.filter((event) => event.type === "interaction_resolved").map((event) => event.id));
         for (const request of snapshot.pendingInteractions || []) {
+          if (resolvedInteractions.has(request.id)) continue;
           if (typeof request.expiresAt !== "number" || request.expiresAt <= Date.now()) continue;
           handleRealtimeData({ type: "interaction_request", ...request, timeout: request.expiresAt - Date.now(), replay: true });
         }
@@ -828,6 +844,7 @@ export function createRealtime(options: {
         state.lastRealtimeSeq = end.seq;
         recoveryBuffer = undefined;
         for (const event of buffered) {
+          if (event.type === "interaction_request" && resolvedInteractions.has(event.id)) continue;
           if (typeof event.seq !== "number") continue;
           if (sourceCovered(event) && snapshot.sourceGeneration) {
             // A remote source may advance while its RPC response is in flight.
@@ -929,6 +946,7 @@ export function createRealtime(options: {
         sessions.applySessionUiState(data.sessionUiState);
         return;
       }
+      if (data.type === "interaction_resolved") return;
       if (data.type === "interaction_request" || data.type === "interaction_effect") {
         if (data.type === "interaction_request" && typeof data.expiresAt === "number") {
           if (data.expiresAt <= Date.now()) return;

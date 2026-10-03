@@ -680,7 +680,9 @@ function requestInteraction<T>(
       pendingInteractionRequests.delete(id);
     };
     const finish = (result: T) => {
+      if (!pendingInteractionRequests.has(id)) return;
       cleanup();
+      deps.emit({ type: "interaction_resolved", id, sessionId: value.sessionId, sessionFile: value.sessionFile });
       resolvePromise(result);
     };
     const onAbort = () => finish(defaultValue);
