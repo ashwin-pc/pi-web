@@ -441,11 +441,14 @@ test.describe("composer layout", () => {
     let releaseSnapshot!: () => void;
     const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
     let snapshotStarted = false;
+    const requestedIds: string[] = [];
     await page.route("**/api/recovery-snapshot**", async (route) => {
       snapshotStarted = true;
+      requestedIds.push(new URL(route.request().url()).searchParams.get("sessionId")!);
       await snapshotGate;
       const response = await route.fetch();
-      await route.fulfill({ response });
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body, startCheckpoint: { ...body.startCheckpoint, epoch: "test" }, endCheckpoint: { ...body.endCheckpoint, epoch: "test" } } });
     });
     await page.goto("/");
     await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
@@ -455,7 +458,8 @@ test.describe("composer layout", () => {
     await page.locator("#sessionNewButton").click();
     releaseSnapshot();
     await expect(page.locator("#statusTitle")).toHaveText("New session");
-    await page.waitForTimeout(100);
+    await expect.poll(() => new Set(requestedIds).size).toBe(2);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
     await expect(page.locator("#statusTitle")).toHaveText("New session");
     await page.evaluate(() => {
       const sessionId = new URL(location.href).searchParams.get("sessionId");

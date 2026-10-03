@@ -1016,7 +1016,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           sourceGeneration: recovery.sourceGeneration,
           sourceCursor: recovery.sourceCursor,
           durableCursor: recovery.durableCursor,
-          activeStates: recovery.activeStates,
+          activeStates: recovery.activeStates.map((active) => {
+            const loaded = sessionService.sessionForId(active.sessionId);
+            return loaded ? decorateState(active, loaded) : active;
+          }),
           coverage: recovery.coverage,
           listingComplete: false,
           listingCoveredCwds: listing.coveredCwds,

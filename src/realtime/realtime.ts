@@ -766,6 +766,15 @@ export function createRealtime(options: {
       status.markWebSocketOpen();
       composer.updatePrimaryAction();
     });
+    const restartForSelectedSession = () => {
+      cancelRecoveryRetry();
+      recoveryGeneration++;
+      recoveryAbort?.abort();
+      recoverySessionId = state.currentSessionId;
+      // Keep buffered host-global events; the next snapshot supplies a new cut.
+      recoveryBuffer ||= [];
+      void recover();
+    };
     const recover = async (ownerAttempt = recoveryGeneration) => {
       // Timer callbacks can already be queued when cancelled. Validate ownership
       // before touching the shared generation/controller of a newer socket.
@@ -782,7 +791,7 @@ export function createRealtime(options: {
         if (!response.ok) throw new Error(await response.text());
         const snapshot = await response.json();
         if (generation !== socketGeneration || attempt !== recoveryGeneration || sessionId !== state.currentSessionId) {
-          if (generation === socketGeneration && attempt === recoveryGeneration) recoveryBuffer = undefined;
+          if (generation === socketGeneration && attempt === recoveryGeneration) restartForSelectedSession();
           return;
         }
         const start = snapshot.startCheckpoint;
@@ -807,7 +816,7 @@ export function createRealtime(options: {
         }
         await applyRecoverySnapshot(snapshot);
         if (generation !== socketGeneration || attempt !== recoveryGeneration || sessionId !== state.currentSessionId) {
-          recoveryBuffer = undefined;
+          if (generation === socketGeneration && attempt === recoveryGeneration) restartForSelectedSession();
           return;
         }
         for (const event of snapshot.liveEvents) handleRealtimeData({ ...event, replay: true });
@@ -829,10 +838,15 @@ export function createRealtime(options: {
         status.markWebSocketOpen();
       } catch (error) {
         if (abort.signal.aborted) return;
+        if (generation === socketGeneration && attempt === recoveryGeneration && sessionId !== state.currentSessionId) {
+          restartForSelectedSession();
+          return;
+        }
         console.error("Realtime recovery failed", error);
         if (generation === socketGeneration && attempt === recoveryGeneration && sessionId === state.currentSessionId) {
           recoveryRetryTimer = window.setTimeout(() => {
-            if (generation !== socketGeneration || attempt !== recoveryGeneration || sessionId !== state.currentSessionId) return;
+            if (generation !== socketGeneration || attempt !== recoveryGeneration) return;
+            if (sessionId !== state.currentSessionId) { restartForSelectedSession(); return; }
             recoveryRetryTimer = undefined;
             void recover(attempt);
           }, Math.min(1_000 * attempt, 10_000));
@@ -999,10 +1013,7 @@ export function createRealtime(options: {
         return;
       }
       if (recoveryBuffer && recoverySessionId !== state.currentSessionId) {
-        cancelRecoveryRetry();
-        recoveryGeneration++;
-        recoveryAbort?.abort();
-        recoveryBuffer = undefined;
+        restartForSelectedSession();
       }
       if (recoveryBuffer) {
         recoveryBuffer.push(data);
