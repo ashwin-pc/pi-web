@@ -311,6 +311,8 @@ export class LocalSessionService implements SessionService {
       noSession: this.noSession,
       modelRuntime: deps.modelRuntime,
       additionalExtensionPaths: (cwd) => deps.additionalExtensionPaths(cwd),
+      sessionCwd: (manager) => this.sessionCwd({ sessionManager: manager }),
+      rememberCwd: (cwd) => this.knownSessionCwds.add(resolve(cwd)),
       readSession: (reference, tail) => this.readSession(reference, tail),
     });
     this.webUiBridge = createWebUiBridge({
@@ -901,7 +903,6 @@ export class LocalSessionService implements SessionService {
     const targetCwd = await assertDirectory(cwd, this.deps.globalCwd());
     const factory = this.deps.sessionFactory || this.productionFactory;
     const result = await factory.create({ path, cwd: targetCwd, sessionStartEvent });
-    if (!this.deps.sessionFactory) this.knownSessionCwds.add(resolve(this.sessionCwd(result.session)));
     await this.webUiBridge.bind(result.session);
     return result;
   }

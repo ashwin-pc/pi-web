@@ -47,6 +47,8 @@ type ProductionFactoryOptions = {
   noSession: boolean;
   modelRuntime: ModelRuntime;
   additionalExtensionPaths(cwd: string): string[];
+  sessionCwd(manager: SessionManager): string;
+  rememberCwd(cwd: string): void;
   readSession: Parameters<typeof createSessionsReadTools>[0];
 };
 
@@ -71,7 +73,8 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
       ? SessionManager.inMemory(targetCwd)
       : path ? SessionManager.open(path) : SessionManager.create(targetCwd);
     if (!path && !this.options.noSession && sessionStartEvent?.reason === "new") manager.newSession();
-    const resolvedCwd = manager.getCwd();
+    const resolvedCwd = this.options.sessionCwd(manager);
+    this.options.rememberCwd(resolvedCwd);
     await this.ensureStorage(resolvedCwd);
     const contextPath = fileURLToPath(new URL("../../contexts/web-ui.md", import.meta.url));
     const appDir = dirname(dirname(contextPath));

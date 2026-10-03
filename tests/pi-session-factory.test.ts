@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { PiSessionFactory, piSessionDirectory } from "../server/session/piFactory.js";
-import type { LocalSessionServiceDependencies } from "../server/session/service.js";
+import { LocalSessionService, type LocalSessionServiceDependencies } from "../server/session/service.js";
 
 const loaderState = vi.hoisted(() => ({ options: [] as any[], reload: vi.fn(async () => undefined) }));
 vi.mock("../server/extensions/resilientLoader.js", () => ({
@@ -35,11 +35,13 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-function factory(noSession = false) {
+function factory(noSession = false, rememberCwd = vi.fn()) {
   return new PiSessionFactory({
     noSession,
     modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
     additionalExtensionPaths: (workspace) => [join(workspace, "extension.ts")],
+    sessionCwd: (manager) => String(manager.getCwd() || cwd),
+    rememberCwd,
     readSession: async () => { throw new Error("not called during creation"); },
   });
 }
@@ -85,6 +87,42 @@ describe("PiSessionFactory resource lifecycle", () => {
     expect(input.cwd).toBe(other);
     expect(input.sessionManager!.getSessionId()).toBe("saved");
     expect(await readFile(path, "utf8")).toBe(before);
+  });
+
+  it("preserves cwd fallback and records it before resource-loading failure", async () => {
+    const rememberCwd = vi.fn();
+    const getCwd = vi.spyOn(SessionManager.prototype, "getCwd").mockReturnValue("");
+    loaderState.reload.mockRejectedValueOnce(new Error("reload failed"));
+    try {
+      await expect(factory(false, rememberCwd).create({ cwd })).rejects.toThrow("reload failed");
+      expect(rememberCwd).toHaveBeenCalledWith(cwd);
+      expect(loaderState.options[0].loaderOptions.cwd).toBe(cwd);
+      expect(await readFile(join(cwd, ".pi/web/.gitignore"), "utf8")).toBe("*\n");
+      expect(createAgentSession).not.toHaveBeenCalled();
+    } finally {
+      getCwd.mockRestore();
+    }
+  });
+
+  it("records an opened session's cwd in the host even when resource loading fails", async () => {
+    const other = join(root, "other");
+    await mkdir(other);
+    const path = await savedSession(other);
+    vi.stubEnv("PI_WEB_NO_SESSION", "0");
+    const service = new LocalSessionService({
+      modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
+      additionalExtensionPaths: () => [],
+      sessionConfig: { defaultsFor: async () => ({}), finalizeCreatedSession: async () => undefined },
+      globalCwd: () => cwd,
+      clientCount: () => 0,
+    });
+    loaderState.reload.mockImplementationOnce(async () => {
+      expect(service.knownCwds()).toContain(other);
+      throw new Error("reload failed");
+    });
+    await expect(service.initialize(path)).rejects.toThrow("reload failed");
+    expect(loaderState.options[0].loaderOptions.cwd).toBe(other);
+    await service.disposeAll();
   });
 
   it("uses an in-memory manager in no-session mode even when given a path", async () => {
