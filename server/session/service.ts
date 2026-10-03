@@ -15,6 +15,7 @@ import { createWebUiBridge } from "../extensions/webUi.js";
 import { EphemeralCaptureStore } from "../extensions/captureStore.js";
 import type { ResilientResourceLoader } from "../extensions/resilientLoader.js";
 import { mapPiEvent } from "./piEventMap.js";
+import { PiSessionHandle } from "./piHandle.js";
 import { createSettingsStore } from "../settings.js";
 import type {
   BaseSessionStateDto,
@@ -43,8 +44,6 @@ import {
   isAssistantFailureMessage,
   isIncompleteToolResultMessage,
   projectCommittedMessage,
-  projectMessages,
-  projectSessionState,
   sessionDisplayName,
   textFromContent,
   toolCallName,
@@ -96,7 +95,7 @@ type WorkLease = {
 
 type LiveSessionEntry = {
   session: PiWebSession;
-  unsubscribe?: () => void;
+  handle: PiSessionHandle;
   viewerClientIds: Set<string>;
   workLeases: Map<symbol, WorkLease>;
   disposeTimer?: ReturnType<typeof setTimeout>;
@@ -283,6 +282,7 @@ function projectPromptProvenance(prompt: string, candidates: ProvenanceCandidate
 export class LocalSessionService implements SessionService {
   private readonly listeners = new Set<(event: SessionServiceEvent) => void>();
   private readonly liveSessions = new Map<string, LiveSessionEntry>();
+  private readonly piHandles = new WeakMap<PiWebSession, PiSessionHandle>();
   private readonly liveById = new Map<string, PiWebSession>();
   /** Names learned from fully loaded sessions remain authoritative after their live session is disposed. */
   private readonly sessionNamesByPath = new Map<string, string | undefined>();
@@ -406,7 +406,20 @@ export class LocalSessionService implements SessionService {
       model?.provider && model?.id ? [`${model.provider}:${model.id}`] : [],
     ));
   }
-  projectState(value: PiWebSession): BaseSessionStateDto { return jsonSafe(projectSessionState(value, this.sessionCwd(value))); }
+  private runtimeFor(value: PiWebSession): PiSessionHandle {
+    // Binding can request state before live-session admission. Reuse that same
+    // owned handle when the host subsequently admits the session.
+    let handle = this.piHandles.get(value);
+    if (!handle) {
+      handle = new PiSessionHandle(value);
+      this.piHandles.set(value, handle);
+    }
+    return handle;
+  }
+
+  projectState(value: PiWebSession): BaseSessionStateDto {
+    return jsonSafe(this.runtimeFor(value).state(this.sessionCwd(value)));
+  }
 
   private currentSession() {
     for (const id of this.protectedSessionIds) {
@@ -536,7 +549,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async messages(sessionId: string): Promise<MessageDto[]> {
-    return jsonSafe(projectMessages(await this.require(sessionId)));
+    return jsonSafe(this.runtimeFor(await this.require(sessionId)).messages());
   }
 
   /** Read saved text only; never construct, steer, or navigate another runtime. */
@@ -936,8 +949,9 @@ export class LocalSessionService implements SessionService {
   private registerLiveSession(value: PiWebSession) {
     const key = sessionPathKey(value);
     if (!key || this.liveSessions.get(key)?.session === value) return value;
-    const unsubscribe = value.subscribe?.((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, unsubscribe, viewerClientIds: new Set(), workLeases: new Map() });
+    const handle = this.runtimeFor(value);
+    handle.subscribe((event) => this.handlePiEvent(value, event));
+    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map() });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
@@ -1120,11 +1134,6 @@ export class LocalSessionService implements SessionService {
     lease.releaseTimer = setTimeout(() => this.releaseViewer(clientId), this.viewerGraceMs);
   }
 
-  private async emitSessionShutdown(value: any) {
-    const runner = value?.extensionRunner;
-    if (runner?.hasHandlers?.("session_shutdown")) await runner.emit({ type: "session_shutdown", reason: "quit" });
-  }
-
   private async disposeLiveSession(key: string, reason: "idle" | "delete" | "reset", force = false) {
     const entry = this.liveSessions.get(key);
     if (!entry || entry.disposing || (!force && this.shouldKeepLiveSession(entry))) return;
@@ -1142,12 +1151,7 @@ export class LocalSessionService implements SessionService {
       for (const connection of lease.sockets) this.viewerConnections.delete(connection);
       lease.sockets.clear();
     }
-    try { await this.emitSessionShutdown(value); }
-    catch (error) { console.warn(`Could not emit session shutdown before ${reason}:`, error); }
-    try { entry.unsubscribe?.(); }
-    catch (error) { console.warn(`Could not unsubscribe session before ${reason}:`, error); }
-    try { (value as any).dispose?.(); }
-    catch (error) { console.warn(`Could not dispose session after ${reason}:`, error); }
+    await entry.handle.dispose(reason);
     this.webUiBridge.releaseSessionSettings(value);
     this.liveSessions.delete(key);
     this.pendingPromptCorrelations.delete(key);
@@ -1355,7 +1359,7 @@ export class LocalSessionService implements SessionService {
 
   private abortSession(value: PiWebSession) {
     const wasSdkActive = Boolean(value.isStreaming || value.isCompacting);
-    const aborting = value.abort().catch((error) => this.emitError(value, error));
+    const aborting = this.runtimeFor(value).interrupt().catch((error) => this.emitError(value, error));
     if (!wasSdkActive) this.clearWorkLeases(value, "abort while SDK idle");
     else void aborting.then(() => {
       if (!value.isStreaming && !value.isCompacting) this.clearWorkLeases(value, "active abort settled");
@@ -1368,7 +1372,7 @@ export class LocalSessionService implements SessionService {
     if (!this.deps.sessionFactory?.isMock && input.clientMessageId && input.sourceClientId) this.rememberPromptCorrelation(sessionPathKey(value), { clientMessageId: input.clientMessageId, sourceClientId: input.sourceClientId, createdAt: Date.now() });
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;
-    void this.withWorkLease(value, "prompt", "general", () => value.prompt(promptText, {
+    void this.withWorkLease(value, "prompt", "general", () => this.runtimeFor(value).prompt(promptText, {
       ...(value.isStreaming ? { streamingBehavior: input.mode } : {}),
     })).catch((error) => {
       if (!this.deps.sessionFactory?.isMock && input.clientMessageId) this.forgetPromptCorrelation(sessionPathKey(value), input.clientMessageId);
