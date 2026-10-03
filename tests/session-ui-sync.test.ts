@@ -30,6 +30,38 @@ function peer(initial = state()) {
 }
 
 describe("session UI state causal sync", () => {
+  it("waits for the authorized caller before GET; starts once and then permits pin/read", async () => {
+    let stored = state({ revision: 0, initialized: false });
+    const read = vi.fn(async () => stored);
+    const patch = vi.fn(async (value: Partial<SessionUiState> & { expectedRevision: number; initialize?: true }) => {
+      stored = state({ ...stored, ...value, initialized: true, revision: stored.revision + 1 });
+      return { status: 200, state: stored };
+    });
+    const postUnread = vi.fn(async (sessionId: string, unread: boolean) => {
+      stored = state({ ...stored, revision: stored.revision + 1, sessionUnreadStates: unread
+        ? [{ sessionId, unreadAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z" }] : [] });
+      return { status: 200, state: stored };
+    });
+    const coordinator = new SessionUiCoordinator({ read, patch, postUnread }, vi.fn(), vi.fn());
+    const bootAppState = { lanes: [lane("legacy")] };
+    const capturedSeed = state({ revision: 0, initialized: false, lanes: bootAppState.lanes });
+    // A later authorized /api/state projection may change mutable AppState;
+    // migration still imports the constructor's original, owned legacy seed.
+    bootAppState.lanes[0].sessionId = "mutated-in-place";
+    bootAppState.lanes = [lane("state-response")];
+    expect(read).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+    await coordinator.start(capturedSeed); // first authorized /api/state response
+    await coordinator.start(state({ revision: 0, initialized: false, lanes: [lane("later")] }));
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch.mock.lastCall?.[0]).toMatchObject({ initialize: true, expectedRevision: 0, lanes: [lane("legacy")] });
+    expect(await coordinator.mutate({ lanes: [lane("legacy"), lane("pin")] })).toBe(true);
+    expect(await coordinator.setUnread("pin", false)).toBe(true);
+    expect(stored.lanes.map((entry) => entry.sessionId)).toEqual(["legacy", "pin"]);
+    expect(postUnread).toHaveBeenCalledWith("pin", false);
+  });
+
   it("keeps concurrent unknown lanes and changes only a gesture's target after 409", async () => {
     const p = peer(state({ lanes: [lane("known"), lane("other")] }));
     await p.coordinator.start(state());

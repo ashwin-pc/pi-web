@@ -578,6 +578,9 @@ async function refreshState() {
     return;
   }
   sessionState.applySnapshot(data, { activate: true });
+  // The first authorized /api/state is the auth gate for UI-state bootstrap.
+  // Do not turn a pre-login 401 into a permanent preferences-store failure.
+  const uiStateReady = sessions.startUiStateAfterAuth();
   syncActiveSessionIdHistoryState(state.currentSessionId);
   const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
   refreshSettlementDependencies(dependencySessionId);
@@ -590,7 +593,7 @@ async function refreshState() {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
-  if (messagesResult.status === "fulfilled") sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
+  if (messagesResult.status === "fulfilled" && await uiStateReady) sessions.markSessionRead().catch((error) => messages.addMessage("system", error instanceof Error ? error.message : String(error), "error"));
   composer.updatePrimaryAction();
 }
 

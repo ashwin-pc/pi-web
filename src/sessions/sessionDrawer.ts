@@ -41,6 +41,7 @@ export type SessionsController = {
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
+  startUiStateAfterAuth: () => Promise<boolean>;
   saveBucketPreference: (patch: Pick<Partial<SessionUiState>, "bucketLabels" | "bucketOrder">, order?: UiIntent) => Promise<boolean>;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
@@ -217,6 +218,21 @@ export function createSessions(options: {
   let closeSessionColorFilterMenu: (() => void) | undefined;
   let closeCurrentSessionBucketMenu: (() => void) | undefined;
   const allowedMarkerColors = new Set<SessionMarkerColorId>();
+  // Capture legacy input once, synchronously at construction. /api/state or
+  // realtime may update AppState before auth permits the preferences GET.
+  const legacyBootSeed = normalizeSessionUiState({
+    lanes: state.lanes,
+    sessionNotes: state.sessionNotes,
+    pinnedFolders: state.pinnedFolders,
+    favoriteFolders: state.favoriteFolders,
+    sessionMarkers: state.sessionMarkers,
+    sessionUnreadStates: state.sessionUnreadStates,
+    sessionOrigins: state.sessionOrigins,
+    selectedMarkerColor: state.selectedMarkerColor,
+    allowedMarkerColors: [],
+    bucketLabels: state.bucketLabels,
+    bucketOrder: state.bucketOrder,
+  });
   let quickBucketColor: SessionMarkerColorId | undefined;
   let unreadFilterActive = false;
   let transcriptLoading = true;
@@ -749,23 +765,9 @@ export function createSessions(options: {
     persistSessionUiState({ allowedMarkerColors: Array.from(allowedMarkerColors) });
   }
 
-  async function refreshSessionUiState() {
-    // Capture the boot-time legacy projection before another server snapshot can
-    // replace it while this request is in flight. It is migration input only.
-    const localState = normalizeSessionUiState({
-      lanes: state.lanes,
-      sessionNotes: state.sessionNotes,
-      pinnedFolders: state.pinnedFolders,
-      favoriteFolders: state.favoriteFolders,
-      sessionMarkers: state.sessionMarkers,
-      sessionUnreadStates: state.sessionUnreadStates,
-      sessionOrigins: state.sessionOrigins,
-      selectedMarkerColor: state.selectedMarkerColor,
-      allowedMarkerColors: Array.from(allowedMarkerColors),
-      bucketLabels: state.bucketLabels,
-      bucketOrder: state.bucketOrder,
-    });
-    await uiSync.start(localState);
+  async function startUiStateAfterAuth(): Promise<boolean> {
+    await uiSync.start(legacyBootSeed);
+    return uiSync.ready;
   }
 
   function unreadStateForSession(sessionId: string) {
@@ -2897,7 +2899,6 @@ export function createSessions(options: {
     // Render immediately from any legacy local pins, then replace with server state.
     renderSessionBar();
     renderCurrentSessionBucketButton();
-    refreshSessionUiState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
     // Restore the drawer state after wiring handlers and footer content.
     if (readPersistedSessionDrawerOpen()) {
       setSessionDrawerOpen(true);
@@ -2927,6 +2928,7 @@ export function createSessions(options: {
     renderSessionBar,
     renderCurrentSessionBucketButton,
     applySessionUiState,
+    startUiStateAfterAuth,
     saveBucketPreference: (patch, order) => persistSessionUiState(patch, order),
     markSessionRead,
     waitingInfoFor,

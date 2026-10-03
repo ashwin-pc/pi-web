@@ -113,6 +113,7 @@ export class SessionUiCoordinator {
   private started = false;
   private failed = false;
   constructor(private readonly transport: UiTransport, private readonly render: (state: SessionUiState) => void, private readonly report: (message: string) => void) {}
+  get ready() { return !this.failed && this.canonical !== undefined; }
   get projected() {
     if (!this.canonical) return this.bootProjection ? copyUiState(this.pending.reduce(applyUiIntent, this.bootProjection)) : undefined;
     const base = this.migrationSeed && !this.canonical.initialized && this.canonical.revision === 0 ? this.migrationSeed : this.canonical;
