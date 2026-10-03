@@ -109,6 +109,85 @@ test("keeps one reply action tethered to the highlighted text and dismisses it w
   await expect.poll(() => page.evaluate(() => getSelection()?.isCollapsed)).toBe(true);
 });
 
+for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+  test(`quote editing hides footer chrome without losing the draft (${viewport.width}px)`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await page.routeWebSocket("**/ws**", () => {});
+    await page.route("**/api/state**", async (route) => {
+      const response = await route.fetch();
+      const state = await response.json();
+      state.webContributions = [{ version: 1, key: "test-footer", slot: "footer", kind: "static",
+        view: { kind: "text", lines: ["Preserved extension footer"] } }];
+      await route.fulfill({ response, json: state });
+    });
+    await page.goto("/");
+    const composer = page.locator(".composer");
+    const tabs = page.locator("#sessionBar");
+    const footer = page.locator("#extensionFooter");
+    await expect(footer).toBeVisible();
+    await page.locator("#prompt").fill("Preserved main composer draft");
+    await expect(tabs).toBeVisible();
+    await page.locator("#prompt").blur();
+    await selectAssistantExcerpt(page, "Image attachment support");
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    const input = page.getByRole("textbox", { name: "Question for quote 1" });
+    await expect(input).toBeVisible();
+    await expect(composer).toBeHidden();
+    await expect(footer).toBeHidden();
+    await expect(tabs).toBeVisible();
+    await input.fill("A linked question");
+    await input.press("Enter");
+    await expect(composer).toBeVisible();
+    await expect(tabs).toBeVisible();
+    await expect(page.locator("#prompt")).toHaveValue("Preserved main composer draft");
+
+    await page.locator(".quoteReplyPin").click();
+    await expect(composer).toBeVisible(); // Reading a saved comment is not editing.
+    await page.getByRole("button", { name: "Edit question" }).click();
+    await expect(composer).toBeHidden();
+    await expect(footer).toBeHidden();
+    await expect(tabs).toBeVisible();
+    await page.locator(".quoteReplyPin").click(); // Close the editor.
+    await expect(composer).toBeVisible();
+    await expect(tabs).toBeVisible();
+    await page.locator(".quoteReplyPin").click();
+    await expect(composer).toBeHidden();
+    await page.getByRole("button", { name: "Remove quote" }).first().click();
+    await expect(composer).toBeVisible();
+    await expect(tabs).toBeVisible();
+    await expect(page.locator("#prompt")).toHaveValue("Preserved main composer draft");
+    await expect(footer).toBeVisible();
+    await expect(footer).toHaveText("Preserved extension footer");
+  });
+}
+
+for (const mode of ["animated", "reduced", "unsupported"] as const) {
+  test(`quote editor transition progressively enhances ${mode} browsers`, async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: mode === "reduced" ? "reduce" : "no-preference" });
+    await page.goto("/");
+    await page.evaluate((mode) => {
+      document.documentElement.dataset.quoteTransitionCalls = "0";
+      if (mode === "unsupported") {
+        Object.defineProperty(document, "startViewTransition", { value: undefined });
+      } else {
+        // A synchronous implementation makes gating independent of browser support.
+        Object.defineProperty(document, "startViewTransition", { value: (update: () => void) => {
+          document.documentElement.dataset.quoteTransitionCalls = String(Number(document.documentElement.dataset.quoteTransitionCalls) + 1);
+          update();
+          return { finished: Promise.resolve(), skipTransition() {} };
+        } });
+      }
+    }, mode);
+    await selectAssistantExcerpt(page, "Image attachment support");
+    await page.getByRole("button", { name: "Reply", exact: true }).click();
+    await expect(page.getByRole("textbox", { name: "Question for quote 1" })).toBeVisible();
+    await expect(page.locator(".composer")).toBeHidden();
+    await expect(page.locator("#sessionBar")).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("data-quote-transition-calls", mode === "animated" ? "1" : "0");
+    await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+  });
+}
+
 test("migrates legacy composer and session quote drafts", async ({ page }) => {
   const quote = [{ id: 4, quote: "Image attachment support", question: "Migrated question", sourceMessageId: "assistant-entry", startOffset: 0, endOffset: 24 }];
   await page.addInitScript((legacyQuote) => {

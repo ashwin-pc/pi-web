@@ -275,7 +275,32 @@ export function createQuoteReplies(options: {
     onChange();
   }
 
+  // Animation state only: footer visibility remains derived from .editing.open.
+  let transition: ViewTransition | undefined;
+  function transitionEditor(update: () => void) {
+    if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      update();
+      return;
+    }
+    // Rapid interactions must not queue stale snapshots or delay an editor action.
+    if (transition) {
+      transition.skipTransition();
+      update();
+      return;
+    }
+    document.documentElement.classList.add("quoteReplyTransition");
+    transition = document.startViewTransition(update);
+    void transition.finished.catch(() => {}).finally(() => {
+      transition = undefined;
+      document.documentElement.classList.remove("quoteReplyTransition");
+    });
+  }
+
   function removeReference(reference: QuoteReference) {
+    transitionEditor(() => removeReferenceImmediately(reference));
+  }
+
+  function removeReferenceImmediately(reference: QuoteReference) {
     if (reference.submitted) return;
     reference.mark.replaceWith(...reference.mark.childNodes);
     reference.pin.remove();
@@ -286,6 +311,14 @@ export function createQuoteReplies(options: {
   }
 
   function saveReference(reference: QuoteReference) {
+    if (!reference.note.querySelector<HTMLInputElement>("input")!.value.trim()) {
+      saveReferenceImmediately(reference);
+      return;
+    }
+    transitionEditor(() => saveReferenceImmediately(reference));
+  }
+
+  function saveReferenceImmediately(reference: QuoteReference) {
     const input = reference.note.querySelector<HTMLInputElement>("input")!;
     const question = input.value.trim();
     if (!question) {
@@ -405,17 +438,17 @@ export function createQuoteReplies(options: {
       if (event.key === "Enter") { event.preventDefault(); saveReference(reference); }
     });
     note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => transitionEditor(() => {
       note.classList.remove("saved");
       note.classList.add("editing", "open");
       input.focus();
       input.select();
-    });
+    }));
     note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
-    pin.addEventListener("click", () => {
+    pin.addEventListener("click", () => transitionEditor(() => {
       note.classList.toggle("open");
       if (note.classList.contains("open")) jumpToReference(reference);
-    });
+    }));
     updateSummary();
   }
 
@@ -503,18 +536,18 @@ export function createQuoteReplies(options: {
       }
     });
     note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => transitionEditor(() => {
       if (reference.submitted) return;
       note.classList.remove("saved");
       note.classList.add("editing", "open");
       input.focus();
       input.select();
-    });
+    }));
     note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
-    pin.addEventListener("click", () => {
+    pin.addEventListener("click", () => transitionEditor(() => {
       note.classList.toggle("open");
       if (note.classList.contains("open")) jumpToReference(reference);
-    });
+    }));
     updateSummary();
     hideToolbar(true);
     window.setTimeout(() => input.focus(), 30);
@@ -522,7 +555,7 @@ export function createQuoteReplies(options: {
   }
 
   toolbar.addEventListener("pointerdown", (event) => event.preventDefault());
-  reply.addEventListener("click", createReference);
+  reply.addEventListener("click", () => transitionEditor(createReference));
   messagesEl.addEventListener("pointerup", () => {
     if (!isMobileSelection()) window.setTimeout(showSelection);
   });
