@@ -13,6 +13,65 @@ import type { PiWebSession } from "../server/types.js";
 import { PiSessionHandle } from "../server/session/piHandle.js";
 
 describe("owned Pi runtime handle", () => {
+  it.each([false, true])("publishes disposal before reentrant cleanup (shutdown=%s)", async (shutdown) => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    const order: string[] = [];
+    const reentrant: Promise<void>[] = [];
+    if (shutdown) fixture.session.extensionRunner = {
+      hasHandlers: () => true,
+      emit: () => { order.push("shutdown"); const promise = handle.dispose("reset"); reentrant.push(promise); return promise; },
+    } as PiWebSession["extensionRunner"];
+    fixture.session.subscribe = () => () => { order.push("unsubscribe"); reentrant.push(handle.dispose("reset")); };
+    (fixture.session as PiWebSession & { dispose(): void }).dispose = () => { order.push("dispose"); reentrant.push(handle.dispose("reset")); };
+    handle.subscribe(() => undefined);
+    const disposal = handle.dispose("reset");
+    expect(order).toEqual(shutdown ? ["shutdown", "unsubscribe", "dispose"] : ["unsubscribe", "dispose"]);
+    await disposal;
+    expect(reentrant.every((promise) => promise === disposal)).toBe(true);
+    expect(handle.dispose("reset")).toBe(disposal);
+  });
+
+  it("releases a late subscription when synchronous notification disposes the handle", async () => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    const unsubscribe = vi.fn();
+    let disposal!: Promise<void>;
+    fixture.session.subscribe = (listener) => { listener({ type: "agent_end" }); return unsubscribe; };
+    const release = handle.subscribe(() => { disposal = handle.dispose("reset"); });
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    release();
+    await disposal;
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(fixture.disposeCalls).toBe(1);
+  });
+
+  it("rejects subscriptions during shutdown and after disposal without SDK ingress", async () => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    let finish!: () => void;
+    fixture.session.extensionRunner = { hasHandlers: () => true, emit: () => new Promise<void>((resolve) => { finish = resolve; }) } as PiWebSession["extensionRunner"];
+    const subscribe = vi.spyOn(fixture.session, "subscribe");
+    const disposal = handle.dispose("reset");
+    expect(() => handle.subscribe(() => undefined)).toThrow("closing or disposed");
+    finish();
+    await disposal;
+    expect(() => handle.subscribe(() => undefined)).toThrow("closing or disposed");
+    expect(subscribe).not.toHaveBeenCalled();
+  });
+
+  it("removes failed subscription records before cleanup", async () => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    fixture.session.subscribe = () => { throw new Error("subscribe failed"); };
+    expect(() => handle.subscribe(() => undefined)).toThrow("subscribe failed");
+    const unsubscribe = vi.fn();
+    fixture.session.subscribe = () => unsubscribe;
+    handle.subscribe(() => undefined);
+    await handle.dispose("reset");
+    expect(unsubscribe).toHaveBeenCalledOnce();
+    expect(fixture.disposeCalls).toBe(1);
+  });
   it("preserves projection, prompt options, interruption and event ingress", async () => {
     const fixture = fixtureSession("/workspace");
     const handle = new PiSessionHandle(fixture.session);
