@@ -216,6 +216,21 @@ describe("LocalSessionService contract", () => {
     expect(recovery.transientEvents[0]).toMatchObject({ type: "agent", event: { type: "compaction_start" } });
   });
 
+  it("starts a complete compaction boundary after an overflowed run", async () => {
+    const { service, initial, fixture } = await fixtureService();
+    fixture.session.isStreaming = true;
+    fixture.emit({ type: "agent_start" });
+    for (let i = 0; i < 10_001; i++) fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x" } });
+    expect((await service.recover(initial.sessionId)).transientComplete).toBe(false);
+    fixture.session.isStreaming = false;
+    fixture.emit({ type: "agent_end" });
+    fixture.session.isCompacting = true;
+    fixture.emit({ type: "compaction_start", reason: "manual" });
+    const recovery = await service.recover(initial.sessionId);
+    expect(recovery.transientComplete).toBe(true);
+    expect(recovery.transientEvents).toHaveLength(1);
+  });
+
   it("bounds source prefixes and fails closed when persistence cannot project a commit", async () => {
     const { service, initial, fixture } = await fixtureService();
     fixture.session.isStreaming = true;

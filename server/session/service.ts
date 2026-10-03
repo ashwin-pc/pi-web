@@ -385,7 +385,7 @@ export class LocalSessionService implements SessionService {
     const serializableEvent = jsonSafe({ ...event, source: { generation: this.sourceGeneration, cursor: ++this.sourceCursor } });
     if (event.type === "agent") {
       const stream = this.recoveryStreams.get(event.sessionId) || { events: [], complete: event.event.type === "agent_start" || event.event.type === "compaction_start", durableCursor: 0, pendingCommits: 0 };
-      if (event.event.type === "agent_start" && stream.pendingCommits === 0) {
+      if ((event.event.type === "agent_start" || event.event.type === "compaction_start") && stream.pendingCommits === 0) {
         stream.events = [];
         stream.complete = true;
       }
