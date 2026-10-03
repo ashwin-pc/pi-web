@@ -112,9 +112,17 @@ export class SessionUiCoordinator {
   private bootProjection?: SessionUiState;
   private started = false;
   private failed = false;
+  // Confirmed deletions hide stale metadata only in this tab's presentation.
+  // The canonical snapshot/revision remains untouched; no synthetic cleanup write.
+  private readonly deletedSessionIds = new Set<string>();
   constructor(private readonly transport: UiTransport, private readonly render: (state: SessionUiState) => void, private readonly report: (message: string) => void) {}
   get ready() { return !this.failed && this.canonical !== undefined; }
   get unavailable() { return this.failed; }
+  hideDeletedSession(sessionId: string) {
+    if (!sessionId) return;
+    this.deletedSessionIds.add(sessionId);
+    this.draw();
+  }
   /** Trusted server availability signal: retain the last display but prohibit writes and migration. */
   markUnavailable() {
     if (this.failed) return;
@@ -123,11 +131,25 @@ export class SessionUiCoordinator {
     this.pending = [];
     this.draw();
   }
+  private forDisplay(value: SessionUiState): SessionUiState {
+    const state = copyUiState(value);
+    if (!this.deletedSessionIds.size) return state;
+    const visible = <T extends { sessionId: string }>(entries: T[]): T[] =>
+      entries.filter((entry) => !this.deletedSessionIds.has(entry.sessionId));
+    return {
+      ...state,
+      lanes: visible(state.lanes),
+      sessionNotes: visible(state.sessionNotes),
+      sessionMarkers: visible(state.sessionMarkers),
+      sessionUnreadStates: visible(state.sessionUnreadStates),
+      sessionOrigins: visible(state.sessionOrigins),
+    };
+  }
   get projected() {
-    if (this.failed && this.canonical && !this.canonical.initialized && this.canonical.revision === 0 && this.bootProjection) return copyUiState(this.bootProjection);
-    if (!this.canonical) return this.bootProjection ? copyUiState(this.pending.reduce(applyUiIntent, this.bootProjection)) : undefined;
+    if (this.failed && this.canonical && !this.canonical.initialized && this.canonical.revision === 0 && this.bootProjection) return this.forDisplay(this.bootProjection);
+    if (!this.canonical) return this.bootProjection ? this.forDisplay(this.pending.reduce(applyUiIntent, this.bootProjection)) : undefined;
     const base = this.migrationSeed && !this.canonical.initialized && this.canonical.revision === 0 ? this.migrationSeed : this.canonical;
-    return copyUiState(this.pending.reduce(applyUiIntent, base));
+    return this.forDisplay(this.pending.reduce(applyUiIntent, base));
   }
   private draw() { const state = this.projected; if (state) this.render(copyUiState(state)); }
   accept(value: unknown) {

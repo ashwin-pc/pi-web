@@ -36,6 +36,55 @@ function deferred<T>() {
 }
 
 describe("session UI state causal sync", () => {
+  it("a confirmed deletion tombstones only that ID in display, not the authoritative snapshot", async () => {
+    const old = state({ revision: 1,
+      lanes: [lane("deleted"), lane("other")],
+      sessionNotes: ["deleted", "other"].map((sessionId) => ({ sessionId, note: sessionId, updatedAt: "2025-01-01T00:00:00.000Z" })),
+      sessionMarkers: [{ sessionId: "deleted", color: "blue", updatedAt: "2025-01-01T00:00:00.000Z" }],
+      sessionUnreadStates: [{ sessionId: "deleted", unreadAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z" }],
+      sessionOrigins: [{ sessionId: "deleted", originSessionId: "other", kind: "worker", updatedAt: "2025-01-01T00:00:00.000Z" },
+        { sessionId: "other", originSessionId: "deleted", kind: "worker", updatedAt: "2025-01-01T00:00:00.000Z" }],
+    });
+    const patch = vi.fn();
+    const coordinator = new SessionUiCoordinator({ read: async () => old, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+    await coordinator.start(state());
+    coordinator.hideDeletedSession("deleted"); // only after the DELETE returned its confirmed id
+    coordinator.markUnavailable();
+    expect(coordinator.projected?.lanes.map((entry) => entry.sessionId)).toEqual(["other"]);
+    expect(coordinator.projected?.sessionNotes.map((entry) => entry.sessionId)).toEqual(["other"]);
+    expect(coordinator.projected?.sessionMarkers).toEqual([]);
+    expect(coordinator.projected?.sessionUnreadStates).toEqual([]);
+    expect(coordinator.projected?.sessionOrigins.map((entry) => entry.sessionId)).toEqual(["other"]);
+    expect(coordinator.projected?.sessionOrigins[0].originSessionId).toBe("deleted"); // unrelated child retained
+    const newer = state({ ...old, revision: 2, lanes: [lane("deleted"), lane("other"), lane("remote")] });
+    coordinator.accept(newer); // stale persisted metadata must not resurrect the deleted tab
+    expect(coordinator.projected?.revision).toBe(2);
+    expect(coordinator.projected?.lanes.map((entry) => entry.sessionId)).toEqual(["other", "remote"]);
+    expect(old.lanes.map((entry) => entry.sessionId)).toEqual(["deleted", "other"]);
+    expect(newer.lanes.map((entry) => entry.sessionId)).toEqual(["deleted", "other", "remote"]);
+    expect(await coordinator.mutate({ lanes: [lane("other")] })).toBe(false);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("a late committed 200 cannot resurrect a tombstoned ID after read-only transition", async () => {
+    const ack = deferred<{ status: number; state: SessionUiState }>();
+    const dispatched = deferred<void>();
+    const initial = state({ lanes: [lane("deleted"), lane("other")] });
+    const patch = vi.fn(() => { dispatched.resolve(); return ack.promise; });
+    const coordinator = new SessionUiCoordinator({ read: async () => initial, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+    await coordinator.start(state());
+    const gesture = coordinator.mutate({ sessionNotes: [{ sessionId: "other", note: "saved", updatedAt: "2025-01-01T00:00:00.000Z" }] });
+    await dispatched.promise;
+    coordinator.hideDeletedSession("deleted");
+    coordinator.markUnavailable();
+    ack.resolve({ status: 200, state: state({ ...initial, revision: 2, sessionNotes: [{ sessionId: "other", note: "saved", updatedAt: "2025-01-01T00:00:00.000Z" }] }) });
+    expect(await gesture).toBe(true);
+    expect(coordinator.projected?.revision).toBe(2);
+    expect(coordinator.projected?.lanes.map((entry) => entry.sessionId)).toEqual(["other"]);
+    expect(coordinator.projected?.sessionNotes[0].note).toBe("saved");
+    expect(coordinator.ready).toBe(false);
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
   it("a captured auto-pin after a held initial GET uses the one coordinator only when ready", async () => {
     for (const becomesUnavailable of [false, true]) {
       const initial = deferred<SessionUiState>();

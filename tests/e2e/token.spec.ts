@@ -246,10 +246,15 @@ test.describe("token overlay", () => {
   test("mints a session cookie and renders a sandboxed HTML artifact through srcdoc", async ({ page }) => {
     await ensurePreviewArtifact();
     await page.goto("/");
+    const sessionResponse = page.waitForResponse((response) =>
+      response.request().method() === "GET"
+      && new URL(response.url()).pathname === "/api/state"
+      && response.status() === 200);
     await page.locator("#tokenInput").fill(CORRECT_TOKEN);
     await page.locator("#tokenForm button[type=submit]").click();
+    expect(await (await sessionResponse).headerValue("set-cookie")).toContain("pi_web_session=");
     await expect(page.locator("#tokenOverlay")).toBeHidden({ timeout: 5000 });
-    expect((await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
+    await expect.poll(async () => (await page.context().cookies()).some(cookie => cookie.name === "pi_web_session")).toBe(true);
 
     await expect(page.locator("#prompt")).toBeEnabled();
     await page.waitForTimeout(500);

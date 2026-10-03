@@ -386,6 +386,11 @@ function bindViewerSocket(clientId: string, ws: WebSocket) {
 }
 
 const createdSessionUiWarnings = new Map<string, string>();
+function takeCreatedSessionUiWarning(sessionId: string): string | undefined {
+  const warning = createdSessionUiWarnings.get(sessionId);
+  createdSessionUiWarnings.delete(sessionId);
+  return warning;
+}
 
 const mockHarness = createMockHarness({
   piCwd,
@@ -1216,8 +1221,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const created = result.state.sessionId !== target.sessionId;
         const decorated = await decorateServiceState(result.state);
         let state: typeof decorated & { sessionUiState?: Awaited<ReturnType<typeof sessionUiStateStore.read>> } = decorated;
-        let sessionUiStateWarning = createdSessionUiWarnings.get(decorated.sessionId);
-        createdSessionUiWarnings.delete(decorated.sessionId);
+        let sessionUiStateWarning = created ? takeCreatedSessionUiWarning(decorated.sessionId) : undefined;
         if (created && /^\/+clear(?:\s|$)/i.test(command)) {
           try {
             state = { ...decorated, sessionUiState: await transferCurrentTabUiState(target.sessionId, decorated.sessionId, decorated.sessionTitle || "New session", decorated.cwd) };
@@ -1346,8 +1350,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           }
         }
         broadcast({ type: "state_changed", ...state });
-        const sessionUiStateWarning = createdSessionUiWarnings.get(state.sessionId);
-        createdSessionUiWarnings.delete(state.sessionId);
+        const sessionUiStateWarning = takeCreatedSessionUiWarning(state.sessionId);
         return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}), ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
@@ -1356,11 +1359,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const cwd = String(body.cwd || "").trim();
         if (!cwd) return sendJson(res, 400, { ok: false, error: "cwd is required" });
         try {
-          const baseState = await sessionService.switchCwd(resolveSessionId(body.sessionId), cwd);
+          const previousSessionId = resolveSessionId(body.sessionId);
+          const baseState = await sessionService.switchCwd(previousSessionId, cwd);
           const state = await decorateServiceState(baseState);
           noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
           broadcast({ type: "state_changed", ...state });
-          return sendJson(res, 200, { ok: true, ...state });
+          const sessionUiStateWarning = state.sessionId !== previousSessionId ? takeCreatedSessionUiWarning(state.sessionId) : undefined;
+          return sendJson(res, 200, { ok: true, ...state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
         } catch (error) {
           const status = error instanceof SessionServiceError ? error.status : 400;
           return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });

@@ -445,10 +445,13 @@ export function createSessions(options: {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
+    const nextState = data.state && typeof data.state === "object" ? data.state : data;
     rememberSessionCwd(cwd);
-    if (data.sessionId) writeActiveSessionIdToUrl(data.sessionId);
-    sessionState.applySnapshot(data, { activate: true });
-    if (data.thinkingLevels) updateThinkingOptions(data.thinkingLevels);
+    if (nextState.sessionId) writeActiveSessionIdToUrl(nextState.sessionId);
+    sessionState.applySnapshot(nextState, { activate: true });
+    if (nextState.thinkingLevels) updateThinkingOptions(nextState.thinkingLevels);
+    const warning = sessionUiMutationWarning(data);
+    if (warning) options.onUiStateUnavailable?.(warning);
     await refreshModels();
     await refreshMessages();
     refreshSessionTitle();
@@ -2236,6 +2239,7 @@ export function createSessions(options: {
     state.sessionNotes = state.sessionNotes.filter((entry) => entry.sessionId !== item.id);
     syncPinnedProjection();
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== item.id);
+    if (data.id === item.id) uiSync.hideDeletedSession(item.id);
     renderSessionList(cachedSessions);
     renderSessionBar();
     const warning = sessionUiMutationWarning(data);

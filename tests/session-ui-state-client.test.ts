@@ -10,6 +10,7 @@ describe("session UI state first-run migration", () => {
     const created = { ok: true, sessionId: "new-chat", messages: [], sessionUiStateWarning: "  preferences write failed  " };
     const deleted = { ok: true, id: "deleted-chat", disposition: "trashed", sessionUiStateWarning: "preferences delete failed" };
     const cleared = { ok: true, state: { sessionId: "cleared-chat", messages: [] }, sessionUiStateWarning: "preferences transfer failed" };
+    const cwdReplacement = { ok: true, state: { sessionId: "new-cwd-chat", cwd: "/next" }, sessionUiStateWarning: "preferences transfer failed" };
     expect(sessionUiMutationWarning(created)).toBe("preferences write failed");
     expect(created.sessionId).toBe("new-chat");
     expect(sessionUiMutationWarning(deleted)).toBe("preferences delete failed");
@@ -17,6 +18,8 @@ describe("session UI state first-run migration", () => {
     expect(sessionUiMutationWarning(cleared)).toBe("preferences transfer failed");
     expect(cleared.state.sessionId).toBe("cleared-chat");
     expect(cleared.state.messages).toEqual([]);
+    expect(sessionUiMutationWarning(cwdReplacement)).toBe("preferences transfer failed");
+    expect(cwdReplacement.state.sessionId).toBe("new-cwd-chat");
   });
 
   it("ignores failed, malformed, unrelated, or warning-free mutation responses", () => {

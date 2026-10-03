@@ -552,6 +552,47 @@ describe("pi-web mock API", () => {
     }
   });
 
+  it("reports a failed default bucket after cwd replacement without hiding the new chat", async () => {
+    const file = join(settingsDir, "session-ui-state.json");
+    const historyPath = `${file}.history.json`;
+    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    await post("/api/mock/reset", {});
+    await fetch(`${baseUrl}/api/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { sessionBucketColor: "red" } }) });
+    try {
+      const empty = await post("/api/sessions/new", {});
+      expect(empty.status).toBe(200);
+      const previous = await empty.json();
+      // The mock factory projects its fixed cwd regardless of requested cwd.
+      // Replacing at that cwd still exercises the new-session warning hand-off.
+      const cwd = previous.cwd as string;
+      const primary = await readFile(file, "utf8");
+      const history = await readFile(historyPath, "utf8");
+      await rm(historyPath);
+      await mkdir(historyPath);
+      await writeFile(join(historyPath, "keep"), "block persisted revision");
+      try {
+        const response = await post("/api/session/cwd", { sessionId: previous.sessionId, cwd });
+        expect(response.status).toBe(200);
+        const replacement = await response.json();
+        expect(replacement).toMatchObject({ ok: true, cwd, sessionId: expect.any(String), sessionUiStateWarning: expect.any(String) });
+        expect(replacement.sessionId).not.toBe(previous.sessionId);
+        expect(Object.hasOwn(replacement, "sessionUiState")).toBe(false);
+        expect(await readFile(file, "utf8")).toBe(primary);
+        expect(await readFile(join(historyPath, "keep"), "utf8")).toBe("block persisted revision");
+        const prompt = await post("/api/prompt", { sessionId: replacement.sessionId, message: "synthetic cwd replacement prompt" });
+        expect(prompt.status).toBe(202);
+        const messages = await (await fetch(`${baseUrl}/api/messages?sessionId=${encodeURIComponent(replacement.sessionId)}`)).json();
+        expect(messages.messages.map((message: { text?: string }) => message.text)).toContain("synthetic cwd replacement prompt");
+      } finally {
+        await rm(historyPath, { recursive: true });
+        await writeFile(historyPath, history);
+      }
+    } finally {
+      await fetch(`${baseUrl}/api/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { sessionBucketColor: null } }) });
+      await post("/api/mock/reset", {});
+    }
+  });
+
   it("applies saved defaults to new sessions", async () => {
     try {
       await fetch(`${baseUrl}/api/settings`, {
