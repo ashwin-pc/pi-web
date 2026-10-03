@@ -676,6 +676,37 @@ test.describe("session quick bar", () => {
     await expect(page.locator(".sessionLaneDrawerCard")).toHaveCount(2);
   });
 
+  test("moving a parked session to Pinned appends after existing pinned sessions, including after reload", async ({ page }) => {
+    const created = await page.request.post("/api/sessions/new", { data: {} });
+    expect(created.ok()).toBe(true);
+    const extraPinned = (await created.json()).sessionId as string;
+    expect((await page.request.post("/api/sessions/open", { data: { sessionId: "mock-current" } })).ok()).toBe(true);
+    const since = "2026-01-01T00:00:00.000Z";
+    await seedServerSessionUiState(page, { lanes: [
+      { sessionId: "mock-current", lane: "pinned", since },
+      { sessionId: extraPinned, lane: "pinned", since },
+      { sessionId: "mock-older", lane: "parked", since },
+    ] });
+    const expected = ["mock-current", extraPinned, "mock-older"];
+    const pinned = page.locator('.sessionLaneDrawerSection[data-lane="pinned"] .sessionLaneDrawerCard');
+    const pinnedOrder = () => pinned.evaluateAll((cards) => cards.map((card) => card.getAttribute("data-session-id")));
+    await page.goto("/");
+    await page.locator(".sessionLayersButton").click();
+    await expect.poll(pinnedOrder).toEqual(expected.slice(0, 2));
+    await page.locator('.sessionLaneDrawerSection[data-lane="parked"] [data-session-id="mock-older"] .sessionLaneDrawerActions').click();
+    await page.getByRole("button", { name: "Move to Pinned" }).click();
+    await expect.poll(pinnedOrder).toEqual(expected);
+    await expect.poll(async () => {
+      const response = await page.request.get("/api/session-ui-state");
+      const data = await response.json();
+      return data.sessionUiState.lanes.filter((entry: { lane: string }) => entry.lane === "pinned")
+        .map((entry: { sessionId: string }) => entry.sessionId);
+    }).toEqual(expected);
+    await page.reload();
+    await page.locator(".sessionLayersButton").click();
+    await expect.poll(pinnedOrder).toEqual(expected);
+  });
+
   test("a stale mark-read response cannot revert a lane drawer move", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-current" }, { id: "mock-older" });
     const held = await holdSessionReadSnapshot(page, "mock-older");

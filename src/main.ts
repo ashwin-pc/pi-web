@@ -101,6 +101,10 @@ let contextMeter: ContextMeterController;
 let activeWorkerDock: ActiveWorkerDockController;
 let modelSettings: ModelSettings;
 let sessions: SessionsController;
+function handleSessionUiStateWarning(warning: string) {
+  sessions.markUiStateUnavailable();
+  showPreferencesWarning(warning);
+}
 let settings: SettingsController;
 let systemInfo: SystemInfoController;
 let sessionInfo: SessionInfoController;
@@ -588,7 +592,7 @@ async function refreshState() {
   if (!res.ok) throw new Error(await res.text());
   const data = await res.json();
   const preferencesWarning = sessionUiUnavailableWarning(data);
-  if (preferencesWarning) { sessions.markUiStateUnavailable(); showPreferencesWarning(preferencesWarning); }
+  if (preferencesWarning) handleSessionUiStateWarning(preferencesWarning);
   if (requestedSessionId && requestedSessionId !== state.currentSessionId) {
     sessionState.applySnapshot(data);
     return;
@@ -741,6 +745,7 @@ composer = createComposer({
   refreshMessages,
   refreshState,
   startNewSession: () => sessions.startNewSession(),
+  onSessionUiStateWarning: handleSessionUiStateWarning,
   beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,

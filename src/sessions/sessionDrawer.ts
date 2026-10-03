@@ -306,9 +306,13 @@ export function createSessions(options: {
     const promptForNote = lane === "parked" && previous?.lane !== "parked" && !noteForSession(sessionId);
     const isActive = sessionId === state.currentSessionId;
     if (isActive) { focusedLane = lane; focusedSessionByLane[lane] = sessionId; }
+    // The gesture appends within its destination lane. Capture that placement
+    // separately from the entry update so a CAS rebase cannot leave an existing
+    // source entry at its old global index (ahead of the destination's pins).
+    const after = sessionsInLane(lane).filter((item) => item.sessionId !== sessionId).at(-1)?.sessionId;
     state.lanes = [...state.lanes.filter((item) => item.sessionId !== sessionId), entry];
     if (previous && previous.lane !== lane && focusedSessionByLane[previous.lane] === sessionId) delete focusedSessionByLane[previous.lane];
-    saveLaneFocus(); commitLanes();
+    saveLaneFocus(); commitLanes({ kind: "order", field: "lanes", id: sessionId, ...(after ? { after } : {}) });
     if (promptForNote) requestAnimationFrame(() => promptForParkedNote(sessionId));
   }
   function promptForParkedNote(sessionId: string) {

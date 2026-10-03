@@ -234,6 +234,47 @@ describe("session UI state causal sync", () => {
     expect(render.mock.lastCall?.[0]).toEqual(original);
   });
 
+  it("moving an existing early parked entry to the end of pinned captures placement independently of its entry", async () => {
+    const parked = { ...lane("parked"), lane: "parked" as const };
+    const original = state({ lanes: [parked, lane("pinned-a"), lane("pinned-b")] });
+    const target = state({ lanes: [lane("pinned-a"), lane("pinned-b"), { ...parked, lane: "pinned" }] });
+    const intents = captureUiIntents(original, { lanes: target.lanes });
+    expect(intents).toHaveLength(1); // The entry change alone retains the old global index.
+    expect(intents.reduce(applyUiIntent, original).lanes.map((entry) => entry.sessionId)).toEqual(["parked", "pinned-a", "pinned-b"]);
+    const placement = { kind: "order" as const, field: "lanes" as const, id: "parked", after: "pinned-b" };
+    expect([...intents, placement].reduce(applyUiIntent, original).lanes.map((entry) => entry.sessionId)).toEqual(["pinned-a", "pinned-b", "parked"]);
+    const p = peer(original);
+    await p.coordinator.start(state());
+    expect(await p.coordinator.mutate({ lanes: target.lanes }, placement)).toBe(true);
+    expect(p.server.lanes.map((entry) => entry.sessionId)).toEqual(["pinned-a", "pinned-b", "parked"]);
+    const reloaded = peer(p.server);
+    await reloaded.coordinator.start(state());
+    expect(reloaded.coordinator.projected?.lanes.map((entry) => entry.sessionId)).toEqual(["pinned-a", "pinned-b", "parked"]);
+  });
+
+  it("rebases a move-to-pinned placement around unknown concurrent pins without reposting stale order", async () => {
+    const parked = { ...lane("parked"), lane: "parked" as const };
+    const original = state({ lanes: [parked, lane("pinned-a"), lane("pinned-b")] });
+    const p = peer(original);
+    await p.coordinator.start(state());
+    p.server = state({ revision: 2, lanes: [parked, lane("pinned-a"), lane("remote"), lane("pinned-b")] });
+    const next = [lane("pinned-a"), lane("pinned-b"), { ...parked, lane: "pinned" }];
+    expect(await p.coordinator.mutate({ lanes: next }, { kind: "order", field: "lanes", id: "parked", after: "pinned-b" })).toBe(true);
+    expect(p.writes.map((write) => write.expectedRevision)).toEqual([1, 2]);
+    expect(p.server.lanes.map((entry) => entry.sessionId)).toEqual(["pinned-a", "remote", "pinned-b", "parked"]);
+    expect(p.server.lanes.find((entry) => entry.sessionId === "remote")?.lane).toBe("pinned");
+  });
+
+  it("ordinary metadata updates never manufacture a lane reorder", async () => {
+    const original = state({ lanes: [lane("early"), lane("later")] });
+    const p = peer(original);
+    await p.coordinator.start(state());
+    const updated = { ...lane("early"), cwd: "/new-cwd" };
+    expect(await p.coordinator.mutate({ lanes: [lane("later"), updated] })).toBe(true);
+    expect(p.server.lanes.map((entry) => entry.sessionId)).toEqual(["early", "later"]);
+    expect(p.server.lanes[0].cwd).toBe("/new-cwd");
+  });
+
   it("ordinary addition does not reset concurrent ordering; explicit reorder moves only its target", () => {
     const base = state({ lanes: [lane("a"), lane("b")] });
     const remote = state({ lanes: [lane("b"), lane("a"), lane("unknown")] });

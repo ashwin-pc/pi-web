@@ -21,6 +21,18 @@ type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => Barc
 
 const restoreFocusStorageKey = "pi-web-composer-restore-focus";
 
+/** A committed command may succeed even when its optional UI metadata write fails. */
+export function committedCommandUiWarning(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const response = value as Record<string, unknown>;
+  const session = response.state;
+  if (response.ok !== true || !session || typeof session !== "object" || Array.isArray(session)
+    || typeof (session as Record<string, unknown>).sessionId !== "string"
+    || !(session as Record<string, unknown>).sessionId) return undefined;
+  const warning = response.sessionUiStateWarning;
+  return typeof warning === "string" && warning.trim() ? warning : undefined;
+}
+
 export type ComposerController = {
   init: () => void;
   addContextAttachment: (context: ComposerContextAttachment) => void;
@@ -51,6 +63,7 @@ export function createComposer(options: {
   refreshMessages: () => Promise<void>;
   refreshState: () => Promise<void>;
   startNewSession: () => Promise<void>;
+  onSessionUiStateWarning: (warning: string) => void;
   beginTranscriptLoading?: () => void;
   beginStreamFollow?: () => void;
   endStreamFollow?: () => void;
@@ -710,6 +723,8 @@ export function createComposer(options: {
       if (resetsSession && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
     }
+    const sessionUiStateWarning = committedCommandUiWarning(data);
+    if (sessionUiStateWarning) options.onSessionUiStateWarning(sessionUiStateWarning);
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
     if (resetsSession) await refreshMessages();
