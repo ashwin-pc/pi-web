@@ -296,10 +296,17 @@ function enhanceMermaid(root: ParentNode) {
         const { svg } = await mermaid.default.render(id, source);
         cacheMermaidSvg(source, svg);
         if (container.isConnected) setSvg(svg);
-      } catch {
+      } catch (error) {
         if (!container.isConnected) return;
-        container.replaceWith(pre);
-        enhanceCodeBlocks(pre.parentNode || pre);
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn("Mermaid render failed", error);
+        container.classList.add("mermaidDiagram--error");
+        const status = document.createElement("div");
+        status.className = "mermaidDiagramError";
+        status.setAttribute("role", "alert");
+        status.textContent = `Diagram couldn't be rendered: ${message}`;
+        container.replaceChildren(status, pre);
+        enhanceCodeBlocks(container);
       }
     };
 

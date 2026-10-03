@@ -242,6 +242,18 @@ body.artifactPreviewDocument {
   height: auto;
   margin: 0 auto;
 }
+.mermaidDiagram--error {
+  color: var(--text);
+}
+.mermaidDiagramError {
+  margin-bottom: 10px;
+  color: var(--danger, #f87171);
+  font-weight: 600;
+  white-space: pre-wrap;
+}
+.mermaidDiagram--error > pre {
+  margin: 0;
+}
 .diagramViewerOpen {
   position: absolute;
   z-index: 1;
