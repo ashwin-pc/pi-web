@@ -82,6 +82,8 @@ type FixtureServiceOptions = {
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: LocalSessionFactory["list"];
+  remove?: LocalSessionFactory["remove"];
+  defaultsFor?: LocalSessionServiceDependencies["sessionConfig"]["defaultsFor"];
   openError?: Error;
   clientCount?: number | (() => number);
 };
@@ -102,13 +104,14 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
       return { session: value.session };
     },
     list: options.list || (async () => []),
+    remove: options.remove,
   };
   const deps: LocalSessionServiceDependencies = {
     modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
     sessionFactory: factory,
     additionalExtensionPaths: () => [],
     sessionConfig: {
-      defaultsFor: async () => ({}),
+      defaultsFor: options.defaultsFor || (async () => ({})),
       finalizeCreatedSession: options.finalizeCreatedSession || (async () => undefined),
     },
     globalCwd: () => cwd,
@@ -120,6 +123,46 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
 }
 
 describe("LocalSessionService contract", () => {
+  it("substitutes a non-mock factory for create/open/list/remove while keeping host defaults, binding and events", async () => {
+    const remove = vi.fn(async () => "trashed" as const);
+    const defaultsFor = vi.fn(async () => ({ model: { provider: "test", id: "model" }, thinkingLevel: "medium" }));
+    const finalize = vi.fn(async () => undefined);
+    let savedCwd = "";
+    const list = vi.fn(async () => [{
+      id: "saved", path: join(savedCwd, "saved.jsonl"), cwd: savedCwd,
+      name: "Saved", firstMessage: "hello", allMessagesText: "hello", messageCount: 1,
+      created: new Date("2026-01-01T00:00:00Z"), modified: new Date("2026-01-01T00:00:00Z"),
+    }]);
+    const { service, fixture, cwd, creates } = await fixtureService({
+      list, remove, defaultsFor, finalizeCreatedSession: finalize,
+    });
+    savedCwd = cwd;
+    expect(fixture.extensionOptions).toBeDefined();
+    expect(defaultsFor).not.toHaveBeenCalled(); // Opening/initializing does not apply new-session defaults.
+    expect(finalize).not.toHaveBeenCalled();
+    expect((await service.list())[0]).toMatchObject({ id: "saved", name: "Saved" });
+    const opened = await service.open("saved", cwd);
+    expect(opened.sessionId).toBe("saved");
+    expect(creates.at(-1)).toMatchObject({ path: join(cwd, "saved.jsonl"), cwd });
+    await service.open("saved", cwd);
+    expect(creates).toHaveLength(2); // A second open reuses the owned live session.
+    const events: SessionServiceEvent[] = [];
+    const unsubscribe = service.subscribe((event) => events.push(event));
+    await fixture.session.prompt("factory event");
+    expect(events.some((event) => event.type === "committed" && event.sessionId === "current")).toBe(true);
+    const created = await service.create("current", cwd);
+    expect(creates.at(-1)).toMatchObject({ reason: "new", previous: fixture.session.sessionFile, cwd });
+    expect(finalize).toHaveBeenCalledWith(created.sessionId);
+    expect(defaultsFor).toHaveBeenCalledWith(cwd);
+    const createdSession = service.sessionForPath(created.sessionFile)!;
+    expect(createdSession.setModel).toHaveBeenCalled();
+    expect(createdSession.setThinkingLevel).toHaveBeenCalledWith("medium");
+    expect(await service.delete("saved", cwd)).toEqual({ id: "saved", disposition: "trashed" });
+    expect(remove).toHaveBeenCalledWith("saved", join(cwd, "saved.jsonl"));
+    unsubscribe();
+    await service.disposeAll();
+  });
+
   it.each([
     "not json\n",
     JSON.stringify({ type: "message" }),
