@@ -398,7 +398,7 @@ test.describe("composer layout", () => {
       const body = await response.json();
       await route.fulfill({ response, json: { ...body,
         sourceGeneration: attempt === 1 ? "old-runner" : "new-runner", sourceCursor: 1,
-        startCheckpoint: { epoch: "host", seq: 100 }, endCheckpoint: { epoch: "host", seq: 200 },
+        startCheckpoint: { epoch: "host", seq: attempt === 1 ? 100 : 200 }, endCheckpoint: { epoch: "host", seq: 200 },
         state: { ...body.state, sessionName: attempt === 1 ? "STALE SOURCE" : "Restart recovered" },
         liveEvents: [], liveEventsComplete: true,
       } });
@@ -409,11 +409,13 @@ test.describe("composer layout", () => {
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "host" }));
     await expect.poll(() => requests).toBe(1);
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "state_changed", sessionId: "mock-current", seq: 150, source: { generation: "new-runner", cursor: 1 }, sessionName: "Restart recovered" }));
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "interaction_effect", source: "extension", kind: "setTitle", sessionId: "mock-current", payload: { title: "Effect survives recovery retry" }, seq: 151 }));
     release();
     await expect.poll(() => requests).toBe(2);
     await expect(page.locator("#connectionStatus")).toBeHidden();
     await expect(page.locator("#statusTitle")).toHaveText("Restart recovered");
     await expect(page.locator("#prompt")).toHaveValue("restart draft");
+    await expect(page).toHaveTitle("Effect survives recovery retry");
   });
 
   test("a socket generation change invalidates an in-flight recovery snapshot", async ({ page }) => {
