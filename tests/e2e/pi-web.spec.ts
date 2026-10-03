@@ -1238,8 +1238,10 @@ test.describe("tool cards", () => {
   });
 
   test("compact density keeps tool calls to one row until expanded", async ({ page }) => {
+    const settingsLoaded = page.waitForResponse((response) => response.url().includes("/api/settings") && response.ok());
     await page.goto("/");
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+    await settingsLoaded;
     await page.evaluate(() => { document.documentElement.dataset.density = "compact"; });
     await page.locator("#prompt").fill("use tool");
     await page.locator("#primaryButton").click();
@@ -1400,6 +1402,19 @@ test.describe("assistant markdown rendering", () => {
     });
     expect(await labelColor("Default dark node")).toBe("rgb(242, 242, 242)");
     expect(await labelColor("Pastel node")).toBe("rgb(17, 24, 39)");
+  });
+
+  test("shows Mermaid rendering errors alongside the source", async ({ page }) => {
+    await page.goto("/");
+    await page.locator("#prompt").fill("please return invalid mermaid");
+    await page.locator("#primaryButton").click();
+
+    const latestAssistant = page.locator(".message.assistant", { hasText: "Here is an invalid Mermaid diagram" }).last();
+    const diagram = latestAssistant.locator(".mermaidDiagram--error");
+    await expect(diagram).toBeVisible({ timeout: 10_000 });
+    await expect(diagram.getByRole("alert")).toContainText("Diagram couldn't be rendered:");
+    await expect(diagram.locator("pre > code.language-mermaid")).toContainText("A -->");
+    await expect(diagram.locator(":scope > svg")).toHaveCount(0);
   });
 
   test("opens and operates the full-screen Mermaid viewer", async ({ page }) => {
