@@ -852,7 +852,7 @@ export function createRealtime(options: {
             // Host end.seq is not a source cut and must not discard those events.
             if (sourcePosition(event).cursor > snapshot.sourceCursor) handleRealtimeData(event);
           } else {
-            const hostCovered = ["settings_updated", "web_settings_schemas_changed", "session_ui_state_changed"].includes(event.type)
+            const hostCovered = ["hello", "settings_updated", "web_settings_schemas_changed", "session_ui_state_changed"].includes(event.type)
               || (["models_updated", "session_stats_changed"].includes(event.type) && event.sessionId === sessionId);
             // Effects/errors and other unsnapshotted domains must survive a
             // retry's newer cut; they are not replacement snapshot state.

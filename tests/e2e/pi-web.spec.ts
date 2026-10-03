@@ -408,6 +408,7 @@ test.describe("composer layout", () => {
     await page.locator("#prompt").fill("restart draft");
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "host" }));
     await expect.poll(() => requests).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "hello", epoch: "host", sessionId: "mock-current", sessionName: "Stale handshake title", isStreaming: true, seq: 99 }));
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "state_changed", sessionId: "mock-current", seq: 150, source: { generation: "new-runner", cursor: 1 }, sessionName: "Restart recovered" }));
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "interaction_effect", source: "extension", kind: "setTitle", sessionId: "mock-current", payload: { title: "Effect survives recovery retry" }, seq: 151 }));
     release();
