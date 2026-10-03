@@ -7,6 +7,9 @@
   padding: 0 8px;
   height: 24px;
   flex-shrink: 0;
+  /* Prevent right-side buttons (settings, bucket, …) from being pushed
+     off-screen on narrow viewports if a child refuses to shrink. */
+  overflow: hidden;
 }
 .statusBar .iconButton {
   flex: 0 0 auto;
