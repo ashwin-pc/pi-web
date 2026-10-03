@@ -71,7 +71,9 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
   const decorate = (state: BaseSessionStateDto, target: PiWebSession, includeThinkingLevels = false) =>
     decorateHostSessionState(state, target, deps.sessionActivity, deps.webUiEntries, includeThinkingLevels);
 
+  const host = deps;
   return (serviceEvent: SessionServiceEvent): void => {
+    const deps = { ...host, broadcast: (value: unknown) => host.broadcast({ ...(value as Record<string, unknown>), ...(serviceEvent.source ? (typeof (value as Record<string, unknown>).source === "string" ? { serviceSource: serviceEvent.source } : { source: serviceEvent.source }) : {}) }) };
     switch (serviceEvent.type) {
       case "agent": {
         const target = deps.sessionForId(serviceEvent.sessionId);
@@ -95,7 +97,7 @@ export function createHostSessionEventHandler(deps: HostEventDependencies) {
         return;
       }
       case "interaction":
-        deps.broadcast({ type: "interaction_request", ...serviceEvent.request });
+        deps.broadcast({ type: "interaction_request", ...serviceEvent.request, serviceSource: serviceEvent.source });
         return;
       case "settlement_dependencies":
         // Consumed by the host's settlement tracker; this internal bridge event

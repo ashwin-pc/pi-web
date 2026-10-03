@@ -39,6 +39,7 @@ export function createApiClient(state: AppState): ApiClient {
       url.searchParams.set("viewerSeq", nextViewerSeq());
       if (state.currentSessionId) url.searchParams.set("sessionId", state.currentSessionId);
       if (state.lastRealtimeSeq > 0) url.searchParams.set("lastSeq", String(state.lastRealtimeSeq));
+      if (state.lastRealtimeEpoch) url.searchParams.set("lastEpoch", state.lastRealtimeEpoch);
       return url;
     },
   };

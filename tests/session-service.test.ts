@@ -123,6 +123,149 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
 }
 
 describe("LocalSessionService contract", () => {
+  it("owns recovery cuts across delayed transport, multiple loaded sessions and source restart", async () => {
+    const { service, initial, fixture } = await fixtureService();
+    const events: SessionServiceEvent[] = [];
+    service.subscribe((event) => events.push(event));
+    fixture.session.isStreaming = true;
+    fixture.emit({ type: "agent_start" });
+    for (let i = 0; i < 100; i++) fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: String(i) } });
+    const capture = jsonRoundTrip(await service.recover(initial.sessionId));
+    expect(capture.transientComplete).toBe(true);
+    expect(capture.transientEvents).toHaveLength(101);
+    // Simulate an asynchronous RPC response held while source events continue.
+    const delayed = new Promise<typeof capture>((resolve) => setTimeout(() => resolve(capture), 5));
+    fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "late" } });
+    const transported = await delayed;
+    const later = events.filter((event) => event.source!.cursor > transported.sourceCursor);
+    expect(later.some((event) => event.type === "agent")).toBe(true);
+    expect(transported.messages).toEqual(capture.messages);
+    const other = await service.create(initial.sessionId);
+    const multiple = await service.recover(initial.sessionId);
+    expect(multiple.activeStates.map((state) => state.sessionId)).toEqual(expect.arrayContaining([initial.sessionId, other.sessionId]));
+    const restarted = await fixtureService();
+    expect((await restarted.service.recover(restarted.initial.sessionId)).sourceGeneration).not.toBe(capture.sourceGeneration);
+  });
+
+  it("does not snapshot agent-core content ahead of Pi's asynchronous persistence relay", async () => {
+    const { service, initial, fixture } = await fixtureService();
+    fixture.session.isStreaming = true;
+    fixture.emit({ type: "agent_start" });
+    fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "source prefix" } });
+    // This is the real SDK's extension-hook window: agent-core has the final
+    // object but AgentSession has not appended/relayed message_end yet.
+    (fixture.session.messages as any[]).push({ role: "assistant", content: [{ type: "text", text: "unpublished final" }], timestamp: 123 });
+    const recovery = await service.recover(initial.sessionId);
+    expect(recovery.transientComplete).toBe(true);
+    expect(recovery.messages.some((message) => message.text === "unpublished final")).toBe(false);
+    expect(recovery.transientEvents).toHaveLength(2);
+  });
+
+  it("trims only acknowledged rounds and retains later streaming events", async () => {
+    const { service, initial, fixture } = await fixtureService();
+    fixture.session.isStreaming = true;
+    fixture.emit({ type: "agent_start" });
+    const first = fixture.session.prompt("round one");
+    fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "second prefix" } });
+    const second = fixture.session.prompt("round two");
+    fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } });
+    fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "third prefix" } });
+    await Promise.all([first, second]);
+    const recovery = await service.recover(initial.sessionId);
+    expect(recovery.transientComplete).toBe(true);
+    expect(recovery.messages.filter((message) => message.role === "user").map((message) => message.text)).toEqual(["round one", "round two"]);
+    expect(recovery.transientEvents).toHaveLength(2);
+    expect(recovery.transientEvents.every((event) => event.source!.cursor > recovery.durableCursor)).toBe(true);
+    // Recovery uses pi-web identity, not a required filesystem lookup key.
+    fixture.session.sessionFile = undefined as unknown as string;
+    expect((await service.recover(initial.sessionId)).sessionId).toBe(initial.sessionId);
+  });
+
+  it("fresh recovery listing bypasses an older in-flight scan", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    const { service } = await fixtureService({ list: async () => { if (++calls === 1) await gate; return []; } });
+    const old = service.list();
+    const fresh = await service.listSnapshot([], { fresh: true });
+    expect(calls).toBe(2);
+    expect(fresh.coveredCwds).toHaveLength(1);
+    release();
+    await old;
+  });
+
+  it("lists coverage only for successful CWD scans", async () => {
+    const { service, cwd } = await fixtureService({ list: async (path) => {
+      if (path === "/unavailable") throw new Error("unavailable");
+      return [];
+    } });
+    const snapshot = await service.listSnapshot(["/unavailable"]);
+    expect(snapshot.sessions).toEqual([]);
+    expect(snapshot.coveredCwds).toContain(cwd);
+    expect(snapshot.coveredCwds).not.toContain("/unavailable");
+  });
+
+  it("recovers compaction without a preceding agent start", async () => {
+    const { service, initial, fixture } = await fixtureService();
+    fixture.session.isCompacting = true;
+    fixture.emit({ type: "compaction_start", reason: "manual" });
+    const recovery = await service.recover(initial.sessionId);
+    expect(recovery.state.isCompacting).toBe(true);
+    expect(recovery.transientComplete).toBe(true);
+    expect(recovery.transientEvents).toHaveLength(1);
+    expect(recovery.transientEvents[0]).toMatchObject({ type: "agent", event: { type: "compaction_start" } });
+  });
+
+  it("starts a complete compaction boundary after an overflowed run", async () => {
+    const { service, initial, fixture } = await fixtureService();
+    fixture.session.isStreaming = true;
+    fixture.emit({ type: "agent_start" });
+    for (let i = 0; i < 10_001; i++) fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x" } });
+    expect((await service.recover(initial.sessionId)).transientComplete).toBe(false);
+    fixture.session.isStreaming = false;
+    fixture.emit({ type: "agent_end" });
+    fixture.session.isCompacting = true;
+    fixture.emit({ type: "compaction_start", reason: "manual" });
+    const recovery = await service.recover(initial.sessionId);
+    expect(recovery.transientComplete).toBe(true);
+    expect(recovery.transientEvents).toHaveLength(1);
+  });
+
+  it("bounds source prefixes and fails closed when persistence cannot project a commit", async () => {
+    const { service, initial, fixture } = await fixtureService();
+    fixture.session.isStreaming = true;
+    fixture.emit({ type: "agent_start" });
+    for (let i = 0; i < 10_001; i++) fixture.emit({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "x" } });
+    const bounded = await service.recover(initial.sessionId);
+    expect(bounded.transientEvents).toHaveLength(10_000);
+    expect(bounded.transientComplete).toBe(false);
+    fixture.emit({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "not persisted" }] } });
+    const unresolved = await service.recover(initial.sessionId);
+    expect(unresolved.transientComplete).toBe(false);
+  });
+
+  it("recovers original pending decisions with unchanged deadline and rejects expired/duplicate replies", async () => {
+    vi.useFakeTimers();
+    const { service, initial, fixture } = await fixtureService({ clientCount: 1 });
+    const decision = fixture.extensionOptions.uiContext.confirm("Allow?", "Recovery", { timeout: 1_000 });
+    const first = await service.recover(initial.sessionId);
+    expect(first.pendingInteractions).toHaveLength(1);
+    const request = first.pendingInteractions[0]!;
+    const liveEvents: SessionServiceEvent[] = [];
+    const unsubscribe = service.subscribe((event) => liveEvents.push(event));
+    const liveDecision = fixture.extensionOptions.uiContext.confirm("Live?", "Recovery", { timeout: 1_000 });
+    expect(liveEvents.find((event) => event.type === "interaction")).toMatchObject({ request: { expiresAt: request.expiresAt } });
+    unsubscribe();
+    await vi.advanceTimersByTimeAsync(300);
+    const second = await service.recover(initial.sessionId);
+    expect(second.pendingInteractions[0]).toEqual(request);
+    await vi.advanceTimersByTimeAsync(701);
+    expect(await decision).toBe(false);
+    expect(await liveDecision).toBe(false);
+    expect(service.respondInteraction({ id: request.id, confirmed: true })).toBe(false);
+    expect((await service.recover(initial.sessionId)).pendingInteractions).toEqual([]);
+  });
+
   it("substitutes a non-mock factory for create/open/list/remove while keeping host defaults, binding and events", async () => {
     const remove = vi.fn(async () => "trashed" as const);
     const defaultsFor = vi.fn(async () => ({ model: { provider: "test", id: "model" }, thinkingLevel: "medium" }));
@@ -413,7 +556,8 @@ describe("LocalSessionService contract", () => {
     const startedAt = "2026-02-01T00:00:00.000Z";
     const firstActivityAt = "2026-02-01T00:00:01.000Z";
     fixture.emit({ type: "agent_start", startedAt, lastActivityAt: firstActivityAt });
-    expect(wire).toEqual([
+    expect(wire.every((event) => typeof event.source?.generation === "string" && typeof event.source?.cursor === "number")).toBe(true);
+    expect(wire.map(({ source: _source, ...event }) => event)).toEqual([
       { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "agent_start", startedAt, lastActivityAt: firstActivityAt } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
     ]);
@@ -421,7 +565,7 @@ describe("LocalSessionService contract", () => {
     wire.length = 0;
     fixture.emit({ type: "session_info_changed", name: "Renamed" });
     const { thinkingLevels: _thinkingLevels, ...stateWithoutThinkingLevels } = service.projectState(initial);
-    expect(wire).toEqual([
+    expect(wire.map(({ source: _source, ...event }) => event)).toEqual([
       { type: "agent_event", sessionId: initial.sessionId, sessionFile: initial.sessionFile, event: { type: "session_info_changed", name: "Renamed" } },
       { type: "session_runtime_changed", sessionId: initial.sessionId, sessionFile: initial.sessionFile, runtime: activity.runtimeForPath(initial.sessionFile) },
       {
@@ -438,7 +582,7 @@ describe("LocalSessionService contract", () => {
     const messageAt = "2026-02-01T00:00:02.000Z";
     const message = { role: "assistant", model: "model", errorMessage: "model_not_supported", timestamp: messageAt };
     fixture.emit({ type: "message_end", message, timestamp: messageAt });
-    expect(wire).toEqual([
+    expect(wire.map(({ source: _source, ...event }) => event)).toEqual([
       {
         type: "agent_event",
         sessionId: initial.sessionId,

@@ -57,6 +57,20 @@ session_runtime_changed
 
 `NavigationResult.finish()` is the one intentional non-serializable value. It is a serving-side finalizer: the serving adapter writes the navigation response and calls `finish()` in `finally`. A future remote runner must likewise finalize after writing its own response; the callback is never sent over stdio.
 
+### Background recovery (implemented local boundary)
+
+`SessionService.recover(sessionId)` owns the authoritative selected-session cut: entry-backed transcript, run state, bounded transient service events, pending interactions with original IDs/deadlines, source generation/cursor and durable-prefix cursor. Source ordering is independent of the serving process's browser epoch/sequence. Consumers discard covered buffered events only against the source cursor, not an HTTP response's host end cut (a source may advance while a remote response is in flight).
+
+The current Pi implementation captures synchronous SDK projections after lookup, with no asynchronous reads inside the capture. It excludes finalized agent-core content not yet backed by SessionManager entries: async extension hooks can delay the persistence relay. `message_end` creates an unresolved-commit guard; the adapter checks the entry-backed committed projection before retiring only that message's event prefix. A missing projection or bounded-prefix overflow reports incomplete, not a guessed quiet window. This is a projection boundary, not an fsync durability guarantee. Deferred callbacks from disposed sessions cannot publish commits.
+
+Browser reconnect identity is the in-memory `(lastRealtimeEpoch, lastRealtimeSeq)` pair. The hello handshake advertises the host epoch and reconnect sends both values. A differing epoch forces recovery even when numerical sequences overlap. A missing epoch with a positive cursor also forces recovery (legacy client safety); no epoch and sequence zero is an initial connection. A matching known epoch with sequence zero is a resume cut: retained events replay from one, or a truncated prefix forces recovery. Invalid negative, fractional, non-finite or unsafe sequence cursors also force recovery. Successful snapshot application replaces both cursor fields, including a lower sequence after host restart. Recovery retry timers belong to their socket/attempt/session, are cancelled on invalidation, and guard ownership before modifying any shared controller or generation, including callbacks already queued before cancellation.
+
+The HTTP endpoint composes this operation with separately read host settings/UI/list domains. All loaded local sessions receive authoritative state baselines; only the selected transcript/interaction set is recovered. The CWD-derived listing is explicitly partial and includes successful CWD coverage: absent cached rows from covered directories are removed, while uncovered directories and failed scans retain cached rows. `listSnapshot` owns this coverage and `list` delegates to that canonical scan. This is not an all-provider transaction or full inactive-session transcript replay.
+
+Interaction recovery never renews a deadline or manufactures a new request. Expired, duplicate and disposed-session replies fail closed; restored dialogs still require an explicit decision. Pi extension dialogs are exercised; native Codex approvals are not implemented by this work.
+
+There is no binding router or production remote service in this checkout. The operation uses the existing canonical local service; Stage 3 must add `recover` to its RPC contract, and Stage 4 must route it binding-authoritatively with no local fallback. Delayed JSON response/source-restart tests establish local contract and asynchronous-boundary behavior only, not actual spawned-runner parity, remote deployment, or Codex compatibility. Existing mock-browser harness fanout remains a separate legacy test path and is not used as cross-harness evidence.
+
 ### Stage 3: runner transport
 
 The runner is a thin transport over the same `LocalSessionService`, not another implementation:

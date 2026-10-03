@@ -4,6 +4,41 @@ import { openSessionDrawerFooterAction, shouldCloseSessionDrawerAfterSwitch } fr
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+async function installControllableWebSocket(page: import("@playwright/test").Page) {
+  await page.addInitScript(() => {
+    const NativeWebSocket = window.WebSocket;
+    const sockets: any[] = [];
+    (window as any).__recoverySockets = sockets;
+    class RecoverySocket extends EventTarget {
+      static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      readyState = RecoverySocket.CONNECTING;
+      readonly url: string;
+      readonly protocol = "";
+      readonly extensions = "";
+      binaryType: BinaryType = "blob";
+      bufferedAmount = 0;
+      onopen: ((event: Event) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super();
+        const parsed = new URL(String(url), location.href);
+        if (parsed.pathname !== "/ws") return protocols === undefined ? new NativeWebSocket(url) : new NativeWebSocket(url, protocols);
+        this.url = parsed.href;
+        sockets.push(this);
+        queueMicrotask(() => this.emitOpen());
+      }
+      send() {}
+      close() { this.emitClose(); }
+      emitOpen() { this.readyState = RecoverySocket.OPEN; const event = new Event("open"); this.dispatchEvent(event); this.onopen?.(event); }
+      emit(value: unknown) { const event = new MessageEvent("message", { data: JSON.stringify(value) }); this.dispatchEvent(event); this.onmessage?.(event); }
+      emitClose() { this.readyState = RecoverySocket.CLOSED; const event = new CloseEvent("close"); this.dispatchEvent(event); this.onclose?.(event); }
+    }
+    (window as any).WebSocket = RecoverySocket as any;
+  });
+}
+
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
@@ -169,7 +204,7 @@ test.describe("composer layout", () => {
     await expect(page.locator("#connectionStatus")).toBeHidden();
   });
 
-  test("connection warning badges refresh the page by click and keyboard", async ({ page }) => {
+  test("offline warning reloads while sync warning is passive during automatic recovery", async ({ page }) => {
     await page.addInitScript(() => {
       const Native = window.WebSocket;
       (window as any).__connectionReady = new Promise<void>(resolve => {
@@ -201,10 +236,285 @@ test.describe("composer layout", () => {
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
 
     await showWarning("syncRequired", "Sync needed");
-    const keyboardReload = page.waitForEvent("framenavigated");
+    const urlBefore = page.url();
     await page.locator("#connectionStatus").press("Enter");
-    await keyboardReload;
+    await page.waitForTimeout(100);
+    expect(page.url()).toBe(urlBefore);
+    await expect(page.locator("#connectionStatus")).toHaveText("Sync needed");
+  });
+
+  test("sync_required recovers during continuous events without losing draft, scroll, or expanded composer", async ({ page }) => {
+    await installControllableWebSocket(page);
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    let snapshotStarted = false;
+    let statusReads = 0;
+    await page.route("**/api/sessions/mock-current/status", async (route) => { statusReads++; await route.continue(); });
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      snapshotStarted = true;
+      await snapshotGate;
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: {
+        ...body,
+        pendingInteractions: [{ id: "resolved-during-response", source: "extension", kind: "set_editor_text", sessionId: "mock-current", payload: { text: "already answered" }, expiresAt: Date.now() + 60_000 }],
+        state: { ...body.state, model: { provider: "mock", id: "other" } },
+        sessions: body.sessions.filter((session: { id: string }) => session.id !== "mock-older"),
+        listingCoveredCwds: body.sessions.filter((session: { id: string }) => session.id === "mock-older").map((session: { cwd: string }) => session.cwd),
+        startCheckpoint: { epoch: "test", seq: 100 },
+        endCheckpoint: { epoch: "test", seq: 200 },
+        sourceGeneration: "test-source",
+        sourceCursor: 200,
+        liveEventsComplete: true,
+        liveEvents: [
+          { type: "agent_event", sessionId: "mock-current", seq: 140, event: { type: "message_update", assistantMessageEvent: { type: "text_start", contentIndex: 0 } } },
+          { type: "agent_event", sessionId: "mock-current", seq: 141, event: { type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "live prefix during snapshot" } } },
+        ],
+      } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.locator("#prompt").fill("draft survives background recovery");
+    await page.locator("#promptForm").hover();
+    await page.locator("#expandButton").click();
+    await page.locator("#messages").evaluate((element) => { element.style.height = "80px"; element.scrollTop = 17; });
+    const scrollBefore = await page.locator("#messages").evaluate((element) => element.scrollTop);
+
+    const statusReadsBefore = statusReads;
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "test" }));
+    await expect.poll(() => snapshotStarted).toBe(true);
+    await page.evaluate(() => {
+      const socket = (window as any).__recoverySockets.at(-1);
+      socket.emit({ type: "interaction_resolved", id: "resolved-during-response", sessionId: "mock-current", seq: 302 });
+      socket.emit({ type: "interaction_request", id: "expired-buffered", source: "extension", serviceSource: { generation: "test-source", cursor: 201 }, kind: "set_editor_text", sessionId: "mock-current", payload: { text: "expired prompt must not apply" }, expiresAt: Date.now() - 1, seq: 301 });
+      for (let seq = 101; seq <= 300; seq++) socket.emit({ type: "session_stats_changed", sessionId: "mock-current", stats: { inputTokens: seq }, seq });
+      socket.emit({ type: "state_changed", sessionId: "mock-current", sessionName: "Changed during recovery", seq: 160, source: { generation: "test-source", cursor: 201 }, replay: true });
+    });
+    releaseSnapshot();
+
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    await expect.poll(() => statusReads).toBeGreaterThan(statusReadsBefore);
+    await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
+    await expect(page.locator("#prompt")).toHaveValue("draft survives background recovery");
+    await expect(page.locator("#promptForm")).toHaveClass(/expanded/);
+    await expect.poll(() => page.locator("#messages").evaluate((element) => element.scrollTop)).toBe(scrollBefore);
+    await expect(page.locator('.sessionBarTab[data-session-id="mock-older"]')).toHaveCount(0);
+    await expect(page.locator("#statusTitle")).toHaveText("Changed during recovery");
+    await expect(page.locator("#messages")).toContainText("live prefix during snapshot");
+  });
+
+  test("a cancelled old-socket retry cannot abort a newer recovery even if its callback fires", async ({ page }) => {
+    await installControllableWebSocket(page);
+    await page.addInitScript(() => {
+      const schedule = window.setTimeout.bind(window);
+      const cancel = window.clearTimeout.bind(window);
+      const retries: any[] = [];
+      (window as any).__recoveryRetries = retries;
+      window.setTimeout = ((handler: TimerHandler, delay?: number, ...args: any[]) => {
+        const capture = typeof handler === "function" && delay === 2_000 && (window as any).__captureRecoveryRetry;
+        const id = schedule(handler, capture ? 100_000 : delay, ...args);
+        if (capture) {
+          (window as any).__captureRecoveryRetry = false;
+          retries.push({ id, callback: handler, cancelled: false });
+        }
+        return id;
+      }) as typeof window.setTimeout;
+      window.clearTimeout = (id?: number) => {
+        const retry = retries.find((entry) => entry.id === id);
+        if (retry) retry.cancelled = true;
+        cancel(id);
+      };
+    });
+    let requests = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      if (++requests === 1) { await route.fulfill({ status: 503, body: "temporary failure" }); return; }
+      await gate;
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body,
+        startCheckpoint: { epoch: "test", seq: 100 }, endCheckpoint: { epoch: "test", seq: 200 },
+        state: { ...body.state, sessionName: "New socket recovered" }, liveEvents: [], liveEventsComplete: true,
+      } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.evaluate(() => {
+      (window as any).__captureRecoveryRetry = true;
+      (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "test" });
+    });
+    await expect.poll(() => page.evaluate(() => (window as any).__recoveryRetries.length)).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emitClose());
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.length)).toBe(2);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "test" }));
+    await expect.poll(() => requests).toBe(2);
+    expect(await page.evaluate(() => (window as any).__recoveryRetries[0].cancelled)).toBe(true);
+    // Invoke the cancelled callback deterministically, modelling a timer that
+    // was already queued when close cancelled it; ownership must still hold.
+    await page.evaluate(() => (window as any).__recoveryRetries[0].callback());
+    release();
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    await expect(page.locator("#statusTitle")).toHaveText("New socket recovered");
+    expect(requests).toBe(2);
+  });
+
+  test("reconnect sends host epoch and resets the cursor after host recovery", async ({ page }) => {
+    await installControllableWebSocket(page);
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body,
+        startCheckpoint: { epoch: "new-host", seq: 10 }, endCheckpoint: { epoch: "new-host", seq: 20 },
+        liveEvents: [], liveEventsComplete: true,
+      } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "hello", epoch: "old-host", seq: 100, sessionId: "mock-current" }));
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emitClose());
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.length)).toBe(2);
+    const resumed = new URL(await page.evaluate(() => (window as any).__recoverySockets.at(-1).url));
+    expect(resumed.searchParams.get("lastEpoch")).toBe("old-host");
+    expect(resumed.searchParams.get("lastSeq")).toBe("100");
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", epoch: "new-host", latestSeq: 20 }));
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emitClose());
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.length)).toBe(3);
+    const recovered = new URL(await page.evaluate(() => (window as any).__recoverySockets.at(-1).url));
+    expect(recovered.searchParams.get("lastEpoch")).toBe("new-host");
+    expect(recovered.searchParams.get("lastSeq")).toBe("20");
+  });
+
+  test("a source generation change retries recovery without poisoning the buffer", async ({ page }) => {
+    await installControllableWebSocket(page);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let requests = 0;
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      const attempt = ++requests;
+      if (attempt === 1) await gate;
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body,
+        sourceGeneration: attempt === 1 ? "old-runner" : "new-runner", sourceCursor: 1,
+        startCheckpoint: { epoch: "host", seq: attempt === 1 ? 100 : 200 }, endCheckpoint: { epoch: "host", seq: 200 },
+        state: { ...body.state, sessionName: attempt === 1 ? "STALE SOURCE" : "Restart recovered" },
+        liveEvents: [], liveEventsComplete: true,
+      } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.locator("#prompt").fill("restart draft");
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "host" }));
+    await expect.poll(() => requests).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "hello", epoch: "host", sessionId: "mock-current", sessionName: "Stale handshake title", isStreaming: true, seq: 99 }));
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "state_changed", sessionId: "mock-current", seq: 150, source: { generation: "new-runner", cursor: 1 }, sessionName: "Restart recovered" }));
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "interaction_effect", source: "extension", kind: "setTitle", sessionId: "mock-current", payload: { title: "Effect survives recovery retry" }, seq: 151 }));
+    release();
+    await expect.poll(() => requests).toBe(2);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    await expect(page.locator("#statusTitle")).toHaveText("Restart recovered");
+    await expect(page.locator("#prompt")).toHaveValue("restart draft");
+    await expect(page).toHaveTitle("Effect survives recovery retry");
+  });
+
+  test("a socket generation change invalidates an in-flight recovery snapshot", async ({ page }) => {
+    await installControllableWebSocket(page);
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    let snapshotStarted = false;
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      snapshotStarted = true;
+      await snapshotGate;
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body, state: { ...body.state, sessionTitle: "STALE RECOVERY" } } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 10, epoch: "test" }));
+    await expect.poll(() => snapshotStarted).toBe(true);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emitClose());
+    releaseSnapshot();
+    await page.waitForTimeout(100);
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
+  });
+
+  test("a missing selected session recovers an available session instead of retrying forever", async ({ page }) => {
+    await installControllableWebSocket(page);
+    const requests: string[] = [];
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      const id = new URL(route.request().url()).searchParams.get("sessionId")!;
+      requests.push(id);
+      if (id === "mock-current") { await route.fulfill({ status: 404, json: { error: "deleted" } }); return; }
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body, startCheckpoint: { ...body.startCheckpoint, epoch: "test" }, endCheckpoint: { ...body.endCheckpoint, epoch: "test" } } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 10, epoch: "test" }));
+    await expect.poll(() => requests.some((id) => id !== "mock-current")).toBe(true);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    expect(requests.filter((id) => id === "mock-current")).toHaveLength(1);
+  });
+
+  test("a selected deletion after a successful snapshot reconciles the selection", async ({ page }) => {
+    await installControllableWebSocket(page);
+    const requests: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      const id = new URL(route.request().url()).searchParams.get("sessionId")!;
+      requests.push(id);
+      if (id === "mock-current" && requests.length > 1) { await route.fulfill({ status: 404, json: { error: "deleted" } }); return; }
+      const response = await route.fetch();
+      const body = await response.json();
+      if (requests.length === 1) await gate;
+      await route.fulfill({ response, json: { ...body, startCheckpoint: { ...body.startCheckpoint, epoch: "test" }, endCheckpoint: { ...body.endCheckpoint, epoch: "test" } } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 10, epoch: "test" }));
+    await expect.poll(() => requests.length).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "session_deleted", sessionId: "mock-current", seq: 1000000 }));
+    release();
+    await expect.poll(() => requests.some((id) => id !== "mock-current")).toBe(true);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    expect(requests.filter((id) => id === "mock-current")).toHaveLength(2);
+  });
+
+  test("a session switch invalidates an in-flight recovery snapshot", async ({ page }) => {
+    await installControllableWebSocket(page);
+    let releaseSnapshot!: () => void;
+    const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+    let snapshotStarted = false;
+    const requestedIds: string[] = [];
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      snapshotStarted = true;
+      requestedIds.push(new URL(route.request().url()).searchParams.get("sessionId")!);
+      await snapshotGate;
+      const response = await route.fetch();
+      const body = await response.json();
+      await route.fulfill({ response, json: { ...body, startCheckpoint: { ...body.startCheckpoint, epoch: "test" }, endCheckpoint: { ...body.endCheckpoint, epoch: "test" } } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 10, epoch: "test" }));
+    await expect.poll(() => snapshotStarted).toBe(true);
+    await page.locator("#sessionButton").click();
+    await page.locator("#sessionNewButton").click();
+    releaseSnapshot();
+    await expect(page.locator("#statusTitle")).toHaveText("New session");
+    await expect.poll(() => new Set(requestedIds).size).toBe(2);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    await expect(page.locator("#statusTitle")).toHaveText("New session");
+    await page.evaluate(() => {
+      const sessionId = new URL(location.href).searchParams.get("sessionId");
+      (window as any).__recoverySockets.at(-1).emit({ type: "state_changed", sessionId, sessionName: "Realtime still active", seq: 500 });
+    });
+    await expect(page.locator("#statusTitle")).toHaveText("Realtime still active");
   });
 
   test("restores unsent composer draft after page refresh", async ({ page }) => {

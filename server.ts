@@ -990,6 +990,52 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, { ok: true, messages: decorateMessages(await sessionService.messages(target.sessionId), target.sessionFile) });
       }
 
+      if (method === "GET" && url.pathname === "/api/recovery-snapshot") {
+        const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
+        const target = await sessionService.require(requestedSessionId);
+        // Host-global replacement domains use the start cut. Session events
+        // use source-owned cursors, independent of this host's sequence/epoch.
+        const startCheckpoint = realtimeHub.checkpoint();
+        const sessionUiState = await sessionUiStateStore.read();
+        const recoveryCwds = [...new Set((sessionUiState.lanes || []).map((lane) => lane.cwd).filter((cwd): cwd is string => Boolean(cwd)))];
+        const [settings, models, listing] = await Promise.all([
+          settingsStore.read(),
+          sessionService.models(target.sessionId),
+          sessionService.listSnapshot(recoveryCwds, { fresh: true }),
+        ]);
+        const recovery = await sessionService.recover(target.sessionId);
+        const state = decorateState(recovery.state, target, true);
+        // Runtime decoration cannot override authoritative run flags.
+        state.runtime = { ...state.runtime, isStreaming: recovery.state.isStreaming, isRetrying: recovery.state.isRetrying, isCompacting: recovery.state.isCompacting };
+        const endCheckpoint = realtimeHub.checkpoint();
+        return sendJson(res, 200, {
+          ok: true,
+          sessionId: target.sessionId,
+          state,
+          messages: decorateMessages(recovery.messages, target.sessionFile),
+          sourceGeneration: recovery.sourceGeneration,
+          sourceCursor: recovery.sourceCursor,
+          durableCursor: recovery.durableCursor,
+          activeStates: recovery.activeStates.map((active) => {
+            const loaded = sessionService.sessionForId(active.sessionId);
+            return loaded ? decorateState(active, loaded) : active;
+          }),
+          coverage: recovery.coverage,
+          listingComplete: false,
+          listingCoveredCwds: listing.coveredCwds,
+          pendingInteractions: recovery.pendingInteractions,
+          liveEvents: recovery.transientEvents.flatMap((event) => event.type === "agent" ? [{ type: "agent_event", sessionId: event.sessionId, sessionFile: event.sessionFile, event: event.event, source: event.source, clientMessageId: event.clientMessageId, sourceClientId: event.sourceClientId }] : []),
+          liveEventsComplete: recovery.transientComplete,
+          settings,
+          webSettingsSchemas: sessionService.settingsSchemas(),
+          models,
+          sessionUiState,
+          sessions: applySessionUnreadState(decorateSessionInfos(listing.sessions), sessionUiState),
+          startCheckpoint,
+          endCheckpoint,
+        });
+      }
+
       if (method === "GET" && url.pathname === "/api/session/reference") {
         const sessionId = url.searchParams.get("sessionId")?.trim() || "";
         const entryId = url.searchParams.get("entryId")?.trim() || "";
@@ -1382,7 +1428,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   logWebSocket(url.pathname, "open");
   ws.on("close", () => logWebSocket(url.pathname, "close", performance.now() - wsStart));
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
-  const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
+  const latestSeq = realtimeHub.attach(realtimeWs, lastSeq, url.searchParams.get("lastEpoch") || undefined);
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
   let targetSession: PiWebSession | undefined;
@@ -1400,6 +1446,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   const helloState = targetSession ? currentState(targetSession) : currentState();
   realtimeWs.send(JSON.stringify({
     type: "hello",
+    epoch: realtimeHub.epoch,
     seq: latestSeq,
     ...helloState,
   }));

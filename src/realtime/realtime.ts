@@ -60,8 +60,19 @@ export function createRealtime(options: {
   applySettlementDependencies?: (sessionId: unknown, childIds: readonly unknown[]) => boolean;
   onSettlementDependenciesChanged?: () => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
+  applyRecoverySnapshot: (snapshot: {
+    state: any;
+    messages: MessageDto[];
+    settings: any;
+    webSettingsSchemas: any;
+    models: any;
+    sessionUiState: any;
+    sessions: any[];
+    liveEvents: any[];
+    liveEventsComplete: boolean;
+  }) => Promise<void>;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, applySettlementDependencies, onSettlementDependenciesChanged, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, applySettlementDependencies, onSettlementDependenciesChanged, addMessage, applyRecoverySnapshot } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -718,7 +729,29 @@ export function createRealtime(options: {
   }
 
   let ticketRetryMs = 500;
+  let socketGeneration = 0;
+  let recoveryGeneration = 0;
+  let recoveryAbort: AbortController | undefined;
+  let recoveryRetryTimer: number | undefined;
+  const cancelRecoveryRetry = () => {
+    if (recoveryRetryTimer !== undefined) window.clearTimeout(recoveryRetryTimer);
+    recoveryRetryTimer = undefined;
+  };
   async function connect() {
+    cancelRecoveryRetry();
+    const generation = ++socketGeneration;
+    recoveryGeneration++;
+    recoveryAbort?.abort();
+    let recoveryBuffer: any[] | undefined;
+    let recoverySessionId = "";
+    let recoveryEpoch = "";
+    const maxRecoveryBuffer = 2_000;
+    const coveredByCurrentSessionSnapshot = (event: any, sessionId: string) => {
+      if (event.sessionId && event.sessionId !== sessionId) return false;
+      return event.type === "agent_event" || event.type === "committed_message"
+        || event.type === "state_changed" || event.type === "session_runtime_changed"
+        || event.type === "interaction_request";
+    };
     let ws: WebSocket;
     try { ws = new WebSocket(await api.wsUrl()); }
     catch {
@@ -733,18 +766,123 @@ export function createRealtime(options: {
       status.markWebSocketOpen();
       composer.updatePrimaryAction();
     });
-    ws.addEventListener("message", (message) => {
-      const data = JSON.parse(String(message.data));
+    const restartForSelectedSession = () => {
+      cancelRecoveryRetry();
+      recoveryGeneration++;
+      recoveryAbort?.abort();
+      recoverySessionId = state.currentSessionId;
+      // Keep buffered host-global events; the next snapshot supplies a new cut.
+      recoveryBuffer ||= [];
+      void recover();
+    };
+    const recover = async (ownerAttempt = recoveryGeneration) => {
+      // Timer callbacks can already be queued when cancelled. Validate ownership
+      // before touching the shared generation/controller of a newer socket.
+      if (generation !== socketGeneration || ownerAttempt !== recoveryGeneration
+        || recoverySessionId !== state.currentSessionId || ws.readyState !== WebSocket.OPEN) return;
+      cancelRecoveryRetry();
+      const attempt = ++recoveryGeneration;
+      recoveryAbort?.abort();
+      const abort = new AbortController();
+      recoveryAbort = abort;
+      const sessionId = state.currentSessionId;
+      try {
+        const response = await fetch(`/api/recovery-snapshot?sessionId=${encodeURIComponent(sessionId)}`, { headers: api.headers(), signal: abort.signal });
+        if (response.status === 404 && generation === socketGeneration && attempt === recoveryGeneration && sessionId === state.currentSessionId) {
+          sessions.removeSession(sessionId);
+          const listing = await fetch("/api/sessions", { headers: api.headers(), signal: abort.signal });
+          if (!listing.ok) throw new Error(await listing.text());
+          const available = await listing.json();
+          if (generation !== socketGeneration || attempt !== recoveryGeneration) return;
+          if (sessionId !== state.currentSessionId) { restartForSelectedSession(); return; }
+          sessions.applySessionList(available.sessions || []);
+          const next = (available.sessions || []).find((item: any) => item.id !== sessionId);
+          if (next) await sessions.openSessionById(next.id);
+          else await sessions.startNewSession();
+          if (generation === socketGeneration && attempt === recoveryGeneration) restartForSelectedSession();
+          return;
+        }
+        if (!response.ok) throw new Error(await response.text());
+        const snapshot = await response.json();
+        if (generation !== socketGeneration || attempt !== recoveryGeneration || sessionId !== state.currentSessionId) {
+          if (generation === socketGeneration && attempt === recoveryGeneration) restartForSelectedSession();
+          return;
+        }
+        const start = snapshot.startCheckpoint;
+        const end = snapshot.endCheckpoint;
+        if (snapshot.sessionId !== sessionId || !start || !end || !Array.isArray(snapshot.messages) || !Array.isArray(snapshot.liveEvents)
+          || snapshot.liveEventsComplete !== true || start.epoch !== end.epoch || (recoveryEpoch && end.epoch !== recoveryEpoch)) {
+          throw new Error(snapshot.liveEventsComplete === false ? "Live recovery suffix exceeded its safety bound" : "Invalid recovery snapshot");
+        }
+        const buffered = recoveryBuffer || [];
+        const sourcePosition = (event: any) => event.serviceSource || event.source;
+        const sourceCovered = (event: any) => coveredByCurrentSessionSnapshot(event, sessionId)
+          || ((event.type === "state_changed" || event.type === "session_runtime_changed")
+            && snapshot.activeStates?.some((active: any) => active.sessionId === event.sessionId));
+        if (buffered.length >= maxRecoveryBuffer) throw new Error("Realtime recovery buffer overflow");
+        if (snapshot.sourceGeneration && buffered.some((event) => sourceCovered(event)
+          && (!sourcePosition(event) || sourcePosition(event).generation !== snapshot.sourceGeneration))) {
+          // A source restart can leave two generations in this host's log.
+          // Re-read the authoritative source after observing the mismatch;
+          // retain global-domain events, not a poisoned old source prefix.
+          recoveryBuffer = buffered.filter((event) => !sourceCovered(event));
+          throw new Error("Recovery source changed");
+        }
+        await applyRecoverySnapshot(snapshot);
+        if (generation !== socketGeneration || attempt !== recoveryGeneration || sessionId !== state.currentSessionId) {
+          if (generation === socketGeneration && attempt === recoveryGeneration) restartForSelectedSession();
+          return;
+        }
+        for (const event of snapshot.liveEvents) handleRealtimeData({ ...event, replay: true });
+        const resolvedInteractions = new Set(buffered.filter((event) => event.type === "interaction_resolved").map((event) => event.id));
+        for (const request of snapshot.pendingInteractions || []) {
+          if (resolvedInteractions.has(request.id)) continue;
+          if (typeof request.expiresAt !== "number" || request.expiresAt <= Date.now()) continue;
+          handleRealtimeData({ type: "interaction_request", ...request, timeout: request.expiresAt - Date.now(), replay: true });
+        }
+        state.lastRealtimeEpoch = end.epoch;
+        state.lastRealtimeSeq = end.seq;
+        recoveryBuffer = undefined;
+        for (const event of buffered) {
+          if (generation !== socketGeneration || attempt !== recoveryGeneration) return;
+          if (event.type === "interaction_request" && resolvedInteractions.has(event.id)) continue;
+          if (typeof event.seq !== "number") continue;
+          if (sourceCovered(event) && snapshot.sourceGeneration) {
+            // A remote source may advance while its RPC response is in flight.
+            // Host end.seq is not a source cut and must not discard those events.
+            if (sourcePosition(event).cursor > snapshot.sourceCursor) handleRealtimeData(event);
+          } else {
+            const hostCovered = ["hello", "settings_updated", "web_settings_schemas_changed", "session_ui_state_changed"].includes(event.type)
+              || (["models_updated", "session_stats_changed"].includes(event.type) && event.sessionId === sessionId);
+            // Effects/errors and other unsnapshotted domains must survive a
+            // retry's newer cut; they are not replacement snapshot state.
+            if (!hostCovered || event.seq > start.seq) handleRealtimeData(event);
+          }
+        }
+        if (generation === socketGeneration && attempt === recoveryGeneration) status.markWebSocketOpen();
+      } catch (error) {
+        if (abort.signal.aborted) return;
+        if (generation === socketGeneration && attempt === recoveryGeneration && sessionId !== state.currentSessionId) {
+          restartForSelectedSession();
+          return;
+        }
+        console.error("Realtime recovery failed", error);
+        if (generation === socketGeneration && attempt === recoveryGeneration && sessionId === state.currentSessionId) {
+          recoveryRetryTimer = window.setTimeout(() => {
+            if (generation !== socketGeneration || attempt !== recoveryGeneration) return;
+            if (sessionId !== state.currentSessionId) { restartForSelectedSession(); return; }
+            recoveryRetryTimer = undefined;
+            void recover(attempt);
+          }, Math.min(1_000 * attempt, 10_000));
+        }
+      }
+    };
+    const handleRealtimeData = (data: any) => {
       if (typeof data.seq === "number" && Number.isFinite(data.seq) && data.seq > state.lastRealtimeSeq) {
         state.lastRealtimeSeq = data.seq;
       }
-      if (data.type === "sync_required") {
-        if (typeof data.latestSeq === "number" && Number.isFinite(data.latestSeq) && data.latestSeq >= 0) {
-          state.lastRealtimeSeq = data.latestSeq;
-        }
-        status.markSyncRequired();
-        return;
-      }
+
+      if (data.type === "hello" && typeof data.epoch === "string") state.lastRealtimeEpoch = data.epoch;
       const isReplay = data.replay === true;
       if (data.type === "hello" || data.type === "state_changed") {
         const appliesToCurrentSession = !data.sessionId || !state.currentSessionId || data.sessionId === state.currentSessionId;
@@ -765,7 +903,15 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "session_deleted") {
-        if (!isReplay) sessions.removeSession(String(data.sessionId || ""));
+        const deletedId = String(data.sessionId || "");
+        sessions.removeSession(String(data.sessionId || ""));
+        if (deletedId === state.currentSessionId) {
+          // Use the same authoritative 404/fallback reconciliation whether the
+          // deletion was missed before the snapshot or replayed after its cut.
+          status.markSyncRequired();
+          recoveryEpoch = state.lastRealtimeEpoch;
+          restartForSelectedSession();
+        }
         return;
       }
       if (data.type === "session_runtime_changed") {
@@ -815,7 +961,12 @@ export function createRealtime(options: {
         sessions.applySessionUiState(data.sessionUiState);
         return;
       }
+      if (data.type === "interaction_resolved") return;
       if (data.type === "interaction_request" || data.type === "interaction_effect") {
+        if (data.type === "interaction_request" && typeof data.expiresAt === "number") {
+          if (data.expiresAt <= Date.now()) return;
+          data = { ...data, timeout: data.expiresAt - Date.now() };
+        }
         handleInteractionRequest(data);
         return;
       }
@@ -857,7 +1008,7 @@ export function createRealtime(options: {
         if (data.event?.type === "agent_end") abortedRuns.set(eventSessionKey, Boolean(data.event.aborted));
         if (!isReplay && data.event?.type === "agent_settled" && !abortedRuns.get(eventSessionKey)) playCompletionAlerts();
         if (data.event?.type === "agent_settled") abortedRuns.delete(eventSessionKey);
-        if (!isReplay && data.event?.type === "session_info_changed") {
+        if (data.event?.type === "session_info_changed") {
           sessions.updateSessionName(String(data.sessionId || ""), String(data.event.name || ""));
         } else if (!isReplay && shouldRefreshSessionsForPiEvent(data.event)) scheduleSessionRefresh();
         const appliesToCurrentSession = !data.sessionId || data.sessionId === state.currentSessionId;
@@ -880,8 +1031,38 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "server_error" && (!data.sessionId || data.sessionId === state.currentSessionId)) addMessage("system", data.error, "error");
+    };
+    ws.addEventListener("message", (message) => {
+      const data = JSON.parse(String(message.data));
+      if (generation !== socketGeneration) return;
+      if (data.type === "sync_required" || (data.type === "hello" && typeof data.epoch === "string"
+        && state.lastRealtimeEpoch && data.epoch !== state.lastRealtimeEpoch && !recoveryBuffer)) {
+        cancelRecoveryRetry();
+        status.markSyncRequired();
+        recoveryBuffer = [];
+        recoverySessionId = state.currentSessionId;
+        recoveryEpoch = typeof data.epoch === "string" ? data.epoch : "";
+        void recover();
+        return;
+      }
+      if (recoveryBuffer && recoverySessionId !== state.currentSessionId) {
+        restartForSelectedSession();
+      }
+      if (recoveryBuffer) {
+        recoveryBuffer.push(data);
+        // Reconnect instead of truncating: the server log can replay from the
+        // last committed sequence, or issue a fresh snapshot requirement.
+        if (recoveryBuffer.length >= maxRecoveryBuffer) ws.close();
+        return;
+      }
+      handleRealtimeData(data);
     });
     ws.addEventListener("close", () => {
+      if (generation !== socketGeneration) return;
+      cancelRecoveryRetry();
+      recoveryGeneration++;
+      recoveryAbort?.abort();
+      recoveryBuffer = undefined;
       status.markWebSocketClosed();
       composer.updatePrimaryAction();
       window.setTimeout(connect, reconnectDelayMs);

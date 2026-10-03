@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import type { WebSocket } from "ws";
 import type { SessionActivity } from "./session/activity.js";
 
@@ -8,6 +9,7 @@ export class RealtimeHub {
   private readonly clients = new Set<RealtimeSocket>();
   private readonly eventLog: RealtimeEnvelope[] = [];
   private nextSeq = 1;
+  readonly epoch = crypto.randomUUID();
 
   constructor(
     heartbeatMs: number,
@@ -30,8 +32,12 @@ export class RealtimeHub {
     return this.nextSeq - 1;
   }
 
+  checkpoint(): { epoch: string; seq: number } {
+    return { epoch: this.epoch, seq: this.latestSeq };
+  }
+
   private record(value: unknown): RealtimeEnvelope {
-    const envelope = { ...(typeof value === "object" && value !== null ? value as Record<string, unknown> : { value }), seq: this.nextSeq++ };
+    const envelope: RealtimeEnvelope = { ...(typeof value === "object" && value !== null ? value as Record<string, unknown> : { value }), seq: this.nextSeq++ };
     this.eventLog.push(envelope);
     if (this.eventLog.length > this.maxEventLogSize) this.eventLog.splice(0, this.eventLog.length - this.maxEventLogSize);
     return envelope;
@@ -45,7 +51,7 @@ export class RealtimeHub {
     this.onBroadcast(value);
   }
 
-  attach(ws: WebSocket, lastSeq: number): number {
+  attach(ws: WebSocket, lastSeq: number, lastEpoch?: string): number {
     const client = ws as RealtimeSocket;
     client.missedPongs = 0;
     client.on("pong", () => { client.missedPongs = 0; });
@@ -54,9 +60,17 @@ export class RealtimeHub {
 
     const latestSeq = this.latestSeq;
     const oldestSeq = this.eventLog[0]?.seq || this.nextSeq;
-    if (Number.isFinite(lastSeq) && lastSeq > 0) {
+    // seq=0 with no epoch is an initial client, not a resume cursor. Legacy
+    // clients resuming a positive seq without an epoch must snapshot: their
+    // numerical cursor cannot establish continuity across host restarts.
+    if (!Number.isSafeInteger(lastSeq) || lastSeq < 0
+      || (lastEpoch && lastEpoch !== this.epoch) || (!lastEpoch && lastSeq > 0)) {
+      client.send(JSON.stringify({ type: "sync_required", latestSeq, epoch: this.epoch }));
+    } else if (lastEpoch) {
+      // A known matching epoch makes zero a valid resume cut too. Only a
+      // missing epoch + zero means initial connection without replay.
       if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
-        client.send(JSON.stringify({ type: "sync_required", latestSeq }));
+        client.send(JSON.stringify({ type: "sync_required", latestSeq, epoch: this.epoch }));
       } else {
         for (const event of this.eventLog) {
           if (event.seq > lastSeq) client.send(JSON.stringify({ ...event, replay: true }));

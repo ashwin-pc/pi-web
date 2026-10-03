@@ -333,7 +333,9 @@ export function createStatusBar(options: {
       });
     });
     const reloadForConnectionStatus = () => {
-      if (!elements.connectionStatusEl.classList.contains("syncRequired") && !elements.connectionStatusEl.classList.contains("offline")) return;
+      // syncRequired is recovered automatically in place. Offline remains an
+      // explicit escape hatch when a browser/network stack cannot reconnect.
+      if (!elements.connectionStatusEl.classList.contains("offline")) return;
       window.location.reload();
     };
     elements.connectionStatusEl.addEventListener("click", reloadForConnectionStatus);

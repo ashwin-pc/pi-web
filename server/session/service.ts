@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -239,6 +240,7 @@ function interactionRequestFromWire(value: Record<string, unknown>): Interaction
     sessionId: value.sessionId,
     sessionFile: value.sessionFile,
     timeout: Number(value.timeout) || 120_000,
+    ...(typeof value.expiresAt === "number" ? { expiresAt: value.expiresAt } : {}),
   };
 }
 
@@ -281,6 +283,33 @@ function projectPromptProvenance(prompt: string, candidates: ProvenanceCandidate
 }
 
 export class LocalSessionService implements SessionService {
+  private readonly sourceGeneration = randomUUID();
+  private sourceCursor = 0;
+  private readonly recoveryStreams = new Map<string, { events: SessionServiceEvent[]; complete: boolean; durableCursor: number; pendingCommits: number }>();
+
+  /** Pi adapter capture: no transport awaits after require, no host-derived transcript.
+   * A deferred persistence commit makes completeness false rather than assuming
+   * a microtask/quiet window has made persistence atomic. */
+  async recover(sessionId: string): Promise<import("./dto.js").SessionRecoverySnapshotDto> {
+    const value = await this.require(sessionId);
+    const stream = this.recoveryStreams.get(value.sessionId);
+    const state = this.projectState(value);
+    const running = state.isStreaming || state.isRetrying || state.isCompacting;
+    return jsonSafe({
+      sessionId: value.sessionId, sourceGeneration: this.sourceGeneration,
+      sourceCursor: this.sourceCursor, durableCursor: stream?.durableCursor ?? 0,
+      // Agent-core can expose finalized content while an async extension
+      // message_end hook is still running. Only entry-backed messages belong
+      // to the recovery transcript; live output stays in the source journal.
+      state, messages: projectMessages(value).filter((message) => Boolean(message.entryId)),
+      transientEvents: running ? stream?.events ?? [] : [],
+      transientComplete: stream?.pendingCommits ? false : !running || Boolean(stream?.complete),
+      pendingInteractions: this.webUiBridge.pendingInteractions(value.sessionId) as unknown as InteractionRequestDto[],
+      activeStates: [...this.liveById.values()].map((session) => this.projectState(session)),
+      coverage: "loaded-local-sessions" as const,
+    });
+  }
+
   private readonly listeners = new Set<(event: SessionServiceEvent) => void>();
   private readonly liveSessions = new Map<string, LiveSessionEntry>();
   private readonly liveById = new Map<string, PiWebSession>();
@@ -288,7 +317,7 @@ export class LocalSessionService implements SessionService {
   private readonly sessionNamesByPath = new Map<string, string | undefined>();
   private readonly sessionLocations = new Map<string, { path: string; cwd: string }>();
   private readonly openingById = new Map<string, Promise<PiWebSession | undefined>>();
-  private readonly sessionListRequests = new Map<string, Promise<SessionInfoDto[]>>();
+  private readonly sessionListRequests = new Map<string, Promise<{ sessions: SessionInfoDto[]; coveredCwds: string[] }>>();
   private readonly viewerLeases = new Map<string, ViewerLease>();
   private readonly viewerConnections = new Map<symbol, string>();
   private readonly productionFactory: PiSessionFactory;
@@ -352,8 +381,33 @@ export class LocalSessionService implements SessionService {
    * The runner boundary intentionally normalizes values through JSON and
    * isolates listeners so one serving adapter cannot block the others.
    */
-  private emit(event: SessionServiceEvent) {
-    const serializableEvent = jsonSafe(event);
+  private emit(event: SessionServiceEvent, durableThrough?: number) {
+    const serializableEvent = jsonSafe({ ...event, source: { generation: this.sourceGeneration, cursor: ++this.sourceCursor } });
+    if (event.type === "agent") {
+      const stream = this.recoveryStreams.get(event.sessionId) || { events: [], complete: event.event.type === "agent_start" || event.event.type === "compaction_start", durableCursor: 0, pendingCommits: 0 };
+      if ((event.event.type === "agent_start" || event.event.type === "compaction_start") && stream.pendingCommits === 0) {
+        stream.events = [];
+        stream.complete = true;
+      }
+      if (stream.events.length < 10_000) stream.events.push(serializableEvent);
+      else stream.complete = false;
+      this.recoveryStreams.set(event.sessionId, stream);
+    }
+    if (event.type === "committed") {
+      const stream = this.recoveryStreams.get(event.sessionId);
+      if (stream) {
+        // Only retire the completed message's prefix. Later rounds may have
+        // already arrived while the persistence projection was deferred.
+        const boundary = durableThrough;
+        if (boundary !== undefined) {
+          stream.events = stream.events.filter((item) => (item.source?.cursor ?? 0) > boundary
+            || (item.type === "agent" && item.event.type === "harness_event"));
+          // Overflow can also have lost opaque observations; a later message
+          // commit does not prove those are represented in the transcript.
+          stream.durableCursor = boundary;
+        }
+      }
+    }
     for (const listener of this.listeners) {
       try { listener(serializableEvent); }
       catch (error) { console.warn("Session service event listener failed:", error); }
@@ -733,26 +787,32 @@ export class LocalSessionService implements SessionService {
   }
 
   async list(extraCwds: string[] = []): Promise<SessionInfoDto[]> {
-    if (this.noSession) return [];
+    return (await this.listSnapshot(extraCwds)).sessions;
+  }
+
+  async listSnapshot(extraCwds: string[] = [], options: { fresh?: boolean } = {}): Promise<{ sessions: SessionInfoDto[]; coveredCwds: string[] }> {
+    if (this.noSession) return { sessions: [], coveredCwds: [] };
     const cwds = this.knownCwds();
     for (const cwd of extraCwds) if (typeof cwd === "string" && cwd.trim()) cwds.add(resolve(cwd));
     const orderedCwds = Array.from(cwds).sort();
     const key = orderedCwds.join("\n");
     const pending = this.sessionListRequests.get(key);
-    if (pending) return pending;
+    if (pending && !options.fresh) return pending;
     const request = (async () => {
+      const coveredCwds: string[] = [];
       const groups = await Promise.all(orderedCwds.map(async (cwd) => {
         try {
           const factory = this.deps.sessionFactory?.list ? this.deps.sessionFactory : this.productionFactory;
           const infos = await factory.list!(cwd);
+          coveredCwds.push(cwd);
           return infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
         } catch { return []; }
       }));
-      return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
+      return { sessions: groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified)), coveredCwds: coveredCwds.sort() };
     })();
-    this.sessionListRequests.set(key, request);
+    if (!options.fresh) this.sessionListRequests.set(key, request);
     try { return await request; }
-    finally { this.sessionListRequests.delete(key); }
+    finally { if (this.sessionListRequests.get(key) === request) this.sessionListRequests.delete(key); }
   }
 
   async create(sessionId: string | undefined, cwd?: string) {
@@ -956,6 +1016,11 @@ export class LocalSessionService implements SessionService {
       return;
     }
     const correlation = this.takePromptCorrelation(sessionPathKey(value), e);
+    if (raw?.type === "message_end") {
+      const stream = this.recoveryStreams.get(sessionId) || { events: [], complete: false, durableCursor: 0, pendingCommits: 0 };
+      stream.pendingCommits++;
+      this.recoveryStreams.set(sessionId, stream);
+    }
     this.emit({
       type: "agent",
       sessionId,
@@ -965,12 +1030,22 @@ export class LocalSessionService implements SessionService {
     });
     if (raw?.type === "message_end") {
       const committed = raw.message;
+      const durableThrough = this.sourceCursor;
       // agent-core inserts this object before notifying listeners; the agent
       // relay persists its entry after listeners return, while idle custom
       // messages persist before emitting. Defer so both paths expose entry metadata.
       queueMicrotask(() => {
-        const message = projectCommittedMessage(value, committed);
-        if (message) this.emit({ type: "committed", sessionId, sessionFile: value.sessionFile, message });
+        if (this.liveById.get(sessionId) !== value) return;
+        const projected = projectCommittedMessage(value, committed);
+        // Entry identity is evidence of Pi persistence projection, not merely
+        // presence in agent-core's messages (which precedes appendMessage).
+        const message = projected?.entryId ? projected : undefined;
+        if (message) this.emit({ type: "committed", sessionId, sessionFile: value.sessionFile, message }, durableThrough);
+        const stream = this.recoveryStreams.get(sessionId);
+        if (stream) {
+          stream.pendingCommits--;
+          if (!message) stream.complete = false;
+        }
       });
     }
     if (raw?.type === "session_info_changed") {
@@ -1150,6 +1225,8 @@ export class LocalSessionService implements SessionService {
     catch (error) { console.warn(`Could not dispose session after ${reason}:`, error); }
     this.webUiBridge.releaseSessionSettings(value);
     this.liveSessions.delete(key);
+    this.recoveryStreams.delete(sessionId);
+    this.webUiBridge.cancelPendingInteractions(sessionId);
     this.pendingPromptCorrelations.delete(key);
     if (this.liveById.get(sessionId) === value) this.liveById.delete(sessionId);
     this.emit({ type: "shutdown", sessionId, sessionFile, sessionKey: key });

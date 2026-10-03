@@ -40,6 +40,7 @@ export type SessionsController = {
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
+  applySessionList: (sessions: SessionInfo[], complete?: boolean, coveredCwds?: string[]) => void;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
   activeWorkersFor: (sessionId: string) => ActiveWorker[];
@@ -564,6 +565,34 @@ export function createSessions(options: {
     });
   }
 
+  function applySessionList(value: SessionInfo[], complete = true, coveredCwds: string[] = []) {
+    if (!complete) {
+      const incoming = new Set(value.map((item) => item.id));
+      const covered = new Set(coveredCwds);
+      value = [...cachedSessions.filter((item) => !incoming.has(item.id) && !covered.has(item.cwd || "")), ...value];
+    }
+    cachedSessions = value.map((item) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
+    for (const session of cachedSessions) sessionState.mergeSessionInfo(session);
+    let laneCwdsChanged = false;
+    state.lanes = state.lanes.map((entry) => {
+      const live = cachedSessions.find((session) => session.id === entry.sessionId);
+      if (live?.cwd && live.cwd !== entry.cwd) {
+        laneCwdsChanged = true;
+        return { ...entry, cwd: live.cwd };
+      }
+      return entry;
+    });
+    if (laneCwdsChanged) {
+      syncPinnedProjection();
+      persistSessionUiState({ lanes: state.lanes });
+    }
+    scheduleSessionListRender();
+    renderSessionBar();
+    updateSessionButtonUnread();
+    options.onDerivedSessionStateChanged?.();
+    lastListFetchedAt = Date.now();
+  }
+
   function refreshSessions(force = false): Promise<void> {
     if (sessionRefreshPromise) return sessionRefreshPromise; // in-flight reuse
     if (!force && Date.now() - lastListFetchedAt < SESSION_LIST_TTL_MS) return Promise.resolve();
@@ -575,26 +604,7 @@ export function createSessions(options: {
       const res = await fetchSessionList(url, api.headers());
       if (!res.ok) throw new Error(await res.text());
       const data = await res.json();
-      cachedSessions = (data.sessions || []).map((item: SessionInfo) => ({ ...item, isCurrent: item.id === state.currentSessionId }));
-      for (const session of cachedSessions) sessionState.mergeSessionInfo(session);
-      let laneCwdsChanged = false;
-      state.lanes = state.lanes.map((entry) => {
-        const live = cachedSessions.find((session) => session.id === entry.sessionId);
-        if (live?.cwd && live.cwd !== entry.cwd) {
-          laneCwdsChanged = true;
-          return { ...entry, cwd: live.cwd };
-        }
-        return entry;
-      });
-      if (laneCwdsChanged) {
-        syncPinnedProjection();
-        persistSessionUiState({ lanes: state.lanes });
-      }
-      scheduleSessionListRender();
-      renderSessionBar();
-      updateSessionButtonUnread();
-      options.onDerivedSessionStateChanged?.();
-      lastListFetchedAt = Date.now();
+      applySessionList(data.sessions || []);
     })().finally(() => { sessionRefreshPromise = undefined; });
     return sessionRefreshPromise;
   }
@@ -2993,6 +3003,7 @@ export function createSessions(options: {
     renderSessionBar,
     renderCurrentSessionBucketButton,
     applySessionUiState,
+    applySessionList,
     markSessionRead,
     waitingInfoFor,
     activeWorkersFor,
