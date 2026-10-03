@@ -472,7 +472,7 @@ const handleSessionServiceEvent = createHostSessionEventHandler({
 const mockSessionFactory = mockMode ? {
   isMock: true,
   create: async ({ path }: { path?: string }) => ({ session: createMockSession(path) }),
-  list: async () => mockSessions,
+  list: async (cwd: string) => mockSessions.filter((item) => resolve(item.cwd || piCwd) === resolve(cwd)),
   remove: async (id: string) => {
     const index = mockSessions.findIndex((item) => item.id === id);
     if (index >= 0) mockSessions.splice(index, 1);

@@ -552,6 +552,27 @@ describe("pi-web mock API", () => {
     }
   });
 
+  it("lists each mock session once after switching to a second known cwd and resetting", async () => {
+    const alternateCwd = await mkdtemp(join(settingsDir, "alternate-cwd-"));
+    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    await post("/api/mock/reset", {});
+    const createdResponse = await post("/api/sessions/new", {});
+    expect(createdResponse.status).toBe(200);
+    const created = await createdResponse.json();
+    const switched = await post("/api/session/cwd", { sessionId: created.sessionId, cwd: alternateCwd });
+    expect(switched.status).toBe(200);
+    expect((await switched.json()).sessionId).not.toBe(created.sessionId);
+    expect((await post("/api/mock/reset", {})).status).toBe(200);
+    const listedResponse = await fetch(`${baseUrl}/api/sessions?cwd=${encodeURIComponent(alternateCwd)}`);
+    expect(listedResponse.status).toBe(200);
+    const listed = await listedResponse.json();
+    const ids = listed.sessions.map((item: { id: string }) => item.id);
+    expect(ids).toEqual(expect.arrayContaining(["mock-current", "mock-older"]));
+    expect(ids.filter((id: string) => id === "mock-current")).toHaveLength(1);
+    expect(ids.filter((id: string) => id === "mock-older")).toHaveLength(1);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("reports a failed default bucket after cwd replacement without hiding the new chat", async () => {
     const file = join(settingsDir, "session-ui-state.json");
     const historyPath = `${file}.history.json`;
