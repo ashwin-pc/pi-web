@@ -10,6 +10,49 @@ import { mapPiEvent } from "../server/session/piEventMap.js";
 import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
+import { PiSessionHandle } from "../server/session/piHandle.js";
+
+describe("owned Pi runtime handle", () => {
+  it("preserves projection, prompt options, interruption and event ingress", async () => {
+    const fixture = fixtureSession("/workspace");
+    const handle = new PiSessionHandle(fixture.session);
+    const events: unknown[] = [];
+    const release = handle.subscribe((event) => events.push(event));
+    const prompt = vi.spyOn(fixture.session, "prompt");
+    const abort = vi.spyOn(fixture.session, "abort");
+    await handle.prompt("steer", { streamingBehavior: "steer" });
+    expect(prompt).toHaveBeenCalledWith("steer", { streamingBehavior: "steer" });
+    expect(events).toHaveLength(1);
+    expect(handle.state("/workspace").sessionId).toBe("current");
+    expect(handle.messages().at(-1)?.entryId).toBe("user-2");
+    await handle.interrupt();
+    expect(abort).toHaveBeenCalledOnce();
+    release();
+    fixture.emit({ type: "agent_end" });
+    expect(events).toHaveLength(1);
+    await handle.dispose("reset");
+    expect(fixture.disposeCalls).toBe(1);
+  });
+
+  it("owns shutdown/unsubscribe/disposal ordering and disposes once on hook failure", async () => {
+    const fixture = fixtureSession("/workspace");
+    const order: string[] = [];
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    fixture.session.extensionRunner = {
+      hasHandlers: () => true,
+      emit: async () => { order.push("shutdown"); throw new Error("hook failed"); },
+    } as PiWebSession["extensionRunner"];
+    fixture.session.subscribe = () => () => { order.push("unsubscribe"); throw new Error("release failed"); };
+    (fixture.session as PiWebSession & { dispose(): void }).dispose = () => { order.push("dispose"); };
+    const handle = new PiSessionHandle(fixture.session);
+    handle.subscribe(() => undefined);
+    try {
+      await Promise.all([handle.dispose("reset"), handle.dispose("reset")]);
+      expect(order).toEqual(["shutdown", "unsubscribe", "dispose"]);
+      expect(warning).toHaveBeenCalledTimes(2);
+    } finally { warning.mockRestore(); }
+  });
+});
 
 const tempDirs: string[] = [];
 let fixtureSessionSequence = 0;
