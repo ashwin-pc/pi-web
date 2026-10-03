@@ -25,11 +25,18 @@ async function switchSession(page: Page, sessionName: string) {
 
 async function deferQuoteTransition(page: Page) {
   await page.evaluate(() => {
+    document.documentElement.dataset.quoteTransitionRejections = "0";
+    window.addEventListener("unhandledrejection", () => {
+      document.documentElement.dataset.quoteTransitionRejections = String(Number(document.documentElement.dataset.quoteTransitionRejections) + 1);
+    });
     Object.defineProperty(document, "startViewTransition", { value: (update: () => void) => {
       let finish!: () => void;
+      let readyResolve!: () => void;
+      let readyReject!: (error: Error) => void;
       const finished = new Promise<void>((resolve) => { finish = resolve; });
-      document.addEventListener("release-quote-transition", () => { update(); finish(); }, { once: true });
-      return { finished, skipTransition() {} };
+      const ready = new Promise<void>((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
+      document.addEventListener("release-quote-transition", () => { update(); readyResolve(); finish(); }, { once: true });
+      return { finished, ready, skipTransition() { readyReject(new Error("Transition skipped")); } };
     } });
   });
 }
@@ -185,7 +192,7 @@ for (const mode of ["animated", "reduced", "unsupported"] as const) {
         Object.defineProperty(document, "startViewTransition", { value: (update: () => void) => {
           document.documentElement.dataset.quoteTransitionCalls = String(Number(document.documentElement.dataset.quoteTransitionCalls) + 1);
           update();
-          return { finished: Promise.resolve(), skipTransition() {} };
+          return { finished: Promise.resolve(), ready: Promise.resolve(), skipTransition() {} };
         } });
       }
     }, mode);
@@ -268,7 +275,32 @@ test("applies rapid editor actions in order and only once", async ({ page }) => 
   await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
   await expect(page.locator(".quoteReplyMark")).toHaveCount(0);
   await expect(page.locator(".composer")).toBeVisible();
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+  await expect(page.locator("html")).toHaveAttribute("data-quote-transition-rejections", "0");
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-current"]?.quoteReplies?.length || 0)).toBe(0);
+});
+
+test("opens and edits saved comments synchronously without a deferred transition", async ({ page }) => {
+  await page.emulateMedia({ reducedMotion: "no-preference" });
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Saved comment");
+  await page.getByRole("button", { name: "Confirm question" }).click();
+  await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+  await page.evaluate(() => {
+    document.documentElement.dataset.deferredDomActionCalls = "0";
+    Object.defineProperty(document, "startViewTransition", { value: () => {
+      document.documentElement.dataset.deferredDomActionCalls = "1";
+      return { ready: Promise.resolve(), finished: Promise.resolve(), skipTransition() {} };
+    } });
+  });
+  await page.locator(".quoteReplyPin").click();
+  await expect(page.locator(".quoteFootnote.open .quoteFootnoteQuestion")).toHaveText("Saved comment");
+  await page.getByRole("button", { name: "Edit question" }).click();
+  await expect(page.getByRole("textbox", { name: "Question for quote 1" })).toBeVisible();
+  await expect(page.locator(".composer")).toBeHidden();
+  await expect(page.locator("html")).toHaveAttribute("data-deferred-dom-action-calls", "0");
 });
 
 test("migrates legacy composer and session quote drafts", async ({ page }) => {

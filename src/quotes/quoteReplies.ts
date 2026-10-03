@@ -304,6 +304,8 @@ export function createQuoteReplies(options: {
     };
     pendingTransitionUpdate = apply;
     transition = document.startViewTransition(apply);
+    // skipTransition() rejects ready during normal rapid actions and teardown.
+    void transition.ready.catch(() => {});
     void transition.finished.catch(() => {}).finally(() => {
       transition = undefined;
       document.documentElement.classList.remove("quoteReplyTransition");
@@ -452,17 +454,18 @@ export function createQuoteReplies(options: {
       if (event.key === "Enter") { event.preventDefault(); saveReference(reference); }
     });
     note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => transitionEditor(() => {
+    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
       note.classList.remove("saved");
       note.classList.add("editing", "open");
       input.focus();
       input.select();
-    }));
+    });
     note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
-    pin.addEventListener("click", () => transitionEditor(() => {
+    pin.addEventListener("click", () => {
       note.classList.toggle("open");
       if (note.classList.contains("open")) jumpToReference(reference);
-    }));
+    });
     updateSummary();
   }
 
@@ -550,18 +553,19 @@ export function createQuoteReplies(options: {
       }
     });
     note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => transitionEditor(() => {
+    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
       if (reference.submitted) return;
       note.classList.remove("saved");
       note.classList.add("editing", "open");
       input.focus();
       input.select();
-    }));
+    });
     note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
-    pin.addEventListener("click", () => transitionEditor(() => {
+    pin.addEventListener("click", () => {
       note.classList.toggle("open");
       if (note.classList.contains("open")) jumpToReference(reference);
-    }));
+    });
     updateSummary();
     hideToolbar(true);
     window.setTimeout(() => input.focus(), 30);
