@@ -277,6 +277,7 @@ export function createQuoteReplies(options: {
 
   // Animation state only: footer visibility remains derived from .editing.open.
   let transition: ViewTransition | undefined;
+  let transcriptGeneration = 0;
   function transitionEditor(update: () => void) {
     if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches) {
       update();
@@ -289,7 +290,13 @@ export function createQuoteReplies(options: {
       return;
     }
     document.documentElement.classList.add("quoteReplyTransition");
-    transition = document.startViewTransition(update);
+    const generation = transcriptGeneration;
+    const sessionId = getSessionId();
+    transition = document.startViewTransition(() => {
+      // The native API defers updates until after capturing the old snapshot.
+      // A transcript teardown invalidates even a switch away and back to this ID.
+      if (generation === transcriptGeneration && sessionId === getSessionId()) update();
+    });
     void transition.finished.catch(() => {}).finally(() => {
       transition = undefined;
       document.documentElement.classList.remove("quoteReplyTransition");
@@ -634,6 +641,8 @@ export function createQuoteReplies(options: {
       updateSummary();
     },
     clear() {
+      transcriptGeneration += 1;
+      transition?.skipTransition();
       // Transcript teardown only clears rendered UI. Draft deletion is reserved
       // for explicit submission/removal paths.
       drafts.flush();

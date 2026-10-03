@@ -188,6 +188,39 @@ for (const mode of ["animated", "reduced", "unsupported"] as const) {
   });
 }
 
+for (const action of ["Confirm question", "Remove quote"] as const) {
+  for (const returnToSource of [false, true]) {
+    test(`discards deferred ${action} after transcript teardown (return=${returnToSource})`, async ({ page }) => {
+      const destinationDraft = [{ id: 7, quote: "Resumed older session.", question: "Keep destination", sourceMessageId: "destination-entry", startOffset: 0, endOffset: 22 }];
+      await page.addInitScript((draft) => localStorage.setItem("pi-web-session-drafts-v1", JSON.stringify({ version: 1, sessions: {
+        "mock-older": { text: "", attachments: [], quoteReplies: draft },
+      } })), destinationDraft);
+      await page.emulateMedia({ reducedMotion: "no-preference" });
+      await page.goto("/");
+      await selectAssistantExcerpt(page, "Image attachment support");
+      await page.getByRole("button", { name: "Reply", exact: true }).click();
+      await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Preserve source");
+      await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+      await page.evaluate(() => {
+        Object.defineProperty(document, "startViewTransition", { value: (update: () => void) => {
+          let finish!: () => void;
+          const finished = new Promise<void>((resolve) => { finish = resolve; });
+          document.addEventListener("release-quote-transition", () => { update(); finish(); }, { once: true });
+          return { finished, skipTransition() {} };
+        } });
+      });
+      await page.getByRole("button", { name: action }).first().click();
+      await expect(page.locator("html")).toHaveClass(/quoteReplyTransition/);
+      await switchSession(page, "Older mock session");
+      if (returnToSource) await switchSession(page, "Current mock session");
+      await page.evaluate(() => document.dispatchEvent(new Event("release-quote-transition")));
+      await expect(page.locator("html")).not.toHaveClass(/quoteReplyTransition/);
+      await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-older"]?.quoteReplies)).toEqual(destinationDraft);
+      await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-current"]?.quoteReplies?.[0]?.question)).toBe("Preserve source");
+    });
+  }
+}
+
 test("migrates legacy composer and session quote drafts", async ({ page }) => {
   const quote = [{ id: 4, quote: "Image attachment support", question: "Migrated question", sourceMessageId: "assistant-entry", startOffset: 0, endOffset: 24 }];
   await page.addInitScript((legacyQuote) => {
