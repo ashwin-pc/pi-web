@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { ensureMarkdownPreviewArtifact, ensurePreviewArtifact } from "./helpers/artifacts.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 import { openSessionDrawerFooterAction, shouldCloseSessionDrawerAfterSwitch } from "./helpers/sessionDrawer.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -853,7 +854,7 @@ test.describe("sessions drawer", () => {
     const pinnedCwd = "/Users/ashwin/projects/pi";
     const projectCwd = "/Users/ashwin/projects/pi-web";
     const archiveCwd = "/Users/ashwin/archive/pi-web";
-    await page.request.patch("/api/session-ui-state", { data: { pinnedFolders: [pinnedCwd] } });
+    await seedSessionUiState(page, { pinnedFolders: [pinnedCwd] });
 
     await page.route(/\/api\/sessions(?:\?.*)?$/, async (route) => {
       await route.fulfill({

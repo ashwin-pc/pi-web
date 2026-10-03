@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 import { copyFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 
@@ -9,14 +10,12 @@ test.use({ video: { mode: "on", size: { width: 1280, height: 800 } } });
 
 test("records activity and tool timers after switching session tabs", async ({ page }) => {
   await page.request.post("/api/mock/reset");
-  await page.request.patch("/api/session-ui-state", {
-    data: {
+  await seedSessionUiState(page, {
       pinnedSessions: [
         { id: "mock-current", label: "Current mock session" },
         { id: "mock-older", label: "Older mock session" },
       ],
       sessionMarkers: [],
-    },
   });
 
   await page.goto("/");

@@ -1,4 +1,5 @@
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 async function clickMessageAction(page: Page, message: Locator, buttonName: string, menuLabel: string) {
   if ((page.viewportSize()?.width || 0) > 700) {
@@ -70,7 +71,7 @@ test("copies canonical header and persisted-message links", async ({ page }) => 
 });
 
 test("opens named and raw Markdown citations in place, including cold load and Back", async ({ page }) => {
-  await page.request.patch("/api/session-ui-state", { data: { pinnedSessions: [{ id: "mock-current" }, { id: "mock-older" }] } });
+  await seedSessionUiState(page, { pinnedSessions: [{ id: "mock-current" }, { id: "mock-older" }] });
   await page.route("**/api/messages?*", async (route) => {
     const url = new URL(route.request().url());
     await route.fulfill({ json: { messages: messagesFor(url.searchParams.get("sessionId") || "mock-current", url.origin) } });

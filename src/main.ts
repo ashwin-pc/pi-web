@@ -634,6 +634,7 @@ settings = createSettings({
   api,
   rightPanels,
   addMessage: messages.addMessage,
+  saveBucketPreference: (patch, order) => sessions.saveBucketPreference(patch, order),
   onAppearanceChange: () => {
     activeWorkerDock?.refresh();
     messages.reconcileActivity();

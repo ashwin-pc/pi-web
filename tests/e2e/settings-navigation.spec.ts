@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openSessionDrawerFooterAction } from "./helpers/sessionDrawer.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
@@ -115,6 +116,27 @@ test("global Buckets page reorders, renames, persists, and propagates to bucket 
   await page.locator("#settingsCloseButton").click();
   await page.locator("#sessionButton").click();
   await expect(page.getByRole("button", { name: "Mark multiple sessions Cyan" })).toBeVisible();
+});
+
+test("bucket rename preserves a label written concurrently outside the open settings page", async ({ page }) => {
+  await page.goto("/");
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavBuckets").click();
+  const cyan = page.getByRole("textbox", { name: "Cyan bucket name" });
+  await expect(cyan).toBeVisible();
+
+  // Another writer updates a different label after Settings has captured its state.
+  await seedSessionUiState(page, { bucketLabels: { purple: "Research" } });
+  await cyan.fill("Builds");
+  await cyan.press("Tab");
+  await expect.poll(async () => (await (await page.request.get("/api/session-ui-state")).json()).sessionUiState.bucketLabels)
+    .toEqual({ purple: "Research", cyan: "Builds" });
+
+  await page.reload();
+  await openSessionDrawerFooterAction(page, "Preferences");
+  await page.locator("#settingsNavBuckets").click();
+  await expect(page.getByRole("textbox", { name: "Purple bucket name" })).toHaveValue("Research");
+  await expect(page.getByRole("textbox", { name: "Cyan bucket name" })).toHaveValue("Builds");
 });
 
 test("bucket handles reorder with mouse and touch pointers, persist, and cancel safely", async ({ page, context }, testInfo) => {

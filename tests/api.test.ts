@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:net";
-import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { request as httpRequest } from "node:http";
@@ -111,10 +111,12 @@ describe("pi-web mock API", () => {
 
   it("deletes a requested session and its independent note", async () => {
     try {
+      const beforeSeed = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
       const seedUiState = await fetch(`${baseUrl}/api/session-ui-state`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
+          expectedRevision: beforeSeed.revision,
           sessionNotes: [{ sessionId: "mock-older", note: "Delete with session", updatedAt: "2026-01-01T00:00:00.000Z" }],
         }),
       });
@@ -371,6 +373,7 @@ describe("pi-web mock API", () => {
       method: "PATCH",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        expectedRevision: initial.sessionUiState.revision,
         pinnedSessions: [{ id: "mock-current", cwd: "." }],
         sessionNotes: [{ sessionId: "mock-current", note: "  Keep after unpin  ", updatedAt: "2026-01-01T00:00:00.000Z" }],
         pinnedFolders: ["/tmp/pi-web", "/tmp/pi-web", ""],
@@ -426,40 +429,72 @@ describe("pi-web mock API", () => {
     ]);
   });
 
-  it("returns 409 when a session UI state patch would remove most entries", async () => {
-    const original = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
-    const lanes = Array.from({ length: 20 }, (_, index) => ({
-      sessionId: `shrink-guard-${index}`,
-      lane: "pinned",
-      since: "2026-01-01T00:00:00.000Z",
-    }));
+  it("rejects unversioned/malformed/stale PATCH, allows current-revision clear, and preserves targeted unread", async () => {
+    const initial = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+    const lanes = Array.from({ length: 5 }, (_, index) => ({ sessionId: `cas-${index}`, lane: "pinned", since: "2026-01-01T00:00:00.000Z" }));
+    const patch = async (body: unknown) => fetch(`${baseUrl}/api/session-ui-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     try {
-      const seeded = await fetch(`${baseUrl}/api/session-ui-state`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lanes, force: true }),
-      });
+      expect((await patch({ lanes })).status).toBe(428);
+      expect((await patch({ expectedRevision: "0", lanes })).status).toBe(400);
+      const seeded = await patch({ expectedRevision: initial.revision, lanes });
       expect(seeded.status).toBe(200);
-
-      const rejected = await fetch(`${baseUrl}/api/session-ui-state`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ lanes: lanes.slice(0, 3) }),
-      });
-      expect(rejected.status).toBe(409);
-      expect(await rejected.json()).toEqual({
-        ok: false,
-        error: "refusing to shrink session UI state",
-        details: { collection: "lanes", current: 20, next: 3 },
-      });
-      const current = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
-      expect(current.sessionUiState.lanes).toHaveLength(20);
+      const current = (await seeded.json()).sessionUiState;
+      const invalid = await patch({ expectedRevision: current.revision, sessionNotes: [{ sessionId: "cas-0", note: "keep", updatedAt: "not-a-timestamp" }] });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({ error: "Invalid session UI state payload" });
+      expect((await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState.revision).toBe(current.revision);
+      const stale = await patch({ expectedRevision: initial.revision, lanes: [], force: true });
+      expect(stale.status).toBe(409);
+      expect(await stale.json()).toMatchObject({ revision: current.revision });
+      expect((await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState.lanes).toHaveLength(5);
+      const unread = await fetch(`${baseUrl}/api/session-ui-state/unread`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ sessionId: "cas-0" }) });
+      expect(unread.status).toBe(200);
+      const next = (await unread.json()).sessionUiState;
+      expect((await patch({ expectedRevision: current.revision, lanes: [] })).status).toBe(409);
+      const cleared = await patch({ expectedRevision: next.revision, lanes: [] });
+      expect(cleared.status).toBe(200);
+      expect((await cleared.json()).sessionUiState.sessionUnreadStates).toEqual(next.sessionUnreadStates);
     } finally {
-      await fetch(`${baseUrl}/api/session-ui-state`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ ...original, force: true }),
-      });
+      const current = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+      expect((await patch({ expectedRevision: current.revision, lanes: initial.lanes, sessionUnreadStates: initial.sessionUnreadStates })).status).toBe(200);
+    }
+  });
+
+  it("returns created/deleted/cleared session IDs when post-effect UI metadata persistence fails", async () => {
+    const file = join(settingsDir, "session-ui-state.json");
+    const historyPath = `${file}.history.json`;
+    const post = async (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const withFailedUiWrites = async <T>(operation: () => Promise<T>) => {
+      const history = await readFile(historyPath, "utf8");
+      await rm(historyPath);
+      await mkdir(historyPath);
+      await writeFile(join(historyPath, "keep"), "block atomic history replacement");
+      try { return await operation(); }
+      finally { await rm(historyPath, { recursive: true }); await writeFile(historyPath, history); }
+    };
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    await fetch(`${baseUrl}/api/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { sessionBucketColor: "red" } }) });
+    try {
+      const created = await withFailedUiWrites(() => post("/api/sessions/new", {}));
+      expect(created.status).toBe(200);
+      const createdBody = await created.json();
+      expect(createdBody.sessionId).toEqual(expect.any(String));
+      expect(createdBody.sessionUiStateWarning).toEqual(expect.any(String));
+
+      const deleted = await withFailedUiWrites(() => post("/api/sessions/delete", { sessionId: "mock-older" }));
+      expect(deleted.status).toBe(200);
+      expect(await deleted.json()).toMatchObject({ ok: true, id: "mock-older", sessionUiStateWarning: expect.any(String) });
+
+      const current = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
+      expect((await fetch(`${baseUrl}/api/session-ui-state`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ expectedRevision: current.revision, lanes: [{ sessionId: "mock-current", lane: "pinned", since: "2025-01-01T00:00:00.000Z" }] }) })).status).toBe(200);
+      const cleared = await withFailedUiWrites(() => post("/api/command", { sessionId: "mock-current", command: "/clear" }));
+      expect(cleared.status).toBe(200);
+      const clearBody = await cleared.json();
+      expect(clearBody.state.sessionId).toEqual(expect.any(String));
+      expect(clearBody.sessionUiStateWarning).toEqual(expect.any(String));
+    } finally {
+      await fetch(`${baseUrl}/api/settings`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ defaults: { sessionBucketColor: null } }) });
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
     }
   });
 

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; cwd?: string }>;
@@ -10,7 +11,7 @@ async function seedServerSessionUiState(page: import("@playwright/test").Page, s
   sessionOrigins?: Array<{ sessionId: string; originSessionId: string; kind: string; updatedAt: string }>;
   bucketLabels?: Record<string, string>;
 }) {
-  await page.request.patch("/api/session-ui-state", { data: state });
+  await seedSessionUiState(page, state);
 }
 
 async function seedServerPinned(page: import("@playwright/test").Page, ...sessions: Array<{ id: string; cwd?: string }>) {

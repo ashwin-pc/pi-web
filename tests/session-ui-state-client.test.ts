@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { normalizeSessionUiState, shouldMigrateLocalUiState } from "../src/app/types.js";
+import { hasAnySessionUiState, normalizeSessionUiState, parseSessionUiStateSnapshot, shouldMigrateLocalUiState } from "../src/app/types.js";
 
 const localState = normalizeSessionUiState({
   lanes: [{ sessionId: "legacy-pin", lane: "pinned", since: "2025-01-01T00:00:00.000Z" }],
 });
 
 describe("session UI state first-run migration", () => {
-  it("migrates legacy local state only when the server explicitly reports revision zero", () => {
+  it("migrates only from an explicit uninitialized revision-zero snapshot", () => {
     expect(shouldMigrateLocalUiState({
       ok: true,
       status: 200,
-      sessionUiState: { revision: 0 },
+      sessionUiState: normalizeSessionUiState({ revision: 0, initialized: false }),
     }, localState)).toBe(true);
   });
 
@@ -18,12 +18,38 @@ describe("session UI state first-run migration", () => {
     expect(shouldMigrateLocalUiState({
       ok: true,
       status: 200,
-      sessionUiState: { revision: 7 },
+      sessionUiState: normalizeSessionUiState({ revision: 0, initialized: true }),
     }, localState)).toBe(false);
   });
 
   it("does not migrate after an unauthorized or empty response", () => {
     expect(shouldMigrateLocalUiState({ ok: false, status: 401 }, localState)).toBe(false);
     expect(shouldMigrateLocalUiState({ ok: true, status: 200 }, localState)).toBe(false);
+    expect(shouldMigrateLocalUiState({ ok: true, status: 200, sessionUiState: { revision: 0 } }, localState)).toBe(false);
+    expect(shouldMigrateLocalUiState({ ok: true, status: 503, sessionUiState: { revision: 0, initialized: false } }, localState)).toBe(false);
+  });
+
+  it("rejects incomplete, future-format, or malformed authoritative records", () => {
+    const valid = normalizeSessionUiState({ revision: 0, initialized: false });
+    for (const malformed of [
+      { revision: 0, initialized: false },
+      { ...valid, version: 4 },
+      { ...valid, lanes: [{ sessionId: "broken", lane: "impossible", since: "now" }] },
+      { ...valid, lanes: "not a collection" },
+      { ...valid, sessionNotes: [{ sessionId: "note", note: 42 }] },
+      { ...valid, lanes: [{ sessionId: "lane", lane: "pinned", since: "not-a-date" }] },
+      { ...valid, sessionNotes: [{ sessionId: "note", note: "text", updatedAt: "not-a-date" }] },
+      { ...valid, sessionMarkers: [{ sessionId: "marker", color: "blue", updatedAt: "not-a-date" }] },
+      { ...valid, sessionUnreadStates: [{ sessionId: "unread", unreadAt: "not-a-date", updatedAt: "2025-01-01T00:00:00.000Z" }] },
+      { ...valid, sessionUnreadStates: [{ sessionId: "unread", unreadAt: "2025-01-01T00:00:00.000Z", updatedAt: "not-a-date" }] },
+      { ...valid, sessionOrigins: [{ sessionId: "worker", originSessionId: "parent", kind: "worker", updatedAt: "not-a-date" }] },
+      { ...valid, bucketLabels: { impossible: "label" } },
+    ]) expect(parseSessionUiStateSnapshot(malformed)).toBeUndefined();
+    expect(parseSessionUiStateSnapshot(valid)).toEqual(valid);
+  });
+
+  it("treats order-only and favorite-folder preferences as migration input", () => {
+    expect(hasAnySessionUiState(normalizeSessionUiState({ bucketOrder: ["pink", "blue"] }))).toBe(true);
+    expect(hasAnySessionUiState(normalizeSessionUiState({ favoriteFolders: ["/synthetic"] }))).toBe(true);
   });
 });

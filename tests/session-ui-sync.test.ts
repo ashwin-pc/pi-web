@@ -1,0 +1,300 @@
+import { describe, expect, it, vi } from "vitest";
+import { normalizeSessionUiState, sessionUiStateFromResponse, type SessionUiState } from "../src/app/types.js";
+import { applyUiIntent, captureUiIntents, SessionUiCoordinator, type UiTransport } from "../src/sessions/sessionUiSync.js";
+
+const state = (value: Record<string, unknown> = {}) => normalizeSessionUiState({ revision: 1, initialized: true, ...value });
+const lane = (sessionId: string) => ({ sessionId, lane: "pinned" as const, since: "2025-01-01T00:00:00.000Z" });
+
+function peer(initial = state()) {
+  let server = initial;
+  const writes: Array<{ expectedRevision: number; initialize?: true; lanes?: SessionUiState["lanes"] }> = [];
+  const transport: UiTransport = {
+    read: async () => server,
+    patch: async (patch) => {
+      writes.push(patch);
+      if (patch.expectedRevision !== server.revision || patch.initialize && server.initialized) return { status: 409 };
+      server = normalizeSessionUiState({ ...server, ...patch, initialized: true, revision: server.revision + 1 });
+      return { status: 200, state: server };
+    },
+    postUnread: async (sessionId, unread) => {
+      server = normalizeSessionUiState({ ...server, revision: server.revision + 1,
+        sessionUnreadStates: unread ? [...server.sessionUnreadStates.filter((item) => item.sessionId !== sessionId), { sessionId, unreadAt: "2025-01-01T00:00:00.000Z", updatedAt: "2025-01-01T00:00:00.000Z" }] : server.sessionUnreadStates.filter((item) => item.sessionId !== sessionId),
+      });
+      return { status: 200, state: server };
+    },
+  };
+  const render = vi.fn<(state: SessionUiState) => void>();
+  const report = vi.fn<(error: string) => void>();
+  const coordinator = new SessionUiCoordinator(transport, render, report);
+  return { coordinator, render, report, writes, get server() { return server; }, set server(value) { server = value; } };
+}
+
+describe("session UI state causal sync", () => {
+  it("keeps concurrent unknown lanes and changes only a gesture's target after 409", async () => {
+    const p = peer(state({ lanes: [lane("known"), lane("other")] }));
+    await p.coordinator.start(state());
+    p.server = state({ revision: 2, lanes: [lane("known"), lane("other"), lane("remote")] });
+    p.coordinator.mutate({ lanes: [lane("other"), lane("new")] });
+    await vi.waitFor(() => expect(p.server.lanes.map((entry) => entry.sessionId)).toEqual(["other", "remote", "new"]));
+    expect(p.writes.map((write) => write.expectedRevision)).toEqual([1, 2]);
+    expect(p.writes[1].lanes?.map((entry) => entry.sessionId)).toEqual(["other", "remote", "new"]);
+    expect(p.report).not.toHaveBeenCalled();
+  });
+
+  it("commits a multi-ID, multi-field gesture in one CAS attempt after rebasing a conflict", async () => {
+    const p = peer(state({ lanes: [lane("remove-a"), lane("remove-b"), lane("keep")], favoriteFolders: ["/old"] }));
+    await p.coordinator.start(state());
+    p.server = state({ revision: 2, lanes: [...p.server.lanes, lane("remote")], favoriteFolders: ["/old", "/remote"],
+      sessionNotes: [{ sessionId: "remote", note: "remote note", updatedAt: "2025-01-01T00:00:00.000Z" }] });
+    const result = await p.coordinator.mutate({
+      lanes: [lane("keep"), lane("new")], favoriteFolders: ["/old", "/mine"],
+      sessionNotes: [{ sessionId: "keep", note: "mine", updatedAt: "2025-01-01T00:00:00.000Z" }],
+    });
+    expect(result).toBe(true);
+    expect(p.writes.map((write) => write.expectedRevision)).toEqual([1, 2]);
+    expect(Object.keys(p.writes[1]).sort()).toEqual(["expectedRevision", "favoriteFolders", "lanes", "sessionNotes"]);
+    expect(p.server.lanes.map((entry) => entry.sessionId)).toEqual(["keep", "remote", "new"]);
+    expect(p.server.sessionNotes.map((entry) => entry.sessionId)).toEqual(["remote", "keep"]);
+    expect(p.server.favoriteFolders).toEqual(["/old", "/remote", "/mine"]);
+  });
+
+  it("a failed multi-field write rolls the entire gesture back without advancing the server", async () => {
+    const original = state({ lanes: [lane("a"), lane("b")] });
+    const patch = vi.fn(async () => ({ status: 503, error: "storage unavailable" }));
+    const render = vi.fn<(value: SessionUiState) => void>();
+    const coordinator = new SessionUiCoordinator({ read: async () => original, patch, postUnread: vi.fn() }, render, vi.fn());
+    await coordinator.start(state());
+    const result = await coordinator.mutate({ lanes: [lane("b")],
+      sessionNotes: [{ sessionId: "b", note: "note", updatedAt: "2025-01-01T00:00:00.000Z" }],
+    });
+    expect(result).toBe(false);
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch.mock.lastCall?.[0]).toMatchObject({ expectedRevision: 1, lanes: [lane("b")] });
+    expect(coordinator.projected).toEqual(original);
+    expect(render.mock.lastCall?.[0]).toEqual(original);
+  });
+
+  it("ordinary addition does not reset concurrent ordering; explicit reorder moves only its target", () => {
+    const base = state({ lanes: [lane("a"), lane("b")] });
+    const remote = state({ lanes: [lane("b"), lane("a"), lane("unknown")] });
+    const intents = captureUiIntents(base, { lanes: [lane("a"), lane("b"), lane("new")] });
+    expect(intents).toHaveLength(1);
+    // The existing Pin/new-session gesture appends its newly laned ID; keep
+    // that placement without overwriting a concurrent ordering of known IDs.
+    expect(intents.reduce(applyUiIntent, remote).lanes.map((entry) => entry.sessionId)).toEqual(["b", "a", "unknown", "new"]);
+    const moved = applyUiIntent(remote, { kind: "order", field: "lanes", id: "a", before: "b" });
+    expect(moved.lanes.map((entry) => entry.sessionId)).toEqual(["a", "b", "unknown"]);
+  });
+
+  it("preserves unrelated notes, markers, origins, folders and labels through keyed edits and explicit clears", () => {
+    const remote = state({
+      sessionNotes: [{ sessionId: "other", note: "remote", updatedAt: "2025-01-01T00:00:00.000Z" }],
+      sessionMarkers: [{ sessionId: "other", color: "blue", updatedAt: "2025-01-01T00:00:00.000Z" }],
+      sessionOrigins: [{ sessionId: "other", originSessionId: "parent", kind: "worker", updatedAt: "2025-01-01T00:00:00.000Z" }],
+      favoriteFolders: ["/remote"], allowedMarkerColors: ["blue", "red"], bucketLabels: { blue: "Remote" },
+    });
+    const edits = [
+      { kind: "entry", field: "sessionNotes", id: "mine", value: { sessionId: "mine", note: "hello", updatedAt: "2025-01-01T00:00:00.000Z" } },
+      { kind: "string", field: "favoriteFolders", id: "/mine", present: true },
+      { kind: "label", id: "red", value: "Mine" },
+      { kind: "clear-strings", field: "allowedMarkerColors" },
+    ] as const;
+    const merged = edits.reduce<SessionUiState>((value, edit) => applyUiIntent(value, edit), remote);
+    expect(merged.sessionNotes.map((item) => item.sessionId)).toEqual(["other", "mine"]);
+    expect(merged.sessionMarkers).toEqual(remote.sessionMarkers);
+    expect(merged.sessionOrigins).toEqual(remote.sessionOrigins);
+    expect(merged.favoriteFolders).toEqual(["/remote", "/mine"]);
+    expect(merged.bucketLabels).toEqual({ blue: "Remote", red: "Mine" });
+    expect(merged.allowedMarkerColors).toEqual([]);
+  });
+
+  it("overlays queued gestures over SSE and ignores late lower-revision acknowledgements", async () => {
+    const p = peer(state({ lanes: [lane("a")] }));
+    await p.coordinator.start(state());
+    p.server = state({ revision: 2, lanes: [lane("a"), lane("remote")] });
+    const saved = p.coordinator.mutate({ lanes: [lane("a"), lane("b")] });
+    p.coordinator.accept(p.server);
+    expect(p.coordinator.projected?.lanes.map((item) => item.sessionId)).toEqual(["a", "remote", "b"]);
+    expect(await saved).toBe(true);
+    p.coordinator.accept(state({ revision: 1, lanes: [lane("a")] }));
+    expect(p.coordinator.projected?.lanes.map((item) => item.sessionId)).toEqual(["a", "remote", "b"]);
+    expect(p.render.mock.lastCall?.[0].lanes.map((item) => item.sessionId)).toEqual(["a", "remote", "b"]);
+  });
+
+  it("does not migrate from a late fresh GET after SSE supplied initialized history", async () => {
+    let finishRead!: (state: SessionUiState | undefined) => void;
+    const pendingRead = new Promise<SessionUiState | undefined>((resolve) => { finishRead = resolve; });
+    const patch = vi.fn();
+    const coordinator = new SessionUiCoordinator({ read: () => pendingRead, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+    const loading = coordinator.start(state({ revision: 0, initialized: false, lanes: [lane("legacy")] }));
+    coordinator.accept(state({ revision: 4, initialized: true, lanes: [lane("winner")] }));
+    finishRead(state({ revision: 0, initialized: false }));
+    await loading;
+    expect(patch).not.toHaveBeenCalled();
+    expect(coordinator.projected?.lanes.map((entry) => entry.sessionId)).toEqual(["winner"]);
+  });
+
+  it("rejects malformed and future GET snapshots without writing a migration", async () => {
+    const patch = vi.fn();
+    for (const value of [{ revision: 0, initialized: false },
+      { ...state({ revision: 0, initialized: false }), version: 4 },
+      { ...state({ revision: 0, initialized: false }), lanes: [{ sessionId: "bad", lane: "bogus" }] }]) {
+      const read = async () => sessionUiStateFromResponse({ ok: true, status: 200, sessionUiState: value });
+      const coordinator = new SessionUiCoordinator({ read, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+      await coordinator.start(state({ revision: 0, initialized: false, lanes: [lane("legacy")] }));
+    }
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("captures immutable entry intents and never gives rendered AppState ownership of canonical entries", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let server = state({ lanes: [lane("known")] });
+    const render = vi.fn<(value: SessionUiState) => void>();
+    const coordinator = new SessionUiCoordinator({
+      read: async () => server,
+      patch: async (patch) => {
+        await gate;
+        server = state({ ...server, ...patch, revision: server.revision + 1 });
+        return { status: 200, state: server };
+      },
+      postUnread: vi.fn(),
+    }, render, vi.fn());
+    await coordinator.start(state());
+    const exposed = render.mock.lastCall![0];
+    exposed.lanes[0].cwd = "/render-mutated";
+    exposed.lanes.push(lane("render-added"));
+    expect(coordinator.projected?.lanes).toEqual([lane("known")]);
+    const entry = { ...lane("known"), cwd: "/gesture" };
+    const saved = coordinator.mutate({ lanes: [entry] });
+    entry.cwd = "/changed-after-capture";
+    render.mock.lastCall![0].lanes[0].cwd = "/second-render-mutation";
+    expect(coordinator.projected?.lanes[0].cwd).toBe("/gesture");
+    release();
+    expect(await saved).toBe(true);
+    expect(server.lanes[0].cwd).toBe("/gesture");
+  });
+
+  it("losing legacy initialize drops seed instead of retrying it over the winner", async () => {
+    let server = state({ revision: 0, initialized: false });
+    const writes: Array<{ expectedRevision: number; initialize?: true }> = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const report = vi.fn();
+    const coordinator = new SessionUiCoordinator({
+      read: async () => server,
+      patch: async (patch) => {
+        writes.push(patch);
+        await gate;
+        if (server.initialized) return { status: 409 };
+        server = state({ revision: 1, initialized: true, ...patch });
+        return { status: 200, state: server };
+      },
+      postUnread: async () => ({ status: 200, state: server }),
+    }, vi.fn(), report);
+    const loading = coordinator.start(state({ revision: 0, initialized: false, lanes: [lane("legacy")] }));
+    await vi.waitFor(() => expect(writes).toHaveLength(1));
+    server = state({ revision: 1, initialized: true, lanes: [lane("winner")] });
+    release();
+    await loading;
+    await vi.waitFor(() => expect(coordinator.projected?.lanes.map((entry) => entry.sessionId)).toEqual(["winner"]));
+    expect(report).not.toHaveBeenCalled();
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ expectedRevision: 0, initialize: true });
+  });
+
+  it("merges individual bucket-name and moved-color intents without replacing concurrent settings", async () => {
+    const p = peer(state({ bucketLabels: { blue: "Blue one" } }));
+    await p.coordinator.start(state());
+    p.server = state({ revision: 2, bucketLabels: { blue: "Blue one", green: "Remote green" },
+      bucketOrder: ["pink", "blue", "purple", "yellow", "red", "green", "orange", "cyan"] });
+    expect(await p.coordinator.mutate({ bucketLabels: { blue: "My blue" } })).toBe(true);
+    expect(p.server.bucketLabels).toEqual({ blue: "My blue", green: "Remote green" });
+    const next = ["blue", "pink", "purple", "yellow", "red", "green", "orange", "cyan"] as SessionUiState["bucketOrder"];
+    expect(await p.coordinator.mutate({ bucketOrder: next }, { kind: "order", field: "bucketOrder", id: "blue", before: "pink" })).toBe(true);
+    expect(p.server.bucketOrder.slice(0, 3)).toEqual(["blue", "pink", "purple"]);
+  });
+
+  it("serializes targeted unread actions with replacement writes and keeps later optimism during earlier acknowledgements", async () => {
+    const p = peer(state({ lanes: [lane("a")] }));
+    await p.coordinator.start(state());
+    p.coordinator.mutate({ lanes: [lane("a"), lane("new")] });
+    p.coordinator.setUnread("a", true);
+    expect(p.coordinator.projected?.sessionUnreadStates.map((entry) => entry.sessionId)).toEqual(["a"]);
+    await vi.waitFor(() => expect(p.server.sessionUnreadStates.map((entry) => entry.sessionId)).toEqual(["a"]));
+    expect(p.server.lanes.map((entry) => entry.sessionId)).toEqual(["a", "new"]);
+    p.coordinator.setUnread("a", false);
+    await vi.waitFor(() => expect(p.server.sessionUnreadStates).toEqual([]));
+  });
+
+  it("restores canonical state after a failed write, with reload guidance instead of unsafe replay", async () => {
+    const source = state({ lanes: [lane("a")] });
+    const report = vi.fn();
+    const render = vi.fn();
+    const patch = vi.fn(async () => ({ status: 428, error: "precondition required" }));
+    const coordinator = new SessionUiCoordinator({ read: async () => source, patch, postUnread: vi.fn() }, render, report);
+    await coordinator.start(state());
+    expect(await coordinator.mutate({ lanes: [lane("a"), lane("b")] })).toBe(false);
+    expect(coordinator.projected?.lanes.map((entry) => entry.sessionId)).toEqual(["a"]);
+    expect(report.mock.lastCall?.[0]).toMatch(/Reload/);
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(await coordinator.mutate({ lanes: [lane("a"), lane("c")] })).toBe(false);
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("queues a gesture made during first load behind one-shot migration", async () => {
+    const p = peer(state({ revision: 0, initialized: false }));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.fn(async () => { await gate; return p.server; });
+    const coordinator = new SessionUiCoordinator({
+      read,
+      patch: async (patch) => {
+        p.writes.push(patch);
+        if (patch.expectedRevision !== p.server.revision) return { status: 409 };
+        p.server = state({ ...p.server, ...patch, revision: p.server.revision + 1, initialized: true });
+        return { status: 200, state: p.server };
+      },
+      postUnread: async () => ({ status: 200, state: p.server }),
+    }, vi.fn(), vi.fn());
+    const initial = coordinator.start(state({ revision: 0, initialized: false, lanes: [lane("legacy")] }));
+    const saved = coordinator.mutate({ lanes: [lane("legacy"), lane("gesture")] });
+    expect(p.writes).toHaveLength(0);
+    release();
+    await initial;
+    expect(await saved).toBe(true);
+    expect(p.writes.map((write) => [write.expectedRevision, write.initialize])).toEqual([[0, true], [1, undefined]]);
+    expect(p.server.lanes.map((entry) => entry.sessionId)).toEqual(["legacy", "gesture"]);
+  });
+
+  it("restores the boot display after a failed initial read without publishing an unsafe patch", async () => {
+    let resolveRead!: (value: SessionUiState | undefined) => void;
+    const read = new Promise<SessionUiState | undefined>((resolve) => { resolveRead = resolve; });
+    const patch = vi.fn();
+    const seed = state({ revision: 0, initialized: false, lanes: [lane("legacy")] });
+    let displayed = normalizeSessionUiState(seed);
+    const coordinator = new SessionUiCoordinator({ read: () => read, patch, postUnread: vi.fn() },
+      (value) => { displayed = value; }, vi.fn());
+    const loading = coordinator.start(seed);
+    displayed.lanes[0].cwd = "/unsaved-edit";
+    coordinator.mutate({ lanes: [{ ...lane("legacy"), cwd: "/unsaved-edit" }] });
+    expect(displayed.lanes[0].cwd).toBe("/unsaved-edit");
+    resolveRead(undefined);
+    await loading;
+    expect(displayed.lanes).toEqual([lane("legacy")]);
+    displayed.lanes.push(lane("unsafe"));
+    expect(await coordinator.mutate({ lanes: displayed.lanes })).toBe(false);
+    expect(displayed.lanes).toEqual([lane("legacy")]);
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("never imports after a failed read and never issues an unversioned replacement", async () => {
+    const patch = vi.fn();
+    const errors = vi.fn();
+    const coordinator = new SessionUiCoordinator({ read: async () => undefined, patch, postUnread: vi.fn() }, vi.fn(), errors);
+    await coordinator.start(state({ lanes: [lane("legacy")] }));
+    coordinator.mutate({ lanes: [lane("new")] });
+    expect(patch).not.toHaveBeenCalled();
+    expect(errors).toHaveBeenCalled();
+  });
+});

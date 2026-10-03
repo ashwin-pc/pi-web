@@ -6,7 +6,8 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { sessionDrawerAutoCloseQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, shouldMigrateLocalUiState, writeActiveSessionIdToUrl } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, writeActiveSessionIdToUrl } from "../app/types.js";
+import { SessionUiCoordinator, type UiIntent } from "./sessionUiSync.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
 import { buildSessionInspector } from "./sessionInspector.js";
@@ -40,6 +41,7 @@ export type SessionsController = {
   renderSessionBar: () => void;
   renderCurrentSessionBucketButton: () => void;
   applySessionUiState: (value: unknown) => void;
+  saveBucketPreference: (patch: Pick<Partial<SessionUiState>, "bucketLabels" | "bucketOrder">, order?: UiIntent) => Promise<boolean>;
   markSessionRead: (sessionId?: string) => Promise<void>;
   waitingInfoFor: (sessionId: string) => WaitingInfo | undefined;
   activeWorkersFor: (sessionId: string) => ActiveWorker[];
@@ -245,7 +247,7 @@ export function createSessions(options: {
   function noteForSession(sessionId: string) { return state.sessionNotes.find((entry) => entry.sessionId === sessionId)?.note; }
   function sessionsInLane(lane: SessionLaneId) { return state.lanes.filter((entry) => entry.lane === lane); }
   function syncPinnedProjection() { state.pinnedSessions = sessionsInLane("pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) })); }
-  function commitLanes() { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
+  function commitLanes(order?: UiIntent) { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }, order); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function commitSessionNotes() { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; persistSessionUiState({ sessionNotes: state.sessionNotes }); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function setSessionNote(sessionId: string, value: string) {
     const note = value.trim();
@@ -672,17 +674,8 @@ export function createSessions(options: {
 
   // ── Markers and pinning ────────────────────────────────────────────────────
 
-  let sessionUiWritePending = 0;
-  let sessionUiWriteSequence = 0;
-  let latestSessionUiRevision = 0;
-  let sessionUiStateInitialized = false;
   let restoredPersistedLaneFocus = false;
-  let sessionUiWriteQueue = Promise.resolve();
-  function applySessionUiStateValue(value: unknown, force = false) {
-    const next = normalizeSessionUiState(value);
-    if (!force && sessionUiStateInitialized && next.revision <= latestSessionUiRevision) return;
-    sessionUiStateInitialized = true;
-    latestSessionUiRevision = next.revision;
+  function applySessionUiStateValue(next: SessionUiState) {
     state.lanes = next.lanes;
     state.sessionNotes = next.sessionNotes;
     state.pinnedSessions = next.lanes.filter((entry) => entry.lane === "pinned").map((entry) => ({ id: entry.sessionId, ...(entry.cwd ? { cwd: entry.cwd } : {}) }));
@@ -693,8 +686,11 @@ export function createSessions(options: {
     state.sessionOrigins = next.sessionOrigins;
     syncCachedUnreadFromState();
     state.selectedMarkerColor = next.selectedMarkerColor;
+    const bucketsChanged = JSON.stringify(state.bucketLabels) !== JSON.stringify(next.bucketLabels)
+      || JSON.stringify(state.bucketOrder) !== JSON.stringify(next.bucketOrder);
     state.bucketLabels = next.bucketLabels;
     state.bucketOrder = next.bucketOrder;
+    if (bucketsChanged) document.dispatchEvent(new CustomEvent("pi-web-bucket-labels-changed"));
     allowedMarkerColors.clear();
     for (const color of next.allowedMarkerColors) allowedMarkerColors.add(color);
     document.body.classList.toggle("hasPinnedSessions", state.pinnedSessions.length > 0 || Boolean(state.currentSessionId));
@@ -725,61 +721,29 @@ export function createSessions(options: {
   }
 
 
-  function applySessionUiState(value: unknown) {
-    // Realtime snapshots emitted before our PATCH response can contain the old
-    // lane projection. Let the mutation response remain authoritative while a
-    // local write is in flight so a newly pinned tab cannot immediately revert.
-    if (sessionUiWritePending > 0) return;
-    applySessionUiStateValue(value);
-  }
+  function applySessionUiState(value: unknown) { uiSync.accept(value); }
 
-  async function fetchSessionUiStateSnapshot() {
-    const res = await fetch("/api/session-ui-state", { headers: api.headers() });
-    const data = await res.json().catch(() => ({}));
-    const response = {
-      ok: res.ok && data.ok !== false,
-      status: res.status,
-      sessionUiState: data.sessionUiState,
-    };
-    const sessionUiState = sessionUiStateFromResponse(response);
-    return sessionUiState ? { response, sessionUiState } : undefined;
-  }
-
-  async function patchSessionUiState(patch: Partial<SessionUiState>) {
-    const writeSequence = ++sessionUiWriteSequence;
-    sessionUiWritePending += 1;
-    const write = async () => {
-      const res = await fetch("/api/session-ui-state", {
-        method: "PATCH",
-        headers: api.headers(),
-        body: JSON.stringify(patch),
+  const uiSync = new SessionUiCoordinator({
+    async read() {
+      const res = await fetch("/api/session-ui-state", { headers: api.headers() });
+      const data = await res.json().catch(() => ({}));
+      return sessionUiStateFromResponse({ ok: res.ok && data.ok === true, status: res.status, sessionUiState: data.sessionUiState });
+    },
+    async patch(patch) {
+      const res = await fetch("/api/session-ui-state", { method: "PATCH", headers: api.headers(), body: JSON.stringify(patch) });
+      const data = await res.json().catch(() => ({}));
+      return { status: res.status, state: sessionUiStateFromResponse({ ok: res.ok && data.ok === true, sessionUiState: data.sessionUiState }), error: data.error as string | undefined };
+    },
+    async postUnread(sessionId, unread) {
+      const res = await fetch(`/api/session-ui-state/${unread ? "unread" : "read"}`, {
+        method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId }),
       });
       const data = await res.json().catch(() => ({}));
-      if (res.status === 409) {
-        console.warn("Session UI state patch was refused; reloading server state.", data.details);
-        const snapshot = await fetchSessionUiStateSnapshot();
-        if (snapshot) applySessionUiStateValue(snapshot.sessionUiState, true);
-        return;
-      }
-      if (!res.ok || data.ok === false) throw new Error(data.error || `Session UI state update failed (${res.status})`);
-      // Keep newer optimistic mutations rendered until their queued write is
-      // confirmed; intermediate full-state responses would otherwise revert UI.
-      if (writeSequence === sessionUiWriteSequence) applySessionUiStateValue(data.sessionUiState);
-    };
-    const result = sessionUiWriteQueue.then(write, write);
-    sessionUiWriteQueue = result.then(() => undefined, () => undefined);
-    try {
-      await result;
-    } finally {
-      sessionUiWritePending -= 1;
-    }
-  }
+      return { status: res.status, state: sessionUiStateFromResponse({ ok: res.ok && data.ok === true, sessionUiState: data.sessionUiState }), error: data.error as string | undefined };
+    },
+  }, applySessionUiStateValue, (message) => addMessage("system", message, "error"));
 
-  function persistSessionUiState(patch: Partial<SessionUiState>) {
-    patchSessionUiState(patch).catch((error) => {
-      addMessage("system", error instanceof Error ? error.message : String(error), "error");
-    });
-  }
+  function persistSessionUiState(patch: Partial<SessionUiState>, order?: UiIntent) { return uiSync.mutate(patch, order); }
 
   function persistAllowedMarkerColors() {
     persistSessionUiState({ allowedMarkerColors: Array.from(allowedMarkerColors) });
@@ -801,13 +765,7 @@ export function createSessions(options: {
       bucketLabels: state.bucketLabels,
       bucketOrder: state.bucketOrder,
     });
-    const snapshot = await fetchSessionUiStateSnapshot();
-    if (!snapshot) return;
-    if (latestSessionUiRevision === 0 && shouldMigrateLocalUiState(snapshot.response, localState)) {
-      await patchSessionUiState(localState);
-      return;
-    }
-    applySessionUiState(snapshot.sessionUiState);
+    await uiSync.start(localState);
   }
 
   function unreadStateForSession(sessionId: string) {
@@ -925,49 +883,14 @@ export function createSessions(options: {
     renderSessionColorFilterButton();
   }
 
-  function clearLocalUnread(sessionId: string) {
-    const next = state.sessionUnreadStates.filter((item) => item.sessionId !== sessionId);
-    if (next.length === state.sessionUnreadStates.length) return;
-    state.sessionUnreadStates = next;
-    syncCachedUnreadFromState();
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
-  }
-
   async function markSessionRead(sessionId = state.currentSessionId) {
     const id = sessionId.trim();
-    if (!id) return;
-    clearLocalUnread(id);
-    const res = await fetch("/api/session-ui-state/read", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ sessionId: id }),
-    });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    applySessionUiState(data.sessionUiState);
+    if (id) await uiSync.setUnread(id, false);
   }
 
   async function markSessionUnread(sessionId = state.currentSessionId) {
     const id = sessionId.trim();
-    if (!id) return;
-    const now = new Date().toISOString();
-    state.sessionUnreadStates = [...state.sessionUnreadStates.filter((item) => item.sessionId !== id), { sessionId: id, unreadAt: now, updatedAt: now }];
-    syncCachedUnreadFromState();
-    if (!elements.sessionDrawer.hidden) renderSessionList(cachedSessions);
-    renderSessionBar();
-    updateSessionButtonUnread();
-    const res = await fetch("/api/session-ui-state/unread", {
-      method: "POST",
-      headers: api.headers(),
-      body: JSON.stringify({ sessionId: id }),
-    });
-    if (res.status === 401) return;
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
-    applySessionUiState(data.sessionUiState);
+    if (id) await uiSync.setUnread(id, true);
   }
 
   function markSessionReadBestEffort(sessionId?: string) {
@@ -1765,7 +1688,10 @@ export function createSessions(options: {
             });
             state.lanes = [...reordered, ...entriesById.values(), ...state.lanes.filter((entry) => entry.lane !== focusedLane)];
             syncPinnedProjection();
-            persistSessionUiState({ lanes: state.lanes });
+            persistSessionUiState({ lanes: state.lanes }, draggedId ? {
+              kind: "order", field: "lanes", id: draggedId,
+              before: visualIds[newIndex + 1], after: visualIds[newIndex - 1],
+            } : undefined);
           }
           tab.classList.remove("settling");
           flushQueuedSessionBarRender(true);
@@ -1954,7 +1880,12 @@ export function createSessions(options: {
               }
               saveLaneFocus();
             }
-            state.lanes = nextLanes; commitLanes();
+            state.lanes = nextLanes;
+            const movedIndex = nextLanes.findIndex((item) => item.sessionId === entry.sessionId);
+            commitLanes(movedIndex >= 0 ? {
+              kind: "order", field: "lanes", id: entry.sessionId,
+              before: nextLanes[movedIndex + 1]?.sessionId, after: nextLanes[movedIndex - 1]?.sessionId,
+            } : undefined);
             if (moved?.lane === "parked" && entry.lane !== "parked" && !noteForSession(entry.sessionId)) requestAnimationFrame(() => promptForParkedNote(entry.sessionId));
           }
           card.classList.remove("reorder-pressed");
@@ -2996,6 +2927,7 @@ export function createSessions(options: {
     renderSessionBar,
     renderCurrentSessionBucketButton,
     applySessionUiState,
+    saveBucketPreference: (patch, order) => persistSessionUiState(patch, order),
     markSessionRead,
     waitingInfoFor,
     activeWorkersFor,

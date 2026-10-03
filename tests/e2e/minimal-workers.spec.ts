@@ -1,5 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import { nextRealtimeHello } from "./helpers/realtimeReady.js";
+import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
 const now = "2026-01-01T00:00:00.000Z";
 const runtime = (isRunning: boolean, pendingMessageCount = 0) => ({
@@ -39,14 +40,14 @@ test("active worker dock shows only running declared dependencies and follows se
     ["mock-current", "Current parent"], ["worker-run", "Compile assets"], ["worker-queue", "Queued review"],
     ["worker-done", "Completed"], ["wrong-parent", "Wrong parent"], ["nonspawn", "Continuation"], ["unavailable", "Unavailable"],
   ];
-  await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: [
+  await seedSessionUiState(page, { sessionOrigins: [
     { sessionId: "worker-run", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
     { sessionId: "worker-queue", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
     { sessionId: "worker-done", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
     { sessionId: "wrong-parent", originSessionId: "mock-older", kind: "spawn", updatedAt: now },
     { sessionId: "nonspawn", originSessionId: "mock-current", kind: "continuation", updatedAt: now },
     { sessionId: "unavailable", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
-  ] } });
+  ] });
   await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({ json: { ok: true, sessions: sessions.map(([id, name]) => ({
     id, name, cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: id === "mock-current", unread: false,
   })) } }));
@@ -106,9 +107,9 @@ test("active worker dock shows only running declared dependencies and follows se
 });
 
 test("pinned parent restores waiting after reload before opening, then shows its running pill in every density", async ({ page }) => {
-  await page.request.patch("/api/session-ui-state", { data: {
+  await seedSessionUiState(page, {
     pinnedSessions: [{ id: "mock-current" }, { id: "mock-older" }],
-  } });
+  });
   await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({ json: { ok: true, sessions: [
     { id: "mock-current", name: "Active worker", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: true,
       runtime: runtime(true) },
@@ -182,9 +183,9 @@ test("current parent restores running dependency pills on initial reload in ever
 });
 
 test("declared dependencies hydrate an active dock from the settlement snapshot", async ({ page }) => {
-  await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: [
+  await seedSessionUiState(page, { sessionOrigins: [
     { sessionId: "hydrated-worker", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
-  ] } });
+  ] });
   await page.route(/\/api\/sessions(?:\?.*)?$/, route => route.fulfill({ json: { ok: true, sessions: [
     { id: "mock-current", name: "Current parent", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: true },
     { id: "hydrated-worker", name: "Hydrated worker", cwd: ".", created: now, modified: now, messageCount: 1, isCurrent: false,
@@ -202,9 +203,9 @@ test("declared dependencies hydrate an active dock from the settlement snapshot"
 });
 
 test("dock links navigate to workers and retain vertical clearance above the context meter", async ({ page }) => {
-  await page.request.patch("/api/session-ui-state", { data: { sessionOrigins: [
+  await seedSessionUiState(page, { sessionOrigins: [
     { sessionId: "mock-older", originSessionId: "mock-current", kind: "spawn", updatedAt: now },
-  ] } });
+  ] });
   await page.goto("/");
   await dependencyEvent(page, "mock-current", ["mock-older"]);
   // Populate canonical session metadata (including cwd) before the runtime event.

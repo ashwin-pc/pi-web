@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile, unlink } from "node:fs/promises";
 import { avatarFile, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar } from "./server/appIdentity.js";
-import { extname, join, resolve } from "node:path";
+import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
@@ -11,7 +11,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { HttpError } from "./server/shared/httpError.js";
-import { createSessionUiStateStore, defaultSessionUiState, SessionUiStateShrinkRejected } from "./server/sessionUiState.js";
+import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
@@ -373,6 +373,8 @@ function bindViewerSocket(clientId: string, ws: WebSocket) {
   if (connection) ws.on("close", () => sessionService.disconnectViewer(connection));
 }
 
+const createdSessionUiWarnings = new Map<string, string>();
+
 const mockHarness = createMockHarness({
   piCwd,
   broadcast,
@@ -390,12 +392,12 @@ function additionalExtensionPaths(cwd = piCwd) {
 
 async function transferCurrentTabUiState(oldSessionId: string, newSessionId: string, _newLabel: string, cwd: string) {
   if (!oldSessionId || !newSessionId || oldSessionId === newSessionId) return sessionUiStateStore.read();
-  const current = await sessionUiStateStore.read();
+  const next = await sessionUiStateStore.update((current) => {
   const oldLaneIndex = current.lanes.findIndex((item) => item.sessionId === oldSessionId);
   const oldNote = current.sessionNotes.find((item) => item.sessionId === oldSessionId);
   const oldMarker = current.sessionMarkers.find((item) => item.sessionId === oldSessionId);
   const hasUnreadState = current.sessionUnreadStates.some((item) => item.sessionId === oldSessionId || item.sessionId === newSessionId);
-  if (oldLaneIndex === -1 && !oldNote && !oldMarker && !hasUnreadState) return current;
+  if (oldLaneIndex === -1 && !oldNote && !oldMarker && !hasUnreadState) return undefined;
 
   const lanes = current.lanes.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
   if (oldLaneIndex !== -1) {
@@ -413,7 +415,8 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
   }
   const sessionUnreadStates = current.sessionUnreadStates.filter((item) => item.sessionId !== oldSessionId && item.sessionId !== newSessionId);
 
-  const next = await sessionUiStateStore.write({ ...current, lanes, sessionNotes, sessionMarkers, sessionUnreadStates });
+  return { ...current, lanes, sessionNotes, sessionMarkers, sessionUnreadStates };
+  });
   broadcast({ type: "session_ui_state_changed", sessionUiState: next });
   return next;
 }
@@ -421,12 +424,11 @@ async function transferCurrentTabUiState(oldSessionId: string, newSessionId: str
 async function applyDefaultSessionBucket(sessionId: string) {
   const color = (await settingsStore.read()).defaults.sessionBucketColor;
   if (!sessionId || !color) return undefined;
-  const current = await sessionUiStateStore.read();
-  if (current.sessionMarkers.some((marker) => marker.sessionId === sessionId)) return current;
-  const sessionUiState = await sessionUiStateStore.write({
-    ...current,
-    sessionMarkers: [{ sessionId, color, updatedAt: new Date().toISOString() }, ...current.sessionMarkers],
-  });
+  const sessionUiState = await sessionUiStateStore.update((current) =>
+    current.sessionMarkers.some((marker) => marker.sessionId === sessionId) ? undefined : {
+      ...current,
+      sessionMarkers: [{ sessionId, color, updatedAt: new Date().toISOString() }, ...current.sessionMarkers],
+    });
   broadcast({ type: "session_ui_state_changed", sessionUiState });
   return sessionUiState;
 }
@@ -471,7 +473,14 @@ sessionService = new LocalSessionService({
       const defaults = (await settingsStore.read()).defaults;
       return { model: defaults.model, thinkingLevel: defaults.thinkingLevel };
     },
-    finalizeCreatedSession: applyDefaultSessionBucket,
+    finalizeCreatedSession: async (sessionId) => {
+      try { await applyDefaultSessionBucket(sessionId); }
+      catch (error) {
+        if (createdSessionUiWarnings.size >= 128) createdSessionUiWarnings.delete(createdSessionUiWarnings.keys().next().value!);
+        createdSessionUiWarnings.set(sessionId, error instanceof Error ? error.message : String(error));
+        console.warn(`Could not apply default session bucket for ${sessionId}:`, error);
+      }
+    },
   },
   globalCwd: () => piCwd,
   clientCount: () => realtimeHub.clientCount,
@@ -642,9 +651,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         setRecommendedAddonsExtensionEnabled(body.recommendedAddonsExtension === true);
         resetMockSessions();
         settlementTracker.reset();
-        await sessionUiStateStore.write(defaultSessionUiState);
+        const resetUiState = await sessionUiStateStore.reset();
         session = await sessionService.initialize();
-        broadcast({ type: "session_ui_state_changed", sessionUiState: defaultSessionUiState });
+        broadcast({ type: "session_ui_state_changed", sessionUiState: resetUiState });
         broadcast({ type: "state_changed", ...currentState() });
         return sendJson(res, 200, { ok: true });
       }
@@ -1013,9 +1022,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, sessionUiState });
         } catch (error) {
-          if (error instanceof SessionUiStateShrinkRejected) {
-            return sendJson(res, 409, { ok: false, error: "refusing to shrink session UI state", details: error.details });
-          }
+          if (error instanceof SessionUiStateConflictError) return sendJson(res, 409, { ok: false, error: error.message, revision: error.revision });
+          if (error instanceof SessionUiStatePreconditionError) return sendJson(res, error.status, { ok: false, error: error.message });
+          if (error instanceof SessionUiStateUnavailableError) return sendJson(res, 503, { ok: false, error: error.message });
           throw error;
         }
       }
@@ -1038,11 +1047,17 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
         try {
           const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
-          const sessionUiState = await sessionUiStateStore.removeSession(result.id);
+          let sessionUiStateWarning: string | undefined;
+          try {
+            const sessionUiState = await sessionUiStateStore.removeSession(result.id);
+            broadcast({ type: "session_ui_state_changed", sessionUiState });
+          } catch (error) {
+            sessionUiStateWarning = error instanceof Error ? error.message : String(error);
+            console.warn(`Could not remove session UI metadata for ${result.id}:`, error);
+          }
           settlementTracker.clear(result.id);
           broadcast({ type: "session_deleted", sessionId: result.id, disposition: result.disposition });
-          broadcast({ type: "session_ui_state_changed", sessionUiState });
-          return sendJson(res, 200, { ok: true, ...result });
+          return sendJson(res, 200, { ok: true, ...result, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
         } catch (error: any) {
           return sendJson(res, Number(error?.status) || 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -1183,11 +1198,19 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const result = await sessionService.executeCommand(target.sessionId, command);
         const created = result.state.sessionId !== target.sessionId;
         const decorated = await decorateServiceState(result.state);
-        const state = created && /^\/+clear(?:\s|$)/i.test(command)
-          ? { ...decorated, sessionUiState: await transferCurrentTabUiState(target.sessionId, decorated.sessionId, decorated.sessionTitle || "New session", decorated.cwd) }
-          : decorated;
+        let state: typeof decorated & { sessionUiState?: Awaited<ReturnType<typeof sessionUiStateStore.read>> } = decorated;
+        let sessionUiStateWarning = createdSessionUiWarnings.get(decorated.sessionId);
+        createdSessionUiWarnings.delete(decorated.sessionId);
+        if (created && /^\/+clear(?:\s|$)/i.test(command)) {
+          try {
+            state = { ...decorated, sessionUiState: await transferCurrentTabUiState(target.sessionId, decorated.sessionId, decorated.sessionTitle || "New session", decorated.cwd) };
+          } catch (error) {
+            sessionUiStateWarning = error instanceof Error ? error.message : String(error);
+            console.warn(`Could not transfer session UI metadata for ${decorated.sessionId}:`, error);
+          }
+        }
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
-        return sendJson(res, 200, { ok: true, message: result.message, state });
+        return sendJson(res, 200, { ok: true, message: result.message, state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
       if (method === "POST" && url.pathname === "/api/shell") {
@@ -1306,7 +1329,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           }
         }
         broadcast({ type: "state_changed", ...state });
-        return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}) });
+        const sessionUiStateWarning = createdSessionUiWarnings.get(state.sessionId);
+        createdSessionUiWarnings.delete(state.sessionId);
+        return sendJson(res, 200, { ok: true, ...state, ...(originWarning ? { originWarning } : {}), ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
       if (method === "POST" && url.pathname === "/api/session/cwd") {
@@ -1347,7 +1372,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
+    const status = error instanceof SessionUiStateUnavailableError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));
