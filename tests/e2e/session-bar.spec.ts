@@ -67,13 +67,18 @@ test.describe("session quick bar", () => {
     await older.click();
     await held.seen;
     await older.locator(".sessionBarTabAction").click();
+    try {
+      // The mark-read response is held, so the queued unpin cannot persist yet.
+      // The projected tab must still reflect the newer gesture immediately.
+      await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(0);
+    } finally {
+      held.release();
+    }
+    await held.delivery;
     await expect.poll(async () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.some((entry: { sessionId: string }) => entry.sessionId === "mock-older");
     }).toBe(false);
-
-    held.release();
-    await held.delivery;
     await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(0);
   });
 
@@ -84,13 +89,16 @@ test.describe("session quick bar", () => {
     await page.locator(".sessionItem").filter({ hasText: "Older mock session" }).locator(".sessionItemNavBtn").click();
     await held.seen;
     await page.locator(".sessionBarTab.temporary .sessionBarTabAction").click();
+    try {
+      await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(1);
+    } finally {
+      held.release();
+    }
+    await held.delivery;
     await expect.poll(async () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.some((entry: { sessionId: string; lane: string }) => entry.sessionId === "mock-older" && entry.lane === "pinned");
     }).toBe(true);
-
-    held.release();
-    await held.delivery;
     await expect(page.locator(".sessionBarTab.pinned").filter({ hasText: "Older mock session" })).toHaveCount(1);
   });
 
@@ -679,13 +687,16 @@ test.describe("session quick bar", () => {
     const row = page.locator('.sessionLaneDrawerCard[data-session-id="mock-older"]');
     await row.locator(".sessionLaneDrawerActions").click();
     await page.getByRole("button", { name: "Move to Bookmarks" }).click();
+    try {
+      await expect(page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] [data-session-id="mock-older"]')).toHaveCount(1);
+    } finally {
+      held.release();
+    }
+    await held.delivery;
     await expect.poll(async () => {
       const value = await (await page.request.get("/api/session-ui-state")).json();
       return value.sessionUiState.lanes.find((entry: { sessionId: string; lane: string }) => entry.sessionId === "mock-older")?.lane;
     }).toBe("bookmarks");
-
-    held.release();
-    await held.delivery;
     await page.keyboard.press("Escape");
     await page.locator(".sessionLayersButton").click();
     await expect(page.locator('.sessionLaneDrawerSection[data-lane="bookmarks"] [data-session-id="mock-older"]')).toHaveCount(1);
