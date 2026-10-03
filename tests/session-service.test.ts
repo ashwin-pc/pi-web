@@ -181,6 +181,19 @@ describe("LocalSessionService contract", () => {
     expect((await service.recover(initial.sessionId)).sessionId).toBe(initial.sessionId);
   });
 
+  it("fresh recovery listing bypasses an older in-flight scan", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let calls = 0;
+    const { service } = await fixtureService({ list: async () => { if (++calls === 1) await gate; return []; } });
+    const old = service.list();
+    const fresh = await service.listSnapshot([], { fresh: true });
+    expect(calls).toBe(2);
+    expect(fresh.coveredCwds).toHaveLength(1);
+    release();
+    await old;
+  });
+
   it("lists coverage only for successful CWD scans", async () => {
     const { service, cwd } = await fixtureService({ list: async (path) => {
       if (path === "/unavailable") throw new Error("unavailable");

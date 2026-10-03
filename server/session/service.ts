@@ -790,14 +790,14 @@ export class LocalSessionService implements SessionService {
     return (await this.listSnapshot(extraCwds)).sessions;
   }
 
-  async listSnapshot(extraCwds: string[] = []): Promise<{ sessions: SessionInfoDto[]; coveredCwds: string[] }> {
+  async listSnapshot(extraCwds: string[] = [], options: { fresh?: boolean } = {}): Promise<{ sessions: SessionInfoDto[]; coveredCwds: string[] }> {
     if (this.noSession) return { sessions: [], coveredCwds: [] };
     const cwds = this.knownCwds();
     for (const cwd of extraCwds) if (typeof cwd === "string" && cwd.trim()) cwds.add(resolve(cwd));
     const orderedCwds = Array.from(cwds).sort();
     const key = orderedCwds.join("\n");
     const pending = this.sessionListRequests.get(key);
-    if (pending) return pending;
+    if (pending && !options.fresh) return pending;
     const request = (async () => {
       const coveredCwds: string[] = [];
       const groups = await Promise.all(orderedCwds.map(async (cwd) => {
@@ -810,9 +810,9 @@ export class LocalSessionService implements SessionService {
       }));
       return { sessions: groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified)), coveredCwds: coveredCwds.sort() };
     })();
-    this.sessionListRequests.set(key, request);
+    if (!options.fresh) this.sessionListRequests.set(key, request);
     try { return await request; }
-    finally { this.sessionListRequests.delete(key); }
+    finally { if (this.sessionListRequests.get(key) === request) this.sessionListRequests.delete(key); }
   }
 
   async create(sessionId: string | undefined, cwd?: string) {

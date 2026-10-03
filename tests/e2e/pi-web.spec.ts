@@ -457,6 +457,31 @@ test.describe("composer layout", () => {
     expect(requests.filter((id) => id === "mock-current")).toHaveLength(1);
   });
 
+  test("a selected deletion after a successful snapshot reconciles the selection", async ({ page }) => {
+    await installControllableWebSocket(page);
+    const requests: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    await page.route("**/api/recovery-snapshot**", async (route) => {
+      const id = new URL(route.request().url()).searchParams.get("sessionId")!;
+      requests.push(id);
+      if (id === "mock-current" && requests.length > 1) { await route.fulfill({ status: 404, json: { error: "deleted" } }); return; }
+      const response = await route.fetch();
+      const body = await response.json();
+      if (requests.length === 1) await gate;
+      await route.fulfill({ response, json: { ...body, startCheckpoint: { ...body.startCheckpoint, epoch: "test" }, endCheckpoint: { ...body.endCheckpoint, epoch: "test" } } });
+    });
+    await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 10, epoch: "test" }));
+    await expect.poll(() => requests.length).toBe(1);
+    await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "session_deleted", sessionId: "mock-current", seq: 1000000 }));
+    release();
+    await expect.poll(() => requests.some((id) => id !== "mock-current")).toBe(true);
+    await expect(page.locator("#connectionStatus")).toBeHidden();
+    expect(requests.filter((id) => id === "mock-current")).toHaveLength(2);
+  });
+
   test("a session switch invalidates an in-flight recovery snapshot", async ({ page }) => {
     await installControllableWebSocket(page);
     let releaseSnapshot!: () => void;

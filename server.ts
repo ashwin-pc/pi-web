@@ -1001,7 +1001,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const [settings, models, listing] = await Promise.all([
           settingsStore.read(),
           sessionService.models(target.sessionId),
-          sessionService.listSnapshot(recoveryCwds),
+          sessionService.listSnapshot(recoveryCwds, { fresh: true }),
         ]);
         const recovery = await sessionService.recover(target.sessionId);
         const state = decorateState(recovery.state, target, true);

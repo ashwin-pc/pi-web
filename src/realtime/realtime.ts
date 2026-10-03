@@ -844,6 +844,7 @@ export function createRealtime(options: {
         state.lastRealtimeSeq = end.seq;
         recoveryBuffer = undefined;
         for (const event of buffered) {
+          if (generation !== socketGeneration || attempt !== recoveryGeneration) return;
           if (event.type === "interaction_request" && resolvedInteractions.has(event.id)) continue;
           if (typeof event.seq !== "number") continue;
           if (sourceCovered(event) && snapshot.sourceGeneration) {
@@ -852,7 +853,7 @@ export function createRealtime(options: {
             if (sourcePosition(event).cursor > snapshot.sourceCursor) handleRealtimeData(event);
           } else if (event.seq > start.seq) handleRealtimeData(event);
         }
-        status.markWebSocketOpen();
+        if (generation === socketGeneration && attempt === recoveryGeneration) status.markWebSocketOpen();
       } catch (error) {
         if (abort.signal.aborted) return;
         if (generation === socketGeneration && attempt === recoveryGeneration && sessionId !== state.currentSessionId) {
@@ -896,7 +897,15 @@ export function createRealtime(options: {
         return;
       }
       if (data.type === "session_deleted") {
+        const deletedId = String(data.sessionId || "");
         sessions.removeSession(String(data.sessionId || ""));
+        if (deletedId === state.currentSessionId) {
+          // Use the same authoritative 404/fallback reconciliation whether the
+          // deletion was missed before the snapshot or replayed after its cut.
+          status.markSyncRequired();
+          recoveryEpoch = state.lastRealtimeEpoch;
+          restartForSelectedSession();
+        }
         return;
       }
       if (data.type === "session_runtime_changed") {

@@ -288,7 +288,7 @@ export interface SessionService {
   invokeGitTab(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   invokePanel(sessionId: string, input: Record<string, unknown>): Promise<Record<string, unknown>>;
   list(extraCwds?: string[]): Promise<SessionInfoDto[]>;
-  listSnapshot(extraCwds?: string[]): Promise<{ sessions: SessionInfoDto[]; coveredCwds: string[] }>;
+  listSnapshot(extraCwds?: string[], options?: { fresh?: boolean }): Promise<{ sessions: SessionInfoDto[]; coveredCwds: string[] }>;
   create(previousSessionId: string | undefined, cwd?: string): Promise<BaseSessionStateDto>;
   open(sessionId: string, cwd?: string): Promise<BaseSessionStateDto>;
   delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto>;
