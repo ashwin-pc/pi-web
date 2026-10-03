@@ -1,11 +1,35 @@
 import { describe, expect, it } from "vitest";
-import { hasAnySessionUiState, normalizeSessionUiState, parseSessionUiStateSnapshot, sessionUiUnavailableWarning, shouldMigrateLocalUiState } from "../src/app/types.js";
+import { hasAnySessionUiState, normalizeSessionUiState, parseSessionUiStateSnapshot, sessionUiMutationWarning, sessionUiUnavailableWarning, shouldMigrateLocalUiState } from "../src/app/types.js";
 
 const localState = normalizeSessionUiState({
   lanes: [{ sessionId: "legacy-pin", lane: "pinned", since: "2025-01-01T00:00:00.000Z" }],
 });
 
 describe("session UI state first-run migration", () => {
+  it("recognizes a committed create, delete, or clear warning without discarding the successful session ID", () => {
+    const created = { ok: true, sessionId: "new-chat", messages: [], sessionUiStateWarning: "  preferences write failed  " };
+    const deleted = { ok: true, id: "deleted-chat", disposition: "trashed", sessionUiStateWarning: "preferences delete failed" };
+    const cleared = { ok: true, state: { sessionId: "cleared-chat", messages: [] }, sessionUiStateWarning: "preferences transfer failed" };
+    expect(sessionUiMutationWarning(created)).toBe("preferences write failed");
+    expect(created.sessionId).toBe("new-chat");
+    expect(sessionUiMutationWarning(deleted)).toBe("preferences delete failed");
+    expect(deleted.id).toBe("deleted-chat");
+    expect(sessionUiMutationWarning(cleared)).toBe("preferences transfer failed");
+    expect(cleared.state.sessionId).toBe("cleared-chat");
+    expect(cleared.state.messages).toEqual([]);
+  });
+
+  it("ignores failed, malformed, unrelated, or warning-free mutation responses", () => {
+    for (const response of [
+      { ok: false, sessionId: "new", sessionUiStateWarning: "failure" },
+      { ok: true, sessionUiStateWarning: "failure" },
+      { ok: true, state: { sessionId: 42 }, sessionUiStateWarning: "failure" },
+      { ok: true, id: " ", sessionUiStateWarning: "failure" },
+      { ok: true, id: "deleted", sessionUiStateWarning: "  " },
+      { ok: true, state: { sessionId: "new" }, sessionUiStateAvailability: "unavailable" },
+      null, [], "warning",
+    ]) expect(sessionUiMutationWarning(response)).toBeUndefined();
+  });
   it("recognizes only explicit unavailable chat responses without inventing UI state", () => {
     const chat = { ok: true, sessionId: "live-chat", messages: [{ role: "assistant", content: "hello" }],
       sessionUiStateAvailability: "unavailable", sessionUiStateWarning: "Preferences storage unavailable" };

@@ -1,6 +1,6 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
-import { clearToken, saveToken, writeActiveSessionIdToUrl } from "../app/types.js";
+import { clearToken, saveToken, sessionUiMutationWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
 import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
@@ -20,18 +20,6 @@ type BarcodeDetectorLike = {
 type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
 
 const restoreFocusStorageKey = "pi-web-composer-restore-focus";
-
-/** A committed command may succeed even when its optional UI metadata write fails. */
-export function committedCommandUiWarning(value: unknown): string | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const response = value as Record<string, unknown>;
-  const session = response.state;
-  if (response.ok !== true || !session || typeof session !== "object" || Array.isArray(session)
-    || typeof (session as Record<string, unknown>).sessionId !== "string"
-    || !(session as Record<string, unknown>).sessionId) return undefined;
-  const warning = response.sessionUiStateWarning;
-  return typeof warning === "string" && warning.trim() ? warning : undefined;
-}
 
 export type ComposerController = {
   init: () => void;
@@ -723,7 +711,7 @@ export function createComposer(options: {
       if (resetsSession && data.state.sessionId) writeActiveSessionIdToUrl(data.state.sessionId);
       if (data.state.thinkingLevels) updateThinkingOptions(data.state.thinkingLevels);
     }
-    const sessionUiStateWarning = committedCommandUiWarning(data);
+    const sessionUiStateWarning = sessionUiMutationWarning(data);
     if (sessionUiStateWarning) options.onSessionUiStateWarning(sessionUiStateWarning);
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);

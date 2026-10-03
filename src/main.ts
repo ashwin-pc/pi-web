@@ -695,7 +695,7 @@ sessions = createSessions({
   refreshMessages,
   refreshState,
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
-  onUiStateUnavailable: (warning) => showPreferencesWarning(warning),
+  onUiStateUnavailable: handleSessionUiStateWarning,
   onDerivedSessionStateChanged: () => {
     // Rehydrate inactive pinned parents too. Realtime dependency declarations
     // are not replayed after a browser reconnect, while pinned indicators must

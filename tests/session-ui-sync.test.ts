@@ -36,6 +36,32 @@ function deferred<T>() {
 }
 
 describe("session UI state causal sync", () => {
+  it("a captured auto-pin after a held initial GET uses the one coordinator only when ready", async () => {
+    for (const becomesUnavailable of [false, true]) {
+      const initial = deferred<SessionUiState>();
+      const read = vi.fn(() => initial.promise);
+      let stored = state({ lanes: [lane("existing")] });
+      const patch = vi.fn(async (value: Partial<SessionUiState> & { expectedRevision: number }) => {
+        stored = state({ ...stored, ...value, revision: stored.revision + 1 });
+        return { status: 200, state: stored };
+      });
+      const coordinator = new SessionUiCoordinator({ read, patch, postUnread: vi.fn() }, vi.fn(), vi.fn());
+      const starting = coordinator.start(state());
+      const newSessionId = "real-created-session";
+      // A successful chat response captures its new ID, but does not await UI GET.
+      const autoPin = starting.then(async () => {
+        if (coordinator.ready) return coordinator.mutate({ lanes: [...coordinator.projected!.lanes, lane(newSessionId)] });
+        return false;
+      });
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(patch).not.toHaveBeenCalled();
+      if (becomesUnavailable) coordinator.markUnavailable();
+      initial.resolve(stored);
+      expect(await autoPin).toBe(!becomesUnavailable);
+      expect(patch).toHaveBeenCalledTimes(becomesUnavailable ? 0 : 1);
+      expect(stored.lanes.map((entry) => entry.sessionId)).toEqual(becomesUnavailable ? ["existing"] : ["existing", newSessionId]);
+    }
+  });
   it("does not refresh a held initialization conflict after read-only mode, but accepts a committed initialization", async () => {
     for (const responseStatus of [409, 200]) {
       const held = deferred<{ status: number; state?: SessionUiState }>();

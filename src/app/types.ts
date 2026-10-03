@@ -421,6 +421,20 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
 
 export type SessionUiStateResponse = { ok: boolean; status?: number; sessionUiState?: unknown };
 
+/** A committed create/delete/clear can carry an optional preferences-write failure. */
+export function sessionUiMutationWarning(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const response = value as Record<string, unknown>;
+  if (response.ok !== true) return undefined;
+  const state = response.state;
+  const sessionId = state && typeof state === "object" && !Array.isArray(state)
+    ? (state as Record<string, unknown>).sessionId : undefined;
+  const committedId = response.sessionId ?? response.id ?? sessionId;
+  if (typeof committedId !== "string" || !committedId.trim()) return undefined;
+  const warning = response.sessionUiStateWarning;
+  return typeof warning === "string" && warning.trim() ? warning.trim().slice(0, 240) : undefined;
+}
+
 /** Only an explicit server availability marker is authoritative; omission alone is not first-run state. */
 export function sessionUiUnavailableWarning(value: unknown): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;

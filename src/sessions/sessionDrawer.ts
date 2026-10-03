@@ -6,7 +6,7 @@ import type { RightPanelHandle, RightPanelManager } from "../layout/rightPanel.j
 import { sessionDrawerAutoCloseQuery } from "../layout/responsive.js";
 import type { AppState, SessionInfo, SessionLaneEntry, SessionLaneId, SessionMarkerColorId, SessionUiState } from "../app/types.js";
 import { sessionRuntime, type SessionStateController } from "../app/sessionState.js";
-import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, sessionUiUnavailableWarning, writeActiveSessionIdToUrl } from "../app/types.js";
+import { defaultSessionUiState, normalizeSessionUiState, orderedSessionMarkerColors, persistCollapsedSessionFolders, persistExpandedWorkerBranches, sessionFolderPreviewLimit, sessionMarkerColors, sessionUiStateFromResponse, sessionUiMutationWarning, sessionUiUnavailableWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import { SessionUiCoordinator, type UiIntent } from "./sessionUiSync.js";
 import { activeWorkersFrom, runningChildIdsOf, sessionIndicatorKind, waitingInfoFrom, type ActiveWorker, type WaitingInfo } from "./lineage.js";
 import { buildSpawnWorkerForest, deriveWorkerBranchView, type WorkerBranchView } from "./workerBranches.js";
@@ -201,6 +201,8 @@ export function createSessions(options: {
   const onDerivedSessionStateChanged = options.onDerivedSessionStateChanged;
 
   let cachedSessions: SessionInfo[] = [];
+  const pendingAutoPins = new Map<string, string>();
+  let uiStateInitialization: Promise<boolean> | undefined;
   const knownSessionNames = new Map<string, string>();
   let sessionRefreshPromise: Promise<void> | undefined;
   // TTL dedupe (issue #112): a message_end-driven refetch arriving within a short
@@ -269,6 +271,7 @@ export function createSessions(options: {
   function commitLanes(order?: UiIntent) { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; syncPinnedProjection(); persistSessionUiState({ lanes: state.lanes }, order); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function commitSessionNotes() { const drawerScrollTop = document.querySelector<HTMLElement>(".sessionLaneDrawerBody")?.scrollTop; persistSessionUiState({ sessionNotes: state.sessionNotes }); renderSessionList(cachedSessions); renderSessionBar(); if (drawerScrollTop !== undefined) openLaneDrawer(drawerScrollTop); }
   function setSessionNote(sessionId: string, value: string) {
+    if (!uiSync.ready) return;
     const note = value.trim();
     if (note === (noteForSession(sessionId) || "")) return;
     state.sessionNotes = note
@@ -301,6 +304,9 @@ export function createSessions(options: {
   }
   function editSessionNote(sessionId: string) { openSessionNoteEditor("Session note", noteForSession(sessionId) || "", (note) => setSessionNote(sessionId, note)); }
   function moveToLane(sessionId: string, lane: SessionLaneId, opts: { cwd?: string } = {}) {
+    // A successful new chat can report a failed metadata write. Do not update
+    // local pins or focus when the authoritative preferences writer is read-only.
+    if (!uiSync.ready) return;
     const previous = laneEntry(sessionId);
     const entry: SessionLaneEntry = { sessionId, lane, ...(opts.cwd || previous?.cwd ? { cwd: opts.cwd || previous?.cwd } : {}), since: previous?.lane === lane ? previous.since : new Date().toISOString() };
     const promptForNote = lane === "parked" && previous?.lane !== "parked" && !noteForSession(sessionId);
@@ -322,7 +328,7 @@ export function createSessions(options: {
       setSessionNote(sessionId, note);
     });
   }
-  function removeFromLanes(sessionId: string) { const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; const lane = laneOf(sessionId); state.lanes = next; if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane]; saveLaneFocus(); commitLanes(); }
+  function removeFromLanes(sessionId: string) { if (!uiSync.ready) return; const next = state.lanes.filter((entry) => entry.sessionId !== sessionId); if (next.length === state.lanes.length) return; const lane = laneOf(sessionId); state.lanes = next; if (lane && focusedSessionByLane[lane] === sessionId) delete focusedSessionByLane[lane]; saveLaneFocus(); commitLanes(); }
   function isStale(entry: SessionLaneEntry) { return entry.lane === "parked" && Date.now() - new Date(entry.since).getTime() > 14 * 864e5; }
   const sessionInspector = buildSessionInspector({
     item: (sessionId) => { const live = cachedSessions.find((entry) => entry.id === sessionId); return { sessionId, name: live ? sessionTitle(live) : titleForSessionId(sessionId), lane: laneOf(sessionId), bucket: markerForSession(sessionId)?.color, note: noteForSession(sessionId), unread: Boolean(unreadStateForSession(sessionId)) }; },
@@ -454,6 +460,7 @@ export function createSessions(options: {
       startPath,
       getBookmarks: () => state.favoriteFolders,
       setBookmarks: (favoriteFolders) => {
+        if (!uiSync.ready) return;
         state.favoriteFolders = favoriteFolders;
         persistSessionUiState({ favoriteFolders });
       },
@@ -538,7 +545,12 @@ export function createSessions(options: {
       beginTranscriptLoading();
       clearMessages();
       sessionState.applySnapshot(data, { activate: true });
-      if (pinNewSessions && data.sessionId) moveToLane(data.sessionId, "pinned", { cwd: data.cwd || targetCwd });
+      const warning = sessionUiMutationWarning(data);
+      if (warning) options.onUiStateUnavailable?.(warning);
+      if (pinNewSessions && data.sessionId) {
+        if (uiSync.ready) moveToLane(data.sessionId, "pinned", { cwd: data.cwd || targetCwd });
+        else if (!uiSync.unavailable) pendingAutoPins.set(data.sessionId, data.cwd || targetCwd);
+      }
       await refreshState();
       finishTranscriptLoading();
     }
@@ -777,9 +789,19 @@ export function createSessions(options: {
     persistSessionUiState({ allowedMarkerColors: Array.from(allowedMarkerColors) });
   }
 
-  async function startUiStateAfterAuth(): Promise<boolean> {
-    await uiSync.start(legacyBootSeed);
-    return uiSync.ready;
+  function startUiStateAfterAuth(): Promise<boolean> {
+    // The authorized /api/state path alone starts the existing coordinator.
+    // A new chat may finish while its first GET is pending: drain only after
+    // that same initialization settles, without holding up chat setup.
+    uiStateInitialization ??= uiSync.start(legacyBootSeed).then(() => {
+      const ready = uiSync.ready;
+      for (const [sessionId, cwd] of pendingAutoPins) {
+        pendingAutoPins.delete(sessionId);
+        if (ready && uiSync.ready && state.sessionsById[sessionId] && !laneEntry(sessionId)) moveToLane(sessionId, "pinned", { cwd });
+      }
+      return uiSync.ready;
+    });
+    return uiStateInitialization.then(() => uiSync.ready);
   }
 
   function unreadStateForSession(sessionId: string) {
@@ -974,6 +996,7 @@ export function createSessions(options: {
   }
 
   function setSessionMarker(sessionId: string, color: SessionMarkerColorId) {
+    if (!uiSync.ready) return;
     const next = { sessionId, color, updatedAt: new Date().toISOString() };
     state.sessionMarkers = [next, ...state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId)];
     renderSessionList(cachedSessions);
@@ -983,6 +1006,7 @@ export function createSessions(options: {
   }
 
   function clearSessionMarker(sessionId: string) {
+    if (!uiSync.ready) return;
     const count = state.sessionMarkers.length;
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== sessionId);
     if (state.sessionMarkers.length === count) return;
@@ -1315,13 +1339,14 @@ export function createSessions(options: {
   }
 
   function pinFolder(cwd: string) {
-    if (isFolderPinned(cwd)) return;
+    if (!uiSync.ready || isFolderPinned(cwd)) return;
     state.pinnedFolders = [...state.pinnedFolders, cwd];
     persistSessionUiState({ pinnedFolders: state.pinnedFolders });
     renderSessionList(cachedSessions);
   }
 
   function unpinFolder(cwd: string) {
+    if (!uiSync.ready) return;
     const pinnedCount = state.pinnedFolders.length;
     state.pinnedFolders = state.pinnedFolders.filter((folder) => folder !== cwd);
     if (state.pinnedFolders.length === pinnedCount) return;
@@ -1542,7 +1567,7 @@ export function createSessions(options: {
     const settleDurationMs = reducedMotion ? 0 : 180;
 
     tab.addEventListener("pointerdown", (downEvent) => {
-      if (sessionBarGestureInFlight || !downEvent.isPrimary) return;
+      if (!uiSync.ready || sessionBarGestureInFlight || !downEvent.isPrimary) return;
       if (downEvent.pointerType === "mouse" && downEvent.button !== 0) return;
       if ((downEvent.target as Element | null)?.closest(".sessionBarTabAction")) return;
 
@@ -1669,6 +1694,7 @@ export function createSessions(options: {
 
       const settle = (commit: boolean) => {
         if (!pressActive) return;
+        commit = commit && uiSync.ready;
         pressActive = false;
         clearListeners();
         suppressTabClickUntil = performance.now() + 400;
@@ -1689,7 +1715,7 @@ export function createSessions(options: {
         }
 
         window.setTimeout(() => {
-          if (commit && newIndex !== originalIndex) {
+          if (commit && uiSync.ready && newIndex !== originalIndex) {
             const visualIds = tabs.map((item) => item.dataset.sessionId).filter((id): id is string => Boolean(id));
             const [draggedId] = visualIds.splice(originalIndex, 1);
             if (draggedId) visualIds.splice(newIndex, 0, draggedId);
@@ -1854,7 +1880,7 @@ export function createSessions(options: {
         copy.append(meta); open.append(copy);
         open.addEventListener("click", () => { if (performance.now() < suppressOpenUntil) return; closeLaneDrawer?.(); void openSessionTab(entry.sessionId, live?.cwd || entry.cwd || state.currentCwd); });
         card.append(open);
-        const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter); dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
+        const dragHandle = document.createElement("button"); dragHandle.type = "button"; dragHandle.className = "sessionLaneDragHandle"; dragHandle.disabled = Boolean(laneDrawerBucketFilter) || !uiSync.ready; dragHandle.title = laneDrawerBucketFilter ? "Show all buckets to reorder sessions" : "Drag to reorder or move between lanes"; dragHandle.setAttribute("aria-label", dragHandle.title); dragHandle.textContent = "⠿"; card.append(dragHandle);
         let dragPointer: number | undefined; let dragStartY = 0; let dragClientY = 0; let dragScrollTop = 0; let dragging = false; let originLane: SessionLaneId = lane;
         let dragRect: DOMRect | undefined; let destinationSlot: HTMLElement | undefined; let dragFrame: number | undefined;
         const reducedReorderMotion = prefersReducedReorderMotion();
@@ -1864,6 +1890,7 @@ export function createSessions(options: {
         };
         const finishDrag = () => {
           if (dragPointer === undefined) return;
+          if (!uiSync.ready) { cancelDrag(); return; }
           clearDragFrame();
           if (dragging && destinationSlot) {
             suppressOpenUntil = performance.now() + 350;
@@ -1960,7 +1987,7 @@ export function createSessions(options: {
         };
         card.addEventListener("session-inspector-open", () => cancelDrag());
         dragHandle.addEventListener("pointerdown", (event) => {
-          if (dragPointer !== undefined || (event.pointerType === "mouse" && event.button !== 0)) return;
+          if (!uiSync.ready || dragPointer !== undefined || (event.pointerType === "mouse" && event.button !== 0)) return;
           dragPointer = event.pointerId; dragStartY = dragClientY = event.clientY; originLane = card.dataset.lane as SessionLaneId || lane; card.classList.add("reorder-pressed");
           window.addEventListener("pointermove", moveDrag, { passive: false }); window.addEventListener("pointerup", endDrag); window.addEventListener("pointercancel", cancelDrag);
         });
@@ -2203,6 +2230,7 @@ export function createSessions(options: {
     if (!res.ok || data.ok === false) throw new Error(data.error || await res.text());
 
     cachedSessions = cachedSessions.filter((session) => session.id !== item.id);
+    pendingAutoPins.delete(item.id);
     sessionState.remove(item.id);
     state.lanes = state.lanes.filter((entry) => entry.sessionId !== item.id);
     state.sessionNotes = state.sessionNotes.filter((entry) => entry.sessionId !== item.id);
@@ -2210,6 +2238,8 @@ export function createSessions(options: {
     state.sessionMarkers = state.sessionMarkers.filter((marker) => marker.sessionId !== item.id);
     renderSessionList(cachedSessions);
     renderSessionBar();
+    const warning = sessionUiMutationWarning(data);
+    if (warning) options.onUiStateUnavailable?.(warning);
     addMessage("system", data.disposition === "trashed" ? "Session moved to trash." : "Session deleted.");
   }
 
