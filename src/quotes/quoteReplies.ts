@@ -276,7 +276,48 @@ export function createQuoteReplies(options: {
     onChange();
   }
 
+  // Animation state only: footer visibility remains derived from .editing.open.
+  let transition: ViewTransition | undefined;
+  let transcriptGeneration = 0;
+  let pendingTransitionUpdate: (() => void) | undefined;
+  function transitionEditor(update: () => void) {
+    if (!document.startViewTransition || matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      update();
+      return;
+    }
+    // Rapid interactions must not queue stale snapshots or delay an editor action.
+    if (transition) {
+      transition.skipTransition();
+      pendingTransitionUpdate?.();
+      update();
+      return;
+    }
+    document.documentElement.classList.add("quoteReplyTransition");
+    const generation = transcriptGeneration;
+    const sessionId = getSessionId();
+    let applied = false;
+    const apply = () => {
+      if (applied) return;
+      applied = true;
+      if (pendingTransitionUpdate === apply) pendingTransitionUpdate = undefined;
+      // Apply once, only to the originating transcript/session.
+      if (generation === transcriptGeneration && sessionId === getSessionId()) update();
+    };
+    pendingTransitionUpdate = apply;
+    transition = document.startViewTransition(apply);
+    // skipTransition() rejects ready during normal rapid actions and teardown.
+    void transition.ready.catch(() => {});
+    void transition.finished.catch(() => {}).finally(() => {
+      transition = undefined;
+      document.documentElement.classList.remove("quoteReplyTransition");
+    });
+  }
+
   function removeReference(reference: QuoteReference) {
+    transitionEditor(() => removeReferenceImmediately(reference));
+  }
+
+  function removeReferenceImmediately(reference: QuoteReference) {
     if (reference.submitted) return;
     reference.mark.replaceWith(...reference.mark.childNodes);
     reference.pin.remove();
@@ -287,6 +328,14 @@ export function createQuoteReplies(options: {
   }
 
   function saveReference(reference: QuoteReference) {
+    if (!reference.note.querySelector<HTMLInputElement>("input")!.value.trim()) {
+      saveReferenceImmediately(reference);
+      return;
+    }
+    transitionEditor(() => saveReferenceImmediately(reference));
+  }
+
+  function saveReferenceImmediately(reference: QuoteReference) {
     const input = reference.note.querySelector<HTMLInputElement>("input")!;
     const question = input.value.trim();
     if (!question) {
@@ -406,6 +455,7 @@ export function createQuoteReplies(options: {
       if (event.key === "Enter") { event.preventDefault(); saveReference(reference); }
     });
     note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
+    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
     note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
       note.classList.remove("saved");
       note.classList.add("editing", "open");
@@ -504,6 +554,7 @@ export function createQuoteReplies(options: {
       }
     });
     note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
+    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
     note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
       if (reference.submitted) return;
       note.classList.remove("saved");
@@ -523,7 +574,7 @@ export function createQuoteReplies(options: {
   }
 
   toolbar.addEventListener("pointerdown", (event) => event.preventDefault());
-  reply.addEventListener("click", createReference);
+  reply.addEventListener("click", () => transitionEditor(createReference));
   messagesEl.addEventListener("pointerup", () => {
     if (!isMobileSelection()) window.setTimeout(showSelection);
   });
@@ -613,6 +664,11 @@ export function createQuoteReplies(options: {
       } };
     },
     clear() {
+      // Finish a same-session action before its draft is flushed and DOM removed.
+      // The captured session check rejects this action during a session switch.
+      pendingTransitionUpdate?.();
+      transcriptGeneration += 1;
+      transition?.skipTransition();
       // Transcript teardown only clears rendered UI. Draft deletion is reserved
       // for explicit submission/removal paths.
       drafts.flush();
