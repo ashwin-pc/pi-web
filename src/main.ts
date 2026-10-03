@@ -561,8 +561,8 @@ async function applyRecoverySnapshot(snapshot: {
   sessions.applySessionUiState(snapshot.sessionUiState);
   sessions.applySessionList(snapshot.sessions, snapshot.listingComplete !== false);
   for (const active of snapshot.activeStates || []) sessionState.applySnapshot(active);
-  modelSettings.populateModelSelect(snapshot.models?.models || [], snapshot.state?.modelKey || state.currentModelKey);
   sessionState.applySnapshot(snapshot.state, { activate: true });
+  modelSettings.populateModelSelect(snapshot.models?.models || [], state.currentModelKey);
   const runtime = sessionRuntime(state);
   await messages.refreshMessages({
     sessionId,

@@ -255,6 +255,7 @@ test.describe("composer layout", () => {
       const body = await response.json();
       await route.fulfill({ response, json: {
         ...body,
+        state: { ...body.state, model: { provider: "mock", id: "other" } },
         startCheckpoint: { epoch: "test", seq: 100 },
         endCheckpoint: { epoch: "test", seq: 200 },
         sourceGeneration: "test-source",
@@ -267,6 +268,7 @@ test.describe("composer layout", () => {
       } });
     });
     await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
     await page.locator("#prompt").fill("draft survives background recovery");
     await page.locator("#promptForm").hover();
     await page.locator("#expandButton").click();
@@ -284,6 +286,7 @@ test.describe("composer layout", () => {
     releaseSnapshot();
 
     await expect(page.locator("#connectionStatus")).toBeHidden();
+    await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
     await expect(page.locator("#prompt")).toHaveValue("draft survives background recovery");
     await expect(page.locator("#promptForm")).toHaveClass(/expanded/);
     await expect.poll(() => page.locator("#messages").evaluate((element) => element.scrollTop)).toBe(scrollBefore);
@@ -328,6 +331,7 @@ test.describe("composer layout", () => {
       } });
     });
     await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
     await page.evaluate(() => {
       (window as any).__captureRecoveryRetry = true;
       (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "test" });
@@ -358,6 +362,7 @@ test.describe("composer layout", () => {
       } });
     });
     await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "hello", epoch: "old-host", seq: 100, sessionId: "mock-current" }));
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emitClose());
     await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.length)).toBe(2);
@@ -391,6 +396,7 @@ test.describe("composer layout", () => {
       } });
     });
     await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
     await page.locator("#prompt").fill("restart draft");
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 100, epoch: "host" }));
     await expect.poll(() => requests).toBe(1);
@@ -415,6 +421,7 @@ test.describe("composer layout", () => {
       await route.fulfill({ response, json: { ...body, state: { ...body.state, sessionTitle: "STALE RECOVERY" } } });
     });
     await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 10, epoch: "test" }));
     await expect.poll(() => snapshotStarted).toBe(true);
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emitClose());
@@ -435,6 +442,7 @@ test.describe("composer layout", () => {
       await route.fulfill({ response });
     });
     await page.goto("/");
+    await expect.poll(() => page.evaluate(() => (window as any).__recoverySockets.at(-1)?.readyState)).toBe(1);
     await page.evaluate(() => (window as any).__recoverySockets.at(-1).emit({ type: "sync_required", latestSeq: 10, epoch: "test" }));
     await expect.poll(() => snapshotStarted).toBe(true);
     await page.locator("#sessionButton").click();

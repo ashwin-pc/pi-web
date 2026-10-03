@@ -181,6 +181,17 @@ describe("LocalSessionService contract", () => {
     expect((await service.recover(initial.sessionId)).sessionId).toBe(initial.sessionId);
   });
 
+  it("recovers compaction without a preceding agent start", async () => {
+    const { service, initial, fixture } = await fixtureService();
+    fixture.session.isCompacting = true;
+    fixture.emit({ type: "compaction_start", reason: "manual" });
+    const recovery = await service.recover(initial.sessionId);
+    expect(recovery.state.isCompacting).toBe(true);
+    expect(recovery.transientComplete).toBe(true);
+    expect(recovery.transientEvents).toHaveLength(1);
+    expect(recovery.transientEvents[0]).toMatchObject({ type: "agent", event: { type: "compaction_start" } });
+  });
+
   it("bounds source prefixes and fails closed when persistence cannot project a commit", async () => {
     const { service, initial, fixture } = await fixtureService();
     fixture.session.isStreaming = true;
