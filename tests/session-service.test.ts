@@ -7,6 +7,7 @@ import { SessionActivity } from "../server/session/activity.js";
 import { shallowSessionCwd } from "../server/session/shallowList.js";
 import { createHostSessionEventHandler, decorateHostMessages, resolveWebSocketHelloSession } from "../server/session/hostEvents.js";
 import { mapPiEvent } from "../server/session/piEventMap.js";
+import { parseAttachmentMarkup } from "../server/shared/attachments.js";
 import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
@@ -381,6 +382,27 @@ describe("LocalSessionService contract", () => {
     await service.disposeAll("reset");
     expect(events.map((event) => event.type)).toContain("shutdown");
     for (const event of events) expect(jsonRoundTrip(event)).toStrictEqual(event);
+  });
+
+  it("uses a comments-specific fallback for comment-only prompts", async () => {
+    const { service, initial } = await fixtureService();
+    const prompt = vi.fn(async () => undefined);
+    initial.prompt = prompt;
+    const comment = {
+      type: "quote-reply" as const,
+      id: "quote-reply-1",
+      label: "Excerpt 1",
+      quote: "Use the shared attachment lifecycle.",
+      question: "Why is this important?",
+      source: { messageId: "entry-42", startOffset: 12, endOffset: 48 },
+    };
+
+    await service.prompt(initial.sessionId, { message: "", mode: "steer", attachments: [comment] });
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
+    expect(parseAttachmentMarkup(prompt.mock.calls[0][0])).toMatchObject({
+      text: "Please review the submitted comments.",
+      attachments: [comment],
+    });
   });
 
   it("returns JSON-round-trip-stable projection results and events", async () => {
