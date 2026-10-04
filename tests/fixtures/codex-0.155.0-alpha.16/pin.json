@@ -1,0 +1,7 @@
+{
+  "nativeVersion": "0.155.0-alpha.16",
+  "schemaFile": "schema.json",
+  "sha256": "158bebf618cdc6fb6fa7347307bdc2791b2080ab8a87d13bbf97808731347027",
+  "generatedWith": "codex app-server generate-json-schema --experimental --out <output-directory>",
+  "notes": "Exact installed native schema. Metadata handshake/account-read passed without refresh or inference. Synthetic peers are not proof of real acceptance. Native executable is configured only by the trusted host."
+}

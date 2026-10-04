@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionViewState } from "../src/app/types.js";
-import { emptySessionCandidates, queueNewSession, reusableEmptySession } from "../src/sessions/newSession.js";
+import { emptySessionCandidates as candidates, queueNewSession, reusableEmptySession as reusable } from "../src/sessions/newSession.js";
 
-type State = Parameters<typeof reusableEmptySession>[0];
+type State = Parameters<typeof reusable>[0];
+const legacySelection = { harnessId: "pi", defaultHarnessId: "pi" };
+const emptySessionCandidates = (state: State, cwd: string, draft: (id: string) => boolean, selection: Parameters<typeof candidates>[3] = legacySelection) => candidates(state, cwd, draft, selection);
+const reusableEmptySession = (state: State, cwd: string, draft: (id: string) => boolean, selection = legacySelection) => reusable(state, cwd, draft, selection);
 const cwd = "/repo";
 function empty(id: string): SessionViewState {
   return { id, cwd, stats: { totalMessages: 0 } };
@@ -62,6 +65,22 @@ describe("new-session creation queue", () => {
 });
 
 describe("empty new-session reuse", () => {
+  it("filters active, pinned, cold hydration and post-open rechecks by selected harness", () => {
+    const value = state({ ...empty("active"), harnessId: "codex" }, { ...empty("pi"), harnessId: "pi", stats: undefined }, { ...empty("other"), harnessId: "codex", stats: undefined });
+    const selection = { harnessId: "pi", defaultHarnessId: "pi" };
+    expect(reusableEmptySession(value, cwd, noDraft, selection)).toBeUndefined();
+    expect(emptySessionCandidates(value, cwd, noDraft, { ...selection, hydrateActive: true }).map((session) => session.id)).toEqual(["pi"]);
+    value.sessionsById.pi.stats = { totalMessages: 0 };
+    expect(reusableEmptySession(value, cwd, noDraft, selection)?.id).toBe("pi");
+    value.currentSessionId = "pi";
+    value.sessionsById.pi.harnessId = "codex"; // authoritative recheck changed the candidate
+    expect(reusableEmptySession(value, cwd, noDraft, selection)).toBeUndefined();
+  });
+  it("uses the declared default only for legacy records without harness identity", () => {
+    const value = state(empty("legacy"));
+    expect(reusableEmptySession(value, cwd, noDraft, { harnessId: "codex", defaultHarnessId: "pi" })).toBeUndefined();
+    expect(reusableEmptySession(value, cwd, noDraft, { harnessId: "pi", defaultHarnessId: "pi" })?.id).toBe("legacy");
+  });
   it("prefers the active empty tab, even after an explicit unpin", () => {
     expect(reusableEmptySession(state(empty("active"), empty("other")), cwd, noDraft)?.id).toBe("active");
   });

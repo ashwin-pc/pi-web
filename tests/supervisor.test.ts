@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const projectRoot = new URL("..", import.meta.url).pathname;
 const token = "supervisor-test-token";
 const supervisors = new Set<ChildProcess>();
+const diagnostics = new WeakMap<ChildProcess, string>();
 
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -30,17 +31,18 @@ async function waitFor<T>(
     const value = await operation().catch(() => undefined);
     if (value !== undefined) return value;
     if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
-      throw new Error(`Supervisor exited early: code=${supervisor.exitCode} signal=${supervisor.signalCode}`);
+      throw new Error(`Supervisor exited early: code=${supervisor.exitCode} signal=${supervisor.signalCode}\n${diagnostics.get(supervisor) ?? ""}`);
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  throw new Error(`Timed out after ${timeoutMs}ms`);
+  throw new Error(`Timed out after ${timeoutMs}ms\n${diagnostics.get(supervisor) ?? ""}`);
 }
 
 async function status(port: number, supervisor: ChildProcess) {
   return waitFor(async () => {
     const response = await fetch(`http://127.0.0.1:${port}/__supervisor/status`, {
       headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(2_000),
     });
     if (!response.ok) return undefined;
     return response.json() as Promise<{ childPid?: number; childGeneration: number }>;
@@ -84,10 +86,17 @@ describe("pi-web supervisor", () => {
         PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: token,
         PI_WEB_MOCK: "1",
         PI_WEB_NO_SESSION: "1",
+        // This exercises process/auth lifecycle, not the Vite optimizer/HMR lifecycle.
+        PI_WEB_DEV: "0",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
     supervisors.add(supervisor);
+    // Drain both pipes so verbose child startup cannot stall the owned process;
+    // retain a bounded diagnostic tail rather than hiding startup failures.
+    for (const stream of [supervisor.stdout, supervisor.stderr]) stream?.on("data", (chunk) => {
+      diagnostics.set(supervisor, ((diagnostics.get(supervisor) ?? "") + String(chunk)).slice(-8_192));
+    });
 
     const initial = await status(publicPort, supervisor);
     expect(initial.childPid).toBeTypeOf("number");
@@ -98,7 +107,9 @@ describe("pi-web supervisor", () => {
       if (current.childGeneration <= initial.childGeneration || current.childPid === initial.childPid) return undefined;
       const response = await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
         headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(2_000),
       });
+      await response.body?.cancel();
       return response.ok ? current : undefined;
     }, supervisor);
     expect(recovered.childGeneration).toBe(initial.childGeneration + 1);
@@ -109,7 +120,7 @@ describe("pi-web supervisor", () => {
     await store.update(s => { s.config = { policy: "authenticated", methods: [] }; s.apiTokens.push({ id: "restart", name: "restart", hash: hashSecret("machine-restart"), createdAt: Date.now(), expiresAt: Date.now() + 60_000 }); });
     process.kill(recovered.childPid!, "SIGSTOP");
     try {
-      const denied = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: `Bearer ${token}` } });
+      const denied = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(2_000) });
       expect(denied.status).toBe(401);
       const allowed = await fetch(`http://127.0.0.1:${publicPort}/__supervisor/status`, { headers: { authorization: "Bearer machine-restart" }, signal: AbortSignal.timeout(2000) });
       expect(allowed.status).toBe(200);
@@ -119,6 +130,7 @@ describe("pi-web supervisor", () => {
     const restartResponse = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(2_000),
     });
     expect(restartResponse.status).toBe(202);
 

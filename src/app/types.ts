@@ -1,6 +1,8 @@
 import { defaultAppIdentity, type AppIdentity } from "../../server/shared/appIdentity.js";
 import { parseSessionReference, sessionReferenceHref, type SessionReference } from "../../server/shared/sessionReference.js";
 
+import type { ActiveExecutionDto, HarnessCatalogDto, HarnessId, InteractionRequestDto, NativeSessionRefDto, NativeSettingsDto, SessionActivityDto, SessionPhaseDto, HarnessCapabilitiesDto } from "../../server/session/dto.js";
+
 export type Role = "user" | "assistant" | "tool" | "system";
 
 export type PiEvent = {
@@ -530,6 +532,8 @@ export type SessionRuntimeState = {
 
 export type SessionInfo = {
   id: string;
+  harnessId?: HarnessId;
+  nativeSession?: NativeSessionRefDto;
   name?: string;
   firstMessage?: string;
   created: string;
@@ -544,19 +548,7 @@ export type SessionInfo = {
 
 export type SessionRecord = Partial<Omit<SessionInfo, "id">> & { id: string };
 
-export type HarnessCapabilities = {
-  harness: string;
-  queue: boolean;
-  steering: boolean;
-  followUp: boolean;
-  thinkingLevel: boolean;
-  tree: boolean;
-  compaction: boolean;
-  retry: boolean;
-  bash: boolean;
-  extensions: boolean;
-  interactions: boolean;
-};
+export type HarnessCapabilities = HarnessCapabilitiesDto;
 
 export type SessionQueueState = {
   steering: string[];
@@ -567,6 +559,12 @@ export type SessionQueueState = {
 export type SessionViewState = SessionRecord & {
   snapshotLoaded?: boolean;
   sessionFile?: string;
+  phase?: SessionPhaseDto;
+  activity?: SessionActivityDto;
+  activeExecution?: ActiveExecutionDto;
+  pendingInteractions?: InteractionRequestDto[];
+  nativeSettings?: NativeSettingsDto;
+  error?: string;
   title?: string;
   model?: SessionModel;
   thinkingLevel?: string;
@@ -597,6 +595,7 @@ export type AppState = {
   lanes: SessionLaneEntry[];
   sessionNotes: SessionNote[];
   sessionsById: Record<string, SessionViewState>;
+  harnessCatalog?: HarnessCatalogDto;
   pinnedFolders: string[];
   favoriteFolders: string[];
   sessionMarkers: SessionMarker[];

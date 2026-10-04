@@ -62,6 +62,14 @@ test("system entry exposes extension failures with icon and text", async ({ page
 });
 
 test("renders an interactive system-info contribution and reports invocation failures", async ({ page }) => {
+  let releaseSnapshot!: () => void;
+  const snapshotGate = new Promise<void>((resolve) => { releaseSnapshot = resolve; });
+  let systemRequests = 0;
+  await page.route("**/api/system-info", async (route) => {
+    systemRequests++;
+    await snapshotGate;
+    await route.continue();
+  });
   await page.request.post("/api/mock/state", { data: {
     webContributions: [{ version: 1, key: "runtime-tools", slot: "system-info", kind: "rendered", title: "Runtime tools", label: "Tools" }],
   } });
@@ -81,11 +89,15 @@ test("renders an interactive system-info contribution and reports invocation fai
   });
 
   await page.goto("/");
+  await expect.poll(() => systemRequests).toBe(1);
   await openSessionDrawerFooterAction(page, "System");
   const panel = page.locator("#systemInfoPanel");
   if (!await panel.isVisible()) await page.locator("#settingsNavOverview").click();
+  releaseSnapshot();
   await expect(panel.getByRole("heading", { name: "Runtime tools" })).toBeVisible();
   await expect(panel.getByRole("button", { name: "Run probe" })).toBeVisible();
+  expect(systemRequests).toBe(1);
+  expect(invocations).toHaveLength(1);
   expect(invocations[0]).toMatchObject({ sessionId: "mock-current", slot: "system-info", key: "runtime-tools" });
 
   await panel.locator('input[name="query"]').fill("disk usage");

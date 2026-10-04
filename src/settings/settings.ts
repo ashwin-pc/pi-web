@@ -1,3 +1,4 @@
+import { activeSessionState } from "../app/sessionState.js";
 import { applyIdentity, createIdentitySettings, normalizeIdentity } from "./identitySettings.js";
 import type { ApiClient } from "../app/api.js";
 import { blurActiveEditableOnMobile } from "../app/focus.js";
@@ -360,6 +361,16 @@ export function createSettings(options: {
   }
 
   async function refreshExtensionStatus() {
+    if (activeSessionState(state)?.capabilities?.extensions === false) {
+      extensionHealth = "ready"; updateSystemStatus();
+      elements.extensionStatusBadge.textContent = "Not supported";
+      elements.extensionStatusMessage.textContent = "This agent uses its own native tools and configuration.";
+      elements.extensionStatusDetails.hidden = true;
+      elements.extensionReloadButton.disabled = true;
+      settingsShell?.setBadge("extension-health", "", "neutral");
+      document.dispatchEvent(new CustomEvent("pi-web-extension-health", { detail: { state: "ready" } }));
+      return;
+    }
     const params = new URLSearchParams();
     if (state.currentSessionId) params.set("sessionId", state.currentSessionId);
     const res = await fetch(`/api/extensions/status?${params}`, { headers: api.headers() });
@@ -369,6 +380,7 @@ export function createSettings(options: {
   }
 
   async function reloadExtensions() {
+    if (activeSessionState(state)?.capabilities?.extensions === false) return;
     elements.extensionStatusBadge.className = "extensionStatusBadge loading";
     elements.extensionStatusBadge.textContent = "Retrying…";
     elements.extensionStatusMessage.textContent = "Reloading extensions and models without restarting pi-web…";

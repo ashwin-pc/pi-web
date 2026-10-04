@@ -22,6 +22,7 @@ export function emptySessionCandidates(
   state: Pick<AppState, "currentSessionId" | "sessionsById" | "lanes" | "sessionOrigins">,
   cwd: string,
   hasDraft: (sessionId: string) => boolean,
+  selection: { harnessId: string; defaultHarnessId?: string; hydrateActive?: boolean },
 ): SessionViewState[] {
   const candidates = Array.from(new Set([
     state.currentSessionId,
@@ -29,6 +30,7 @@ export function emptySessionCandidates(
   ]), (id) => state.sessionsById[id]);
   return candidates.filter((session): session is SessionViewState => {
     if (!session || session.cwd !== cwd || session.name || session.firstMessage?.trim()) return false;
+    if (!selection.harnessId || (session.harnessId || selection.defaultHarnessId) !== selection.harnessId) return false;
     if (state.sessionOrigins.some((origin) => origin.sessionId === session.id)) return false;
     const lane = state.lanes.find((entry) => entry.sessionId === session.id)?.lane;
     if (lane && lane !== "pinned") return false;
@@ -38,6 +40,7 @@ export function emptySessionCandidates(
     // conversationMessages is refreshed with every stats event. totalMessages
     // includes SDK branch metadata, so a legacy total only proves emptiness at
     // zero when no authoritative conversational count is available.
+    if (selection.hydrateActive && session.id === state.currentSessionId) return !hasDraft(session.id);
     const conversational = session.stats?.conversationMessages;
     // A fresh list count can arrive before the next stats event. Treat either
     // positive authoritative count as content rather than risking reuse.

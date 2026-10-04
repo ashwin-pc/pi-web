@@ -155,11 +155,14 @@ export function createModelSettings(options: {
   }
 
   function updateSummary() {
+    const supportsModels = activeSessionState(state)?.capabilities?.models !== false;
+    elements.modelSelectEl.disabled = !supportsModels;
+    elements.modelSettingsButton.disabled = !supportsModels;
     const supportsThinking = activeSessionState(state)?.capabilities?.thinkingLevel !== false;
     elements.thinkingSelectEl.hidden = !supportsThinking;
     elements.thinkingSelectEl.closest?.<HTMLElement>("label")?.toggleAttribute("hidden", !supportsThinking);
     elements.modelSettingsThinking.hidden = !supportsThinking;
-    const level = elements.thinkingSelectEl.value || state.currentThinkingLevel || "off";
+    const level = supportsThinking ? elements.thinkingSelectEl.value || state.currentThinkingLevel || "off" : activeSessionState(state)?.nativeSettings?.reasoningEffort || "not reported";
     const selectedModelOption = elements.modelSelectEl.selectedOptions[0] as HTMLOptionElement | undefined;
     const selectedModelLabel = selectedModelOption?.textContent?.trim();
     const label = state.currentModelDisplay || selectedModelLabel || state.currentModelKey || "";
@@ -234,6 +237,7 @@ export function createModelSettings(options: {
   }
 
   async function refreshModels() {
+    if (activeSessionState(state)?.capabilities?.models === false) { updateSummary(); return; }
     const sessionId = state.currentSessionId;
     const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
     const res = await fetch(`/api/models${query}`, { headers: api.headers() });
@@ -246,6 +250,7 @@ export function createModelSettings(options: {
   }
 
   async function setModelFromControls() {
+    if (activeSessionState(state)?.capabilities?.models === false) return;
     const [provider, ...idParts] = elements.modelSelectEl.value.split("/");
     const id = idParts.join("/");
     if (!provider || !id) return;

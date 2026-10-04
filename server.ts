@@ -19,7 +19,9 @@ import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment }
 import { assertDirectory, createDirectory, listDirectories } from "./server/shared/fsList.js";
 import { gitCommitDetails, gitCwdFromRepoParam, gitDiff, gitLog, gitStatus, gitSync, isGitRepo, listGitRepos, readGitImage } from "./server/shared/git.js";
 import { listWorkspaceDirectory, readWorkspaceFile, readWorkspaceImage, WorkspaceFileError, writeWorkspaceFile } from "./server/shared/workspaceFiles.js";
-import type { PiWebSession } from "./server/types.js";
+import type { SessionHandle } from "./server/session/adapter.js";
+import { createPiAdapter } from "./server/session/adapters/pi/index.js";
+import { createCodexAdapter } from "./server/session/adapters/codex/index.js";
 import type { BaseSessionStateDto, InteractionResponseDto, SessionInfoDto } from "./server/session/dto.js";
 import { SessionActivity } from "./server/session/activity.js";
 import { createHostSessionEventHandler, decorateHostMessages, decorateHostSessionState, resolveWebSocketHelloSession, type DecoratedSessionState, type WireSessionState } from "./server/session/hostEvents.js";
@@ -239,8 +241,8 @@ async function requestCwdFromSessionId(sessionId: string | null) {
   return sessionService.cwdForSessionId(sessionId);
 }
 
-function sessionCwd(targetSession: PiWebSession | any = session) {
-  return sessionService ? sessionService.cwdForSession(targetSession) : String(targetSession?.sessionManager?.getCwd?.() || targetSession?.cwd || piCwd);
+function sessionCwd(targetSession: SessionHandle = session) {
+  return sessionService.cwdForSession(targetSession);
 }
 
 function resolveSessionId(value: unknown) {
@@ -267,16 +269,16 @@ function applySessionUnreadState<T extends { id: string }>(sessions: T[], sessio
   });
 }
 
-function decorateState(baseState: BaseSessionStateDto, targetSession: PiWebSession, includeThinkingLevels = false): WireSessionState {
+function decorateState(baseState: BaseSessionStateDto, targetSession: SessionHandle, includeThinkingLevels = false): WireSessionState {
   const state = decorateHostSessionState(baseState, targetSession, sessionActivity, (value) => sessionService.webUiEntries(value), includeThinkingLevels);
   return (mockMode ? { ...state, ...mockStateOverrides } : state) as WireSessionState;
 }
 
-function currentState(targetSession: PiWebSession = session) {
+function currentState(targetSession: SessionHandle = session) {
   return decorateState(sessionService.projectState(targetSession), targetSession);
 }
 
-function currentStateWithThinkingLevels(targetSession: PiWebSession = session) {
+function currentStateWithThinkingLevels(targetSession: SessionHandle = session) {
   return decorateState(sessionService.projectState(targetSession), targetSession, true);
 }
 
@@ -284,11 +286,11 @@ async function decorateServiceState(baseState: BaseSessionStateDto, includeThink
   return decorateState(baseState, await sessionService.require(baseState.sessionId), includeThinkingLevels) as DecoratedSessionState;
 }
 
-const decorateMessages = (messages: Parameters<typeof decorateHostMessages>[0], sessionFile: string) =>
+const decorateMessages = (messages: Parameters<typeof decorateHostMessages>[0], sessionFile: string | undefined) =>
   decorateHostMessages(messages, sessionFile, sessionActivity);
 
 function decorateSessionInfos(infos: SessionInfoDto[]) {
-  return infos.map(({ path, ...info }) => ({ ...info, runtime: sessionActivity.runtimeForPath(path) }));
+  return infos.map(({ path, ...info }) => ({ ...info, runtime: sessionActivity.runtimeForPath(info.id) }));
 }
 
 function envMs(name: string, fallback: number) {
@@ -304,17 +306,17 @@ const pushNotifications = createPushNotificationService(
 );
 let sessionService: LocalSessionService;
 const sessionActivity = new SessionActivity(
-  (path) => sessionService?.sessionForPath(path),
+  (path) => sessionService?.sessionForPath(path)?.state(),
   (path) => sessionService?.hasActiveWorkForPath(path) ?? false,
   (path) => sessionService?.hasActiveRetryForPath(path) ?? false,
 );
-let session: PiWebSession;
+let session: SessionHandle;
 
 const settlementTracker = new SessionSettlementTracker(
   async (sessionId) => {
     const target = await sessionService?.find(sessionId);
     if (!target) return undefined;
-    const runtime = sessionActivity.runtimeForPath(target.sessionFile);
+    const runtime = sessionActivity.runtimeForPath(target.sessionId);
     return {
       sessionId: target.sessionId,
       isRunning: runtime.isRunning,
@@ -375,7 +377,7 @@ function parseViewerSeq(value: unknown): number | undefined {
   return Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
 }
 
-function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, fallbackClientId?: unknown) {
+function noteViewerLeaseFromRequest(req: IncomingMessage, value: SessionHandle, fallbackClientId?: unknown) {
   const clientId = clientIdFromRequest(req, fallbackClientId);
   if (clientId) sessionService.acquireViewer(value.sessionId, clientId, parseViewerSeq(req.headers["x-pi-web-viewer-seq"]));
 }
@@ -395,7 +397,7 @@ function takeCreatedSessionUiWarning(sessionId: string): string | undefined {
 const mockHarness = createMockHarness({
   piCwd,
   broadcast,
-  isCurrentSession: (value: PiWebSession) => value === session,
+  isCurrentSession: (value) => value.sessionId === session.sessionId,
   currentState,
 });
 const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled } = mockHarness;
@@ -480,27 +482,32 @@ const mockSessionFactory = mockMode ? {
   },
 } : undefined;
 
+const piAdapter = createPiAdapter({
+  extensionHttp, modelRuntime, additionalExtensionPaths,
+  peer: mockSessionFactory ? { ...mockSessionFactory, newSessionAfterCreate: true } : undefined,
+  defaultsFor: async () => {
+    const defaults = (await settingsStore.read()).defaults;
+    return { model: defaults.model, thinkingLevel: defaults.thinkingLevel };
+  },
+  globalCwd: () => piCwd, clientCount: () => realtimeHub.clientCount,
+});
+// Executable selection is trusted host configuration only, never a browser input.
+const codexArgs: unknown = process.env.PI_WEB_CODEX_ARGS ? JSON.parse(process.env.PI_WEB_CODEX_ARGS) : undefined;
+if (codexArgs !== undefined && (!Array.isArray(codexArgs) || codexArgs.some((arg) => typeof arg !== "string"))) throw new Error("PI_WEB_CODEX_ARGS must be a JSON string array");
+const codexAdapter = createCodexAdapter({ command: process.env.PI_WEB_CODEX_COMMAND, args: codexArgs as string[] | undefined });
 sessionService = new LocalSessionService({
-  extensionHttp,
-  modelRuntime,
-  sessionFactory: mockSessionFactory,
-  additionalExtensionPaths,
-  sessionConfig: {
-    defaultsFor: async () => {
-      const defaults = (await settingsStore.read()).defaults;
-      return { model: defaults.model, thinkingLevel: defaults.thinkingLevel };
-    },
-    finalizeCreatedSession: async (sessionId) => {
-      try { await applyDefaultSessionBucket(sessionId); }
-      catch (error) {
-        if (createdSessionUiWarnings.size >= 128) createdSessionUiWarnings.delete(createdSessionUiWarnings.keys().next().value!);
-        createdSessionUiWarnings.set(sessionId, error instanceof Error ? error.message : String(error));
-        console.warn(`Could not apply default session bucket for ${sessionId}:`, error);
-      }
-    },
+  pi: piAdapter, adapters: [codexAdapter],
+  nativeBindingsFile: process.env.PI_WEB_NATIVE_BINDINGS_FILE || join(getAgentDir(), "pi-web-native-bindings.json"),
+  multiHarnessEnabled: process.env.PI_WEB_MULTI_HARNESS === "1",
+  finalizeCreatedSession: async (sessionId) => {
+    try { await applyDefaultSessionBucket(sessionId); }
+    catch (error) {
+      if (createdSessionUiWarnings.size >= 128) createdSessionUiWarnings.delete(createdSessionUiWarnings.keys().next().value!);
+      createdSessionUiWarnings.set(sessionId, error instanceof Error ? error.message : String(error));
+      console.warn(`Could not apply default session bucket for ${sessionId}:`, error);
+    }
   },
   globalCwd: () => piCwd,
-  clientCount: () => realtimeHub.clientCount,
 });
 const settingsStore = sessionService.settingsStore;
 // Serialize avatar uploads, settings patches, and explicit reset cleanup.
@@ -514,7 +521,7 @@ function withAvatarMutation<T>(operation: () => Promise<T>): Promise<T> {
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
     mockPromptCorrelations.delete(event.sessionKey);
-    mockPromptCorrelations.delete(event.sessionFile);
+    if (event.sessionFile) mockPromptCorrelations.delete(event.sessionFile);
     mockPromptCorrelations.delete(event.sessionId);
   }
   handleSessionServiceEvent(event);
@@ -698,6 +705,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (mockMode && method === "GET" && url.pathname === "/api/mock/live-sessions") {
         return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(), lifecycle: getMockLifecycle() });
       }
+
+      if (method === "GET" && url.pathname === "/api/harnesses") return sendJson(res, 200, { ok: true, ...sessionService.catalog() });
 
       if (method === "GET" && url.pathname === "/api/fs/dirs") {
         try {
@@ -1013,7 +1022,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "GET" && url.pathname === "/api/messages") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
         const target = await sessionService.require(requestedSessionId);
-        return sendJson(res, 200, { ok: true, messages: decorateMessages(await sessionService.messages(target.sessionId), target.sessionFile) });
+        return sendJson(res, 200, { ok: true, messages: decorateMessages(await sessionService.messages(target.sessionId), target.state().sessionFile) });
       }
 
       if (method === "GET" && url.pathname === "/api/session/reference") {
@@ -1068,7 +1077,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
         if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
         try {
-          const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
+          const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined);
           let sessionUiStateWarning: string | undefined;
           try {
             const sessionUiState = await sessionUiStateStore.removeSession(result.id);
@@ -1288,14 +1297,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const clientMessageId = cleanClientId(body.clientMessageId);
         const sourceClientId = clientIdFromRequest(req);
         if (mockMode && clientMessageId && sourceClientId) {
-          const key = target.sessionFile || target.sessionId;
+          const key = target.state().sessionFile || target.sessionId;
           const pending = mockPromptCorrelations.get(key) || [];
           pending.push({ clientMessageId, sourceClientId });
           mockPromptCorrelations.set(key, pending);
         }
         const result = await sessionService.prompt(target.sessionId, {
           message,
-          mode: body.mode === "followUp" ? "followUp" : "steer",
+          mode: target.state().capabilities.queue ? body.mode === "followUp" ? "followUp" : "steer" : body.mode === undefined ? "prompt" : String(body.mode),
           attachments,
           clientMessageId,
           sourceClientId,
@@ -1309,8 +1318,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/abort") {
-        const body = await readBody(req) as { sessionId?: unknown };
-        return sendJson(res, 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId)) });
+        const body = await readBody(req) as { sessionId?: unknown; expectedExecutionId?: unknown };
+        return sendJson(res, 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId), typeof body.expectedExecutionId === "string" ? body.expectedExecutionId : undefined) });
       }
 
       if (method === "POST" && url.pathname === "/api/compaction/abort") {
@@ -1326,8 +1335,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
-        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; origin?: unknown };
-        const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined);
+        const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; origin?: unknown; harnessId?: unknown };
+        if (body.harnessId !== undefined && typeof body.harnessId !== "string") throw new SessionServiceError("harnessId must be a string", 400);
+        const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined, body.harnessId as string | undefined);
         extensionHttp.recordCreatedSession(req, baseState.sessionId);
         const state = await decorateServiceState(baseState);
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
@@ -1439,7 +1449,7 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
 
   const requestedSessionId = url.searchParams.get("sessionId") || session.sessionId;
-  let targetSession: PiWebSession | undefined;
+  let targetSession: SessionHandle | undefined;
   try {
     targetSession = await resolveWebSocketHelloSession(requestedSessionId, session, (id) => sessionService.find(id));
   } catch {
@@ -1470,6 +1480,20 @@ if (isDev) {
 }
 
 startEventLoopTelemetry();
+
+let shuttingDown = false;
+async function shutdownOwnedSessions() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  const deadline = setTimeout(() => process.exit(1), 10_000); deadline.unref();
+  server.close();
+  for (const socket of wss.clients) socket.close(1001, "Server shutting down");
+  try { await sessionService.disposeAll(); await viteDevServer?.close(); }
+  catch (error) { console.warn("Session cleanup failed:", error); }
+  finally { clearTimeout(deadline); process.exit(0); }
+}
+process.once("SIGTERM", () => { void shutdownOwnedSessions(); });
+process.once("SIGINT", () => { void shutdownOwnedSessions(); });
 
 extensionHttpServer = server;
 server.listen(port, host, () => {

@@ -659,6 +659,7 @@ export function createSessionInfo(options: {
 
   function update() {
     const view = activeSessionState(state);
+    contextSection.hidden = view?.capabilities?.context === false;
     const stats = view?.stats;
     const runtime = runtimePresentation();
     const sessionId = state.currentSessionId;
@@ -744,6 +745,7 @@ export function createSessionInfo(options: {
   }
 
   async function refreshContext() {
+    if (activeSessionState(state)?.capabilities?.context === false) return;
     const sessionId = state.currentSessionId;
     const request = ++contextRequest;
     if (!sessionId) return;

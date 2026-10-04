@@ -1,4 +1,5 @@
 import type { ApiClient } from "../app/api.js";
+import { exactStop } from "./exactStop.js";
 import type { AppElements } from "../app/elements.js";
 import { clearToken, saveToken, sessionUiMutationWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
@@ -155,7 +156,8 @@ export function createComposer(options: {
     const canSendWhileRunning = activeSessionState(state)?.capabilities?.queue !== false;
     elements.primaryButton.disabled = !hasInput || !initialRealtimeReady || runtime.isRunning && !canSendWhileRunning;
     elements.primaryButton.title = initialRealtimeReady ? "Send" : "Connecting live updates…";
-    elements.stopButton.style.display = runtime.isStreaming || runtime.isRetrying ? "" : "none";
+    elements.stopButton.style.display = runtime.isStreaming || runtime.isRetrying || runtime.isRunning && !canSendWhileRunning ? "" : "none";
+    elements.attachButton.hidden = activeSessionState(state)?.capabilities?.attachments === false;
   }
 
   function updateQueueToggle() {
@@ -179,8 +181,14 @@ export function createComposer(options: {
   }
 
   async function stopStreaming() {
-    if (!state.currentSessionId) return;
-    await fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId: state.currentSessionId }) });
+    const sessionId = state.currentSessionId;
+    const expectedExecutionId = activeSessionState(state)?.activeExecution?.id;
+    if (!sessionId) return;
+    await exactStop(
+      () => fetch("/api/abort", { method: "POST", headers: api.headers(), body: JSON.stringify({ sessionId, expectedExecutionId }) }),
+      (message) => addMessage("system", message, "error"),
+      refreshState,
+    );
   }
 
   function persistDraft(immediate = false) {
@@ -361,6 +369,7 @@ export function createComposer(options: {
   async function attachFiles(files: File[]) {
     if (!files.length) return;
     const uploadSessionId = ownedSessionId;
+    if (activeSessionState(state)?.capabilities?.attachments === false) throw new Error("Attachments are not supported by this agent.");
     recordDebugEvent("attachment-upload-start", { files: files.map(({ name, size, type }) => ({ name, size, type })) });
     try {
       const attachments = await Promise.all(files.map(async (file): Promise<FileAttachment> => {
@@ -814,7 +823,7 @@ export function createComposer(options: {
       }, { kind: "start", label: "starting" });
       beginStreamFollow?.();
       const clientMessageId = crypto.randomUUID?.() || `message-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-      if (!submittedWhileRunning) {
+      if (!submittedWhileRunning && activeSessionState(state)?.capabilities?.queue !== false) {
         optimisticUserMessages.add(clientMessageId);
         addMessage("user", message || "", "", attachments);
       }
@@ -823,7 +832,7 @@ export function createComposer(options: {
         const res = await fetch("/api/prompt", {
           method: "POST",
           headers: api.headers(),
-          body: JSON.stringify({ sessionId, clientMessageId, message, mode: state.queueMode, attachments }),
+          body: JSON.stringify({ sessionId, clientMessageId, message, mode: activeSessionState(state)?.capabilities?.queue === false ? "prompt" : state.queueMode, attachments }),
         });
         if (!res.ok) throw new Error(await res.text());
         if (quoteSubmission) quoteReplies.commitSubmission(quoteSubmission);

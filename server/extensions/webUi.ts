@@ -43,6 +43,7 @@ const plainExtensionTheme = {
 };
 
 type PendingInteractionRequest = {
+  sessionId: string;
   resolve: (response: Record<string, unknown>) => void;
   cleanup: () => void;
 };
@@ -688,6 +689,7 @@ function requestInteraction<T>(
     timeoutId.unref?.();
 
     pendingInteractionRequests.set(id, {
+      sessionId: value.sessionId,
       cleanup,
       resolve: (response) => finish(parse(response)),
     });
@@ -790,8 +792,7 @@ async function bindWebExtensions(value: any) {
     commandContextActions: {
       waitForIdle: () => value.agent.waitForIdle(),
       newSession: async () => {
-        const newSession = await deps.createNewSession(deps.sessionCwd(value), value.sessionFile);
-        const state = deps.state(newSession);
+        const state = await deps.createNewSession(deps.sessionCwd(value), value.sessionFile);
         deps.emit({ type: "state_changed", ...state });
         return { cancelled: false };
       },
@@ -1072,8 +1073,10 @@ async function bindWebExtensions(value: any) {
     return true;
   }
 
-  function cancelPendingInteractions() {
-    for (const pending of [...pendingInteractionRequests.values()]) pending.resolve({ cancelled: true });
+  function cancelPendingInteractions(sessionId?: string) {
+    for (const pending of [...pendingInteractionRequests.values()]) {
+      if (!sessionId || pending.sessionId === sessionId) pending.resolve({ cancelled: true });
+    }
   }
 
   return {
