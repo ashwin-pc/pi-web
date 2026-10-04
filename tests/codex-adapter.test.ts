@@ -31,6 +31,20 @@ const tools = async (handle: SessionHandle): Promise<ToolCallPartDto[]> => (awai
 const clientRequests = async (peer: CodexPeer, method: string) => (await readObserved(peer)).filter((record) => record.direction === "client" && record.message.method === method);
 
 describe("Codex production adapter through native process ingress", () => {
+  it("projects terminal turn.error without an error item, live and after native resume", async () => {
+    const { handle, peer, adapter, root, handles, events } = await fixture();
+    await prompt(handle);
+    await controlPeer(peer, { action: "complete", status: "failed", error: { message: "TURN_ERROR_SENTINEL token=private-test-value", codexErrorInfo: "other", additionalDetails: null, misalignment: null } });
+    const failure = (await handle.messages()).find((message) => message.id?.startsWith("codex-turn-error:"));
+    expect(failure).toMatchObject({ role: "system", status: "error", errorMessage: "TURN_ERROR_SENTINEL token=[redacted]" });
+    expect(failure?.timestamp).toBeUndefined();
+    expect(events.some((event) => event.type === "message_replace" && event.message.id === failure?.id)).toBe(true);
+    const reference = handle.state().nativeSession;
+    await handle.dispose();
+    const resumed = await adapter.open({ sessionId: handle.sessionId, cwd: root, nativeSession: reference });
+    handles.push(resumed);
+    expect((await resumed.messages()).find((message) => message.id === failure?.id)).toMatchObject({ errorMessage: failure?.errorMessage, status: "error" });
+  });
   it.each(["0.154.0", "0.155.0-alpha.160", "0.155.0", "0.156.0"]) ("rejects incompatible native handshake %s without creating a thread", async (version) => {
     const root = await mkdtemp(join(tmpdir(), "pi-web-codex-pin-"));
     cleanups.push(() => rm(root, { recursive: true, force: true }));

@@ -489,30 +489,39 @@ export class LocalSessionService implements SessionService {
     return { id, disposition: "forgotten" }; // Web metadata only; native history is untouched.
   }
   private async listInfo(adapter: SessionAdapter, info: AdapterSessionInfo): Promise<SessionInfoDto | undefined> {
-    if (!info.nativeSession.sessionId) return;
-    if ([...this.liveSessions.values()].some((entry) => entry.initializing && entry.handle.harnessId === adapter.harness.id
-      && entry.handle.state().nativeSession.sessionId === info.nativeSession.sessionId)) return;
-    let id = info.nativeSession.sessionId;
-    let name = info.name;
-    let firstMessage = info.firstMessage;
-    let created = info.created;
-    if (adapter.piCompatibility) {
-      this.piLocations.set(id, { sessionId: id, cwd: info.cwd, nativeSession: info.nativeSession, sessionFile: info.sessionFile });
-      if (info.sessionFile && this.piNames.has(info.sessionFile)) name = this.piNames.get(info.sessionFile);
-    } else {
-      const binding = await this.bindings.getOrCreateNative(info.nativeSession, (canonicalId, previous) => ({
+    return (await this.listInfos(adapter, [info]))[0];
+  }
+  private async listInfos(adapter: SessionAdapter, discovered: AdapterSessionInfo[]): Promise<SessionInfoDto[]> {
+    const initializing = new Set([...this.liveSessions.values()].filter((entry) => entry.initializing && entry.handle.harnessId === adapter.harness.id).map((entry) => entry.handle.state().nativeSession.sessionId));
+    const infos = discovered.filter((info) => info.nativeSession.sessionId && !initializing.has(info.nativeSession.sessionId));
+    const bindings = adapter.piCompatibility ? [] : await this.bindings.getOrCreateMany(infos.map((info) => ({
+      ref: info.nativeSession,
+      preferredId: adapter.webIdentity === "native" ? info.nativeSession.sessionId : undefined,
+      change: (canonicalId, previous) => ({
         id: canonicalId, nativeSession: info.nativeSession, cwd: info.cwd, name: previous?.name ?? info.name,
         firstMessage: previous?.firstMessage || info.firstMessage, created: previous?.created || info.created, modified: info.modified,
-      }), adapter.webIdentity === "native" ? info.nativeSession.sessionId : undefined);
-      if (!binding) return;
-      ({ id, name, firstMessage, created } = binding);
-    }
-    const candidate = this.sessionForId(id)?.state();
-    const live = !adapter.piCompatibility || candidate?.sessionFile === info.sessionFile ? candidate : undefined;
-    return { id, ...(info.sessionFile && adapter.piCompatibility ? { path: info.sessionFile } : {}), harnessId: adapter.harness.id,
-      nativeSession: live?.nativeSession || info.nativeSession, name: live && adapter.piCompatibility ? live.sessionName : name,
-      firstMessage, created, modified: info.modified, cwd: live?.cwd || info.cwd,
-      messageCount: live?.stats.totalMessages ?? info.messageCount, isCurrent: false };
+      }),
+    })));
+    return infos.flatMap((info, index) => {
+      let id = info.nativeSession.sessionId!;
+      let name = info.name;
+      let firstMessage = info.firstMessage;
+      let created = info.created;
+      if (adapter.piCompatibility) {
+        this.piLocations.set(id, { sessionId: id, cwd: info.cwd, nativeSession: info.nativeSession, sessionFile: info.sessionFile });
+        if (info.sessionFile && this.piNames.has(info.sessionFile)) name = this.piNames.get(info.sessionFile);
+      } else {
+        const binding = bindings[index];
+        if (!binding) return [];
+        ({ id, name, firstMessage, created } = binding);
+      }
+      const candidate = this.sessionForId(id)?.state();
+      const live = !adapter.piCompatibility || candidate?.sessionFile === info.sessionFile ? candidate : undefined;
+      return [{ id, ...(info.sessionFile && adapter.piCompatibility ? { path: info.sessionFile } : {}), harnessId: adapter.harness.id,
+        nativeSession: live?.nativeSession || info.nativeSession, name: live && adapter.piCompatibility ? live.sessionName : name,
+        firstMessage, created, modified: info.modified, cwd: live?.cwd || info.cwd,
+        messageCount: live?.stats.totalMessages ?? info.messageCount, isCurrent: false }];
+    });
   }
   async list(extraCwds: string[] = []): Promise<SessionInfoDto[]> {
     if (process.env.PI_WEB_NO_SESSION === "1") return [];
@@ -526,7 +535,7 @@ export class LocalSessionService implements SessionService {
         const descriptor = descriptors.get(adapter.harness.id);
         if (!descriptor?.enabled || !descriptor.available) continue;
         for (const cwd of cwds) {
-          try { for (const info of await adapter.list(cwd)) { const row = await this.listInfo(adapter, info); if (row) rows.push(row); } }
+          try { rows.push(...await this.listInfos(adapter, await adapter.list(cwd))); }
           catch (error) { if (!adapter.piCompatibility) console.warn(`Could not list ${adapter.harness.id} sessions:`, error instanceof Error ? error.message : "unavailable"); }
         }
       }

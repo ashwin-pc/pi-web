@@ -158,6 +158,14 @@ test("native browser lifecycle through the production UI and owned native protoc
     expect(await page.locator("#messages img").count()).toBe(0);
     expect(await page.locator("#messages .user time[datetime]").count()).toBe(0);
     expect((await json(`/api/state?sessionId=${id}`)).nativeSession.sessionId).toBe(state.nativeSession.sessionId);
+    const resumedPeer = await peerForThread(peers, state.nativeSession.sessionId);
+    await page.locator("#prompt").fill("Terminal error protocol-peer turn");
+    await page.locator("#primaryButton").click();
+    await acceptedTurn(resumedPeer);
+    await controlPeer(resumedPeer, { action: "complete", status: "failed", error: { message: "VISIBLE_TERMINAL_ERROR_SENTINEL", codexErrorInfo: "other", additionalDetails: null, misalignment: null } });
+    await expect.poll(() => page.locator("#messages").innerText()).toContain("VISIBLE_TERMINAL_ERROR_SENTINEL");
+    await page.reload();
+    await expect.poll(() => page.locator("#messages").innerText()).toContain("VISIBLE_TERMINAL_ERROR_SENTINEL");
   } finally {
     const exit = new Promise<void>((done) => child.once("close", () => done()));
     if (child.exitCode === null && !child.signalCode) {

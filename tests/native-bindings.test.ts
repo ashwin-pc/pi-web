@@ -24,6 +24,42 @@ function row(id: string, nativeId = `native-${id}`): NativeBinding {
     nativeSession: { harnessId: "codex", sessionId: nativeId, persistence: "persistent", status: "resumable" } };
 }
 
+it("commits hundreds of discovered identities once and skips unchanged refresh writes", async () => {
+  const { store } = await fixture();
+  const entries = Array.from({ length: 300 }, (_, index) => {
+    const value = row(`web-${index}`);
+    return { ref: value.nativeSession, preferredId: value.id, change: (id: string) => ({ ...value, id }) };
+  });
+  const first = await store.getOrCreateMany(entries);
+  expect(first).toHaveLength(300);
+  expect(vi.mocked(writeFile)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(rename)).toHaveBeenCalledTimes(1);
+  const second = await store.getOrCreateMany(entries);
+  expect(second).toEqual(first);
+  expect(vi.mocked(writeFile)).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(rename)).toHaveBeenCalledTimes(1);
+  for (const entry of entries) expect(store.byNative(entry.ref)?.id).toBe(entry.preferredId);
+});
+
+it("overlapping batches preserve one identity/tombstones and failed drafts never leak their index", async () => {
+  const { store, file } = await fixture();
+  const ref = row("preferred", "same-native").nativeSession;
+  const entry = { ref, change: (id: string, previous: NativeBinding | undefined) => ({ ...row(id, "same-native"), name: previous?.name ?? "Kept" }) };
+  const [a, b] = await Promise.all([store.getOrCreateMany([entry, entry]), store.getOrCreateMany([entry])]);
+  expect(new Set([...a, ...b].map((value) => value?.id)).size).toBe(1);
+  expect(vi.mocked(writeFile)).toHaveBeenCalledTimes(1);
+  const id = a[0]!.id;
+  await store.update(id, (value) => ({ ...value!, deleted: true }));
+  expect(await store.getOrCreateMany([entry])).toEqual([undefined]);
+  const disk = await readFile(file, "utf8");
+  vi.mocked(rename).mockRejectedValueOnce(new Error("batch commit failed"));
+  const fresh = row("fresh");
+  await expect(store.getOrCreateMany([{ ref: fresh.nativeSession, preferredId: fresh.id, change: () => fresh }])).rejects.toThrow("batch commit failed");
+  expect(store.byNative(fresh.nativeSession)).toBeUndefined();
+  expect(await readFile(file, "utf8")).toBe(disk);
+  expect((await store.getOrCreateMany([{ ref: fresh.nativeSession, preferredId: fresh.id, change: () => fresh }]))[0]).toEqual(fresh);
+});
+
 it.each(["write", "rename"] as const)("a failed %s preserves committed memory/disk, removes its temporary file, and permits retry", async (stage) => {
   const { root, file, store } = await fixture();
   await store.put(row("original"));

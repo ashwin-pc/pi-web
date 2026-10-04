@@ -275,7 +275,10 @@ async function control(command) {
     const request = { id: command.requestId ?? `approval-${randomUUID()}`, method, params };
     controls.set(request.id, request); send(request);
     activity(thread, { type: "active", activeFlags: ["waitingOnApproval"] });
-  } else if (command.action === "complete") settle(thread, turn, command.status ?? "completed", command.idle !== false);
+  } else if (command.action === "complete") {
+    if (command.error) turn.error = command.error;
+    settle(thread, turn, command.status ?? "completed", command.idle !== false);
+  }
   else if (command.action === "error") notify("error", { ...ids, willRetry: Boolean(command.willRetry), error: { message: command.message ?? "Synthetic native failure", codexErrorInfo: "other", additionalDetails: null, misalignment: null } });
   else throw new Error(`Unknown control action ${command.action}`);
   save(thread);

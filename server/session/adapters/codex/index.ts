@@ -253,6 +253,7 @@ class CodexHandle implements SessionHandle {
         const completed = !active || item?.type === "userMessage" || ["completed", "failed", "declined"].includes(String(item?.status));
         this.updateItem(turn.id, item, completed, undefined, false);
       }
+      if (status === "failed") this.turnFailure(turn.id, turn.error, false);
     }
     this.snapshot.phase = "idle";
     delete this.snapshot.error;
@@ -455,6 +456,7 @@ class CodexHandle implements SessionHandle {
       }
       this.emit({ type: "message_replace", sessionId: this.sessionId, message, final: true });
     }
+    if (turn.status === "failed") this.turnFailure(id, native?.error, true);
     for (const [webId, control] of this.controls) if (control.turnId === id) this.removeControl(webId, "native");
     if (id === this.activeTurnId) {
       this.activeTurnId = undefined; this.snapshot.isRetrying = false;
@@ -462,6 +464,20 @@ class CodexHandle implements SessionHandle {
       else if (turn.status === "completed") delete this.snapshot.error;
     }
     this.reconcile();
+  }
+
+  /** A turn error is native transcript content even when no error item exists. */
+  private turnFailure(turnId: string, error: unknown, publish: boolean): void {
+    const id = `codex-turn-error:${turnId}`;
+    const message: TranscriptMessageDto = {
+      id, role: "system", isError: true, status: "error", nativeExecutionId: turnId,
+      executionId: this.turns.get(turnId)?.executionId,
+      parts: [{ id: `${id}:text`, type: "text", text: "Codex turn failed" }],
+      errorMessage: diagnostic(object(error)?.message),
+      hostRevision: { scope: transcriptScope, sequence: ++transcriptSequence },
+    };
+    this.transcript.set(id, message); this.countMessages();
+    if (publish) this.emit({ type: "message_replace", sessionId: this.sessionId, message, final: true });
   }
 
   private requiredControl(native: NativeRequest): void {
