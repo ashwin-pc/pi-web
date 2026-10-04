@@ -327,6 +327,8 @@ export function createMessageList(options: {
   let refreshSerial = 0;
   let mutationSerial = 0;
   let applyingRefresh = false;
+  let transcriptHydrated = false;
+  const pendingTranscriptEvents: TranscriptEventDto[] = [];
   let bulkRendering = false;
   let thinkingSerial = 0;
   const customReportExpansion = new Map<string, boolean>();
@@ -1218,7 +1220,11 @@ export function createMessageList(options: {
 
   function clearInternal(invalidate = true) {
     nativeTranscript.clear();
-    if (invalidate) invalidatePendingRefreshes();
+    if (invalidate) {
+      invalidatePendingRefreshes();
+      transcriptHydrated = false;
+      pendingTranscriptEvents.length = 0;
+    }
     quoteReplies?.clear();
     clearStreamingText();
     messagesEl.textContent = "";
@@ -1580,6 +1586,10 @@ export function createMessageList(options: {
           added = added.nextElementSibling;
         }
       }
+      // Initial native events must not invalidate the history request or replace
+      // it with a live-only map. Revisions skip events already in the snapshot.
+      transcriptHydrated = true;
+      for (const event of pendingTranscriptEvents.splice(0)) nativeTranscript.event(event);
       activity.restore();
       activityRestored = true;
       bulkRendering = false;
@@ -1605,7 +1615,11 @@ export function createMessageList(options: {
   return {
     addMessage,
     appendCommittedMessage,
-    applyTranscriptEvent: (event) => { mutationSerial++; return nativeTranscript.event(event); },
+    applyTranscriptEvent: (event) => {
+      if (!transcriptHydrated) { pendingTranscriptEvents.push(structuredClone(event)); return true; }
+      mutationSerial++;
+      return nativeTranscript.event(event);
+    },
     startStreamingText,
     appendStreamingDelta,
     endStreamingText,

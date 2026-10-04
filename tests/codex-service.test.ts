@@ -39,6 +39,18 @@ async function fixture(registrationId?: string) {
 }
 
 describe("Codex production service, host relay and native process ingress", () => {
+  it("skips native discovery when the canonical descriptor is unavailable", async () => {
+    const { root, native, makeService } = await fixture();
+    native.harness.available = false;
+    const discovery = vi.spyOn(native, "list");
+    const warning = vi.spyOn(console, "warn");
+    cleanups.push(async () => { warning.mockRestore(); discovery.mockRestore(); });
+    const service = makeService();
+    await mkdir(join(root, "extra"));
+    expect(await service.list([join(root, "extra")])).toEqual([]);
+    expect(discovery).not.toHaveBeenCalled();
+    expect(warning).not.toHaveBeenCalled();
+  });
   it("routes a locally registered identity/default through the production adapter without Pi/name dispatch", async () => {
     const id = "local-installed-agent";
     const { root, native, makeService, piFallback } = await fixture(id);

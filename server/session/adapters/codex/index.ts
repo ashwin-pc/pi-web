@@ -6,6 +6,11 @@ import { codexApproval, unsupportedControlResponse, type CodexApproval } from ".
 import { itemMessageId, projectItem } from "./projection.js";
 import { CodexRpcError, CodexTransport, diagnostic, object, type CodexLaunchOptions, type NativeObject, type NativeRequest, type RpcId } from "./transport.js";
 
+// A process-wide observation clock also orders recovery snapshots after old
+// journal entries. It is never persisted into, or reported as, native history.
+const transcriptScope = randomUUID();
+let transcriptSequence = 0;
+
 const capabilities: HarnessCapabilitiesDto = {
   harness: "codex", queue: false, steering: false, followUp: false, thinkingLevel: false,
   tree: false, compaction: false, retry: false, bash: false, extensions: false, interactions: true, executionPhases: true, cwdChange: false, historyRemoval: "binding",
@@ -206,6 +211,14 @@ class CodexHandle implements SessionHandle {
   }
   private nativeId(): string { return requiredString(this.snapshot.nativeSession.sessionId, "thread ID"); }
   private emit(event: SessionServiceEvent): void {
+    if (event.type === "message_start" || event.type === "message_replace" || event.type === "message_part" || event.type === "message_delta") {
+      const id = "message" in event ? event.message.id : event.messageId;
+      const revision = { scope: transcriptScope, sequence: ++transcriptSequence };
+      const message = this.transcript.get(id);
+      if (message) message.hostRevision = revision;
+      if ("message" in event) event.message.hostRevision = revision;
+      event.hostRevision = revision;
+    }
     const wire = jsonRoundTrip(event);
     for (const listener of this.listeners) { try { listener(wire); } catch { /* Serving listeners are isolated. */ } }
   }
@@ -359,6 +372,7 @@ class CodexHandle implements SessionHandle {
       for (const part of message.parts) if (part.type === "toolCall") part.status = "cancelled";
     }
     const previous = this.transcript.get(message.id);
+    message.hostRevision = { scope: transcriptScope, sequence: ++transcriptSequence };
     this.transcript.set(message.id, message);
     this.countMessages();
     if (!publish) return;

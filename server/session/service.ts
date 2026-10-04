@@ -521,8 +521,10 @@ export class LocalSessionService implements SessionService {
     const key = cwds.join("\n"); const pending = this.sessionListRequests.get(key); if (pending) return pending;
     const request = (async () => {
       const rows: SessionInfoDto[] = [];
+      const descriptors = new Map(this.catalog().harnesses.map((item) => [item.id, item]));
       for (const adapter of this.adapters.values()) {
-        if (!this.catalog().harnesses.find((item) => item.id === adapter.harness.id)?.enabled) continue;
+        const descriptor = descriptors.get(adapter.harness.id);
+        if (!descriptor?.enabled || !descriptor.available) continue;
         for (const cwd of cwds) {
           try { for (const info of await adapter.list(cwd)) { const row = await this.listInfo(adapter, info); if (row) rows.push(row); } }
           catch (error) { if (!adapter.piCompatibility) console.warn(`Could not list ${adapter.harness.id} sessions:`, error instanceof Error ? error.message : "unavailable"); }

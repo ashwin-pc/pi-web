@@ -85,7 +85,17 @@ describe("Codex production adapter through native process ingress", () => {
     await controlPeer(peer, { action: "activity", status: { type: "idle" } });
     expect(handle.state().phase).toBe("idle");
     expect(events.some((event) => event.type === "message_delta")).toBe(true);
-    for (const event of events) expect(jsonRoundTrip(event)).toStrictEqual(event);
+    const revisions = new Map<string, number>();
+    for (const event of events) {
+      expect(jsonRoundTrip(event)).toStrictEqual(event);
+      if (event.type === "message_start" || event.type === "message_replace" || event.type === "message_part" || event.type === "message_delta") {
+        const id = "message" in event ? event.message.id : event.messageId;
+        expect(event.hostRevision?.scope).toBeTruthy();
+        expect(event.hostRevision!.sequence).toBeGreaterThan(revisions.get(id) ?? 0);
+        revisions.set(id, event.hostRevision!.sequence);
+      }
+    }
+    for (const message of await handle.messages()) expect(message.hostRevision?.sequence).toBe(revisions.get(message.id!));
   });
 
   it("streams keyed nested tool text with linear wire growth, including a null initial result", async () => {

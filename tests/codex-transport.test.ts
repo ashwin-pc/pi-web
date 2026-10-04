@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -8,6 +8,17 @@ import { CodexRpcError, CodexTransport, diagnostic, type NativeNotification, typ
 import { controlPeer, findPeer, readObserved, waitObserved } from "./fixtures/codex-peer-control.js";
 
 const cleanups: Array<() => Promise<void>> = [];
+
+it.skipIf(process.platform !== "win32").each(["cmd", "bat"])("launches an owned Windows %s wrapper with spaces/metacharacters", async (suffix) => {
+  const root = await mkdtemp(join(tmpdir(), "pi web native & shell-"));
+  const wrapper = join(root, `owned wrapper.${suffix}`);
+  await writeFile(wrapper, `@echo off\r\n"${process.execPath}" "${fileURLToPath(new URL("./fixtures/codex-app-server-peer.mjs", import.meta.url))}" %*\r\n`);
+  const transport = new CodexTransport({ cwd: root, command: wrapper, env: { ...process.env, PI_WEB_CODEX_PEER_DIR: root } },
+    { notification() {}, request() {}, closed() {}, observation() {} });
+  cleanups.push(async () => { await transport.dispose(); await rm(root, { recursive: true, force: true }); });
+  expect(await transport.request("initialize", { clientInfo: { name: "owned-wrapper-test", version: "1" } })).toMatchObject({ version: "0.155.0-alpha.16" });
+  expect((await readObserved(await findPeer(root))).some((row) => row.direction === "client" && /^(thread|turn)\//.test(String(row.message.method)))).toBe(false);
+});
 
 it.each(["eof", "natural"])("cleans an independently surviving wrapper descendant on %s", async (mode) => {
   if (process.platform === "win32") return;

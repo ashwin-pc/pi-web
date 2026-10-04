@@ -194,7 +194,11 @@ export interface ToolCallPartDto extends MessagePartBaseDto {
 export type MessagePartDto = TextPartDto | ThinkingPartDto | ImagePartDto | ToolCallPartDto;
 
 /** Ordered parts are authoritative when present; raw is a Pi-only fidelity fallback. */
+/** Host observation ordering only; not a native timestamp or persisted native revision. */
+export type TranscriptHostRevision = { scope: string; sequence: number };
+
 type MessageDtoBase = {
+  hostRevision?: TranscriptHostRevision;
   id?: string;
   parts?: MessagePartDto[];
   executionId?: string;
@@ -228,6 +232,7 @@ export type MessageDto = MessageDtoBase & (
 export type TranscriptMessageDto = MessageDto & { id: string; parts: MessagePartDto[] };
 
 type TranscriptEventBaseDto = {
+  hostRevision?: TranscriptHostRevision;
   sessionId: string;
   executionId?: string;
   nativeExecutionId?: string;

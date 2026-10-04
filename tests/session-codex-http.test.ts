@@ -145,12 +145,18 @@ it("routes native create, stream, approval, settlement and explicit recovery thr
     expect(resumedPeer.pid).not.toBe(peer.pid);
     const resumedWire = await readObserved(resumedPeer);
     expect(resumedWire.filter((record) => record.direction === "client" && record.message.method === "turn/start")).toHaveLength(0);
-    // Host guards and live observation times are not a native replay guarantee.
+    // Host guards, observation revisions and live times are not native replay guarantees.
     // Durable native keys, part order, content, tool results and error state are.
-    const durableHistory = (items: any[]) => items.map(({ timestamp: _time, executionId: _hostGuard, ...message }) => ({
+    const durableHistory = (items: any[]) => items.map(({ timestamp: _time, executionId: _hostGuard, hostRevision: _hostRevision, ...message }) => ({
       ...message, parts: message.parts?.map(({ startedAt: _observedStart, ...part }: any) => part),
     }));
-    expect(durableHistory((await request(`/api/messages?sessionId=${id}`)).body.messages)).toEqual(durableHistory(completeHistory));
+    const resumedHistory = (await request(`/api/messages?sessionId=${id}`)).body.messages;
+    expect(durableHistory(resumedHistory)).toEqual(durableHistory(completeHistory));
+    for (const message of resumedHistory) {
+      const previous = completeHistory.find((item: any) => item.id === message.id);
+      expect(message.hostRevision.scope).toBe(previous.hostRevision.scope);
+      expect(message.hostRevision.sequence).toBeGreaterThan(previous.hostRevision.sequence);
+    }
     expect((await request("/api/abort", { sessionId: id, expectedExecutionId: secondPrompt.body.executionId })).status).toBe(409);
     const bindings = JSON.parse(await readFile(join(root, "bindings.json"), "utf8"));
     expect(bindings.sessions).toContainEqual(expect.objectContaining({ id, nativeSession: expect.objectContaining({ sessionId: nativeId }) }));

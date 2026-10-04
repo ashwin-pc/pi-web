@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import crossSpawn from "cross-spawn";
 import { StringDecoder } from "node:string_decoder";
 import { nativeChildEnvironment } from "../nativeEnvironment.js";
 import { processGuardian } from "./processGuardian.js";
@@ -82,7 +83,10 @@ export class CodexTransport {
     const guarded = process.platform !== "win32";
     const command = options.command ?? "codex";
     const args = options.args ?? ["app-server", "--listen", "stdio://"];
-    this.child = spawn(guarded ? process.execPath : command, guarded ? ["-e", processGuardian, command, JSON.stringify(args)] : args, {
+    // cross-spawn safely resolves/quotes Windows .cmd/.bat wrappers; Unix keeps
+    // the existing anchored guardian and never adds a shell to native launch.
+    const launch = guarded ? spawn : crossSpawn;
+    this.child = launch(guarded ? process.execPath : command, guarded ? ["-e", processGuardian, command, JSON.stringify(args)] : args, {
       cwd: options.cwd,
       // Preserve native auth/config and explicit-env semantics, not the host control token.
       env: nativeChildEnvironment(options.env ?? process.env),

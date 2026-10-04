@@ -107,6 +107,39 @@ test("native browser lifecycle through the production UI and owned native protoc
     expect(pageErrors).toEqual([]);
     expect(await page.evaluate(() => (window as any).__stopRejections)).toEqual([]);
     await page.unroute("**/api/abort");
+    await page.locator("#prompt").fill("Hydration protocol-peer turn");
+    await page.locator("#primaryButton").click();
+    await acceptedTurn(peer, guarded.activeExecution.nativeExecutionId);
+    await controlPeer(peer, { action: "text", itemId: "hydrate-active", delta: "Hydration snapshot" });
+    await page.addInitScript(() => {
+      if (!new URL(location.href).searchParams.has("holdNativeHistory")) return;
+      const originalFetch = window.fetch.bind(window);
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      (window as any).__releaseNativeHistory = () => { (window as any).__historyReleased = true; release(); };
+      window.fetch = async (...args) => {
+        const response = await originalFetch(...args);
+        const input = args[0];
+        const url = typeof input === "string" ? input : input instanceof Request ? input.url : String(input);
+        if (new URL(url, location.href).pathname === "/api/messages" && !(window as any).__historyReleased) {
+          (window as any).__heldNativeHistory = await response.clone().json();
+          await gate; // delay the genuine HTTP response; never fulfill/mock a route
+        }
+        return response;
+      };
+    });
+    await page.goto(`${origin}/?sessionId=${id}&holdNativeHistory=1`);
+    await expect.poll(() => page.evaluate(() => JSON.stringify((window as any).__heldNativeHistory))).toContain("Hydration snapshot");
+    await controlPeer(peer, { action: "text", itemId: "hydrate-active", delta: " raced" });
+    await page.evaluate(() => (window as any).__releaseNativeHistory());
+    await expect.poll(() => page.locator("#messages").innerText()).toContain("Visible streamed answer");
+    await expect.poll(() => page.locator("#messages").innerText()).toContain("Hydration snapshot raced");
+    await controlPeer(peer, { action: "text", itemId: "hydrate-active", delta: " remains-live" });
+    await expect.poll(() => page.locator("#messages").innerText()).toContain("Hydration snapshot raced remains-live");
+    expect((await json(`/api/state?sessionId=${id}`)).phase).toBe("running");
+    expect((await page.locator("#messages").innerText()).match(/Hydration snapshot/g)).toHaveLength(1);
+    await page.evaluate(() => { const url = new URL(location.href); url.searchParams.delete("holdNativeHistory"); history.replaceState(null, "", url); });
+    await controlPeer(peer, { action: "complete" });
     await controlPeer(peer, { action: "exit", code: 17 });
     await expect.poll(async () => (await json(`/api/state?sessionId=${id}`)).phase).toBe("unavailable");
     const reopened = await page.evaluate(async (sessionId) => {
@@ -116,7 +149,7 @@ test("native browser lifecycle through the production UI and owned native protoc
     expect(reopened).toBe(200);
     await page.reload();
     await expect.poll(() => page.locator("#messages").innerText()).toContain("Visible streamed answer");
-    expect(await page.locator("#messages .user").count()).toBe(2);
+    expect(await page.locator("#messages .user").count()).toBe(3);
     await expect.poll(() => page.locator("#messages").textContent()).toContain("DIFF_SENTINEL");
     await expect.poll(() => page.locator("#messages").textContent()).toContain("STRUCTURED_SENTINEL");
     await page.locator("#messages details").evaluateAll((nodes) => nodes.forEach((node) => { (node as HTMLDetailsElement).open = true; }));

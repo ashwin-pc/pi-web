@@ -78,6 +78,10 @@ export function createNativeTranscript(addMessage: MessageList["addMessage"], ma
     messages.set(canonical.id, canonical); render(canonical); return true;
   }
   function event(event: TranscriptEventDto): boolean {
+    const id = "message" in event ? event.message.id : event.messageId;
+    const current = messages.get(id)?.hostRevision;
+    const incoming = event.hostRevision;
+    if (current && incoming && current.scope === incoming.scope && incoming.sequence <= current.sequence) return true;
     if (event.type === "message_start" || event.type === "message_replace") return append(event.message);
     const message = messages.get(event.messageId);
     if (!message) return false;
@@ -93,6 +97,7 @@ export function createNativeTranscript(addMessage: MessageList["addMessage"], ma
       }
       if (!found) return false;
     }
+    if (incoming) message.hostRevision = structuredClone(incoming);
     render(message); return true;
   }
   return { append, event, clear() { messages.clear(); cards.clear(); nodes.clear(); } };
