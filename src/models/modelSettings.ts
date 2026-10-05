@@ -210,10 +210,12 @@ export function createModelSettings(options: {
     if (modelTransition) {
       modelTransition.skipTransition();
       apply();
+      if (open) void picker?.refresh(false);
       return;
     }
     if (!document.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       apply();
+      if (open) void picker?.refresh(false);
       return;
     }
     const content = popover.querySelector<HTMLElement>(".modelSettingsContent");
@@ -251,6 +253,7 @@ export function createModelSettings(options: {
       delete document.documentElement.dataset.modelTransitionDirection;
       if (content) content.style.viewTransitionName = "";
       modelTransition = undefined;
+      if (modelSettingsOpen) void picker?.refresh(false);
     });
   }
 
@@ -293,16 +296,21 @@ export function createModelSettings(options: {
     picker?.render();
   }
 
-  async function refreshModels() {
+  async function refreshModels(refreshCatalog = false, force = false) {
     const sessionId = state.currentSessionId;
-    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-    const res = await fetch(`/api/models${query}`, { headers: api.headers() });
+    const params = new URLSearchParams();
+    if (sessionId) params.set("sessionId", sessionId);
+    if (refreshCatalog) params.set("refresh", "1");
+    if (force) params.set("force", "1");
+    const query = params.size ? `?${params}` : "";
+    const res = await fetch(`/api/models${query}`, { headers: api.headers(), cache: refreshCatalog ? "no-store" : "default" });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     sessionState.applySnapshot({ sessionId, cwd: data.cwd || "", model: data.current, thinkingLevel: data.thinkingLevel });
     if (sessionId !== state.currentSessionId) return;
     populateModelSelect(data.models || [], state.currentModelKey);
     updateThinkingOptions(data.thinkingLevels || [state.currentThinkingLevel]);
+    if (refreshCatalog && data.catalogRefreshFailed) throw new Error("Model catalog refresh failed");
   }
 
   async function setModelFromControls() {
@@ -341,7 +349,7 @@ export function createModelSettings(options: {
     content.className = "modelSettingsContent";
     content.append(...Array.from(elements.modelSettingsPopover.childNodes));
     elements.modelSettingsPopover.append(content);
-    picker = createModelPicker(elements.modelSelectEl, () => setModelSettingsOpen(false));
+    picker = createModelPicker(elements.modelSelectEl, () => setModelSettingsOpen(false), (force) => refreshModels(true, force));
     picker.render();
     const consumeCompactSettingsClick = bindCompactInactiveAction(elements.modelSettingsButton, elements.formEl, () => {
       setModelSettingsOpen(elements.modelSettingsPopover.hidden);

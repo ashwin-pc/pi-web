@@ -182,6 +182,7 @@ function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jso
 }
 
 type FixtureServiceOptions = {
+  modelRuntime?: LocalSessionServiceDependencies["modelRuntime"];
   isMock?: boolean;
   finalizeCreatedSession?: (sessionId: string) => Promise<unknown>;
   list?: LocalSessionFactory["list"];
@@ -203,6 +204,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
       creates.push({ cwd: input.cwd, path: input.path, reason: input.sessionStartEvent?.reason, previous: input.sessionStartEvent?.previousSessionFile });
       const id = input.path ? input.path.split("/").at(-1)?.replace(/\.jsonl$/, "") || "opened" : creates.length === 1 ? "current" : `factory-${creates.length}`;
       const value = fixtureSession(input.cwd, id, input.path);
+      if (options.modelRuntime) value.session.modelRuntime = options.modelRuntime;
       sessions.set(id, value);
       return { session: value.session };
     },
@@ -210,7 +212,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
     remove: options.remove,
   };
   const deps: LocalSessionServiceDependencies = {
-    modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
+    modelRuntime: options.modelRuntime || {} as LocalSessionServiceDependencies["modelRuntime"],
     sessionFactory: factory,
     additionalExtensionPaths: () => [],
     sessionConfig: {
@@ -224,6 +226,94 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
   const initial = await service.initialize();
   return { service, initial, fixture: sessions.get("current")!, creates, cwd };
 }
+
+describe("model catalog refresh", () => {
+  function runtimeFixture() {
+    let models = [{ provider: "available", id: "cached", name: "Cached", reasoning: false, contextWindow: 1000, maxTokens: 100 }];
+    const refresh = vi.fn(async (_options: { providers?: readonly string[]; force?: boolean; signal?: AbortSignal }) => ({ aborted: false, errors: new Map<string, Error>() }));
+    const runtime = {
+      getAvailableSnapshot: () => models,
+      getProviders: () => [{ id: "available" }, { id: "configured" }, { id: "unconfigured" }],
+      hasConfiguredAuth: (id: string) => id === "configured",
+      refresh,
+    } as unknown as LocalSessionServiceDependencies["modelRuntime"];
+    return { runtime, refresh, addModel: () => { models = [...models, { ...models[0], id: "discovered" }]; } };
+  }
+
+  it("keeps normal reads local and refreshes only available/configured providers on opt-in", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { runtime, refresh, addModel } = runtimeFixture();
+    const { service, initial } = await fixtureService({ modelRuntime: runtime });
+    expect((await service.models(initial.sessionId)).models.map((model) => model.id)).toEqual(["cached"]);
+    expect(refresh).not.toHaveBeenCalled();
+    refresh.mockImplementationOnce(async () => { addModel(); return { aborted: false, errors: new Map() }; });
+    expect((await service.models(initial.sessionId, { refresh: true })).models.map((model) => model.id)).toEqual(["cached", "discovered"]);
+    expect(refresh).toHaveBeenCalledWith({ providers: ["available", "configured"], allowNetwork: true, force: false, signal: expect.any(AbortSignal) });
+    await service.models(initial.sessionId, { force: true });
+    expect(refresh.mock.lastCall?.[0].force).toBe(true);
+  });
+
+  it("joins concurrent refreshes across sessions without delaying normal reads", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { runtime, refresh, addModel } = runtimeFixture();
+    let finish!: () => void;
+    refresh.mockImplementationOnce(() => new Promise((resolve) => { finish = () => { addModel(); resolve({ aborted: false, errors: new Map() }); }; }));
+    const { service, initial, cwd } = await fixtureService({ modelRuntime: runtime });
+    const second = await service.create(cwd);
+    const firstRequest = service.models(initial.sessionId, { refresh: true });
+    await vi.waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+    const secondRequest = service.models(second.sessionId, { force: true });
+    expect((await service.models(initial.sessionId)).models).toHaveLength(1);
+    finish();
+    expect((await firstRequest).models).toHaveLength(2);
+    expect((await secondRequest).models).toHaveLength(2);
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it.each(["", "1", "0"])("honors PI_OFFLINE=%j even for manual refresh", async (offline) => {
+    vi.stubEnv("PI_OFFLINE", offline);
+    const { runtime, refresh } = runtimeFixture();
+    const { service, initial } = await fixtureService({ modelRuntime: runtime });
+    expect((await service.models(initial.sessionId, { force: true })).models).toHaveLength(1);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it("keeps cached models on thrown errors and exposes partial refreshes with a warning", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { runtime, refresh, addModel } = runtimeFixture();
+    const { service, initial } = await fixtureService({ modelRuntime: runtime });
+    refresh.mockRejectedValueOnce(new Error("offline"));
+    const failed = await service.models(initial.sessionId, { refresh: true });
+    expect(failed.models).toHaveLength(1);
+    expect(failed.catalogRefreshFailed).toBe(true);
+    refresh.mockImplementationOnce(async () => { addModel(); return { aborted: false, errors: new Map([["available", new Error("failed")]]) }; });
+    const partial = await service.models(initial.sessionId, { force: true });
+    expect(partial.models).toHaveLength(2);
+    expect(partial.catalogRefreshFailed).toBe(true);
+  });
+
+  it("skips catalog networking for mock session factories", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { service, initial } = await fixtureService({ isMock: true });
+    const result = await service.models(initial.sessionId, { force: true });
+    expect(result.models).toHaveLength(1);
+    expect(result.catalogRefreshFailed).toBe(false);
+  });
+
+  it("bounds refresh waits to ten seconds and keeps timed-out work deduplicated", async () => {
+    vi.stubEnv("PI_OFFLINE", undefined);
+    const { runtime, refresh } = runtimeFixture();
+    const { service, initial } = await fixtureService({ modelRuntime: runtime });
+    vi.useFakeTimers();
+    refresh.mockImplementationOnce(() => new Promise(() => {}));
+    const request = service.models(initial.sessionId, { refresh: true });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect((await request).models).toHaveLength(1);
+    expect(refresh.mock.lastCall?.[0].signal?.aborted).toBe(true);
+    expect((await service.models(initial.sessionId, { force: true })).models).toHaveLength(1);
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+});
 
 describe("LocalSessionService contract", () => {
   it("substitutes a non-mock factory for create/open/list/remove while keeping host defaults, binding and events", async () => {

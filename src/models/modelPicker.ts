@@ -1,6 +1,6 @@
 const favoritesKey = "pi-web.model-favorites";
 
-export function createModelPicker(select: HTMLSelectElement, onSelect?: () => void) {
+export function createModelPicker(select: HTMLSelectElement, onSelect?: () => void, refreshCatalog?: (force: boolean) => Promise<void>) {
   let favorites = new Set<string>();
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(favoritesKey) || "[]");
@@ -27,7 +27,13 @@ export function createModelPicker(select: HTMLSelectElement, onSelect?: () => vo
   favoritesOnly.type = "button";
   favoritesOnly.textContent = "★ Favorites only";
   favoritesOnly.setAttribute("aria-pressed", "false");
-  filters.append(provider, favoritesOnly);
+  const refreshButton = document.createElement("button");
+  refreshButton.type = "button";
+  refreshButton.textContent = "Refresh models";
+  refreshButton.title = "Check providers for newly available models";
+  filters.append(provider, favoritesOnly, refreshButton);
+  let refreshing = false;
+  let refreshError = "";
   const pagination = document.createElement("div");
   pagination.className = "modelPickerPagination";
   const previous = document.createElement("button");
@@ -132,17 +138,33 @@ export function createModelPicker(select: HTMLSelectElement, onSelect?: () => vo
         .find(button => (button.dataset.favoriteKey || button.dataset.modelKey) === focusKey);
       (target || favoritesOnly).focus({ preventScroll: true });
     }
-    status.textContent = options.length
+    status.textContent = (options.length
       ? `${options.length} models · Star your favorites to keep them on top.`
       : favoritesOnly.getAttribute("aria-pressed") === "true" && !favorites.size
         ? "No favorites yet. Switch off Favorites only and star a model."
-        : "No matching models.";
+        : "No matching models.") + (refreshing ? " · Checking for new models…" : refreshError ? ` · ${refreshError}` : "");
+    refreshButton.disabled = refreshing || !refreshCatalog;
     pagination.hidden = options.length <= pageSize;
     previous.disabled = page === 0;
     next.disabled = (page + 1) * pageSize >= options.length;
     pageLabel.textContent = `${page * pageSize + 1}–${Math.min((page + 1) * pageSize, options.length)} of ${options.length}`;
   }
   function resetResults() { page = 0; list.scrollTop = 0; render(); }
+  async function refresh(force: boolean) {
+    if (!refreshCatalog || refreshing) return;
+    refreshing = true;
+    refreshError = "";
+    render();
+    try {
+      await refreshCatalog(force);
+    } catch {
+      refreshError = "Catalog refresh failed; showing cached models.";
+    } finally {
+      refreshing = false;
+      render();
+    }
+  }
+  refreshButton.addEventListener("click", () => { void refresh(true); });
   search.addEventListener("input", resetResults);
   provider.addEventListener("change", resetResults);
   favoritesOnly.addEventListener("click", () => {
@@ -172,5 +194,5 @@ export function createModelPicker(select: HTMLSelectElement, onSelect?: () => vo
     buttons[index + (event.key === "ArrowDown" ? 1 : -1)]?.focus();
     if (index === 0 && event.key === "ArrowUp") search.focus();
   });
-  return { render, open: () => { search.value = ""; provider.value = ""; resetResults(); } };
+  return { render, refresh, open: () => { search.value = ""; provider.value = ""; resetResults(); } };
 }

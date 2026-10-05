@@ -724,6 +724,31 @@ test.describe("composer layout", () => {
     await expect(page.getByRole("button", { name: "Unfavorite mock/other", exact: true })).toBeVisible();
   });
 
+  test("model picker refreshes its catalog on open and keeps search and filters", async ({ page }) => {
+    const oldModel = { provider: "openai-codex", id: "gpt-6-sol", name: "Sol 6" };
+    const newModel = { provider: "openai-codex", id: "gpt-6.1-sol", name: "Sol 6.1" };
+    let refreshes = 0;
+    await page.route("**/api/models**", route => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("refresh") === "1") refreshes++;
+      return route.fulfill({ json: {
+        current: oldModel, models: url.searchParams.get("refresh") === "1" ? [oldModel, newModel] : [oldModel],
+        thinkingLevel: "off", thinkingLevels: ["off"],
+      } });
+    });
+    await page.goto("/");
+    await page.locator("#modelSettingsButton").click();
+    const search = page.getByRole("searchbox", { name: "Search models or providers" });
+    await search.fill("6.1");
+    await expect(page.locator(".modelPickerChoice")).toHaveCount(1);
+    await expect(page.locator(".modelPickerChoice")).toContainText("gpt-6.1-sol");
+    await expect(search).toHaveValue("6.1");
+    expect(refreshes).toBeGreaterThan(0);
+    await page.getByRole("button", { name: "Refresh models" }).click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(search).toHaveValue("6.1");
+  });
+
   test("model picker handles a 500-model catalog with bounded pages and full-catalog search", async ({ page }) => {
     const models = Array.from({ length: 500 }, (_, i) => ({
       provider: `provider-${Math.floor(i / 50)}`,
