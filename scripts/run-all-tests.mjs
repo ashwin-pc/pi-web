@@ -137,7 +137,14 @@ async function runE2eTasks() {
 if (e2eOnly) {
   const buildTask = skipBuild ? [] : preflightTasks.filter((task) => task.name === "build");
   if (buildTask.length === 0 || await runPhase(buildTask)) await runE2eTasks();
-} else if (await runPhase(preflightTasks) && await runPhase([packedStartupTask])) await runE2eTasks();
+} else {
+  // Vite and tsc can starve mock API server startup in the unit suite: under
+  // concurrent preflight the server took >18s against a 15s readiness budget.
+  // Keep the static checks parallel, then run unit tests without that contention.
+  const staticTasks = preflightTasks.filter((task) => task.kind === "static");
+  const unitTasks = preflightTasks.filter((task) => task.kind === "unit");
+  if (await runPhase(staticTasks) && await runPhase(unitTasks) && await runPhase([packedStartupTask])) await runE2eTasks();
+}
 
 const elapsed = ((Date.now() - started) / 1000).toFixed(1);
 const failed = results.filter((result) => result.code !== 0);
