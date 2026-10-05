@@ -119,7 +119,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   await expect(artifact).toBeVisible();
   await expect(artifact.locator("iframe").contentFrame().locator("h1")).toHaveText("Make every handoff feel effortless.");
   await page.locator("#modelSettingsButton").click();
-  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
   await page.mouse.click(5, 5);
   await expect(page.locator("#modelSettingsPopover")).toBeHidden();
   await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
@@ -147,7 +147,7 @@ async function prepareNeutralWorkspace(page: import("@playwright/test").Page, pr
   await page.locator("#statusTitle input").fill("Launch research workspace");
   await page.locator("#statusTitle input").press("Enter");
   await page.locator("#modelSettingsButton").click();
-  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
   await page.mouse.click(5, 5);
   await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
   await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.messageTimestamp{visibility:hidden!important}" });
@@ -176,7 +176,7 @@ async function prepareRecommendedAddons(page: import("@playwright/test").Page, p
   expect(await renameResponse.json()).toMatchObject({ sessionId: activeSessionId, sessionTitle: "Studio launch planning" });
   await expect(page.locator("#statusTitle")).toHaveText("Studio launch planning");
   await page.locator("#modelSettingsButton").click();
-  await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+  await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
   await page.mouse.click(5, 5);
   await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
   await expect(page.locator('#headerActions .webHeaderActionButton[title="Session recap preview"]')).toBeVisible();
@@ -455,7 +455,7 @@ test.describe("visual regression", () => {
     await expect(page.locator(".message.system.compaction")).toContainText("Context compacted");
     await scrollMessagesToBottom(page);
     await page.locator("#modelSettingsButton").click();
-    await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4");
+    await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
     await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
     await expect(page).toHaveScreenshot(`capability-models-context-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });

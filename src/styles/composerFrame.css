@@ -87,6 +87,9 @@
   .composer.compactInactive:not(.expanded) {
     transition-delay: .1s;
   }
+  .composer.restoringSessionDraft:not(.expanded) {
+    transition: none;
+  }
 }
 
 .extensionFooter {

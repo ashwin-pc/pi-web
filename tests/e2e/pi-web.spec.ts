@@ -671,7 +671,7 @@ test.describe("composer layout", () => {
     expect(state.thinkingLevel).toBe("off");
   });
 
-  test("model settings popover stays open after mobile model selection", async ({ page }) => {
+  test("model selection closes the picker without activating the mobile search field", async ({ page }) => {
     const models = [
       { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },
       { provider: "mock", id: "other", name: "Other Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },
@@ -698,21 +698,166 @@ test.describe("composer layout", () => {
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
     await expect(page.locator("#modelSelect")).toHaveValue("mock/model");
 
-    await page.locator("#modelSelect").selectOption("mock/other");
-    await expect(page.locator("#modelSettingsButton")).toBeEnabled();
-
-    await page.evaluate(() => {
-      document.body.dispatchEvent(new MouseEvent("click", { bubbles: true, composed: true }));
-    });
-
-    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
-    await expect(page.locator("#modelSettingsButton")).toHaveAttribute("aria-expanded", "true");
+    const search = page.getByRole("searchbox", { name: "Search models or providers" });
+    await search.fill("mock other");
+    await expect(page.locator(".modelPickerChoice")).toHaveCount(1);
+    await page.getByRole("button", { name: "Favorite mock/other", exact: true }).click();
+    await expect(page.locator(".modelPickerHeading").first()).toHaveText("★ Favorites");
+    await page.locator(".modelPickerChoice").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).not.toBe("Search models or providers");
     await expect(page.locator("#modelSelect")).toHaveValue("mock/other");
     await expect(page.locator("#modelSettingsButton")).toContainText("Other Mock Model");
     await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/other/);
+    await expect(page.locator("#modelSettingsButton")).toBeEnabled();
+    await page.waitForTimeout(750);
 
-    await page.mouse.click(5, 5);
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await search.fill("mock other");
+    await page.locator(".modelPickerChoice").click();
     await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+    expect(await page.evaluate(() => document.activeElement?.getAttribute("aria-label"))).not.toBe("Search models or providers");
+    await page.reload();
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator(".modelPickerChoice").first()).toContainText("mock/other");
+    await expect(page.getByRole("button", { name: "Unfavorite mock/other", exact: true })).toBeVisible();
+  });
+
+  test("model picker handles a 500-model catalog with bounded pages and full-catalog search", async ({ page }) => {
+    const models = Array.from({ length: 500 }, (_, i) => ({
+      provider: `provider-${Math.floor(i / 50)}`,
+      id: `model-${String(i).padStart(3, "0")}`,
+      name: `Model ${String(i).padStart(3, "0")}`,
+    }));
+    await page.route("**/api/models**", route => route.fulfill({
+      json: { current: models[0], models, thinkingLevel: "off", thinkingLevels: ["off"] },
+    }));
+    await page.goto("/");
+    await page.locator("#modelSettingsButton").click();
+    const choices = page.locator(".modelPickerChoice");
+    const search = page.getByRole("searchbox", { name: "Search models or providers" });
+    const providers = page.getByRole("combobox", { name: "Filter by provider" });
+    await expect(choices).toHaveCount(40);
+    await expect(page.locator(".modelPickerPagination")).toContainText("1–40 of 500");
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    await expect(page.locator(".modelPickerPagination")).toContainText("41–80 of 500");
+    await expect(choices.first()).toBeFocused();
+    await providers.selectOption("provider-9");
+    await expect(page.locator(".modelPickerPagination")).toContainText("1–40 of 50");
+    await expect(choices.first()).toContainText("provider-9");
+    await providers.selectOption("");
+    await search.fill("model-499");
+    await expect(choices).toHaveCount(1);
+    await expect(choices).toContainText("provider-9/model-499");
+    await expect(page.locator(".modelPickerPagination")).toBeHidden();
+    await page.getByRole("button", { name: "Favorite provider-9/model-499", exact: true }).click();
+    await search.fill("");
+    await page.getByRole("button", { name: "★ Favorites only", exact: true }).click();
+    await expect(choices).toHaveCount(1);
+    await expect(choices).toContainText("model-499");
+    await page.getByRole("button", { name: "Unfavorite provider-9/model-499", exact: true }).click();
+    await expect(choices).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "★ Favorites only", exact: true })).toBeFocused();
+    await expect(page.locator(".modelPicker [role=status]")).toContainText("No favorites yet");
+  });
+
+  test("desktop model picker uses available space without overlapping the right panel", async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto("/");
+    await page.locator("#modelSettingsButton").click();
+    const popup = page.locator("#modelSettingsPopover");
+    await expect(popup).toBeVisible();
+    expect((await popup.boundingBox())!.width).toBeGreaterThan(800);
+    await page.keyboard.press("Escape");
+    await page.locator(".actionLauncherToggle").click();
+    await page.getByRole("menuitem", { name: "Session details" }).click();
+    const panel = page.locator("#sessionInfoPanel");
+    await expect(panel).toBeVisible();
+    await page.locator("#modelSettingsButton").click();
+    await expect(popup).toBeVisible();
+    const bounds = (await popup.boundingBox())!;
+    const panelBounds = (await panel.boundingBox())!;
+    expect(bounds.x).toBeGreaterThanOrEqual(16);
+    expect(bounds.x + bounds.width).toBeLessThanOrEqual(panelBounds.x - 15);
+    expect(bounds.y).toBeGreaterThanOrEqual(0);
+  });
+
+  test("model picker connects to its trigger with a view transition in both composer layouts", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    for (const draft of ["", "An active composer draft"]) {
+      await page.goto("/");
+      await expect(page.locator("#modelSettingsLabel")).not.toBeEmpty();
+      if (draft) {
+        await page.locator("#prompt").fill(draft);
+        await expect(page.locator("#primaryButton")).toBeEnabled();
+        await page.locator("#prompt").blur();
+      }
+      const button = page.locator("#modelSettingsButton");
+      const origin = (await button.boundingBox())!;
+      await button.evaluate(element => (element as HTMLButtonElement).click());
+      await expect(page.locator("html")).toHaveAttribute("data-model-transition", "true");
+      await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+      await expect(page.locator("html")).not.toHaveAttribute("data-model-transition");
+      await page.keyboard.press("Escape");
+      await expect(page.locator("html")).toHaveAttribute("data-model-transition", "true");
+      await expect(page.locator("html")).not.toHaveAttribute("data-model-transition");
+      await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+      await expect(button).toBeFocused();
+      if (!draft) {
+        await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+        const returned = (await button.boundingBox())!;
+        expect(Math.abs(returned.x - origin.x)).toBeLessThanOrEqual(1);
+        expect(Math.abs(returned.width - origin.width)).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  test("opening the model picker preserves the composer footer widths", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/");
+    await expect(page.locator("#modelSettingsLabel")).not.toBeEmpty();
+    await page.locator("#prompt").fill("Draft to keep the composer active");
+    await expect(page.locator("#primaryButton")).toBeEnabled();
+    await page.locator("#prompt").blur();
+    const controls = page.locator(".modelControl");
+    const footer = page.locator(".composerFooter");
+    const before = (await controls.boundingBox())!;
+    const footerBefore = (await footer.boundingBox())!;
+    await page.locator("#modelSettingsButton").click();
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    const after = (await controls.boundingBox())!;
+    const footerAfter = (await footer.boundingBox())!;
+    expect(Math.abs(after.width - before.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(footerAfter.width - footerBefore.width)).toBeLessThanOrEqual(1);
+  });
+
+  test("model picker keeps static details above reachable controls and wraps long names", async ({ page }) => {
+    const current = {
+      provider: "a-very-long-provider-name-for-an-enterprise-model-deployment",
+      id: "a-very-long-model-id-with-region-and-version-information",
+      name: "A descriptive model name that should remain readable without clipping",
+    };
+    await page.route("**/api/models**", route => route.fulfill({
+      json: { current, models: [current], thinkingLevel: "off", thinkingLevels: ["off"] },
+    }));
+    await page.goto("/");
+    await page.locator("#modelSettingsButton").click();
+    const summary = page.locator(".modelSettingsCurrent");
+    const picker = page.locator(".modelPicker");
+    await expect(picker).toBeVisible();
+    const summaryBox = (await summary.boundingBox())!;
+    const pickerBox = (await picker.boundingBox())!;
+    const reasoningBox = (await page.locator("#thinkingSelect").boundingBox())!;
+    expect(summaryBox.y + summaryBox.height).toBeLessThanOrEqual(reasoningBox.y);
+    expect(reasoningBox.y + reasoningBox.height).toBeLessThanOrEqual(pickerBox.y);
+    for (const selector of [".modelSettingsCurrentValue", ".modelPickerChoice strong", ".modelPickerChoice small"]) {
+      const readable = await page.locator(selector).evaluateAll(elements => elements.every(element => {
+        const style = getComputedStyle(element);
+        return style.whiteSpace === "normal" && element.scrollWidth <= element.clientWidth + 1;
+      }));
+      expect(readable).toBe(true);
+    }
   });
 
   test("model settings popover is not clipped on mobile", async ({ page }) => {

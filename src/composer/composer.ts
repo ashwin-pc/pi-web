@@ -174,7 +174,8 @@ export function createComposer(options: {
 
   function updateCompactInactive() {
     const active = document.activeElement;
-    const unfocused = !active || !elements.formEl.contains(active);
+    // Model settings are a separate interaction, not an intent to edit a draft.
+    const unfocused = !active || !elements.formEl.contains(active) || elements.modelControl.contains(active);
     applyCompactInactive(unfocused && !elements.promptEl.value.trim());
   }
 
@@ -894,7 +895,8 @@ export function createComposer(options: {
     // document.activeElement on mobile WebKit. The event itself is authoritative.
     let pageIsUnloading = false;
     window.addEventListener("beforeunload", () => { pageIsUnloading = true; });
-    elements.formEl.addEventListener("focusin", () => {
+    elements.formEl.addEventListener("focusin", (event) => {
+      if (event.target instanceof Node && elements.modelControl.contains(event.target)) return;
       applyCompactInactive(false);
       try { sessionStorage.setItem(restoreFocusStorageKey, "true"); } catch { /* ignore */ }
     });

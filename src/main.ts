@@ -458,8 +458,27 @@ function renderActiveSession(
   renderActiveSessionRuntime(activity, previous);
 }
 
+function restoreComposerSession(sessionId: string) {
+  if (!composer) return;
+  if (sessionId === state.currentSessionId) {
+    composer.switchSession(sessionId);
+    return;
+  }
+  // Restoring another session's draft is not an interactive expand/collapse.
+  // Commit its geometry without animating the surrounding transcript for 480ms.
+  elements.formEl.classList.add("restoringSessionDraft");
+  try {
+    composer.switchSession(sessionId);
+  } finally {
+    // Resolve the restored layout while transitions are disabled, before lifting
+    // the override. Normal focus/input changes keep their existing animation.
+    void elements.formEl.offsetHeight;
+    elements.formEl.classList.remove("restoringSessionDraft");
+  }
+}
+
 function activateSession(sessionId: string) {
-  composer?.switchSession(sessionId);
+  restoreComposerSession(sessionId);
   selectSession(state, sessionId);
   renderActiveSession();
 }
@@ -485,7 +504,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
   if (activatesSession) {
-    composer?.switchSession(view.id);
+    restoreComposerSession(view.id);
     selectSession(state, view.id);
   }
   if (data && "sessionUiState" in data) sessions?.applySessionUiState(data.sessionUiState);

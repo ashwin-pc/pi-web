@@ -453,6 +453,7 @@ select {
 .composerFooter > button {
   border-top: 0;
 }
+:root { --model-picker-surface: color-mix(in srgb, var(--panel-2) 94%, var(--text) 6%); }
 .composerFooter .modelSettingsButton { background-color: transparent; }
 .modelSettingsButton:hover { border-color: var(--accent); }
 .modelSettingsLabel {
@@ -535,6 +536,25 @@ select {
 }
 .modelSettingsThinking[data-thinking-active="true"] .modelSettingsThinkingIconBase { opacity: .34; }
 .modelSettingsThinkingText { display: none; }
+body:has(.modelSettingsButton[aria-expanded="true"]) .jumpToLatestButton,
+html[data-model-transition] .jumpToLatestButton { visibility: hidden; }
+.modelControl::after {
+  content: "";
+  position: fixed;
+  z-index: 19;
+  inset: 0;
+  pointer-events: none;
+  background: rgba(0, 0, 0, .34);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 320ms cubic-bezier(.22, 1, .36, 1), visibility 320ms;
+}
+.modelControl:has(.modelSettingsButton[aria-expanded="true"])::after {
+  opacity: 1;
+  visibility: visible;
+}
 .modelSettingsPopover {
   position: absolute;
   left: 0;
@@ -544,20 +564,175 @@ select {
   width: min(560px, calc(100vw - 32px));
   gap: 10px;
   padding: 12px;
-  border: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--border) 65%, transparent);
   border-radius: 14px;
-  background: var(--panel);
-  box-shadow: 0 18px 45px rgba(0, 0, 0, .35);
+  background: var(--model-picker-surface);
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, .65),
+    0 4px 16px rgba(0, 0, 0, .4),
+    0 0 28px rgba(0, 0, 0, .22);
 }
-.modelSettingsPopover[hidden] { display: none; }
+.modelSettingsPopover {
+  max-height: calc(100dvh - 120px);
+  overflow-y: auto;
+  opacity: 1;
+  translate: 0 0;
+  scale: 1;
+  transform-origin: bottom center;
+  transition:
+    opacity 320ms cubic-bezier(.22, 1, .36, 1),
+    translate 380ms cubic-bezier(.22, 1, .36, 1),
+    scale 380ms cubic-bezier(.22, 1, .36, 1),
+    display 380ms allow-discrete;
+}
+.modelSettingsPopover[hidden] {
+  display: none;
+  opacity: 0;
+  translate: 0 16px;
+  scale: .975;
+  pointer-events: none;
+}
+.modelSettingsField[hidden] { display: none; }
+@starting-style {
+  .modelSettingsPopover:not([hidden]) { opacity: 0; translate: 0 16px; scale: .975; }
+}
+/* Only the model surface is captured; the rest of the app (including the
+   fading scrim) stays live instead of cross-fading a full-page screenshot. */
+html[data-model-transition] { view-transition-name: none; }
+html[data-model-transition] .modelSettingsPopover {
+  transition: none;
+  translate: none;
+  scale: none;
+}
+html[data-model-transition] .modelSettingsPopover:not([hidden]) { opacity: 1; }
+::view-transition-group(model-picker-surface) {
+  background: var(--model-picker-surface);
+  border-radius: 14px;
+  overflow: clip;
+  animation-duration: 440ms;
+  animation-timing-function: cubic-bezier(.22, 1, .36, 1);
+}
+::view-transition-group(model-picker-title) {
+  z-index: 2;
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(.22, 1, .36, 1);
+}
+::view-transition-old(model-picker-title),
+::view-transition-new(model-picker-title) {
+  width: 100%;
+  height: 100%;
+  object-fit: none;
+  object-position: left top;
+  animation-duration: 180ms;
+}
+::view-transition-image-pair(model-picker-surface) {
+  overflow: clip;
+  border-radius: 14px;
+}
+::view-transition-old(model-picker-surface),
+::view-transition-new(model-picker-surface) {
+  /* Only the group background morphs. Popup UI must never be resized or
+     cropped into the trigger's bounds; the title has its own snapshot. */
+  animation: none;
+  opacity: 0;
+}
+@keyframes model-picker-content-reveal {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes model-picker-content-hide {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+.modelSettingsContent { display: grid; gap: inherit; min-width: 0; }
+::view-transition-group(model-picker-content) {
+  z-index: 1;
+  animation: none;
+}
+::view-transition-new(model-picker-content) {
+  animation: model-picker-content-reveal 220ms ease-out 220ms both;
+}
+::view-transition-old(model-picker-content) {
+  animation: model-picker-content-hide 100ms ease-out both;
+}
+html[data-model-transition-direction="closing"]::view-transition-group(model-picker-surface),
+html[data-model-transition-direction="closing"]::view-transition-group(model-picker-title) {
+  /* Let outgoing controls disappear before the surface leaves their bounds. */
+  animation-delay: 100ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  .modelControl::after, .modelSettingsPopover { transition: none; }
+}
+.modelPicker {
+  display: grid; gap: 8px; min-width: 0;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.modelPickerFilters { display: flex; flex-wrap: wrap; gap: 8px; }
+.modelPickerFilters select { flex: 1; min-width: 120px; }
+.modelPickerFilters button, .modelPickerPagination button {
+  height: auto; min-height: 44px; border-radius: 8px; padding: 8px 12px;
+}
+.modelPickerFilters button[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, var(--panel-2)); color: var(--text); }
+.modelPickerPagination { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--muted); }
+.modelPickerPagination[hidden] { display: none; }
+.modelPickerPagination button:disabled { opacity: .4; }
+.modelPicker input {
+  width: 100%; min-width: 0; box-sizing: border-box; padding: 9px 10px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); color: var(--text); font: inherit;
+}
+.modelPickerList {
+  max-height: min(420px, 48dvh); overflow-y: auto; overscroll-behavior: contain;
+  padding: 6px; border-radius: 10px;
+  background: var(--bg);
+}
+.modelPickerHeading { padding: 8px 6px 4px; color: var(--muted); font-size: 11px; font-weight: 700; overflow-wrap: anywhere; }
+.modelPickerRow {
+  display: flex; gap: 4px; margin: 0;
+  border-bottom: 1px solid var(--border);
+}
+.modelPickerRow button { border: 0; border-radius: 4px; background: transparent; color: var(--text); cursor: pointer; }
+.modelPickerChoice {
+  display: grid; gap: 0; flex: 1; min-width: 0;
+  height: auto; min-height: 32px; padding: 3px 8px; text-align: left;
+  font-size: 12px; line-height: 1.25;
+}
+.modelPickerChoice strong, .modelPickerChoice small { min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+.modelPickerChoice small { color: var(--muted); font-size: 10px; line-height: 1.2; }
+.modelPickerRow:hover { background: var(--panel-2); }
+.modelPickerRow:has(.modelPickerChoice[aria-pressed="true"]) {
+  background: color-mix(in srgb, var(--text) 9%, var(--panel-2));
+}
+.modelPickerChoice[aria-pressed="true"] strong { font-weight: 800; }
+.modelPickerRow button:focus-visible, .modelPicker input:focus-visible { outline: 2px solid var(--text); outline-offset: -2px; }
+.modelPickerChoice:disabled { opacity: .5; cursor: wait; }
+.modelPickerStar { flex: 0 0 32px; height: auto; min-height: 32px; padding: 2px; font-size: 17px; }
+@media (pointer: coarse) {
+  .modelPickerChoice, .modelPickerStar { min-height: 40px; }
+  .modelPickerStar { flex-basis: 40px; }
+}
+.modelPickerStar[aria-pressed="true"] { color: var(--accent, var(--text)); }
 .modelSettingsCurrent {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--panel-2) 62%, transparent);
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 2px 8px;
+  border-bottom: 1px solid var(--border);
+}
+.modelSettingsCurrentItem:first-child { flex: 1; }
+.modelSettingsCurrentItem:nth-child(2) { max-width: 40%; }
+.modelSettingsCurrentItem:nth-child(2) .modelSettingsCurrentLabel,
+.modelSettingsCurrentItem:nth-child(3) { display: none; }
+.modelSettingsCurrentValue[data-model-summary-value="name"] {
+  font-size: 13px;
+  line-height: 1.3;
+}
+.modelSettingsCurrentValue[data-model-summary-value="provider"] {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 500;
 }
 .modelSettingsCurrentItem {
   display: grid;
@@ -573,13 +748,12 @@ select {
 }
 .modelSettingsCurrentValue {
   min-width: 0;
-  overflow: hidden;
   color: var(--text);
   font-size: 12px;
   font-weight: 760;
-  line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .modelSettingsField {
   display: grid;
@@ -808,9 +982,6 @@ button:disabled:hover { border-color: var(--border); }
   width: fit-content;
   max-width: clamp(112px, 18vw, 190px);
 }
-.composer:has(.modelSettingsButton[aria-expanded="true"]) .modelControl {
-  max-width: clamp(132px, 22vw, 230px);
-}
 
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsButton {
   display: inline-flex;
@@ -838,14 +1009,25 @@ button:disabled:hover { border-color: var(--border); }
   font-size: 9.5px;
   line-height: 1.1;
 }
-.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .modelSettingsPopover,
-.composer:has(.modelSettingsButton[aria-expanded="true"]) .modelSettingsPopover {
+.composer .modelSettingsPopover {
   position: fixed;
-  left: 50%;
+  left: calc(var(--app-layout-left-width, 0px) + (100vw - var(--app-layout-left-width, 0px) - var(--app-layout-right-width, 0px)) / 2);
   right: auto;
   bottom: calc(72px + max(0px, env(safe-area-inset-bottom)));
-  width: min(560px, calc(100vw - 32px));
+  width: min(960px, calc(100vw - var(--app-layout-left-width, 0px) - var(--app-layout-right-width, 0px) - 32px));
+  box-sizing: border-box;
   transform: translateX(-50%);
+}
+@media (min-width: 1025px) {
+  .modelSettingsPopover { padding: 18px; gap: 12px; }
+  .modelPickerList {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
+    column-gap: 12px;
+    align-items: start;
+    max-height: min(600px, 58dvh);
+  }
+  .modelPickerHeading { grid-column: 1 / -1; }
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureButton,
