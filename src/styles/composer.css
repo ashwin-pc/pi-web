@@ -1020,14 +1020,10 @@ button:disabled:hover { border-color: var(--border); }
 }
 @media (min-width: 1025px) {
   .modelSettingsPopover { padding: 18px; gap: 12px; }
-  .modelPickerList {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
-    column-gap: 12px;
-    align-items: start;
-    max-height: min(600px, 58dvh);
-  }
-  .modelPickerHeading { grid-column: 1 / -1; }
+  .modelPickerList { max-height: min(600px, 58dvh); }
+  .modelPickerChoice { display: flex; align-items: center; gap: 16px; }
+  .modelPickerChoice strong { flex: 0 0 min(40%, 320px); }
+  .modelPickerChoice small { flex: 1; text-align: left; }
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureButton,

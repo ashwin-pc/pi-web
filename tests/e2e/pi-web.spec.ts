@@ -787,13 +787,25 @@ test.describe("composer layout", () => {
     await expect(page.locator(".modelPicker [role=status]")).toContainText("No favorites yet");
   });
 
-  test("desktop model picker uses available space without overlapping the right panel", async ({ page }) => {
+  test("desktop model picker uses a readable list without overlapping the right panel", async ({ page }) => {
+    const models = ["one", "two", "three"].map(id => ({ provider: "mock", id, name: `Model ${id}` }));
+    await page.route("**/api/models**", route => route.fulfill({
+      json: { current: models[0], models, thinkingLevel: "off", thinkingLevels: ["off"] },
+    }));
     await page.setViewportSize({ width: 1440, height: 1000 });
     await page.goto("/");
     await page.locator("#modelSettingsButton").click();
     const popup = page.locator("#modelSettingsPopover");
     await expect(popup).toBeVisible();
     expect((await popup.boundingBox())!.width).toBeGreaterThan(800);
+    const choices = page.locator(".modelPickerChoice");
+    await expect(choices).toHaveCount(3);
+    const first = (await choices.nth(0).boundingBox())!;
+    const second = (await choices.nth(1).boundingBox())!;
+    expect(second.y).toBeGreaterThanOrEqual(first.y + first.height);
+    const name = (await choices.first().locator("strong").boundingBox())!;
+    const detail = (await choices.first().locator("small").boundingBox())!;
+    expect(detail.x).toBeGreaterThan(name.x + name.width);
     await page.keyboard.press("Escape");
     await page.locator(".actionLauncherToggle").click();
     await page.getByRole("menuitem", { name: "Session details" }).click();
