@@ -152,6 +152,10 @@ function jsonSafe<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+const MODEL_REFRESH_TIMEOUT_MS = 10_000;
+// Sessions share a runtime; opening several pickers must not multiply catalog requests.
+const modelRefreshes = new WeakMap<ModelRuntime, { pending?: Promise<boolean> }>();
+
 const MAX_SESSION_READ_ENTRY_TEXT = 6_000;
 const MAX_SESSION_READ_TEXT = 12_000;
 
@@ -594,14 +598,44 @@ export class LocalSessionService implements SessionService {
     return value.modelRuntime.getAvailableSnapshot().filter((model) => !this.blockedModelIds.has(model.id) && (!allowed || allowed.has(model.id)));
   }
 
-  async models(sessionId: string) {
+  private async refreshModels(force: boolean): Promise<boolean> {
+    if (process.env.PI_OFFLINE !== undefined || this.deps.sessionFactory?.isMock) return true;
+    const runtime = this.deps.modelRuntime;
+    let state = modelRefreshes.get(runtime);
+    if (state?.pending) return state.pending;
+    const availableProviders = new Set(runtime.getAvailableSnapshot().map((model) => model.provider));
+    const providers = runtime.getProviders()
+      .filter((provider) => availableProviders.has(provider.id) || runtime.hasConfiguredAuth(provider.id))
+      .map((provider) => provider.id);
+    if (!providers.length) return true;
+
+    state = {};
+    modelRefreshes.set(runtime, state);
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => { controller.abort(); resolve(false); }, MODEL_REFRESH_TIMEOUT_MS);
+      timer.unref();
+    });
+    const refresh = Promise.resolve().then(() => runtime.refresh({ providers, allowNetwork: true, force, signal: controller.signal }))
+      .then((result) => !result.aborted && result.errors.size === 0, () => false);
+    state.pending = Promise.race([refresh, timeout]);
+    const current = state;
+    // Keep deduplication until the SDK settles, even if a provider ignores cancellation.
+    void refresh.finally(() => { clearTimeout(timer); current.pending = undefined; });
+    return state.pending;
+  }
+
+  async models(sessionId: string, options: { refresh?: boolean; force?: boolean } = {}) {
     const value = await this.require(sessionId);
+    const refreshed = options.refresh || options.force ? await this.refreshModels(options.force === true) : true;
     return jsonSafe({
       cwd: this.sessionCwd(value),
       current: simplifyModel(value.model),
       thinkingLevel: value.thinkingLevel,
       thinkingLevels: value.getAvailableThinkingLevels(),
       models: this.availableModels(value).map(simplifyModel).filter((model) => model !== undefined),
+      catalogRefreshFailed: !refreshed,
     });
   }
 

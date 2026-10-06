@@ -1,3 +1,4 @@
+import { createModelPicker } from "./modelPicker.js";
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
 import { iconElement } from "../app/icons.js";
@@ -110,6 +111,7 @@ export function createModelSettings(options: {
   addMessage: (role: "system", text: string, extraClass?: string) => void;
 }): ModelSettings {
   const { state, elements, api, sessionState, addMessage } = options;
+  let picker: ReturnType<typeof createModelPicker> | undefined;
 
   function ensureCurrentModelSummary() {
     const popover = elements.modelSettingsPopover as HTMLElement | undefined;
@@ -120,7 +122,7 @@ export function createModelSettings(options: {
     const summary = document.createElement("div");
     summary.className = "modelSettingsCurrent";
     summary.setAttribute("aria-label", "Current model details");
-    for (const [key, label] of [["name", "Name"], ["provider", "Provider"], ["id", "Model ID"]] as const) {
+    for (const [key, label] of [["name", "Current model"], ["provider", "Provider"], ["id", "Model ID"]] as const) {
       const item = document.createElement("div");
       item.className = "modelSettingsCurrentItem";
       const itemLabel = document.createElement("span");
@@ -133,8 +135,7 @@ export function createModelSettings(options: {
       item.append(itemLabel, value);
       summary.append(item);
     }
-    const firstField = popover.querySelector(".modelSettingsField");
-    popover.insertBefore(summary, firstField || popover.firstChild);
+    (popover.querySelector(".modelSettingsContent") || popover).prepend(summary);
     return summary;
   }
 
@@ -142,7 +143,7 @@ export function createModelSettings(options: {
     const container = ensureCurrentModelSummary();
     if (!container) return;
     const values = {
-      name: summary.name || "—",
+      name: summary.model || "—",
       provider: summary.provider || "—",
       id: summary.id || "—",
     };
@@ -189,10 +190,71 @@ export function createModelSettings(options: {
       : `Model and reasoning settings: reasoning ${level}`);
   }
 
+  let modelTransition: ViewTransition | undefined;
+  let modelSettingsOpen = false;
+
   function setModelSettingsOpen(open: boolean) {
-    if (open) blurActiveEditableOnMobile();
-    elements.modelSettingsPopover.hidden = !open;
-    elements.modelSettingsButton.setAttribute("aria-expanded", String(open));
+    if (open === modelSettingsOpen) return;
+    modelSettingsOpen = open;
+    if (open) {
+      blurActiveEditableOnMobile();
+      picker?.open();
+    }
+    const button = elements.modelSettingsButton;
+    const popover = elements.modelSettingsPopover;
+    const apply = () => {
+      popover.hidden = !open;
+      button.setAttribute("aria-expanded", String(open));
+    };
+    // Rapid toggles should settle immediately rather than queue stale snapshots.
+    if (modelTransition) {
+      modelTransition.skipTransition();
+      apply();
+      if (open) void picker?.refresh(false);
+      return;
+    }
+    if (!document.startViewTransition || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      apply();
+      if (open) void picker?.refresh(false);
+      return;
+    }
+    const content = popover.querySelector<HTMLElement>(".modelSettingsContent");
+    const source = open ? button : popover;
+    const destination = open ? popover : button;
+    const buttonTitle = button.querySelector<HTMLElement>(".modelSettingsModelName");
+    const popupTitle = popover.querySelector<HTMLElement>('[data-model-summary-value="name"]');
+    const sourceTitle = open ? buttonTitle : popupTitle;
+    const destinationTitle = open ? popupTitle : buttonTitle;
+    document.documentElement.dataset.modelTransition = "true";
+    document.documentElement.dataset.modelTransitionDirection = open ? "opening" : "closing";
+    source.style.viewTransitionName = "model-picker-surface";
+    if (sourceTitle) sourceTitle.style.viewTransitionName = "model-picker-title";
+    if (content && !open) content.style.viewTransitionName = "model-picker-content";
+    const transition = document.startViewTransition(() => {
+      source.style.viewTransitionName = "";
+      if (sourceTitle) sourceTitle.style.viewTransitionName = "";
+      if (content) content.style.viewTransitionName = "";
+      // Read the latest intent in case a second interaction interrupted capture.
+      popover.hidden = !modelSettingsOpen;
+      button.setAttribute("aria-expanded", String(modelSettingsOpen));
+      if (modelSettingsOpen === open) {
+        destination.style.viewTransitionName = "model-picker-surface";
+        if (destinationTitle) destinationTitle.style.viewTransitionName = "model-picker-title";
+        if (content && open) content.style.viewTransitionName = "model-picker-content";
+      }
+    });
+    modelTransition = transition;
+    void transition.finished.catch(() => undefined).finally(() => {
+      button.style.viewTransitionName = "";
+      popover.style.viewTransitionName = "";
+      if (buttonTitle) buttonTitle.style.viewTransitionName = "";
+      if (popupTitle) popupTitle.style.viewTransitionName = "";
+      delete document.documentElement.dataset.modelTransition;
+      delete document.documentElement.dataset.modelTransitionDirection;
+      if (content) content.style.viewTransitionName = "";
+      modelTransition = undefined;
+      if (modelSettingsOpen) void picker?.refresh(false);
+    });
   }
 
   function updateThinkingOptions(levels: string[] = [state.currentThinkingLevel]) {
@@ -231,18 +293,24 @@ export function createModelSettings(options: {
       elements.modelSelectEl.prepend(option);
       elements.modelSelectEl.value = activeKey;
     }
+    picker?.render();
   }
 
-  async function refreshModels() {
+  async function refreshModels(refreshCatalog = false, force = false) {
     const sessionId = state.currentSessionId;
-    const query = sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : "";
-    const res = await fetch(`/api/models${query}`, { headers: api.headers() });
+    const params = new URLSearchParams();
+    if (sessionId) params.set("sessionId", sessionId);
+    if (refreshCatalog) params.set("refresh", "1");
+    if (force) params.set("force", "1");
+    const query = params.size ? `?${params}` : "";
+    const res = await fetch(`/api/models${query}`, { headers: api.headers(), cache: refreshCatalog ? "no-store" : "default" });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     sessionState.applySnapshot({ sessionId, cwd: data.cwd || "", model: data.current, thinkingLevel: data.thinkingLevel });
     if (sessionId !== state.currentSessionId) return;
     populateModelSelect(data.models || [], state.currentModelKey);
     updateThinkingOptions(data.thinkingLevels || [state.currentThinkingLevel]);
+    if (refreshCatalog && data.catalogRefreshFailed) throw new Error("Model catalog refresh failed");
   }
 
   async function setModelFromControls() {
@@ -253,6 +321,7 @@ export function createModelSettings(options: {
     elements.modelSelectEl.disabled = true;
     elements.thinkingSelectEl.disabled = true;
     elements.modelSettingsButton.disabled = true;
+    picker?.render();
     try {
       const res = await fetch("/api/model", {
         method: "POST",
@@ -271,24 +340,34 @@ export function createModelSettings(options: {
       elements.modelSelectEl.disabled = false;
       elements.thinkingSelectEl.disabled = false;
       elements.modelSettingsButton.disabled = false;
+      picker?.render();
     }
   }
 
   function init() {
+    const content = document.createElement("div");
+    content.className = "modelSettingsContent";
+    content.append(...Array.from(elements.modelSettingsPopover.childNodes));
+    elements.modelSettingsPopover.append(content);
+    picker = createModelPicker(elements.modelSelectEl, () => setModelSettingsOpen(false), (force) => refreshModels(true, force));
+    picker.render();
     const consumeCompactSettingsClick = bindCompactInactiveAction(elements.modelSettingsButton, elements.formEl, () => {
-      setModelSettingsOpen(elements.modelSettingsPopover.hidden);
-    }, { stopPropagation: true });
+      setModelSettingsOpen(!modelSettingsOpen);
+    }, { stopPropagation: true, minIntervalMs: 0 });
     elements.modelSettingsButton.addEventListener("click", (event) => {
       event.stopPropagation();
       if (consumeCompactSettingsClick(event)) return;
-      setModelSettingsOpen(elements.modelSettingsPopover.hidden);
+      setModelSettingsOpen(!modelSettingsOpen);
     });
     elements.modelSettingsPopover.addEventListener("click", (event) => event.stopPropagation());
     document.addEventListener("pointerdown", (event) => {
       if (!elements.modelSettingsPopover.hidden && !elements.modelControl.contains(event.target as Node)) setModelSettingsOpen(false);
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && !elements.modelSettingsPopover.hidden) setModelSettingsOpen(false);
+      if (event.key === "Escape" && !elements.modelSettingsPopover.hidden) {
+        setModelSettingsOpen(false);
+        elements.modelSettingsButton.focus();
+      }
     });
     elements.modelSelectEl.addEventListener("change", () => {
       const selected = elements.modelSelectEl.selectedOptions[0]?.textContent;

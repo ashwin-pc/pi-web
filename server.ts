@@ -1198,7 +1198,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "GET" && url.pathname === "/api/models") {
-        return sendJson(res, 200, { ok: true, ...await sessionService.models(resolveSessionId(url.searchParams.get("sessionId"))) });
+        return sendJson(res, 200, { ok: true, ...await sessionService.models(resolveSessionId(url.searchParams.get("sessionId")), {
+          refresh: url.searchParams.get("refresh") === "1",
+          force: url.searchParams.get("force") === "1",
+        }) });
       }
 
       if (method === "POST" && url.pathname === "/api/model") {

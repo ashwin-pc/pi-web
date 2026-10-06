@@ -79,10 +79,6 @@
     width: min(420px, calc(100vw - 32px));
   }
 
-  .modelSettingsCurrent {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .composerFooter .iconButton {
     width: 40px;
     min-width: 40px;
