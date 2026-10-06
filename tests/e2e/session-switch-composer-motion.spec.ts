@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { seedSessionUiState } from "./helpers/sessionUiState.js";
 
-test("pinned session draft restoration skips composer motion but input focus still animates", async ({ page }, testInfo) => {
+test("pinned draft restoration and input focus avoid layout animations", async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await seedSessionUiState(page, {
     lanes: ["mock-current", "mock-older"].map((sessionId) => ({
@@ -40,8 +40,8 @@ test("pinned session draft restoration skips composer motion but input focus sti
   }
   await expect(page.locator(".composer")).toHaveAttribute("data-restore-transitions", "0");
   await page.locator("#prompt").focus();
-  if (testInfo.project.name === "mobile") {
-    await expect.poll(() => page.locator(".composer").getAttribute("data-restore-transitions"))
-      .not.toBe("0");
-  }
+  await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+  await expect(page.locator(".composer")).toHaveAttribute("data-restore-transitions", "0");
+  const transitions = await page.locator(".composer").evaluate(element => getComputedStyle(element).transitionProperty);
+  expect(transitions).not.toMatch(/\b(height|margin-right|box-shadow)\b/);
 });

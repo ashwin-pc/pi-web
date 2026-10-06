@@ -671,6 +671,21 @@ test.describe("composer layout", () => {
     expect(state.thinkingLevel).toBe("off");
   });
 
+  test("touchscreen taps toggle the picker once and do not swallow keyboard activation", async ({ page, context }) => {
+    test.skip(!context.browser() || !page.viewportSize(), "Requires browser context");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await page.goto("/");
+    const button = page.locator("#modelSettingsButton");
+    await button.dispatchEvent("pointerdown", { pointerType: "touch", bubbles: true });
+    // Pointer-enabled browsers must not handle a compatibility touchstart twice.
+    await button.dispatchEvent("touchstart", { bubbles: true });
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.locator("#modelSettingsPopover")).toBeHidden();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+  });
+
   test("model selection closes the picker without activating the mobile search field", async ({ page }) => {
     const models = [
       { provider: "mock", id: "model", name: "Mock Model", reasoning: true, contextWindow: 128000, maxTokens: 4096 },

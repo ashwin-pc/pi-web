@@ -137,6 +137,13 @@
   .actionLauncherToggle { width: 44px; height: 44px; }
 }
 
+@media (hover: none) and (pointer: coarse) {
+  .composer:not(.expanded) .actionLauncher {
+    /* Keep the launcher in place without top/right layout animation or delay. */
+    transition: transform .16s ease;
+    transition-delay: 0s;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .actionLauncherToggle, .actionLauncherItem { transition: none; }
+  .actionLauncher, .actionLauncherToggle, .actionLauncherItem { transition: none; }
 }
