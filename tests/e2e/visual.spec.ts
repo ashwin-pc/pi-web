@@ -356,6 +356,9 @@ async function mockGitApi(page: import("@playwright/test").Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  // Set this before navigation: CSS screenshot options do not settle the
+  // model picker's asynchronous View Transition update before later clicks.
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
     data: {
@@ -454,10 +457,12 @@ test.describe("visual regression", () => {
     await page.locator("#primaryButton").click();
     await expect(page.locator(".message.system.compaction")).toContainText("Context compacted");
     await scrollMessagesToBottom(page);
+    // The seeded model is already selected. Choosing it closes the picker;
+    // this scene intentionally captures the open settings instead.
     await page.locator("#modelSettingsButton").click();
-    await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
     await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();
+    await expect(page.locator(".modelPickerChoice")).toContainText("anthropic/claude-sonnet-4");
     await expect(page).toHaveScreenshot(`capability-models-context-${testInfo.project.name}.png`, { fullPage: true, animations: "disabled", scale: testInfo.project.name === "mobile" ? "device" : "css" });
   });
 
@@ -531,8 +536,8 @@ test.describe("visual regression", () => {
         await sendPrompt(page, "Summarize the launch decision.");
         await expect(page.locator("#stopButton")).toBeHidden();
         await page.locator("#modelSettingsButton").click();
-        await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4", { force: true });
-        await page.mouse.click(5, 5);
+        await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
+        await expect(page.locator("#modelSettingsPopover")).toBeHidden();
         await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
         await page.locator('#headerActions .webHeaderActionButton[title="Session recap preview"]').click();
         await expect(page.locator(".webHeaderActionPopoverBody")).toBeVisible({ timeout: 8_000 });
@@ -554,8 +559,8 @@ test.describe("visual regression", () => {
       }
       if (scene === "artifact-reference") {
         await page.locator("#modelSettingsButton").click();
-        await page.locator("#modelSelect").selectOption("anthropic/claude-sonnet-4", { force: true });
-        await page.mouse.click(5, 5);
+        await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
+        await expect(page.locator("#modelSettingsPopover")).toBeHidden();
         await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
       }
       if (scene === "git-footer") await expect(page.locator('.webFooterEntry[data-footer-key="local-git-footer"]')).toContainText("dirty");

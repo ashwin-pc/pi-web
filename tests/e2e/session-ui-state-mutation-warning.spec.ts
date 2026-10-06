@@ -234,7 +234,9 @@ test("successful deletion warns and stays read-only while the active chat remain
   await older.locator(".sessionItemActionsBtn").click();
   await page.locator(".sessionActionsMenu").getByRole("menuitem", { name: "Delete" }).click();
   await expect(older).toHaveCount(0);
-  expect(delivered).toBe(true);
+  // session_deleted can remove the row before the intercepted delete response
+  // finishes reinstating the stale fixture and delivering its warning.
+  await expect.poll(() => delivered).toBe(true);
   expect(cleanupObserved).toBe(true);
   await expect(page.locator(`.sessionBarTab[data-session-id="${olderId}"]`)).toHaveCount(0);
   await expect(page.locator('.sessionBarTab.pinned[data-session-id="mock-current"]')).toBeVisible();

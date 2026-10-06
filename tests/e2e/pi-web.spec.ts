@@ -710,7 +710,6 @@ test.describe("composer layout", () => {
     await expect(page.locator("#modelSettingsButton")).toContainText("Other Mock Model");
     await expect(page.locator("#modelSettingsButton")).toHaveAttribute("title", /mock\/other/);
     await expect(page.locator("#modelSettingsButton")).toBeEnabled();
-    await page.waitForTimeout(750);
 
     await page.locator("#modelSettingsButton").click();
     await expect(page.locator("#modelSettingsPopover")).toBeVisible();

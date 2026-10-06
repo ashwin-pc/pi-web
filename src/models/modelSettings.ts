@@ -352,12 +352,12 @@ export function createModelSettings(options: {
     picker = createModelPicker(elements.modelSelectEl, () => setModelSettingsOpen(false), (force) => refreshModels(true, force));
     picker.render();
     const consumeCompactSettingsClick = bindCompactInactiveAction(elements.modelSettingsButton, elements.formEl, () => {
-      setModelSettingsOpen(elements.modelSettingsPopover.hidden);
-    }, { stopPropagation: true });
+      setModelSettingsOpen(!modelSettingsOpen);
+    }, { stopPropagation: true, minIntervalMs: 0 });
     elements.modelSettingsButton.addEventListener("click", (event) => {
       event.stopPropagation();
       if (consumeCompactSettingsClick(event)) return;
-      setModelSettingsOpen(elements.modelSettingsPopover.hidden);
+      setModelSettingsOpen(!modelSettingsOpen);
     });
     elements.modelSettingsPopover.addEventListener("click", (event) => event.stopPropagation());
     document.addEventListener("pointerdown", (event) => {

@@ -2,6 +2,7 @@ export const compactInactiveComposerSelector = ".composer.compactInactive:not(.e
 
 type CompactPressOptions = {
   stopPropagation?: boolean;
+  minIntervalMs?: number;
 };
 
 export function isCompactInactiveComposer(formEl: HTMLFormElement) {
@@ -26,7 +27,7 @@ export function bindCompactInactiveAction(
     if (!isCompactInactiveComposer(formEl)) return;
 
     const now = Date.now();
-    if (now - lastHandledAt < 700) return;
+    if (now - lastHandledAt < (options.minIntervalMs ?? 700)) return;
     lastHandledAt = now;
 
     suppressEvent(event);
