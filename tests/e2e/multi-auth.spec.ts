@@ -12,7 +12,7 @@ test("legacy owner enrolls password and passkey, verifies login, and retires leg
   browser,
 }, info) => {
   test.skip(
-    info.project.name !== "desktop",
+    info.project.name !== "desktop" && info.project.name !== "isolated",
     "One isolated Chromium authentication flow",
   );
   test.setTimeout(60_000);

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { isolatedAuthEnv } from "../auth-isolation.js";
 
 test("restored custom selection without an upload renders fallback artwork", async ({ browser }, info) => {
-  test.skip(info.project.name !== "desktop", "Isolated server/browser regression");
+  test.skip(info.project.name !== "desktop" && info.project.name !== "isolated", "Isolated server/browser regression");
   const socket = createServer();
   await new Promise<void>(resolve => socket.listen(0, "127.0.0.1", resolve));
   const port = (socket.address() as { port: number }).port;

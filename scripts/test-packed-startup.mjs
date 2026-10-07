@@ -38,6 +38,10 @@ async function main() {
     const pkg = join(dir, "package");
     await symlink(join(root, "node_modules"), join(pkg, "node_modules"), process.platform === "win32" ? "junction" : "dir");
     await writeFile(join(dir, "settings.json"), JSON.stringify({ version: 1, identity: { name: "Backup Brand", shortName: "Backup", avatar: { type: "custom" }, revision: 3 } }));
+    const isolatedEnv = { ...process.env, PI_WEB_HOME: join(dir, "web-home") };
+    for (const key of Object.keys(isolatedEnv)) {
+      if (key.startsWith("PI_WEB_AUTH_") || key === "PI_WEB_TOKEN" || (key.startsWith("PI_WEB_") && key.endsWith("_FILE"))) isolatedEnv[key] = "";
+    }
     let response;
     let port;
     for (let attempt = 0; attempt < 3; attempt++) {
@@ -45,7 +49,7 @@ async function main() {
       // Node's ESM --import requires a file URL for absolute Windows drive paths.
       child = spawn(process.execPath, ["--import", pathToFileURL(join(root, "node_modules/tsx/dist/loader.mjs")).href, "server.ts"], {
         cwd: pkg,
-        env: { ...process.env, PI_WEB_DEV: "0", NODE_ENV: "test", PI_WEB_MOCK: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "none", PI_WEB_TOKEN: "", PI_WEB_AUTH_STORE: join(dir, "auth.json"), PI_WEB_SETTINGS_FILE: join(dir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(dir, "sessions.json"), PI_WEB_CWD: dir },
+        env: { ...isolatedEnv, PI_WEB_DEV: "0", NODE_ENV: "test", PI_WEB_MOCK: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "none", PI_WEB_TOKEN: "", PI_WEB_AUTH_STORE: join(dir, "auth.json"), PI_WEB_SETTINGS_FILE: join(dir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(dir, "sessions.json"), PI_WEB_CWD: dir },
         stdio: "pipe",
       });
       // Attach before any await: 'exit' can precede 'close', which releases the

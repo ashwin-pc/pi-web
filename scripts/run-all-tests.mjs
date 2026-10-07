@@ -13,7 +13,7 @@ const e2eShards = Math.max(1, Number(process.env.PI_WEB_E2E_SHARDS || 1));
 const e2eConcurrency = Math.max(1, Number(process.env.PI_WEB_E2E_CONCURRENCY || 4));
 // Independent worktrees can run the whole matrix without sharing server ports.
 const portOffset = Number(process.env.PI_WEB_E2E_PORT_OFFSET || 0);
-if (!Number.isInteger(portOffset) || portOffset < 0 || 10_776 + portOffset + (e2eShards - 1) * 10 > 65_535) {
+if (!Number.isInteger(portOffset) || portOffset < 0 || Math.max(11_076 + portOffset, 10_776 + portOffset + (e2eShards - 1) * 10) > 65_535) {
   throw new Error("PI_WEB_E2E_PORT_OFFSET must keep all E2E ports between 1024 and 65535");
 }
 
@@ -31,11 +31,18 @@ const e2eTasks = e2eProjects.flatMap((project) =>
       name: project.name === "auth" || e2eShards === 1 ? `e2e:${project.name}` : `e2e:${project.name}:${shard}/${e2eShards}`,
       command: bin("playwright"),
       args: ["test", `--project=${project.name}`, ...(project.name === "auth" ? [] : [`--shard=${shard}/${e2eShards}`])],
-      env: { PLAYWRIGHT_PORT: String(project.basePort + portOffset + index * 10), PI_WEB_E2E_AUTH: project.name === "auth" ? "1" : "0" },
+      env: { PLAYWRIGHT_PORT: String(project.basePort + portOffset + index * 10), PI_WEB_E2E_AUTH: project.name === "auth" ? "1" : "0", PI_WEB_E2E_ISOLATED: "0" },
       kind: "e2e",
     };
   }),
 );
+
+// These regressions spawn additional servers themselves. Do not compete with
+// the matrix's two (or more) browser/server pairs for startup CPU and memory.
+const isolatedE2eTask = {
+  name: "e2e:isolated", command: bin("playwright"), args: ["test", "--project=isolated"],
+  env: { PLAYWRIGHT_PORT: String(11_076 + portOffset), PI_WEB_E2E_ISOLATED: "1", PI_WEB_E2E_AUTH: "0" }, kind: "e2e",
+};
 
 // Packaging requires completed dist assets. Running this beside Vite in the
 // preflight phase can pack a half-built tree (or no dist on a clean CI runner).
@@ -56,6 +63,13 @@ const reset = "\x1b[0m";
 
 const started = Date.now();
 const results = [];
+// Tests may be launched from a running instance. Do not pass its persistent
+// home or per-file overrides to child test processes; individual server fixtures
+// allocate their own temporary home (see tests/auth-isolation.ts).
+const testEnv = { ...process.env, PI_WEB_HOME: "" };
+for (const key of Object.keys(testEnv)) {
+  if (key.startsWith("PI_WEB_") && key.endsWith("_FILE")) testEnv[key] = "";
+}
 
 function prefixLines(stream, taskName, color) {
   let pending = "";
@@ -95,7 +109,7 @@ async function runPhase(tasks, colorOffset = 0) {
     const color = colors[(index + colorOffset) % colors.length];
     const child = spawn(task.command, task.args, {
       cwd: process.cwd(),
-      env: { ...process.env, ...task.env },
+      env: { ...testEnv, ...task.env },
       stdio: ["ignore", "pipe", "pipe"],
       shell: isWin,
     });
@@ -133,7 +147,9 @@ async function runE2eTasks() {
     }
   });
   await Promise.all(workers);
-  return !failed;
+  if (failed) return false;
+  return runPhase([isolatedE2eTask], preflightTasks.length);
+
 }
 
 if (e2eOnly) {
