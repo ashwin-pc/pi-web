@@ -43,7 +43,8 @@ async function initGitRepo(path: string) {
 }
 
 async function waitForServer(baseUrl: string) {
-  const deadline = Date.now() + 15_000;
+  // Cold server imports compete with the full runner's production build.
+  const deadline = Date.now() + 60_000;
   let lastFailure = "No response";
   while (Date.now() < deadline) {
     try {
@@ -67,6 +68,8 @@ async function waitForCondition(predicate: () => Promise<boolean> | boolean, tim
   throw new Error("Timed out waiting for condition");
 }
 
+// API-only suites do not need a Vite optimizer for every ephemeral port.
+// Frontend/HMR integration remains covered by the browser suites.
 describe("pi-web mock API", () => {
   let child: ChildProcess;
   let baseUrl: string;
@@ -77,12 +80,12 @@ describe("pi-web mock API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
     await waitForServer(baseUrl);
-  }, 20_000);
+  }, 70_000);
 
   afterAll(async () => {
     child?.kill();
@@ -279,7 +282,7 @@ describe("pi-web mock API", () => {
   it("returns a very deep conversation tree without overflowing the stack", async () => {
     const port = await freePort();
     const deepChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", PI_WEB_MOCK_DEEP_TREE_DEPTH: "2500", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", PI_WEB_MOCK_DEEP_TREE_DEPTH: "2500", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     deepChild.stderr?.on("data", (data) => process.stderr.write(data));
@@ -905,12 +908,12 @@ describe("git repo discovery API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: workspace },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: workspace },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
     await waitForServer(baseUrl);
-  }, 25_000);
+  }, 70_000);
 
   afterAll(async () => {
     child?.kill();
@@ -959,12 +962,12 @@ describe("artifact serving", () => {
     await writeFile(join(legacyArtifactDir, "legacy.png"), Buffer.from("LEGACY"));
 
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: process.cwd() },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
     await waitForServer(baseUrl);
-  }, 20_000);
+  }, 70_000);
 
   afterAll(async () => {
     child?.kill();
@@ -1025,7 +1028,7 @@ describe("artifact serving", () => {
   it("protects artifacts with the same gate when a token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "secret", PI_WEB_CWD: process.cwd() },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "secret", PI_WEB_CWD: process.cwd() },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
@@ -1077,7 +1080,7 @@ describe("additional API coverage", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -1097,7 +1100,7 @@ describe("additional API coverage", () => {
   it("state includes tokenRequired:true when token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "mytoken" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "mytoken" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
@@ -1286,7 +1289,7 @@ describe("Live session lifecycle", () => {
       env: {
         ...isolatedAuthEnv(),
         PI_WEB_MOCK: "1",
-        PI_WEB_DEV: "1",
+        PI_WEB_DEV: "0",
         HOST: "127.0.0.1",
         PORT: String(port),
         PI_WEB_TOKEN: "",
@@ -1404,7 +1407,7 @@ describe("WebSocket authentication", () => {
   it("rejects WebSocket upgrade without a valid token when token is configured", async () => {
     const port = await freePort();
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "secret" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "secret" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
@@ -1454,7 +1457,7 @@ describe("WebSocket authentication", () => {
   it("sends a hello message with session info on WebSocket connect (no token)", async () => {
     const port = await freePort();
     const noTokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "1", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {

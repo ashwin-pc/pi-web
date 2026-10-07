@@ -30,6 +30,8 @@ import type {
   UserBashEventResult,
 } from "@earendil-works/pi-coding-agent";
 
+export { resolveWebHomePath } from "./webHome.js";
+
 export type PiWebFooter =
   | string
   | string[]

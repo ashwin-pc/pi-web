@@ -46,7 +46,9 @@ const preflightTasks = [
   { name: "unit", command: bin("vitest"), args: ["run"], kind: "unit" },
   // Match the production server even when the caller is a development shell.
   // NODE_ENV=development would otherwise compile out SW activation reloads.
-  { name: "build", command: bin("vite"), args: ["build"], env: { NODE_ENV: "production", PI_WEB_DEV: "0" }, kind: "static" },
+  // Include the public extension runtime, not just browser assets: examples
+  // import it at runtime and the package-startup check needs dist/extensions.js.
+  { name: "build", command: isWin ? "npm.cmd" : "npm", args: ["run", "build"], env: { NODE_ENV: "production", PI_WEB_DEV: "0" }, kind: "static" },
 ];
 
 const colors = ["\x1b[36m", "\x1b[35m", "\x1b[32m", "\x1b[34m", "\x1b[33m", "\x1b[95m"];

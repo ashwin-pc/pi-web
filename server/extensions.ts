@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { resolveWebHomePath } from "./shared/webHome.js";
 
 type BundledExtensionPathOptions = {
   piCwd: string;
@@ -112,7 +113,7 @@ export function discoverExtensionEntryPaths(dir: string, seenDirs = new Set<stri
 export function resolvePiWebExtensionPaths(cwd: string) {
   return dedupePaths([
     ...discoverExtensionEntryPaths(join(cwd, ".pi", "web", "extensions")),
-    ...discoverExtensionEntryPaths(join(homedir(), ".pi", "web", "extensions")),
+    ...discoverExtensionEntryPaths(resolveWebHomePath("extensions", join(homedir(), ".pi", "web", "extensions"))),
   ]);
 }
 

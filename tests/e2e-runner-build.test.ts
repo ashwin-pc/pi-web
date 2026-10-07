@@ -13,7 +13,8 @@ it("builds production E2E assets without leaking build flags into other tasks", 
   try {
     const bin = join(cwd, "node_modules", ".bin");
     await mkdir(bin, { recursive: true });
-    for (const command of ["vite", "playwright"]) {
+    await writeFile(join(cwd, "package.json"), JSON.stringify({ scripts: { build: "vite build && tsc -p tsconfig.extensions.json" } }));
+    for (const command of ["vite", "tsc", "playwright"]) {
       const source = `require("node:fs").writeFileSync(${JSON.stringify(`${command}-env.json`)}, JSON.stringify({ NODE_ENV: process.env.NODE_ENV, PI_WEB_DEV: process.env.PI_WEB_DEV }));\n`;
       if (process.platform === "win32") {
         await writeFile(join(bin, `${command}.cjs`), source);
@@ -37,6 +38,7 @@ it("builds production E2E assets without leaking build flags into other tasks", 
       timeout: 15_000,
     });
     expect(JSON.parse(await readFile(join(cwd, "vite-env.json"), "utf8"))).toEqual({ NODE_ENV: "production", PI_WEB_DEV: "0" });
+    expect(JSON.parse(await readFile(join(cwd, "tsc-env.json"), "utf8"))).toEqual({ NODE_ENV: "production", PI_WEB_DEV: "0" });
     expect(JSON.parse(await readFile(join(cwd, "playwright-env.json"), "utf8"))).toEqual({ NODE_ENV: "development", PI_WEB_DEV: "1" });
   } finally {
     await rm(cwd, { recursive: true, force: true });

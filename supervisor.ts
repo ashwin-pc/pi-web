@@ -8,6 +8,7 @@ import { resolveAuthConfig } from "./server/auth/config.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
+import { resolveWebHomePath } from "./server/shared/webHome.js";
 
 const publicHost = process.env.HOST || "127.0.0.1";
 const publicPort = Number(process.env.PORT || 8787);
@@ -24,7 +25,7 @@ const intentionalStops = new Set<number>();
 async function isAuthorized(req: IncomingMessage, mutation = false): Promise<boolean> {
   try {
     const config = resolveAuthConfig(process.env);
-    const kernel = new AuthKernel(config.legacyMode, new AuthStore(process.env.PI_WEB_AUTH_STORE || join(getAgentDir(), "web", "auth.json")), token, true, config.trustedHeader, config.policy, config.methods);
+    const kernel = new AuthKernel(config.legacyMode, new AuthStore(resolveWebHomePath("web/auth.json", join(getAgentDir(), "web", "auth.json"), process.env.PI_WEB_AUTH_STORE)), token, true, config.trustedHeader, config.policy, config.methods);
     await kernel.refreshConfig();
     const auth = await kernel.gate(req);
     if (!auth.ok) return false;
@@ -199,6 +200,7 @@ function shutdown(): void {
 
 process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
+process.on("SIGHUP", shutdown); // tmux kill-session must also stop the child.
 
 startChild();
 supervisor.listen(publicPort, publicHost, () => {

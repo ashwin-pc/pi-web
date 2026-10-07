@@ -2,8 +2,8 @@
  * global-notepad — installable pi-web extension (opt-in)
  *
  * A persistent, machine-global day planner shared by every pi-web conversation,
- * stored as structured entries in ~/.pi/agent/notepad.json (override with
- * PI_WEB_NOTEPAD_FILE). Delete this file from your extensions directory to
+ * stored as structured entries in ~/.pi/agent/notepad.json (or PI_WEB_HOME/notepad.json;
+ * override with PI_WEB_NOTEPAD_FILE). Delete this file from your extensions directory to
  * remove the feature entirely; nothing notepad-specific lives in core pi-web.
  *
  * Design principles:
@@ -24,7 +24,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import type { PiWebExtensionAPI, PiWebPanelEvent, PiWebPanelView } from "@ashwin-pc/pi-web/extensions";
+import { resolveWebHomePath, type PiWebExtensionAPI, type PiWebPanelEvent, type PiWebPanelView } from "@ashwin-pc/pi-web/extensions";
 
 const PANEL_KEY = "global-notepad";
 const SETTINGS_ID = "global-notepad.settings";
@@ -52,11 +52,11 @@ type NotepadEntry = {
 
 type NotepadStore = { version: 1; entries: NotepadEntry[] };
 
-function storePath() {
-  return process.env.PI_WEB_NOTEPAD_FILE || join(homedir(), ".pi", "agent", "notepad.json");
+export function storePath() {
+  return resolveWebHomePath("notepad.json", join(homedir(), ".pi", "agent", "notepad.json"), process.env.PI_WEB_NOTEPAD_FILE);
 }
 
-function archivePath() {
+export function archivePath() {
   return storePath().replace(/\.json$/, "") + "-archive.jsonl";
 }
 

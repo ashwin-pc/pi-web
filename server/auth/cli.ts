@@ -3,10 +3,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { AuthStore, hashSecret, randomSecret } from "./kernel.js";
 import { resolveAuthConfig } from "./config.js";
+import { resolveWebHomePath } from "../shared/webHome.js";
 
 const args = process.argv.slice(2);
 const command = args.shift();
-const store = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "web", "auth.json"));
+const store = new AuthStore(resolveWebHomePath("web/auth.json", join(process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent"), "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
 const value = (flag: string, fallback = "") => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] || fallback : fallback; };
 if (command === "bootstrap" || command === "recover") {
   const token = randomSecret(), minutes = Math.max(1, Math.min(30, Number(value("--minutes", "10"))));
