@@ -23,7 +23,7 @@ Existing per-file overrides take precedence. With `PI_WEB_HOME` unset (or empty)
 | Global web extensions | `extensions/` | — |
 | Example notepad | `notepad.json`, `notepad-archive.jsonl`, legacy `notepad.md` | `PI_WEB_NOTEPAD_FILE` (archive/markdown follow its location) |
 
-Project extensions remain in `<cwd>/.pi/web/extensions`. This version's notepad has no separate database/vault, and the session orchestrator uses a ledger in agent session files rather than a delegation spool; those sessions remain under the agent home. Installable extensions can import the shared `resolveWebHomePath(file, legacyPath, override?)` helper from `@ashwin-pc/pi-web/extensions`.
+Project extensions remain in `<cwd>/.pi/web/extensions`. This version's notepad has no separate database/vault, and the session orchestrator uses a ledger in agent session files rather than a delegation spool; those sessions remain under the agent home. Extensions with their own resolvable `@ashwin-pc/pi-web` dependency can import the shared `resolveWebHomePath(file, legacyPath, override?)` helper from `@ashwin-pc/pi-web/extensions`. Copied standalone extensions should keep runtime path helpers self-contained and package imports type-only: a global or `npx` install is not on their Node package resolution path.
 
 ### Launcher (requires tmux)
 
@@ -34,7 +34,7 @@ npm run instance -- my-instance --stop
 
 `npm run instance -- <name> [--mock] [--worktree]` creates private state folders in `~/.pi/web-instances/<name>/{web,pi}`, chooses a free public/child port pair, and starts `pi-web-<name>` in tmux. It clears inherited `PI_WEB_*` configuration (including `PI_WEB_TOKEN`), mints a stored API token with the auth CLI, waits for an authenticated API response, then prints the URL, token (shown once), and stop command. Use the UI's **Set token** action with that token. Logs are in `~/.pi/web-instances/<name>/server.log`. Duplicate launches fail without stopping the existing session.
 
-Without `--mock`, the launcher copies only `auth.json` and `models.json` from the current `PI_CODING_AGENT_DIR` (or `~/.pi/agent`); it never copies settings or sessions. `--mock` skips that copy and uses the mock harness.
+Without `--mock`, the launcher seeds missing `auth.json` and `models.json` from the current `PI_CODING_AGENT_DIR` (or `~/.pi/agent`); it never overwrites existing instance files or copies settings or sessions. **OAuth caveat:** copied credentials can share rotating refresh tokens with the source install; refreshing in either instance can invalidate the other's login. Use API keys or log in separately in the instance to avoid sharing OAuth credentials. `--mock` skips that copy and uses the mock harness.
 
 `--worktree` creates a detached Git worktree at `~/.pi/web-instances/<name>/worktree` from the **current committed HEAD**, reuses it on subsequent launches, and runs both server and agent there. It shares the source checkout's `node_modules` installation via a symlink; uncommitted source changes are not copied. Without the flag, the current checkout is used. `--stop` stops the tmux session and its server, but preserves state and the worktree for reuse.
 

@@ -50,11 +50,11 @@ const packedStartupTask = { name: "package-startup", command: isWin ? "npm.cmd" 
 
 const preflightTasks = [
   { name: "typecheck", command: bin("tsc"), args: ["--noEmit"], kind: "static" },
-  { name: "unit", command: bin("vitest"), args: ["run"], kind: "unit" },
+  { name: "unit", command: bin("vitest"), args: ["run"], env: { PI_WEB_UNIT_WORKERS: process.env.PI_WEB_UNIT_WORKERS || "1" }, kind: "unit" },
   // Match the production server even when the caller is a development shell.
   // NODE_ENV=development would otherwise compile out SW activation reloads.
-  // Include the public extension runtime, not just browser assets: examples
-  // import it at runtime and the package-startup check needs dist/extensions.js.
+  // Include the public extension runtime, not just browser assets:
+  // the package-startup check needs dist/extensions.js.
   { name: "build", command: isWin ? "npm.cmd" : "npm", args: ["run", "build"], env: { NODE_ENV: "production", PI_WEB_DEV: "0" }, kind: "static" },
 ];
 

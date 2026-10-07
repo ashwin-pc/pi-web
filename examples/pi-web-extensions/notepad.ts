@@ -24,7 +24,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { Type } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
-import { resolveWebHomePath, type PiWebExtensionAPI, type PiWebPanelEvent, type PiWebPanelView } from "@ashwin-pc/pi-web/extensions";
+import type { PiWebExtensionAPI, PiWebPanelEvent, PiWebPanelView } from "@ashwin-pc/pi-web/extensions";
 
 const PANEL_KEY = "global-notepad";
 const SETTINGS_ID = "global-notepad.settings";
@@ -53,7 +53,11 @@ type NotepadEntry = {
 type NotepadStore = { version: 1; entries: NotepadEntry[] };
 
 export function storePath() {
-  return resolveWebHomePath("notepad.json", join(homedir(), ".pi", "agent", "notepad.json"), process.env.PI_WEB_NOTEPAD_FILE);
+  // Keep copied extensions self-contained: a global/npx install is not on
+  // Node's package resolution path from ~/.pi/web/extensions.
+  return process.env.PI_WEB_NOTEPAD_FILE || (process.env.PI_WEB_HOME
+    ? join(process.env.PI_WEB_HOME, "notepad.json")
+    : join(homedir(), ".pi", "agent", "notepad.json"));
 }
 
 export function archivePath() {

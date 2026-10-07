@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -92,10 +92,18 @@ describe("isolated instance launcher", () => {
       expect(await readFile(join(instance, "pi/auth.json"), "utf8")).toBe("auth.json");
       expect(await readFile(join(instance, "pi/models.json"), "utf8")).toBe("models.json");
       await expect(readFile(join(instance, "pi/settings.json"))).rejects.toThrow();
-      expect((await exec("git", ["-C", join(instance, "worktree"), "rev-parse", "--show-toplevel"])).stdout.trim()).toBe(join(instance, "worktree"));
+      expect(await realpath((await exec("git", ["-C", join(instance, "worktree"), "rev-parse", "--show-toplevel"])).stdout.trim())).toBe(await realpath(join(instance, "worktree")));
       expect(await readFile(join(root, "command"), "utf8")).toContain(`PI_WEB_CWD='${instance}/worktree'`);
       await launch("--stop");
-      await launch("--mock", "--worktree"); // Reuse without attempting another worktree add.
+      await writeFile(join(instance, "pi/auth.json"), "refreshed-instance-auth");
+      await writeFile(join(instance, "pi/models.json"), "instance-models");
+      await writeFile(join(credentials, "auth.json"), "stale-source-auth");
+      await launch("--worktree"); // Reuse without overwriting instance credentials/models.
+      expect(await readFile(join(instance, "pi/auth.json"), "utf8")).toBe("refreshed-instance-auth");
+      expect(await readFile(join(instance, "pi/models.json"), "utf8")).toBe("instance-models");
+      await launch("--stop");
+      await launch("--mock", "--worktree"); // Mock launches also preserve existing files.
+      expect(await readFile(join(instance, "pi/auth.json"), "utf8")).toBe("refreshed-instance-auth");
     } finally { await launch("--stop").catch(() => {}); }
   }, 30_000);
 

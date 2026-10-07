@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { mkdir, copyFile, symlink, access } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -51,8 +52,9 @@ async function main() {
   if (!args.includes('--mock')) {
     const source = process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
     for (const file of ['auth.json', 'models.json']) {
-      try { await copyFile(join(source, file), join(agentHome, file)); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
+      // Seed once; never overwrite credentials refreshed by this instance.
+      try { await copyFile(join(source, file), join(agentHome, file), constants.COPYFILE_EXCL); }
+      catch (error) { if (error.code !== 'ENOENT' && error.code !== 'EEXIST') throw error; }
     }
   }
   let port = 8787;
