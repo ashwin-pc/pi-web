@@ -585,7 +585,9 @@ export function createRealtime(options: {
           lastActivityAt: event.lastActivityAt,
         }, { kind: "start", label: "starting", startedAt: event.startedAt, lastActivityAt: event.lastActivityAt });
         messages.resetStreamingAssistant();
-        messages.beginStreamFollow();
+        // The optimistic submit may already have begun this stream. Its server
+        // acknowledgement must not erase a user scroll that arrived meanwhile.
+        messages.beginStreamFollow({ preserveUserIntent: true });
         break;
       case "message_update": {
         const deltaEvent = event.assistantMessageEvent;

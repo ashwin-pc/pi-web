@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { seedSessionUiState } from "./helpers/sessionUiState.js";
+import { nextRealtimeHello } from "./helpers/realtimeReady.js";
 
 async function seedServerSessionUiState(page: import("@playwright/test").Page, state: {
   pinnedSessions?: Array<{ id: string; cwd?: string }>;
@@ -1234,7 +1235,12 @@ test.describe("session quick bar", () => {
 
   test("runtime changes patch one drawer branch instead of rebuilding unrelated rows", async ({ page }) => {
     await seedServerPinned(page, { id: "mock-older" });
-    await page.goto("/");
+    const hello = nextRealtimeHello(page);
+    // This tests a background branch update, not the initial automatic switch
+    // to a remembered pinned lane (which legitimately rebuilds the drawer).
+    await page.goto("/?sessionId=mock-current");
+    await hello;
+    await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
     await page.locator("#sessionButton").click();
     const unaffected = page.locator('.sessionItem[data-session-id="mock-current"]');
     await unaffected.evaluate((row) => { row.dataset.renderToken = "preserved"; });

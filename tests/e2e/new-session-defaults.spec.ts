@@ -293,6 +293,9 @@ test.describe("new-session defaults", () => {
     await expect.poll(() => activeSessionId(page)).not.toBe("mock-current");
     const emptyId = await activeSessionId(page);
     await expectPinned(page, emptyId);
+    // Pinning/activation precede refreshState and the final compact drawer
+    // close. Wait for hydration before opening it for the next user action.
+    await expect(page.locator("#emptyCwdChooser")).toBeVisible();
 
     // Switch through the drawer because mock-current is unpinned and therefore
     // absent from the quick bar after the created tab is pinned.

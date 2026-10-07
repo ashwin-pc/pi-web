@@ -459,7 +459,9 @@ test("switching to reduced motion during a reveal settles it and prevents later 
   await expect(body.locator(".streamingWordReveal")).toHaveCount(0);
   await expect(body).toContainText("Rapid update");
   await expect(body.locator(".streamingWordReveal")).toHaveCount(0);
-  expect(await body.evaluate(element => getComputedStyle(element).opacity)).toBe("1");
+  // Settlement can replace the live body between locator resolution and a
+  // one-shot evaluate (computed style on the detached node is empty).
+  await expect(body).toHaveCSS("opacity", "1");
   await expect(page.locator("#stopButton")).toBeHidden({ timeout: 5_000 });
 });
 

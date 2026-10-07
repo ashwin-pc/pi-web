@@ -175,10 +175,14 @@ test("batched streaming preserves scroll-away intent and a selection in stable c
   const stableText = page.locator(".message.assistant p", { hasText: "This deliberately long response" });
   await expect(stableText).toContainText("avoid executing unsafe markup", { timeout: 10_000 });
   const messages = page.locator("#messages");
-  // An upward gesture on content that cannot scroll is intentionally a no-op.
-  // Wait until this test can exercise real scroll-away intent on tall viewports.
-  await expect.poll(() => messages.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(1);
-  await messages.dispatchEvent("wheel", { deltaY: -600 });
+  // A one-pixel overflow is still within the follow threshold. Exercise real
+  // scroll-away on tall viewports, including the wheel's native scroll effect
+  // (dispatchEvent only signals intent and never moves the viewport).
+  await expect.poll(() => messages.evaluate((element) => element.scrollHeight - element.clientHeight)).toBeGreaterThan(200);
+  await expect(page.locator("#stopButton")).toBeVisible();
+  await messages.hover();
+  await page.mouse.wheel(0, -600);
+  await expect.poll(() => messages.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeGreaterThan(48);
   await stableText.evaluate((element) => {
     // Live text can be inside a temporary reveal span. Select actual text,
     // rather than treating an element's child indexes as character offsets.
@@ -213,6 +217,25 @@ test("adjacent content indexes retain distinct assistant bodies without a tool b
 });
 
 test("live prefixes stay sanitized and resolve late references before settlement", async ({ page }) => {
+  // Hold the real stream at its first text_end instead of racing a 600ms mock
+  // pause. Slow browsers must still assert the live (not settled) DOM.
+  let release = () => {};
+  await page.routeWebSocket("**/ws", (socket) => {
+    const server = socket.connectToServer();
+    const buffered: (string | Buffer)[] = [];
+    let held = false;
+    let released = false;
+    release = () => {
+      released = true;
+      for (const message of buffered.splice(0)) socket.send(message);
+    };
+    server.onMessage((message) => {
+      const frame = JSON.parse(String(message));
+      if (!released && frame.type === "agent_event" && frame.event?.assistantMessageEvent?.type === "text_end" && frame.event.assistantMessageEvent.contentIndex === 0) held = true;
+      if (held && !released) buffered.push(message);
+      else socket.send(message);
+    });
+  });
   await configureVariant(page, "batched");
   await page.request.post("/api/mock/reset");
   await page.goto("/");
@@ -224,6 +247,7 @@ test("live prefixes stay sanitized and resolve late references before settlement
   await expect(live.locator('a[href="https://example.com/streaming"]')).toHaveText("reference link");
   await expect(live.locator("script")).toHaveCount(0);
   expect(await page.evaluate(() => (globalThis as typeof globalThis & { __streamingUnsafe?: boolean }).__streamingUnsafe)).not.toBe(true);
+  release();
   await expect(page.locator("#stopButton")).toBeHidden({ timeout: 20_000 });
 });
 

@@ -45,6 +45,30 @@ test("user scroll intent pauses stream following before the next streamed update
   await expect(page.locator(".jumpToLatestButton")).toBeHidden();
 });
 
+test("input in the same task as the submit's automatic scroll still pauses following", async ({ page }) => {
+  await page.goto("/");
+  await page.locator("#prompt").fill("slow pending tool refresh");
+  await expect(page.locator("#primaryButton")).toBeEnabled();
+  const messages = page.locator("#messages");
+  await messages.evaluate(element => {
+    const spacer = document.createElement("div");
+    spacer.style.height = "1600px";
+    element.append(spacer);
+    element.scrollTop = element.scrollHeight;
+  });
+  // DOM click invokes beginStreamFollow synchronously. Dispatch intent before
+  // its zero-delay programmatic-scroll ownership timer can run.
+  await page.evaluate(() => {
+    document.querySelector<HTMLButtonElement>("#primaryButton")!.click();
+    document.querySelector("#messages")!.dispatchEvent(new WheelEvent("wheel", { deltaY: -320, bubbles: true }));
+  });
+  await expect(page.locator(".jumpToLatestButton")).toBeVisible();
+  const top = await messages.evaluate(element => element.scrollTop);
+  await expect(page.locator(".message.assistant", { hasText: "Let me check that for you." })).toBeVisible();
+  expect(await messages.evaluate(element => element.scrollTop)).toBeLessThanOrEqual(top + 1);
+  await expect(page.locator(".jumpToLatestButton")).toBeVisible();
+});
+
 test("an upward wheel gesture on short content does not disable following", async ({ page }) => {
   await page.goto("/");
   await expect(page.locator("#prompt")).toBeVisible();
