@@ -1,3 +1,4 @@
+import type { SessionProjection } from "@earendil-works/pi-coding-agent";
 import { parseAttachmentMarkup } from "../shared/attachments.js";
 import type { PiWebSession } from "../types.js";
 import { jsonRoundTrip, type BaseSessionStateDto, type ConversationTreeDto, type MessageDto, type ModelDto, type SessionStatsDto, type SlashCommandDto } from "./dto.js";
@@ -44,6 +45,20 @@ export function appendMessageEntryRef(refs: MessageEntryRef[], entry: any) {
 }
 
 export function messageEntryRefs(targetSession: PiWebSession): MessageEntryRef[] {
+  const manager = targetSession.sessionManager as PiWebSession["sessionManager"] & {
+    buildSessionProjection?: () => Pick<SessionProjection, "entries"> | undefined;
+  };
+  const projection = manager?.buildSessionProjection?.();
+  if (projection) {
+    // An entry can produce zero messages (context edits) or multiple messages
+    // (compaction checkpoints). Preserve pi's authoritative source mapping.
+    return projection.entries.flatMap(({ sourceEntry, messages }) => messages.map(() => ({
+      entryId: sourceEntry.id,
+      parentEntryId: sourceEntry.parentId ?? undefined,
+    })));
+  }
+
+  // Older SDKs and lightweight session mocks only expose the raw branch.
   const getBranch = targetSession.sessionManager?.getBranch;
   if (typeof getBranch !== "function") return [];
 

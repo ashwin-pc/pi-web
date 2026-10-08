@@ -1,3 +1,4 @@
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import type { PiWebSession } from "../server/types.js";
 import { jsonRoundTrip } from "../server/session/dto.js";
@@ -7,6 +8,7 @@ import {
   getSessionSlashCommands,
   messageEntryRefs,
   projectCommittedMessage,
+  projectMessages,
   projectSessionState,
   sessionStats,
   simplifyMessage,
@@ -67,6 +69,77 @@ describe("pure session projections", () => {
       { id: "new", type: "message", message: { role: "assistant", content: "new" } },
     ];
     expect(messageEntryRefs(session)).toEqual([{ entryId: "compact" }, { entryId: "kept" }, { entryId: "new" }]);
+  });
+
+  it("keeps user action targets aligned after context edits omit messages", () => {
+    const manager = SessionManager.inMemory();
+    const firstUser = manager.appendMessage({ role: "user", content: "First turn", timestamp: 1 });
+    const removedTool = manager.appendMessage({
+      role: "toolResult", toolCallId: "read-1", toolName: "read",
+      content: [{ type: "text", text: "Large output" }], isError: false, timestamp: 2,
+    });
+    const secondUser = manager.appendMessage({ role: "user", content: "Second turn", timestamp: 3 });
+    const edit = manager.appendContextEdit(removedTool, null);
+    const lastUser = manager.appendMessage({ role: "user", content: "Third turn", timestamp: 4 });
+    const session = fixtureSession();
+    session.sessionManager = manager;
+    session.messages = manager.buildSessionContext().messages;
+
+    expect(manager.getEntry(removedTool)).toMatchObject({ type: "message", message: { role: "toolResult" } });
+    expect(session.messages.map((message: any) => message.role)).toEqual(["user", "user", "user"]);
+    expect(projectMessages(session).map(({ entryId, parentEntryId }) => ({ entryId, parentEntryId }))).toEqual([
+      { entryId: firstUser, parentEntryId: undefined },
+      { entryId: secondUser, parentEntryId: removedTool },
+      { entryId: lastUser, parentEntryId: edit },
+    ]);
+    expect(projectCommittedMessage(session, session.messages.at(-1))).toMatchObject({
+      role: "user", entryId: lastUser, parentEntryId: edit, text: "Third turn",
+    });
+  });
+
+  it("uses compaction provenance for both checkpoint messages and retained user messages", () => {
+    const manager = SessionManager.inMemory();
+    manager.appendMessage({ role: "system", content: "Initial prompt", timestamp: 1 });
+    const oldUser = manager.appendMessage({ role: "user", content: "Summarized turn", timestamp: 2 });
+    const keptUser = manager.appendMessage({ role: "user", content: "Kept turn", timestamp: 3 });
+    const keptSystem = manager.appendMessage({ role: "system", content: "Prompt update", timestamp: 4 });
+    const nextUser = manager.appendMessage({ role: "user", content: "Next turn", timestamp: 5 });
+    const compaction = manager.appendCompaction("Earlier conversation", keptUser, 1000);
+    const lastUser = manager.appendMessage({ role: "user", content: "After compaction", timestamp: 6 });
+    const session = fixtureSession();
+    session.sessionManager = manager;
+    session.messages = manager.buildSessionContext().messages;
+
+    expect(manager.getEntry(compaction)).toMatchObject({ type: "compaction", systemMessage: { role: "system" } });
+    expect(projectMessages(session).map(({ role, entryId, parentEntryId }) => ({ role, entryId, parentEntryId }))).toEqual([
+      { role: "system", entryId: compaction, parentEntryId: nextUser },
+      { role: "compactionSummary", entryId: compaction, parentEntryId: nextUser },
+      { role: "user", entryId: keptUser, parentEntryId: oldUser },
+      { role: "user", entryId: nextUser, parentEntryId: keptSystem },
+      { role: "user", entryId: lastUser, parentEntryId: compaction },
+    ]);
+    expect(projectCommittedMessage(session, session.messages.at(-1))).toMatchObject({
+      role: "user", entryId: lastUser, parentEntryId: compaction,
+    });
+  });
+
+  it("does not invent labels for older retained compactions", () => {
+    const manager = SessionManager.inMemory();
+    manager.appendMessage({ role: "system", content: "Prompt", timestamp: 1 });
+    const keptUser = manager.appendMessage({ role: "user", content: "Kept turn", timestamp: 2 });
+    manager.appendCompaction("First summary", keptUser, 1000);
+    const nextUser = manager.appendMessage({ role: "user", content: "Next turn", timestamp: 3 });
+    const latestCompaction = manager.appendCompaction("Latest summary", keptUser, 2000);
+    const session = fixtureSession();
+    session.sessionManager = manager;
+    session.messages = manager.buildSessionContext().messages;
+
+    expect(messageEntryRefs(session)).toEqual([
+      { entryId: latestCompaction, parentEntryId: nextUser },
+      { entryId: latestCompaction, parentEntryId: nextUser },
+      { entryId: keptUser, parentEntryId: manager.getEntry(keptUser)?.parentId },
+      { entryId: nextUser, parentEntryId: manager.getEntry(nextUser)?.parentId },
+    ]);
   });
 
   it("preserves visible custom metadata and omits hidden custom content", () => {
