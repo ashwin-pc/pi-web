@@ -131,6 +131,8 @@ async function setDocumentVisibility(page: Page, visibility: "visible" | "hidden
 }
 
 async function expectPointerTarget(page: Page, selector: string, minimumHeight: number) {
+  // Capture state text can update before its controls finish rendering.
+  await expect(page.locator(selector)).toBeVisible();
   const hit = await page.locator(selector).evaluate((element, minHeight) => {
     const rect = element.getBoundingClientRect();
     const target = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);

@@ -88,6 +88,7 @@ test.describe("keyboard shortcuts", () => {
     await expect(prompt).toBeFocused();
 
     const cyclePinned = async (key: "ArrowLeft" | "ArrowRight") => {
+      const previousSessionId = new URL(page.url()).searchParams.get("sessionId");
       await page.locator("#statusTitle").dispatchEvent("keydown", {
         key,
         code: key,
@@ -96,6 +97,9 @@ test.describe("keyboard shortcuts", () => {
         ctrlKey: true,
         shiftKey: true,
       });
+      // The title switches optimistically; the URL commits after hydration.
+      // Wait before issuing another shortcut that depends on the new session.
+      await expect.poll(() => new URL(page.url()).searchParams.get("sessionId")).not.toBe(previousSessionId);
     };
 
     await trackNextKeyDefault(page);
