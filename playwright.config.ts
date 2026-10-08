@@ -21,7 +21,11 @@ export default defineConfig({
   // Concurrent shard processes must not delete or overwrite each other's
   // failure artifacts while Playwright prepares its output directory.
   outputDir: join("test-results", String(port)),
-  snapshotPathTemplate: "{testDir}/{testFilePath}-snapshots/{arg}{ext}",
+  // The existing baselines were captured by the macOS CI job. System fonts
+  // have different metrics on Linux; compare each platform to its own baseline.
+  snapshotPathTemplate: process.platform === "darwin"
+    ? "{testDir}/{testFilePath}-snapshots/{arg}{ext}"
+    : "{testDir}/{testFilePath}-snapshots/{platform}/{arg}{ext}",
   expect: {
     toHaveScreenshot: {
       maxDiffPixelRatio: 0.025,
@@ -37,7 +41,9 @@ export default defineConfig({
     // and 30-second retries that dominate the suite runtime.
     serviceWorkers: "block",
   },
-  webServer: {
+  // These fixtures launch their own servers. The all-tests runner schedules
+  // them exclusively after the viewport matrix, without an unused mock server.
+  webServer: process.env.PI_WEB_E2E_ISOLATED === "1" ? undefined : {
     env: Object.fromEntries(Object.entries(isolatedAuthEnv()).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
     // E2E runs against the preflight production build. Starting many embedded
     // Vite optimizers in parallel made sharded runs slow and resource-sensitive.
@@ -49,7 +55,8 @@ export default defineConfig({
   projects: [
     { name: "mobile", use: { ...devices["Pixel 5"] }, testIgnore: "**/token.spec.ts" },
     { name: "tablet", use: { viewport: { width: 768, height: 1024 } }, testIgnore: "**/token.spec.ts" },
-    { name: "desktop", use: { viewport: { width: 1280, height: 800 } }, testIgnore: "**/token.spec.ts" },
+    { name: "desktop", use: { viewport: { width: 1280, height: 800 } }, testIgnore: ["**/token.spec.ts", "**/identity-missing-custom.spec.ts", "**/multi-auth.spec.ts"] },
+    { name: "isolated", use: { viewport: { width: 1280, height: 800 } }, testMatch: ["**/identity-missing-custom.spec.ts", "**/multi-auth.spec.ts"] },
     { name: "auth", use: { baseURL: `http://127.0.0.1:${port}`, viewport: { width: 1280, height: 800 } }, testMatch: "**/token.spec.ts" },
   ],
 });

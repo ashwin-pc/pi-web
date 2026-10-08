@@ -37,7 +37,7 @@ function startServer(port: number, cwd: string, settingsFile: string, mock: bool
     env: {
       ...isolatedAuthEnv(),
       ...(mock ? { PI_WEB_MOCK: "1" } : { PI_WEB_NO_SESSION: "1" }),
-      PI_WEB_DEV: "1",
+      PI_WEB_DEV: "0", // HTTP contracts do not need a Vite optimizer.
       HOST: "127.0.0.1",
       PORT: String(port),
       PI_WEB_TOKEN: "",

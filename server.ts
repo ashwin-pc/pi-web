@@ -11,6 +11,7 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { HttpError } from "./server/shared/httpError.js";
+import { resolveWebHomePath } from "./server/shared/webHome.js";
 import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
@@ -51,7 +52,7 @@ const authConfig = resolveAuthConfig(process.env);
 const authMode = authConfig.legacyMode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
-const authStore = new AuthStore(process.env.PI_WEB_AUTH_STORE || join(agentDir, "web", "auth.json"));
+const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
@@ -297,9 +298,9 @@ function envMs(name: string, fallback: number) {
 }
 
 const modelRuntime = await ModelRuntime.create();
-const sessionUiStateStore = createSessionUiStateStore(process.env.PI_WEB_SESSION_UI_STATE_FILE || join(agentDir, "pi-web-session-ui-state.json"));
+const sessionUiStateStore = createSessionUiStateStore(resolveWebHomePath("pi-web-session-ui-state.json", join(agentDir, "pi-web-session-ui-state.json"), process.env.PI_WEB_SESSION_UI_STATE_FILE));
 const pushNotifications = createPushNotificationService(
-  process.env.PI_WEB_PUSH_FILE || join(agentDir, "pi-web-push.json"),
+  resolveWebHomePath("pi-web-push.json", join(agentDir, "pi-web-push.json"), process.env.PI_WEB_PUSH_FILE),
   process.env.PI_WEB_VAPID_SUBJECT || "https://github.com/ashwin-pc/pi-web",
 );
 let sessionService: LocalSessionService;

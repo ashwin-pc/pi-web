@@ -2512,10 +2512,15 @@ export function createSessions(options: {
     }
     if (workerForest.unattachedWorkers.length > 0) validExpansionIds.add(unattachedWorkersExpansionId);
     let prunedExpansion = false;
-    for (const sessionId of state.expandedWorkerBranches) {
-      if (validExpansionIds.has(sessionId)) continue;
-      state.expandedWorkerBranches.delete(sessionId);
-      prunedExpansion = true;
+    // Opening/restoring the drawer renders before its index and UI-state
+    // bootstrap complete. An empty/incomplete forest is not evidence that a
+    // persisted expansion is stale (and must not erase it during reload).
+    if (uiSync.ready && lastListFetchedAt > 0) {
+      for (const sessionId of state.expandedWorkerBranches) {
+        if (validExpansionIds.has(sessionId)) continue;
+        state.expandedWorkerBranches.delete(sessionId);
+        prunedExpansion = true;
+      }
     }
     if (prunedExpansion) persistExpandedWorkerBranches(state.expandedWorkerBranches);
     if (sessionWorkerCollapseAllButton) {

@@ -2,8 +2,8 @@
  * global-notepad — installable pi-web extension (opt-in)
  *
  * A persistent, machine-global day planner shared by every pi-web conversation,
- * stored as structured entries in ~/.pi/agent/notepad.json (override with
- * PI_WEB_NOTEPAD_FILE). Delete this file from your extensions directory to
+ * stored as structured entries in ~/.pi/agent/notepad.json (or PI_WEB_HOME/notepad.json;
+ * override with PI_WEB_NOTEPAD_FILE). Delete this file from your extensions directory to
  * remove the feature entirely; nothing notepad-specific lives in core pi-web.
  *
  * Design principles:
@@ -52,11 +52,15 @@ type NotepadEntry = {
 
 type NotepadStore = { version: 1; entries: NotepadEntry[] };
 
-function storePath() {
-  return process.env.PI_WEB_NOTEPAD_FILE || join(homedir(), ".pi", "agent", "notepad.json");
+export function storePath() {
+  // Keep copied extensions self-contained: a global/npx install is not on
+  // Node's package resolution path from ~/.pi/web/extensions.
+  return process.env.PI_WEB_NOTEPAD_FILE || (process.env.PI_WEB_HOME
+    ? join(process.env.PI_WEB_HOME, "notepad.json")
+    : join(homedir(), ".pi", "agent", "notepad.json"));
 }
 
-function archivePath() {
+export function archivePath() {
   return storePath().replace(/\.json$/, "") + "-archive.jsonl";
 }
 

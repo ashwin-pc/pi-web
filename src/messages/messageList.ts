@@ -69,7 +69,7 @@ export type MessageList = {
   endStreamingThinking: (content?: string, contentIndex?: number | string) => void;
   checkpoint: () => { restore: () => void };
   clear: () => void;
-  beginStreamFollow: () => void;
+  beginStreamFollow: (options?: { preserveUserIntent?: boolean }) => void;
   endStreamFollow: () => void;
   refreshMessages: (options: {
     sessionId: string;
@@ -450,11 +450,17 @@ export function createMessageList(options: {
     return true;
   }
 
-  function beginStreamFollow() {
+  function beginStreamFollow(options: { preserveUserIntent?: boolean } = {}) {
+    const keepPaused = options.preserveUserIntent && isStreaming && pendingUserScrollIntent && !shouldFollowStream;
     invalidatePendingRefreshes();
     currentStreamingResponseKey = `stream:${++assistantResponseSerial}`;
     currentAssistantResponseKey = currentStreamingResponseKey;
     isStreaming = true;
+    if (keepPaused) {
+      activity.schedule();
+      setJumpButtonVisible(true);
+      return;
+    }
     shouldFollowStream = true;
     pendingUserScrollIntent = false;
     activity.schedule();
@@ -481,7 +487,9 @@ export function createMessageList(options: {
   }
 
   function pauseStreamFollow(event: Event) {
-    if (programmaticScroll) return;
+    // Wheel/key/pointer input is explicit user intent even when it arrives in
+    // the same task as our automatic scroll. The ownership flag filters scroll
+    // events, not input; ignoring input here can keep dragging users to bottom.
     const direction = userScrollDirection(event);
     const canScroll = messagesEl.scrollHeight > messagesEl.clientHeight + 1;
     const atPhysicalBottom = distanceFromBottom() <= 1;

@@ -27,12 +27,14 @@
     "examples/",
     "!examples/pi-web-extensions/wavy/",
     "server/",
+    "src/webHome.ts",
     "server.ts",
     "supervisor.ts",
     "README.md"
   ],
   "scripts": {
     "dev": "PI_WEB_DEV=1 node --import tsx supervisor.ts",
+    "instance": "node scripts/instance.mjs",
     "dev:server": "PI_WEB_DEV=1 node --import tsx --watch server.ts",
     "build": "vite build && tsc -p tsconfig.extensions.json",
     "website:assets": "node scripts/copy-website-assets.mjs",

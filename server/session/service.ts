@@ -12,6 +12,7 @@ import { isSessionReferenceId, type SessionReference } from "../shared/sessionRe
 import { assertDirectory } from "../shared/fsList.js";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { createWebUiBridge } from "../extensions/webUi.js";
+import { resolveWebHomePath } from "../shared/webHome.js";
 import { EphemeralCaptureStore } from "../extensions/captureStore.js";
 import type { ResilientResourceLoader } from "../extensions/resilientLoader.js";
 import { mapPiEvent } from "./piEventMap.js";
@@ -301,7 +302,7 @@ export class LocalSessionService implements SessionService {
   private readonly knownSessionCwds = new Set<string>();
   private readonly protectedSessionIds = new Set<string>();
   private nextWorkLeaseId = 1;
-  readonly settingsStore = createSettingsStore(process.env.PI_WEB_SETTINGS_FILE || join(getAgentDir(), "pi-web-settings.json"));
+  readonly settingsStore = createSettingsStore(resolveWebHomePath("pi-web-settings.json", join(getAgentDir(), "pi-web-settings.json"), process.env.PI_WEB_SETTINGS_FILE));
   private readonly noSession = process.env.PI_WEB_NO_SESSION === "1";
   private readonly idleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 24 * 60 * 60 * 1000);
   private readonly viewerGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, this.idleGraceMs));
