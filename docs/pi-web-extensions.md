@@ -490,11 +490,22 @@ The repo includes an opt-in GitHub extension example at [`examples/pi-web-extens
 
 This example is shipped as source for discovery and sharing, but it is **not enabled by default**. Install it by copying or downloading the file into a pi-web extension directory.
 
-Prerequisite:
+Prerequisites: install the official [GitHub CLI](https://cli.github.com) on the
+**machine running the pi-web server**, and authenticate it for your repository:
 
 ```sh
+gh --version
+gh auth login
 gh auth status
 ```
+
+The server process must have `gh` on its `PATH` (a CLI installed only on your
+browser's machine is not enough). If you change the server's `PATH`, restart
+pi-web with that environment. Installing into a directory already on the server's
+`PATH` does not require a restart; refresh the GitHub tab. The tab reports setup
+help if `gh` cannot start, preserves CLI authentication/access errors, and reports
+request timeouts separately. It uses authenticated `gh` commands, not an
+unauthenticated public API fallback.
 
 Install for one project:
 
