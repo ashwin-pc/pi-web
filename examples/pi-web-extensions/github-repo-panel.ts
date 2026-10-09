@@ -175,14 +175,31 @@ async function findGithubRepo(pi: PiWebExtensionAPI, cwd: string): Promise<RepoI
   return remotes.find((repo) => repo.remote === "origin") || remotes[0];
 }
 
+const GH_SETUP_HELP = "GitHub CLI (gh) could not be started. Install it from https://cli.github.com, put gh on the pi-web server's PATH, then run gh auth login and gh auth status.";
+
 async function ghJson<T>(pi: PiWebExtensionAPI, cwd: string, args: string[]): Promise<{ items?: T; error?: string }> {
   try {
     const result = await exec(pi, cwd, "gh", args);
+    if (result.killed) {
+      return { error: `GitHub CLI request timed out after ${COMMAND_TIMEOUT_MS / 1000}s. Check connectivity and retry.` };
+    }
     if (result.code !== 0) {
-      return { error: compactError(result.stderr || result.stdout || `gh ${args.join(" ")} failed`) };
+      const diagnostic = result.stderr.trim() || result.stdout.trim();
+      if (diagnostic) return { error: compactError(diagnostic) };
+      // pi.exec can swallow spawn errors (including ENOENT), returning code 1
+      // with empty streams. Probe separately: an ordinary silent CLI failure
+      // must not be misreported as a missing executable.
+      const version = await exec(pi, cwd, "gh", ["--version"]);
+      if (!version.killed && version.code !== 0 && !version.stderr.trim() && !version.stdout.trim()) {
+        return { error: GH_SETUP_HELP };
+      }
+      return { error: `gh ${args.slice(0, 2).join(" ")} failed (exit code ${result.code}, no diagnostic output). Run gh auth status and check repository access.` };
     }
     return { items: JSON.parse(result.stdout || "null") as T };
   } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") {
+      return { error: GH_SETUP_HELP };
+    }
     return { error: compactError(error instanceof Error ? error.message : String(error)) };
   }
 }
