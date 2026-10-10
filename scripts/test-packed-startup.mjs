@@ -63,10 +63,23 @@ async function main() {
       // Drain both pipes so startup cannot block on an unread stdout buffer.
       child.stdout?.on("data", chunk => { output += chunk; });
       child.stderr?.on("data", chunk => { errors += chunk; });
-      for (let i = 0; i < 80; i++) {
-        if (child.exitCode !== null) break;
-        try { response = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`); break; }
-        catch (error) { lastFetchError = error; await delay(100); }
+      // A fresh extraction has no tsx transform cache for its source paths.
+      // Cold SDK imports alone can take several seconds before server.ts runs;
+      // measured packed startup exceeds 10s even without concurrent tests.
+      // Use a wall-clock deadline, not a poll count, and bound each HTTP probe
+      // so an accepted connection that never responds cannot hang this check.
+      const startupDeadline = startupStarted + 30_000;
+      while (Date.now() < startupDeadline) {
+        if (spawnError || child.exitCode !== null) break;
+        try {
+          response = await fetch(`http://127.0.0.1:${port}/manifest.webmanifest`, {
+            signal: AbortSignal.timeout(Math.min(1_000, Math.max(1, startupDeadline - Date.now()))),
+          });
+          break;
+        } catch (error) {
+          lastFetchError = error;
+          await delay(Math.min(100, Math.max(0, startupDeadline - Date.now())));
+        }
       }
       if (response?.status === 200) break;
       // 'exit' can precede the final stderr data; classify only after it drains.
