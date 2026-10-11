@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deflateSync } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 import { Readable } from "node:stream";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -42,6 +42,19 @@ describe("app identity", () => {
       expect(apng.readUInt32BE(animationControl + 4)).toBeGreaterThan(1); // real frames
       expect(apng.readUInt32BE(animationControl + 8)).toBe(1); // settle, do not loop
       expect(bundle.newSession).not.toHaveProperty("sprite");
+    }
+  });
+  it("validates optional static suggested palettes before persisting package assets", () => {
+    const base = solidPng(1);
+    const palette = (size: number) => {
+      const chunk = Buffer.alloc(size + 12); chunk.writeUInt32BE(size); chunk.write("PLTE", 4); chunk.writeUInt32BE(crc32(chunk.subarray(4, size + 8)), size + 8); return chunk;
+    };
+    const insert = (chunk: Buffer) => Buffer.concat([base.subarray(0, 33), chunk, base.subarray(33)]);
+    expect(validPng(insert(palette(3)))).toBe(true);
+    const invalid = [insert(palette(0)), insert(palette(2)), insert(palette(771)), insert(Buffer.concat([palette(3), palette(3)])), Buffer.concat([base.subarray(0, -12), palette(3), base.subarray(-12)])];
+    for (const still of invalid) {
+      expect(validPng(still)).toBe(false);
+      expect(() => parseAvatarPackage({ format: "pi-web-avatar", version: 1, assets: { still: { mediaType: "image/png", base64: still.toString("base64") }, icon: { mediaType: "image/png", base64: base.toString("base64") } } })).toThrow("Invalid static PNG asset");
     }
   });
   it("reads stored icon metadata from the bounded header without requiring image decompression", () => {

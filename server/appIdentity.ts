@@ -19,6 +19,7 @@ export function validPng(png: Buffer): boolean {
   let offset = 8;
   let sawHeader = false;
   let ended = false;
+  let sawPalette = false;
   const imageData: Buffer[] = [];
   while (offset + 12 <= png.length) {
     const length = png.readUInt32BE(offset);
@@ -32,9 +33,13 @@ export function validPng(png: Buffer): boolean {
       if (type !== "IHDR" || length !== 13 || body[8] !== 8 || ![2, 6].includes(body[9]) || body[10] !== 0 || body[11] !== 0 || body[12] !== 0) return false;
       sawHeader = true;
     } else if (type === "acTL" || type === "IHDR") return false;
+    else if (type === "PLTE") {
+      if (sawPalette || imageData.length || !length || length > 768 || length % 3) return false;
+      sawPalette = true;
+    }
     else if (type === "IDAT") imageData.push(body);
     else if (type === "IEND") { ended = length === 0; offset += 12; break; }
-    else if (!/^[a-zA-Z]{4}$/.test(type) || (type[0] === type[0].toUpperCase() && type !== "PLTE")) return false;
+    else if (!/^[a-zA-Z]{4}$/.test(type) || type[0] === type[0].toUpperCase()) return false;
     offset += 12 + length;
   }
   if (!sawHeader || !ended || offset !== png.length || !imageData.length) return false;
