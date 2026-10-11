@@ -44,6 +44,13 @@ describe("app identity", () => {
       expect(bundle.newSession).not.toHaveProperty("sprite");
     }
   });
+  it("reads stored icon metadata from the bounded header without requiring image decompression", () => {
+    const settings = normalizeSettings({});
+    const headerOnly = solidPng(1024).subarray(0, 33);
+    expect(validPng(headerOnly)).toBe(false);
+    expect(identityManifest(settings, headerOnly).icons[0].sizes).toBe("1024x1024");
+    expect(identityManifest(settings, Buffer.alloc(0)).icons[0].sizes).toBe("512x512");
+  });
   it("validates identity patches and retains stable manifest identity", () => {
     const original = normalizeSettings(undefined);
     const invalid = applySettingsPatch(original, { identity: { name: " ", avatar: { type: "preset", id: "unknown" }, revision: 999 } });

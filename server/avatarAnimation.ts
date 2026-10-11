@@ -6,7 +6,7 @@ export function validAvatarAnimation(bytes: Buffer): boolean {
   try {
     if (bytes.length > maxAvatarAnimationBytes || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return false;
     let offset = 8, width = 0, height = 0, frames = 0, declared = 0, sequence = 0, duration = 0, ended = false;
-    let frameWidth = 0, frameHeight = 0, data: Buffer[] = [], firstData = false;
+    let frameWidth = 0, frameHeight = 0, data: Buffer[] = [], firstData = false, separatePoster = false;
     const finish = () => {
       if (!data.length) throw new Error("Missing frame data");
       const stride = frameWidth * 4 + 1;
@@ -25,23 +25,25 @@ export function validAvatarAnimation(bytes: Buffer): boolean {
         if (type !== "IHDR" || length !== 13 || body[8] !== 8 || body[9] !== 6 || body[10] || body[11] || body[12]) return false;
         width = body.readUInt32BE(0); height = body.readUInt32BE(4);
         if (!width || !height || width > 512 || height > 512) return false;
+        frameWidth = width; frameHeight = height;
       } else if (type === "acTL") {
-        if (declared || frames || length !== 8 || body.readUInt32BE(4) !== 1) return false;
+        if (declared || frames || firstData || length !== 8 || body.readUInt32BE(4) !== 1) return false;
         declared = body.readUInt32BE(0);
         if (declared < 2 || declared > 240) return false;
       } else if (type === "fcTL") {
         if (!declared || length !== 26 || body.readUInt32BE(0) !== sequence++) return false;
         if (frames) finish();
+        else if (firstData) { finish(); separatePoster = true; }
         frameWidth = body.readUInt32BE(4); frameHeight = body.readUInt32BE(8);
         if (!frameWidth || !frameHeight || frameWidth + body.readUInt32BE(12) > width || frameHeight + body.readUInt32BE(16) > height || body[24] > 2 || body[25] > 1) return false;
-        if (!frames && (frameWidth !== width || frameHeight !== height || body.readUInt32BE(12) || body.readUInt32BE(16))) return false;
+        if (!frames && !separatePoster && (frameWidth !== width || frameHeight !== height || body.readUInt32BE(12) || body.readUInt32BE(16))) return false;
         duration += body.readUInt16BE(20) / (body.readUInt16BE(22) || 100);
         if (duration > 15 || ++frames > declared) return false;
       } else if (type === "IDAT") {
-        if (frames !== 1) return false;
+        if (!declared || separatePoster || frames > 1) return false;
         data.push(body); firstData = true;
       } else if (type === "fdAT") {
-        if (frames < 2 || length < 5 || body.readUInt32BE(0) !== sequence++) return false;
+        if (frames < (separatePoster ? 1 : 2) || length < 5 || body.readUInt32BE(0) !== sequence++) return false;
         data.push(body.subarray(4));
       } else if (type === "IEND") {
         if (length || frames !== declared || !firstData || !duration) return false;

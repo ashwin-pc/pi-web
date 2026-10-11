@@ -171,6 +171,12 @@ export function publicIdentityAssets(settings: PiWebSettings, uploadedPng?: Buff
 export function identityManifest(settings: PiWebSettings, selectedIcon?: Buffer) {
   const { name, shortName } = settings.identity;
   const icon = `/identity/icon.png?v=${settings.identity.revision}`;
+  // Stored generation assets were validated before publication. Manifest reads
+  // need only bounded IHDR dimensions, never another synchronous decompression.
+  const hasHeader = selectedIcon && selectedIcon.length >= 33 && selectedIcon.subarray(0, 8).equals(signature) && selectedIcon.readUInt32BE(8) === 13 && selectedIcon.toString("ascii", 12, 16) === "IHDR";
+  const width = hasHeader ? selectedIcon.readUInt32BE(16) : 0;
+  const height = hasHeader ? selectedIcon.readUInt32BE(20) : 0;
+  const sizes = width >= 1 && height >= 1 && width <= 2048 && height <= 2048 ? `${width}x${height}` : "512x512";
   return {
     id: "/",
     start_url: "/",
@@ -183,6 +189,6 @@ export function identityManifest(settings: PiWebSettings, selectedIcon?: Buffer)
     background_color: "#1a1a1a",
     // Report actual custom icon dimensions; built-in icons are 512×512.
     // None has a verified maskable safe zone.
-    icons: [{ src: icon, sizes: selectedIcon && validPng(selectedIcon) ? `${selectedIcon.readUInt32BE(16)}x${selectedIcon.readUInt32BE(20)}` : "512x512", type: "image/png", purpose: "any" }],
+    icons: [{ src: icon, sizes, type: "image/png", purpose: "any" }],
   };
 }

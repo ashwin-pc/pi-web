@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { crc32 } from "node:zlib";
+import { crc32, deflateSync } from "node:zlib";
 import { validAvatarAnimation } from "../server/avatarAnimation.js";
 import { commitAvatarGeneration, createAvatarGeneration, exportAvatarPackage, exportAvatarZip, parseAvatarPackage, parseAvatarZip, readAvatar } from "../server/appIdentity.js";
 import { resolveAvatarBundle } from "../server/shared/appIdentity.js";
@@ -20,15 +20,19 @@ describe("custom animated bundles", () => {
       const id = await createAvatarGeneration(file, { still, fab, icon, newSession });
       expect(await readAvatar(file, id, "newSession")).toEqual(newSession);
       expect(await readAvatar(file, id, "fab")).toEqual(fab);
-      expect(parseAvatarPackage(JSON.parse(await exportAvatarPackage(file, id))).fab).toEqual(fab);
-      expect((await parseAvatarZip(await exportAvatarZip(file, id))).fab).toEqual(fab);
+      const jsonRoundtrip = parseAvatarPackage(JSON.parse(await exportAvatarPackage(file, id)));
+      const zipRoundtrip = await parseAvatarZip(await exportAvatarZip(file, id));
+      expect(jsonRoundtrip.fab).toEqual(fab);
+      expect(zipRoundtrip.fab).toEqual(fab);
       expect(resolveAvatarBundle({ name: "Pi", shortName: "Pi", revision: 1, avatar: { type: "custom", assetId: id, animated: true } }).fab).toBe("/identity/fab.png?v=1");
-      expect(parseAvatarPackage(JSON.parse(await exportAvatarPackage(file, id))).newSession).toEqual(newSession);
-      expect((await parseAvatarZip(await exportAvatarZip(file, id))).newSession).toEqual(newSession);
+      expect(jsonRoundtrip.newSession).toEqual(newSession);
+      expect(zipRoundtrip.newSession).toEqual(newSession);
       expect(resolveAvatarBundle({ name: "Pi", shortName: "Pi", revision: 1, avatar: { type: "custom", assetId: id, animated: true } }).newSession?.apng).toBe("/identity/new-session.apng?v=1");
       expect(resolveAvatarBundle({ name: "Pi", shortName: "Pi", revision: 1, avatar: { type: "custom", assetId: id } }).newSession).toBeUndefined();
     } finally { await rm(root, { recursive: true, force: true }); }
-  });
+  // This multi-format integration performs bounded compression and validation
+  // of real artwork; shared Linux runners need more than a unit-test deadline.
+  }, 30_000);
   it("reclaims old generations only after commit while preserving the previous reader and rollback", async () => {
     const still = await readFile("public/avatars/fox/still.png");
     const root = await mkdtemp(join(tmpdir(), "avatar-reclaim-"));
@@ -50,6 +54,26 @@ describe("custom animated bundles", () => {
       expect(await readAvatar(file, previous)).toEqual(still);
       expect(await readAvatar(file, current)).toEqual(still);
     } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("validates a separate APNG fallback poster and every fdAT frame", () => {
+    const chunk = (type: string, body: Buffer) => {
+      const data = Buffer.concat([Buffer.from(type), body]);
+      const size = Buffer.alloc(4); size.writeUInt32BE(body.length);
+      const checksum = Buffer.alloc(4); checksum.writeUInt32BE(crc32(data));
+      return Buffer.concat([size, data, checksum]);
+    };
+    const header = Buffer.alloc(13); header.writeUInt32BE(1, 0); header.writeUInt32BE(1, 4); header[8] = 8; header[9] = 6;
+    const control = Buffer.alloc(8); control.writeUInt32BE(2); control.writeUInt32BE(1, 4);
+    const pixels = deflateSync(Buffer.from([0, 255, 0, 0, 255]));
+    const frame = (sequence: number) => {
+      const body = Buffer.alloc(26); body.writeUInt32BE(sequence); body.writeUInt32BE(1, 4); body.writeUInt32BE(1, 8); body.writeUInt16BE(1, 20); body.writeUInt16BE(10, 22);
+      const order = Buffer.alloc(4); order.writeUInt32BE(sequence + 1);
+      return Buffer.concat([chunk("fcTL", body), chunk("fdAT", Buffer.concat([order, pixels]))]);
+    };
+    const prefix = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk("IHDR", header), chunk("acTL", control)]);
+    const suffix = Buffer.concat([frame(0), frame(2), chunk("IEND", Buffer.alloc(0))]);
+    expect(validAvatarAnimation(Buffer.concat([prefix, chunk("IDAT", pixels), suffix]))).toBe(true);
+    expect(validAvatarAnimation(Buffer.concat([prefix, chunk("IDAT", deflateSync(Buffer.from([0, 255]))), suffix]))).toBe(false);
   });
   it("rejects infinite looping, corrupted frames, truncation, static PNG and excessive dimensions", async () => {
     const original = await readFile("public/avatars/fox/new-session.apng");
