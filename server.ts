@@ -1106,13 +1106,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
       if (method === "POST" && ["/api/identity/avatar", "/api/identity/avatar/package"].includes(url.pathname)) {
         const settings = await withAvatarMutation(async () => {
+          const previous = (await settingsStore.read()).identity.avatar;
           let assetId: string;
           try { assetId = await (url.pathname.endsWith("/package") ? receiveAvatarPackage : receiveAvatar)(req, settingsStore.file); }
           catch (error) { throw new HttpError((error as Error).message, 400); }
           return commitAvatarGeneration(settingsStore.file, assetId, async () => {
             const animated = Boolean(await readAvatar(settingsStore.file, assetId, "newSession"));
             return settingsStore.patch({ identity: { avatar: { type: "custom", assetId, ...(animated ? { animated: true } : {}) } } });
-          });
+          }, previous.type === "custom" ? previous.assetId : undefined);
         });
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });

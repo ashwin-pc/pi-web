@@ -89,6 +89,7 @@
     "vite": "^7.2.7",
     "web-push": "^3.6.7",
     "workbox-core": "^7.4.1",
+    "workbox-expiration": "^7.4.1",
     "workbox-precaching": "^7.4.1",
     "ws": "^8.18.3",
     "yauzl": "^3.4.0"

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 } from "node:zlib";
 import { validAvatarAnimation } from "../server/avatarAnimation.js";
-import { createAvatarGeneration, exportAvatarPackage, exportAvatarZip, parseAvatarPackage, parseAvatarZip, readAvatar } from "../server/appIdentity.js";
+import { commitAvatarGeneration, createAvatarGeneration, exportAvatarPackage, exportAvatarZip, parseAvatarPackage, parseAvatarZip, readAvatar } from "../server/appIdentity.js";
 import { resolveAvatarBundle } from "../server/shared/appIdentity.js";
 
 describe("custom animated bundles", () => {
@@ -27,6 +27,28 @@ describe("custom animated bundles", () => {
       expect((await parseAvatarZip(await exportAvatarZip(file, id))).newSession).toEqual(newSession);
       expect(resolveAvatarBundle({ name: "Pi", shortName: "Pi", revision: 1, avatar: { type: "custom", assetId: id, animated: true } }).newSession?.apng).toBe("/identity/new-session.apng?v=1");
       expect(resolveAvatarBundle({ name: "Pi", shortName: "Pi", revision: 1, avatar: { type: "custom", assetId: id } }).newSession).toBeUndefined();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it("reclaims old generations only after commit while preserving the previous reader and rollback", async () => {
+    const still = await readFile("public/avatars/fox/still.png");
+    const root = await mkdtemp(join(tmpdir(), "avatar-reclaim-"));
+    const file = join(root, "settings.json");
+    try {
+      const oldest = await createAvatarGeneration(file, { still, icon: still });
+      const previous = await createAvatarGeneration(file, { still, icon: still });
+      const current = await createAvatarGeneration(file, { still, icon: still });
+      await commitAvatarGeneration(file, current, async () => {
+        expect(await readAvatar(file, oldest)).toEqual(still);
+        return "committed";
+      }, previous);
+      expect(await readAvatar(file, oldest)).toBeUndefined();
+      expect(await readAvatar(file, previous)).toEqual(still);
+      expect(await readAvatar(file, current)).toEqual(still);
+      const failed = await createAvatarGeneration(file, { still, icon: still });
+      await expect(commitAvatarGeneration(file, failed, async () => { throw new Error("disk failure"); }, current)).rejects.toThrow("disk failure");
+      expect(await readAvatar(file, failed)).toBeUndefined();
+      expect(await readAvatar(file, previous)).toEqual(still);
+      expect(await readAvatar(file, current)).toEqual(still);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("rejects infinite looping, corrupted frames, truncation, static PNG and excessive dimensions", async () => {

@@ -3,7 +3,7 @@ import { maxAvatarAnimationBytes } from "./shared/appIdentity.js";
 import { decodeAvatarZip, encodeAvatarZip } from "./avatarZip.js";
 import { createHash, randomUUID } from "node:crypto";
 import { crc32, inflateSync } from "node:zlib";
-import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdir, readFile, writeFile, rm, readdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { IncomingMessage } from "node:http";
 import type { PiWebSettings } from "./settings.js";
@@ -131,9 +131,18 @@ export async function createAvatarGeneration(settingsFile: string, assets: Avata
   catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
 }
 /** Commit the settings pointer only after a complete generation exists. */
-export async function commitAvatarGeneration<T>(settingsFile: string, assetId: string, commit: () => Promise<T>): Promise<T> {
-  try { return await commit(); }
+export async function commitAvatarGeneration<T>(settingsFile: string, assetId: string, commit: () => Promise<T>, previousAssetId?: string): Promise<T> {
+  let result: T;
+  try { result = await commit(); }
   catch (error) { await removeAvatarGeneration(settingsFile, assetId); throw error; }
+  // Keep one previous generation for readers already holding its pointer, but
+  // bound retained storage across replacements. Callers serialize mutations.
+  // Cleanup failure must never roll back/delete the newly committed generation.
+  try {
+    const generations = await readdir(avatarDirectory(settingsFile));
+    await Promise.all(generations.filter(id => isAvatarAssetId(id) && id !== assetId && id !== previousAssetId).map(id => removeAvatarGeneration(settingsFile, id)));
+  } catch (error) { console.warn("Could not reclaim superseded avatar generations", error); }
+  return result;
 }
 export async function removeAvatarGeneration(settingsFile: string, id: string): Promise<void> { if (isAvatarAssetId(id)) await rm(join(avatarDirectory(settingsFile), id), { recursive: true, force: true }); }
 export { isAvatarAssetId as validAssetId } from "./shared/appIdentity.js";
