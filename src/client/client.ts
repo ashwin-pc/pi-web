@@ -140,6 +140,14 @@ export function createPiWebClient(deps: PiWebClientDeps): PiWebClient {
           ...options,
         });
       },
+      fetch(url, init = {}) {
+        const target = new URL(url, globalThis.location?.href || "http://localhost/");
+        if (globalThis.location && target.origin !== location.origin || !target.pathname.startsWith("/api/")) {
+          return Promise.reject(new Error(`Not a pi-web API URL: ${url}`));
+        }
+        const { "content-type": _contentType, ...headers } = deps.headers();
+        return fetchFn(target.pathname + target.search, { headers, signal: init.signal });
+      },
     },
     actions: {
       async openSession(sessionId) {

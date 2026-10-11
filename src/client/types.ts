@@ -141,7 +141,11 @@ export type PiWebClient = {
   messages(sessionId: string): MessagesStore;
   artifacts(sessionId: string): ArtifactsStore;
   events: { subscribe(listener: (event: ClientEvent) => void): Unsubscribe };
-  files: { tree(root: string, options?: FileTreeOptions): Promise<FileTreeDir | null> };
+  files: {
+    tree(root: string, options?: FileTreeOptions): Promise<FileTreeDir | null>;
+    /** Fetch an artifact's bytes with the API's auth (same-origin /api/ routes only), for views that draw it themselves. */
+    fetch(url: string, init?: { signal?: AbortSignal }): Promise<Response>;
+  };
   actions: PiWebClientActions;
   dispose(): void;
 };
