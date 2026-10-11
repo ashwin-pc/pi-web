@@ -2,7 +2,7 @@ import { validAvatarAnimation } from "./avatarAnimation.js";
 import { maxAvatarAnimationBytes } from "./shared/appIdentity.js";
 import { decodeAvatarZip, encodeAvatarZip } from "./avatarZip.js";
 import { createHash, randomUUID } from "node:crypto";
-import { inflateSync } from "node:zlib";
+import { crc32, inflateSync } from "node:zlib";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import type { IncomingMessage } from "node:http";
@@ -25,13 +25,9 @@ export function validPng(png: Buffer): boolean {
     if (length > png.length - offset - 12) return false;
     const type = png.toString("ascii", offset + 4, offset + 8);
     const body = png.subarray(offset + 8, offset + 8 + length);
-    // PNG chunk CRC covers the four-byte type and the chunk data.
-    let crc = 0xffffffff;
-    for (let i = offset + 4; i < offset + 8 + length; i++) {
-      crc ^= png[i];
-      for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-    }
-    if (((crc ^ 0xffffffff) >>> 0) !== png.readUInt32BE(offset + 8 + length)) return false;
+    // Use the same native, bounded CRC path as animation validation. Package
+    // roundtrips validate these assets repeatedly; JS bit loops starve CI I/O.
+    if (crc32(png.subarray(offset + 4, offset + 8 + length)) !== png.readUInt32BE(offset + 8 + length)) return false;
     if (!sawHeader) {
       if (type !== "IHDR" || length !== 13 || body[8] !== 8 || ![2, 6].includes(body[9]) || body[10] !== 0 || body[11] !== 0 || body[12] !== 0) return false;
       sawHeader = true;
