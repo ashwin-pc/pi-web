@@ -36,8 +36,8 @@ export const cityHooks = {
     bar.g.updateMatrixWorld(true);
     const p = bar.panel, inv = new THREE.Matrix4();
     const cells = [];
-    for (const id of S.pinned.slice(bar.page * PAGE, bar.page * PAGE + PAGE)) {
-      const c = cellOf(id, bar.page); const L = bar.cellLocal(c.col, c.row);
+    for (const id of S.pinned.slice(bar.start, bar.start + PAGE)) {
+      const c = cellOf(id, bar.start); const L = bar.cellLocal(c.col, c.row);
       const w = L.p.clone().applyMatrix4(bar.g.matrixWorld), d = w.clone().sub(head.pos);
       cells.push({id, col: c.col, row: c.row, x: +w.x.toFixed(4), y: +w.y.toFixed(4), z: +w.z.toFixed(4), el: +(Math.asin(d.y / d.length()) / DEG).toFixed(2), az: +(Math.atan2(-d.x, -d.z) / DEG).toFixed(2), status: indicator(get(id))});
     }
@@ -49,7 +49,29 @@ export const cityHooks = {
     const centre = p.uvToLocal(0.5, 0.5, new THREE.Vector3()).applyMatrix4(bar.g.matrixWorld).sub(head.pos);
     const cellDeg = BAR.CELL, rowDeg = BAR.ROW;
     return {cells, centreEl: +(Math.asin(centre.y / centre.length()) / DEG).toFixed(2), centreAz: +(Math.atan2(-centre.x, -centre.z) / DEG).toFixed(2), widthDeg: +(p.w / BAR.D / DEG).toFixed(1), heightDeg: +(p.h / BAR.D / DEG).toFixed(1),
-      cellDeg, rowDeg, worstNdc: +worst.toFixed(3), insideAllEyes: worst <= 1, eyes: eyes().length, distance: BAR.D, drawn: bar.drawn, yaw: +(bar.yaw / DEG).toFixed(2)};
+      cellDeg, rowDeg, worstNdc: +worst.toFixed(3), insideAllEyes: worst <= 1, eyes: eyes().length, distance: BAR.D, drawn: bar.drawn, yaw: +(bar.yaw / DEG).toFixed(2),
+      elev: +bar.elev.toFixed(2), elevTarget: +bar.elevTarget.toFixed(2), gaze: bar.gaze, start: bar.start, visible: Math.min(PAGE, S.pinned.length - bar.start), pitchLog: bar.pitchLog.slice(-6)};
+  },
+  /** Does the bar cover the main view of the city? Per eye: the city's centre region is the box holding the middle
+   * half of the buildings in view (25th to 75th percentile of their projected centres, x and y separately); the bar's
+   * box is its projected outline. Both in that eye's normalised device coordinates. */
+  barOverlap() {
+    updateHead(); bar.g.updateMatrixWorld(true); city.root.updateMatrixWorld(true);
+    const out = [], v = new THREE.Vector3(), M = city.root.matrixWorld, B = city.L.buildings, step = Math.max(1, Math.floor(B.length / 1500));
+    for (const cam of eyes()) {
+      cam.updateMatrixWorld();
+      const xs = [], ys = [];
+      for (let i = 0; i < B.length; i += step) { const g = B[i]; v.set(g.x, g.base + g.h / 2, g.z).applyMatrix4(M).project(cam); if (v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1) { xs.push(v.x); ys.push(v.y); } }
+      xs.sort((a, b) => a - b); ys.sort((a, b) => a - b);
+      const q = (a, f) => a[Math.floor((a.length - 1) * f)];
+      const city0 = xs.length ? {x0: q(xs, 0.25), x1: q(xs, 0.75), y0: q(ys, 0.25), y1: q(ys, 0.75)} : null;
+      let bx0 = Infinity, bx1 = -Infinity, by0 = Infinity, by1 = -Infinity, behind = false;
+      for (let u = 0; u <= 1.001; u += 0.1) for (const w of [0, 0.5, 1]) { v.copy(bar.panel.uvToLocal(u, w, new THREE.Vector3())).applyMatrix4(bar.g.matrixWorld).project(cam); if (v.z > 1) { behind = true; continue; } bx0 = Math.min(bx0, v.x); bx1 = Math.max(bx1, v.x); by0 = Math.min(by0, v.y); by1 = Math.max(by1, v.y); }
+      const barBox = {x0: bx0, x1: bx1, y0: by0, y1: by1}, r = (o) => o && Object.fromEntries(Object.entries(o).map(([k, x]) => [k, +x.toFixed(3)]));
+      const overlap = !!city0 && !behind && bx0 < city0.x1 && bx1 > city0.x0 && by0 < city0.y1 && by1 > city0.y0;
+      out.push({city: r(city0), bar: r(barBox), inView: xs.length, overlap, gapY: city0 ? +(city0.y0 - by1).toFixed(3) : null});
+    }
+    return {eyes: out, overlap: out.some((e) => e.overlap), barElev: +bar.elev.toFixed(2), headPitch: +(head.pitch / DEG).toFixed(1)};
   },
   /** Elevation (degrees from the eye) of the city's near and far edges and of every building top in view. */
   elevationSpan() {
@@ -64,10 +86,12 @@ export const cityHooks = {
       span: +(vals[Math.floor(vals.length * 0.98)] - vals[Math.floor(vals.length * 0.02)]).toFixed(1), headPitch: +(head.pitch / DEG).toFixed(1)};
   },
   labels() { return city.labels.placed.map((l) => ({id: l.id, kind: l.kind, text: l.text, sub: l.sub, deg: +l.deg.toFixed(2), subDeg: +(l.deg * 28 / 34).toFixed(2), degW: +l.degW.toFixed(2), degH: +l.degH.toFixed(2), chars: l.text.length + (l.sub ? l.sub.length : 0), anchorGap: +l.anchorGap.toFixed(3), D: +l.D.toFixed(1)})); },
-  cards() { return city.cards.placed.map((c) => ({sid: c.sid, kind: c.kind, textDeg: c.textDeg && +c.textDeg.toFixed(3), degW: +c.degW.toFixed(2), degH: +c.degH.toFixed(2), D: +c.D.toFixed(1), text: c.info?.text, chars: c.info?.chars, total: c.info?.total, lines: c.info?.lines, tool: c.info?.tool})); },
+  cards() { return city.cards.placed.map((c) => ({sid: c.sid, kind: c.kind, textDeg: c.textDeg && +c.textDeg.toFixed(3), degW: +c.degW.toFixed(2), degH: +c.degH.toFixed(2), D: +c.D.toFixed(1), text: c.info?.text, chars: c.info?.chars, total: c.info?.total, shownFraction: c.info?.total ? +(c.info.chars / c.info.total).toFixed(2) : null, lines: c.info?.lines, tool: c.info?.tool})); },
   preview() { const p = pops.preview; return p.mesh.visible ? {...p.drawn, visible: true} : {visible: false}; },
   hover(id) { A.hoverOverride = id; },
   /** Point the desktop mouse ray at an avatar cell (for hover tests without the page mouse). */
+  /** Scroll the bar's row so that id is on it (what More → Scroll does, in one step). */
+  barScrollTo(id) { const i = S.pinned.indexOf(id); if (i < 0) return null; if (i < bar.start) bar.scroll(i - bar.start); else if (i >= bar.start + PAGE) bar.scroll(i - PAGE + 1 - bar.start); return bar.start; },
   avatarScreen(id) { const w = bar.cellWorld(id); if (!w) return null; const v = w.clone().project(camera), r = renderer.domElement.getBoundingClientRect(); return {x: r.left + (v.x + 1) / 2 * r.width, y: r.top + (1 - v.y) / 2 * r.height}; },
   nav() { return {...N.snapshot(), pos: N.nav.pos.toArray().map((v) => +v.toFixed(3)), altitude: +N.altitude(head.local).toFixed(2), anim: N.nav.anim ? N.nav.anim.key : null, moving: +N.nav.moving.toFixed(3)}; },
   setNav(o) { if (o.pos) N.nav.pos.fromArray(o.pos); if (o.yaw != null) N.nav.yaw = o.yaw; if (o.scale) N.nav.scale = o.scale; N.apply(city.root); },
@@ -79,7 +103,7 @@ export const cityHooks = {
   placeOf(id) { return city.placeOf(id); },
   lines() { return city.lines.n; },
   buildingFx(path) { const g = city.L.byFile.get(path); if (!g) return null; const B = city.B, i = g.idx, sl = B.slotOf[i], F = B.fx.array, I = B.info.array; return {scan: F[sl * 4], hi: F[sl * 4 + 1], cur: F[sl * 4 + 2], heat: +I[sl * 4 + 2].toFixed(3), flare: +I[sl * 4 + 3].toFixed(3), drawn: sl < B.mesh.count}; },
-  lod() { return {drawn: city.B.mesh.count, total: city.B.n, reorders: city.B.reorders}; },
+  lod() { const B = city.B; return {drawn: B.mesh.count, total: B.n, reorders: B.reorders, masses: B.masses.length, massed: B.massed, massedBuildings: B.massedBuildings}; },
   cardSource(sid) { return liveLine(get(sid)); },
   previewSource(sid) { return previewText(get(sid)); },
   /** A pi-web live card's source words are whole: every word on the card appears whole in the source text. */

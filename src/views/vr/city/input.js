@@ -27,6 +27,7 @@ function targets() {
 }
 /** What a ray hits: panels in front win (the bar and its pop-ups first: they are nearest), then a live card or coin,
  * then a block or district sign (within 3°, the nearest wins). */
+export const REST_DROP = 0.45;
 export function intersect(ptr) {
   if (!ptr.valid) return null;
   raycaster.ray.copy(ptr.ray);
@@ -46,6 +47,9 @@ export function intersect(ptr) {
     }
     const reg = panel.regionAt(h.uv);
     if ((panel.name === 'bar' || panel.name === 'preview' || panel.name === 'menu') && !reg) continue;
+    // A resting hand (its ray starting more than REST_DROP below your eyes) does not reach the bar, which now sits
+    // low, where relaxed rays point; raise the hand to point at it.
+    if ((panel.name === 'bar' || panel.name === 'preview' || panel.name === 'menu') && ptr.kind !== 'mouse' && ptr.ray.origin.y < head.pos.y - REST_DROP) continue;
     return {panel, uv: h.uv.clone(), point: h.point, distance: h.distance, region: reg};
   }
   if (S.reading) return null; // while reading, the city ignores selects (a resting ray often lands there)
@@ -69,6 +73,7 @@ export function updateHovers() {
     if (!per.has(panel)) per.set(panel, new Set());
     per.get(panel).add(reg.id);
   }
+  A.barPointed = [...per.keys()].some((p) => p.name === 'bar' || p.name === 'preview' || p.name === 'menu');
   // The preview keeps showing while you point at it (so its buttons can be reached).
   if (!A.hoverAvatar && [...per.keys()].some((p) => p.name === 'preview')) A.hoverAvatar = A.pops?.preview.sid;
   for (const panel of panels) {

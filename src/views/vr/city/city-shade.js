@@ -5,7 +5,10 @@ import * as THREE from 'three';
 
 export const PAL = {bg: 0x030303, panel: 0x0a0a0a, panel2: 0x131313, border: 0x242424, text: 0xf2f2f2, muted: 0xa3a3a3, accent: 0xe2b15f, danger: 0xfb7185};
 /** Shared uniforms: time, the eye (for fog), the reading dim, and how much detail to draw. */
-export const U = {uTime: {value: 0}, uEye: {value: new THREE.Vector3()}, uDim: {value: 0}, uFogK: {value: 1 / 900}, uScale: {value: 1}};
+// uCheap: distant facades (windows smaller than about 1.7 px) skip the per-window pattern and use its average
+// (?glass=full turns this off, for measuring what it buys).
+export const U = {uTime: {value: 0}, uEye: {value: new THREE.Vector3()}, uDim: {value: 0}, uFogK: {value: 1 / 900}, uScale: {value: 1},
+  uCheap: {value: new URLSearchParams(location.search).get('glass') === 'full' ? 0 : 1}};
 
 const FOG = `
   vec3 cityFog(vec3 col, vec3 wp) {
@@ -49,7 +52,7 @@ export function buildingMaterial() {
         gl_Position = projectionMatrix * viewMatrix * w;
       }`,
     fragmentShader: `
-      uniform float uTime, uDim, uFogK, uScale; uniform vec3 uEye;
+      uniform float uTime, uDim, uFogK, uScale, uCheap; uniform vec3 uEye;
       varying vec3 vW, vN, vL, vSize; varying vec4 vInfo, vFx;
       ${HASH}
       ${TYPE_GLSL}
@@ -68,19 +71,22 @@ export function buildingMaterial() {
           float u = abs(vN.x) > 0.5 ? vL.z : vL.x;
           float v = vL.y;
           vec2 g = vec2(u + 50.0, v - 0.6) / cell;
-          vec2 id = floor(g), f = fract(g);
-          float r = h21(id + seed * 17.0), r2 = h21(id.yx + seed * 5.3);
           float litP = clamp(lit + heat * 0.65 + flare, 0.0, 1.0);
-          float on = step(1.0 - litP, r);
-          float flick = 0.55 + 0.45 * r2;
           // Anti-aliased window rectangles with a mullion, fading to their average once smaller than a pixel.
           vec2 fw = clamp(fwidth(g), vec2(1e-4), vec2(1.0));
-          vec2 lo = smoothstep(vec2(0.16, 0.20) - fw, vec2(0.16, 0.20) + fw, f), hi = 1.0 - smoothstep(vec2(0.84, 0.80) - fw, vec2(0.84, 0.80) + fw, f);
-          float mull = 1.0 - 0.7 * (1.0 - smoothstep(0.0, 0.03 + fw.x, abs(f.x - 0.5)));
-          float box = lo.x * hi.x * lo.y * hi.y * mull * step(0.6, v) * step(v, vSize.y - 0.5);
-          float inner = 0.75 + 0.25 * smoothstep(0.2, 0.8, f.y); // a soft ceiling light at the top of each window
           float fine = smoothstep(0.25, 0.6, max(fw.x, fw.y));
-          float wlit = mix(box * on * flick * inner, litP * 0.62, fine);
+          float box = 0.0, on = 1.0, wlit = litP * 0.62;
+          if (fine < 0.999 || uCheap < 0.5) {
+            vec2 id = floor(g), f = fract(g);
+            float r = h21(id + seed * 17.0), r2 = h21(id.yx + seed * 5.3);
+            on = step(1.0 - litP, r);
+            float flick = 0.55 + 0.45 * r2;
+            vec2 lo = smoothstep(vec2(0.16, 0.20) - fw, vec2(0.16, 0.20) + fw, f), hi = 1.0 - smoothstep(vec2(0.84, 0.80) - fw, vec2(0.84, 0.80) + fw, f);
+            float mull = 1.0 - 0.7 * (1.0 - smoothstep(0.0, 0.03 + fw.x, abs(f.x - 0.5)));
+            box = lo.x * hi.x * lo.y * hi.y * mull * step(0.6, v) * step(v, vSize.y - 0.5);
+            float inner = 0.75 + 0.25 * smoothstep(0.2, 0.8, f.y); // a soft ceiling light at the top of each window
+            wlit = mix(box * on * flick * inner, litP * 0.62, fine);
+          }
           vec3 wc = mix(win, vec3(1.0, 0.80, 0.45), heat * 0.6);
           float sky = smoothstep(0.0, 1.0, v / max(vSize.y, 1.0));
           // Glass: dark, with a faint reflection of the warm sky that grows toward the top, and unlit windows a touch lighter.

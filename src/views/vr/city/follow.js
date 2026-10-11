@@ -41,13 +41,17 @@ function readerObstacle(eye) {
   }
   return {id: 'panel', cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: x1 - x0, h: y1 - y0};
 }
-let hoverSid = null, hoverSince = 0;
+let hoverSid = null, hoverSince = 0, lowAt = -1e9, contentLow = null;
 export function followFrame(dt) {
   viewQuat(camQ); inv.copy(camQ).invert();
   const eye = head.pos;
   // The bar: body-locked with lazy follow (the desktop keeps it along the bottom of the window).
-  const deskElev = renderer.xr.isPresenting ? null : {pitch: head.pitch, offset: -camera.fov / 2 + 9.2};
-  bar.update(head.local, head.yaw, dt, deskElev);
+  const deskElev = renderer.xr.isPresenting ? null : {pitch: head.pitch, offset: -camera.fov / 2 + 5.4};
+  // In the headset the bar keeps below the city's centre region in view (sampled a few times a second).
+  const tNow = performance.now();
+  if (!deskElev && tNow - lowAt > 300) { lowAt = tNow; contentLow = S.reading ? null : city.contentLow(renderer.xr.getCamera().cameras); }
+  bar.pointed = !!A.barPointed;
+  bar.update(head.local, head.yaw, dt, deskElev, head.pitch, deskElev || contentLow == null ? null : head.pitch / DEG + contentLow);
   // Pointing at an avatar for a moment highlights its beam and building, with a thread to it.
   const hv = A.hoverAvatar || null;
   if (hv !== hoverSid) { hoverSid = hv; hoverSince = performance.now(); }

@@ -62,7 +62,7 @@ window.__vrCity = {
       panelSettled: readers.every((x) => !x.pose || animMs() - x.pose.t0 >= x.pose.dur),
       xrPresenting: renderer.xr.isPresenting, xr: {...xrStatus}, inIframe, lastSwitch: getLastSwitch(), table: isTable(),
       nav: {x: +N.nav.pos.x.toFixed(3), y: +N.nav.pos.y.toFixed(3), z: +N.nav.pos.z.toFixed(3), yaw: +N.nav.yaw.toFixed(5), scale: +N.nav.scale.toFixed(4), anim: !!N.nav.anim, altitude: +N.altitude(head.local).toFixed(2)},
-      bar: {yaw: +(bar.yaw / DEG).toFixed(2), page: bar.page, pages: Math.ceil(S.pinned.length / 22), moreOpen: bar.moreOpen, highlight: A.highlight || null, preview: pops.preview.mesh.visible ? pops.preview.sid : null},
+      bar: {yaw: +(bar.yaw / DEG).toFixed(2), page: bar.page, start: bar.start, pages: Math.ceil(S.pinned.length / 10), moreOpen: bar.moreOpen, highlight: A.highlight || null, preview: pops.preview.mesh.visible ? pops.preview.sid : null},
       head: {yaw: +(head.yaw / DEG).toFixed(2), pitch: +(head.pitch / DEG).toFixed(2)}, hoverAvatar: A.hoverAvatar || null,
     };
   },

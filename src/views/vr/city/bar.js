@@ -1,7 +1,10 @@
-// The status bar: a floating, gently curved row of pi-web avatars for the pinned sessions, in a stable pinned order.
-// Avatars never move or reorder when a status changes; only their rings and badges do. Body-locked with lazy follow:
-// it sits low in the view (centre at −26.5°) and re-centres only when your head turns more than 35° away. It comes
-// with you when you fly (it lives in your space, not the city's). Every avatar cell is a 6.1° × 7.2° target.
+// The status bar: one compact, gently curved row of pi-web avatars for the pinned sessions, in a stable pinned order.
+// Avatars never move or reorder when a status changes; only their rings, glows and badges do. Ten are visible at a
+// time; the row scrolls (a flick to a session outside it, or More) and the More chip counts what is off the row.
+// Titles show for the current session, and for the avatar you point at or look at. Body-locked with lazy follow in
+// both yaw and pitch: it sits about 24° below where you are looking (clamped), re-centring only when your gaze moves
+// well away, so it stays under the city you look at instead of over it. It comes with you when you fly.
+// Every avatar cell is a 6.1° × 6.6° target.
 import * as THREE from 'three';
 import {Panel} from './panel.js';
 import {S, get, indicator, unreadTurns, waitingCount, fenceLine} from './state.js';
@@ -10,26 +13,32 @@ import {drawAvatar} from './avatars.js';
 import {wrapWhole} from './city-text.js';
 import {animMs, clamp, DEG} from './core.js';
 
-export const BAR = {D: 0.95, CELL: 6.1, ROW: 7.2, COLS: 12, ROWS: 2, ELEV: -26.5, FOLLOW: 35, PPM: 2100, TITLE_DEG: 0.82, STATUS_DEG: 0.72};
+const QB = new URLSearchParams(location.search);
+export const BAR = {D: 0.95, CELL: 6.1, ROW: 6.6, COLS: 12, ROWS: 1, VIS: 10, ELEV: -26.5, FOLLOW: 35, PPM: 2100, TITLE_DEG: 0.82, STATUS_DEG: 0.72,
+  BELOW: +(QB.get('barbelow') || 24), CITY_GAZE: +(QB.get('barcity') || 26), PITCH_FOLLOW: 12, ELEV_MIN: -70, ELEV_MAX: -16};
 const M_PER_DEG = BAR.D * DEG;
 const CELL_M = BAR.CELL * M_PER_DEG, ROW_M = BAR.ROW * M_PER_DEG, PAD_M = 0.004;
-export const PAGE = (BAR.COLS - 1) * BAR.ROWS;
+export const PAGE = BAR.VIS; // avatars visible at once (the row scrolls past them)
 const px = (deg) => deg * M_PER_DEG * BAR.PPM;
 export const UIB = {};
 
-/** The visible page of the pinned order (22 avatars a page; the page only changes when you move to another page). */
+/** The row shows PAGE pinned sessions from `start`; it scrolls only on a user action (moving to a session outside it,
+ * or scrolling from More), never on a status change. */
 export function pageOf(id) { const i = S.pinned.indexOf(id); return i < 0 ? 0 : Math.floor(i / PAGE); }
 export const pages = () => Math.max(1, Math.ceil(S.pinned.length / PAGE));
-export function cellOf(id, page) { const i = S.pinned.indexOf(id) - page * PAGE; if (i < 0 || i >= PAGE) return null; return {col: i % (BAR.COLS - 1), row: Math.floor(i / (BAR.COLS - 1))}; }
+export const maxStart = () => Math.max(0, S.pinned.length - PAGE);
+export function cellOf(id, start) { const i = S.pinned.indexOf(id) - start; if (i < 0 || i >= PAGE) return null; return {col: i, row: 0}; }
+/** Sessions off the row that need you (the More chip counts them). */
+export function offRow(start) { const ids = S.pinned.filter((id, i) => i < start || i >= start + PAGE); return {n: ids.length, need: ids.filter((id) => ['unread', 'asking', 'error'].includes(indicator(get(id)))).length}; }
 const RING = {idle: 0, current: 0, running: 1, waiting: 2, unread: 3, asking: 3, error: 4};
 
 function drawBar(ctx, p) {
   const bar = p.bar, W = p.cw, H = p.ch, cw = px(BAR.CELL), rh = px(BAR.ROW), pad = PAD_M * BAR.PPM;
   fillRR(ctx, 2, 2, W - 4, H - 4, 26, 'rgba(10,10,10,0.74)', 'rgba(36,36,36,1)', 3);
-  const page = bar.page, ids = S.pinned.slice(page * PAGE, page * PAGE + PAGE);
+  const start = bar.start, ids = S.pinned.slice(start, start + PAGE);
   bar.drawn = [];
   ids.forEach((id, i) => {
-    const s = get(id), col = i % (BAR.COLS - 1), row = Math.floor(i / (BAR.COLS - 1));
+    const s = get(id), col = i, row = 0;
     const x = pad + col * cw, y = pad + row * rh, cx = x + cw / 2, k = indicator(s), cur = id === S.currentId;
     const hov = p.isHover(`avatar:${id}`);
     if (cur || hov) fillRR(ctx, x + 6, y + 6, cw - 12, rh - 12, 22, cur ? '#181818' : '#121212', cur ? '#3a3a3a' : '#2a2a2a', 2);
@@ -47,29 +56,32 @@ function drawBar(ctx, p) {
       fillRR(ctx, cx - tw / 2, ay + r - th * 0.55, tw, th, th / 2, '#0a0a0a', 'rgba(226,177,95,0.55)', 2);
       text(ctx, tool, cx, ay + r - th * 0.05, {size: px(BAR.STATUS_DEG), weight: 700, family: MONO, color: C.accent, align: 'center'});
     }
-    // Title: two lines of whole words (the short title when the full one needs more).
+    // Title: two lines of whole words (the short title when the full one needs more), for the current session and
+    // the one you point at or look at; the others show only their avatar and status.
     ctx.font = font(px(BAR.TITLE_DEG), 650, SANS);
     let w = wrapWhole(ctx, s.title, cw - 26, 2);
     if (w.cut && s.short) w = wrapWhole(ctx, s.short, cw - 26, 2);
-    const tc = k === 'idle' ? C.muted : '#f2f2f2';
+    const tc = k === 'idle' ? C.muted : '#f2f2f2', titled = cur || hov || bar.gaze === id;
+    if (!titled) w = {...w, lines: []};
     w.lines.forEach((ln, j) => text(ctx, ln, cx, y + px(4.75) + j * px(1.0), {size: px(BAR.TITLE_DEG), weight: 650, color: tc, align: 'center'}));
     if (cur) fillRR(ctx, cx - cw * 0.3, y + rh - 16, cw * 0.6, 5, 2.5, C.accent);
-    bar.drawn.push({id, lines: w.lines, chars: w.lines.join(' ').replace(/ …$/, '').length, total: (s.title).length, usedShort: w.lines.join(' ').replace(/ …$/, '') !== s.title, cut: w.cut});
+    bar.drawn.push({id, col, titled, lines: w.lines, chars: w.lines.join(' ').replace(/ …$/, '').length, total: (s.title).length, usedShort: w.lines.join(' ').replace(/ …$/, '') !== s.title, cut: w.cut});
     p.region(`avatar:${id}`, x, y, cw, rh, {session: id, click: () => UIB.choose(id)});
   });
-  // The chip column: Home, and More (settings, back to chat, pages).
-  const x = pad + (BAR.COLS - 1) * cw, chips = [
+  // The chips at the end of the row: Home, and More (what is off the row, settings, back to chat, scrolling).
+  const off = offRow(start), chips = [
     {id: 'bar:home', icon: 'house', label: 'Home', sub: 'H · Y', click: () => UIB.home()},
-    {id: 'bar:more', icon: 'layers', label: pages() > 1 ? `Page ${page + 1}/${pages()}` : 'More', sub: 'settings', click: () => UIB.toggleMore()},
+    {id: 'bar:more', icon: 'layers', label: 'More', sub: off.n ? `+${off.n} more${off.need ? ` · ${off.need} need you` : ''}` : 'settings', click: () => UIB.toggleMore(), need: off.need},
   ];
   chips.forEach((c, j) => {
-    const y = pad + j * rh, hov = p.isHover(c.id) || (c.id === 'bar:more' && bar.moreOpen);
+    const x = pad + (PAGE + j) * cw, y = pad, hov = p.isHover(c.id) || (c.id === 'bar:more' && bar.moreOpen);
     fillRR(ctx, x + 8, y + 8, cw - 16, rh - 16, 22, hov ? '#202020' : '#141414', hov ? 'rgba(226,177,95,0.6)' : '#2c2c2c', 2);
     icon(ctx, c.icon, x + cw / 2, y + px(1.9), px(1.9), C.accent, 3);
     text(ctx, c.label, x + cw / 2, y + px(4.3), {size: px(BAR.TITLE_DEG), weight: 700, align: 'center'});
     ctx.font = font(px(BAR.STATUS_DEG), 600, SANS);
     const sw = wrapWhole(ctx, c.sub, cw - 24, 2);
     sw.lines.forEach((ln, k) => text(ctx, ln, x + cw / 2, y + px(5.35) + k * px(0.86), {size: px(BAR.STATUS_DEG), weight: 600, color: C.muted, align: 'center'}));
+    if (c.need) { const bx = x + cw - px(1.15), by = y + px(1.0), br = px(0.62); ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fillStyle = C.accent; ctx.fill(); text(ctx, String(c.need), bx, by + 1, {size: px(BAR.STATUS_DEG), weight: 800, color: '#111', align: 'center'}); }
     p.region(c.id, x, y, cw, rh, {click: c.click});
   });
 }
@@ -120,9 +132,12 @@ export class Bar {
     this.ringA = new THREE.InstancedBufferAttribute(new Float32Array(PAGE * 4), 4).setUsage(THREE.DynamicDrawUsage);
     this.rings.geometry.setAttribute('aR', this.ringA); this.rings.renderOrder = 31; this.rings.frustumCulled = false; this.rings.name = 'bar-rings';
     this.g.add(this.rings);
-    this.yaw = 0; this.yawTarget = 0; this.page = 0; this.moreOpen = false; this.sig = ''; this.follow = []; this.hover = null; this.hoverSince = 0;
-    this.pos = new THREE.Vector3(0, 1.6, 0); this.elev = BAR.ELEV;
+    this.yaw = 0; this.yawTarget = 0; this.start = 0; this.lastCur = null; this.gaze = null; this.moreOpen = false; this.sig = ''; this.follow = []; this.hover = null; this.hoverSince = 0;
+    this.pos = new THREE.Vector3(0, 1.6, 0); this.elev = BAR.ELEV; this.elevTarget = BAR.ELEV; this.pitchLog = []; this.snap = true;
   }
+  get page() { return Math.floor((this.start + PAGE - 1) / PAGE); }
+  /** Scroll the row by d avatars (clamped); a user action. */
+  scroll(d) { const s0 = this.start; this.start = clamp(this.start + d, 0, maxStart()); if (this.start !== s0) this.invalidate(); return this.start; }
   invalidate() { this.panel.invalidate(); }
   /** Local position (in the bar group) of a cell's avatar centre, and its curve angle. */
   cellLocal(col, row) {
@@ -131,30 +146,63 @@ export class Bar {
     const {u, v} = this.panel.fromCanvas(x, y), out = this.panel.uvToLocal(u, v, new THREE.Vector3());
     return {p: out, t: (u - 0.5) * this.panel.w / BAR.D, u, v, W, H};
   }
-  cellWorld(id) { const c = cellOf(id, this.page); if (!c) return null; const L = this.cellLocal(c.col, c.row); this.g.updateMatrixWorld(true); return L.p.clone().applyMatrix4(this.g.matrixWorld); }
-  /** headPos / headYaw in the bar's parent space (uiRoot). eyePitch: desktop-only placement. */
-  update(headPos, headYaw, dt, deskElev = null) {
+  cellWorld(id) { const c = cellOf(id, this.start); if (!c) return null; const L = this.cellLocal(c.col, c.row); this.g.updateMatrixWorld(true); return L.p.clone().applyMatrix4(this.g.matrixWorld); }
+  /** headPos / headYaw / headPitch (radians) in the bar's parent space (uiRoot). deskElev: desktop-only placement. */
+  update(headPos, headYaw, dt, deskElev = null, headPitch = 0, contentLow = null) {
     // Lazy follow: re-centre only when the head has turned more than 35° away; then ease over to it.
     let d = Math.atan2(Math.sin(headYaw - this.yawTarget), Math.cos(headYaw - this.yawTarget));
     if (Math.abs(d) > BAR.FOLLOW * DEG) { this.yawTarget = headYaw; this.follow.push({t: Math.round(animMs()), to: +(headYaw / DEG).toFixed(1)}); }
     d = Math.atan2(Math.sin(this.yawTarget - this.yaw), Math.cos(this.yawTarget - this.yaw));
     this.yaw += S.reduceMotion ? d : d * Math.min(1, dt / 0.16);
     this.pos.copy(headPos); // body-locked in position (it never swims); only its heading follows lazily
-    // In the headset the bar is a level band at −26.5° (a cone around you). The desktop preview has no body, so there
-    // the band is tilted with the camera's pitch and sits along the bottom of the window.
-    this.elev = deskElev ? deskElev.offset : BAR.ELEV;
-    this.panel.setElev(Math.round(this.elev * 4) / 4, !!deskElev);
+    // In the headset the band sits BELOW (24°) under where you look, clamped to −70°…−16°, with lazy follow: it re-centres
+    // only when your gaze has moved more than 12° from where it would put it, and never while you look at the bar
+    // itself. The band is built on the equator and tilted by the group, so following costs no geometry. The desktop
+    // preview has no body, so there the band is tilted with the camera's pitch and sits along the bottom of the window.
+    if (deskElev) { this.elev = deskElev.offset; this.panel.setElev(Math.round(this.elev * 4) / 4, true); }
+    else {
+      // Where it wants to be: BELOW under your gaze, and a little lower when that would put it over the city's centre
+      // region in view (contentLow, its lower edge). Only when you are looking at the city: if the region's edge is
+      // more than CITY_GAZE under your gaze (you look at the sky or the horizon), the city is not your main view.
+      // Clamped to −70°…−16°.
+      const gaze = headPitch / DEG, t = animMs(), top = BAR.ROW / 2 + 2;
+      const low = contentLow != null && contentLow > gaze - BAR.CITY_GAZE ? contentLow : null;
+      const want = clamp(Math.min(gaze - BAR.BELOW, low == null ? 1e9 : low - top), BAR.ELEV_MIN, BAR.ELEV_MAX);
+
+      const covering = low != null && this.elevTarget + top > low + 1 && want < this.elevTarget - 1;
+      // Your gaze has to rest (0.5 s within 4°) somewhere new, and not on or just above the bar (looking at the bar
+      // never moves it away).
+      if (Math.abs(gaze - (this.rest ?? 1e9)) > 4) { this.rest = gaze; this.restAt = t; }
+      // Looking at the bar (or pointing at it) holds it where it is.
+      const onBar = this.pointed || (gaze > this.elev - BAR.ROW / 2 - 2 && gaze < this.elev + BAR.ROW / 2 + 4);
+      if ((Math.abs(want - this.elevTarget) > BAR.PITCH_FOLLOW || covering) && !onBar && (t - this.restAt > 500 || this.snap)) { this.elevTarget = want; this.snap = false; this.pitchLog.push({t: Math.round(animMs()), gaze: +gaze.toFixed(1), to: +want.toFixed(1)}); }
+      const de = this.elevTarget - this.elev;
+      this.elev += S.reduceMotion || Math.abs(de) < 0.05 ? de : de * Math.min(1, dt / 0.16);
+      this.panel.setElev(0, false);
+    }
     this.g.position.copy(this.pos);
-    this.g.rotation.set(deskElev ? deskElev.pitch : 0, this.yaw, 0, 'YXZ');
-    // The page follows the current session (a user action), never a status change.
-    const pg = pageOf(S.currentId); if (pg !== this.page && !this.pagePinned) { this.page = pg; this.invalidate(); }
-    const sig = S.pinned.slice(this.page * PAGE, this.page * PAGE + PAGE).map((id) => { const s = get(id); return `${id}:${indicator(s)}:${unreadTurns(s)}:${waitingCount(s)}:${indicator(s) === 'running' ? currentToolName(s) : ''}`; }).join('|') + `|${S.currentId}|${this.page}|${this.moreOpen}|${pages()}`;
+    this.g.rotation.set(deskElev ? deskElev.pitch : this.elev * DEG, this.yaw, 0, 'YXZ');
+    // The row scrolls to keep the current session on it when you move to another one (a user action), never on a
+    // status change; a scroll from More stays until you next move.
+    if (S.currentId !== this.lastCur) {
+      this.lastCur = S.currentId; const i = S.pinned.indexOf(S.currentId);
+      if (i >= 0 && (i < this.start || i >= this.start + PAGE)) { this.start = clamp(i < this.start ? i : i - PAGE + 1, 0, maxStart()); this.invalidate(); }
+    }
+    if (this.start > maxStart()) { this.start = maxStart(); this.invalidate(); }
+    // Gaze: the avatar within half a cell of your head's forward direction (titles show for it).
+    this.gaze = null;
+    if (!deskElev) {
+      const fwd = new THREE.Vector3(-Math.sin(headYaw) * Math.cos(headPitch), Math.sin(headPitch), -Math.cos(headYaw) * Math.cos(headPitch));
+      this.g.updateMatrix();
+      S.pinned.slice(this.start, this.start + PAGE).forEach((id, i) => { const d = this.cellLocal(i, 0).p.clone().applyMatrix4(this.g.matrix).sub(this.pos).normalize(); if (d.angleTo(fwd) < BAR.CELL / 2 * DEG) this.gaze = id; });
+    }
+    const sig = S.pinned.slice(this.start, this.start + PAGE).map((id) => { const s = get(id); return `${id}:${indicator(s)}:${unreadTurns(s)}:${waitingCount(s)}:${indicator(s) === 'running' ? currentToolName(s) : ''}`; }).join('|') + `|${S.currentId}|${this.start}|${this.gaze}|${this.moreOpen}|${offRow(this.start).need}|${S.pinned.length}`;
     if (sig !== this.sig) { this.sig = sig; this.invalidate(); }
     this.panel.update();
     // Rings: one per visible avatar.
-    const ids = S.pinned.slice(this.page * PAGE, this.page * PAGE + PAGE), m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), pos = new THREE.Vector3();
+    const ids = S.pinned.slice(this.start, this.start + PAGE), m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), pos = new THREE.Vector3();
     ids.forEach((id, i) => {
-      const L = this.cellLocal(i % (BAR.COLS - 1), Math.floor(i / (BAR.COLS - 1)));
+      const L = this.cellLocal(i, 0);
       const r = 2 * 1.85 * M_PER_DEG * 1.3;
       pos.copy(L.p).multiplyScalar(0.999);
       m.lookAt(pos, new THREE.Vector3(), new THREE.Vector3(0, 1, 0)); q.setFromRotationMatrix(m);

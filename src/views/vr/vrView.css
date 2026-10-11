@@ -14,7 +14,8 @@
 #enterVR:disabled { background: #262626; color: #777; cursor: not-allowed; }
 .vrBack { font: inherit; font-size: 12px; color: #ddd; background: #1c1c1c; border: 1px solid #333; border-radius: 999px; padding: 6px 12px; cursor: pointer; text-decoration: none; min-height: 32px; box-sizing: border-box; display: inline-flex; align-items: center; }
 #xrStatus { color: #a3a3a3; font-size: 12px; }
-#xrMsg.vrChrome { bottom: 10px; left: 12px; right: 12px; max-width: 640px; font-size: 12px; color: #d4d4d4; background: rgba(14, 14, 14, 0.9); border: 1px solid #2a2a2a; border-radius: 12px; padding: 9px 12px; }
+/* Below the top bar: the status bar of avatars lives along the bottom edge. */
+#xrMsg.vrChrome { top: calc(56px + env(safe-area-inset-top)); left: 12px; right: 12px; max-width: 640px; font-size: 12px; color: #d4d4d4; background: rgba(14, 14, 14, 0.9); border: 1px solid #2a2a2a; border-radius: 12px; padding: 9px 12px; }
 #xrMsg[hidden] { display: none; }
 #xrMsg a { color: #e2b15f; font-weight: 700; }
 #xrMsg code { font-size: 11.5px; color: #e5e5e5; }

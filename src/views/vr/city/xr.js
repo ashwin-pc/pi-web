@@ -57,6 +57,9 @@ function poseNow(e, p) { try { setRayFromPose(p, e.frame.getPose(e.inputSource.t
 function onSelectStart(e) { const p = pointerFor(e.inputSource); poseNow(e, p); pressStart(p); }
 function onSelectEnd(e) { const p = pointerFor(e.inputSource); poseNow(e, p); pressEnd(p); }
 function onSourcesChange(e) { for (const src of e.removed || []) { const p = xrPointers.get(src); if (p) { if (p.vis) for (const o of Object.values(p.vis)) xrVisuals.remove(o); pointers.delete(p); xrPointers.delete(src); } } }
+const QX = new URLSearchParams(location.search);
+// Render scale 0.8 by default (measured: the biggest single gain after the far level of detail); MSAA stays on.
+export const XR_SCALE = +(QX.get('xrscale') || 0.8), XR_AA = QX.get('xraa') !== '0';
 let xrSession = null, needRecenter = false;
 export async function enterVR() {
   if (xrSession) { await xrSession.end(); return; }
@@ -64,6 +67,10 @@ export async function enterVR() {
     const session = await navigator.xr.requestSession('immersive-vr', {optionalFeatures: ['local-floor', 'hand-tracking', 'layers']});
     xrSession = session;
     renderer.xr.setFoveation(0.2);
+    // Headset render cost: ?xrscale= sets the framebuffer scale (XR_SCALE by default), and ?xraa=0 turns off MSAA
+    // for the headset only (three reads the context's antialias attribute when the session starts).
+    renderer.xr.setFramebufferScaleFactor(XR_SCALE);
+    if (!XR_AA) { const gl = renderer.getContext(), get = gl.getContextAttributes.bind(gl); gl.getContextAttributes = () => ({...get(), antialias: false}); }
     await renderer.xr.setSession(session);
     session.addEventListener('selectstart', onSelectStart);
     session.addEventListener('selectend', onSelectEnd);

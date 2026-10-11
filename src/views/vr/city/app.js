@@ -177,7 +177,7 @@ export function setTable(onT) {
 export const isTable = () => table && N.nav.scale > 5;
 Object.assign(UIB, {choose, home: goHome, flyToSession, toggleMore: () => { bar.moreOpen = !bar.moreOpen; bar.invalidate(); }, setReduceMotion: (v) => UI.setReduceMotion(v),
   setVignette: (v) => { S.vignette = v; }, toggleTable: () => setTable(!isTable()), isTable, exit: () => host.exit(), page: () => bar.page,
-  turnPage: (d) => { bar.page = mod(bar.page + d, pages()); bar.pagePinned = true; bar.invalidate(); }});
+  start: () => bar.start, turnPage: (d) => bar.scroll(d * PAGE)});
 Object.assign(A, {flyToSession, flyToPath, goHome, setTable});
 UI.goHome = goHome; UI.flyCurrent = () => flyToSession(S.currentId);
 

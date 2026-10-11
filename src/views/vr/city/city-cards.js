@@ -6,9 +6,9 @@ import * as THREE from 'three';
 import {SANS, MONO, font, fillRR, icon, ellipsize} from './draw.js';
 import {get} from './state.js';
 import {drawAvatar} from './avatars.js';
-import {liveLine, wrapWhole} from './city-text.js';
+import {liveLine, wrapNewest} from './city-text.js';
 
-const CW = 400, CH = 132, CCOLS = 5, CROWS = 6, COIN = 96, KCOLS = 21, KROWS = 2;
+const CW = 400, CH = 150, CCOLS = 5, CROWS = 6, COIN = 96, KCOLS = 21, KROWS = 2;
 const AW = 2048, AH = CROWS * CH + KROWS * COIN;
 export const CARD = {W: CW, H: CH, TEXT_PX: 24, TITLE_PX: 26, TEXT_DEG: 0.84, COIN_DEG: 2.6, FAR: 640};
 const tmp = new THREE.Vector3(), inv = new THREE.Quaternion(), right = new THREE.Vector3(), up = new THREE.Vector3();
@@ -42,21 +42,22 @@ export class Cards {
     const L = liveLine(s), info = {sid, title, tool: L.tool};
     if (L.tool) {
       // A collapsed pi-web tool card: the running fill, a top border, a spinner, the tool name and its summary.
-      fillRR(ctx, x + 14, y + 62, CW - 28, 54, 6, L.running ? '#14191f' : '#171b25', '#242424', 1.5);
-      ctx.strokeStyle = '#2a2a2a'; ctx.beginPath(); ctx.moveTo(x + 14, y + 62); ctx.lineTo(x + CW - 14, y + 62); ctx.stroke();
-      icon(ctx, L.running ? 'loader-circle' : 'brain', x + 38, y + 89, 24, '#e2b15f', 2.6);
+      // The summary wraps to a second line by whole words; if it still does not fit, its oldest words are dropped.
+      fillRR(ctx, x + 14, y + 60, CW - 28, 78, 6, L.running ? '#14191f' : '#171b25', '#242424', 1.5);
+      ctx.strokeStyle = '#2a2a2a'; ctx.beginPath(); ctx.moveTo(x + 14, y + 60); ctx.lineTo(x + CW - 14, y + 60); ctx.stroke();
+      icon(ctx, L.running ? 'loader-circle' : 'brain', x + 38, y + 84, 24, '#e2b15f', 2.6);
       ctx.font = font(CARD.TEXT_PX, 700, MONO); ctx.fillStyle = '#f2f2f2'; const nw = ctx.measureText(L.name).width;
-      ctx.fillText(L.name, x + 58, y + 89);
-      ctx.font = font(CARD.TEXT_PX, 500, SANS); ctx.fillStyle = '#a3a3a3';
-      const sw = wrapWhole(ctx, L.sum || '', CW - 28 - 58 - nw - 24, 1, 'head'), sum = sw.lines[0] || '';
-      ctx.fillText(sum, x + 58 + nw + 12, y + 89);
-      info.text = `${L.name} ${sum}`; info.chars = L.name.length + 1 + sw.shown; info.total = L.name.length + 1 + sw.total; info.lines = 1;
+      ctx.fillText(L.name, x + 58, y + 84);
+      ctx.font = font(CARD.TEXT_PX, 500, SANS); ctx.fillStyle = '#b5b5b5';
+      const sw = wrapNewest(ctx, L.sum || '', [CW - 28 - 58 - nw - 24, CW - 28 - 58 - 12]);
+      sw.lines.forEach((ln, k) => ctx.fillText(ln, x + 58 + (k ? 0 : nw + 12), y + 84 + k * 30));
+      info.text = `${L.name} ${sw.lines.join(' ')}`; info.chars = L.name.length + 1 + sw.shown; info.total = L.name.length + 1 + sw.total; info.lines = sw.lines.length;
     } else {
       ctx.font = font(CARD.TEXT_PX, 400, SANS);
-      const w = wrapWhole(ctx, L.text, CW - 40, 2, L.streaming ? 'tail' : 'head');
+      const w = wrapNewest(ctx, L.text, [CW - 40, CW - 40]);
       ctx.fillStyle = '#e8e8e8';
-      w.lines.forEach((ln, k) => ctx.fillText(ln, x + 18, y + 74 + k * 32));
-      if (L.streaming && w.lines.length) { const lw = ctx.measureText(w.lines[w.lines.length - 1]).width; ctx.fillStyle = '#e2b15f'; ctx.fillRect(x + 22 + lw, y + 74 + (w.lines.length - 1) * 32 - 12, 4, 24); }
+      w.lines.forEach((ln, k) => ctx.fillText(ln, x + 18, y + 82 + k * 34));
+      if (L.streaming && w.lines.length) { const lw = ctx.measureText(w.lines[w.lines.length - 1]).width; ctx.fillStyle = '#e2b15f'; ctx.fillRect(x + 22 + lw, y + 82 + (w.lines.length - 1) * 34 - 12, 4, 24); }
       info.text = w.lines.join(' '); info.chars = w.shown; info.total = w.total; info.lines = w.lines.length; info.cutMidWord = false;
     }
     this.dirty = true;

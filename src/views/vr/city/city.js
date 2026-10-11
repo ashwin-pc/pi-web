@@ -98,6 +98,25 @@ export class City {
   /** The tallest roof within r metres of a point (so an overlook is always above the rooftops). */
   topNear(x, z, r) { let t = 0; for (let i = -2; i <= 2; i++) for (let j = -2; j <= 2; j++) for (const g of this.grid.get(`${Math.floor(x / 60) + i},${Math.floor(z / 60) + j}`) || []) if (Math.hypot(g.x - x, g.z - z) < r) t = Math.max(t, g.base + g.h); return t; }
 
+  /** The lower edge of the city's centre region in view, as an angle (degrees, negative = below) from the view axis
+   * of the given eye cameras: the 25th percentile of the in-view buildings' projected centres (the lowest eye's).
+   * The bar keeps below it. null if hardly any city is in view. */
+  contentLow(cams) {
+    const B = this.L.buildings, step = Math.max(1, Math.floor(B.length / 600)), v = new THREE.Vector3();
+    this.root.updateMatrixWorld();
+    let low = null;
+    for (const cam of cams) {
+      cam.updateMatrixWorld(); const ys = [];
+      for (let i = 0; i < B.length; i += step) { const g = B[i]; v.set(g.x, g.base + g.h / 2, g.z); this.root.localToWorld(v).project(cam); if (v.z < 1 && Math.abs(v.x) <= 1 && Math.abs(v.y) <= 1) ys.push(v.y); }
+      if (ys.length < 8) continue;
+      ys.sort((a, b) => a - b);
+      const y0 = ys[Math.floor((ys.length - 1) * 0.25)], P = cam.projectionMatrix.elements;
+      const ang = Math.atan((y0 + P[9]) / P[5]) * 180 / Math.PI;
+      low = low == null ? ang : Math.min(low, ang);
+    }
+    return low;
+  }
+
   /** o: {dt, eye (world), camQ, bounds, reading, currentId, hover (sid), obstacles, navScale} */
   update(o) {
     this.frame++;

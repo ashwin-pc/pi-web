@@ -74,3 +74,21 @@ export function wrapWhole(ctx, text, maxW, n, mode = 'head') {
   lines[lines.length - 1] += ' …';
   return {lines, shown: words.slice(0, k).join(' ').length, total: words.join(' ').length, cut: true};
 }
+
+/** Wrap whole words into lines of the given widths (one width per line), keeping the newest words: when the text does
+ * not fit, the oldest words are dropped (whole words, marked by a leading "…"), never a cut word. */
+export function wrapNewest(ctx, text, widths) {
+  const words = String(text).split(/\s+/).filter(Boolean), total = words.join(' ').length;
+  const fit = (ws) => {
+    const lines = []; let cur = '';
+    for (const w of ws) { const t = cur ? `${cur} ${w}` : w; if (ctx.measureText(t).width <= widths[Math.min(lines.length, widths.length - 1)] || !cur) cur = t; else { lines.push(cur); cur = w; } }
+    if (cur) lines.push(cur);
+    return lines;
+  };
+  let lines = fit(words);
+  if (lines.length <= widths.length) return {lines, shown: total, total, dropped: 0};
+  let k = 1;
+  while (k < words.length - 1 && fit(['…', ...words.slice(k)]).length > widths.length) k++;
+  lines = fit(['…', ...words.slice(k)]);
+  return {lines, shown: words.slice(k).join(' ').length, total, dropped: k};
+}
