@@ -73,6 +73,11 @@ describe("custom animated bundles", () => {
     const prefix = Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]), chunk("IHDR", header), chunk("acTL", control)]);
     const suffix = Buffer.concat([frame(0), frame(2), chunk("IEND", Buffer.alloc(0))]);
     expect(validAvatarAnimation(Buffer.concat([prefix, chunk("IDAT", pixels), suffix]))).toBe(true);
+    const palette = chunk("PLTE", Buffer.from([255, 0, 0]));
+    expect(validAvatarAnimation(Buffer.concat([prefix, palette, chunk("IDAT", pixels), suffix]))).toBe(true);
+    expect(validAvatarAnimation(Buffer.concat([prefix, palette, palette, chunk("IDAT", pixels), suffix]))).toBe(false);
+    expect(validAvatarAnimation(Buffer.concat([prefix, chunk("PLTE", Buffer.from([1, 2])), chunk("IDAT", pixels), suffix]))).toBe(false);
+    expect(validAvatarAnimation(Buffer.concat([prefix, chunk("IDAT", pixels), palette, suffix]))).toBe(false);
     expect(validAvatarAnimation(Buffer.concat([prefix, chunk("IDAT", deflateSync(Buffer.from([0, 255]))), suffix]))).toBe(false);
   });
   it("rejects infinite looping, corrupted frames, truncation, static PNG and excessive dimensions", async () => {

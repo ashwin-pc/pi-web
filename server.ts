@@ -1138,7 +1138,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
         const patch = await readBody(req);
-        const settings = await withAvatarMutation(() => settingsStore.patch(patch));
+        const settings = await withAvatarMutation(async () => {
+          const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
+          // A stale settings form must not resurrect a reclaimed generation.
+          // Serialize the reference check with imports/reset and settings writes.
+          if (avatar?.type === "custom" && avatar.assetId !== undefined && (typeof avatar.assetId !== "string" || !await readAvatar(settingsStore.file, avatar.assetId) || !await readAvatar(settingsStore.file, avatar.assetId, "icon")))
+            throw new HttpError("Custom avatar package is unavailable; import it again before saving", 400);
+          return settingsStore.patch(patch);
+        });
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });
       }

@@ -33,7 +33,7 @@ registerRoute(
 // Separate revisioned uploads from presets. Two complete four-role bundles
 // bound storage without expiring the most recently used offline identity.
 registerRoute(
-  ({ url }) => url.origin === self.location.origin && /^\/identity\/(?:avatar\.png|fab\.png|icon\.png|new-session\.apng)$/.test(url.pathname),
+  ({ url }) => url.origin === self.location.origin && /^\d+$/.test(url.searchParams.get("v") ?? "") && /^\/identity\/(?:avatar\.png|fab\.png|icon\.png|new-session\.apng)$/.test(url.pathname),
   new CacheFirst({ cacheName: `${avatarCacheName}-custom`, plugins: [new ExpirationPlugin({ maxEntries: 8, purgeOnQuotaError: true })] }),
 );
 self.addEventListener("activate", event => {

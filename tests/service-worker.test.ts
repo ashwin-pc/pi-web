@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { registerRoute } from "workbox-routing";
 
 const { expirationOptions } = vi.hoisted(() => ({ expirationOptions: vi.fn() }));
 vi.mock("workbox-expiration", () => ({ ExpirationPlugin: class { constructor(options: unknown) { expirationOptions(options); } } }));
+vi.mock("workbox-routing", () => ({ registerRoute: vi.fn() }));
 vi.mock("workbox-core", () => ({ clientsClaim: vi.fn() }));
 vi.mock("workbox-precaching", () => ({ cleanupOutdatedCaches: vi.fn(), precacheAndRoute: vi.fn() }));
 
@@ -34,6 +36,15 @@ describe("service worker completion notifications", () => {
     const config = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
     expect(config).toContain('"avatars/current-pi/still.png"');
     // The packed smoke additionally checks the generated dist/sw.js manifest.
+  });
+  it("never cache-first matches unversioned favicon or notification identity URLs", () => {
+    const match = vi.mocked(registerRoute).mock.calls[1][0] as (context: { url: URL }) => boolean;
+    for (const role of ["avatar.png", "icon.png", "fab.png", "new-session.apng"]) {
+      expect(match({ url: new URL(`https://pi.test/identity/${role}`) })).toBe(false);
+      expect(match({ url: new URL(`https://pi.test/identity/${role}?v=12`) })).toBe(true);
+      expect(match({ url: new URL(`https://pi.test/identity/${role}?v=`) })).toBe(false);
+      expect(match({ url: new URL(`https://other.test/identity/${role}?v=12`) })).toBe(false);
+    }
   });
   it("bounds revisioned custom assets without expiring selected offline assets by age", () => {
     expect(expirationOptions).toHaveBeenCalledExactlyOnceWith({ maxEntries: 8, purgeOnQuotaError: true });

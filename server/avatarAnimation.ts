@@ -6,7 +6,7 @@ export function validAvatarAnimation(bytes: Buffer): boolean {
   try {
     if (bytes.length > maxAvatarAnimationBytes || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return false;
     let offset = 8, width = 0, height = 0, frames = 0, declared = 0, sequence = 0, duration = 0, ended = false;
-    let frameWidth = 0, frameHeight = 0, data: Buffer[] = [], firstData = false, separatePoster = false;
+    let frameWidth = 0, frameHeight = 0, data: Buffer[] = [], firstData = false, separatePoster = false, sawPalette = false;
     const finish = () => {
       if (!data.length) throw new Error("Missing frame data");
       const stride = frameWidth * 4 + 1;
@@ -26,6 +26,10 @@ export function validAvatarAnimation(bytes: Buffer): boolean {
         width = body.readUInt32BE(0); height = body.readUInt32BE(4);
         if (!width || !height || width > 512 || height > 512) return false;
         frameWidth = width; frameHeight = height;
+      } else if (type === "PLTE") {
+        // RGBA may carry a suggested palette, but only once before image data.
+        if (sawPalette || firstData || data.length || !length || length > 768 || length % 3) return false;
+        sawPalette = true;
       } else if (type === "acTL") {
         if (declared || frames || firstData || length !== 8 || body.readUInt32BE(4) !== 1) return false;
         declared = body.readUInt32BE(0);
