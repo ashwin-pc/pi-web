@@ -33,7 +33,7 @@ export function validAvatarAnimation(bytes: Buffer): boolean {
       } else if (type === "acTL") {
         if (declared || frames || firstData || length !== 8 || body.readUInt32BE(4) !== 1) return false;
         declared = body.readUInt32BE(0);
-        if (declared < 2 || declared > 240) return false;
+        if (declared < 1 || declared > 240) return false;
       } else if (type === "fcTL") {
         if (!declared || length !== 26 || body.readUInt32BE(0) !== sequence++) return false;
         if (frames) finish();
@@ -50,7 +50,7 @@ export function validAvatarAnimation(bytes: Buffer): boolean {
         if (frames < (separatePoster ? 1 : 2) || length < 5 || body.readUInt32BE(0) !== sequence++) return false;
         data.push(body.subarray(4));
       } else if (type === "IEND") {
-        if (length || frames !== declared || !firstData || !duration) return false;
+        if (length || frames !== declared || !firstData) return false;
         finish(); ended = true; offset += 12; break;
       } else if (!/^[a-zA-Z]{4}$/.test(type) || type[0] === type[0].toUpperCase()) return false;
       offset += length + 12;

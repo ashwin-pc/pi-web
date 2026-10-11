@@ -79,6 +79,14 @@ describe("custom animated bundles", () => {
     expect(validAvatarAnimation(Buffer.concat([prefix, chunk("PLTE", Buffer.from([1, 2])), chunk("IDAT", pixels), suffix]))).toBe(false);
     expect(validAvatarAnimation(Buffer.concat([prefix, chunk("IDAT", pixels), palette, suffix]))).toBe(false);
     expect(validAvatarAnimation(Buffer.concat([prefix, chunk("IDAT", deflateSync(Buffer.from([0, 255]))), suffix]))).toBe(false);
+    const oneFrameControl = Buffer.from(control); oneFrameControl.writeUInt32BE(1);
+    const oneFramePrefix = Buffer.concat([prefix.subarray(0, 33), chunk("acTL", oneFrameControl)]);
+    const end = chunk("IEND", Buffer.alloc(0));
+    expect(validAvatarAnimation(Buffer.concat([oneFramePrefix, chunk("IDAT", pixels), frame(0), end]))).toBe(true);
+    const includedFrame = frame(0).subarray(0, 38);
+    expect(validAvatarAnimation(Buffer.concat([oneFramePrefix, includedFrame, chunk("IDAT", pixels), end]))).toBe(true);
+    const zeroDelayBody = Buffer.from(includedFrame.subarray(8, 34)); zeroDelayBody.writeUInt16BE(0, 20);
+    expect(validAvatarAnimation(Buffer.concat([oneFramePrefix, chunk("fcTL", zeroDelayBody), chunk("IDAT", pixels), end]))).toBe(true);
   });
   it("rejects infinite looping, corrupted frames, truncation, static PNG and excessive dimensions", async () => {
     const original = await readFile("public/avatars/fox/new-session.apng");

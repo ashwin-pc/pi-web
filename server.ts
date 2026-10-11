@@ -1095,14 +1095,18 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "GET" && url.pathname === "/api/identity/avatar/package") {
         const format = url.searchParams.get("format") ?? "zip";
         if (!["zip", "json"].includes(format)) return sendJson(res, 400, { error: "Unsupported avatar export format" });
-        const settings = await settingsStore.read();
-        if (settings.identity.avatar.type !== "custom") return sendJson(res, 404, { error: "No custom avatar selected" });
-        try {
-          const data = await (format === "json" ? exportAvatarPackage : exportAvatarZip)(settingsStore.file, settings.identity.avatar.assetId);
-          res.setHeader("content-type", format === "json" ? "application/json" : "application/zip");
-          res.setHeader("content-disposition", `attachment; filename="custom-avatar.pi-avatar.${format}"`);
-          res.setHeader("cache-control", "no-store"); res.end(data); return;
-        } catch (error) { return sendJson(res, 404, { error: (error as Error).message }); }
+        // Snapshot and every role read share the mutation lock: reset/reclaim
+        // cannot remove optional artwork while a portable package is assembled.
+        return withAvatarMutation(async () => {
+          const settings = await settingsStore.read();
+          if (settings.identity.avatar.type !== "custom") return sendJson(res, 404, { error: "No custom avatar selected" });
+          try {
+            const data = await (format === "json" ? exportAvatarPackage : exportAvatarZip)(settingsStore.file, settings.identity.avatar.assetId);
+            res.setHeader("content-type", format === "json" ? "application/json" : "application/zip");
+            res.setHeader("content-disposition", `attachment; filename="custom-avatar.pi-avatar.${format}"`);
+            res.setHeader("cache-control", "no-store"); res.end(data); return;
+          } catch (error) { return sendJson(res, 404, { error: (error as Error).message }); }
+        });
       }
       if (method === "POST" && ["/api/identity/avatar", "/api/identity/avatar/package"].includes(url.pathname)) {
         const settings = await withAvatarMutation(async () => {
