@@ -6,6 +6,9 @@ import {
   avatarPresets,
   defaultAppIdentity,
   isAvatarPresetId,
+  isAvatarAssetId,
+  maxAvatarPackageBytes,
+  maxAvatarZipBytes,
   resolveAvatarBundle,
   type AppIdentity,
   type AvatarSelection,
@@ -18,7 +21,7 @@ export function normalizeIdentity(value: unknown): AppIdentity {
     name: typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, 64) : defaultAppIdentity.name,
     shortName: typeof raw.shortName === "string" && raw.shortName.trim() ? raw.shortName.trim().slice(0, 24) : defaultAppIdentity.shortName,
     avatar: raw.avatar?.type === "custom"
-      ? { type: "custom" }
+      ? { type: "custom", ...(isAvatarAssetId(raw.avatar.assetId) ? { assetId: raw.avatar.assetId, ...(raw.avatar.animated === true ? { animated: true as const } : {}) } : {}) }
       : raw.avatar?.type === "preset" && isAvatarPresetId(raw.avatar.id)
         ? { type: "preset", id: raw.avatar.id }
         : defaultAppIdentity.avatar,
@@ -63,7 +66,12 @@ async function normalizedAvatar(file: File): Promise<Blob> {
     const url = URL.createObjectURL(file);
     const image = new Image();
     image.src = url;
-    await image.decode();
+    try {
+      await image.decode();
+    } catch (error) {
+      URL.revokeObjectURL(url);
+      throw error;
+    }
     source = image;
     width = image.naturalWidth;
     height = image.naturalHeight;
@@ -197,6 +205,7 @@ export function createIdentitySettings(
     img.append(still);
     button.append(img, el("span", "identityChoiceLabel", avatarPresetLabels[id]));
     button.addEventListener("click", () => {
+      if (busy || processingUpload) return;
       selected = { type: "preset", id };
       dirtyAvatar = true;
       render();
@@ -210,8 +219,34 @@ export function createIdentitySettings(
   custom.dataset.avatar = "custom";
   custom.setAttribute("aria-label", "Upload custom avatar");
   custom.append(el("span", "identityChoiceCustomIcon", "+"), el("span", "identityChoiceLabel", "Custom"));
-  custom.addEventListener("click", () => upload.click());
+  custom.addEventListener("click", () => { if (!busy && !processingUpload) upload.click(); });
   gallery.after(custom);
+
+  const packageInput = el("input");
+  packageInput.type = "file";
+  packageInput.id = "identityPackageUpload";
+  packageInput.accept = ".pi-avatar.zip,.pi-avatar.json,application/zip,application/json";
+  packageInput.hidden = true;
+  packageInput.setAttribute("aria-label", "Import avatar package file");
+  const importPackage = el("button", "", "Import avatar package");
+  importPackage.type = "button";
+  importPackage.id = "identityPackageImport";
+  const exportPackage = el("button", "", "Export custom avatar");
+  exportPackage.type = "button";
+  exportPackage.id = "identityPackageExport";
+  exportPackage.disabled = true;
+  const packageHelp = el("p", "settingsHint", "Images: PNG, JPEG or WebP under 5 MB. Portable packages: .pi-avatar.zip containing a manifest, still.png (new-session fallback), icon.png, optional fab.png (launcher image; defaults to still.png) and optional transparent single-play new-session.apng (up to 8 MB, 512×512, 240 frames and 15 seconds). Legacy .pi-avatar.json packages are also accepted. Import applies immediately without changing app names; export can be imported on another updated Pi Web instance.");
+  const packageActions = el("div", "identityActions");
+  packageActions.append(importPackage, exportPackage);
+  custom.after(packageActions, packageInput, packageHelp);
+  importPackage.addEventListener("click", () => { if (!busy && !processingUpload) packageInput.click(); });
+
+  function updateControls() {
+    const blocked = busy || processingUpload;
+    save.disabled = reset.disabled = upload.disabled = packageInput.disabled = importPackage.disabled = custom.disabled = blocked;
+    exportPackage.disabled = blocked || saved.avatar.type !== "custom";
+    for (const button of gallery.querySelectorAll<HTMLButtonElement>("button")) button.disabled = blocked;
+  }
 
   function update(identity: AppIdentity) {
     saved = identity;
@@ -219,13 +254,14 @@ export function createIdentitySettings(
       dirtyName = dirtyShortName = dirtyAvatar = false;
     }
     if (pendingAction === "upload") {
-      selected = { type: "custom" };
+      selected = identity.avatar;
       dirtyAvatar = false;
     } else if (!dirtyAvatar) selected = identity.avatar;
     if (!dirtyName) name.value = identity.name;
     if (!dirtyShortName) shortName.value = identity.shortName;
     pendingAction = undefined;
     render();
+    updateControls();
     applyIdentity(identity);
   }
 
@@ -239,7 +275,7 @@ export function createIdentitySettings(
   async function request(method: "POST" | "PATCH", url: string, body: BodyInit, contentType?: string, action?: "save" | "reset" | "upload", afterSave?: (settings: { identity: AppIdentity }) => Promise<void>) {
     if (busy) { onError("Wait for the current identity update to finish."); return; }
     busy = true;
-    save.disabled = reset.disabled = upload.disabled = true;
+    updateControls();
     try {
       const headers = api.headers();
       if (contentType) headers["content-type"] = contentType;
@@ -255,11 +291,12 @@ export function createIdentitySettings(
       onError(error instanceof Error ? error.message : String(error));
     } finally {
       busy = false;
-      save.disabled = reset.disabled = upload.disabled = processingUpload;
+      updateControls();
     }
   }
 
   save.addEventListener("click", () => {
+    if (busy || processingUpload) { onError("Wait for the current identity update to finish."); return; }
     if (!name.value.trim() || !shortName.value.trim()) {
       onError("App name and short name are required");
       return;
@@ -270,7 +307,7 @@ export function createIdentitySettings(
   });
   reset.addEventListener("click", () => {
     if (busy || processingUpload) { onError("Wait for the current identity update to finish."); return; }
-    if (!window.confirm("Reset the app name and avatar to Pi Web? This also permanently removes your uploaded custom avatar file.")) return;
+    if (!window.confirm("Reset the app name and avatar to Pi Web? This permanently removes this instance’s custom artwork/icon packages. Shared legacy uploads are retained for compatibility.")) return;
     void request("PATCH", "/api/settings", JSON.stringify({
       identity: { name: defaultAppIdentity.name, shortName: defaultAppIdentity.shortName, avatar: defaultAppIdentity.avatar },
     }), undefined, "reset", async settings => {
@@ -278,9 +315,9 @@ export function createIdentitySettings(
         const response = await fetch(`/api/identity/avatar?revision=${settings.identity.revision}`, { method: "DELETE", headers: api.headers() });
         const data = await response.json().catch(() => ({}));
         if (!response.ok || data.ok === false) throw new Error(data.error || String(response.status));
-        onNotice("Identity reset and uploaded custom avatar removed. This cannot be undone.");
+        onNotice("Identity reset and instance-owned custom avatar packages removed.");
       } catch (error) {
-        throw new Error(`Identity reset, but uploaded avatar cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Identity reset, but instance-owned avatar package cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     });
   });
@@ -295,7 +332,7 @@ export function createIdentitySettings(
       return;
     }
     processingUpload = true;
-    save.disabled = reset.disabled = upload.disabled = true;
+    updateControls();
     try {
       const blob = await normalizedAvatar(file);
       await request("POST", "/api/identity/avatar", blob, "image/png", "upload");
@@ -303,7 +340,55 @@ export function createIdentitySettings(
       onError(error instanceof Error ? error.message : String(error));
     } finally {
       processingUpload = false;
-      save.disabled = reset.disabled = upload.disabled = busy;
+      updateControls();
+    }
+  });
+
+  packageInput.addEventListener("change", async () => {
+    const file = packageInput.files?.[0];
+    packageInput.value = "";
+    if (!file) return;
+    if (busy || processingUpload) { onError("Wait for the current identity update to finish."); return; }
+    const filename = file.name.toLowerCase();
+    const zip = filename.endsWith(".pi-avatar.zip");
+    if (!zip && !filename.endsWith(".pi-avatar.json")) {
+      onError("Choose a .pi-avatar.zip or legacy .pi-avatar.json avatar package");
+      return;
+    }
+    const limit = zip ? maxAvatarZipBytes : maxAvatarPackageBytes;
+    if (file.size > limit) {
+      onError(`Choose an avatar ${zip ? "ZIP" : "JSON"} package under ${(limit / 1024 / 1024).toFixed(1)} MiB`);
+      return;
+    }
+    await request("POST", "/api/identity/avatar/package", file, zip ? "application/zip" : "application/json", "upload");
+  });
+
+  exportPackage.addEventListener("click", async () => {
+    if (busy || processingUpload || exportPackage.disabled) return;
+    busy = true;
+    updateControls();
+    let downloadUrl: string | undefined;
+    let link: HTMLAnchorElement | undefined;
+    try {
+      const response = await fetch("/api/identity/avatar/package", { headers: api.headers() });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(data.error || `Export failed (${response.status})`);
+      }
+      downloadUrl = URL.createObjectURL(await response.blob());
+      link = el("a");
+      link.href = downloadUrl;
+      link.download = "custom-avatar.pi-avatar.zip";
+      document.body.append(link);
+      link.click();
+      onNotice("Custom avatar package downloaded. Import it on another updated Pi Web instance.");
+    } catch (error) {
+      onError(error instanceof Error ? error.message : String(error));
+    } finally {
+      link?.remove();
+      if (downloadUrl) URL.revokeObjectURL(downloadUrl);
+      busy = false;
+      updateControls();
     }
   });
 

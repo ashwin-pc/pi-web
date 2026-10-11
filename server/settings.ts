@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { defaultAppIdentity, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
+import { defaultAppIdentity, isAvatarAssetId, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
 
 export type PiWebModelSetting = {
   provider: string;
@@ -303,7 +303,10 @@ function validIdentityName(value: unknown, max: number): string | undefined {
 function validAvatar(value: unknown): AppIdentity["avatar"] | undefined {
   if (!isRecord(value)) return undefined;
   if (value.type === "preset" && isAvatarPresetId(value.id)) return { type: "preset", id: value.id };
-  if (value.type === "custom") return { type: "custom" };
+  if (value.type === "custom") {
+    if (value.assetId !== undefined && !isAvatarAssetId(value.assetId)) return undefined;
+    return { type: "custom", ...(typeof value.assetId === "string" ? { assetId: value.assetId, ...(value.animated === true ? { animated: true as const } : {}) } : {}) };
+  }
   return undefined;
 }
 

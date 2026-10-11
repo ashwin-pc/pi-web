@@ -26,7 +26,7 @@ cleanupOutdatedCaches();
 const avatarCachePrefix = "pi-web-avatars-";
 const avatarCacheName = `${avatarCachePrefix}${__PI_WEB_AVATAR_CACHE_REVISION__}`;
 registerRoute(
-  ({ url }) => url.origin === self.location.origin && /^\/avatars\/[^/]+\/(?:still\.png|icon\.png|new-session\.apng|new-session\.webm)$/.test(url.pathname),
+  ({ url }) => url.origin === self.location.origin && (/^\/avatars\/[^/]+\/(?:still\.png|icon\.png|new-session\.apng|new-session\.webm)$/.test(url.pathname) || /^\/identity\/(?:avatar\.png|fab\.png|icon\.png|new-session\.apng)$/.test(url.pathname)),
   new CacheFirst({ cacheName: avatarCacheName }),
 );
 self.addEventListener("activate", event => {

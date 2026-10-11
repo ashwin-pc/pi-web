@@ -128,7 +128,7 @@ test("custom saved avatar avoids Pi on cold boot and uses its still under reduce
     expect(await page.locator(".actionLauncherToggle img").getAttribute("src")).toBeNull();
     await expect(page.locator("#identityNewSessionMedia img")).toHaveCount(0);
     settings.release();
-    await expect(page.locator(".actionLauncherToggle img")).toHaveAttribute("src", /\/identity\/avatar\.png\?v=\d+/);
+    await expect(page.locator(".actionLauncherToggle img")).toHaveAttribute("src", /\/identity\/fab\.png\?v=\d+/);
     await expect(page.locator("#identityNewSessionStill")).toHaveAttribute("src", /\/identity\/avatar\.png\?v=\d+/);
     await expect(page.locator("#identityNewSessionAnimation")).toHaveCount(0);
     expect(requested.filter(path => path.startsWith("/avatars/current-pi/"))).toEqual([]);
