@@ -53,7 +53,8 @@ test.describe("keyboard shortcuts", () => {
     const dialog = page.locator(".shortcutHelp");
     await expect(dialog).toBeVisible();
     await expect(dialog.getByRole("heading")).toHaveText("Keyboard shortcuts");
-    await expect(dialog.locator(".shortcutHelpRow")).toHaveCount(11);
+    await expect(dialog.locator(".shortcutHelpRow")).toHaveCount(12);
+    await expect(dialog).toContainText("Open VR view");
     await expect(dialog).toContainText("Pin or unpin current session");
     await expect(dialog).toContainText("Park current session");
     await expect(dialog).toContainText("Bookmark current session");

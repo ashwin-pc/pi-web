@@ -1,0 +1,7 @@
+/* The root-view slot: an alternative full-screen view replaces the 2D app. */
+html[data-root-view] body > main.app { display: none !important; }
+html[data-root-view], html[data-root-view] body { overflow: hidden; background: #030303; }
+.rootView { position: fixed; inset: 0; z-index: 1; overflow: hidden; background: #030303; color: #f2f2f2; }
+.rootViewStatus { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; text-align: center; color: #a3a3a3; font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+.rootViewStatus.error { color: #fca5a5; }
+#openVrViewButton[hidden] { display: none; }
