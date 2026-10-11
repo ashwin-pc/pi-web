@@ -4,6 +4,7 @@ import { clientsClaim } from "workbox-core";
 import { cleanupOutdatedCaches, precacheAndRoute } from "workbox-precaching";
 import { registerRoute } from "workbox-routing";
 import { CacheFirst } from "workbox-strategies";
+import { ExpirationPlugin } from "workbox-expiration";
 
 declare let self: ServiceWorkerGlobalScope & { __WB_MANIFEST: Array<unknown> };
 declare const __PI_WEB_AVATAR_CACHE_REVISION__: string;
@@ -29,9 +30,15 @@ registerRoute(
   ({ url }) => url.origin === self.location.origin && /^\/avatars\/[^/]+\/(?:still\.png|icon\.png|new-session\.apng|new-session\.webm)$/.test(url.pathname),
   new CacheFirst({ cacheName: avatarCacheName }),
 );
+// Separate revisioned uploads from presets. Two complete four-role bundles
+// bound storage without expiring the most recently used offline identity.
+registerRoute(
+  ({ url }) => url.origin === self.location.origin && /^\d+$/.test(url.searchParams.get("v") ?? "") && /^\/identity\/(?:avatar\.png|fab\.png|icon\.png|new-session\.apng)$/.test(url.pathname),
+  new CacheFirst({ cacheName: `${avatarCacheName}-custom`, plugins: [new ExpirationPlugin({ maxEntries: 8, purgeOnQuotaError: true })] }),
+);
 self.addEventListener("activate", event => {
   event.waitUntil(caches.keys().then(names => Promise.all(names
-    .filter(name => name.startsWith(avatarCachePrefix) && name !== avatarCacheName)
+    .filter(name => name.startsWith(avatarCachePrefix) && name !== avatarCacheName && name !== `${avatarCacheName}-custom`)
     .map(name => caches.delete(name)))));
 });
 

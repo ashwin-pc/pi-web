@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 import type { PiWebSession, PiWebSessionInfo } from "./types.js";
 import { simplifyMessage } from "./session/projection.js";
 import { mapPiEvent } from "./session/piEventMap.js";
@@ -325,7 +326,7 @@ export function createMockHarness(options: MockSessionOptions) {
 
     const mockSessionManager = {
       newSession() {
-        mockSession.sessionId = `mock-${Date.now()}`;
+        mockSession.sessionId = `mock-${randomUUID()}`;
         mockSession.sessionFile = join(piCwd, `.mock-sessions/${mockSession.sessionId}.jsonl`);
         // Rename reads/writes this index. Without a record, a new-session rename
         // succeeds optimistically in the browser but returns "New session".

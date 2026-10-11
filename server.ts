@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
-import { mkdir, writeFile, unlink } from "node:fs/promises";
-import { avatarFile, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar } from "./server/appIdentity.js";
+import { mkdir, writeFile, unlink, rm } from "node:fs/promises";
+import { avatarDirectory, commitAvatarGeneration, exportAvatarPackage, exportAvatarZip, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar, receiveAvatarPackage } from "./server/appIdentity.js";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -589,32 +589,37 @@ import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 
 async function loginPresentation() {
   const settings = await settingsStore.read();
-  const uploaded = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
+  const uploaded = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file, settings.identity.avatar.assetId) : undefined;
   return { name: settings.identity.name, assets: publicIdentityAssets(settings, uploaded) };
 }
 
 const server = createServer(withAccessLog(async (req, res, url) => {
   const method = req.method || "GET";
   try {
-    if (method === "GET" && ["/manifest.webmanifest", "/identity/config.json", "/identity/avatar.png", "/identity/icon.png"].includes(url.pathname)) {
+    if (method === "GET" && ["/manifest.webmanifest", "/identity/config.json", "/identity/avatar.png", "/identity/icon.png", "/identity/fab.png", "/identity/new-session.apng"].includes(url.pathname)) {
       res.setHeader("cache-control", "no-store");
       const settings = await settingsStore.read();
       if (url.pathname === "/manifest.webmanifest") {
         res.setHeader("content-type", "application/manifest+json");
-        res.end(JSON.stringify(identityManifest(settings))); return;
+        res.end(JSON.stringify(identityManifest(settings, settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file, settings.identity.avatar.assetId, "icon") : undefined))); return;
       }
-      const png = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file) : undefined;
+      const roles: Record<string, "still" | "icon" | "fab" | "newSession"> = { "/identity/icon.png": "icon", "/identity/fab.png": "fab", "/identity/new-session.apng": "newSession" };
+      const role = roles[url.pathname] ?? "still";
+      let png = settings.identity.avatar.type === "custom" ? await readAvatar(settingsStore.file, settings.identity.avatar.assetId, role) : undefined;
+      // Legacy/static packages need no separate FAB: reuse their still without
+      // synthesizing an optional asset in exports or changing the saved names.
+      if (!png && role === "fab" && settings.identity.avatar.type === "custom") png = await readAvatar(settingsStore.file, settings.identity.avatar.assetId);
       // A removed or unavailable upload must not leave the public login page
       // with broken artwork or send the icon endpoint into a redirect loop.
       const assets = publicIdentityAssets(settings, png);
-      if (url.pathname === "/identity/config.json") return sendJson(res, 200, { ...settings.identity, assets });
+      if (url.pathname === "/identity/config.json") return sendJson(res, 200, { ...settings.identity, ...(settings.identity.avatar.type === "custom" && !png ? { avatar: { type: "preset", id: "current-pi" } } : {}), assets });
       if (settings.identity.avatar.type === "custom" && png) {
-        res.setHeader("content-type", "image/png");
+        res.setHeader("content-type", url.pathname === "/identity/new-session.apng" ? "image/apng" : "image/png");
         res.end(png); return;
       }
-      if (url.pathname === "/identity/icon.png" || url.pathname === "/identity/avatar.png") {
+      if (url.pathname === "/identity/icon.png" || url.pathname === "/identity/avatar.png" || url.pathname === "/identity/fab.png") {
         res.statusCode = 302;
-        res.setHeader("location", url.pathname === "/identity/icon.png" ? assets.icon : assets.still);
+        res.setHeader("location", url.pathname === "/identity/icon.png" ? assets.icon : url.pathname === "/identity/fab.png" ? assets.fab : assets.still);
         res.end(); return;
       }
       return sendJson(res, 404, { error: "Avatar not found" });
@@ -1087,11 +1092,32 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
 
-      if (method === "POST" && url.pathname === "/api/identity/avatar") {
+      if (method === "GET" && url.pathname === "/api/identity/avatar/package") {
+        const format = url.searchParams.get("format") ?? "zip";
+        if (!["zip", "json"].includes(format)) return sendJson(res, 400, { error: "Unsupported avatar export format" });
+        // Snapshot and every role read share the mutation lock: reset/reclaim
+        // cannot remove optional artwork while a portable package is assembled.
+        return withAvatarMutation(async () => {
+          const settings = await settingsStore.read();
+          if (settings.identity.avatar.type !== "custom") return sendJson(res, 404, { error: "No custom avatar selected" });
+          try {
+            const data = await (format === "json" ? exportAvatarPackage : exportAvatarZip)(settingsStore.file, settings.identity.avatar.assetId);
+            res.setHeader("content-type", format === "json" ? "application/json" : "application/zip");
+            res.setHeader("content-disposition", `attachment; filename="custom-avatar.pi-avatar.${format}"`);
+            res.setHeader("cache-control", "no-store"); res.end(data); return;
+          } catch (error) { return sendJson(res, 404, { error: (error as Error).message }); }
+        });
+      }
+      if (method === "POST" && ["/api/identity/avatar", "/api/identity/avatar/package"].includes(url.pathname)) {
         const settings = await withAvatarMutation(async () => {
-          try { await receiveAvatar(req, settingsStore.file); }
+          const previous = (await settingsStore.read()).identity.avatar;
+          let assetId: string;
+          try { assetId = await (url.pathname.endsWith("/package") ? receiveAvatarPackage : receiveAvatar)(req, settingsStore.file); }
           catch (error) { throw new HttpError((error as Error).message, 400); }
-          return settingsStore.patch({ identity: { avatar: { type: "custom" } } });
+          return commitAvatarGeneration(settingsStore.file, assetId, async () => {
+            const animated = Boolean(await readAvatar(settingsStore.file, assetId, "newSession"));
+            return settingsStore.patch({ identity: { avatar: { type: "custom", assetId, ...(animated ? { animated: true } : {}) } } });
+          }, previous.type === "custom" ? previous.assetId : undefined);
         });
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });
@@ -1104,8 +1130,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           const { identity } = await settingsStore.read();
           if (identity.revision !== expectedRevision || identity.avatar.type !== "preset" || identity.avatar.id !== "current-pi")
             return sendJson(res, 409, { ok: false, error: "Identity changed; uploaded avatar was not deleted" });
-          try { await unlink(avatarFile(settingsStore.file)); }
-          catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+          // Only this exact settings file owns this directory. Legacy files may
+          // be shared by older instances and must not be deleted here.
+          await rm(avatarDirectory(settingsStore.file), { recursive: true, force: true });
           return sendJson(res, 200, { ok: true });
         });
       }
@@ -1115,7 +1142,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
         const patch = await readBody(req);
-        const settings = await withAvatarMutation(() => settingsStore.patch(patch));
+        const settings = await withAvatarMutation(async () => {
+          const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
+          // A stale settings form must not resurrect a reclaimed generation.
+          // Serialize the reference check with imports/reset and settings writes.
+          if (avatar?.type === "custom" && avatar.assetId !== undefined && (typeof avatar.assetId !== "string" || !await readAvatar(settingsStore.file, avatar.assetId) || !await readAvatar(settingsStore.file, avatar.assetId, "icon")))
+            throw new HttpError("Custom avatar package is unavailable; import it again before saving", 400);
+          return settingsStore.patch(patch);
+        });
         broadcast({ type: "settings_updated", settings });
         return sendJson(res, 200, { ok: true, settings });
       }

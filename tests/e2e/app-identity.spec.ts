@@ -67,10 +67,12 @@ test("reset confirms removal, preserves drafts on cancel, and rejects stale clea
   const { readFile } = await import("node:fs/promises");
   const fox = await readFile("public/avatars/fox/still.png");
   const cat = await readFile("public/avatars/cat/still.png");
-  expect((await page.request.post("/api/identity/avatar", { data: fox, headers: { "content-type": "image/png" } })).ok()).toBe(true);
+  const uploaded = await page.request.post("/api/identity/avatar", { data: fox, headers: { "content-type": "image/png" } });
+  expect(uploaded.ok()).toBe(true);
+  const customSelection = (await uploaded.json()).settings.identity.avatar;
   await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "preset", id: "fox" } } } });
-  await page.request.patch("/api/settings", { data: { identity: { avatar: { type: "custom" } } } });
-  expect(await (await page.request.get("/identity/avatar.png")).body()).toEqual(fox);
+  await page.request.patch("/api/settings", { data: { identity: { avatar: customSelection } } });
+  expect((await (await page.request.get("/identity/avatar.png")).body()).equals(fox)).toBe(true);
   await page.goto("/");
   await openSessionDrawerFooterAction(page, "Preferences");
   await page.locator("#settingsNavIdentity").click();
@@ -78,13 +80,14 @@ test("reset confirms removal, preserves drafts on cancel, and rejects stale clea
   page.once("dialog", dialog => dialog.dismiss());
   await page.locator("#identityReset").click();
   await expect(page.locator("#identityName")).toHaveValue("Unsaved draft");
-  expect((await (await page.request.get("/api/settings")).json()).settings.identity.avatar).toEqual({ type: "custom" });
+  expect((await (await page.request.get("/api/settings")).json()).settings.identity.avatar).toMatchObject({ type: "custom" });
   page.once("dialog", dialog => {
-    expect(dialog.message()).toContain("permanently removes your uploaded custom avatar file");
+    expect(dialog.message()).toContain("permanently removes this instance’s custom artwork/icon packages");
+    expect(dialog.message()).toContain("Shared legacy uploads are retained for compatibility");
     void dialog.accept();
   });
   await page.locator("#identityReset").click();
-  await expect(page.locator("#settingsStatus")).toContainText("uploaded custom avatar removed");
+  await expect(page.locator("#settingsStatus")).toContainText("instance-owned custom avatar packages removed");
   await expect(page.locator("#identityName")).toHaveValue("Pi Web");
   // Explicitly re-selecting custom without a new upload must use the fallback:
   // reset removed the old bytes, unlike merely saving a preset selection.
@@ -95,7 +98,7 @@ test("reset confirms removal, preserves drafts on cancel, and rejects stale clea
   expect((await page.request.post("/api/identity/avatar", { data: cat, headers: { "content-type": "image/png" } })).ok()).toBe(true);
   const stale = await page.request.delete(`/api/identity/avatar?revision=${revision}`);
   expect(stale.status()).toBe(409);
-  expect(await (await page.request.get("/identity/avatar.png")).body()).toEqual(cat);
+  expect((await (await page.request.get("/identity/avatar.png")).body()).equals(cat)).toBe(true);
 });
 
 test("in-flight save rejects concurrent upload explicitly and allows retry", async ({ page }, info) => {

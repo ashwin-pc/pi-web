@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
+import { registerRoute } from "workbox-routing";
 
+const { expirationOptions } = vi.hoisted(() => ({ expirationOptions: vi.fn() }));
+vi.mock("workbox-expiration", () => ({ ExpirationPlugin: class { constructor(options: unknown) { expirationOptions(options); } } }));
+vi.mock("workbox-routing", () => ({ registerRoute: vi.fn() }));
 vi.mock("workbox-core", () => ({ clientsClaim: vi.fn() }));
 vi.mock("workbox-precaching", () => ({ cleanupOutdatedCaches: vi.fn(), precacheAndRoute: vi.fn() }));
 
@@ -14,7 +18,7 @@ beforeEach(async () => {
   listeners.clear();
   vi.clearAllMocks();
   vi.resetModules();
-  vi.stubGlobal("caches", { open: vi.fn(async () => cache), keys: vi.fn(async () => ["pi-web-avatars-old", "pi-web-avatars-test", "other-cache"]), delete: vi.fn(async () => true) });
+  vi.stubGlobal("caches", { open: vi.fn(async () => cache), keys: vi.fn(async () => ["pi-web-avatars-old", "pi-web-avatars-old-custom", "pi-web-avatars-test", "pi-web-avatars-test-custom", "other-cache"]), delete: vi.fn(async () => true) });
   vi.stubGlobal("__PI_WEB_AVATAR_CACHE_REVISION__", "test");
   vi.stubGlobal("fetch", vi.fn(async () => ({ json: async () => ({ name: "Custom Brand" }) })));
   vi.stubGlobal("self", {
@@ -33,12 +37,26 @@ describe("service worker completion notifications", () => {
     expect(config).toContain('"avatars/current-pi/still.png"');
     // The packed smoke additionally checks the generated dist/sw.js manifest.
   });
+  it("never cache-first matches unversioned favicon or notification identity URLs", () => {
+    const match = vi.mocked(registerRoute).mock.calls[1][0] as (context: { url: URL }) => boolean;
+    for (const role of ["avatar.png", "icon.png", "fab.png", "new-session.apng"]) {
+      expect(match({ url: new URL(`https://pi.test/identity/${role}`) })).toBe(false);
+      expect(match({ url: new URL(`https://pi.test/identity/${role}?v=12`) })).toBe(true);
+      expect(match({ url: new URL(`https://pi.test/identity/${role}?v=`) })).toBe(false);
+      expect(match({ url: new URL(`https://other.test/identity/${role}?v=12`) })).toBe(false);
+    }
+  });
+  it("bounds revisioned custom assets without expiring selected offline assets by age", () => {
+    expect(expirationOptions).toHaveBeenCalledExactlyOnceWith({ maxEntries: 8, purgeOnQuotaError: true });
+  });
   it("cleans only stale avatar caches after an artwork revision", async () => {
     let pending!: Promise<unknown>;
     listeners.get("activate")?.({ waitUntil: (value: Promise<unknown>) => { pending = value; } });
     await pending;
     expect(caches.delete).toHaveBeenCalledWith("pi-web-avatars-old");
+    expect(caches.delete).toHaveBeenCalledWith("pi-web-avatars-old-custom");
     expect(caches.delete).not.toHaveBeenCalledWith("pi-web-avatars-test");
+    expect(caches.delete).not.toHaveBeenCalledWith("pi-web-avatars-test-custom");
     expect(caches.delete).not.toHaveBeenCalledWith("other-cache");
   });
   it("shows a visible, vibrating notification linked to the completed session", async () => {
