@@ -10,11 +10,11 @@ A pi-web-only composer action that records in the browser, transcribes through a
 | Whisper | MLX (`mlx-whisper`) | Supported | No | No | No | `mlx-community/whisper-large-v3-turbo` |
 | Whisper | faster-whisper/CTranslate2 | CPU supported | CPU supported; default | CPU supported; default | CPU supported; default | `large-v3-turbo` |
 | Whisper | faster-whisper CUDA | Not applicable | Not applicable | Available only with a compatible NVIDIA/CUDA/cuDNN installation | Available only with a compatible NVIDIA/CUDA/cuDNN installation | User-selected |
-| Parakeet | Other runtimes | Not included | Not included | Not included | Not included | — |
+| Parakeet | Photon (`moondream` 2.4.0) CPU, optional | Unverified | Unverified | CPU smoke-tested on x86_64; opt-in | Unverified | `moondream/parakeet-redux` |
 
 CUDA is opt-in and is not exercised by this example's lightweight CI. Follow faster-whisper's current CUDA/cuDNN compatibility documentation; an installed Python package alone does not prove the GPU runtime is usable. This example does not claim native Windows support for NVIDIA NeMo and does not include a community ONNX Parakeet conversion.
 
-`Runtime: Automatic` resolves to MLX on Apple Silicon. Fresh non-Apple hosts default to Whisper/faster-whisper on CPU. Parakeet selected on another host fails clearly rather than silently switching families. A blank model field is resolved only when a request starts, so changing family/runtime cannot carry an incompatible generated default. Explicit model values are always preserved.
+`Runtime: Automatic` resolves to MLX on Apple Silicon. Fresh non-Apple hosts default to Whisper/faster-whisper on CPU. Parakeet with Automatic selected on another host fails clearly rather than silently switching families or selecting Photon. Photon is always an explicit selection; no existing defaults change. A blank model field is resolved only when a request starts, so changing family/runtime cannot carry an incompatible generated default. Explicit model values are always preserved.
 
 ### Existing settings migration
 
@@ -35,6 +35,7 @@ macOS/Linux:
 python3 setup.py parakeet-mlx            # Apple Silicon only
 python3 setup.py whisper-mlx             # Apple Silicon only
 python3 setup.py whisper-faster-whisper  # portable CPU baseline
+python3 setup.py parakeet-photon         # optional Photon CPU; Python 3.10–3.14
 ```
 
 Windows PowerShell or Command Prompt:
@@ -65,9 +66,25 @@ New-Item -ItemType Junction -Path "$HOME/.pi/web/extensions/dictation" -Target "
 
 Alternatively copy the directory and repeat the copy when updating. Run `/reload` or restart pi-web after installation changes.
 
+### Optional Parakeet/Photon
+
+Install `parakeet-photon`, then choose **Model family: Parakeet**, **Runtime: Photon**, and **Device: CPU** in Dictation settings. Clear an old MLX model value to use `moondream/parakeet-redux`; explicit model IDs are preserved and must be recognized by Photon. This adapter does not promise arbitrary Hugging Face repositories or local MLX/NeMo model directories work with Photon.
+
+The dependency file pins the inspected public API release `moondream==2.4.0` (Python >=3.10,<3.15), which brings Kestrel. On Linux/Windows, setup first installs `torch==2.14.1+cpu` from `https://download.pytorch.org/whl/cpu`; macOS uses standard PyPI Torch. CPU-wheel availability still depends on Python/architecture. A plain PyPI Moondream install on the Linux smoke host pulled large CUDA Torch dependencies and exhausted 1.9 GB of free disk; use the setup target rather than installing Moondream alone. CPU Torch, Kestrel kernels, pip caches, and model weights still require substantial disk space. Installing into an existing environment does not remove old CUDA dependency packages or cached downloads. Preflight requires both packages and moondream >=2.4.0 without importing providers or downloading weights. Inference uses only the local public API:
+
+```python
+import moondream as md
+with md.photon("moondream/parakeet-redux", device="cpu") as speech:
+    text = speech.transcribe(audio="capture.wav")["text"]
+```
+
+CPU is passed explicitly, not auto-selected. CUDA/MPS are not enabled for Photon in this example; the faster-whisper compute-type setting is ignored. The serial worker keeps one Photon context warm for the current model/device, releases it on model changes or inference errors, and closes it on normal worker exit. Cancellation kills the worker process and releases its resources; the next request reloads the model. Errors are surfaced without switching models, runtimes, or to a cloud API. The first request can download model assets and exceed the dictation timeout; prewarm on the server host outside capture if needed.
+
+A real Linux x86_64 CPU smoke check with `moondream==2.4.0` and `torch==2.14.1+cpu` successfully transcribed the committed 3.306-second speech fixture: two consecutive production-worker requests took 8.857 seconds cold and 0.389 seconds warm for inference, plus 102/229 ms for decoding. These are single-host observations, not performance guarantees. Lightweight tests mock the public API, not native inference. macOS and Windows remain unverified despite registry availability: confirm package availability, model loading, transcription, and cleanup on your exact OS/architecture before use. No GPU support or untested platform is promised.
+
 ## Models, caches, and licenses
 
-Weights are never bundled. A Hugging Face/model name downloads on first use to the runtime's external cache; a local model directory remains owner-managed. Parakeet's upstream model is NVIDIA Parakeet TDT 0.6B v3 under CC BY 4.0; preserve required attribution. faster-whisper is MIT, while selected Whisper model artifacts can have their own model-card terms. Review the exact model card before deployment.
+Weights are never bundled. A Hugging Face/model name downloads on first use to the runtime's external cache; a local model directory remains owner-managed. Parakeet's upstream model is NVIDIA Parakeet TDT 0.6B v3 under CC BY 4.0; preserve required attribution. faster-whisper is MIT, while selected Whisper model artifacts can have their own model-card terms. Photon resolves `moondream/parakeet-redux` through its own model registry/cache rather than MLX's cache; review that model's card and Moondream/Kestrel package terms separately. Review the exact model card before deployment.
 
 ## Architecture and security
 
@@ -77,7 +94,7 @@ The browser capture contract gives the extension a validated private temporary f
 
 `worker.py` forces MIME-selected WebM, MP4, Ogg, or WAV demuxers, limits FFmpeg protocols to `file,pipe`, emits mono 16 kHz PCM16, and independently rejects decoded audio over 120 seconds. Runtime/platform/dependency preflight happens before decode or model loading.
 
-Node owns a FIFO queue with capacity for three total active-plus-queued requests and dispatches one request at a time. The transcription timeout begins at dispatch, not while waiting in the queue. Cancelling a queued request removes only that request, leaving the warm worker and other requests intact. Cancelling or timing out the active request interrupts native work by killing the detached POSIX process group or invoking `taskkill.exe /PID <pid> /T /F` directly without a shell on Windows. Termination is bounded, temporary cleanup is retried, and queued requests continue on a replacement worker. Only an interrupted active request requires a model reload.
+Node owns a FIFO queue with capacity for three total active-plus-queued requests and dispatches one request at a time. The transcription timeout begins at dispatch, not while waiting in the queue. Cancelling a queued request removes only that request, leaving the warm worker and other requests intact. Cancelling or timing out the active request interrupts native work by killing the detached POSIX process group or invoking `taskkill.exe /PID <pid> /T /F` directly without a shell on Windows. Termination is bounded, temporary cleanup is retried, and queued requests continue on a replacement worker. Cached MLX/faster-whisper models and the warm Photon context reload after an interrupted active request.
 
 Node and Python communicate through bounded JSON-lines stdio. Python retains a private, non-inheritable duplicate of the protocol output descriptor and redirects operating-system stdout to stderr; native library logging cannot contaminate protocol output. Worker stderr is separately bounded.
 
@@ -114,4 +131,4 @@ npx vitest run --config examples/pi-web-extensions/dictation/vitest.config.ts
 - Transcription can be wrong; review consequential text.
 - Cached models consume memory until the shared worker exits or is cancelled.
 - The existing Parakeet smoke result covers Apple Silicon MLX only.
-- The portable Whisper adapter's API is unit-tested with mocks; no weights are downloaded in CI.
+- The portable Whisper and optional Photon adapters' APIs are unit-tested with mocks; no weights are downloaded in CI.

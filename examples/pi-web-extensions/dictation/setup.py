@@ -12,6 +12,7 @@ import sys
 ROOT = Path(__file__).resolve().parent
 TARGETS = {
     "parakeet-mlx": ROOT / "adapters/parakeet/mlx/requirements.txt",
+    "parakeet-photon": ROOT / "adapters/parakeet/photon/requirements.txt",
     "whisper-mlx": ROOT / "adapters/whisper/mlx/requirements.txt",
     "whisper-faster-whisper": ROOT / "adapters/whisper/faster_whisper/requirements.txt",
 }
@@ -31,10 +32,15 @@ def commands(target: str) -> list[list[str]]:
     result: list[list[str]] = []
     if not python.exists():
         result.append([sys.executable, "-m", "venv", str(ROOT / ".venv")])
-    result.extend([
-        [str(python), "-m", "pip", "install", "--upgrade", "pip"],
-        [str(python), "-m", "pip", "install", "-r", str(TARGETS[target])],
-    ])
+    result.append([str(python), "-m", "pip", "install", "--upgrade", "pip"])
+    if target == "parakeet-photon":
+        # Install CPU Torch before Kestrel resolves its dependencies. The public
+        # PyPI Linux/Windows build can otherwise pull large CUDA packages.
+        if sys.platform in {"linux", "win32"}:
+            result.append([str(python), "-m", "pip", "install", "torch==2.14.1+cpu", "--index-url", "https://download.pytorch.org/whl/cpu"])
+        else:
+            result.append([str(python), "-m", "pip", "install", "torch"])
+    result.append([str(python), "-m", "pip", "install", "-r", str(TARGETS[target])])
     return result
 
 

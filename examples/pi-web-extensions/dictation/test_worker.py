@@ -6,10 +6,12 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 import wave
 
 import worker
+import adapters
+from adapters.parakeet.photon import adapter as photon_adapter
 from adapters.parakeet.mlx import adapter as parakeet_adapter
 from adapters.whisper.mlx import adapter as whisper_adapter
 from adapters.whisper.faster_whisper import adapter as faster_whisper_adapter
@@ -25,6 +27,12 @@ def write_wav(path: Path, seconds: float, sample: int = 1000):
 
 
 class WorkerTests(unittest.TestCase):
+    def setUp(self):
+        photon_adapter._close()
+
+    def tearDown(self):
+        photon_adapter._close()
+
     def test_validate_rejects_relative_and_symlink_paths(self):
         with self.assertRaisesRegex(ValueError, "absolute"):
             worker.validate_input("relative.webm")
@@ -133,6 +141,90 @@ class WorkerTests(unittest.TestCase):
             text = parakeet_adapter.transcribe(Path("audio.wav"), "org/custom-parakeet", Mock())
         self.assertEqual(text, "parakeet text")
         provider.from_pretrained.assert_called_once_with("org/custom-parakeet")
+
+    def test_photon_uses_public_context_api_and_cpu(self):
+        provider = MagicMock()
+        speech = provider.photon.return_value.__enter__.return_value
+        speech.transcribe.return_value = {"text": "photon text"}
+        with patch.dict(sys.modules, {"moondream": provider}):
+            text = photon_adapter.transcribe(Path("audio.wav"), "moondream/parakeet-redux", Mock(), compute_type="unused")
+        self.assertEqual(text, "photon text")
+        provider.photon.assert_called_once_with("moondream/parakeet-redux", device="cpu")
+        speech.transcribe.assert_called_once_with(audio="audio.wav")
+        provider.photon.return_value.__exit__.assert_not_called()
+        photon_adapter._close()
+        provider.photon.return_value.__exit__.assert_called_once_with(None, None, None)
+        provider.vl.assert_not_called()
+
+    def test_photon_reuses_engine_and_releases_it_on_model_switch(self):
+        provider = MagicMock()
+        first, second = MagicMock(), MagicMock()
+        first.__enter__.return_value.transcribe.return_value = {"text": "first"}
+        second.__enter__.return_value.transcribe.return_value = {"text": "second"}
+        provider.photon.side_effect = [first, second]
+        with patch.dict(sys.modules, {"moondream": provider}):
+            self.assertEqual(photon_adapter.transcribe(Path("audio.wav"), "first/model", Mock()), "first")
+            self.assertEqual(photon_adapter.transcribe(Path("next.wav"), "first/model", Mock()), "first")
+            provider.photon.assert_called_once_with("first/model", device="cpu")
+            first.__enter__.assert_called_once()
+            first.__exit__.assert_not_called()
+            self.assertEqual(photon_adapter.transcribe(Path("next.wav"), "second/model", Mock()), "second")
+        first.__exit__.assert_called_once_with(None, None, None)
+        self.assertEqual(provider.photon.call_count, 2)
+        photon_adapter._close()
+        photon_adapter._close()
+        second.__exit__.assert_called_once_with(None, None, None)
+        self.assertIsNone(photon_adapter._engine)
+
+    def test_photon_releases_engine_on_failure_without_fallback(self):
+        provider = MagicMock()
+        provider.photon.return_value.__enter__.return_value.transcribe.side_effect = RuntimeError("inference failed")
+        with patch.dict(sys.modules, {"moondream": provider}):
+            with self.assertRaisesRegex(RuntimeError, "inference failed"):
+                photon_adapter.transcribe(Path("audio.wav"), "custom/model", Mock())
+        provider.photon.return_value.__exit__.assert_called_once()
+        self.assertIsNone(photon_adapter._engine)
+        provider.photon.return_value.__enter__.return_value.transcribe.side_effect = None
+        provider.photon.return_value.__enter__.return_value.transcribe.return_value = {"text": "retry"}
+        with patch.dict(sys.modules, {"moondream": provider}):
+            self.assertEqual(photon_adapter.transcribe(Path("audio.wav"), "custom/model", Mock()), "retry")
+        self.assertEqual(provider.photon.call_count, 2)
+        provider.vl.assert_not_called()
+
+    def test_photon_rejects_non_cpu_before_import_and_invalid_output(self):
+        with patch.dict(sys.modules, {"moondream": None}):
+            with self.assertRaisesRegex(ValueError, "only device=cpu"):
+                photon_adapter.transcribe(Path("audio.wav"), "model", Mock(), device="cuda")
+            with self.assertRaisesRegex(RuntimeError, "setup.py parakeet-photon"):
+                photon_adapter.transcribe(Path("audio.wav"), "model", Mock())
+        provider = MagicMock()
+        for result in ({}, {"text": None}, "text"):
+            provider.photon.return_value.__enter__.return_value.transcribe.return_value = result
+            with patch.dict(sys.modules, {"moondream": provider}):
+                with self.assertRaisesRegex(RuntimeError, "no text transcript"):
+                    photon_adapter.transcribe(Path("audio.wav"), "model", Mock())
+
+    def test_photon_preflight_checks_dependencies_and_version_without_import(self):
+        with patch.object(adapters, "_host", return_value=("linux", "x86_64")), patch.object(adapters.util, "find_spec", return_value=Mock()), patch.object(adapters, "version", return_value="2.4.0"), patch.object(adapters, "import_module") as load:
+            self.assertEqual(adapters.preflight("parakeet", "photon").setup_target, "parakeet-photon")
+            load.assert_not_called()
+            for installed in ("2.3.9", "2.4.0rc1"):
+                with patch.object(adapters, "version", return_value=installed):
+                    with self.assertRaisesRegex(RuntimeError, "moondream>=2.4.0"):
+                        adapters.preflight("parakeet", "photon")
+            for missing in ("moondream", "kestrel"):
+                with patch.object(adapters.util, "find_spec", side_effect=lambda name: None if name == missing else Mock()):
+                    with self.assertRaisesRegex(RuntimeError, "setup.py parakeet-photon"):
+                        adapters.preflight("parakeet", "photon")
+            with patch.object(adapters, "_host", return_value=("freebsd", "x86_64")):
+                with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                    adapters.preflight("parakeet", "photon")
+
+    def test_photon_missing_dependency_fails_before_decode(self):
+        with patch.object(adapters, "_host", return_value=("linux", "x86_64")), patch.object(adapters.util, "find_spec", return_value=None), patch.object(worker, "decode_audio") as decode:
+            with self.assertRaisesRegex(RuntimeError, "setup.py parakeet-photon"):
+                worker.transcribe(Path("audio.wav"), Path("work"), "wav", "parakeet", "photon", "moondream/parakeet-redux", "cpu", "int8")
+            decode.assert_not_called()
 
     def test_whisper_adapter_passes_requested_model(self):
         provider = Mock()
