@@ -537,7 +537,7 @@ rm ~/.pi/web/extensions/github-repo-panel.ts
 
 ## Example: live git footer
 
-The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch and live dirty/clean state, refreshes periodically, and also refreshes around turns, bash commands, and compaction events.
+The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch, live dirty/clean state, and compact tracked-upstream indicators (`↑N` ahead / `↓N` behind, or `✓` when synchronized). The upstream name and full explanation live in accessible tooltips; clean/dirty state uses a colored dot with change counts. Comparisons use the last fetched local refs only: the footer never fetches or contacts a remote. One bounded Git status command provides all the data, with a one-second per-working-directory cache and shared in-flight requests across sessions. It refreshes periodically and around turns, bash commands, and compaction events.
 
 Install it for one project from a checkout of this repository. Use a symlink so the installed extension stays in sync with the example source:
 
