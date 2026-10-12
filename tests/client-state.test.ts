@@ -142,6 +142,19 @@ describe("messages", () => {
     expect(store.getSnapshot()[2].tool).toMatchObject({ name: "read", paths: ["/repo/a.ts"], isError: false });
   });
 
+  it("shows a prompt delivered from another client at once, once", async () => {
+    let persisted: unknown[] = [];
+    const controller = createMessagesController({ load: async () => persisted, cwdOf: () => "" });
+    const store = controller.get("s");
+    await store.refresh();
+    controller.applyEvent({ type: "user/message", sessionId: "s", text: "from my phone" });
+    controller.applyEvent({ type: "user/message", sessionId: "s", text: "from my phone" });
+    expect(store.getSnapshot().map((m) => [m.role, m.text])).toEqual([["user", "from my phone"]]);
+    persisted = [{ role: "user", text: "from my phone", entryId: "u" }];
+    await store.refresh();
+    expect(store.getSnapshot().map((m) => m.id)).toEqual(["u"]);
+  });
+
   it("shows an optimistic prompt until the transcript echoes it", async () => {
     let persisted: unknown[] = [];
     const controller = createMessagesController({ load: async () => persisted, cwdOf: () => "" });

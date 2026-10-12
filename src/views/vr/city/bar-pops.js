@@ -30,8 +30,9 @@ function drawPreview(ctx, p) {
   p.drawn = {sid: id, state: k, text: w.lines.join(' '), chars: w.shown, total: w.total, lines: w.lines.length, cut: w.cut};
   // Two actions along the bottom: open (the main one), and fly to its place in the city.
   const by = H - 52;
-  for (const [i, b] of [{id: 'pv:open', label: 'Open', ic: 'chevron-right', click: () => UIB.choose(id)}, {id: 'pv:fly', label: 'Fly to', ic: 'locate-fixed', click: () => UIB.flyToSession(id)}].entries()) {
-    const x = W - 32 - (2 - i) * 170 + (i ? 10 : 0), hov = p.isHover(b.id);
+  const acts = [{id: 'pv:open', label: 'Open', ic: 'chevron-right', click: () => UIB.choose(id)}, {id: 'pv:beside', label: 'Beside', ic: 'columns-2', click: () => UIB.beside?.(id)}, {id: 'pv:fly', label: 'Fly to', ic: 'locate-fixed', click: () => UIB.flyToSession(id)}];
+  for (const [i, b] of acts.entries()) {
+    const x = W - 32 - (acts.length - i) * 170 + i * 10 - 20, hov = p.isHover(b.id);
     fillRR(ctx, x, by - 22, 160, 44, 22, hov ? '#2a2a2a' : '#181818', i === 0 ? 'rgba(226,177,95,0.7)' : '#333', 2);
     icon(ctx, b.ic, x + 26, by, 22, C.accent, 2.6);
     text(ctx, b.label, x + 46, by + 1, {size: 22, weight: 700});

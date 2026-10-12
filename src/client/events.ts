@@ -99,6 +99,12 @@ export function createEventTranslator(options: { cwdOf?: (sessionId: string) => 
         return [{ type: "assistant/delta", sessionId, channel, delta: str(delta.delta), ...(contentIndex === undefined ? {} : { contentIndex }) }];
       }
       case "message_end": {
+        const message = isRecord(event.message) && isRecord(event.message.message) ? event.message.message : event.message;
+        if (isRecord(message) && str(message.role) === "user") {
+          const content = message.content;
+          const text = typeof content === "string" ? content : Array.isArray(content) ? content.map((part) => (isRecord(part) && part.type === "text" ? str(part.text) : "")).join("\n") : str(message.text);
+          return text ? [{ type: "user/message", sessionId, text }] : [];
+        }
         const error = assistantError(event.message);
         const run = runs.get(sessionId) || { aborted: false };
         if (error) runs.set(sessionId, { ...run, error });

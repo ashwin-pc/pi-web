@@ -45,7 +45,8 @@ test.describe("VR view", () => {
     const files = await page.evaluate(() => (window as VrWindow).__vrCity.cityFiles());
     expect(files.files).toBeGreaterThan(50);
     // Without a headset, Enter VR explains itself and the desktop preview stays usable.
-    await expect(page.locator("#xrMsg")).toContainText(/headset|WebXR|HTTPS/);
+    await expect(page.locator("#enterVR")).toBeDisabled();
+    await expect(page.locator("#enterVR")).toHaveAttribute("title", /immersive-vr|WebXR|secure context/);
   });
 
   test("opening a session from the bar shows its messages in the reader", async ({ page }) => {

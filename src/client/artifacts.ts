@@ -52,7 +52,7 @@ export function artifactUrl(sessionId: string, path: string) {
 const LINK = /!?\[([^\]]*)\]\(\s*<?([^)\s>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 const BARE = /(?:^|[\s(])((?:https?:\/\/[^\s/]+)?\/api\/(?:session-)?artifacts\/[^\s)"'<>]+)/g;
 
-/** Artifacts in a transcript, in first-seen order, with the turn (0-based user turn) that produced or showed each. Pure; tested. */
+/** Artifacts in a transcript (linked or embedded in any message, or written by a tool), in first-seen order, with the turn (0-based user turn) that produced or showed each. Pure; tested. */
 export function artifactsInTranscript(sessionId: string, messages: readonly ClientMessage[], cwd = ""): ClientArtifact[] {
   const found = new Map<string, ClientArtifact>();
   let turn = -1;
@@ -67,7 +67,8 @@ export function artifactsInTranscript(sessionId: string, messages: readonly Clie
   const sameOriginPath = (reference: string) => { try { return new URL(reference, "http://x").pathname; } catch { return undefined; } };
   for (const message of messages) {
     if (message.role === "user") turn++;
-    if (message.role === "assistant" || message.role === "tool" || message.role === "system") {
+    // Every message counts, prompts included: an artifact you link in the chat is part of the session.
+    {
       for (const match of message.text.matchAll(LINK)) add(artifactPathOf(match[2], cwd), match[1], "linked", sameOriginPath(match[2]));
       for (const match of message.text.matchAll(BARE)) add(artifactPathOf(match[1], cwd), "", "linked", sameOriginPath(match[1]));
     }

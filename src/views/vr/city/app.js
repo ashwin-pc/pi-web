@@ -12,7 +12,10 @@ import {Bar, UIB, PAGE, pages} from './bar.js';
 import {BarPops} from './bar-pops.js';
 import {PanelBatch} from './panel-batch.js';
 import {readers, sets, setFor, VIEW_PX} from './reader.js';
-import {A, world, uiRoot, renderer, scene, camera, nowMs, animMs, clamp, easeOut, applyStatus, READER_POS, RH, DEG} from './core.js';
+import {A, world, uiRoot, renderer, scene, camera, nowMs, animMs, clamp, easeOut, applyStatus, READER_POS, RH, DEG, FOCUS} from './core.js';
+import {restPos, setAnchor, faceRoom, context} from './focus.js';
+import {rail} from './artifacts.js';
+import {head} from './input.js';
 
 const UI = V.UI;
 export const city = new City({scene, parent: uiRoot});
@@ -29,15 +32,16 @@ export const composer = new Panel('composer', {w: V.COMPOSER.w, h: V.COMPOSER.h,
 world.add(composer.mesh);
 export const nav = new Panel('nav', {w: V.NAV.w, h: V.NAV.h, ppm: V.NAV.ppm, draw: V.drawNav, renderOrder: 5});
 world.add(nav.mesh);
-export const sideBatch = new PanelBatch([nav, composer]);
+export const sideBatch = new PanelBatch([nav, composer, context, rail]); // round 3: the cockpit's side columns too
 scene.add(sideBatch.mesh);
 export const hint = {invalidate() { for (const r of readers) r.header.invalidate(); nav.invalidate(); bar.invalidate(); }};
 export const dock = {invalidate() { bar.invalidate(); }};
 
 // ------------------------------------------------------------------ reader poses (open, close, switch)
 const tmp = new THREE.Vector3();
-const restPose = () => ({pos: READER_POS.clone(), scale: 1, alpha: 1});
-function poseNowOf(r) { return r.pose ? {pos: r.g.position.clone(), scale: r.g.scale.x, alpha: r.alpha} : {pos: READER_POS.clone(), scale: 1, alpha: 0}; }
+// Round 3: the rest pose is the focus panel's (focus.js): 1.9 m away at FOCUS.S, just below where you looked.
+const restPose = () => ({pos: restPos(), scale: FOCUS.S, alpha: 1});
+function poseNowOf(r) { return r.pose ? {pos: r.g.position.clone(), scale: r.g.scale.x, alpha: r.alpha} : {pos: restPos(), scale: FOCUS.S, alpha: 0}; }
 function animate(r, to, dur = 260) {
   const from = poseNowOf(r);
   if (S.reduceMotion) { r.pose = {from: {...to, alpha: to.alpha > 0 ? 0 : from.alpha}, to, t0: animMs(), dur: 150}; return; }
@@ -53,6 +57,7 @@ export function tickReaders() {
     const u = clamp((animMs() - t0) / dur, 0, 1), e = easeOut(u);
     r.g.position.lerpVectors(from.pos, to.pos, e);
     r.g.scale.setScalar(from.scale + (to.scale - from.scale) * e);
+    faceRoom(r.g);
     const a = from.alpha + (to.alpha - from.alpha) * (S.reduceMotion ? u : e);
     r.setAlpha(a);
     if (r === A.active && u < 1) { panelLog.push({t: Math.round(animMs()), x: +r.g.position.x.toFixed(4), s: +r.g.scale.x.toFixed(4), a: +a.toFixed(3)}); if (panelLog.length > 400) panelLog.shift(); }
@@ -65,6 +70,7 @@ export function tickReaders() {
 function faceHead() {
   const yaw = A.headYaw ?? 0;
   world.rotation.set(0, yaw, 0); world.updateMatrixWorld(true);
+  setAnchor(head.pos, (head.pitch || 0) / DEG); // the cockpit (and any layout) is placed around this gaze
 }
 
 // ------------------------------------------------------------------ selection, opening, switching
@@ -85,16 +91,18 @@ function makeCurrent(id) {
   switchLog.push({t: Math.round(nowMs()), from: prev.id, to: id, nav: N.snapshot()}); if (switchLog.length > 200) switchLog.shift();
   return prevReader;
 }
+/** Round 3: make a session current without moving any panel (multi layouts swap tiles themselves). */
+export function focusQuiet(id) { if (id === S.currentId) return; makeCurrent(id); for (const r of readers) if (r.pose) r.pose.to.alpha = 0; city.retarget(); hint.invalidate(); }
 export function openReader(id = S.selectedId) {
   if (!id) return;
   if (!S.reading) faceHead();
   const fromAnchor = avatarAnchor(id);
-  if (id !== S.currentId) { const prevReader = makeCurrent(id); if (prevReader && S.reading) animate(prevReader, {pos: READER_POS.clone(), scale: 1, alpha: 0}, 180); }
+  if (id !== S.currentId) { const prevReader = makeCurrent(id); if (prevReader && S.reading) animate(prevReader, {pos: restPos(), scale: FOCUS.S, alpha: 0}, 180); }
   else if (A.active.sid !== id) A.active.setSession(id);
   else if (!S.reading) { const set = sets.get(id); if (set?.stale) A.active.setSession(id); }
   S.selectedId = id;
   const r = A.active;
-  if (!S.reading) { r.g.position.copy(fromAnchor); r.g.scale.setScalar(0.18); r.pose = {from: {pos: fromAnchor, scale: 0.18, alpha: 0}, to: restPose(), t0: animMs(), dur: S.reduceMotion ? 150 : 280}; if (S.reduceMotion) r.pose.from = {pos: READER_POS.clone(), scale: 1, alpha: 0}; }
+  if (!S.reading) { r.g.position.copy(fromAnchor); r.g.scale.setScalar(0.18); r.pose = {from: {pos: fromAnchor, scale: 0.18, alpha: 0}, to: restPose(), t0: animMs(), dur: S.reduceMotion ? 150 : 280}; if (S.reduceMotion) r.pose.from = {pos: restPos(), scale: FOCUS.S, alpha: 0}; }
   else animate(r, restPose(), 260);
   S.reading = true;
   city.retarget(); hint.invalidate(); composer.invalidate();
@@ -102,6 +110,7 @@ export function openReader(id = S.selectedId) {
 }
 export function closeReader() {
   if (!S.reading) return;
+  A.r3?.closeAll();
   const r = A.active;
   get(r.sid).savedScroll = r.dest;
   S.reading = false;
@@ -112,6 +121,7 @@ export function closeReader() {
 /** One flick = one session, in the bar's pinned order. From the city view it opens the panel on that session. */
 export function switchBy(dir) {
   if (!dir || !S.pinned.length) return;
+  if (A.r3?.multi()) { A.r3.switchBy(dir); return; } // round 3: a multi layout replaces the focused tile's session
   S.order = [...S.pinned];
   const base = S.pinned.indexOf(S.currentId);
   const id = S.pinned[mod((base < 0 ? 0 : base) + dir, S.pinned.length)];
@@ -122,21 +132,24 @@ function switchTo(id, dir = 1) {
   const prevReader = makeCurrent(id);
   if (!prevReader) return;
   const off = 0.32 * Math.sign(dir || 1);
-  animate(prevReader, {pos: READER_POS.clone().add(tmp.set(-off, 0, 0)), scale: 1, alpha: 0}, 240);
+  const side = new THREE.Vector3(1, 0, 0).applyQuaternion(prevReader.g.quaternion); // the panel's own sideways
+  animate(prevReader, {pos: restPos().addScaledVector(side, -off), scale: FOCUS.S, alpha: 0}, 240);
   const r = A.active;
-  r.g.position.copy(READER_POS).add(tmp.set(off, 0, 0)); r.g.scale.setScalar(1);
-  r.pose = {from: {pos: r.g.position.clone(), scale: 1, alpha: 0}, to: restPose(), t0: animMs(), dur: 260};
-  if (S.reduceMotion) { r.pose = {from: {pos: READER_POS.clone(), scale: 1, alpha: 0}, to: restPose(), t0: animMs(), dur: 150}; prevReader.pose = {from: {pos: READER_POS.clone(), scale: 1, alpha: 1}, to: {pos: READER_POS.clone(), scale: 1, alpha: 0}, t0: animMs(), dur: 150}; }
+  r.g.position.copy(restPos()).addScaledVector(side, off); r.g.scale.setScalar(FOCUS.S);
+  r.pose = {from: {pos: r.g.position.clone(), scale: FOCUS.S, alpha: 0}, to: restPose(), t0: animMs(), dur: 260};
+  if (S.reduceMotion) { r.pose = {from: {pos: restPos(), scale: FOCUS.S, alpha: 0}, to: restPose(), t0: animMs(), dur: 150}; prevReader.pose = {from: {pos: restPos(), scale: FOCUS.S, alpha: 1}, to: {pos: restPos(), scale: FOCUS.S, alpha: 0}, t0: animMs(), dur: 150}; }
   city.retarget(); hint.invalidate();
   prefetchAround(id);
 }
 /** Pick a specific session: the city view opens it; while reading it switches to it. */
 export function choose(id) {
   if (!id || !get(id)) return;
+  if (A.r3?.multi()) { const i = A.r3.indexOf(id); if (i > 0) A.r3.refocus(i); else if (i < 0) A.r3.showInFocused(id); return; } // shown: refocus it; else it replaces the focused tile
   if (S.reading) { if (id !== S.currentId) { const d = S.pinned.indexOf(id) - S.pinned.indexOf(S.currentId); switchTo(id, d >= 0 ? 1 : -1); } return; }
   openReader(id);
 }
 UI.needsYou = () => {
+  if (A.r3?.multi()) return A.r3.needsYou(); // round 3: highlight, never rearrange
   const s = nextNeedingYou();
   if (!s) { hint.invalidate(); return null; }
   if (S.reading) switchTo(s.id, 1); else openReader(s.id);
@@ -177,7 +190,7 @@ export function setTable(onT) {
 export const isTable = () => table && N.nav.scale > 5;
 Object.assign(UIB, {choose, home: goHome, flyToSession, toggleMore: () => { bar.moreOpen = !bar.moreOpen; bar.invalidate(); }, setReduceMotion: (v) => UI.setReduceMotion(v),
   setVignette: (v) => { S.vignette = v; }, toggleTable: () => setTable(!isTable()), isTable, exit: () => host.exit(), page: () => bar.page,
-  start: () => bar.start, turnPage: (d) => bar.scroll(d * PAGE)});
+  start: () => bar.start, turnPage: (d) => bar.scroll(d * PAGE), beside: (id) => A.r3?.openBeside(id)});
 Object.assign(A, {flyToSession, flyToPath, goHome, setTable});
 UI.goHome = goHome; UI.flyCurrent = () => flyToSession(S.currentId);
 

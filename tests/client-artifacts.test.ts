@@ -23,13 +23,14 @@ describe("artifacts", () => {
     const messages: ClientMessage[] = [
       { id: "u0", role: "user", text: "Draw it" },
       { id: "a0", role: "assistant", text: "Here: ![chart](/api/artifacts/chart.png) and [the report](/api/session-artifacts/s1/report.md).", toolCalls: [{ name: "write", args: {}, paths: ["/repo/.pi/web/artifacts/part.stl"] }] },
-      { id: "u1", role: "user", text: "Again" },
+      { id: "u1", role: "user", text: "Again, and compare [the old one](/api/artifacts/old.png)" },
       { id: "a1", role: "assistant", text: "Updated /api/artifacts/chart.png and see /api/artifacts/app/index.html" },
     ];
     expect(artifactsInTranscript("s1", messages, "/repo")).toEqual([
       { id: "chart.png", kind: "image", name: "chart", path: "chart.png", url: "/api/artifacts/chart.png", turn: 0, origin: "linked" },
       { id: "report.md", kind: "markdown", name: "the report", path: "report.md", url: "/api/session-artifacts/s1/report.md", turn: 0, origin: "linked" },
       { id: "part.stl", kind: "model", name: "part.stl", path: "part.stl", url: "/api/session-artifacts/s1/part.stl", turn: 0, origin: "written" },
+      { id: "old.png", kind: "image", name: "the old one", path: "old.png", url: "/api/artifacts/old.png", turn: 1, origin: "linked" },
       { id: "app/index.html", kind: "html", name: "index.html", path: "app/index.html", url: "/api/artifacts/app/index.html", turn: 1, origin: "linked" },
     ]);
   });

@@ -14,7 +14,7 @@ export type ArtifactContent =
 const MAX_TEXT = 200_000;
 const MAX_MODEL = 25 * 1024 * 1024;
 
-export async function loadArtifactContent(client: PiWebClient, artifact: ClientArtifact, signal?: AbortSignal): Promise<ArtifactContent> {
+export async function loadArtifactContent(client: PiWebClient, artifact: Pick<ClientArtifact, "kind" | "url" | "path">, signal?: AbortSignal): Promise<ArtifactContent> {
   if (artifact.kind === "html") return { kind: "unavailable", reason: "HTML can't be drawn in VR. Open it in 2D." };
   if (artifact.kind === "audio" || artifact.kind === "other") return { kind: "unavailable", reason: "No preview for this kind. Open it in 2D." };
   const response = await client.files.fetch(artifact.url, { signal });

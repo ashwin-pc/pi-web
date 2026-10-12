@@ -14,6 +14,8 @@ import {mouse, pointers, updateHovers, updateHead, head, pressMove, panPoints} f
 import {updateDeskCamera, updateMouseRay, deskFlight} from './desktop.js';
 import {xrFrame, updateXRVisuals, xrInput} from './xr.js';
 import './hooks.js';
+import {r3} from './r3.js'; // round 3: focus cockpit, layouts, artifacts
+import './r3-hooks.js';
 
 A.frames = 0; A.fpsWin = []; A.world = world; A.pops = pops;
 avatarsReady.then(() => { bar.invalidate(); for (const r of readers) r.header.invalidate(); city.cards.sig.clear(); });
@@ -37,13 +39,15 @@ renderer.setAnimationLoop((time, frame) => {
   // Flight: only your own input moves you (stick, grips, pinch-drag, keys), or an explicit fly-to / Home.
   if (frame) { if (xrInput.fwd || xrInput.strafe || xrInput.climb) N.fly(head.yaw, xrInput.fwd, xrInput.strafe, xrInput.climb, dt, head.local); }
   else deskFlight(dt);
-  N.grab([...xrInput.grabs, ...panPoints()].slice(0, 2));
+  N.grab(r3.filterGrabs([...xrInput.grabs, ...panPoints()].slice(0, 2)));
   const blink = N.tick();
   N.apply(city.root);
+  r3.afterNav(dt);
   comfort.update(blink);
   for (const r of readers) r.tick(dt);
   tickReaders();
   for (const r of readers) r.updateClip();
+  r3.frame(dt);
   followFrame(dt);
   updateHovers();
   for (const p of pointers) if (p !== mouse && p.press) pressMove(p);

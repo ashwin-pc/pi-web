@@ -217,10 +217,14 @@ const btn = document.getElementById('enterVR');
 const msgEl = document.getElementById('xrMsg');
 export const inIframe = (() => { try { return window.self !== window.top; } catch { return true; } })();
 function fullPageUrl() { return location.href.split('#')[0]; }
-function showMsg(html) {
+let msgTimer = 0;
+/** autoHideMs: a note that only explains the desktop preview fades after a while (Enter VR's tooltip keeps the reason). */
+function showMsg(html, autoHideMs = 0) {
+  clearTimeout(msgTimer);
   msgEl.innerHTML = html ? `<button class="close" type="button" aria-label="Dismiss">×</button>${html}` : '';
   msgEl.hidden = !html;
   msgEl.querySelector('.close')?.addEventListener('click', () => { msgEl.hidden = true; });
+  if (html && autoHideMs) msgTimer = setTimeout(() => { msgEl.hidden = true; }, autoHideMs);
 }
 function setStatus() { btn.textContent = xrSession ? 'Exit VR' : 'Enter VR'; btn.disabled = !xrStatus.supported && !xrSession; btn.title = xrStatus.supported || xrSession ? '' : xrStatus.summary; }
 /** Why Enter VR is unavailable, and the desktop preview message. WebXR needs a secure context (HTTPS or localhost) and
@@ -248,7 +252,7 @@ async function detectXR() {
   try { xrStatus.supported = await navigator.xr.isSessionSupported('immersive-vr'); } catch (err) { xrStatus.supported = false; xrStatus.error = String(err?.message || err); }
   xrStatus.summary = xrStatus.supported ? 'immersive-vr supported' : 'no immersive-vr device';
   if (xrStatus.supported) { showMsg(''); statusEl.textContent = 'Headset ready'; }
-  else showMsg('<b>No VR headset detected.</b> This is the desktop preview. On Quest or Vision Pro, open this page and select Enter VR.');
+  else showMsg('<b>No VR headset detected.</b> This is the desktop preview. On Quest or Vision Pro, open this page and select Enter VR.', 8000);
   setStatus();
 }
 btn.addEventListener('click', () => { if (xrStatus.supported || xrSession) enterVR(); });

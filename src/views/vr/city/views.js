@@ -24,7 +24,9 @@ export function wrapLines(ctx, str, maxW, maxLines) {
 }
 
 // ---------------------------------------------------------------- reader header (pi-web's status bar and runtime status)
-export const READER = {w: 1.32, headerH: 0.13, streamH: 0.63, gutter: 0.19, ppm: 1100};
+// Round 3: the focused session gets the room. In metres at the round 1 scale (1.4 m); the focus panel shows it 1.9 m
+// away at FOCUS.S (core.js), so text stays about 1.2° while the panel is 55° × 44° (round 2: 50° × 30°).
+export const READER = {w: 1.56, headerH: 0.13, streamH: 1.06, gutter: 0.19, ppm: 1100};
 /** pi-web's status bar: the title in bold on the dark bar, the runtime status ("running" in gold, with the tool) and
  * the session's note below it, the context meter as a thin track along the bottom edge, and the City and Fly-to buttons. */
 export function drawHeader(ctx, p) {

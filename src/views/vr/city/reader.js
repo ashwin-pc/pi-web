@@ -54,7 +54,10 @@ export class TurnSet {
     const lay = layoutTurn(scratch, s, t, {index: i, expanded: this.expanded, newMark: mark});
     const h = Math.min(lay.h, 4096);
     const sid = this.sid;
-    const panel = new Panel(`turn:${sid}:${i}`, {w: TURN_W / PPM, h: h / PPM, ppm: PPM, canvasW: TURN_W, canvasH: h, anchorX: 0, anchorY: 1, renderOrder: 3, hoverRedraw: false, mipmaps: true,
+    // pi-web: a turn that is still streaming is rebuilt on every update; building its mipmaps each time is the costly
+    // part (as for the round 3 tiles), so only settled turns get them.
+    let live = false; for (let j = t.start; j < t.end; j++) if (s.messages[j].streaming || s.messages[j].status === 'running') live = true;
+    const panel = new Panel(`turn:${sid}:${i}`, {w: TURN_W / PPM, h: h / PPM, ppm: PPM, canvasW: TURN_W, canvasH: h, anchorX: 0, anchorY: 1, renderOrder: 3, hoverRedraw: false, mipmaps: !live,
       draw: (ctx, p) => { drawTurn(ctx, lay, TURN_W); for (const r of lay.regions) p.region(`chip:${sid}:${r.msg}`, 0, r.y, TURN_W, r.h, {chip: r.msg, click: () => V.UI.toggleChip(sid, r.msg)}); }});
     panel.isTurn = true;
     panel.mat.depthWrite = false;

@@ -4,7 +4,7 @@
 import {C, MONO, SANS, font, fillRR, icon, text, ellipsize, parseHtml, layoutRuns, drawRuns, codeTokens} from './draw.js';
 
 export const PPM = 1100; // canvas px per metre on the reading panel
-export const TURN_W = 1240; // turn canvas width (px) = 1.127 m; text column ≈ 1144 px ≈ 65-70 characters at 35 px
+export const TURN_W = 1500; // turn canvas width (px) = 1.36 m (round 3: the focus panel is wider); text column ≈ 1404 px ≈ 80 characters at 35 px
 export const BODY = 35; // body text px: 31.8 mm at 1.4 m = 1.3° (22.7 px-at-1 m, where 1 px at 1 m = 1 mm)
 const M = 12; // block margin inside the canvas
 const PAD = 36; // inner padding of a turn block
@@ -38,9 +38,10 @@ export function chipText(m) { const l = chipLabel(m); return l.joined ? `${l.nam
 
 /**
  * Lay out one turn. Returns {h, items: [{y, h, draw(c, y)}], regions: [{id, msg, y, h}], replyY, markY}.
- * opts: {index, expanded: Set<msgIndex>, newMark: msgIndex|null}
+ * opts: {index, expanded: Set<msgIndex>, newMark: msgIndex|null, width?: canvas px (default TURN_W; live tiles are narrower)}
  */
 export function layoutTurn(ctx, s, turn, opts) {
+  const TW = opts.width || TURN_W, INNER = TW - 2 * M - 2 * PAD; // eslint-disable-line no-shadow
   const items = [], regions = [];
   let y = 0, replyY = null, markY = null;
   const add = (h, draw) => { items.push({y, h, draw}); y += h; };
@@ -51,7 +52,7 @@ export function layoutTurn(ctx, s, turn, opts) {
   const head = first.type === 'user' ? `Turn ${opts.index + 1}` : 'Start';
   gap(14);
   const markAtStart = opts.newMark === turn.start && first.type === 'user';
-  if (markAtStart) { markY = y; add(46, (c, top) => drawMark(c, top)); gap(4); }
+  if (markAtStart) { markY = y; add(46, (c, top) => drawMark(c, top, TW)); gap(4); }
   add(44, (c, top) => {
     const w = text(c, head.toUpperCase(), M + PAD, top + 22, {size: 20, weight: 800, color: '#8a7a5c'});
     text(c, first.time ? `·  ${first.time}` : '', M + PAD + w + 14, top + 22, {size: 20, color: '#5a5a5a'});
@@ -63,7 +64,7 @@ export function layoutTurn(ctx, s, turn, opts) {
     if (opts.newMark === i && !markAtStart) {
       gap(prevKind ? 6 : 0);
       markY = y;
-      add(46, (c, top) => drawMark(c, top));
+      add(46, (c, top) => drawMark(c, top, TW));
       gap(12);
     }
     const kind = m.type === 'tool' || m.type === 'edit' || m.type === 'thinking' ? 'chip' : m.type;
@@ -127,7 +128,7 @@ export function layoutTurn(ctx, s, turn, opts) {
     } else if (kind === 'chip') {
       if (prevKind && prevKind !== 'chip') gap(4);
       const open = opts.expanded?.has(i);
-      const body = open ? expandedBody(ctx, m) : null;
+      const body = open ? expandedBody(ctx, m, INNER) : null;
       const h = CHIP_H + (body ? body.h + 14 : 0);
       const lab = chipLabel(m);
       const running = m.status === 'running';
@@ -136,7 +137,7 @@ export function layoutTurn(ctx, s, turn, opts) {
       add(h, (c, top) => {
         // pi-web's collapsed tool card: full width, a top border, the state's fill with the woven texture, a status
         // icon, the tool name in bold mono, its one-line summary, a gold "running" pill, and the gold chevron.
-        const x = M + 4, w = TURN_W - 2 * M - 8, err = m.status === 'error';
+        const x = M + 4, w = TW - 2 * M - 8, err = m.status === 'error';
         const fill = think ? '#171b25' : running ? '#14191f' : err ? '#1f1116' : '#15201e';
         c.fillStyle = fill; c.fillRect(x, top, w, h);
         weave(c, x, top, w, h);
@@ -184,9 +185,9 @@ function drawCaret(c, lay, x0, top) {
   const f = L.frags[L.frags.length - 1], x = x0 + (f ? f.x + f.w : 0) + 6, y = top + (lay.lines.length - 1) * lay.lineH;
   c.fillStyle = '#e2b15f'; c.fillRect(x, y + lay.lineH * 0.18, 5, lay.lineH * 0.64);
 }
-function drawMark(c, top) {
+function drawMark(c, top, TW = TURN_W) {
   const cy = top + 23;
-  c.fillStyle = C.accent; c.globalAlpha = 0.8; c.fillRect(M + 8, cy - 1.5, TURN_W - 2 * M - 16, 3); c.globalAlpha = 1;
+  c.fillStyle = C.accent; c.globalAlpha = 0.8; c.fillRect(M + 8, cy - 1.5, TW - 2 * M - 16, 3); c.globalAlpha = 1;
   const label = 'New since you looked';
   c.font = font(22, 700);
   const lw = c.measureText(label).width + 30;
@@ -194,7 +195,7 @@ function drawMark(c, top) {
   text(c, label, M + PAD - 6 + 15, cy + 1, {size: 22, weight: 700, color: '#ffd58a'});
 }
 
-function expandedBody(ctx, m) {
+function expandedBody(ctx, m, INNER = TURN_W - 2 * M - 2 * PAD) { // eslint-disable-line no-shadow
   if (m.type === 'thinking') {
     const lay = layoutRuns(ctx, [{text: m.text, i: true}], INNER - 40, 29, 400, 44);
     return {h: lay.height + 10, draw: (c, x, y) => drawRuns(c, lay, x, y, 29, C.muted)};

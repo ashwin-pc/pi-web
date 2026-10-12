@@ -113,6 +113,8 @@ export function applyStatus(m, kind, t, strength = 1) {
 export const EYE = 1.6;
 export const R = V.READER;
 export const RW = R.w, RH = R.headerH + R.streamH;
-/** The reading panel: 1.4 m away, raised above the far edge of the town so the town stays visible below it. */
-export const READER_POS = new THREE.Vector3(0, 1.7, -1.4);
+/** Round 3, the focus panel: FOCUS.D metres away, scaled by FOCUS.S (text 1.27° at 1.4 m becomes 1.2° at 1.9 m), its
+ * centre FOCUS.E degrees below where you looked when you opened it (see focus.js). READER_POS is the level default. */
+export const FOCUS = {D: 1.9, S: (1.9 / 1.4) * (1.2 / 1.27), E: -3};
+export const READER_POS = new THREE.Vector3(0, EYE + FOCUS.D * Math.sin(FOCUS.E * DEG), -FOCUS.D * Math.cos(FOCUS.E * DEG));
 export const TOP = RH / 2, STREAM_TOP = TOP - R.headerH, STREAM_BOT = -RH / 2;

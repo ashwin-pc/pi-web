@@ -23,6 +23,7 @@ function targets() {
   const list = [];
   for (const p of panels) if (p.interactive && inScene(p.mesh) && (p.isTurn ? p.mat.opacity > 0.5 : p.mat.opacity > 0.3 || p.batch)) list.push(p.mesh);
   for (const r of readers) if (r.alpha > 0.5) list.push(r.frame);
+  for (const m of A.extraTargets?.() || []) list.push(m); // round 3: the 3D model on its pedestal
   return list;
 }
 /** What a ray hits: panels in front win (the bar and its pop-ups first: they are nearest), then a live card or coin,
@@ -37,6 +38,7 @@ export function intersect(ptr) {
       if (h.object.material.uniforms.uOpacity.value < 0.5) continue;
       return {reader: readers.find((x) => x.frame === h.object), point: h.point, distance: h.distance, region: null};
     }
+    if (h.object.userData.hit) return {...h.object.userData.hit(h), point: h.point, distance: h.distance}; // round 3 objects
     const panel = h.object.userData.panel;
     if (!panel || !h.uv) continue;
     if (panel.isTurn) {
@@ -53,6 +55,8 @@ export function intersect(ptr) {
     return {panel, uv: h.uv.clone(), point: h.point, distance: h.distance, region: reg};
   }
   if (S.reading) return null; // while reading, the city ignores selects (a resting ray often lands there)
+  const mk = A.markers?.pick(ptr.ray); // round 3: an artifact marker on its building
+  if (mk) return {point: mk.point, distance: mk.distance, region: mk.region};
   const c = city.pick(ptr.ray);
   if (c?.session) return {card: c.session, point: ptr.ray.at(c.distance, new THREE.Vector3()), distance: c.distance, region: {id: `card:${c.session}`, session: c.session}};
   if (c?.label && ptr.kind === 'mouse' || c?.label && c.angle === 0) return {label: c.label, point: c.point, distance: c.distance, region: {id: c.label.id}};
@@ -128,6 +132,9 @@ export function pressStart(p) {
   const reg = p.hit?.region || null;
   const P0 = gesturePoint(p, new THREE.Vector3());
   p.press = {t0: nowMs(), reg, hit: p.hit, P0, last: P0.clone(), samples: [{t: nowMs(), y: 0}], mode: null, startScroll: A.active.scroll, right: head.right.clone()};
+  // Round 3: a region with a drag handler (a panel's grab bar or corner, an avatar pulled up out of the bar, the 3D
+  // model): the drag owns the press; a press that barely moves is still a click.
+  if (reg?.drag) { p.press.mode = 'drag'; p.press.dir0 = p.ray.direction.clone(); reg.drag.start?.(p); logInput(`${p.kind}:press`); return; }
   if (reg?.strip) { p.press.mode = 'strip'; p.press.reader = p.hit.panel.reader; p.press.y0 = stripF(p); }
   if (p.kind === 'mouse' && !p.hit) p.press.mode = 'look';
   if (p.kind === 'mouse' && p.hit?.label) p.press.mode = 'look-or-tap';
@@ -147,6 +154,7 @@ export function pressMove(p) {
   const pr = p.press;
   if (!pr || pr.mode === 'look' || pr.mode === 'done' || pr.mode === 'flicked' || pr.mode === 'pan') return;
   const r = A.active;
+  if (pr.mode === 'drag') { pr.moved = Math.max(pr.moved || 0, p.ray.direction.angleTo(pr.dir0) / DEG); pr.reg.drag.move?.(p, pr); return; }
   if (pr.mode === 'strip' || pr.mode === 'scrub') {
     const f = stripF(p);
     if (pr.mode === 'strip' && Math.abs(f - pr.y0) > 0.015) { pr.mode = 'scrub'; pr.reader.scrubbing = true; pr.reader.strip.invalidate(); }
@@ -185,6 +193,7 @@ export function pressEnd(p) {
   if (!pr) return;
   const r = A.active;
   if (pr.mode === 'pan') { logInput(`${p.kind}:pan-end`); return; }
+  if (pr.mode === 'drag') { const tapped = (pr.moved || 0) < 1.2; pr.reg.drag.end?.(p, pr, tapped); if (tapped && pr.reg.click) { pr.reg.click(); logInput(`${p.kind}:click:${pr.reg.id}`); } else logInput(`${p.kind}:drag:${pr.reg.id}`); return; }
   if (pr.mode === 'strip') { const f = stripF({...p, press: pr}); if (pr.reader === r && r.set?.turns.length) r.to(r.posAtF(f, true)); logInput(`${p.kind}:strip-jump`); return; }
   if (pr.mode === 'scrub') { pr.reader.scrubbing = false; pr.reader.strip.invalidate(); return; }
   if (pr.mode === 'scroll') {

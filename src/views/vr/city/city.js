@@ -42,6 +42,18 @@ export class City {
     this.retarget(true);
   }
 
+  /** pi-web: a thread (avatar → beam, file → building) that never crosses a panel. The lines draw on top of
+   * everything, so the pieces whose midpoint a panel covers (in the eye's tangent space) are left out. */
+  threadSeg(a, b, alpha, o) {
+    const blockers = o.threadBlockers || [];
+    if (!blockers.length) { this.lines.seg(a, b, alpha); return; }
+    const inv = o.camQ.clone().invert(), n = 32, p = new THREE.Vector3(), q = new THREE.Vector3(), m = new THREE.Vector3();
+    const covered = (v) => { m.copy(v).sub(o.eye).applyQuaternion(inv); if (m.z > -0.05) return false; const tx = m.x / -m.z, ty = m.y / -m.z; return blockers.some((r) => Math.abs(tx - r.cx) <= r.w / 2 && Math.abs(ty - r.cy) <= r.h / 2); };
+    for (let i = 0; i < n; i++) {
+      p.lerpVectors(a, b, i / n); q.lerpVectors(a, b, (i + 1) / n);
+      if (!covered(p.clone().add(q).multiplyScalar(0.5))) this.lines.seg(p, q, alpha);
+    }
+  }
   /** Re-read the sessions: beam targets (sliding 250 ms along the streets to a new file), heat, flares. */
   retarget(instant = false) {
     const now = Date.now(), t = performance.now();
@@ -153,6 +165,9 @@ export class City {
     }
     // A fresh edit flares the whole building for a moment.
     if (this.flares) for (const [k, t0] of this.flares) { const u = (performance.now() - t0) / 900; if (u > 1) { this.flares.delete(k); continue; } B.flare[k] = Math.max(B.flare[k], 1 - u * 0.5); touched.push(k); }
+    // Round 3: a file picked in the focus panel's context column (or an artifact's file) lights up its building.
+    const fg = o.fileThread && this.L.byFile.get(o.fileThread.path);
+    if (fg) { B.hi[fg.idx] = 1; touched.push(fg.idx); }
     B.touch([...new Set([...this.touchedFx, ...touched])]);
     this.touchedFx = touched;
     this.beamFx.set(beams, decals);
@@ -163,7 +178,8 @@ export class City {
       const a = this.beamWorld(id, 70, new THREE.Vector3());
       for (const w of workersOf(get(id))) { const c = this.beamWorld(w, 45, new THREE.Vector3()); if (c) this.lines.arc(a, c, 40 / scale, 20, 0.75); }
     }
-    if (o.thread) { const c = this.beamWorld(o.thread.sid, 0, new THREE.Vector3()) || this.root.localToWorld(new THREE.Vector3(...Object.values(this.placeOf(o.thread.sid)).slice(0, 3))); this.lines.seg(o.thread.from, c, 0.9); }
+    if (o.thread) { const c = this.beamWorld(o.thread.sid, 0, new THREE.Vector3()) || this.root.localToWorld(new THREE.Vector3(...Object.values(this.placeOf(o.thread.sid)).slice(0, 3))); this.threadSeg(o.thread.from, c, 0.9, o); }
+    if (fg) this.threadSeg(o.fileThread.from, this.root.localToWorld(new THREE.Vector3(fg.x, fg.base + fg.h, fg.z)), 0.9, o);
     this.lines.end();
     // Labels and cards: sized in degrees, at their referents, the bar and the reading panel as obstacles.
     if (this.frame % 3 === 1 || !this.cands) {

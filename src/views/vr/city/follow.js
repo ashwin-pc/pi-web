@@ -51,6 +51,7 @@ export function followFrame(dt) {
   const tNow = performance.now();
   if (!deskElev && tNow - lowAt > 300) { lowAt = tNow; contentLow = S.reading ? null : city.contentLow(renderer.xr.getCamera().cameras); }
   bar.pointed = !!A.barPointed;
+  bar.panelCap = renderer.xr.isPresenting && S.reading ? A.r3?.barCap(bar.yaw, bar.halfWidthDeg(), bar.halfHeightDeg()) ?? null : null; // round 3: the bar stays below every panel
   bar.update(head.local, head.yaw, dt, deskElev, head.pitch, deskElev || contentLow == null ? null : head.pitch / DEG + contentLow);
   // Pointing at an avatar for a moment highlights its beam and building, with a thread to it.
   const hv = A.hoverAvatar || null;
@@ -59,20 +60,9 @@ export function followFrame(dt) {
   A.highlight = lit;
   pops.update(lit);
   city.hover = lit;
-  // Composer and navigation columns ride with the active reading panel.
-  const r = A.active, ra = r.pose ? r.alpha : 0;
-  composer.mesh.visible = S.reading && ra > 0.02;
-  nav.mesh.visible = composer.mesh.visible;
-  const headW = world.worldToLocal(head.pos.clone());
-  for (const [p, dx, dy] of [[composer, COMPOSER_DX, COMPOSER_DY], [nav, NAV_DX, NAV_DY]]) {
-    if (!p.mesh.visible) continue;
-    const sc = r.g.scale.x;
-    p.mesh.position.copy(r.g.position).add(v.set(dx * sc, dy * sc, 0));
-    p.mesh.scale.setScalar(sc);
-    p.mesh.lookAt(world.localToWorld(headW.clone()));
-    p.mat.opacity = ra;
-  }
-  const obstacles = [...bar.obstacle(eye, camQ), readerObstacle(eye)].filter(Boolean);
+  // Round 3: the cockpit's columns, the tiles and the artifacts are placed by r3.js (before this, each frame).
+  const panelObstacles = (A.r3 ? A.r3.obstacles(eye, inv) : [readerObstacle(eye)]).filter(Boolean);
+  const obstacles = [...bar.obstacle(eye, camQ), ...panelObstacles].filter(Boolean);
   const from = lit ? bar.cellWorld(lit) : null;
-  city.update({dt, eye, camQ, bounds: viewBounds(), reading: S.reading, currentId: S.currentId, obstacles, navScale: N.nav.scale, thread: from && get(lit) ? {sid: lit, from} : null});
+  city.update({dt, eye, camQ, bounds: viewBounds(), reading: S.reading, currentId: S.currentId, obstacles, navScale: N.nav.scale, thread: from && get(lit) ? {sid: lit, from} : null, fileThread: A.r3?.fileThread(), threadBlockers: panelObstacles});
 }

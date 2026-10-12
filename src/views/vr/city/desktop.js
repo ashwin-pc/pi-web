@@ -9,10 +9,10 @@ import {VIEW_PX} from './reader.js';
 import {composer, switchBy, openReader, closeReader, goHome, setTable, isTable, city} from './app.js';
 import {mouse, raycaster, intersect, pressStart, pressMove, pressEnd, logInput, head} from './input.js';
 import * as N from './city-nav.js';
+import {relDir} from './focus.js';
 
 const UI = V.UI;
 export const desk = {yaw: 0, pitch: -34 * DEG, hfov: 90, lookYaw: 0, lookPitch: -34 * DEG, view: 'city', keys: new Set()};
-const READ_PITCH = -0.1;
 window.__desk = desk;
 export function fitCamera() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -27,8 +27,13 @@ fitCamera();
 export function updateDeskCamera(dt) {
   swipe.quiet += Math.min(50, dt * 1000);
   const k = S.reduceMotion ? 1 : 1 - Math.exp(-dt / 0.09);
-  const wantPitch = S.reading ? READ_PITCH : desk.lookPitch, wantYaw = S.reading ? A.world.rotation.y : desk.lookYaw;
+  // Round 3: while reading, look at the layout's centre (plus any drag-look offset; it resets when you close).
+  if (!S.reading) { desk.readYaw = 0; desk.readPitch = 0; }
+  const vc = S.reading ? relDir(A.r3?.viewCentre().yaw || 0, A.r3?.viewCentre().elev || 0) : null;
+  const wantPitch = S.reading ? Math.asin(vc.y) + (desk.readPitch || 0) : desk.lookPitch, wantYaw = S.reading ? A.world.rotation.y + Math.atan2(-vc.x, -vc.z) + (desk.readYaw || 0) : desk.lookYaw;
   desk.pitch += (wantPitch - desk.pitch) * k;
+  // Round 3: the cockpit is 81° wide; the desktop preview widens its view to 100° while panels are open.
+  const wantH = S.reading ? A.r3?.viewHfov() || 100 : 90; if (Math.abs(wantH - desk.hfov) > 0.05) { desk.hfov += (wantH - desk.hfov) * k; fitCamera(); }
   let dy = Math.atan2(Math.sin(wantYaw - desk.yaw), Math.cos(wantYaw - desk.yaw)); desk.yaw += dy * k;
   camera.position.set(0, EYE, 0); uiRoot.localToWorld(camera.position);
   camera.rotation.set(desk.pitch, desk.yaw, 0, 'YXZ');
@@ -65,6 +70,7 @@ el.addEventListener('pointermove', (e) => {
   if (pr?.mode === 'look' || pr?.mode === 'look-or-tap') {
     const L = pr.lookStart;
     if (Math.hypot(e.clientX - L.x, e.clientY - L.y) > 4) pr.moved = true;
+    if (pr.moved && S.reading) { desk.readYaw = L.ryaw - (e.clientX - L.x) * 0.0035; desk.readPitch = clamp(L.rpitch - (e.clientY - L.y) * 0.0035, -0.6, 0.6); el.style.cursor = 'grabbing'; return; } // round 3: look around the layout
     if (pr.moved) {
       desk.lookYaw = L.yaw - (e.clientX - L.x) * 0.0035;
       desk.lookPitch = clamp(L.pitch - (e.clientY - L.y) * 0.0035, -1.45, 0.5);
@@ -82,10 +88,12 @@ el.addEventListener('pointerdown', (e) => {
   if (renderer.xr.isPresenting) return;
   el.setPointerCapture?.(e.pointerId);
   updateMouseRay();
+  // Round 3: Shift+click on an avatar (or a live card) opens that session beside the focused one.
+  if (e.button === 0 && e.shiftKey) { const h = intersect(mouse), sid = h?.region?.session || h?.card; if (sid && A.r3) { A.r3.openBeside(sid); logInput('mouse:beside'); return; } }
   if (e.button === 2 || (e.button === 0 && e.shiftKey)) { const g = groundPoint(); if (g) { pan = g; logInput('mouse:pan'); } return; }
   if (e.button !== 0) return;
   pressStart(mouse);
-  if (mouse.press.mode === 'look' || mouse.press.mode === 'look-or-tap') mouse.press.lookStart = {x: e.clientX, y: e.clientY, yaw: desk.lookYaw, pitch: desk.lookPitch};
+  if (mouse.press.mode === 'look' || mouse.press.mode === 'look-or-tap') mouse.press.lookStart = {x: e.clientX, y: e.clientY, yaw: desk.lookYaw, pitch: desk.lookPitch, ryaw: desk.readYaw || 0, rpitch: desk.readPitch || 0};
 });
 el.addEventListener('pointerup', (e) => {
   if (pan) { pan = null; return; }
@@ -109,6 +117,7 @@ el.addEventListener('wheel', (e) => {
     return;
   }
   const over = intersect(mouse);
+  if (S.reading && A.r3?.wheel(over, dy)) return; // round 3: a tile's tail, or the 3D model's size
   if (S.reading && (over?.panel?.isTurn || over?.reader || over?.panel?.reader)) {
     const r = A.active;
     r.anim = null;
@@ -143,6 +152,9 @@ window.addEventListener('keydown', (e) => {
     n: () => UI.needsYou(), N: () => UI.needsYou(), ' ': () => UI.needsYou(),
     h: () => goHome(), H: () => goHome(), f: () => UI.flyCurrent(), F: () => UI.flyCurrent(),
     m: () => UI.setReduceMotion(!S.reduceMotion), v: () => { S.vignette = S.vignette === false; },
+    // Round 3: layouts (L cycles; 1-4 pick one), and B opens the next pinned session beside the focused one.
+    l: () => A.r3?.cycle(), L: () => A.r3?.cycle(), 1: () => A.r3?.setMode('focus'), 2: () => A.r3?.setMode('pair'), 3: () => A.r3?.setMode('triptych'), 4: () => A.r3?.setMode('wall'),
+    b: () => A.r3?.besideNext(), B: () => A.r3?.besideNext(),
   }[k];
   if (act) { e.preventDefault(); act(); logInput(`key:${k}`); }
 });

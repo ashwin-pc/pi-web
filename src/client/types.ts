@@ -76,6 +76,8 @@ export type MessagesStore = ReadableStore<readonly ClientMessage[]> & {
 /** Neutral event names, close to dsh's turn/*, assistant/* and tool/*. */
 export type ClientEvent =
   | { type: "turn/start"; sessionId: string; at?: string }
+  /** A prompt delivered to the session (from any client), before the transcript is reloaded. */
+  | { type: "user/message"; sessionId: string; text: string }
   | { type: "assistant/delta"; sessionId: string; channel: "text" | "thinking"; delta: string; contentIndex?: number }
   | { type: "tool/call"; sessionId: string; toolCallId: string; name: string; args: unknown; paths: string[]; at?: string }
   | { type: "tool/result"; sessionId: string; toolCallId: string; name: string; isError: boolean; paths: string[] }

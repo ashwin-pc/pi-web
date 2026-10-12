@@ -5,6 +5,7 @@ import "./vrView.css";
 import { createCityClient } from "./cityClient.js";
 import { installClient } from "./city/client.js";
 import { host } from "./city/host.js";
+import { loadArtifactContent } from "./artifactContent.js";
 import type { RootViewContext } from "../rootView.js";
 
 function chrome(el: HTMLElement, exitHref: string) {
@@ -13,7 +14,7 @@ function chrome(el: HTMLElement, exitHref: string) {
   top.id = "topBar";
   top.innerHTML = `
     <div class="vrTitle">pi-web · City <span class="tag">VR</span></div>
-    <div class="vrKeys"><b>WASD</b> fly · <b>Q E</b> down / up · drag: look · right-drag: pan · wheel: altitude · <b>← →</b> next session · <b>N</b> what needs me · <b>Esc</b> back to the city · <b>F</b> fly to it · <b>H</b> home · <b>T</b> tabletop · <b>M</b> reduce motion · <b>V</b> vignette</div>
+    <div class="vrKeys"><b>WASD</b> fly · <b>Q E</b> down / up · drag: look · right-drag: pan · wheel: altitude · <b>← →</b> next session · <b>N</b> what needs me · <b>Esc</b> back to the city · <b>F</b> fly to it · <b>H</b> home · <b>Shift</b>+click / <b>B</b> open beside · <b>L</b> / <b>1-4</b> layout · <b>T</b> tabletop · <b>M</b> reduce motion · <b>V</b> vignette</div>
     <div class="vrRow"><span id="xrStatus">Checking for a headset…</span><a class="vrBack" id="vrBack" href="${exitHref}">Back to chat</a><button id="enterVR" type="button" disabled>Enter VR</button></div>`;
   const message = document.createElement("div");
   message.className = "vrChrome";
@@ -38,6 +39,8 @@ export async function mountVrApp(el: HTMLElement, context: RootViewContext, prog
   installClient(cityClient);
   host.el = el;
   host.exit = context.exit;
+  host.loadArtifact = (artifact) => loadArtifactContent(context.client, artifact);
+  host.openIn2D = (artifact) => cityClient.actions.openIn2D(artifact.sessionId, { url: artifact.url });
   // Evaluated once per page: the City's modules are singletons, and leaving the view navigates away.
   const city = await import("./city/main.js");
   return () => {

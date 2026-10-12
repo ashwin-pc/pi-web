@@ -74,7 +74,7 @@ export function createMessagesController(deps: {
   let disposed = false;
 
   function isEchoedPrompt(entry: Entry, message: ClientMessage) {
-    return message.id.startsWith("optimistic-") && entry.persisted.some((item) => item.role === "user" && item.text === message.text);
+    return (message.id.startsWith("optimistic-") || message.id.startsWith("live-user-")) && entry.persisted.some((item) => item.role === "user" && item.text === message.text);
   }
 
   function publish(entry: Entry) {
@@ -132,6 +132,13 @@ export function createMessagesController(deps: {
     switch (event.type) {
       case "turn/start":
         void refresh(event.sessionId, entry);
+        return;
+      case "user/message":
+        // A prompt you sent from here is already shown (optimistic); one from elsewhere appears now.
+        if (!entry.live.some((message) => message.role === "user" && message.text === event.text)) {
+          entry.live = [...entry.live, { id: `live-user-${entry.live.length}`, role: "user", text: event.text }];
+          publish(entry);
+        }
         return;
       case "assistant/delta": {
         if (event.channel !== "text" || !event.delta) return;

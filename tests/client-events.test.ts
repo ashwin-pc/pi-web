@@ -41,6 +41,13 @@ describe("client event translation", () => {
     expect(translator.translate(agent("s1", { type: "agent_settled" }))).toEqual([{ type: "turn/end", sessionId: "s1", aborted: false }]);
   });
 
+  it("turns a delivered prompt into user/message, whatever its content shape", () => {
+    const translator = createEventTranslator();
+    expect(translator.translate(agent("s1", { type: "message_end", message: { role: "user", content: "hi there" } }))).toEqual([{ type: "user/message", sessionId: "s1", text: "hi there" }]);
+    expect(translator.translate(agent("s1", { type: "message_end", message: { role: "user", content: [{ type: "text", text: "a" }, { type: "image" }] } }))).toEqual([{ type: "user/message", sessionId: "s1", text: "a\n" }]);
+    expect(translator.translate(agent("s1", { type: "message_end", message: { role: "user", content: [] } }))).toEqual([]);
+  });
+
   it("ignores replayed envelopes, other envelope types and events without a session", () => {
     const translator = createEventTranslator();
     expect(translator.translate(agent("s1", { type: "agent_start" }, { replay: true }))).toEqual([]);

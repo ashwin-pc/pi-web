@@ -14,6 +14,7 @@ import * as V from './views.js';
 import * as N from './city-nav.js';
 import {cityHooks} from './city-hooks.js';
 import {plainOf} from './city-text.js';
+import {contentOf} from './artifact-draw.js';
 
 const el = renderer.domElement;
 export function findRegion(id) {
@@ -101,6 +102,8 @@ window.__vrCity = {
   markReadNow(id) { client.actions.markRead(id); },
   /** The reader's transcript as the City sees it (type, text, streaming), for tests. */
   messages(id = S.currentId) { return (get(id)?.messages || []).map((m) => ({type: m.type, name: m.name, status: m.status, streaming: !!m.streaming, text: m.text || plainOf(m)})); },
+  /** pi-web: an artifact's content state (loading | ready | error), without starting a load. */
+  artifactState(id) { const a = client.artifacts(id.split(':')[0]).find((x) => x.id === id); return a ? contentOf(a, false)?.state || 'none' : null; },
   cityFiles() { return {files: city.land.files.size, dirs: city.land.byPath.size, home: client.files.home}; },
   clientEvents(n = 40) { return (window.__clientEvents || []).slice(-n); },
   header() { return A.active.header.drawn || null; },

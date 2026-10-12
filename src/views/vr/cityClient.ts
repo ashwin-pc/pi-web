@@ -9,7 +9,8 @@
 //   events (neutral)                →    events: "this session's transcript changed"
 //   files.tree(root) (async)        →    files.tree(home) (sync, prefetched by prepare())
 import { marked } from "marked";
-import type { ClientMessage, ClientSession, FileTreeDir, PiWebClient } from "../../client/types.js";
+import type { ClientArtifact, ClientMessage, ClientSession, FileTreeDir, PiWebClient } from "../../client/types.js";
+import { ARTIFACT_ROOT } from "../../client/artifacts.js";
 
 export type CityMessage = {
   type: "user" | "assistant" | "tool";
@@ -33,14 +34,41 @@ export type CitySession = {
   model: string | null; context: number; updatedAt: number; seenTurns: number | null; synthetic: false;
 };
 
+/** The City's artifact record (round 3): `id` is "<sessionId>:<path>", `path` is absolute (a file in the city), `turn` is 1-based. */
+export type CityArtifact = {
+  id: string; sessionId: string; kind: ClientArtifact["kind"]; name: string; path: string; turn: number; bytes: number;
+  url: string; exists?: boolean; artifactPath: string;
+};
+
+export function cityArtifactOf(sessionId: string, cwd: string, artifact: ClientArtifact): CityArtifact {
+  return {
+    id: `${sessionId}:${artifact.path}`,
+    sessionId,
+    kind: artifact.kind,
+    name: artifact.name,
+    path: `${cwd.replace(/\/+$/, "")}/${ARTIFACT_ROOT}/${artifact.path}`,
+    turn: artifact.turn + 1,
+    bytes: artifact.bytes ?? 0,
+    url: artifact.url,
+    artifactPath: artifact.path,
+    ...(artifact.exists === undefined ? {} : { exists: artifact.exists }),
+  };
+}
+
 type CityDir = { name: string; root?: boolean; synthetic?: boolean; files: Array<{ name: string; bytes: number; lines: number }>; dirs: CityDir[] };
 
 export type CityClient = {
   sessions: { getSnapshot(): CitySession[]; subscribe(fn: () => void): () => void };
   messages(sessionId: string): CityMessage[];
+  /** What a session produced (round 3): a live array, updated in place. */
+  artifacts(sessionId: string): CityArtifact[];
+  /** Bumps when any session's artifacts change (the city's markers re-sync). */
+  artifactsVersion(): number;
   events: { subscribe(fn: (event: { type: string; sessionId: string }) => void): () => void };
   files: { home: string; tree(root?: string): CityDir | null };
-  actions: { openSession(id: string): void; prompt(id: string, text: string): boolean; markRead(id: string): void };
+  actions: { openSession(id: string): void; prompt(id: string, text: string): boolean; markRead(id: string): void; openIn2D(id: string, artifact?: { url: string }): void };
+  /** The real client, for loading artifact content. */
+  live: PiWebClient;
   /** The session the 2D app had open, to start on. */
   initialSessionId: string | null;
   /** Load the session list, transcripts and file trees the scene needs before it is built. */
@@ -62,9 +90,20 @@ function clock(timestamp?: string) {
   return Number.isFinite(time) ? new Date(time).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : undefined;
 }
 
+const htmlCache = new Map<string, string>();
+/** Markdown → the City's HTML subset. Cached by text: a streaming reply re-parses only the message that grew. */
 function markdownHtml(text: string) {
-  try { return marked.parse(text, { async: false, gfm: true, breaks: false }) as string; } catch { return `<p>${text.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</p>`; }
+  const cached = htmlCache.get(text);
+  if (cached !== undefined) return cached;
+  let html: string;
+  try { html = marked.parse(text, { async: false, gfm: true, breaks: false }) as string; } catch { html = `<p>${text.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</p>`; }
+  if (htmlCache.size > 2000) htmlCache.clear();
+  htmlCache.set(text, html);
+  return html;
 }
+
+/** Streaming deltas arrive at token rate; the scene re-lays a transcript at most this often (ms). */
+export const STREAM_SYNC_MS = 200;
 
 function toolArgs(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" && !Array.isArray(args) ? args as Record<string, unknown> : {};
@@ -164,6 +203,9 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
   const arrays = new Map<string, CityMessage[]>();
   const objects = new Map<string, Map<string, CityMessage>>();
   const messageSubscriptions = new Map<string, () => void>();
+  const artifactArrays = new Map<string, CityArtifact[]>();
+  const artifactSubscriptions = new Map<string, () => void>();
+  let artifactsVersion = 0;
   const sessionListeners = new Set<() => void>();
   const eventListeners = new Set<(event: { type: string; sessionId: string }) => void>();
   let included: ClientSession[] = [];
@@ -221,9 +263,21 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
     for (const [id, unsubscribe] of messageSubscriptions) if (!ids.has(id)) { unsubscribe(); messageSubscriptions.delete(id); }
     for (const id of ids) if (!messageSubscriptions.has(id)) {
       const store = client.messages(id);
-      messageSubscriptions.set(id, store.subscribe(() => syncMessages(id)));
+      messageSubscriptions.set(id, store.subscribe(() => scheduleSync(id)));
       syncMessages(id, false);
     }
+    for (const [id, unsubscribe] of artifactSubscriptions) if (!ids.has(id)) { unsubscribe(); artifactSubscriptions.delete(id); }
+    for (const id of ids) if (!artifactSubscriptions.has(id)) {
+      artifactSubscriptions.set(id, client.artifacts(id).subscribe(() => syncArtifacts(id)));
+      syncArtifacts(id, false);
+    }
+  }
+
+  const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Coalesce a burst of transcript changes (streaming) into one rebuild per STREAM_SYNC_MS per session. */
+  function scheduleSync(sessionId: string) {
+    if (syncTimers.has(sessionId)) return;
+    syncTimers.set(sessionId, setTimeout(() => { syncTimers.delete(sessionId); syncMessages(sessionId); }, STREAM_SYNC_MS));
   }
 
   /** Rebuild a session's City message array in place, reusing message objects so the scene's caches hold. */
@@ -245,6 +299,38 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
     for (const key of [...byKey.keys()]) if (!keep.has(key)) byKey.delete(key);
     array.splice(0, array.length, ...next);
     if (notify) for (const listener of [...eventListeners]) listener({ type: "transcript", sessionId });
+  }
+
+  function syncArtifacts(sessionId: string, notify = true) {
+    if (disposed) return;
+    const cwd = client.sessions.getSnapshot().find((item) => item.id === sessionId)?.cwd || "";
+    const fresh = client.artifacts(sessionId).getSnapshot().map((artifact) => cityArtifactOf(sessionId, cwd, artifact));
+    let array = artifactArrays.get(sessionId);
+    if (!array) { array = []; artifactArrays.set(sessionId, array); }
+    const byId = new Map(array.map((item) => [item.id, item]));
+    array.splice(0, array.length, ...fresh.map((item) => { const existing = byId.get(item.id); return existing ? Object.assign(existing, item) : item; }));
+    artifactsVersion++;
+    if (notify) for (const listener of [...eventListeners]) listener({ type: "transcript", sessionId });
+  }
+
+  /** Artifact files are files in the city, even when the tree walk did not reach them. */
+  function addArtifactFiles(tree: CityDir, homePath: string) {
+    for (const array of artifactArrays.values()) for (const artifact of array) {
+      if (!artifact.path.startsWith(`${homePath}/`)) continue;
+      const relative = artifact.path.slice(homePath.length + 1);
+      // Avenues are flattened ("oss/x"), so match the avenue by prefix, then walk the rest.
+      const avenue = tree.dirs.find((dir) => relative.startsWith(`${dir.name}/`));
+      if (!avenue) continue;
+      const parts = relative.slice(avenue.name.length + 1).split("/");
+      let node: CityDir = avenue;
+      for (const part of parts.slice(0, -1)) {
+        let next = node.dirs.find((dir) => dir.name === part);
+        if (!next) { next = { name: part, files: [], dirs: [] }; node.dirs.push(next); }
+        node = next;
+      }
+      const name = parts[parts.length - 1];
+      if (!node.files.some((file) => file.name === name)) node.files.push({ name, bytes: artifact.bytes || 1200, lines: Math.max(1, Math.round((artifact.bytes || 1200) / BYTES_PER_LINE)) });
+    }
   }
 
   let unsubscribeSessions: (() => void) | undefined;
@@ -299,6 +385,8 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
     ]);
     for (const session of included) syncMessages(session.id, false);
     project();
+    for (const session of included) syncArtifacts(session.id, false);
+    if (homeTree) addArtifactFiles(homeTree, home);
     unsubscribeSessions = client.sessions.subscribe(() => {
       project();
       for (const listener of [...sessionListeners]) listener();
@@ -319,6 +407,13 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
       if (!array) { array = []; arrays.set(sessionId, array); }
       return array;
     },
+    artifacts(sessionId) {
+      let array = artifactArrays.get(sessionId);
+      if (!array) { array = []; artifactArrays.set(sessionId, array); }
+      return array;
+    },
+    artifactsVersion: () => artifactsVersion,
+    live: client,
     events: { subscribe(fn) { eventListeners.add(fn); return () => { eventListeners.delete(fn); }; } },
     files: {
       get home() { return home; },
@@ -332,6 +427,7 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
         return true;
       },
       markRead(id) { void client.actions.markRead(id).catch((error) => console.warn("VR view: mark read failed", error)); },
+      openIn2D(id, artifact) { client.actions.openIn2D(id, artifact); },
     },
     prepare,
     dispose() {
@@ -340,6 +436,10 @@ export function createCityClient(client: PiWebClient, options: { initialSessionI
       unsubscribeEvents?.();
       for (const unsubscribe of messageSubscriptions.values()) unsubscribe();
       messageSubscriptions.clear();
+      for (const timer of syncTimers.values()) clearTimeout(timer);
+      syncTimers.clear();
+      for (const unsubscribe of artifactSubscriptions.values()) unsubscribe();
+      artifactSubscriptions.clear();
       sessionListeners.clear();
       eventListeners.clear();
     },
