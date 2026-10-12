@@ -6,6 +6,7 @@ const FOOTER_KEY = "local-git-footer";
 const REFRESH_MS = 2_500;
 const GIT_TIMEOUT_MS = 1_000;
 const CACHE_TTL_MS = 1_000;
+const COMPARISON_COOLDOWN_MS = 30_000;
 const MAX_CACHE_ENTRIES = 128;
 const execFileAsync = promisify(execFile);
 
@@ -47,9 +48,10 @@ type FooterCache = Map<string, CacheEntry>;
 // runner's cache process-wide, including across those independent module loads.
 const cacheKey = Symbol.for("pi-web.git-footer.cache.v1");
 const sharedGlobal = globalThis as typeof globalThis & {
-  [cacheKey]?: { default: FooterCache; custom: WeakMap<GitRunner, FooterCache> };
+  [cacheKey]?: { default: FooterCache; custom: WeakMap<GitRunner, FooterCache>; fallbackUntil?: Map<string, number> };
 };
-const caches = sharedGlobal[cacheKey] ??= { default: new Map(), custom: new WeakMap() };
+const caches = sharedGlobal[cacheKey] ??= { default: new Map(), custom: new WeakMap(), fallbackUntil: new Map<string, number>() };
+const fallbackUntil = caches.fallbackUntil ??= new Map<string, number>();
 
 function cacheFor(git: GitRunner): FooterCache {
   if (git === runGit) return caches.default;
@@ -59,9 +61,12 @@ function cacheFor(git: GitRunner): FooterCache {
 }
 
 async function runGit(args: string[], cwd: string): Promise<GitResult> {
+  const skipComparison = (fallbackUntil.get(cwd) ?? 0) > Date.now();
+  if (!skipComparison) fallbackUntil.delete(cwd);
   try {
-    const { stdout } = await execFileAsync("git", ["--no-optional-locks", ...args], {
+    const { stdout } = await execFileAsync("git", ["--no-optional-locks", ...args, ...(skipComparison ? ["--no-ahead-behind"] : [])], {
       cwd,
+      env: { ...process.env, LC_ALL: "C" },
       encoding: "utf8",
       timeout: GIT_TIMEOUT_MS,
       killSignal: "SIGKILL",
@@ -69,7 +74,16 @@ async function runGit(args: string[], cwd: string): Promise<GitResult> {
     });
     return { ok: true, output: stdout };
   } catch (error) {
-    const stderr = (error as { stderr?: string }).stderr || "";
+    const failure = error as { stderr?: string; killed?: boolean; signal?: string };
+    if (!skipComparison && (failure.killed || failure.signal === "SIGKILL")) {
+      // Keep one subprocess per refresh: the next refresh recovers branch/dirty
+      // state without the expensive commit walk, then retry counts after a pause.
+      for (const [key, until] of fallbackUntil) {
+        if (until <= Date.now() || fallbackUntil.size >= MAX_CACHE_ENTRIES) fallbackUntil.delete(key);
+      }
+      fallbackUntil.set(cwd, Date.now() + COMPARISON_COOLDOWN_MS);
+    }
+    const stderr = failure.stderr || "";
     return { ok: false, output: "", notRepo: stderr.includes("not a git repository") || stderr.includes("must be run in a work tree") };
   }
 }

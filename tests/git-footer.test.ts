@@ -220,7 +220,50 @@ describe("git footer porcelain v2 regression and command budget", () => {
 });
 
 describe("git footer subprocess bounds", () => {
-  it("sets a timeout, kill signal, output cap and disables optional locks", async () => {
+  it.each([{ killed: true }, { signal: "SIGKILL" }])("recovers on the next refresh after timeout %j, shares cooldown across module loads and retries counts later", async (failure) => {
+    vi.useFakeTimers();
+    const execute = vi.fn(async (_command: string, args: string[]) => ({
+      stdout: status(args.includes("--no-ahead-behind")
+        ? "# branch.upstream upstream/main\0# branch.ab +? -?\0? new-file\0"
+        : upstream(2, 1)),
+      stderr: "",
+    })).mockRejectedValueOnce(failure);
+    const mockedExecFile = Object.assign(vi.fn(), { [promisify.custom]: execute });
+    vi.resetModules();
+    vi.doMock("node:child_process", () => ({ execFile: mockedExecFile }));
+    try {
+      const cwd = temp();
+      const firstModule = await import("../examples/pi-web-extensions/git-footer.js");
+      const first = mount(undefined, cwd, firstModule.createGitFooterExtension);
+      await flush();
+      expect(execute).toHaveBeenCalledTimes(1); // No immediate second subprocess.
+      expect(first.html()).toBeUndefined();
+      vi.resetModules();
+      const secondModule = await import("../examples/pi-web-extensions/git-footer.js");
+      const second = mount(undefined, cwd, secondModule.createGitFooterExtension);
+      await flush();
+      expect(execute).toHaveBeenCalledTimes(2);
+      expect(execute.mock.calls[1][1]).toContain("--no-ahead-behind");
+      expect(second.html()).toContain("main");
+      expect(second.html()).toContain("⇅?");
+      expect(second.html()).toContain("dirty (?1)");
+      first.emit("turn_end"); await flush();
+      expect(execute).toHaveBeenCalledTimes(2); // Shared fallback result cache.
+      expect(first.html()).toContain("⇅?");
+      first.stop(); second.stop();
+      await vi.advanceTimersByTimeAsync(30_001);
+      const recovered = mount(undefined, cwd, firstModule.createGitFooterExtension);
+      await flush();
+      expect(execute).toHaveBeenCalledTimes(3);
+      expect(execute.mock.calls[2][1]).not.toContain("--no-ahead-behind");
+      expect(recovered.html()).toContain("↑2 ↓1");
+    } finally {
+      vi.doUnmock("node:child_process");
+      vi.resetModules();
+    }
+  });
+
+  it("sets a timeout, kill signal, output cap, stable diagnostic locale and disables optional locks", async () => {
     const execute = vi.fn(async () => ({ stdout: status(), stderr: "" }));
     const mockedExecFile = Object.assign(vi.fn(), { [promisify.custom]: execute });
     vi.resetModules();
@@ -231,7 +274,7 @@ describe("git footer subprocess bounds", () => {
       const footer = mount(undefined, cwd, module.createGitFooterExtension);
       await vi.waitFor(() => expect(footer.html()).toContain("main"));
       expect(execute).toHaveBeenCalledExactlyOnceWith("git", ["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"], {
-        cwd, encoding: "utf8", timeout: 1_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
+        cwd, env: { ...process.env, LC_ALL: "C" }, encoding: "utf8", timeout: 1_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
       });
     } finally {
       vi.doUnmock("node:child_process");

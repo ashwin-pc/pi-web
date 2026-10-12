@@ -50,11 +50,10 @@ export default function recommendedAddonsExtension(pi: any, cwd: string) {
   githubRepoPanel(pi);
   createGitFooterExtension({
     refreshMs: 60_000,
-    git: async (args) => {
-      if (args[0] === "rev-parse" && args[1] === "--is-inside-work-tree") return { ok: true, output: "true" };
-      if (args[0] === "branch") return { ok: true, output: "main" };
-      if (args[0] === "status") return { ok: true, output: " M website/src/pages/extensions/index.astro\n?? research-notes.md" };
-      return { ok: false, output: "" };
-    },
+    git: async () => ({
+      ok: true,
+      output: "# branch.oid abc1234\0# branch.head main\0# branch.upstream origin/main\0# branch.ab +2 -0\0"
+        + "1 .M N... 100644 100644 100644 a b website/src/pages/extensions/index.astro\0? research-notes.md\0",
+    }),
   })(pi);
 }

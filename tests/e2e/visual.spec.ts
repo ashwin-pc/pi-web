@@ -563,7 +563,11 @@ test.describe("visual regression", () => {
         await expect(page.locator("#modelSettingsPopover")).toBeHidden();
         await expect(page.locator("#modelSettingsButton")).toContainText("Claude Sonnet 4");
       }
-      if (scene === "git-footer") await expect(page.locator('.webFooterEntry[data-footer-key="local-git-footer"]')).toContainText("dirty");
+      if (scene === "git-footer") {
+        const footer = page.locator('.webFooterEntry[data-footer-key="local-git-footer"]');
+        await expect(footer).toContainText("↑2");
+        await expect(footer.locator('[aria-label="dirty (~1 ?1)"]')).toContainText("● (~1 ?1)");
+      }
       await expect(page).toHaveScreenshot(`addon-${scene}-${project}.png`, { fullPage: true, animations: "disabled", scale: project === "mobile" ? "device" : "css" });
       await page.unrouteAll({ behavior: "ignoreErrors" });
     }
