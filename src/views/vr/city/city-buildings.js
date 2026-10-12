@@ -18,7 +18,7 @@ export const MIN_RAD = 0.0045; // ≈ 0.26°: below this a building is a few pix
 const QL = new URLSearchParams(location.search);
 export const MASS_RAD = QL.get('lod') === '0' ? 0 : +(QL.get('massrad') || 0.008), TOWER = 2;
 // Instance budget: beyond it, the blocks that look smallest are massed first until the frame fits (big workspaces).
-export const SUB_RAD = QL.get('lod') === '0' ? 0 : +(QL.get('subrad') || 0.08);
+export const SUB_RAD = QL.get('lod') === '0' ? 0 : +(QL.get('subrad') || 0.12), SUB_FOOT = +(QL.get('subfoot') || 0.012), MASS_EXT = +(QL.get('massext') || 0.2);
 export const BUDGET = QL.get('lod') === '0' ? Infinity : +(QL.get('budget') || 1800), MASS_MAX = +(QL.get('massmax') || 0.03);
 function boxNoBottom() {
   const g = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
@@ -72,8 +72,9 @@ export class Buildings {
     const cand = [];
     M.forEach((m, j) => {
       const k = B.length + j; ids[k] = k; sz[k] = 0;
-      const ms = sizeOf(m.x, m.base + m.h * 0.5, m.z, Math.max(m.w, m.d, m.h)) * m.typical / Math.max(m.w, m.d, m.h);
-      if (ms > 0 && !m.members.some((i) => this.active(i))) cand.push({j, k, m, ms});
+      const ext = sizeOf(m.x, m.base + m.h * 0.5, m.z, Math.max(m.w, m.d, m.h)), ms = ext * m.typical / Math.max(m.w, m.d, m.h);
+      // Never a mass that would span more than MASS_EXT of your view (a big folder close by keeps its buildings).
+      if (ms > 0 && (ext < MASS_EXT || ms < MASS_RAD) && !m.members.some((i) => this.active(i))) cand.push({j, k, m, ms});
     });
     // First the coarsest level: a whole top-level folder that looks smaller than SUB_RAD is one mass.
     const covered = new Set();
@@ -81,8 +82,8 @@ export class Buildings {
     for (const sub of this.subs) {
       if (usedSub.some((p) => sub.id.startsWith(p))) continue; // inside a coarser folder mass already drawn
       const m = sub.mass, k = B.length + sub.j;
-      const ms = sizeOf(m.x, m.base + m.h * 0.5, m.z, Math.max(m.w, m.d, m.h));
-      if (!(ms > 0 && ms < SUB_RAD) || m.members.some((i) => this.active(i))) continue;
+      const ms = sizeOf(m.x, m.base + m.h * 0.5, m.z, Math.max(m.w, m.d, m.h)), foot = ms * m.typical / Math.max(m.w, m.d, m.h);
+      if (!(ms > 0 && ms < SUB_RAD && foot < SUB_FOOT) || m.members.some((i) => this.active(i))) continue;
       sz[k] = 1; this.massed++; drawn++;
       for (const i of m.members) { if (sz[i] > MIN_RAD) drawn--; sz[i] = 0; this.massedBuildings++; }
       for (const j of sub.blockMasses) covered.add(j);
@@ -152,18 +153,19 @@ function masses(L) {
 }
 
 /** The coarser levels: one mass per folder (its whole subtree, at least 12 files) over its block's plinth, at its
- * files' footprint-weighted mean height, coarsest first. A folder that looks smaller than SUB_RAD (about 4.6°) far
- * away is drawn as its one mass, and nothing inside it is; j is its index in the mass list. */
+ * files' footprint-weighted mean height, coarsest first. A folder that looks smaller than SUB_RAD (about 6.9°) far
+ * away, with buildings that look smaller than SUB_FOOT (about 0.7°), is drawn as its one mass, and nothing inside it is; j is its index in the mass list. */
 function subtreeMasses(L, blockMasses) {
   const out = [], j0 = blockMasses.length;
   for (const b of L.blocks.filter((x) => x.rel >= 1).sort((p, q) => p.rel - q.rel)) {
     const pre = b.id + '/', members = [];
     L.buildings.forEach((g, i) => { if (g.block === b.id || g.block.startsWith(pre)) members.push(i); });
     if (members.length < 12) continue;
-    let a = 0, v = 0; const types = new Map();
-    for (const i of members) { const g = L.buildings[i]; a += g.w * g.d; v += g.w * g.d * g.h; types.set(g.type, (types.get(g.type) || 0) + 1); }
+    let a = 0, v = 0; const types = new Map(), feet = [];
+    for (const i of members) { const g = L.buildings[i]; a += g.w * g.d; v += g.w * g.d * g.h; types.set(g.type, (types.get(g.type) || 0) + 1); feet.push(Math.max(g.w, g.d)); }
+    feet.sort((p, q) => p - q);
     const r = b.rect, type = [...types].sort((p, q) => q[1] - p[1])[0][0];
-    out.push({id: b.id, mass: {sub: true, members, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: (r.x1 - r.x0) * 0.9, d: (r.z1 - r.z0) * 0.9, h: Math.max(2, 0.8 * v / a), base: b.y, type: TYPE_IX[type] ?? 6, seed: (members[0] * 0.211) % 1, typical: 0}, j: j0 + out.length,
+    out.push({id: b.id, mass: {sub: true, members, x: (r.x0 + r.x1) / 2, z: (r.z0 + r.z1) / 2, w: (r.x1 - r.x0) * 0.9, d: (r.z1 - r.z0) * 0.9, h: Math.max(2, 0.8 * v / a), base: b.y, type: TYPE_IX[type] ?? 6, seed: (members[0] * 0.211) % 1, typical: feet[Math.floor(feet.length / 2)]}, j: j0 + out.length,
       blockMasses: blockMasses.map((m, j) => [m, j]).filter(([m]) => { const blk = L.buildings[m.members[0]].block; return blk === b.id || blk.startsWith(pre); }).map(([, j]) => j)});
   }
   return out;

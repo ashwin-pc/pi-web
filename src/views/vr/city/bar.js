@@ -219,10 +219,10 @@ export class Bar {
   obstacle(eye, camQ) {
     const inv = camQ.clone().invert(), out = [];
     this.g.updateMatrixWorld(true);
-    const n = BAR.COLS / 2, extra = this.moreOpen ? 0.18 : 0;
+    const n = BAR.COLS / 2, extra = this.moreOpen ? ((this.menuH || 0.44) + 0.03) / this.panel.h : 0; // the open More menu, in bar heights
     for (let k = 0; k < n; k++) {
       const pts = [];
-      for (const [u, v] of [[k / n, 0], [(k + 1) / n, 0], [k / n, 1 + extra * (k >= n - 2 ? 1 : 0)], [(k + 1) / n, 1 + extra * (k >= n - 2 ? 1 : 0)], [(k + 0.5) / n, 0], [(k + 0.5) / n, 1]]) {
+      for (const [u, v] of [[k / n, 0], [(k + 1) / n, 0], [k / n, 1 + extra * (k >= n - 3 ? 1 : 0)], [(k + 1) / n, 1 + extra * (k >= n - 3 ? 1 : 0)], [(k + 0.5) / n, 0], [(k + 0.5) / n, 1]]) {
         const p = this.panel.uvToLocal(u, v, new THREE.Vector3()).applyMatrix4(this.g.matrixWorld).sub(eye).applyQuaternion(inv);
         if (p.z > -0.05) { pts.length = 0; break; }
         pts.push([p.x / -p.z, p.y / -p.z]);

@@ -1,6 +1,6 @@
 # City scene: porting notes
 
-These modules are the vr-city WebXR mock's `src/` (round 2, as of 2026-10-11 23:44; round 2 merged three-way onto the round 1 port), ported into pi-web with as few
+These modules are the vr-city WebXR mock's `src/` (round 2 final, as of 2026-10-12 01:14; each round is merged three-way onto the port), ported into pi-web with as few
 edits as possible, file for file, so later rounds of the mock can be re-applied by diff. They stay plain JavaScript
 behind a typed boundary (`main.d.ts`, `client.d.ts`, `host.d.ts`); converting them to TypeScript is a follow-up.
 

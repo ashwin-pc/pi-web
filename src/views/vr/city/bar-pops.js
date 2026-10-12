@@ -40,9 +40,9 @@ function drawPreview(ctx, p) {
   p.region('pv:card', 0, 0, W, H - 60, {under: true, click: () => UIB.choose(id)});
 }
 
-export const MENU = {w: 0.44, h: 0.36, ppm: 1600};
+export const MENU = {w: 0.52, h: 0.44, ppm: 1600};
 function drawMenu(ctx, p) {
-  const W = p.cw, H = p.ch, rows = 3, rh = (H - 24) / rows, cw = (W - 24) / 2;
+  const W = p.cw, H = p.ch, rows = 4, rh = (H - 24) / rows, cw = (W - 24) / 2;
   fillRR(ctx, 3, 3, W - 6, H - 6, 22, 'rgba(10,10,10,0.96)', '#2c2c2c', 3);
   const pg = S.pinned.length > PAGE, st = UIB.start?.() || 0, range = `showing ${st + 1}–${Math.min(S.pinned.length, st + PAGE)} of ${S.pinned.length}`;
   const items = [
@@ -57,7 +57,8 @@ function drawMenu(ctx, p) {
     const x = 12 + (i % 2) * cw, y = 12 + Math.floor(i / 2) * rh, hov = it.click && p.isHover(it.id);
     fillRR(ctx, x + 6, y + 6, cw - 12, rh - 12, 18, hov ? '#222' : '#151515', '#2c2c2c', 2);
     text(ctx, it.label, x + 28, y + rh * 0.36, {size: 30, weight: 700, maxW: cw - (it.on != null ? 140 : 50)});
-    text(ctx, it.sub, x + 28, y + rh * 0.68, {size: 22, color: C.muted, maxW: cw - 50});
+    ctx.font = font(22, 400, SANS); const sub = wrapWhole(ctx, it.sub, cw - 50, 1).lines[0] || ''; // whole words, never a cut word
+    text(ctx, sub, x + 28, y + rh * 0.68, {size: 22, color: C.muted});
     if (it.on != null) { fillRR(ctx, x + cw - 110, y + rh * 0.36 - 20, 72, 40, 20, it.on ? C.accent : '#333'); ctx.beginPath(); ctx.arc(it.on ? x + cw - 58 : x + cw - 90, y + rh * 0.36, 15, 0, Math.PI * 2); ctx.fillStyle = it.on ? '#111' : '#bbb'; ctx.fill(); }
     p.region(it.id, x, y, cw, rh, it.click ? {click: it.click} : {});
   });
@@ -71,6 +72,7 @@ export class BarPops {
     this.menu = new Panel('menu', {w: MENU.w, h: MENU.h, ppm: MENU.ppm, draw: drawMenu, renderOrder: 32, depthWrite: false});
     this.menu.mat.depthTest = false; this.menu.mesh.visible = false;
     bar.g.add(this.preview.mesh, this.menu.mesh);
+    bar.menuH = MENU.h; // the bar keeps labels and cards clear of the open menu
     this.sig = '';
   }
   /** Placed just above the bar, at the avatar (preview) or the chip column (menu), turned to face you. */

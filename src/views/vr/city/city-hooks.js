@@ -107,7 +107,7 @@ export const cityHooks = {
   cardSource(sid) { return liveLine(get(sid)); },
   previewSource(sid) { return previewText(get(sid)); },
   /** A pi-web live card's source words are whole: every word on the card appears whole in the source text. */
-  wholeWords(sid) { const c = city.cards.placed.find((x) => x.sid === sid); if (!c?.info?.text) return null; const L = liveLine(get(sid)), src = L.tool ? `${L.name} ${L.sum}` : L.text; const words = c.info.text.replace(/…/g, ' ').split(/\s+/).filter(Boolean); const srcWords = new Set(src.split(/\s+/)); return {ok: words.every((w) => srcWords.has(w)), words: words.length, bad: words.filter((w) => !srcWords.has(w))}; },
+  wholeWords(sid) { const c = city.cards.placed.find((x) => x.sid === sid); if (!c?.info?.text) return null; const L = liveLine(get(sid)), src = L.tool ? `${L.name} ${L.sum}` : L.text || 'Thinking'; const words = c.info.text.replace(/…/g, ' ').split(/\s+/).filter(Boolean); const srcWords = new Set(src.split(/\s+/)); return {ok: words.every((w) => srcWords.has(w)), words: words.length, bad: words.filter((w) => !srcWords.has(w))}; },
   /** Desktop only: point the camera (degrees). */
   look(yawDeg, pitchDeg) { window.__desk.lookYaw = yawDeg * DEG; window.__desk.lookPitch = pitchDeg * DEG; },
   tan,

@@ -39,7 +39,9 @@ export class Cards {
     ctx.font = font(CARD.TITLE_PX, 700, SANS); ctx.fillStyle = '#f2f2f2';
     const title = s.short && ctx.measureText(s.title).width > CW - 84 ? s.short : s.title;
     ctx.fillText(ellipsize(ctx, title, CW - 84), x + 64, y + 30);
-    const L = liveLine(s), info = {sid, title, tool: L.tool};
+    let L = liveLine(s);
+    if (!L.tool && !L.text) L = {tool: true, running: true, name: 'Thinking', sum: ''}; // a turn that has not written yet
+    const info = {sid, title, tool: L.tool};
     if (L.tool) {
       // A collapsed pi-web tool card: the running fill, a top border, a spinner, the tool name and its summary.
       // The summary wraps to a second line by whole words; if it still does not fit, its oldest words are dropped.
