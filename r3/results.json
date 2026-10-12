@@ -1,0 +1,57 @@
+{
+  "thread": {
+    "segments": 0,
+    "covered": 0,
+    "panels": 6
+  },
+  "focusSize": {
+    "cockpit": {
+      "wDeg": 86.1,
+      "hDeg": 43.8,
+      "left": -43,
+      "right": 43,
+      "centreYaw": 0,
+      "centreElev": -35
+    },
+    "conversation": {
+      "wDeg": 55.3,
+      "hDeg": 43.5,
+      "left": -27.6,
+      "right": 27.6,
+      "centreYaw": 0,
+      "centreElev": -35
+    },
+    "distance": 1.9,
+    "textDeg": 1.23,
+    "predicted": {
+      "w": 85.2,
+      "conv": [
+        55.5,
+        43.8
+      ]
+    }
+  },
+  "wallOverlaps": 0,
+  "r3": [
+    "session:mock-dfa41633-4411-482b-aed3-8dff708d4549",
+    "session:mock-5278dfed-e83b-42e0-96e9-58b514c53b19",
+    "session:mock-8dec36fe-8cea-41d7-a5fb-e987afa05302",
+    "session:mock-current",
+    "artifact:mock-older:vr-e2e/chat-after.png",
+    "artifact:mock-older:vr-e2e/chat-before.png"
+  ],
+  "fps": {
+    "city": 19.9,
+    "focus1": 13.1,
+    "focus1again": 13.3,
+    "triptych3": 15.9,
+    "wall6": 15.5,
+    "mockCityView": 21.2
+  },
+  "stats": {
+    "calls": 36,
+    "triangles": 23636,
+    "geometries": 33,
+    "textures": 19
+  }
+}
