@@ -814,6 +814,19 @@ export function createMockHarness(options: MockSessionOptions) {
             { type: "text", text: fixtureBlocks[1] },
           ], timestamp });
           appendMockMessage({ role: "toolResult", toolCallId, toolName: "read", content: "benchmark reference contents", timestamp });
+        } else if (message.includes("transcript image benchmark")) {
+          const toolCallId = "call-transcript-image";
+          // Valid one-pixel PNG with trailing padding: reproducible large-image
+          // transport fixture without committing a megabyte binary asset.
+          const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6zAAAAABJRU5ErkJggg==", "base64");
+          const image = { type: "image", mimeType: "image/png", data: Buffer.concat([png, Buffer.alloc(1024 * 1024)]).toString("base64") };
+          const timestamp = new Date().toISOString();
+          appendMockMessage({ role: "user", content: [{ type: "text", text: "Image transport fixture" }, image], timestamp });
+          appendMockMessage({ role: "assistant", content: [{ type: "toolCall", id: toolCallId, toolName: "read", arguments: { path: "/mock/image.png" } }], timestamp });
+          broadcastPiEvent({ type: "tool_execution_start", toolName: "read", toolCallId, args: { path: "/mock/image.png" } });
+          broadcastPiEvent({ type: "tool_execution_end", toolName: "read", toolCallId, isError: false, result: { content: [image] } });
+          appendMockMessage({ role: "toolResult", toolCallId, toolName: "read", content: [image], timestamp });
+          appendMockMessage({ role: "assistant", content: "Image transport fixture complete.", timestamp });
         } else if (withInterruptedTool) {
           const toolCallId = "call-incomplete-read";
           const assistantMessage = { role: "assistant", content: [

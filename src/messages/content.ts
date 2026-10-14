@@ -8,7 +8,11 @@ export function imagesFromRawContent(content: unknown): AttachedImage[] {
   if (!Array.isArray(content)) return [];
   return content
     .filter((part): part is Record<string, unknown> => !!part && typeof part === "object" && (part as any).type === "image")
-    .map((part) => ({ data: part.data as string | undefined, mimeType: part.mimeType as string | undefined }));
+    .map((part) => ({
+      data: part.data as string | undefined,
+      mimeType: part.mimeType as string | undefined,
+      ...(typeof part.imageUrl === "string" ? { contentUrl: part.imageUrl } : {}),
+    }));
 }
 
 export function stripImagePathNote(text: string) {

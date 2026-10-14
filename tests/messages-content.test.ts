@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { assistantErrorBody, assistantErrorStatusCode, cleanThinkingText, formatThinkingText, isRetryableAssistantError, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
+import { assistantErrorBody, assistantErrorStatusCode, cleanThinkingText, formatThinkingText, imagesFromRawContent, isRetryableAssistantError, messageText, normalizeAssistantError, textFromRawContent, thinkingFromRawContent, thinkingTextSegments } from "../src/messages/content.js";
 
 describe("message content helpers", () => {
+  it("maps lazy user transcript image references to authenticated attachment URLs", () => {
+    const imageUrl = "/api/messages/image?sessionId=session-1&imageId=image-1";
+    expect(imagesFromRawContent([
+      { type: "text", text: "look at this" },
+      { type: "image", mimeType: "image/png", imageUrl },
+    ])).toEqual([{ data: undefined, mimeType: "image/png", contentUrl: imageUrl }]);
+    expect(imagesFromRawContent([{ type: "image", mimeType: "image/jpeg", data: "embedded" }]))
+      .toEqual([{ data: "embedded", mimeType: "image/jpeg" }]);
+    expect(imagesFromRawContent(null)).toEqual([]);
+  });
+
   it("keeps thinking out of text bubbles and extracts it for thinking cards", () => {
     const content = [
       { type: "thinking", thinking: "  consider the options  " },

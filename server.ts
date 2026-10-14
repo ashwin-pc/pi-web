@@ -11,6 +11,8 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { HttpError } from "./server/shared/httpError.js";
+import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
+import { referenceTranscriptImages, resolveTranscriptImage } from "./server/session/transcriptImages.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
@@ -884,7 +886,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, {
           ok: true,
           ...await decorateServiceState(await sessionService.state(requestedSessionId)),
-          ...await readOptionalSessionUiState(),
+          // Candidate validation only needs the session snapshot. Keep the full
+          // response as the default for existing API consumers and bootstrap.
+          ...(url.searchParams.get("includeSessionUiState") === "false" ? {} : await readOptionalSessionUiState()),
           tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
@@ -1019,7 +1023,28 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "GET" && url.pathname === "/api/messages") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
         const target = await sessionService.require(requestedSessionId);
-        return sendJson(res, 200, { ok: true, messages: decorateMessages(await sessionService.messages(target.sessionId), target.sessionFile) });
+        const messages = decorateMessages(await sessionService.messages(target.sessionId), target.sessionFile);
+        // Explicit compatibility opt-in for API clients that consume embedded images.
+        const wireMessages = url.searchParams.get("images") === "inline" ? messages : referenceTranscriptImages(messages, target.sessionId);
+        return await sendNegotiatedJson(req, res, 200, { ok: true, messages: wireMessages });
+      }
+
+      if (method === "GET" && url.pathname === "/api/messages/image") {
+        const sessionId = url.searchParams.get("sessionId")?.trim();
+        const imageId = url.searchParams.get("imageId") || "";
+        if (!sessionId || !imageId) return sendJson(res, 400, { ok: false, error: "sessionId and imageId are required" });
+        const target = await sessionService.require(sessionId);
+        const image = resolveTranscriptImage(await sessionService.messages(target.sessionId), imageId);
+        if (!image) return sendJson(res, 404, { ok: false, error: "Transcript image not found" });
+        res.writeHead(200, {
+          "content-type": image.mimeType,
+          "content-length": image.data.length,
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "content-security-policy": "default-src 'none'; sandbox",
+        });
+        res.end(image.data);
+        return;
       }
 
       if (method === "GET" && url.pathname === "/api/session/reference") {
