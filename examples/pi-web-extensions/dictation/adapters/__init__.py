@@ -20,6 +20,11 @@ class AdapterSpec:
     machines: tuple[str, ...] = ()
     minimum_version: tuple[int, int, int] | None = None
     extra_dependencies: tuple[str, ...] = ()
+    platform_machines: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+    def supports(self, system: str, machine: str) -> bool:
+        machines = dict(self.platform_machines).get(system, self.machines)
+        return system in self.platforms and (not machines or machine in machines)
 
 
 _ADAPTERS: dict[tuple[str, str], AdapterSpec] = {
@@ -28,7 +33,12 @@ _ADAPTERS: dict[tuple[str, str], AdapterSpec] = {
     ),
     ("parakeet", "photon"): AdapterSpec(
         "adapters.parakeet.photon.adapter", "moondream", "parakeet-photon", ("darwin", "linux", "win32"),
-        minimum_version=(2, 4, 0), extra_dependencies=("kestrel",)
+        minimum_version=(2, 4, 0), extra_dependencies=("kestrel",),
+        platform_machines=(
+            ("darwin", ("arm64", "aarch64")),
+            ("win32", ("amd64", "x86_64")),
+            ("linux", ("x86_64", "amd64", "aarch64", "arm64")),
+        )
     ),
     ("whisper", "mlx"): AdapterSpec(
         "adapters.whisper.mlx.adapter", "mlx_whisper", "whisper-mlx", ("darwin",), ("arm64", "aarch64")
@@ -71,8 +81,13 @@ def _installed(spec: AdapterSpec) -> bool:
 def preflight(family: str, runtime: str) -> AdapterSpec:
     spec = get_spec(family, runtime)
     system, machine = _host()
-    if system not in spec.platforms or (spec.machines and machine not in spec.machines):
-        supported = "macOS on Apple Silicon" if runtime == "mlx" else ", ".join(spec.platforms)
+    if not spec.supports(system, machine):
+        if runtime == "mlx":
+            supported = "macOS on Apple Silicon"
+        elif spec.platform_machines:
+            supported = ", ".join(f"{host} ({'/'.join(machines)})" for host, machines in spec.platform_machines)
+        else:
+            supported = ", ".join(spec.platforms)
         raise RuntimeError(f"{family} with {runtime} is unavailable on {system}/{machine}; supported: {supported}")
     if not _installed(spec):
         reason = "missing or incompatible (requires moondream>=2.4.0 and kestrel)" if runtime == "photon" else "not installed"
@@ -91,7 +106,7 @@ def capabilities() -> list[dict[str, object]]:
     system, machine = _host()
     result = []
     for (family, runtime), spec in _ADAPTERS.items():
-        platform_ok = system in spec.platforms and (not spec.machines or machine in spec.machines)
+        platform_ok = spec.supports(system, machine)
         result.append({
             "family": family,
             "runtime": runtime,

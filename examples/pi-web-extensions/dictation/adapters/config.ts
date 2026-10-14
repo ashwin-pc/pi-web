@@ -8,7 +8,7 @@ export const DICTATION_FAMILIES = [
 export const DICTATION_RUNTIMES = [
   { value: "auto", label: "Automatic" },
   { value: "mlx", label: "MLX (Apple Silicon)" },
-  { value: "photon", label: "Photon (Parakeet, optional CPU)" },
+  { value: "photon", label: "Photon (Parakeet CPU; telemetry blocked by audited shim)" },
   { value: "faster-whisper", label: "faster-whisper (portable CPU/CUDA)" },
 ] as const;
 
@@ -40,7 +40,12 @@ export function validateCombination(family: DictationFamily, runtime: DictationR
   if (runtime === "mlx" && !isAppleSilicon(hostPlatform, hostArch)) {
     throw new Error(`MLX requires macOS on Apple Silicon; current host is ${hostPlatform}/${hostArch}.`);
   }
-  if (runtime === "photon" && !["darwin", "linux", "win32"].includes(hostPlatform)) {
+  const photonArchitectures: Partial<Record<NodeJS.Platform, readonly string[]>> = {
+    darwin: ["arm64"],
+    win32: ["x64"],
+    linux: ["x64", "arm64"],
+  };
+  if (runtime === "photon" && !photonArchitectures[hostPlatform]?.includes(hostArch)) {
     throw new Error(`Photon is not configured for ${hostPlatform}/${hostArch}.`);
   }
   if (family === "parakeet" && runtime !== "mlx" && runtime !== "photon") {

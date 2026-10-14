@@ -11,6 +11,8 @@ import wave
 
 import worker
 import adapters
+# Existing portability CI invokes test_worker; include the shim audit tests there.
+from test_telemetry import InstalledPackageTelemetryTests, TelemetryGuardTests
 from adapters.parakeet.photon import adapter as photon_adapter
 from adapters.parakeet.mlx import adapter as parakeet_adapter
 from adapters.whisper.mlx import adapter as whisper_adapter
@@ -29,6 +31,9 @@ def write_wav(path: Path, seconds: float, sample: int = 1000):
 class WorkerTests(unittest.TestCase):
     def setUp(self):
         photon_adapter._close()
+        protection = patch.object(photon_adapter, "disable_telemetry")
+        self.protection = protection.start()
+        self.addCleanup(protection.stop)
 
     def tearDown(self):
         photon_adapter._close()
@@ -146,15 +151,24 @@ class WorkerTests(unittest.TestCase):
         provider = MagicMock()
         speech = provider.photon.return_value.__enter__.return_value
         speech.transcribe.return_value = {"text": "photon text"}
-        with patch.dict(sys.modules, {"moondream": provider}):
+        with patch.dict(sys.modules, {"moondream": provider}), patch.dict(os.environ, {"MOONDREAM_API_KEY": "ambient-secret-must-not-be-forwarded"}):
             text = photon_adapter.transcribe(Path("audio.wav"), "moondream/parakeet-redux", Mock(), compute_type="unused")
         self.assertEqual(text, "photon text")
-        provider.photon.assert_called_once_with("moondream/parakeet-redux", device="cpu")
+        provider.photon.assert_called_once_with("moondream/parakeet-redux", device="cpu", api_key="")
         speech.transcribe.assert_called_once_with(audio="audio.wav")
         provider.photon.return_value.__exit__.assert_not_called()
         photon_adapter._close()
         provider.photon.return_value.__exit__.assert_called_once_with(None, None, None)
         provider.vl.assert_not_called()
+
+    def test_photon_refuses_inference_if_telemetry_protection_fails(self):
+        provider = MagicMock()
+        self.protection.side_effect = RuntimeError("refusing inference")
+        with patch.dict(sys.modules, {"moondream": provider}):
+            with self.assertRaisesRegex(RuntimeError, "refusing inference"):
+                photon_adapter.transcribe(Path("audio.wav"), "model", Mock())
+        provider.photon.assert_not_called()
+        self.assertIsNone(photon_adapter._engine)
 
     def test_photon_reuses_engine_and_releases_it_on_model_switch(self):
         provider = MagicMock()
@@ -165,7 +179,7 @@ class WorkerTests(unittest.TestCase):
         with patch.dict(sys.modules, {"moondream": provider}):
             self.assertEqual(photon_adapter.transcribe(Path("audio.wav"), "first/model", Mock()), "first")
             self.assertEqual(photon_adapter.transcribe(Path("next.wav"), "first/model", Mock()), "first")
-            provider.photon.assert_called_once_with("first/model", device="cpu")
+            provider.photon.assert_called_once_with("first/model", device="cpu", api_key="")
             first.__enter__.assert_called_once()
             first.__exit__.assert_not_called()
             self.assertEqual(photon_adapter.transcribe(Path("next.wav"), "second/model", Mock()), "second")
@@ -219,6 +233,22 @@ class WorkerTests(unittest.TestCase):
             with patch.object(adapters, "_host", return_value=("freebsd", "x86_64")):
                 with self.assertRaisesRegex(RuntimeError, "unavailable"):
                     adapters.preflight("parakeet", "photon")
+
+    def test_photon_platform_preflight_and_capabilities(self):
+        supported = [("darwin", "arm64"), ("darwin", "aarch64"), ("win32", "amd64"), ("win32", "x86_64"), *[("linux", arch) for arch in ("x86_64", "amd64", "aarch64", "arm64")]]
+        unsupported = [("darwin", "x86_64"), ("win32", "arm64"), ("win32", "aarch64"), ("linux", "i686"), ("linux", "riscv64")]
+        for host in supported + unsupported:
+            with self.subTest(host=host), patch.object(adapters, "_host", return_value=host), patch.object(adapters, "_installed", return_value=True) as installed:
+                capability = next(item for item in adapters.capabilities() if item["runtime"] == "photon")
+                self.assertEqual(capability["platformSupported"], host in supported)
+                self.assertEqual(capability["installed"], host in supported)
+                installed.reset_mock()
+                if host in supported:
+                    adapters.preflight("parakeet", "photon")
+                else:
+                    with self.assertRaisesRegex(RuntimeError, "unavailable"):
+                        adapters.preflight("parakeet", "photon")
+                    installed.assert_not_called()
 
     def test_photon_missing_dependency_fails_before_decode(self):
         with patch.object(adapters, "_host", return_value=("linux", "x86_64")), patch.object(adapters.util, "find_spec", return_value=None), patch.object(worker, "decode_audio") as decode:

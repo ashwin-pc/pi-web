@@ -62,12 +62,23 @@ describe("dictation contribution settings", () => {
     dictation({ on: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, handler) } as any);
     await handlers.get("session_start")?.({}, { ui: { web, notify: () => {} } });
     expect(contributions).toHaveLength(1);
-    expect(settingsRegistration.fields.find((field: any) => field.key === "runtime").options).toContainEqual({ value: "photon", label: "Photon (Parakeet, optional CPU)" });
+    expect(settingsRegistration.fields.find((field: any) => field.key === "runtime").options).toContainEqual({ value: "photon", label: "Photon (Parakeet CPU; telemetry blocked by audited shim)" });
+    expect(settingsRegistration.fields.find((field: any) => field.key === "runtime").description).toContain("incompatible packages refuse inference");
+    expect(settingsRegistration.fields.find((field: any) => field.key === "runtime").description).toContain("Model downloads still use the network");
     settingsRegistration.onChange({ maxSeconds: 120, model: "changed" });
     settingsRegistration.onChange({ maxSeconds: 120, pythonPath: "changed" });
     expect(contributions).toHaveLength(1);
     settingsRegistration.onChange({ maxSeconds: 60 });
     expect(contributions).toHaveLength(2);
+  });
+});
+
+describe("Photon platform whitelist", () => {
+  it.each<[NodeJS.Platform, NodeJS.Architecture]>([["darwin", "arm64"], ["win32", "x64"], ["linux", "x64"], ["linux", "arm64"]])("accepts %s/%s", (hostPlatform, hostArch) => {
+    expect(() => validateCombination("parakeet", "photon", hostPlatform, hostArch)).not.toThrow();
+  });
+  it.each<[NodeJS.Platform, NodeJS.Architecture]>([["darwin", "x64"], ["win32", "arm64"], ["linux", "ia32"], ["linux", "riscv64"], ["freebsd", "x64"]])("rejects %s/%s", (hostPlatform, hostArch) => {
+    expect(() => validateCombination("parakeet", "photon", hostPlatform, hostArch)).toThrow("not configured");
   });
 });
 

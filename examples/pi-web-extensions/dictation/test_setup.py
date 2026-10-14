@@ -27,9 +27,17 @@ class SetupTests(unittest.TestCase):
         with patch.object(setup, "venv_python", return_value=Path("missing/python")):
             result = setup.commands("parakeet-photon")
         self.assertIn("adapters/parakeet/photon/requirements.txt", result[-1][-1].replace("\\", "/"))
-        for system in ("linux", "darwin", "win32"):
-            with patch.object(setup.sys, "platform", system):
-                setup.validate_target("parakeet-photon")
+
+    def test_photon_target_validates_platform_architecture_before_install(self):
+        supported = [("darwin", "arm64"), ("darwin", "aarch64"), ("win32", "AMD64"), ("win32", "x86_64"), *[("linux", arch) for arch in ("x86_64", "amd64", "aarch64", "arm64")]]
+        unsupported = [("darwin", "x86_64"), ("win32", "ARM64"), ("win32", "aarch64"), ("linux", "i686"), ("freebsd", "x86_64")]
+        for system, machine in supported + unsupported:
+            with self.subTest(system=system, machine=machine), patch.object(setup.sys, "platform", system), patch.object(setup.platform, "machine", return_value=machine):
+                if (system, machine) in supported:
+                    setup.validate_target("parakeet-photon")
+                else:
+                    with self.assertRaisesRegex(SystemExit, "Photon requires"):
+                        setup.validate_target("parakeet-photon")
 
     def test_photon_installs_cpu_torch_before_runtime_on_linux_and_windows(self):
         for system in ("linux", "win32"):

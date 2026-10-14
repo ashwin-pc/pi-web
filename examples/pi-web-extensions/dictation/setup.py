@@ -9,6 +9,8 @@ import platform
 import subprocess
 import sys
 
+from adapters import get_spec
+
 ROOT = Path(__file__).resolve().parent
 TARGETS = {
     "parakeet-mlx": ROOT / "adapters/parakeet/mlx/requirements.txt",
@@ -23,6 +25,8 @@ def venv_python(root: Path = ROOT) -> Path:
 
 
 def validate_target(target: str) -> None:
+    if target == "parakeet-photon" and not get_spec("parakeet", "photon").supports(sys.platform, platform.machine().lower()):
+        raise SystemExit("Photon requires macOS arm64, Windows x86_64, or Linux x86_64/aarch64. Use whisper-faster-whisper on this host.")
     if target.endswith("-mlx") and not (sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}):
         raise SystemExit("MLX runtimes require macOS on Apple Silicon. Use whisper-faster-whisper on this host.")
 

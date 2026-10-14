@@ -343,7 +343,7 @@ export default function dictation(pi: PiWebExtensionAPI) {
       migrate: (oldValues) => migrateDictationSettings(oldValues as Record<string, unknown>),
       fields: [
         { key: "family", type: "select", label: "Model family", default: HOST_DEFAULTS.family, options: DICTATION_FAMILIES.map(({ value, label }) => ({ value, label })) },
-        { key: "runtime", type: "select", label: "Runtime", default: "auto", options: DICTATION_RUNTIMES.map(({ value, label }) => ({ value, label })) },
+        { key: "runtime", type: "select", label: "Runtime", description: "Photon: this extension blocks upstream usage telemetry with an audited, version/source-checked shim; incompatible packages refuse inference. Model downloads still use the network. Unmodified Kestrel reports hostname/model/token counts with no opt-out.", default: "auto", options: DICTATION_RUNTIMES.map(({ value, label }) => ({ value, label })) },
         { key: "model", type: "text", label: "Model ID or local model path", description: "Leave blank for the family/runtime default. Weights use an external provider cache.", default: "", maxLength: MAX_SETTING_CHARS },
         { key: "device", type: "select", label: "Device", description: "CUDA is opt-in and requires a compatible faster-whisper/CTranslate2 installation.", default: "cpu", options: [{ value: "cpu", label: "CPU" }, { value: "cuda", label: "NVIDIA CUDA (explicit)" }] },
         { key: "computeType", type: "text", label: "Compute type", description: "faster-whisper only: blank uses int8 on CPU or float16 on CUDA. Ignored by MLX/Photon.", default: "", maxLength: 32 },

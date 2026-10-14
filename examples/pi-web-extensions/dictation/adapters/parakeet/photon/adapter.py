@@ -1,4 +1,4 @@
-"""Optional local Parakeet through moondream's public Photon API."""
+"""Optional CPU Parakeet via Photon with an audited telemetry-blocking shim."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import atexit
 from pathlib import Path
 import sys
 from typing import Any, Callable
+
+from .telemetry import disable_telemetry
 
 # The worker dispatches requests serially. Keep only the current model warm,
 # rather than retaining an unbounded collection of native engines.
@@ -38,9 +40,13 @@ def transcribe(path: Path, model_id: str, log: Callable[[str], None], *, device:
             raise RuntimeError("Parakeet Photon runtime is not installed; run python setup.py parakeet-photon") from error
         if not callable(getattr(md, "photon", None)):
             raise RuntimeError("Parakeet Photon requires moondream>=2.4.0; run python setup.py parakeet-photon")
+        # Fail closed before engine initialization if the telemetry audit changes.
+        disable_telemetry()
         # Own the public context manager for the warm engine's entire lifetime.
-        # Do not use private Kestrel APIs or fall back to the cloud client.
-        context = md.photon(model_id, device="cpu")
+        # Inference uses the public API; only the audited reporter shim is private.
+        # Empty key bypasses MOONDREAM_API_KEY and disables the cloud provider.
+        # The separate audited reporter shim disables Kestrel usage telemetry.
+        context = md.photon(model_id, device="cpu", api_key="")
         speech = context.__enter__()
         _engine = (key, context, speech)
     try:
