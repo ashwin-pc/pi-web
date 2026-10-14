@@ -5,7 +5,7 @@ import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs
 import { playToolCardEntry, playToolCardStateTransition } from "../messages/entryAnimation.js";
 import type { ApiHeaders } from "../app/api.js";
 import { isCompactDensity } from "../app/appearance.js";
-import { setActivityCardMetadata } from "../messages/activitySummary.js";
+import { activityCardVisibilityRestoredEvent, setActivityCardMetadata } from "../messages/activitySummary.js";
 import { normalizeErrorPresentation } from "../errors/errorPresentation.js";
 
 export type RuntimeErrorPresentation = { title: string; subtitle?: string; technicalDetails?: string };
@@ -163,6 +163,9 @@ function addToolSessionChips(card: HTMLDivElement, result: unknown, openSession?
 }
 
 function addCardHeader(card: HTMLDivElement, title: string, subtitleText = "") {
+  card.addEventListener(activityCardVisibilityRestoredEvent, () => {
+    if (!detailsAreHidden(card)) initializeCardDetails(card);
+  });
   densityObserver ??= new MutationObserver(() => {
     document.querySelectorAll<HTMLDivElement>(".toolCard").forEach((existing) => {
       if (!detailsAreHidden(existing)) initializeCardDetails(existing);

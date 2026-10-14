@@ -37,6 +37,14 @@ test("collapsed tool cards defer detail rendering and authenticated images until
     const large = messages.lastElementChild as HTMLDivElement;
     large.querySelector<HTMLButtonElement>(".toolCardExpandToggle")!.click();
     const bounded = { ...fixture.counts, text: large.querySelector("code")?.textContent, scripts: large.querySelectorAll("script").length };
+    // Activity summaries restore visibility directly after rebuilding history.
+    tools.addToolHistoryCard("read", false, "restored result", { path: "restored.txt" });
+    const restoredCard = messages.lastElementChild as HTMLDivElement;
+    const beforeRestore = restoredCard.querySelectorAll(".toolCardBody").length;
+    restoredCard.classList.remove("toolCard--compactCollapsed");
+    restoredCard.dispatchEvent(new Event("activity-card-visibility-restored"));
+    restoredCard.dispatchEvent(new Event("activity-card-visibility-restored"));
+    const restored = { before: beforeRestore, bodies: restoredCard.querySelectorAll(".toolCardBody").length, text: restoredCard.querySelector(".toolCardBody")?.textContent };
     // Streaming stays readable and completion replaces the partial output.
     const live = tools.addToolCard("bash", { command: "printf first\nprintf second" });
     tools.updateToolProgress(undefined, "bash");
@@ -62,7 +70,7 @@ test("collapsed tool cards defer detail rendering and authenticated images until
     tools.addRuntimeErrorCard({ title: "Runtime error", technicalDetails: "Visible runtime details" });
     const runtime = messages.lastElementChild?.querySelector(".toolCardBody")?.textContent;
     tools.clearActiveToolCards();
-    return { collapsed, expanded, repeated, bounded, partial, completed, comfortable, errorHidden, errorExpanded, runtime };
+    return { collapsed, expanded, repeated, bounded, restored, partial, completed, comfortable, errorHidden, errorExpanded, runtime };
   });
   expect(result.collapsed).toEqual({ highlight: 0, auto: 0, fetch: 0, children: 1 });
   expect(result.expanded).toEqual({ highlight: 1, auto: 0, fetch: 1, args: 1, images: 1, body: "saved\n[image]" });
@@ -71,6 +79,7 @@ test("collapsed tool cards defer detail rendering and authenticated images until
   expect(result.bounded.auto).toBe(0);
   expect(result.bounded.scripts).toBe(0);
   expect(result.bounded.text).toHaveLength(8000);
+  expect(result.restored).toEqual({ before: 0, bodies: 1, text: "restored result" });
   expect(result.partial).toBe("first partial");
   expect(result.completed).toBe("final output");
   expect(result.comfortable).toBe("comfortable result");
