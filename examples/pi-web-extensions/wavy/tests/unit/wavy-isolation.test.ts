@@ -25,7 +25,7 @@ describe("Wavy extension isolation", () => {
     await sdk.reload();
     const result = sdk.getExtensions();
     expect(wavyExtension(result)).toBeUndefined();
-    expect(result.extensions.flatMap((extension) => [...extension.tools.keys()]).filter((name) => name.startsWith("wavy"))).toEqual([]);
+    expect(result.extensions.flatMap((extension) => [...extension.tools.keys()]).filter((name) => name === "music" || name.startsWith("wavy"))).toEqual([]);
   });
 
   it("loads registration through the real SDK loader and a global-style symlink without evaluating lazy modules", async () => {
@@ -47,7 +47,7 @@ describe("Wavy extension isolation", () => {
     expect(result.errors).toEqual([]);
     const extension = wavyExtension(result);
     expect(extension).toBeDefined();
-    expect([...extension!.tools.keys()]).toEqual(["wavy", "wavy_status", "wavy_compose", "wavy_render", "wavy_transcribe"]);
+    expect([...extension!.tools.keys()]).toEqual(["music"]);
     expect([...extension!.handlers.keys()]).toEqual(["resources_discover", "session_start", "session_shutdown"]);
     expect(await readFile(join(fixture, "engines.ts"), "utf8")).toContain("eager engines.ts");
   });
@@ -61,12 +61,12 @@ describe("Wavy extension isolation", () => {
     await sdk.reload();
     const result = sdk.getExtensions();
     expect(result.errors).toEqual([]);
-    const status = wavyExtension(result)!.tools.get("wavy_status")!.definition;
+    const status = wavyExtension(result)!.tools.get("music")!.definition;
     const oldPython = process.env.WAVY_SHEETSAGE_PYTHON;
     const oldModel = process.env.WAVY_SHEETSAGE_MODEL;
     delete process.env.WAVY_SHEETSAGE_PYTHON; delete process.env.WAVY_SHEETSAGE_MODEL;
     try {
-      const output = await status.execute("isolation", {}, undefined, undefined, { cwd: root } as any);
+      const output = await status.execute("isolation", { action: "status" }, undefined, undefined, { cwd: root } as any);
       const content = output.content[0];
       expect(content.type).toBe("text");
       if (content.type !== "text") throw new Error("expected text status output");
