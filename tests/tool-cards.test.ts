@@ -27,6 +27,11 @@ describe("tool card result text", () => {
 });
 
 describe("tool card image previews", () => {
+  it("recognizes authenticated lazy transcript image URLs", () => {
+    expect(collectToolImages({ raw: { content: [{ type: "image", mimeType: "image/png", imageUrl: "/api/messages/image?sessionId=s&imageId=i" }] } }))
+      .toEqual([{ src: "/api/messages/image?sessionId=s&imageId=i", alt: "tool result image", needsAuth: true }]);
+  });
+
   it("extracts image data from read tool style raw content", () => {
     const images = collectToolImages({
       role: "toolResult",

@@ -495,9 +495,12 @@ export function createSessions(options: {
     const pinNewSessions = state.settings.defaults.pinNewSessions === true;
     let reusable: ReturnType<typeof reusableEmptySession>;
     if (pinNewSessions) {
-      // Validate even the active tab: a recent prompt or external edit can make
-      // its previously empty snapshot stale before realtime stats arrive.
-      await refreshSessions(true);
+      // Discover candidates from the local projection, not a full corpus fetch.
+      // Cached emptiness is only a hint: openSessionTab below rechecks the
+      // authoritative snapshot before accepting even an already-active tab.
+      // Finish an existing bootstrap scan so cold pinned tabs are discoverable,
+      // but never start or force another corpus request on this path.
+      if (sessionRefreshPromise) await sessionRefreshPromise;
       reusable = reusableEmptySession(state, targetCwd, options.hasSessionDraft);
       if (!reusable) {
         // Cold listings deliberately omit counts. Read candidate snapshots without
@@ -513,7 +516,7 @@ export function createSessions(options: {
           ...emptySessionCandidates(state, targetCwd, options.hasSessionDraft),
         ];
         for (const candidate of Array.from(new Map(candidates.map((item) => [item.id, item])).values())) {
-          const res = await fetch(`/api/state?sessionId=${encodeURIComponent(candidate.id)}`, { headers });
+          const res = await fetch(`/api/state?sessionId=${encodeURIComponent(candidate.id)}&includeSessionUiState=false`, { headers });
           if (res.status === 404) {
             discardMissingSession(candidate.id);
             continue; // A stale pin may point at a deleted session.

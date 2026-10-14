@@ -78,6 +78,54 @@ test.afterEach(async ({ page }) => {
 });
 
 test.describe("new-session defaults", () => {
+  test("validates a cached blank without downloading the session list, and rejects stale emptiness", async ({ page }) => {
+    await setPinNewSessions(page, true);
+    const emptyId = await createNewSession(page);
+    // No corpus discovery should be required, even when a cached blank gained
+    // content externally before its next realtime/list update.
+    await page.route("**/api/sessions**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/sessions") return route.abort("failed");
+      if (path === "/api/sessions/open" && request.postDataJSON()?.sessionId === emptyId) {
+        const response = await route.fetch();
+        const data = await response.json();
+        data.stats = { ...(data.stats || {}), totalMessages: 1, conversationMessages: 1 };
+        return route.fulfill({ response, json: data });
+      }
+      await route.continue();
+    });
+    const requests: string[] = [];
+    page.on("request", (request) => requests.push(new URL(request.url()).pathname));
+    const created = page.waitForResponse((response) => response.url().endsWith("/api/sessions/new") && response.ok());
+    await clickHeaderNew(page);
+    await created;
+    await expect.poll(() => activeSessionId(page)).not.toBe(emptyId);
+    expect(requests).not.toContain("/api/sessions");
+    expect(requests.indexOf("/api/sessions/open")).toBeLessThan(requests.indexOf("/api/sessions/new"));
+    console.log(`new-session stale-cache request chain: ${requests.join(" -> ")}`);
+  });
+
+  test("offers an opt-in state snapshot without the shared preferences payload", async ({ page }) => {
+    await seedSessionUiState(page, { sessionOrigins: Array.from({ length: 2352 }, (_, index) => ({
+      sessionId: `worker-${index}`, originSessionId: `parent-${index}`, kind: "spawn", updatedAt: "2026-01-01T00:00:00Z",
+    })) });
+    const fullResponse = await page.request.get("/api/state?sessionId=mock-current");
+    const leanResponse = await page.request.get("/api/state?sessionId=mock-current&includeSessionUiState=false");
+    expect(fullResponse.ok()).toBe(true);
+    expect(leanResponse.ok()).toBe(true);
+    const full = await fullResponse.json();
+    const lean = await leanResponse.json();
+    expect(full.sessionUiState.sessionOrigins).toHaveLength(2352);
+    expect(lean).not.toHaveProperty("sessionUiState");
+    expect(lean.sessionId).toBe(full.sessionId);
+    expect(lean.stats).toEqual(full.stats);
+    const fullBytes = (await fullResponse.body()).length;
+    const leanBytes = (await leanResponse.body()).length;
+    expect(fullBytes - leanBytes).toBeGreaterThan(250_000);
+    console.log(`state fixture (2352 origins): default=${fullBytes} bytes; includeSessionUiState=false=${leanBytes} bytes`);
+  });
+
   test("persists the opt-in preference and pins only newly created sessions", async ({ page }) => {
     await setPinNewSessions(page, true);
     await page.reload();
@@ -373,6 +421,7 @@ test.describe("new-session defaults", () => {
       const url = new URL(request.url());
       if (request.method() === "GET" && url.searchParams.get("sessionId") === b) {
         stateReadClientId = request.headers()["x-pi-web-client-id"];
+        expect(url.searchParams.get("includeSessionUiState")).toBe("false");
         activeWhenRead = await activeSessionId(page);
         resolveColdStateRead();
       }

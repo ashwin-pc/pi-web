@@ -159,6 +159,33 @@ describe("scoped extension HTTP credentials", () => {
     await expect(h.client.request("POST", "/api/auth/tokens")).rejects.toThrow("scope");
   });
 
+  it("permits scoped image reads and inline compatibility without widening session targets", async () => {
+    const h = harness();
+    const imageId = `0.1.${"a".repeat(64)}`;
+    await h.client.request("GET", `/api/messages/image?imageId=${imageId}`);
+    expect(h.url).toContain(`imageId=${imageId}&sessionId=parent`);
+    expect((await h.registry.authenticate(request(h.auth, `/api/messages/image?sessionId=parent&imageId=${imageId}`))).ok).toBe(true);
+    await h.client.request("GET", "/api/messages?images=inline");
+    expect((await h.registry.authenticate(request(h.auth, "/api/messages?sessionId=parent&images=inline"))).ok).toBe(true);
+    for (const path of [
+      `/api/messages/image?sessionId=other&imageId=${imageId}`,
+      "/api/messages/image?sessionId=parent",
+      "/api/messages/image?sessionId=parent&imageId=invalid",
+      `/api/messages/image?sessionId=parent&imageId=${imageId}&imageId=${imageId}`,
+      `/api/messages/image?sessionId=parent&imageId=${imageId}&clientId=browser`,
+      "/api/messages?sessionId=parent&images=inline&images=inline",
+      "/api/messages?sessionId=parent&images=unknown",
+      `/api/state?sessionId=parent&imageId=${imageId}`,
+    ]) {
+      await expect(h.client.request("GET", path)).rejects.toThrow();
+      expect(await h.registry.authenticate(request(h.auth, path))).toEqual({ ok: false, status: 403 });
+    }
+    const writeOnly = h.registry.createClient({}, "parent", () => true, { name: "write-only", scopes: ["sessions.write"] });
+    await writeOnly.request("POST", "/api/prompt");
+    expect(await h.registry.authenticate(request(h.auth, `/api/messages/image?sessionId=parent&imageId=${imageId}`))).toEqual({ ok: false, status: 403 });
+    await expect(writeOnly.request("GET", `/api/messages/image?imageId=${imageId}`)).rejects.toThrow("scope");
+  });
+
   it("adds created sessions only after server-authorized creation and supports explicit all-session tools", async () => {
     const h = harness();
     await h.client.request("POST", "/api/new-chat");

@@ -5,7 +5,7 @@ import { createSessionRefChip, sessionRefsFromDetails } from "../app/sessionRefs
 import { playToolCardEntry, playToolCardStateTransition } from "../messages/entryAnimation.js";
 import type { ApiHeaders } from "../app/api.js";
 import { isCompactDensity } from "../app/appearance.js";
-import { setActivityCardMetadata } from "../messages/activitySummary.js";
+import { activityCardVisibilityRestoredEvent, setActivityCardMetadata } from "../messages/activitySummary.js";
 import { normalizeErrorPresentation } from "../errors/errorPresentation.js";
 
 export type RuntimeErrorPresentation = { title: string; subtitle?: string; technicalDetails?: string };
@@ -41,8 +41,34 @@ function updateCompactToggle(toggle: HTMLButtonElement, collapsed: boolean) {
   toggle.setAttribute("aria-expanded", String(!collapsed));
 }
 
+const pendingCardDetails = new WeakMap<HTMLDivElement, Array<() => void>>();
+let densityObserver: MutationObserver | undefined;
+
+function detailsAreHidden(card: HTMLDivElement) {
+  return card.classList.contains("toolCard--compactCollapsed") &&
+    (isCompactDensity() || (card.classList.contains("toolCard--error") && !card.classList.contains("runtimeErrorCard")));
+}
+
+function initializeCardDetails(card: HTMLDivElement) {
+  const pending = pendingCardDetails.get(card);
+  pendingCardDetails.delete(card);
+  pending?.forEach((render) => render());
+}
+
+function renderWhenVisible(card: HTMLDivElement, render: () => void) {
+  if (!detailsAreHidden(card)) {
+    initializeCardDetails(card);
+    render();
+    return;
+  }
+  const pending = pendingCardDetails.get(card) || [];
+  pending.push(render);
+  pendingCardDetails.set(card, pending);
+}
+
 function setCompactCollapsed(card: HTMLDivElement, collapsed: boolean) {
   card.classList.toggle("toolCard--compactCollapsed", collapsed);
+  if (!detailsAreHidden(card)) initializeCardDetails(card);
   const toggle = card.querySelector<HTMLButtonElement>(".toolCardExpandToggle");
   if (toggle) updateCompactToggle(toggle, collapsed);
 }
@@ -51,12 +77,29 @@ function formatArgValue(value: unknown) {
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
-function appendHighlightedCode(parent: HTMLElement, text: string) {
+const maxHighlightLength = 2000;
+
+function setHighlightedText(code: HTMLElement, text: string, language?: string) {
+  code.className = "hljs";
+  if (language && text.length <= maxHighlightLength && hljs.getLanguage(language)) {
+    code.innerHTML = hljs.highlight(text, { language, ignoreIllegals: true }).value;
+  } else code.textContent = text;
+}
+
+function argumentLanguage(key: string, value: unknown, args: Record<string, unknown>) {
+  if (typeof value !== "string") return "json";
+  if (key === "command") return "bash";
+  if (key !== "content" || typeof args.path !== "string") return undefined;
+  const extension = args.path.split(".").pop()?.toLowerCase();
+  const languages: Record<string, string> = { ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript", json: "json", py: "python", sh: "bash", css: "css", html: "xml", xml: "xml", md: "markdown", rs: "rust", sql: "sql", yml: "yaml", yaml: "yaml" };
+  return extension ? languages[extension] : undefined;
+}
+
+function appendHighlightedCode(parent: HTMLElement, text: string, language?: string) {
   const pre = document.createElement("pre");
   pre.className = "toolCardArgCode";
   const code = document.createElement("code");
-  code.className = "hljs";
-  code.innerHTML = hljs.highlightAuto(text).value;
+  setHighlightedText(code, text, language);
   pre.append(code);
   parent.append(pre);
 }
@@ -86,7 +129,7 @@ function addToolArgsDetails(card: HTMLDivElement, args?: Record<string, unknown>
     const valueEl = document.createElement("div");
     valueEl.className = "toolCardArgValue";
     const text = formatArgValue(value);
-    if (text.includes("\n")) appendHighlightedCode(valueEl, text);
+    if (text.includes("\n")) appendHighlightedCode(valueEl, text, argumentLanguage(key, value, args));
     else valueEl.textContent = text;
 
     row.append(keyEl, valueEl);
@@ -120,6 +163,15 @@ function addToolSessionChips(card: HTMLDivElement, result: unknown, openSession?
 }
 
 function addCardHeader(card: HTMLDivElement, title: string, subtitleText = "") {
+  card.addEventListener(activityCardVisibilityRestoredEvent, () => {
+    if (!detailsAreHidden(card)) initializeCardDetails(card);
+  });
+  densityObserver ??= new MutationObserver(() => {
+    document.querySelectorAll<HTMLDivElement>(".toolCard").forEach((existing) => {
+      if (!detailsAreHidden(existing)) initializeCardDetails(existing);
+    });
+  });
+  densityObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["data-density"] });
   const header = document.createElement("div");
   header.className = "toolCardHeader";
 
@@ -169,7 +221,7 @@ function addCardHeader(card: HTMLDivElement, title: string, subtitleText = "") {
 
 function addToolHeader(card: HTMLDivElement, toolName: string, args?: Record<string, unknown>) {
   addCardHeader(card, toolName, args ? toolSubtitle(toolName, args) : "");
-  addToolArgsDetails(card, args);
+  renderWhenVisible(card, () => addToolArgsDetails(card, args));
 }
 
 function addBashHeader(card: HTMLDivElement, result: unknown, args?: Record<string, unknown>) {
@@ -177,14 +229,14 @@ function addBashHeader(card: HTMLDivElement, result: unknown, args?: Record<stri
   const command = typeof args?.command === "string" ? args.command : typeof value.command === "string" ? value.command : "";
   const context = value.excludeFromContext ? "not in agent context" : "in agent context";
   addCardHeader(card, "bash", command ? `${command} · ${context}` : context);
-  addToolArgsDetails(card, args);
+  renderWhenVisible(card, () => addToolArgsDetails(card, args));
 }
 
 function highlightToolResult(pre: HTMLPreElement, text: string) {
   const code = document.createElement("code");
   code.classList.add("hljs");
-  const result = hljs.highlightAuto(text);
-  code.innerHTML = result.value;
+  // Tool output is logs/plain text, not source with a known language.
+  setHighlightedText(code, text);
   pre.append(code);
 }
 
@@ -216,7 +268,7 @@ export function errorRowPresentation(result: unknown) {
 function addErrorResult(card: HTMLDivElement, result: unknown) {
   const presentation = errorRowPresentation(result);
   setCardPresentation(card, presentation.title, presentation.subtitle);
-  addToolResultBody(card, presentation.technicalDetails);
+  renderWhenVisible(card, () => addToolResultBody(card, presentation.technicalDetails));
 }
 
 function addToolResultBody(card: HTMLDivElement, result: string) {
@@ -294,7 +346,7 @@ export function collectToolImages(result: unknown): ToolImage[] {
       const mimeType = [obj.mimeType, obj.mediaType, obj.mime_type, source?.media_type].find((v): v is string => typeof v === "string") || "image/png";
       const alt = typeof obj.name === "string" ? obj.name : "tool result image";
       const data = typeof obj.data === "string" ? obj.data : typeof source?.data === "string" ? source.data : undefined;
-      const url = typeof obj.url === "string" ? obj.url : typeof source?.url === "string" ? source.url : undefined;
+      const url = typeof obj.imageUrl === "string" ? obj.imageUrl : typeof obj.url === "string" ? obj.url : typeof source?.url === "string" ? source.url : undefined;
       if (data) images.push({ src: `data:${mimeType};base64,${data}`, alt });
       else if (url) images.push({ src: url, alt, needsAuth: url.startsWith("/") });
       else if (typeof obj.path === "string") {
@@ -472,7 +524,7 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     const card = document.createElement("div");
     card.className = "toolCard toolCard--running";
     addToolHeader(card, toolName, args);
-    if (toolName === "edit") renderEditDiff(card, args);
+    if (toolName === "edit") renderWhenVisible(card, () => renderEditDiff(card, args));
     card.dataset.toolName = toolName;
     startRunningToolProgress(card, parseToolTimestamp(startedAt));
     messagesEl.append(card);
@@ -489,18 +541,19 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
 
     card.querySelector(".toolCardBadge")?.remove();
 
-    if (toolName === "edit" && !isError) renderEditDiff(card, {}, result);
-    const resultStr = textFromToolResult(result);
     if (isError) {
       removePartialToolOutput(card);
       addErrorResult(card, result);
-    } else if (resultStr && card.dataset.toolName !== "edit") {
-      removePartialToolOutput(card);
-      addToolResultBody(card, resultStr);
-    } else {
-      finalizePartialToolOutput(card);
     }
-    addToolImagePreviews(card, result, apiHeaders);
+    renderWhenVisible(card, () => {
+      if (toolName === "edit" && !isError) renderEditDiff(card, {}, result);
+      const resultStr = isError ? "" : textFromToolResult(result);
+      if (resultStr && card.dataset.toolName !== "edit") {
+        removePartialToolOutput(card);
+        addToolResultBody(card, resultStr);
+      } else if (!isError) finalizePartialToolOutput(card);
+      addToolImagePreviews(card, result, apiHeaders);
+    });
     playToolCardStateTransition(card);
     addToolSessionChips(card, result, openSession);
     onTranscriptChanged();
@@ -512,11 +565,17 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     card.className = `toolCard ${isError ? "toolCard--error" : "toolCard--success"}`;
     if (toolName === "bash") addBashHeader(card, result, args);
     else addToolHeader(card, toolName, args);
-    const resultStr = textFromToolResult(result);
     if (isError) addErrorResult(card, result);
-    else if (toolName === "edit" && args) renderEditDiff(card, args, result);
-    else if (resultStr) addToolResultBody(card, resultStr);
-    addToolImagePreviews(card, result, apiHeaders);
+    renderWhenVisible(card, () => {
+      if (!isError) {
+        if (toolName === "edit" && args) renderEditDiff(card, args, result);
+        else {
+          const resultStr = textFromToolResult(result);
+          if (resultStr) addToolResultBody(card, resultStr);
+        }
+      }
+      addToolImagePreviews(card, result, apiHeaders);
+    });
     addToolSessionChips(card, result, openSession);
     const record = result && typeof result === "object" ? result as Record<string, unknown> : {};
     const raw = record.raw && typeof record.raw === "object" ? record.raw as Record<string, unknown> : {};
@@ -531,6 +590,8 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     const card = document.createElement("div");
     card.className = "toolCard toolCard--error runtimeErrorCard";
     addCardHeader(card, presentation.title, presentation.subtitle);
+    // Realtime mutates/expands these small error cards directly; their body must
+    // exist immediately so retries update it rather than leaving a stale callback.
     if (presentation.technicalDetails) addToolResultBody(card, presentation.technicalDetails);
     messagesEl.append(card);
     onTranscriptChanged();

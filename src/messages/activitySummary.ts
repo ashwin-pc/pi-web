@@ -4,6 +4,7 @@ import { createSessionRefChip, maxSessionRefs, type SessionRef } from "../app/se
 
 /** Explicit render metadata, not a parser for tool output or referenced-session state. */
 export type ActivityCardMetadata = { key?: string; refs?: readonly SessionRef[] };
+export const activityCardVisibilityRestoredEvent = "activity-card-visibility-restored";
 const metadata = new WeakMap<HTMLElement, ActivityCardMetadata>();
 export function setActivityCardMetadata(card: HTMLElement, value: ActivityCardMetadata) {
   metadata.set(card, { ...metadata.get(card), ...value });
@@ -312,6 +313,8 @@ export function createActivitySummaries(options: {
       const open = id ? cardChoices.get(id) : undefined;
       if (open === undefined) continue;
       card.classList.toggle("toolCard--compactCollapsed", !open);
+      // Restoring an expanded card must also initialize deferred tool details.
+      card.dispatchEvent(new Event(activityCardVisibilityRestoredEvent));
       const toggle = card.querySelector<HTMLButtonElement>(".toolCardExpandToggle");
       if (toggle) {
         const name = card.classList.contains("toolCard--thinking") ? "thinking" : "tool details";

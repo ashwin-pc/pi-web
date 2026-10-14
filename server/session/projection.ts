@@ -95,12 +95,18 @@ export function messageEntryRefs(targetSession: PiWebSession): MessageEntryRef[]
   return refs;
 }
 
+export function isVisibleTranscriptMessage(message: unknown): message is Record<string, unknown> {
+  if (!message || typeof message !== "object") return false;
+  const value = message as Record<string, unknown>;
+  return value.role !== "custom" || value.display !== false;
+}
+
 export function simplifyMessage(
   message: unknown,
   options: { toolCallArgs?: Map<string, Record<string, unknown>>; decorateContent?: ContentDecorator; entryId?: string; parentEntryId?: string } = {},
 ): MessageDto | undefined {
-  if (!message || typeof message !== "object") return undefined;
-  const m = message as Record<string, unknown>;
+  if (!isVisibleTranscriptMessage(message)) return undefined;
+  const m = message;
   const content = options.decorateContent ? options.decorateContent(m.content) : m.content;
   const entry = {
     ...(options.entryId ? { entryId: options.entryId } : {}),

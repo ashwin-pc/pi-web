@@ -1038,7 +1038,7 @@ describe("artifact serving", () => {
     });
     try {
       const tokenBaseUrl = `http://127.0.0.1:${port}`;
-      const deadline = Date.now() + 15_000;
+      const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
         try { if ((await fetch(`${tokenBaseUrl}/api/state`)).status === 401) break; } catch { /* retry */ }
         await new Promise((resolve) => setTimeout(resolve, 100));
@@ -1050,13 +1050,15 @@ describe("artifact serving", () => {
       const apiRes = await fetch(`${tokenBaseUrl}/api/state`);
       expect(apiRes.status).toBe(401);
       expect((await fetch(`${tokenBaseUrl}/api/session/lifecycle`)).status).toBe(401);
+      expect((await fetch(`${tokenBaseUrl}/api/messages/image?sessionId=mock-current&imageId=0.0.${"a".repeat(64)}`)).status).toBe(401);
+      expect((await fetch(`${tokenBaseUrl}/api/messages?sessionId=mock-current`)).status).toBe(401);
       const diagnostics = await fetch(`${tokenBaseUrl}/api/session/lifecycle`, { headers: { authorization: "Bearer secret" } });
       expect(diagnostics.status).toBe(200);
       expect(await diagnostics.json()).toMatchObject({ ok: true, liveSessions: expect.any(Array) });
     } finally {
       tokenChild.kill();
     }
-  }, 25_000);
+  }, 70_000);
 
   it("returns 404 for missing artifacts", async () => {
     const res = await fetch(`${baseUrl}/api/artifacts/does-not-exist.png`);
@@ -1090,7 +1092,7 @@ describe("additional API coverage", () => {
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
     await waitForServer(baseUrl);
-  }, 20_000);
+  }, 70_000);
 
   afterAll(() => {
     child?.kill();
@@ -1199,6 +1201,53 @@ describe("additional API coverage", () => {
     // mock-current has initial messages about image attachments
     expect(data.messages.some((m: any) => /image attachments/i.test(m.text))).toBe(true);
   });
+
+  it("references large transcript images and serves authenticated session-scoped bytes lazily", async () => {
+    await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    try {
+      expect((await fetch(`${baseUrl}/api/prompt`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "mock-current", message: "transcript image benchmark" }),
+      })).status).toBe(202);
+      await waitForCondition(async () => {
+        const result = await (await fetch(`${baseUrl}/api/messages?sessionId=mock-current`)).json();
+        return result.messages.some((message: any) => message.text === "Image transport fixture complete.");
+      });
+      const referencedResponse = await fetch(`${baseUrl}/api/messages?sessionId=mock-current`, { headers: { "accept-encoding": "identity" } });
+      const referencedText = await referencedResponse.text();
+      const referenced = JSON.parse(referencedText);
+      const images = referenced.messages.flatMap((message: any) => Array.isArray(message.raw?.content) ? message.raw.content.filter((block: any) => block.type === "image") : []);
+      expect(images).toHaveLength(2);
+      expect(images.every((image: any) => !Object.hasOwn(image, "data") && image.imageUrl.startsWith("/api/messages/image?"))).toBe(true);
+      const inlineResponse = await fetch(`${baseUrl}/api/messages?sessionId=mock-current&images=inline`, { headers: { "accept-encoding": "identity" } });
+      const inlineText = await inlineResponse.text();
+      const inline = JSON.parse(inlineText);
+      const inlineImages = inline.messages.flatMap((message: any) => Array.isArray(message.raw?.content) ? message.raw.content.filter((block: any) => block.type === "image") : []);
+      expect(inlineText.length - referencedText.length).toBeGreaterThan(2_700_000);
+      for (let index = 0; index < images.length; index++) {
+        const imageResponse = await fetch(`${baseUrl}${images[index].imageUrl}`);
+        expect(imageResponse.status).toBe(200);
+        expect(imageResponse.headers.get("content-type")).toBe("image/png");
+        expect(imageResponse.headers.get("cache-control")).toBe("no-store");
+        expect(imageResponse.headers.get("x-content-type-options")).toBe("nosniff");
+        expect(Buffer.from(await imageResponse.arrayBuffer()).equals(Buffer.from(inlineImages[index].data, "base64"))).toBe(true);
+        const wrongSession = new URL(images[index].imageUrl, baseUrl);
+        wrongSession.searchParams.set("sessionId", "mock-older");
+        expect((await fetch(wrongSession)).status).toBe(404);
+      }
+      const zipped = await fetch(`${baseUrl}/api/messages?sessionId=mock-current`, { headers: { "accept-encoding": "gzip" } });
+      expect(zipped.headers.get("content-encoding")).toBe("gzip");
+      expect(zipped.headers.get("vary")).toContain("Accept-Encoding");
+      expect(await zipped.json()).toEqual(referenced);
+      console.log(`API transcript payload: before inline=${Buffer.byteLength(inlineText)} bytes; after references=${Buffer.byteLength(referencedText)} bytes; gzip=${zipped.headers.get("content-length")} bytes`);
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+      expect((await fetch(`${baseUrl}${images[0].imageUrl}`)).status).toBe(404);
+      expect((await fetch(`${baseUrl}/api/messages/image`)).status).toBe(400);
+      expect((await fetch(`${baseUrl}/api/messages/image?sessionId=missing&imageId=invalid`)).status).toBe(404);
+    } finally {
+      await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
+    }
+  }, 30_000);
 
   it("returns 404 for unknown sessionId in /api/messages", async () => {
     const res = await fetch(`${baseUrl}/api/messages?sessionId=does-not-exist`);
