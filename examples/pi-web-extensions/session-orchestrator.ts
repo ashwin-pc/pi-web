@@ -32,6 +32,7 @@ const RESOLVED_ENTRY = "orchestrator-watch-resolved";
 const MAX_WORKERS = 4;
 const POLL_MS = 2500;
 const WAKEUP_SUMMARY_CHARS = 2000;
+const MAX_TRANSCRIPT_FAILURES = 20;
 // At most three 2,000-character reports plus bounded headers/status prose.
 const WAKEUP_BATCH_CHARS = 8000;
 const WAKEUP_BATCH_WORKERS = Math.floor((WAKEUP_BATCH_CHARS - 2000) / WAKEUP_SUMMARY_CHARS);
@@ -153,7 +154,9 @@ type WorkerReport = { text: string; isError: boolean; outcome: "finished" | "fai
 /** Classify the last activity, never an earlier assistant's optimistic prose. */
 export function workerReport(messages: any[] | null): WorkerReport {
   if (messages === null) return { text: "Transcript could not be read; the watch remains open for retry.", isError: false, outcome: "report unavailable" };
-  const m = messages.at(-1);
+  // Extension notes and compaction metadata are not worker activity. Keep the
+  // actual reply's entry ID, but never scan past new user/tool/bash activity.
+  const m = messages.slice().reverse().find((message) => !["custom", "system", "compactionSummary"].includes(message?.role));
   const text = typeof m?.text === "string" ? m.text.trim() : "";
   const reason = m?.raw?.stopReason ?? m?.stopReason;
   // A failed assistant stream can contain partial tool calls. Its terminal
@@ -205,6 +208,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     errorPolls: number;
     aborted: boolean;
     unavailableReported?: boolean;
+    transcriptFailures: number;
   };
 
   const watched = new Map<string, Watched>();
@@ -300,9 +304,21 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
 
   function watch(id: string, name: string, categoryName = "Unknown") {
     if (!isActive()) return;
-    watched.set(id, { id, name: trunc(name, 80), categoryName, sawRunning: false, idlePolls: 0, errorPolls: 0, aborted: false });
+    watched.set(id, { id, name: trunc(name, 80), categoryName, sawRunning: false, idlePolls: 0, errorPolls: 0, aborted: false, transcriptFailures: 0 });
     reportWatchedDependencies();
     ensureTimer();
+  }
+
+  function trackTranscriptReport(w: Watched, summary: WorkerReport): WorkerReport {
+    if (summary.outcome !== "report unavailable") {
+      w.transcriptFailures = 0;
+      return summary;
+    }
+    w.transcriptFailures += 1;
+    if (w.transcriptFailures >= MAX_TRANSCRIPT_FAILURES) {
+      return { ...summary, text: `Transcript unavailable after ${MAX_TRANSCRIPT_FAILURES} failed fetches; automatic retries stopped and this watch is being released. Inspect the worker with sessions_read using id "${w.id}" or [open its session](/?sessionId=${encodeURIComponent(w.id)}).` };
+    }
+    return summary;
   }
 
   function unwatch(id: string) {
@@ -763,6 +779,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           if (!isActive(expectedGeneration)) return;
           // Report unavailable and retain the watch so the poller retries.
         }
+        const w = watched.get(childId);
+        if (w) summary = trackTranscriptReport(w, summary);
         if (finished.length < WAKEUP_BATCH_WORKERS) finished.push({ id: childId, name: trunc(worker.name, 80), categoryName: worker.categoryName, summary });
       } catch (error) {
         if (!isActive(expectedGeneration)) return;
@@ -811,9 +829,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration)) return;
     if (ok) {
       for (const f of finished) {
-        if (f.summary.outcome === "report unavailable") {
-          const w = watched.get(f.id);
-          if (w) w.unavailableReported = true;
+        const w = watched.get(f.id);
+        if (f.summary.outcome === "report unavailable" && w && w.transcriptFailures < MAX_TRANSCRIPT_FAILURES) {
+          w.unavailableReported = true;
           continue;
         }
         unwatch(f.id);
@@ -823,7 +841,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     } else {
       // Keep completed workers live in the watcher until a later poll can
       // successfully deliver their wakeup.
-      for (const f of finished) watch(f.id, f.name, f.categoryName);
+      ensureTimer();
     }
   }
 
@@ -915,7 +933,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             if (!isActive(expectedGeneration)) return;
             // Report unavailable and retain the watch for another fetch.
           }
-          if (summary.outcome === "report unavailable" && w.unavailableReported) continue;
+          summary = trackTranscriptReport(w, summary);
+          if (summary.outcome === "report unavailable" && w.unavailableReported && w.transcriptFailures < MAX_TRANSCRIPT_FAILURES) continue;
           if (completed.length < WAKEUP_BATCH_WORKERS) completed.push({ w, summary });
         } catch {
           if (!isActive(expectedGeneration)) return;
@@ -980,7 +999,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         if (!isActive(expectedGeneration)) return;
         if (ok) {
           for (const { w, summary } of completed) {
-            if (summary.outcome === "report unavailable") {
+            if (summary.outcome === "report unavailable" && w.transcriptFailures < MAX_TRANSCRIPT_FAILURES) {
               w.unavailableReported = true;
               continue;
             }

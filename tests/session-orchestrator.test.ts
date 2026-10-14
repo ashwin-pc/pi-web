@@ -244,6 +244,21 @@ describe("issue 190 quick fixes", () => {
     expect(workerReport([]).outcome).toBe("interrupted");
   });
 
+  it("ignores trailing metadata while retaining the terminal assistant's exact entry link", () => {
+    const assistant = { role: "assistant", text: "Outcome: complete\n" + "details ".repeat(500) + "Verified: passes", entryId: "real-final" };
+    const metadata = ["custom", "system", "compactionSummary"].map((role) => ({ role, text: "metadata", entryId: `${role}-entry` }));
+    for (const trailing of [...metadata.map((entry) => [entry]), metadata]) {
+      const summary = workerReport([assistant, ...trailing]);
+      expect(summary).toMatchObject({ outcome: "finished", entryId: "real-final" });
+      const output = formatWorkerReport(summary, "worker-123");
+      expect(output).toContain("&entryId=real-final.");
+      expect(output).not.toContain("&entryId=custom-entry");
+    }
+    for (const role of ["user", "toolResult", "bashExecution"]) {
+      expect(workerReport([assistant, { role, text: "new activity" }, ...metadata])).toMatchObject({ outcome: "interrupted", text: "new activity" });
+    }
+  });
+
   it("prioritizes terminal assistant errors over partial tool calls, but preserves explicit aborts", () => {
     const message = {
       role: "assistant", text: "[API Error] stream ended unexpectedly", isError: true,
@@ -293,6 +308,53 @@ describe("issue 190 quick fixes", () => {
     expect(pi.sendMessage).toHaveBeenCalledTimes(2);
     expect(pi.sendMessage.mock.calls[1][0].content).toContain("finished");
     expect(resultText(await tools.get("sessions_status").execute("status", {}))).toContain("No tracked workers");
+  });
+
+  it.each([false, true])("bounds permanent transcript failures and releases spawn capacity (catch-up: %s)", async (catchUp) => {
+    vi.useFakeTimers();
+    const pi = makeExtension();
+    const ctx = makeCtx();
+    let transcriptFetches = 0;
+    const fetchBefore = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/messages")) {
+        transcriptFetches += 1;
+        throw new Error("permanent projection failure");
+      }
+      if (path.startsWith("/api/state")) {
+        return { ok: true, json: async () => ({ runtime: { isRunning: !path.endsWith(catchUp ? "ledger-worker" : "worker-1") } }) };
+      }
+      return fetchBefore(url, init);
+    }) as any;
+    if (catchUp) {
+      ctx.sessionManager.getBranch = () => [{ type: "custom", customType: "orchestrator-watch", data: { childId: "ledger-worker", name: "unreadable", spawned: true } }];
+      await activate(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await spawn(ctx, { name: "unreadable", task: "work" });
+    }
+    for (let i = 0; i < 3; i++) await spawn(ctx, { name: `busy-${i}`, task: "work" });
+    expect((await spawn(ctx, { name: "overflow", task: "work" })).isError).toBe(true);
+    // Catch-up's initial failure counts toward the same 20-fetch budget.
+    await vi.advanceTimersByTimeAsync(catchUp ? 52500 : 55000);
+    expect(transcriptFetches).toBe(19);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(pi.appendEntry).not.toHaveBeenCalledWith("orchestrator-watch-resolved", expect.anything());
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(transcriptFetches).toBe(20);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+    const final = pi.sendMessage.mock.calls[1][0];
+    expect(final.content).toContain("report unavailable");
+    expect(final.content).toContain("automatic retries stopped");
+    expect(final.content).toContain("sessions_read");
+    expect(final.content).not.toContain("finished");
+    expect(pi.appendEntry).toHaveBeenCalledWith("orchestrator-watch-resolved", { childId: catchUp ? "ledger-worker" : "worker-1" });
+    expect(ctx.ui.web.reportSettlementDependencies.mock.calls.at(-1)?.[0].sessionIds).not.toContain(catchUp ? "ledger-worker" : "worker-1");
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(transcriptFetches).toBe(20);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+    expect((await spawn(ctx, { name: "replacement", task: "work" })).isError).toBeFalsy();
   });
 
   it("bounds a simultaneous completion batch and reports deferred workers on the next poll", async () => {
