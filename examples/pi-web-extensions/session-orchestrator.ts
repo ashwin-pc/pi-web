@@ -32,6 +32,9 @@ const RESOLVED_ENTRY = "orchestrator-watch-resolved";
 const MAX_WORKERS = 4;
 const POLL_MS = 2500;
 const WAKEUP_SUMMARY_CHARS = 2000;
+// At most three 2,000-character reports plus bounded headers/status prose.
+const WAKEUP_BATCH_CHARS = 8000;
+const WAKEUP_BATCH_WORKERS = Math.floor((WAKEUP_BATCH_CHARS - 2000) / WAKEUP_SUMMARY_CHARS);
 
 // Generic extension-settings schema: user-authored worker model categories.
 // The `description` prose IS the routing guidance the orchestrator reads; the
@@ -145,14 +148,31 @@ function reportPresentation(label: string, preview: string, tone: "accent" | "da
 // Transcript helpers (uses /api/messages simplified message shape)
 // ---------------------------------------------------------------------------
 
-function lastAssistantText(messages: any[]): { text: string; isError: boolean } {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i];
-    if (m?.role === "assistant" && typeof m.text === "string" && m.text.trim()) {
-      return { text: m.text.trim(), isError: Boolean(m.isError) };
-    }
-  }
-  return { text: "", isError: false };
+type WorkerReport = { text: string; isError: boolean; outcome: "finished" | "failed" | "interrupted" | "report unavailable"; entryId?: string };
+
+/** Classify the last activity, never an earlier assistant's optimistic prose. */
+export function workerReport(messages: any[] | null): WorkerReport {
+  if (messages === null) return { text: "Transcript could not be read; the watch remains open for retry.", isError: false, outcome: "report unavailable" };
+  const m = messages.at(-1);
+  const text = typeof m?.text === "string" ? m.text.trim() : "";
+  const reason = m?.raw?.stopReason ?? m?.stopReason;
+  const interrupted = reason === "aborted" || m?.role !== "assistant" || m?.toolCalls?.length > 0 || reason === "toolUse";
+  const outcome = interrupted ? "interrupted" : m?.isError || reason === "error" ? "failed" : text ? "finished" : "interrupted";
+  return { text: text || "No terminal assistant reply; last activity: " + (m?.role || "empty transcript"), isError: outcome === "failed", outcome, entryId: m?.entryId };
+}
+
+export function formatWorkerReport(report: WorkerReport, sessionId: string, max = WAKEUP_SUMMARY_CHARS): string {
+  if (report.text.length <= max) return report.text;
+  // /api/messages supplies persisted entryId. Never invent a final-entry link.
+  const link = report.entryId
+    ? `/?sessionId=${encodeURIComponent(sessionId)}&entryId=${encodeURIComponent(report.entryId)}`
+    : `/?sessionId=${encodeURIComponent(sessionId)}`;
+  const footer = report.entryId
+    ? `\nReport truncated, full final message: ${link}.`
+    : `\nReport truncated; final entry link unavailable. Session: ${link}.`;
+  const remaining = Math.max(0, max - footer.length - 3);
+  const head = Math.ceil(remaining / 2);
+  return `${report.text.slice(0, head)}\n…\n${report.text.slice(-(remaining - head))}${footer}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -170,7 +190,8 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   }
   async function fetchMessages(sessionId: string): Promise<any[]> {
     const json = await api("GET", `/api/messages?sessionId=${encodeURIComponent(sessionId)}`);
-    return Array.isArray(json.messages) ? json.messages : [];
+    if (!Array.isArray(json.messages)) throw new Error("Transcript response did not contain messages");
+    return json.messages;
   }
   type Watched = {
     id: string;
@@ -180,6 +201,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     idlePolls: number;
     errorPolls: number;
     aborted: boolean;
+    unavailableReported?: boolean;
   };
 
   const watched = new Map<string, Watched>();
@@ -275,7 +297,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
 
   function watch(id: string, name: string, categoryName = "Unknown") {
     if (!isActive()) return;
-    watched.set(id, { id, name, categoryName, sawRunning: false, idlePolls: 0, errorPolls: 0, aborted: false });
+    watched.set(id, { id, name: trunc(name, 80), categoryName, sawRunning: false, idlePolls: 0, errorPolls: 0, aborted: false });
     reportWatchedDependencies();
     ensureTimer();
   }
@@ -401,6 +423,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         category: Type.Optional(Type.String({ description: parameterDescription })),
       }),
       execute: async (_toolCallId: string, params: any, _signal: any, _onUpdate: any, ctx: PiWebExtensionContext) => {
+        const result = await (async () => {
         if (isWorkerSession(ctx)) {
           return {
             content: [
@@ -613,7 +636,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
 
         const prompt = [
           `${WORKER_MARKER} You are a worker session spawned by session ${parentId} to do one task. Work autonomously; the spawner cannot answer questions mid-task, so make reasonable assumptions and note them.`,
-          `When finished, end your final message with a concise report: what you did/found, files touched (with paths), and how you verified it. Do not spawn other sessions.`,
+          `Lead your final report with four short labelled lines: Outcome: what you did/found; Changed: files touched (with paths); Verified: checks and results; Blocked: remaining issues or none. Keep these lines concise, then add details if needed. Do not spawn other sessions.`,
           ``,
           `TASK: ${params.task}`,
         ].join("\n");
@@ -652,6 +675,10 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         } finally {
           reservedSpawnSlots -= 1;
         }
+        })();
+        // The SDK records failure only when execute throws, not from isError.
+        if ("isError" in result && result.isError) throw new Error(result.content.map((part: any) => part.text || "").join("\n"));
+        return result;
       },
     };
   }
@@ -716,7 +743,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       watch(id, worker.name, worker.categoryName);
     }
 
-    const finished: { id: string; name: string; categoryName: string; summary: { text: string; isError: boolean } }[] = [];
+    const finished: { id: string; name: string; categoryName: string; summary: WorkerReport }[] = [];
     for (const [childId, worker] of outstanding) {
       if (!isActive(expectedGeneration)) return;
       try {
@@ -724,16 +751,16 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         if (!isActive(expectedGeneration)) return;
         const running = Boolean(state?.runtime?.isRunning) || Number(state?.runtime?.pendingMessageCount || 0) > 0;
         if (running) continue;
-        let summary = { text: "", isError: false };
+        let summary = workerReport(null);
         try {
           const messages = await fetchMessages(childId);
           if (!isActive(expectedGeneration)) return;
-          summary = lastAssistantText(messages);
+          summary = workerReport(messages);
         } catch {
           if (!isActive(expectedGeneration)) return;
-          // Transcript fetch is best effort.
+          // Report unavailable and retain the watch so the poller retries.
         }
-        finished.push({ id: childId, name: worker.name, categoryName: worker.categoryName, summary });
+        if (finished.length < WAKEUP_BATCH_WORKERS) finished.push({ id: childId, name: trunc(worker.name, 80), categoryName: worker.categoryName, summary });
       } catch (error) {
         if (!isActive(expectedGeneration)) return;
         if (error instanceof ApiError && error.status === 404) {
@@ -755,24 +782,24 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     const details = {
       kind: "wakeup",
       catchUp: true,
-      workers: finished.map((f) => ({ sessionId: f.id, name: f.name, status: f.summary.isError ? "error" : "idle" })),
+      workers: finished.map((f) => ({ sessionId: f.id, name: f.name, status: f.summary.isError ? "error" : f.summary.outcome === "interrupted" ? "aborted" : f.summary.outcome === "report unavailable" ? "error" : "idle" })),
       stillRunning: Array.from(watched.values())
         .filter((worker) => !finishedIds.has(worker.id))
         .map((o) => ({ sessionId: o.id, name: o.name })),
       presentation: reportPresentation(
-        finished.length === 1 ? `${finished[0].name} · ${catchUpFailed ? "failed" : "finished"}` : `${finished.length} workers · ${catchUpFailed ? "completed with errors" : "finished"}`,
+        finished.length === 1 ? `${finished[0].name} · ${finished[0].summary.outcome}` : `${finished.length} workers · outcomes reported`,
         finished.map((worker) => worker.summary.text || "No final message captured").join(" · "),
         catchUpFailed ? "danger" : "accent",
       ),
     };
     const sections = finished.map((f) => [
-      `Worker "${f.name}" (session ${f.id}) finished while this session was offline.`,
+      `Worker "${f.name}" (session ${f.id}): ${f.summary.outcome} (catch-up).`,
       f.summary.text
-        ? `${f.summary.isError ? "⚠️ Its last turn ENDED WITH AN ERROR (task likely incomplete):\n" : "Final message:\n"}${trunc(f.summary.text, WAKEUP_SUMMARY_CHARS)}`
+        ? `${f.summary.isError ? "⚠️ Its last turn ENDED WITH AN ERROR (task likely incomplete):\n" : `${f.summary.outcome === "finished" ? "Final message" : "Last activity"}:\n`}${formatWorkerReport(f.summary, f.id)}`
         : `(no final message captured)`,
     ].join("\n"));
     const ok = await deliverWakeup([
-      `🔔 [orchestrator] Catch-up: ${finished.length === 1 ? "a worker" : `${finished.length} workers`} finished while this session was not loaded.`,
+      `🔔 [orchestrator] Catch-up: ${finished.length} worker outcome(s) reported.`,
       ``,
       sections.join("\n\n---\n\n"),
       ``,
@@ -781,6 +808,11 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration)) return;
     if (ok) {
       for (const f of finished) {
+        if (f.summary.outcome === "report unavailable") {
+          const w = watched.get(f.id);
+          if (w) w.unavailableReported = true;
+          continue;
+        }
         unwatch(f.id);
         appendLedger(RESOLVED_ENTRY, f.id);
         markChildRead(f.id);
@@ -851,7 +883,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!isActive(expectedGeneration) || pollInFlight) return;
     pollInFlight = true;
     try {
-      const completed: { w: Watched; summary: { text: string; isError: boolean } }[] = [];
+      const completed: { w: Watched; summary: WorkerReport }[] = [];
       for (const w of Array.from(watched.values())) {
         if (!isActive(expectedGeneration)) return;
         try {
@@ -871,16 +903,17 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           const settled = w.sawRunning ? w.idlePolls >= 1 : w.idlePolls >= 4;
           if (!settled) continue;
 
-          let summary = { text: "", isError: false };
+          let summary = workerReport(null);
           try {
             const messages = await fetchMessages(w.id);
             if (!isActive(expectedGeneration)) return;
-            summary = lastAssistantText(messages);
+            summary = workerReport(messages);
           } catch {
             if (!isActive(expectedGeneration)) return;
-            // Transcript fetch is best-effort.
+            // Report unavailable and retain the watch for another fetch.
           }
-          completed.push({ w, summary });
+          if (summary.outcome === "report unavailable" && w.unavailableReported) continue;
+          if (completed.length < WAKEUP_BATCH_WORKERS) completed.push({ w, summary });
         } catch {
           if (!isActive(expectedGeneration)) return;
           w.errorPolls += 1;
@@ -911,40 +944,43 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         const activeWorkers = Array.from(watched.values()).filter((w) => !completedIds.has(w.id));
         const stillRunning = activeWorkers.map((o) => `"${o.name}"`).join(", ");
         const completedWithError = completed.some(({ summary }) => summary.isError);
-        const allAborted = completed.every(({ w }) => w.aborted);
         const details = {
           kind: "wakeup",
           workers: completed.map(({ w, summary }) => ({
             sessionId: w.id,
             name: w.name,
-            status: w.aborted ? "aborted" : summary.isError ? "error" : "idle",
+            status: summary.outcome === "interrupted" ? "aborted" : summary.isError || summary.outcome === "report unavailable" ? "error" : "idle",
           })),
           stillRunning: activeWorkers.map((o) => ({ sessionId: o.id, name: o.name })),
           presentation: reportPresentation(
             completed.length === 1
-              ? `${completed[0].w.name} · ${completed[0].w.aborted ? "stopped" : completedWithError ? "failed" : "finished"}`
-              : `${completed.length} workers · ${allAborted ? "stopped" : completedWithError ? "completed with errors" : "finished"}`,
+              ? `${completed[0].w.name} · ${completed[0].summary.outcome}`
+              : `${completed.length} workers · outcomes reported`,
             completed.map(({ summary }) => summary.text || "No final message captured").join(" · "),
             completedWithError ? "danger" : "accent",
           ),
         };
         const sections = completed.map(({ w, summary }) => [
-          `Worker "${w.name}" (session ${w.id}) is now ${w.aborted ? "stopped (aborted)" : "idle"}.`,
+          `Worker "${w.name}" (session ${w.id}): ${summary.outcome}.`,
           summary.text
-            ? `${summary.isError ? "⚠️ Its last turn ENDED WITH AN ERROR (task likely incomplete — inspect with sessions_read, then retry or fix):\n" : "Final message:\n"}${trunc(summary.text, WAKEUP_SUMMARY_CHARS)}`
+            ? `${summary.isError ? "⚠️ Its last turn ENDED WITH AN ERROR (task likely incomplete — inspect with sessions_read, then retry or fix):\n" : `${summary.outcome === "finished" ? "Final message" : "Last activity"}:\n`}${formatWorkerReport(summary, w.id)}`
             : `(no final message captured)`,
         ].join("\n"));
         const ok = await deliverWakeup([
-          `🔔 [orchestrator] ${completed.length === 1 ? "A worker finished." : `${completed.length} workers finished.`}`,
+          `🔔 [orchestrator] ${completed.length} worker outcome(s) reported.`,
           ``,
           sections.join("\n\n---\n\n"),
           ``,
-          stillRunning ? `Still running: ${stillRunning}.` : `No other workers are running.`,
+          stillRunning ? `Still watched: ${trunc(stillRunning, 500)}.` : `No other workers are watched.`,
           `You can inspect details with sessions_read, follow up or redirect with sessions_prompt, or continue with your task.`,
         ].join("\n"), details, expectedGeneration);
         if (!isActive(expectedGeneration)) return;
         if (ok) {
-          for (const { w } of completed) {
+          for (const { w, summary } of completed) {
+            if (summary.outcome === "report unavailable") {
+              w.unavailableReported = true;
+              continue;
+            }
             unwatch(w.id);
             appendLedger(RESOLVED_ENTRY, w.id);
             // The report was consumed by this session on the user's behalf —

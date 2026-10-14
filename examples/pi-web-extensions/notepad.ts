@@ -31,6 +31,7 @@ const SETTINGS_ID = "global-notepad.settings";
 const MAX_TEXT_CHARS = 2_000;
 const MAX_ACTIVE_ENTRIES = 200;
 const MAX_TAGS = 8;
+const MAX_TAG_CHARS = 32;
 const ARCHIVE_AFTER_DAYS = 7;
 const MAX_PINNED_IN_PROMPT = 10;
 
@@ -199,7 +200,7 @@ function findDuplicate(store: NotepadStore, text: string) {
 function cleanTags(value: unknown): string[] {
   const raw = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : [];
   const tags = raw
-    .map((tag) => String(tag).trim().replace(/^#/, "").slice(0, 32))
+    .map((tag) => String(tag).trim().replace(/^#/, "").slice(0, MAX_TAG_CHARS))
     .filter(Boolean);
   return [...new Set(tags)].slice(0, MAX_TAGS);
 }
@@ -259,9 +260,9 @@ function touch(entry: NotepadEntry) {
 const toolParameters = Type.Object({
   action: StringEnum(["add", "list", "done", "drop", "edit", "pin", "unpin"] as const),
   id: Type.Optional(Type.String({ description: "Entry id (from list), required for done/drop/edit/pin/unpin" })),
-  text: Type.Optional(Type.String({ description: "Entry text (required for add, optional for edit)" })),
+  text: Type.Optional(Type.String({ maxLength: MAX_TEXT_CHARS, description: "Entry text (required for add, optional for edit)" })),
   kind: Type.Optional(StringEnum(["task", "note", "decision"] as const)),
-  tags: Type.Optional(Type.Array(Type.String())),
+  tags: Type.Optional(Type.Array(Type.String({ maxLength: MAX_TAG_CHARS }))),
   due: Type.Optional(Type.String({ description: 'Optional due date, "YYYY-MM-DD"' })),
   query: Type.Optional(Type.String({ description: "For list: case-insensitive text/tag filter" })),
   status: Type.Optional(StringEnum(["open", "done", "dropped", "all"] as const)),
