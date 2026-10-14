@@ -5,17 +5,24 @@ import type { PiWebExtensionAPI, PiWebExtensionContext } from "@ashwin-pc/pi-web
 const FOOTER_KEY = "local-git-footer";
 const REFRESH_MS = 2_500;
 const GIT_TIMEOUT_MS = 1_000;
+const CACHE_TTL_MS = 1_000;
+const COMPARISON_COOLDOWN_MS = 30_000;
+const MAX_CACHE_ENTRIES = 128;
 const execFileAsync = promisify(execFile);
 
 type GitResult = {
   ok: boolean;
   output: string;
+  notRepo?: boolean;
 };
 
 type GitRunner = (args: string[], cwd: string) => Promise<GitResult>;
 
 type GitSnapshot = {
   branch: string;
+  upstream?: string;
+  ahead?: number;
+  behind?: number;
   dirty: boolean;
   added: number;
   modified: number;
@@ -35,17 +42,49 @@ type SessionState = {
 
 const sessions = new Map<string, SessionState>();
 
+type CacheEntry = { pending?: Promise<string | undefined>; html?: string; expires: number };
+type FooterCache = Map<string, CacheEntry>;
+// Extension modules can be loaded separately for each runtime. Keep the default
+// runner's cache process-wide, including across those independent module loads.
+const cacheKey = Symbol.for("pi-web.git-footer.cache.v1");
+const sharedGlobal = globalThis as typeof globalThis & {
+  [cacheKey]?: { default: FooterCache; custom: WeakMap<GitRunner, FooterCache>; fallbackUntil?: Map<string, number> };
+};
+const caches = sharedGlobal[cacheKey] ??= { default: new Map(), custom: new WeakMap(), fallbackUntil: new Map<string, number>() };
+const fallbackUntil = caches.fallbackUntil ??= new Map<string, number>();
+
+function cacheFor(git: GitRunner): FooterCache {
+  if (git === runGit) return caches.default;
+  let cache = caches.custom.get(git);
+  if (!cache) caches.custom.set(git, cache = new Map());
+  return cache;
+}
+
 async function runGit(args: string[], cwd: string): Promise<GitResult> {
+  const skipComparison = (fallbackUntil.get(cwd) ?? 0) > Date.now();
+  if (!skipComparison) fallbackUntil.delete(cwd);
   try {
-    const { stdout } = await execFileAsync("git", ["--no-optional-locks", ...args], {
+    const { stdout } = await execFileAsync("git", ["--no-optional-locks", ...args, ...(skipComparison ? ["--no-ahead-behind"] : [])], {
       cwd,
+      env: { ...process.env, LC_ALL: "C" },
       encoding: "utf8",
       timeout: GIT_TIMEOUT_MS,
       killSignal: "SIGKILL",
+      maxBuffer: 1024 * 1024,
     });
-    return { ok: true, output: stdout.trim() };
-  } catch {
-    return { ok: false, output: "" };
+    return { ok: true, output: stdout };
+  } catch (error) {
+    const failure = error as { stderr?: string; killed?: boolean; signal?: string };
+    if (!skipComparison && (failure.killed || failure.signal === "SIGKILL")) {
+      // Keep one subprocess per refresh: the next refresh recovers branch/dirty
+      // state without the expensive commit walk, then retry counts after a pause.
+      for (const [key, until] of fallbackUntil) {
+        if (until <= Date.now() || fallbackUntil.size >= MAX_CACHE_ENTRIES) fallbackUntil.delete(key);
+      }
+      fallbackUntil.set(cwd, Date.now() + COMPARISON_COOLDOWN_MS);
+    }
+    const stderr = failure.stderr || "";
+    return { ok: false, output: "", notRepo: stderr.includes("not a git repository") || stderr.includes("must be run in a work tree") };
   }
 }
 
@@ -68,35 +107,40 @@ function escapeHtml(value: string) {
 }
 
 async function readSnapshot(cwd: string, git: GitRunner): Promise<GitSnapshot | null | undefined> {
-  const repo = await git(["rev-parse", "--is-inside-work-tree"], cwd);
-  if (!repo.ok) return undefined;
-  if (repo.output !== "true") return null;
-
-  const branchResult = await git(["branch", "--show-current"], cwd);
-  if (!branchResult.ok) return undefined;
-  let branch = branchResult.output;
-  if (!branch) {
-    const headResult = await git(["rev-parse", "--short", "HEAD"], cwd);
-    if (!headResult.ok) return undefined;
-    branch = headResult.output || "detached";
-  }
-
-  const statusResult = await git(["status", "--porcelain=v1", "--untracked-files=normal"], cwd);
-  if (!statusResult.ok) return undefined;
-  const lines = statusResult.output.split("\n").filter(Boolean);
+  const result = await git(["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=normal"], cwd);
+  if (!result.ok) return result.notRepo ? null : undefined;
+  let branch = "";
+  let oid = "";
+  let upstream: string | undefined;
+  let ahead: number | undefined;
+  let behind: number | undefined;
+  let dirty = false;
   const counts = { added: 0, modified: 0, deleted: 0, untracked: 0 };
-
-  for (const line of lines) {
-    const code = line.slice(0, 2);
-    if (code === "??") counts.untracked += 1;
-    else {
+  const records = result.output.split("\0");
+  for (let i = 0; i < records.length; i += 1) {
+    const record = records[i];
+    if (record.startsWith("# branch.head ")) branch = record.slice(14);
+    else if (record.startsWith("# branch.oid ")) oid = record.slice(13);
+    else if (record.startsWith("# branch.upstream ")) upstream = record.slice(18);
+    else if (record.startsWith("# branch.ab ")) {
+      const match = /^# branch\.ab \+(\d+) -(\d+)$/.exec(record);
+      if (match) { ahead = Number(match[1]); behind = Number(match[2]); }
+    } else if (record.startsWith("? ")) {
+      dirty = true;
+      counts.untracked += 1;
+    } else if (/^[12u] /.test(record)) {
+      dirty = true;
+      const code = record.slice(2, 4);
       if (code.includes("A")) counts.added += 1;
       if (code.includes("M") || code.includes("R") || code.includes("C")) counts.modified += 1;
       if (code.includes("D")) counts.deleted += 1;
+      // Renames/copies have a second NUL-delimited pathname, not another record.
+      if (record[0] === "2") i += 1;
     }
   }
-
-  return { branch, dirty: lines.length > 0, ...counts };
+  if (!branch) return undefined; // Incomplete/unexpected output must not replace a good footer.
+  if (branch === "(detached)") branch = oid && oid !== "(initial)" ? oid.slice(0, 7) : "detached";
+  return { branch, upstream, ahead, behind, dirty, ...counts };
 }
 
 function formatDetails(snapshot: GitSnapshot) {
@@ -120,11 +164,44 @@ async function renderFooter(cwd: string, git: GitRunner) {
 
   const status = snapshot.dirty ? `dirty${formatDetails(snapshot)}` : "clean";
   const dirtyColor = snapshot.dirty ? "#facc15" : "#86efac";
+  const comparisonKnown = snapshot.ahead !== undefined && snapshot.behind !== undefined;
+  const divergence = !comparisonKnown
+    ? "⇅?"
+    : snapshot.ahead === 0 && snapshot.behind === 0
+      ? "✓"
+      : [snapshot.ahead ? `↑${snapshot.ahead}` : "", snapshot.behind ? `↓${snapshot.behind}` : ""].filter(Boolean).join(" ");
+  const upstreamDetails = escapeHtml(`${snapshot.upstream}: ${comparisonKnown
+    ? `${snapshot.ahead} ahead, ${snapshot.behind} behind`
+    : "comparison unavailable"}. Last fetched local ref; no network fetching.`);
+  const upstream = snapshot.upstream
+    ? ` <span title="${upstreamDetails}" aria-label="${upstreamDetails}">${divergence}</span>`
+    : "";
 
   return `<div style="display:flex;justify-content:space-between;gap:16px;align-items:center;font:12px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace;color:#93a4b8">
-    <span>🌿 <strong style="color:#e7edf5">${escapeHtml(snapshot.branch)}</strong></span>
-    <span style="color:${dirtyColor}">● ${escapeHtml(status)}</span>
+    <span>🌿 <strong style="color:#e7edf5">${escapeHtml(snapshot.branch)}</strong>${upstream}</span>
+    <span title="${escapeHtml(status)}" aria-label="${escapeHtml(status)}" style="color:${dirtyColor}">●${escapeHtml(formatDetails(snapshot))}</span>
   </div>`;
+}
+
+function cachedFooter(cwd: string, git: GitRunner) {
+  const cache = cacheFor(git);
+  const now = Date.now();
+  const existing = cache.get(cwd);
+  if (existing?.pending) return existing.pending;
+  if (existing && existing.expires > now) return Promise.resolve(existing.html);
+  // Bound retained cwd entries without evicting work still in flight.
+  for (const [key, entry] of cache) {
+    if (!entry.pending && (entry.expires <= now || cache.size >= MAX_CACHE_ENTRIES)) cache.delete(key);
+  }
+  const entry: CacheEntry = { expires: 0 };
+  cache.set(cwd, entry);
+  entry.pending = renderFooter(cwd, git).catch(() => undefined).then((html) => {
+    entry.pending = undefined;
+    if (html === undefined) cache.delete(cwd); // Failures retry on the next refresh.
+    else { entry.html = html; entry.expires = Date.now() + CACHE_TTL_MS; }
+    return html;
+  });
+  return entry.pending;
 }
 
 export function createGitFooterExtension(options: {
@@ -139,7 +216,7 @@ export function createGitFooterExtension(options: {
     const revision = state.revision;
     const ctx = state.ctx;
     const key = sessionKey(ctx);
-    state.refreshing = renderFooter(sessionCwd(ctx), git)
+    state.refreshing = cachedFooter(sessionCwd(ctx), git)
       .catch(() => undefined)
       .then((html) => {
         if (html === undefined

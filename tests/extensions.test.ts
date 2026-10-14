@@ -538,11 +538,7 @@ describe("bundled extension path discovery", () => {
     try {
       const handlers = new Map<string, Array<(event: unknown, context: any) => unknown>>();
       const extension = createGitFooterExtension({
-        git: async (args) => {
-          if (args[0] === "rev-parse") return { ok: true, output: "true" };
-          if (args[0] === "branch") return { ok: true, output: "main" };
-          return { ok: true, output: "" };
-        },
+        git: async () => ({ ok: true, output: "# branch.head main\0# branch.oid abc1234\0" }),
       });
       extension({
         on(event: string, handler: (event: unknown, context: any) => unknown) {
