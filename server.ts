@@ -12,7 +12,7 @@ import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./serv
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { HttpError } from "./server/shared/httpError.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
-import { referenceTranscriptImages, resolveTranscriptImage } from "./server/session/transcriptImages.js";
+import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
@@ -1034,7 +1034,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const imageId = url.searchParams.get("imageId") || "";
         if (!sessionId || !imageId) return sendJson(res, 400, { ok: false, error: "sessionId and imageId are required" });
         const target = await sessionService.require(sessionId);
-        const image = resolveTranscriptImage(await sessionService.messages(target.sessionId), imageId);
+        const image = await sessionService.transcriptImage(target.sessionId, imageId);
         if (!image) return sendJson(res, 404, { ok: false, error: "Transcript image not found" });
         res.writeHead(200, {
           "content-type": image.mimeType,

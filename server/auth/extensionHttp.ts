@@ -29,6 +29,7 @@ const scopes = new Set<PiWebHttpScope>(["sessions.read", "sessions.create", "ses
 const routes: Readonly<Record<string, PiWebHttpScope>> = Object.freeze({
   "GET /api/state": "sessions.read",
   "GET /api/messages": "sessions.read",
+  "GET /api/messages/image": "sessions.read",
   "GET /api/session/reference": "sessions.read",
   "GET /api/models": "sessions.read",
   "POST /api/new-chat": "sessions.create",
@@ -146,12 +147,21 @@ export class ExtensionHttpRegistry {
   }
 
   private validateTarget(client: ClientRecord, method: string, url: URL, body: unknown) {
-    // GET routes permit sessionId; the exact-reference reader additionally accepts one validated entryId.
+    // Each read route explicitly permits only its own bounded selectors.
+    const selectors: Record<string, string> = {
+      "/api/session/reference": "entryId",
+      "/api/messages/image": "imageId",
+      "/api/messages": "images",
+    };
     for (const key of url.searchParams.keys()) {
-      if (method !== "GET" || (key !== "sessionId" && !(url.pathname === "/api/session/reference" && key === "entryId"))) {
+      if (method !== "GET" || (key !== "sessionId" && key !== selectors[url.pathname])) {
         throw new Error("Extension API query parameter is not permitted");
       }
     }
+    const imageIds = url.searchParams.getAll("imageId");
+    if (url.pathname === "/api/messages/image" && (imageIds.length !== 1 || !/^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([a-f0-9]{64})$/.test(imageIds[0]))) throw new Error("Unambiguous imageId is required");
+    const imageModes = url.searchParams.getAll("images");
+    if (imageModes.length && (imageModes.length !== 1 || imageModes[0] !== "inline")) throw new Error("Only images=inline is permitted");
     const entryIds = url.searchParams.getAll("entryId");
     if (entryIds.length && (entryIds.length !== 1 || !validId(entryIds[0]))) throw new Error("Unambiguous entryId is required");
     const value = body as Record<string, unknown>;

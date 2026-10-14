@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { JsonValue, MessageDto } from "./dto.js";
+import { isVisibleTranscriptMessage } from "./projection.js";
 
 interface EmbeddedImage {
   type: "image";
@@ -39,13 +40,36 @@ export function referenceTranscriptImages<T extends MessageDto>(messages: T[], s
   });
 }
 
+const imageReferencePattern = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([a-f0-9]{64})$/;
+
 export function resolveTranscriptImage(messages: MessageDto[], imageId: string): { data: Buffer; mimeType: string } | undefined {
-  const match = /^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([a-f0-9]{64})$/.exec(imageId);
+  const match = imageReferencePattern.exec(imageId);
   if (!match) return undefined;
   const message = messages[Number(match[1])];
   const raw = message?.raw;
   const image = raw && typeof raw === "object" && !Array.isArray(raw) && Array.isArray(raw.content) ? raw.content[Number(match[2])] : undefined;
-  if (!embeddedImage(image) || imageDigest(image) !== match[3]) return undefined;
+  return decodeReferencedImage(image, match[3]);
+}
+
+/** Resolve only the selected live block, without DTO projection or JSON copies.
+ * Visible indices match simplifyMessage, including hidden custom-message gaps.
+ */
+export function resolveRawTranscriptImage(messages: readonly unknown[], imageId: string): { data: Buffer; mimeType: string } | undefined {
+  const match = imageReferencePattern.exec(imageId);
+  if (!match) return undefined;
+  const requestedIndex = Number(match[1]);
+  let visibleIndex = 0;
+  for (const message of messages) {
+    if (!isVisibleTranscriptMessage(message)) continue;
+    if (visibleIndex++ !== requestedIndex) continue;
+    const image = Array.isArray(message.content) ? message.content[Number(match[2])] : undefined;
+    return decodeReferencedImage(image, match[3]);
+  }
+  return undefined;
+}
+
+function decodeReferencedImage(image: unknown, digest: string): { data: Buffer; mimeType: string } | undefined {
+  if (!embeddedImage(image) || imageDigest(image) !== digest) return undefined;
   // Do not serve HTML/SVG or arbitrary MIME types supplied by a tool as active
   // same-origin content. Typical provider-supported images are raster formats.
   if (!/^image\/(png|jpeg|gif|webp|bmp|avif)$/i.test(image.mimeType)) return undefined;

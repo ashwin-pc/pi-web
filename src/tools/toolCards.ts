@@ -590,7 +590,9 @@ export function createToolCards(messagesEl: HTMLDivElement, scrollToBottom: () =
     const card = document.createElement("div");
     card.className = "toolCard toolCard--error runtimeErrorCard";
     addCardHeader(card, presentation.title, presentation.subtitle);
-    if (presentation.technicalDetails) renderWhenVisible(card, () => addToolResultBody(card, presentation.technicalDetails!));
+    // Realtime mutates/expands these small error cards directly; their body must
+    // exist immediately so retries update it rather than leaving a stale callback.
+    if (presentation.technicalDetails) addToolResultBody(card, presentation.technicalDetails);
     messagesEl.append(card);
     onTranscriptChanged();
     return card;

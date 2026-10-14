@@ -17,6 +17,7 @@ import { EphemeralCaptureStore } from "../extensions/captureStore.js";
 import type { ResilientResourceLoader } from "../extensions/resilientLoader.js";
 import { mapPiEvent } from "./piEventMap.js";
 import { PiSessionHandle } from "./piHandle.js";
+import { resolveRawTranscriptImage } from "./transcriptImages.js";
 import { createSettingsStore } from "../settings.js";
 import type {
   BaseSessionStateDto,
@@ -555,6 +556,10 @@ export class LocalSessionService implements SessionService {
 
   async messages(sessionId: string): Promise<MessageDto[]> {
     return jsonSafe(this.runtimeFor(await this.require(sessionId)).messages());
+  }
+
+  async transcriptImage(sessionId: string, imageId: string): Promise<{ data: Buffer; mimeType: string } | undefined> {
+    return resolveRawTranscriptImage((await this.require(sessionId)).messages, imageId);
   }
 
   /** Read saved text only; never construct, steer, or navigate another runtime. */

@@ -73,7 +73,7 @@ await client.request("POST", "/api/session/name", { body: { name: "Reviewed" } }
 
 | Scope | Exact permitted HTTP operations |
 | --- | --- |
-| `sessions.read` | GET `/api/state`, `/api/messages`, `/api/models` |
+| `sessions.read` | GET `/api/state`, `/api/messages`, `/api/messages/image`, `/api/session/reference`, `/api/models` |
 | `sessions.create` | POST `/api/new-chat`, `/api/sessions/new` |
 | `sessions.write` | POST `/api/prompt`, `/api/abort`, `/api/session/name`, `/api/model`, `/api/session-ui-state/read` |
 | `sessions.delete` | POST `/api/sessions/delete` |
@@ -90,9 +90,12 @@ a caller-provided lineage claim. `sessionIds: [id, ...]` adds explicit targets;
 `all` because its tools deliberately operate on user-selected sessions and restored
 workers as well as newly spawned children. Neither route scope nor target scope is
 inferred from UI focus. Both are checked server-side even for a copied credential.
-GET routes accept only the single `sessionId` query parameter; POST routes accept
-no query parameters. Browser viewer identity headers are rejected, and extension
-requests never acquire or move browser viewer leases (including body `clientId`).
+GET routes accept a single `sessionId`. The exact-reference route additionally
+accepts one `entryId`; `/api/messages/image` requires one bounded `imageId`;
+`/api/messages` permits the optional `images=inline` compatibility selector.
+Unknown or duplicate selectors are rejected. POST routes accept no query
+parameters. Browser viewer identity headers are rejected, and extension requests
+never acquire or move browser viewer leases (including body `clientId`).
 
 Target restrictions are **not filesystem restrictions**: `sessions.create` accepts
 an arbitrary existing, accessible `cwd`, not just the owning session's workspace.
@@ -107,6 +110,34 @@ verified package provenance**. Access logs include the core-bound parent agent
 session and this label, never the credential. Scopes limit the supported API and
 credential blast radius; they do not sandbox malicious in-process extensions,
 prevent prompt-driven code execution, or introduce multi-user resource ownership.
+
+## Transcript images
+
+By default, `GET /api/messages` replaces embedded image `data` fields in
+`raw.content` with `imageUrl` references, retaining `type` and `mimeType`. Fetch
+those relative URLs with the same scoped client; each response returns the image
+bytes. Both history and image reads require `sessions.read`, and the usual
+session-target restrictions apply to both routes. Only raster image MIME types
+are served, with `nosniff` and `no-store` headers. References are content-addressed
+and may return 404 after history navigation or edits; refresh history in that case.
+
+```ts
+const history = await client.request("GET", "/api/messages");
+const { messages } = await history.json();
+for (const message of messages) {
+  for (const block of message.raw?.content || []) {
+    if (block.type === "image" && block.imageUrl) {
+      const image = await client.request("GET", block.imageUrl);
+      if (image.ok) await image.arrayBuffer(); // process the original image bytes
+    }
+  }
+}
+```
+
+Clients that still need embedded base64 image data can request
+`GET /api/messages?images=inline`. Live tool events retain their existing image
+representation. Transcript JSON negotiates gzip via `Accept-Encoding`; a normal
+fetch `Response` exposes the decoded body.
 
 ## Credentials and lifecycle
 

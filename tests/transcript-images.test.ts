@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MessageDto } from "../server/session/dto.js";
-import { referenceTranscriptImages, resolveTranscriptImage } from "../server/session/transcriptImages.js";
+import { referenceTranscriptImages, resolveRawTranscriptImage, resolveTranscriptImage } from "../server/session/transcriptImages.js";
 
 const imageData = Buffer.from("image bytes").toString("base64");
 const messages = (data = imageData, mimeType = "image/png"): MessageDto[] => [
@@ -40,6 +40,22 @@ describe("lazy transcript image transport", () => {
     }
     const svg = messages(imageData, "image/svg+xml");
     expect(resolveTranscriptImage(svg, imageUrl(referenceTranscriptImages(svg, "one")).searchParams.get("imageId")!)).toBeUndefined();
+  });
+
+  it("resolves only the selected raw block without serializing or touching other content", () => {
+    const target = messages()[0].raw as Record<string, unknown>;
+    // This target is at visible index 1, with its image at content index 1.
+    const imageId = String(content(referenceTranscriptImages([{ role: "user", text: "unrelated" }, messages()[0]], "one")[1])[1].imageUrl);
+    const reference = new URL(imageId, "http://localhost").searchParams.get("imageId")!;
+    const unrelated = { role: "user", get content(): never { throw new Error("Unrelated content must not be accessed"); }, toJSON(): never { throw new Error("No transcript JSON round-trip"); } };
+    const hidden = { role: "custom", display: false, get content(): never { throw new Error("Hidden content must not be accessed"); } };
+    target.toJSON = () => { throw new Error("Do not serialize the image message"); };
+    const raw = [null, hidden, unrelated, target];
+    for (let index = 0; index < 30; index++) {
+      expect(resolveRawTranscriptImage(raw, reference)?.data.equals(Buffer.from("image bytes"))).toBe(true);
+    }
+    expect(resolveRawTranscriptImage(raw, reference.replace(/^[^.]+/, "2"))).toBeUndefined();
+    expect(resolveRawTranscriptImage([unrelated, ...messages("changed").map((message) => message.raw)], reference)).toBeUndefined();
   });
 
   it("preserves text, tool calls and non-image blocks", () => {
