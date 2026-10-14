@@ -14,6 +14,41 @@ for line in sys.stdin:
 `;
 
 describe("dictation contribution settings", () => {
+  it("dispatches explicit Photon settings and defaults without falling back", async () => {
+    const root = await mkdtemp(join(tmpdir(), "dictation-settings-test-"));
+    const path = join(root, "capture.wav");
+    await writeFile(path, "audio");
+    const transcribe = vi.spyOn(DictationWorker.prototype, "transcribe").mockResolvedValue({ text: "photon" } as any);
+    try {
+      const handlers = new Map<string, (...args: any[]) => unknown>();
+      let contribution: any;
+      const values = { family: "parakeet", runtime: "photon", model: "", device: "cpu" };
+      const web = {
+        capabilities: { slots: ["composer-input"], kinds: ["capture"] },
+        contribute: (_key: string, value: unknown) => { contribution = value; },
+        registerSettings: async () => {},
+        getSettings: async () => ({ values }),
+      };
+      dictation({ on: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, handler) } as any);
+      await handlers.get("session_start")?.({}, { ui: { web, notify: () => {} } });
+      const event = { capture: { path, mimeType: "audio/wav" } };
+      await expect(contribution.invoke(event)).resolves.toMatchObject({ effects: [{ text: "photon" }] });
+      expect(transcribe).toHaveBeenLastCalledWith(path, expect.objectContaining({ family: "parakeet", runtime: "photon", model: "moondream/parakeet-redux", device: "cpu" }));
+      values.model = "custom/model";
+      await contribution.invoke(event);
+      expect(transcribe).toHaveBeenLastCalledWith(path, expect.objectContaining({ model: "custom/model" }));
+      values.device = "cuda";
+      await expect(contribution.invoke(event)).rejects.toThrow("CUDA is available only");
+      values.family = "whisper";
+      values.device = "cpu";
+      await expect(contribution.invoke(event)).rejects.toThrow("Whisper does not support");
+      expect(transcribe).toHaveBeenCalledTimes(2);
+    } finally {
+      transcribe.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("re-registers capture only when the capture maximum changes", async () => {
     const handlers = new Map<string, (...args: any[]) => unknown>();
     let settingsRegistration: any;
@@ -27,11 +62,23 @@ describe("dictation contribution settings", () => {
     dictation({ on: (name: string, handler: (...args: any[]) => unknown) => handlers.set(name, handler) } as any);
     await handlers.get("session_start")?.({}, { ui: { web, notify: () => {} } });
     expect(contributions).toHaveLength(1);
+    expect(settingsRegistration.fields.find((field: any) => field.key === "runtime").options).toContainEqual({ value: "photon", label: "Photon (Parakeet CPU; telemetry blocked by audited shim)" });
+    expect(settingsRegistration.fields.find((field: any) => field.key === "runtime").description).toContain("incompatible packages refuse inference");
+    expect(settingsRegistration.fields.find((field: any) => field.key === "runtime").description).toContain("Model downloads still use the network");
     settingsRegistration.onChange({ maxSeconds: 120, model: "changed" });
     settingsRegistration.onChange({ maxSeconds: 120, pythonPath: "changed" });
     expect(contributions).toHaveLength(1);
     settingsRegistration.onChange({ maxSeconds: 60 });
     expect(contributions).toHaveLength(2);
+  });
+});
+
+describe("Photon platform whitelist", () => {
+  it.each<[NodeJS.Platform, NodeJS.Architecture]>([["darwin", "arm64"], ["win32", "x64"], ["linux", "x64"], ["linux", "arm64"]])("accepts %s/%s", (hostPlatform, hostArch) => {
+    expect(() => validateCombination("parakeet", "photon", hostPlatform, hostArch)).not.toThrow();
+  });
+  it.each<[NodeJS.Platform, NodeJS.Architecture]>([["darwin", "x64"], ["win32", "arm64"], ["linux", "ia32"], ["linux", "riscv64"], ["freebsd", "x64"]])("rejects %s/%s", (hostPlatform, hostArch) => {
+    expect(() => validateCombination("parakeet", "photon", hostPlatform, hostArch)).toThrow("not configured");
   });
 });
 
@@ -190,6 +237,16 @@ for number, line in enumerate(sys.stdin, 1):
     expect(() => resolveRuntime("parakeet", "auto", "win32", "x64")).toThrow("no portable runtime");
     expect(() => validateCombination("whisper", "mlx", "linux", "x64")).toThrow("Apple Silicon");
     expect(() => validateCombination("parakeet", "faster-whisper", "win32", "x64")).toThrow("Parakeet only through MLX");
+  });
+
+  it("keeps Photon opt-in with a family-specific default and rejects Whisper/Photon", () => {
+    expect(resolveRuntime("parakeet", "photon", "linux", "x64")).toBe("photon");
+    expect(defaultModel("parakeet", "photon")).toBe("moondream/parakeet-redux");
+    expect(() => validateCombination("parakeet", "photon", "linux", "x64")).not.toThrow();
+    expect(() => validateCombination("whisper", "photon", "linux", "x64")).toThrow("Whisper does not support");
+    expect(() => defaultModel("whisper", "photon")).toThrow("Unsupported");
+    expect(() => validateCombination("parakeet", "photon", "freebsd", "x64")).toThrow("not configured");
+    expect(() => resolveRuntime("parakeet", "auto", "linux", "x64")).toThrow("Select Photon explicitly");
   });
 
   it.each([

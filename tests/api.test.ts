@@ -1,4 +1,4 @@
-import { isolatedAuthEnv } from "./auth-isolation.js";
+import { isolatedAuthEnv as baseAuthEnv } from "./auth-isolation.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
@@ -69,7 +69,12 @@ async function waitForCondition(predicate: () => Promise<boolean> | boolean, tim
 }
 
 // API-only suites do not need a Vite optimizer for every ephemeral port.
+// PI_WEB_DEV=0 alone cannot override an inherited NODE_ENV=development.
 // Frontend/HMR integration remains covered by the browser suites.
+function isolatedAuthEnv(): NodeJS.ProcessEnv {
+  return { ...baseAuthEnv(), NODE_ENV: "test" };
+}
+
 describe("pi-web mock API", () => {
   let child: ChildProcess;
   let baseUrl: string;
