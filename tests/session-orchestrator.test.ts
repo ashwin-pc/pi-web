@@ -244,6 +244,19 @@ describe("issue 190 quick fixes", () => {
     expect(workerReport([]).outcome).toBe("interrupted");
   });
 
+  it("prioritizes terminal assistant errors over partial tool calls, but preserves explicit aborts", () => {
+    const message = {
+      role: "assistant", text: "[API Error] stream ended unexpectedly", isError: true,
+      raw: { stopReason: "error" },
+      toolCalls: [{ id: "partial-call", toolName: "bash", args: {} }],
+    };
+    expect(workerReport([message])).toMatchObject({ outcome: "failed", isError: true });
+    expect(workerReport([{ ...message, isError: false }])).toMatchObject({ outcome: "failed", isError: true });
+    expect(workerReport([{ ...message, raw: {} }])).toMatchObject({ outcome: "failed", isError: true });
+    expect(workerReport([{ ...message, raw: { stopReason: "aborted" } }])).toMatchObject({ outcome: "interrupted", isError: false });
+    expect(workerReport([{ role: "toolResult", text: "command failed", isError: true }])).toMatchObject({ outcome: "interrupted", isError: false });
+  });
+
   it("keeps labelled head and evidence tail inside 2000 chars with exact final-entry link", () => {
     const head = "Outcome: fixed\nChanged: src/a.ts\nVerified: tests pass\nBlocked: none\n";
     const text = head + "middle ".repeat(700) + "TAIL: concrete evidence";

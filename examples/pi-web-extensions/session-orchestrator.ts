@@ -156,8 +156,11 @@ export function workerReport(messages: any[] | null): WorkerReport {
   const m = messages.at(-1);
   const text = typeof m?.text === "string" ? m.text.trim() : "";
   const reason = m?.raw?.stopReason ?? m?.stopReason;
-  const interrupted = reason === "aborted" || m?.role !== "assistant" || m?.toolCalls?.length > 0 || reason === "toolUse";
-  const outcome = interrupted ? "interrupted" : m?.isError || reason === "error" ? "failed" : text ? "finished" : "interrupted";
+  // A failed assistant stream can contain partial tool calls. Its terminal
+  // error takes precedence over those calls, but an explicit abort does not.
+  const terminalError = m?.role === "assistant" && (m?.isError || reason === "error");
+  const interrupted = m?.role !== "assistant" || m?.toolCalls?.length > 0 || reason === "toolUse";
+  const outcome = reason === "aborted" ? "interrupted" : terminalError ? "failed" : interrupted ? "interrupted" : text ? "finished" : "interrupted";
   return { text: text || "No terminal assistant reply; last activity: " + (m?.role || "empty transcript"), isError: outcome === "failed", outcome, entryId: m?.entryId };
 }
 
