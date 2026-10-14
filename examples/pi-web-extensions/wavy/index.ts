@@ -1,8 +1,9 @@
 import type { PiWebExtensionAPI } from "@ashwin-pc/pi-web/extensions";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { truncateHead } from "@earendil-works/pi-coding-agent";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { readFile, realpath, stat } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -32,6 +33,28 @@ const settingsFields = Type.Object({
   steps: Type.Optional(Type.Integer(bounds(SETTINGS_LIMITS.steps))),
 }, { additionalProperties: false });
 const revisionField = Type.Integer({ minimum: 1, description: "Current composition revision from inspect; rejects stale edits." });
+
+const internalParameters = Type.Object({
+      action: StringEnum(["generate", "create", "inspect", "revise", "source", "export", "status", "compose", "render", "transcribe"] as const),
+      path: pathField,
+      title: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
+      lyrics: Type.Optional(Type.String({ maxLength: 32000 })),
+      style: Type.Optional(Type.String({ maxLength: 16000 })),
+      score: Type.Optional(Type.String({ maxLength: 128000, description: "Optional canonical ABC. Create/revise only save it; generate renders it as authoritative written music." })),
+      remove_score: Type.Optional(Type.Boolean()),
+      settings: Type.Optional(settingsFields),
+      expected_revision: Type.Optional(revisionField),
+      summary: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
+      source_path: Type.Optional(Type.String({ minLength: 1, maxLength: 2000, description: "For source: explicit local attachment path to copy; never deletes original." })),
+      source_label: Type.Optional(Type.String({ maxLength: 160 })),
+      seed: seedField,
+      count: Type.Optional(Type.Integer({ minimum: 1, maximum: 4 })),
+      source_id: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+      apply_score: Type.Optional(Type.Boolean()),
+      take_id: Type.Optional(Type.String({ maxLength: 100, description: "For inspect: return the host-owned audio link for this take instead of the latest recording." })),
+    }, { additionalProperties: false });
+const musicParameters = Type.Object({ ...internalParameters.properties, path: Type.Optional(pathField) }, { additionalProperties: false });
+type Execute = ToolDefinition<typeof internalParameters>["execute"];
 
 function result(text: string, details: Record<string, unknown> = {}) {
   const shortened = truncateHead(text, { maxBytes: 40_000, maxLines: 700 });
@@ -110,30 +133,7 @@ export default function wavy(pi: PiWebExtensionAPI) {
     ctx.ui?.web?.contribute?.(KEY, undefined);
   });
 
-  pi.registerTool({
-    name: "wavy", label: "Wavy project",
-    description: "Create, inspect, revise, attach source audio, or export a Wavy song. Native lyrics/style/settings/ABC live outside the index; revisions and recordings are preserved. Paths are artifact-relative. Inspect before revising; expected_revision prevents overwriting newer work. Export produces a portable archive. Never edits audio or starts inference. Output bounded to 40 KB.",
-    promptSnippet: "Create and edit Wavy music projects, inspect native compositions, attach audio, and export bundles",
-    promptGuidelines: [
-      "Use wavy for Wavy project changes rather than editing immutable revision files or the index directly. Read its skill for composition/rendering workflows.",
-      "After using wavy, include the returned .wavy artifact link so the user sees the score and lyrics inline. Use the returned audio link if sandbox playback is unavailable.",
-    ],
-    parameters: Type.Object({
-      action: StringEnum(["create", "inspect", "revise", "source", "export"] as const),
-      path: pathField,
-      title: Type.Optional(Type.String({ minLength: 1, maxLength: 160 })),
-      lyrics: Type.Optional(Type.String({ maxLength: 32000 })),
-      style: Type.Optional(Type.String({ maxLength: 16000 })),
-      score: Type.Optional(Type.String({ maxLength: 128000, description: "Canonical ABC written music; supplying it does not generate audio." })),
-      remove_score: Type.Optional(Type.Boolean()),
-      settings: Type.Optional(settingsFields),
-      expected_revision: Type.Optional(revisionField),
-      summary: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
-      source_path: Type.Optional(Type.String({ minLength: 1, maxLength: 2000, description: "For source: explicit local attachment path to copy; never deletes original." })),
-      source_label: Type.Optional(Type.String({ maxLength: 160 })),
-      take_id: Type.Optional(Type.String({ maxLength: 100, description: "For inspect: return the host-owned audio link for this take instead of the latest recording." })),
-    }, { additionalProperties: false }),
-    async execute(_id, params, signal, _onUpdate, ctx) {
+  const executeProject: Execute = async (_id, params, signal, _onUpdate, ctx) => {
       signal?.throwIfAborted();
       const { createProject, exportProject, importSource, loadProject, reviseProject } = await loadStore();
       if (params.action === "create") {
@@ -164,27 +164,16 @@ export default function wavy(pi: PiWebExtensionAPI) {
         files: project.index.revisions.at(-1)?.files,
         sources: project.index.sources, takes: project.index.takes.slice(-20),
       }, null, 2), base.details);
-    },
-  });
+    };
 
-  pi.registerTool({
-    name: "wavy_status", label: "Wavy engines",
-    description: "Check local YuE2 and SheetSage2 configuration without loading or downloading model weights. Reports setup requirements; does not run inference.",
-    parameters: Type.Object({}),
-    async execute() { const { engineStatus } = await loadEngines(); const status = await engineStatus(); return result(JSON.stringify(status, null, 2)); },
-  });
+  const executeStatus: Execute = async () => { const { engineStatus } = await loadEngines(); const status = await engineStatus(); return result(JSON.stringify(status, null, 2)); };
 
-  pi.registerTool({
-    name: "wavy_compose", label: "Compose written music",
-    description: "Use local YuE2 to plan ABC melody/chords from this Wavy project's lyrics and requested style, then save a new revision. Does not synthesize singing/audio. Non-commercial weights. Current revision required; stale results are retained but never overwrite a newer composition. No waveform inpainting or singer cloning.",
-    promptSnippet: "Plan a Wavy composition with local YuE2 before generating its recording",
-    parameters: Type.Object({ path: pathField, expected_revision: revisionField, seed: seedField }, { additionalProperties: false }),
-    async execute(_id, params, signal, onUpdate, ctx) {
+  const executeCompose: Execute = async (_id, params, signal, onUpdate, ctx) => {
       return operation(signal, async abortSignal => {
         const [{ loadProject, newOperationDir, reviseProject }, { planComposition }] = await Promise.all([loadStore(), loadEngines()]);
         const project = await loadProject(ctx.cwd, params.path);
-        if (project.index.revision !== params.expected_revision) throw new Error("Composition changed. Inspect Wavy before composing.");
-        if (project.head.settings.planning === "off") throw new Error("Set planning to melody or full with wavy revise before composing.");
+        if (project.index.revision !== required(params.expected_revision, "expected_revision")) throw new Error("Composition changed. Inspect Wavy before composing.");
+        if (project.head.settings.planning === "off") throw new Error("Set planning to melody or full with music revise before composing.");
         const outputDir = await newOperationDir(ctx.cwd, params.path, "compose");
         const seed = params.seed ?? randomInt(2147483648);
         const progress = (text: string) => onUpdate?.(result(text.slice(-3000)));
@@ -197,28 +186,19 @@ export default function wavy(pi: PiWebExtensionAPI) {
         if ((await stat(rawPlanPath)).size > 512000) throw new Error(`Plan provenance is too large; retained in ${outputDir}.`);
         const rawPlan = await readFile(rawPlanPath, "utf8");
         const saved = await reviseProject(ctx.cwd, params.path, {
-          expectedRevision: params.expected_revision, origin: "yue", summary: "YuE2 written-music plan",
+          expectedRevision: required(params.expected_revision, "expected_revision"), origin: "yue", summary: "YuE2 written-music plan",
           score: planned.score, provenance: { operation: "compose", seed, baseRevision: params.expected_revision,
             requestedSettings: project.head.settings, rawPlan, result: planned.result },
         });
         return projectResult(saved, "Saved YuE2's written music. Audition the notes in the preview; ask for a recording when ready.", ctx.cwd);
       });
-    },
-  });
+    };
 
-  pi.registerTool({
-    name: "wavy_render", label: "Record Wavy composition",
-    description: "Generate a full local YuE2 performance from the project's exact saved ABC/lyrics/style/settings. Preserves older recordings and revision inputs. No audio inpainting: edited music creates a new performance. Uses BF16 by default. Non-commercial weights. Safety token ceiling is NOT a duration/phrasing control. count generates sequential takes of the same captured composition. Without saved score, requires planning=off for an explicitly direct generation.",
-    promptSnippet: "Render a saved Wavy composition into one or more local YuE2 takes",
-    parameters: Type.Object({
-      path: pathField, expected_revision: revisionField, seed: seedField,
-      count: Type.Optional(Type.Integer({ minimum: 1, maximum: 4 })),
-    }, { additionalProperties: false }),
-    async execute(_id, params, signal, onUpdate, ctx) {
+  const executeRender: Execute = async (_id, params, signal, onUpdate, ctx) => {
       return operation(signal, async abortSignal => {
         const [{ beginTake, finishTake, loadProject }, { renderComposition }] = await Promise.all([loadStore(), loadEngines()]);
         const project = await loadProject(ctx.cwd, params.path);
-        if (project.index.revision !== params.expected_revision) throw new Error("Composition changed. Inspect Wavy before rendering.");
+        if (project.index.revision !== required(params.expected_revision, "expected_revision")) throw new Error("Composition changed. Inspect Wavy before rendering.");
         if (!project.head.score && project.head.settings.planning !== "off") throw new Error("Compose or supply an ABC score first. For deliberate direct audio generation set planning=off.");
         const count = params.count ?? 1;
         const firstSeed = params.seed ?? randomInt(2147483648);
@@ -250,22 +230,15 @@ export default function wavy(pi: PiWebExtensionAPI) {
         }
         return projectResult(latest, `Saved ${count} new recording${count === 1 ? "" : "s"}. Check completion/truncation metadata before treating a take as finished.`, ctx.cwd);
       });
-    },
-  });
+    };
 
-  pi.registerTool({
-    name: "wavy_transcribe", label: "Transcribe source melody",
-    description: "Use local SheetSage2 on a source previously attached with wavy source. Retains original audio, raw timed events and draft ABC. Does not transcribe lyrics; humming accuracy and quantization require review. Does not replace the composition unless apply_score=true with expected_revision. Never automatically installs/downloads models. Non-commercial weights.",
-    parameters: Type.Object({
-      path: pathField, source_id: Type.String({ minLength: 1, maxLength: 100 }),
-      apply_score: Type.Optional(Type.Boolean()), expected_revision: Type.Optional(revisionField),
-    }, { additionalProperties: false }),
-    async execute(_id, params, signal, onUpdate, ctx) {
+  const executeTranscribe: Execute = async (_id, params, signal, onUpdate, ctx) => {
       return operation(signal, async abortSignal => {
         const [{ attachTranscription, loadProject, newOperationDir, resolveFile, reviseProject }, { transcribeSource }] = await Promise.all([loadStore(), loadEngines()]);
         const project = await loadProject(ctx.cwd, params.path);
         if (params.apply_score && required(params.expected_revision, "expected_revision") !== project.index.revision) throw new Error("Composition changed. Inspect Wavy before applying a transcription.");
-        const source = project.index.sources.find(item => item.id === params.source_id);
+        const sourceId = required(params.source_id, "source_id");
+        const source = project.index.sources.find(item => item.id === sourceId);
         if (!source) throw new Error("Source not found. Inspect Wavy for source IDs.");
         const audioPath = await resolveFile(project, source.audio);
         const outputDir = await newOperationDir(ctx.cwd, params.path, "transcribe");
@@ -275,13 +248,46 @@ export default function wavy(pi: PiWebExtensionAPI) {
           events: { events: transcribed.events, result: transcribed.result }, score: transcribed.score,
         });
         if (params.apply_score) saved = await reviseProject(ctx.cwd, params.path, {
-          expectedRevision: params.expected_revision!, origin: "transcription", summary: "Draft score from source transcription; review required",
+          expectedRevision: required(params.expected_revision, "expected_revision"), origin: "transcription", summary: "Draft score from source transcription; review required",
           score: transcribed.score, provenance: { operation: "transcribe", sourceId: source.id, result: transcribed.result },
         });
         return projectResult(saved, params.apply_score
           ? "Saved transcription as a draft composition. Review pitches, octave, rhythm, and chords; original timed events are preserved."
           : "Saved source transcription and draft ABC for review. Current composition and recordings are unchanged.", ctx.cwd);
       });
+    };
+  pi.registerTool({
+    name: "music", label: "Music",
+    description: "Generate a local YuE2 song and retain a Wavy project, immutable revisions and takes. Generate needs lyrics/style, not a score; BF16 default, planning off without score. Optional advanced actions: create, inspect, revise, compose, render, source, transcribe, export, status. Inspect before revising; expected_revision guards edits/composition/render. Explicitly configured local engines use non-commercial weights; no singer cloning or audio inpainting. Semantic ceiling is safety, not duration. Returns Wavy and audio artifact links.",
+    promptSnippet: "Generate music or manage retained Wavy projects and recordings",
+    promptGuidelines: ["Use music for music generation and Wavy changes. Read its skill. Include returned .wavy and audio links. Never edit immutable revision files."],
+    parameters: musicParameters,
+    async execute(id, input, signal, onUpdate, ctx) {
+      if (input.action === "status") return executeStatus(id, { ...input, path: "" }, signal, onUpdate, ctx);
+      if (input.action === "generate") {
+        if (!input.lyrics?.trim() || !input.style?.trim()) throw new Error("generate requires non-empty lyrics and style.");
+        if (input.score !== undefined && !input.score.trim()) throw new Error("Supplied score must be non-empty.");
+        const planning = input.score ? (input.settings?.planning ?? "full") : "off";
+        if (input.score && planning === "off") throw new Error("A score requires planning melody or full.");
+        if (!input.score && input.settings?.planning && input.settings.planning !== "off") throw new Error("Generate without a score uses planning off. Use create then compose for written music.");
+        signal?.throwIfAborted();
+        const path = input.path ?? `music/song-${randomUUID()}.wavy`;
+        const { createProject } = await loadStore();
+        const project = await createProject(ctx.cwd, {
+          path, title: input.title ?? "New song", lyrics: input.lyrics, style: input.style,
+          score: input.score, settings: { ...input.settings, planning },
+        });
+        onUpdate?.(projectResult(project, "Created music project; recording next.", ctx.cwd));
+        return executeRender(id, { ...input, action: "render", path, expected_revision: 1 }, signal, onUpdate, ctx);
+      }
+      const params = { ...input, path: required(input.path, "path") };
+      switch (input.action) {
+        case "compose": return executeCompose(id, params, signal, onUpdate, ctx);
+        case "render": return executeRender(id, params, signal, onUpdate, ctx);
+        case "transcribe": return executeTranscribe(id, params, signal, onUpdate, ctx);
+        default: return executeProject(id, params, signal, onUpdate, ctx);
+      }
     },
   });
+
 }

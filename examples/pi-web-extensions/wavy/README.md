@@ -53,15 +53,17 @@ The agent should return the `.wavy` artifact link after each operation. Reopen t
 
 ### Tools
 
-| Tool | Purpose |
-| --- | --- |
-| `wavy` | `create`, `inspect`, `revise`, `source`, `export` |
-| `wavy_status` | Check local backend configuration without loading weights |
-| `wavy_compose` | YuE2 → ABC written music, no audio synthesis |
-| `wavy_render` | Saved composition → a new full YuE2 performance; optional sequential takes |
-| `wavy_transcribe` | Attached audio → retained timed events and draft ABC |
+One public tool, **`music`**, owns all actions. `generate` needs lyrics and style, but no score; it creates a retained Wavy project and records with YuE2. Optional title/path are generated when omitted. `create` makes a project without inference; `inspect`, `revise`, `source`, and `export` manage it. Advanced `compose`, `render`, `transcribe`, and `status` preserve planning, sequential takes, source drafts, and lightweight prerequisite checks.
 
-`wavy revise`, `wavy_compose`, and `wavy_render` require the expected composition revision. Inspect before changing a project. A stale model result never silently replaces newer written music. Transcription does not replace the composition unless `apply_score` is explicitly requested.
+```json
+{"action":"generate","lyrics":"[Verse]\nYour lyrics here","style":"warm acoustic folk"}
+{"action":"inspect","path":"music/song-<returned-id>.wavy"}
+{"action":"render","path":"music/song-<returned-id>.wavy","expected_revision":1,"count":2}
+```
+
+Migration: replace `wavy` calls with `music` using the same action; replace `wavy_status`, `wavy_compose`, `wavy_render`, and `wavy_transcribe` with `music` actions `status`, `compose`, `render`, and `transcribe`. No old tool-name aliases are registered. Existing projects, revisions, and takes require no format migration. If standalone YuE/MiniMax registration files are installed locally, disable those registrations separately to avoid competing public music tools; this package does not modify user-installed extensions or model environments. Reload every existing session to discover the new surface; already-loaded tools are not changed automatically.
+
+`music revise`, `music compose`, and `music render` require the expected composition revision. Inspect before changing a project. A stale model result never silently replaces newer written music. Transcription does not replace the composition unless `apply_score` is explicitly requested.
 
 Long engine tools run as cancellable tool calls, not detached jobs. Progress appears in the tool transcript. Abort/reload stops their subprocesses; completed takes, failed-run diagnostics, and prior revisions remain on disk. There is no automatic renderer refresh, inline/expanded playback handoff, or model invocation from browser controls.
 
@@ -73,13 +75,13 @@ The project format, editing, preview, and synthesized-note audition do not requi
 
 Wavy's extension-owned Python bridge imports the existing community `npario/YuE2-3B-MLX` implementation. This is YuE2—not original YuE and not a ComfyUI workflow. Configure `WAVY_YUE_ROOT` to the local `yue-local` checkout with its isolated `.venv`, backend code, and model assets. The default location is `~/projects/yue-local`.
 
-The pre-existing `yue_music_generate` tool and its legacy defaults are unchanged. Wavy's defaults are **BF16**, **full melody/chord planning**, and a **9,000 semantic-token safety ceiling**. Optional 4-bit refers to that backend's mixed 4-bit AR / 8-bit NAR model. Changing the ceiling does not specify a duration or improve phrasing. Natural end and ceiling-limited output must be distinguished using completion metadata.
+The canonical `music generate` defaults are **BF16**, **direct/off planning** without a score, and a **9,000 semantic-token safety ceiling**. Advanced `create` retains full melody/chord planning by default; supplying a score to generate uses full planning unless melody is requested. Optional 4-bit refers to that backend's mixed 4-bit AR / 8-bit NAR model. Changing the ceiling does not specify a duration or improve phrasing. Natural end and ceiling-limited output must be distinguished using completion metadata.
 
 Supported controls are validated centrally: precision, planning mode, semantic token ceiling, semantic CFG, temperature, top-p, top-k, and synthesis steps. A project can deliberately use `planning: "off"` for direct audio generation with no saved score. Otherwise, compose or supply ABC before rendering.
 
 ### SheetSage2
 
-SheetSage2 is an optional, separately configured Python/model environment. See [engine setup](engine/README.md) for its actual adapter contract and local dependencies. `wavy_status` reports availability; missing prerequisites produce an actionable error rather than fabricated transcription. Do not reuse or mutate the YuE/MiniMax environments to install transcription dependencies.
+SheetSage2 is an optional, separately configured Python/model environment. See [engine setup](engine/README.md) for its actual adapter contract and local dependencies. `music status` reports availability; missing prerequisites produce an actionable error rather than fabricated transcription. Do not reuse or mutate the YuE/MiniMax environments to install transcription dependencies.
 
 SheetSage2 does **not** transcribe lyrics. Melody, chord, beat, meter, and related estimates require review, especially for humming and sparse clips. Retain original audio and raw timed events: the draft ABC necessarily quantizes timing. No calibrated per-note confidence or automatic “correct transcription” label is invented.
 
@@ -87,7 +89,7 @@ SheetSage2 does **not** transcribe lyrics. Melody, chord, beat, meter, and relat
 
 Score audition uses an explicitly labelled WebAudio oscillator. It makes no soundfont, model, recording, or network request and preserves the pitches and timing parsed from the saved ABC; it is not a preview of the final singer or production. Generated singing is **not** assumed to align exactly with the notation.
 
-pi-web renders the self-contained document in `sandbox="allow-scripts"` without `allow-same-origin`. Wavy declares no preview assets or host callbacks. Generated recordings are available only through ordinary tool-returned host-player links; `wavy inspect` accepts `take_id` to return a selected take's link. The HTML stays under the host's 1 MB response limit, including its pinned ABCjs library.
+pi-web renders the self-contained document in `sandbox="allow-scripts"` without `allow-same-origin`. Wavy declares no preview assets or host callbacks. Generated recordings are available only through ordinary tool-returned host-player links; `music inspect` accepts `take_id` to return a selected take's link. The HTML stays under the host's 1 MB response limit, including its pinned ABCjs library.
 
 ## Files and integrity
 

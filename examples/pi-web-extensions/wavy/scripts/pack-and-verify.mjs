@@ -63,8 +63,8 @@ const result = loader.getExtensions();
 if (result.errors.length) throw new Error(JSON.stringify(result.errors));
 const extension = result.extensions.find(item => item.path.endsWith("/index.ts"));
 const tools = extension ? [...extension.tools.keys()] : [];
-for (const expected of ["wavy", "wavy_status", "wavy_compose", "wavy_render", "wavy_transcribe"]) {
-  if (!tools.includes(expected)) throw new Error("clean discovery missing " + expected + ": " + tools.join(", "));
+if (tools.length !== 1 || tools[0] !== "music") {
+  throw new Error("clean discovery expected only music: " + tools.join(", "));
 }
 console.log("Clean packed Wavy install discovered all runtime tools.");
 `);

@@ -20,7 +20,7 @@ vi.mock("../../engines.js", () => ({
 import wavy from "../../index.js";
 import { loadProject } from "../../store.js";
 
-type Tool = { name: string; execute: (...args: any[]) => Promise<any> };
+type Tool = { name: string; parameters: any; execute: (...args: any[]) => Promise<any> };
 type Handler = (...args: any[]) => any;
 
 function harness(cwd: string) {
@@ -66,7 +66,7 @@ beforeEach(async () => {
 afterEach(async () => { await Promise.all(dirs.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
 async function create(h: ReturnType<typeof harness>, extra: Record<string, unknown> = {}) {
-  return h.call("wavy", { action: "create", path: "songs/demo.wavy", title: "Demo [song]", lyrics: "la", style: "folk", ...extra });
+  return h.call("music", { action: "create", path: "songs/demo.wavy", title: "Demo [song]", lyrics: "la", style: "folk", ...extra });
 }
 
 async function finishFiles(outputDir: string, seed: number) {
@@ -81,7 +81,13 @@ async function finishFiles(outputDir: string, seed: number) {
 describe("Wavy extension entrypoint", () => {
   it("registers only Wavy tools/events and discovers its bundled skill", async () => {
     const h = harness(cwd);
-    expect([...h.tools.keys()]).toEqual(["wavy", "wavy_status", "wavy_compose", "wavy_render", "wavy_transcribe"]);
+    expect([...h.tools.keys()]).toEqual(["music"]);
+    const schema = h.tools.get("music")!.parameters;
+    expect(schema.required).toEqual(["action"]);
+    expect(schema.properties.action.enum).toEqual(["generate", "create", "inspect", "revise", "source", "export", "status", "compose", "render", "transcribe"]);
+    expect(schema.additionalProperties).toBe(false);
+    expect(schema.properties.count.maximum).toBe(4);
+    expect(schema.properties.settings.properties.maxSemanticTokens.maximum).toBe(16384);
     expect(h.handlers.has("resources_discover")).toBe(true);
     expect(h.handlers.has("session_start")).toBe(true);
     expect(h.handlers.has("session_shutdown")).toBe(true);
@@ -91,17 +97,70 @@ describe("Wavy extension entrypoint", () => {
     expect(resources.skillPaths[0]).toMatch(/wavy\/skill\/SKILL\.md$/);
   });
 
+  it("generates directly into retained projects with BF16 defaults and immutable takes", async () => {
+    const h = harness(cwd);
+    engines.render.mockImplementation(async (input: any) => ({
+      audioPath: await finishFiles(input.outputDir, input.seed), result: { finishReason: "eos" },
+    }));
+    const made = await h.call("music", { action: "generate", lyrics: "[Verse]\nHello", style: "quiet folk", seed: 11 });
+    expect(made.details.path).toMatch(/^\/api\/artifacts\/music\/song-[\w-]+\.wavy$/);
+    expect(made.details.audio).toContain("/takes/");
+    let p = await loadProject(cwd, made.details.path);
+    expect(p.head.score).toBeUndefined();
+    expect(p.head.settings).toMatchObject({ precision: "bf16", planning: "off", maxSemanticTokens: 9000 });
+    expect(engines.plan).not.toHaveBeenCalled();
+    const first = structuredClone(p.index.takes[0]);
+    const original = p.index.revisions[0].files;
+    await h.call("music", { action: "inspect", path: made.details.path });
+    await h.call("music", { action: "export", path: made.details.path });
+    expect(engines.render).toHaveBeenCalledTimes(1);
+    await h.call("music", { action: "revise", path: made.details.path, expected_revision: 1, summary: "new lyric", lyrics: "New" });
+    await expect(h.call("music", { action: "render", path: made.details.path, expected_revision: 1 })).rejects.toThrow(/Composition changed/);
+    await expect(h.call("music", { action: "render", path: made.details.path })).rejects.toThrow(/expected_revision is required/);
+    await h.call("music", { action: "render", path: made.details.path, expected_revision: 2, seed: 12 });
+    p = await loadProject(cwd, made.details.path);
+    expect(p.index.takes[0]).toEqual(first);
+    expect(p.index.revisions[0].files).toEqual(original);
+    expect(p.index.takes.map(t => t.revision)).toEqual([1, 2]);
+  });
+
+  it("generates from authoritative supplied scores without replanning", async () => {
+    const h = harness(cwd);
+    engines.render.mockImplementation(async (input: any) => ({
+      audioPath: await finishFiles(input.outputDir, input.seed), result: { finishReason: "eos" },
+    }));
+    const score = "X:1\nK:C\nC D E F|";
+    const made = await h.call("music", { action: "generate", path: "songs/scored.wavy", lyrics: "la", style: "folk", score, seed: 4 });
+    const p = await loadProject(cwd, made.details.path);
+    expect(p.head.score).toBe(score);
+    expect(p.head.settings.planning).toBe("full");
+    expect(engines.render.mock.calls[0][0].score).toBe(score);
+    expect(engines.plan).not.toHaveBeenCalled();
+    await expect(h.call("music", { action: "generate", lyrics: "la", style: "folk", score: " " })).rejects.toThrow(/non-empty/);
+    await expect(h.call("music", { action: "generate", lyrics: "la", style: "folk", score, settings: { planning: "off" } })).rejects.toThrow(/score requires/);
+  });
+
+  it("checks status without rendering and rejects inconsistent generation before creating", async () => {
+    const h = harness(cwd);
+    await h.call("music", { action: "status" });
+    expect(engines.status).toHaveBeenCalledTimes(1);
+    expect(engines.render).not.toHaveBeenCalled();
+    await expect(h.call("music", { action: "generate", lyrics: "", style: "folk" })).rejects.toThrow(/non-empty/);
+    await expect(h.call("music", { action: "generate", lyrics: "la", style: "folk", settings: { planning: "full" } })).rejects.toThrow(/planning off/);
+    await expect(h.call("music", { action: "inspect" })).rejects.toThrow(/path is required/);
+  });
+
   it("creates, inspects, and partially revises settings through the real store", async () => {
     const h = harness(cwd);
     const made = await create(h, { score: "X:1\nK:C\nC", settings: { precision: "4bit", temperature: 0.8 } });
     expect(made.details).toEqual({ path: "/api/artifacts/songs/demo.wavy", revision: 1 });
-    const inspected = await h.call("wavy", { action: "inspect", path: made.details.path });
+    const inspected = await h.call("music", { action: "inspect", path: made.details.path });
     expect(inspected.content[0].text).toContain('"precision": "4bit"');
     expect(inspected.content[0].text).toContain('"temperature": 0.8');
-    await h.call("wavy", { action: "revise", path: made.details.path, expected_revision: 1, summary: "lower temp", settings: { temperature: 0.4 } });
+    await h.call("music", { action: "revise", path: made.details.path, expected_revision: 1, summary: "lower temp", settings: { temperature: 0.4 } });
     const project = await loadProject(cwd, "songs/demo.wavy");
     expect(project.head.settings).toMatchObject({ precision: "4bit", planning: "full", temperature: 0.4 });
-    await expect(h.call("wavy", { action: "revise", path: made.details.path, expected_revision: 1, summary: "stale" })).rejects.toThrow(/revision conflict/i);
+    await expect(h.call("music", { action: "revise", path: made.details.path, expected_revision: 1, summary: "stale" })).rejects.toThrow(/revision conflict/i);
   });
 
   it("renders artifact previews from /api/artifacts paths and emits native media fallback links", async () => {
@@ -118,7 +177,7 @@ describe("Wavy extension entrypoint", () => {
     engines.render.mockImplementation(async ({ outputDir, seed }: any) => ({
       audioPath: await finishFiles(outputDir, seed), result: { seed }, durationSeconds: 1,
     }));
-    const rendered = await h.call("wavy_render", { path: "songs/demo.wavy", expected_revision: 1, seed: 9 });
+    const rendered = await h.call("music", { action: "render", path: "songs/demo.wavy", expected_revision: 1, seed: 9 });
     expect(rendered.details.audio).toMatch(/^\/api\/artifacts\/songs\/demo\.wavy\.d\/takes\/[^/]+\/audio\.wav$/);
     expect(rendered.content[0].text).toContain(`[Listen to `);
     expect(rendered.content[0].text).toContain(`](${rendered.details.audio})`);
@@ -133,9 +192,9 @@ describe("Wavy extension entrypoint", () => {
       await writeFile(rawPlanPath, "RAW COT RECEIPT");
       return { score: "X:1\nK:C\nC", rawPlanPath, result: { ok: true } };
     });
-    const composing = h.call("wavy_compose", { path: "songs/demo.wavy", expected_revision: 1, seed: 7 });
+    const composing = h.call("music", { action: "compose", path: "songs/demo.wavy", expected_revision: 1, seed: 7 });
     while (!release) await new Promise(resolve => setTimeout(resolve, 0));
-    await h.call("wavy", { action: "revise", path: "songs/demo.wavy", expected_revision: 1, summary: "human edit", lyrics: "new" });
+    await h.call("music", { action: "revise", path: "songs/demo.wavy", expected_revision: 1, summary: "human edit", lyrics: "new" });
     release();
     await expect(composing).rejects.toThrow(/revision conflict/i);
     expect((await loadProject(cwd, "songs/demo.wavy")).index.revision).toBe(2);
@@ -145,7 +204,7 @@ describe("Wavy extension entrypoint", () => {
       const rawPlanPath = join(outputDir, "raw-plan.txt"); await writeFile(rawPlanPath, "RAW COT RECEIPT");
       return { score: "X:1\nK:C\nD", rawPlanPath, result: { ok: true } };
     });
-    await h.call("wavy_compose", { path: "songs/demo.wavy", expected_revision: 2, seed: 8 });
+    await h.call("music", { action: "compose", path: "songs/demo.wavy", expected_revision: 2, seed: 8 });
     const p = await loadProject(cwd, "songs/demo.wavy");
     const provenance = p.index.revisions.at(-1)!.provenance!;
     expect(await readFile(join(cwd, ".pi/web/artifacts/songs", provenance.path), "utf8")).toContain('"rawPlan": "RAW COT RECEIPT"');
@@ -158,16 +217,16 @@ describe("Wavy extension entrypoint", () => {
       inputs.push(structuredClone({ ...input, outputDir: undefined }));
       return { audioPath: await finishFiles(input.outputDir, input.seed), result: { seed: input.seed } };
     });
-    await h.call("wavy_render", { path: "songs/demo.wavy", expected_revision: 1, seed: 41, count: 3 });
+    await h.call("music", { action: "render", path: "songs/demo.wavy", expected_revision: 1, seed: 41, count: 3 });
     expect(inputs.map(x => x.seed)).toEqual([41, 42, 43]);
     expect(inputs.every(x => x.score === "X:1\nK:C\nC" && x.lyrics === "la")).toBe(true);
     const p = await loadProject(cwd, "songs/demo.wavy");
     expect(p.index.takes.map(t => [t.revision, t.seed, t.status])).toEqual([[1, 41, "complete"], [1, 42, "complete"], [1, 43, "complete"]]);
-    const selected = await h.call("wavy", { action: "inspect", path: "songs/demo.wavy", take_id: p.index.takes[0].id });
+    const selected = await h.call("music", { action: "inspect", path: "songs/demo.wavy", take_id: p.index.takes[0].id });
     expect(selected.details.audio).toContain(p.index.takes[0].id);
-    const newest = await h.call("wavy", { action: "inspect", path: "songs/demo.wavy" });
+    const newest = await h.call("music", { action: "inspect", path: "songs/demo.wavy" });
     expect(newest.details.audio).toContain(p.index.takes[2].id);
-    await expect(h.call("wavy", { action: "inspect", path: "songs/demo.wavy", take_id: "missing" })).rejects.toThrow(/Selected take/);
+    await expect(h.call("music", { action: "inspect", path: "songs/demo.wavy", take_id: "missing" })).rejects.toThrow(/Selected take/);
     for (const take of p.index.takes) {
       const request = JSON.parse(await readFile(join(cwd, ".pi/web/artifacts/songs", take.request.path), "utf8"));
       expect(request).toMatchObject({ operation: "render", revision: 1, seed: take.seed, lyrics: "la", score: "X:1\nK:C\nC" });
@@ -178,12 +237,12 @@ describe("Wavy extension entrypoint", () => {
   it("marks failed/cancelled takes without losing older complete outputs", async () => {
     const h = harness(cwd); await create(h, { score: "X:1\nK:C\nC" });
     engines.render.mockImplementationOnce(async (input: any) => ({ audioPath: await finishFiles(input.outputDir, input.seed), result: { ok: true } }));
-    await h.call("wavy_render", { path: "songs/demo.wavy", expected_revision: 1, seed: 1 });
+    await h.call("music", { action: "render", path: "songs/demo.wavy", expected_revision: 1, seed: 1 });
     engines.render.mockRejectedValueOnce(new Error("boom"));
-    await expect(h.call("wavy_render", { path: "songs/demo.wavy", expected_revision: 1, seed: 2 })).rejects.toThrow(/failed.*boom/i);
+    await expect(h.call("music", { action: "render", path: "songs/demo.wavy", expected_revision: 1, seed: 2 })).rejects.toThrow(/failed.*boom/i);
     const controller = new AbortController();
     engines.render.mockImplementationOnce(async (_input: any, signal: AbortSignal) => new Promise((_r, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })));
-    const pending = h.call("wavy_render", { path: "songs/demo.wavy", expected_revision: 1, seed: 3 }, controller.signal);
+    const pending = h.call("music", { action: "render", path: "songs/demo.wavy", expected_revision: 1, seed: 3 }, controller.signal);
     await vi.waitFor(() => expect(engines.render).toHaveBeenCalledTimes(3)); controller.abort(new Error("stop"));
     await expect(pending).rejects.toThrow(/cancelled/i);
     const p = await loadProject(cwd, "songs/demo.wavy");
@@ -194,18 +253,18 @@ describe("Wavy extension entrypoint", () => {
   it("attaches transcription without changing composition, and applies score only with revision guard", async () => {
     const h = harness(cwd); await create(h);
     const wav = join(cwd, "source.wav"); await writeFile(wav, tinyWav());
-    await h.call("wavy", { action: "source", path: "songs/demo.wavy", source_path: wav, source_label: "hum" });
+    await h.call("music", { action: "source", path: "songs/demo.wavy", source_path: wav, source_label: "hum" });
     let p = await loadProject(cwd, "songs/demo.wavy"); const sourceId = p.index.sources[0].id;
     engines.transcribe.mockResolvedValue({ score: "X:1\nK:C\nE", events: [{ t: 0 }], result: { model: "mock" } });
-    await h.call("wavy_transcribe", { path: "songs/demo.wavy", source_id: sourceId });
+    await h.call("music", { action: "transcribe", path: "songs/demo.wavy", source_id: sourceId });
     p = await loadProject(cwd, "songs/demo.wavy");
     expect(p.index.revision).toBe(1); expect(p.head.score).toBeUndefined(); expect(p.index.sources[0].score).toBeDefined();
 
     // Use a second source because transcription attachment is intentionally one-shot.
-    await h.call("wavy", { action: "source", path: "songs/demo.wavy", source_path: wav, source_label: "hum 2" });
+    await h.call("music", { action: "source", path: "songs/demo.wavy", source_path: wav, source_label: "hum 2" });
     p = await loadProject(cwd, "songs/demo.wavy"); const source2 = p.index.sources[1].id;
-    await expect(h.call("wavy_transcribe", { path: "songs/demo.wavy", source_id: source2, apply_score: true, expected_revision: 99 })).rejects.toThrow(/Composition changed/i);
-    await h.call("wavy_transcribe", { path: "songs/demo.wavy", source_id: source2, apply_score: true, expected_revision: 1 });
+    await expect(h.call("music", { action: "transcribe", path: "songs/demo.wavy", source_id: source2, apply_score: true, expected_revision: 99 })).rejects.toThrow(/Composition changed/i);
+    await h.call("music", { action: "transcribe", path: "songs/demo.wavy", source_id: source2, apply_score: true, expected_revision: 1 });
     p = await loadProject(cwd, "songs/demo.wavy"); expect(p.index.revision).toBe(2); expect(p.head.score).toContain("E");
   });
 
@@ -218,7 +277,7 @@ describe("Wavy extension entrypoint", () => {
       try { await new Promise((_r, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })); }
       finally { cleaned = true; }
     });
-    const pending = h.call("wavy_compose", { path: "songs/demo.wavy", expected_revision: 1, seed: 4 });
+    const pending = h.call("music", { action: "compose", path: "songs/demo.wavy", expected_revision: 1, seed: 4 });
     await vi.waitFor(() => expect(engines.plan).toHaveBeenCalled());
     await h.emit("session_shutdown", { reason: "reload" });
     await expect(pending).rejects.toThrow(/session closed or reloaded/i);
