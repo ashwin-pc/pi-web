@@ -31,10 +31,12 @@ const routes: Readonly<Record<string, PiWebHttpScope>> = Object.freeze({
   "GET /api/messages": "sessions.read",
   "GET /api/messages/image": "sessions.read",
   "GET /api/session/reference": "sessions.read",
+  "GET /api/session/history": "sessions.read",
   "GET /api/models": "sessions.read",
   "POST /api/new-chat": "sessions.create",
   "POST /api/sessions/new": "sessions.create",
   "POST /api/prompt": "sessions.write",
+  "POST /api/session/completion": "sessions.write",
   "POST /api/abort": "sessions.write",
   "POST /api/session/name": "sessions.write",
   "POST /api/model": "sessions.write",
@@ -150,6 +152,7 @@ export class ExtensionHttpRegistry {
     // Each read route explicitly permits only its own bounded selectors.
     const selectors: Record<string, string> = {
       "/api/session/reference": "entryId",
+      "/api/session/history": "dispatchId",
       "/api/messages/image": "imageId",
       "/api/messages": "images",
     };
@@ -162,6 +165,8 @@ export class ExtensionHttpRegistry {
     if (url.pathname === "/api/messages/image" && (imageIds.length !== 1 || !/^(0|[1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([a-f0-9]{64})$/.test(imageIds[0]))) throw new Error("Unambiguous imageId is required");
     const imageModes = url.searchParams.getAll("images");
     if (imageModes.length && (imageModes.length !== 1 || imageModes[0] !== "inline")) throw new Error("Only images=inline is permitted");
+    const dispatchIds = url.searchParams.getAll("dispatchId");
+    if (url.pathname === "/api/session/history" && (dispatchIds.length !== 1 || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(dispatchIds[0]))) throw new Error("Exactly one UUID dispatchId is required");
     const entryIds = url.searchParams.getAll("entryId");
     if (entryIds.length && (entryIds.length !== 1 || !validId(entryIds[0]))) throw new Error("Unambiguous entryId is required");
     const value = body as Record<string, unknown>;

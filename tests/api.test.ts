@@ -1127,6 +1127,36 @@ describe("additional API coverage", () => {
     }
   }, 25_000);
 
+  it("offers explicit prompt admission and awaited idle receipts without changing legacy 202", async () => {
+    const dispatchId = "12345678-1234-1234-1234-123456789abc";
+    const admitted = await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "slow admission receipt", waitFor: "admission", dispatchId }),
+    });
+    expect(admitted.status).toBe(200);
+    expect(await admitted.json()).toMatchObject({ ok: true, admission: "accepted", dispatchId });
+    const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
+    expect(JSON.stringify(messages)).toContain(`[pi-web-dispatch:${dispatchId}]`);
+    const history = await fetch(`${baseUrl}/api/session/history?dispatchId=${dispatchId}`);
+    expect(history.status).toBe(200);
+    expect(JSON.stringify(await history.json())).toContain(`[pi-web-dispatch:${dispatchId}]`);
+    const invalidCompletion = await fetch(`${baseUrl}/api/session/completion`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deliveryId: 123, branchAnchorEntryId: null, message: { customType: "wakeup", content: "Done", display: true } }),
+    });
+    expect(invalidCompletion.status).toBe(400);
+    const idle = await fetch(`${baseUrl}/api/abort`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ waitFor: "idle" }),
+    });
+    expect(idle.status).toBe(200);
+    expect(await idle.json()).toMatchObject({ ok: true, idle: true });
+    const invalid = await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "must not submit", waitFor: "admission", dispatchId: "invalid" }),
+    });
+    expect(invalid.status).toBe(400);
+  });
+
   it("aborts the current session via POST /api/abort", async () => {
     // Start a slow prompt so the session is streaming
     void fetch(`${baseUrl}/api/prompt`, {
@@ -1148,6 +1178,14 @@ describe("additional API coverage", () => {
 
     const state = await (await fetch(`${baseUrl}/api/state`)).json();
     expect(state.isStreaming).toBe(false);
+    // Legacy 202 and the SDK streaming flag do not prove that the detached
+    // prompt operation has settled. Finish cleanup before later model mutations.
+    const settled = await fetch(`${baseUrl}/api/abort`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ waitFor: "idle" }),
+    });
+    expect(settled.status).toBe(200);
+    expect(await settled.json()).toMatchObject({ ok: true, idle: true });
   });
 
   it("switches model via POST /api/model", async () => {

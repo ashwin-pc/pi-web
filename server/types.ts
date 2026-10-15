@@ -11,6 +11,8 @@ export interface PiWebSession {
   sessionId: string;
   sessionFile: string;
   isStreaming: boolean;
+  /** SDK idle proof, distinct from host operation settlement and user queue size. */
+  readonly isIdle?: boolean;
   isRetrying?: boolean;
   isCompacting?: boolean;
   pendingMessageCount?: number;
@@ -29,6 +31,7 @@ export interface PiWebSession {
     getLeafId?(): string | null;
     getEntry?(id: string): unknown;
     getBranch?(fromId?: string): unknown[];
+    getEntries?(): unknown[];
     getTree?(): unknown[];
     getLabel?(id: string): string | undefined;
     branch?(entryId: string): void;
@@ -70,7 +73,8 @@ export interface PiWebSession {
   compact?(customInstructions?: string): Promise<unknown>;
   abortCompaction?(): void;
   executeBash?(command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean; operations?: unknown }): Promise<{ output: string; exitCode: number | undefined; cancelled: boolean; truncated: boolean; fullOutputPath?: string }>;
-  prompt(message: string, options?: { images?: unknown[]; streamingBehavior?: string }): Promise<void>;
+  prompt(message: string, options?: { images?: unknown[]; streamingBehavior?: string; preflightResult?: (success: boolean) => void }): Promise<void>;
+  sendCustomMessage?(message: import("./session/completionOutbox.js").CompletionMessage, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void>;
   retryFromFailure?(): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): void;

@@ -27,8 +27,8 @@ describe("owned Pi runtime handle", () => {
     (fixture.session as PiWebSession & { dispose(): void }).dispose = () => { order.push("dispose"); reentrant.push(handle.dispose("reset")); };
     handle.subscribe(() => undefined);
     const disposal = handle.dispose("reset");
-    expect(order).toEqual(shutdown ? ["shutdown", "unsubscribe", "dispose"] : ["unsubscribe", "dispose"]);
     await disposal;
+    expect(order).toEqual(shutdown ? ["shutdown", "unsubscribe", "dispose"] : ["unsubscribe", "dispose"]);
     expect(reentrant.every((promise) => promise === disposal)).toBe(true);
     expect(handle.dispose("reset")).toBe(disposal);
   });
@@ -40,9 +40,9 @@ describe("owned Pi runtime handle", () => {
     let disposal!: Promise<void>;
     fixture.session.subscribe = (listener) => { listener({ type: "agent_end" }); return unsubscribe; };
     const release = handle.subscribe(() => { disposal = handle.dispose("reset"); });
+    await disposal;
     expect(unsubscribe).toHaveBeenCalledOnce();
     release();
-    await disposal;
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(fixture.disposeCalls).toBe(1);
   });
@@ -55,6 +55,7 @@ describe("owned Pi runtime handle", () => {
     const subscribe = vi.spyOn(fixture.session, "subscribe");
     const disposal = handle.dispose("reset");
     expect(() => handle.subscribe(() => undefined)).toThrow("closing or disposed");
+    await Promise.resolve();
     finish();
     await disposal;
     expect(() => handle.subscribe(() => undefined)).toThrow("closing or disposed");
@@ -900,7 +901,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     warn.mockRestore();
   });
 
-  it("lets abort recover a gated lease and ignores its late scoped release", async () => {
+  it("lets Stop recover a visible gated lease while ignoring its late scoped release", async () => {
     const { service, initial } = await fixtureService();
     let finishNavigate!: () => void;
     let markEntered!: () => void;
@@ -990,8 +991,7 @@ describe("LocalSessionService standalone lifecycle", () => {
 
     const first = service.disposeAll("reset");
     const second = service.disposeAll("reset");
-    await Promise.resolve();
-    expect(emit).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
     releaseShutdown();
     await Promise.all([first, second]);
     expect(fixture.disposeCalls).toBe(1);
