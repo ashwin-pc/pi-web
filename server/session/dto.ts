@@ -240,6 +240,16 @@ export type NavigationResult = {
   [key: string]: unknown;
 };
 
+export interface SessionPromptInput {
+  message: string;
+  mode: string;
+  attachments: AttachmentDto[];
+  clientMessageId?: string;
+  sourceClientId?: string;
+  waitFor?: "admission";
+  dispatchId?: string;
+}
+
 export interface SessionService {
   state(sessionId: string): Promise<BaseSessionStateDto>;
   context(sessionId: string): Promise<SessionContextDto>;
@@ -253,9 +263,10 @@ export interface SessionService {
   setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string): Promise<BaseSessionStateDto>;
   executeShell(sessionId: string, command: string, excludeFromContext: boolean): Promise<Record<string, JsonValue | undefined>>;
   executeCommand(sessionId: string, command: string): Promise<{ message: string; state: BaseSessionStateDto }>;
-  prompt(sessionId: string, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }): Promise<{ sessionId: string }>;
+  prompt(sessionId: string, input: SessionPromptInput): Promise<{ sessionId: string; admission?: "accepted"; dispatchId?: string }>;
+  deliverCompletion(sessionId: string, input: import("./completionOutbox.js").CompletionInput): Promise<import("./completionOutbox.js").CompletionReceipt>;
   retry(sessionId: string): Promise<{ sessionId: string }>;
-  abort(sessionId: string): Promise<{ sessionId: string }>;
+  abort(sessionId: string, waitFor?: "idle"): Promise<{ sessionId: string; idle?: true }>;
   abortCompaction(sessionId: string): Promise<{ sessionId: string }>;
   abortBranchSummary(sessionId: string): Promise<{ sessionId: string }>;
   rename(sessionId: string, name: string): Promise<BaseSessionStateDto>;

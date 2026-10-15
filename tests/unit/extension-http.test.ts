@@ -58,6 +58,17 @@ describe("scoped extension HTTP credentials", () => {
     expect((await h.registry.authenticate(request(h.auth, "/api/prompt?unknown=x", "POST"))).ok).toBe(false);
   });
 
+  it("permits completion delivery only with write scope and an authorized target", async () => {
+    const h = harness();
+    await h.client.request("POST", "/api/session/completion", { body: { deliveryId: "completion-1", message: { customType: "wakeup", content: "Done", display: true } } });
+    expect((await h.registry.authenticate(request(h.auth, "/api/session/completion", "POST"))).ok).toBe(true);
+    h.body.sessionId = "other";
+    expect(await h.registry.authenticate(request(h.auth, "/api/session/completion", "POST"))).toEqual({ ok: false, status: 403 });
+    await expect(h.client.request("POST", "/api/session/completion?unknown=x")).rejects.toThrow();
+    const readOnly = h.registry.createClient({}, "parent", () => true, { name: "reader", scopes: ["sessions.read"] });
+    await expect(readOnly.request("POST", "/api/session/completion")).rejects.toThrow("scope");
+  });
+
   it("checks IPv4, IPv6 and mapped socket peers without trusting forwarding headers", async () => {
     const h = harness();
     await h.client.request("GET", "/api/state");

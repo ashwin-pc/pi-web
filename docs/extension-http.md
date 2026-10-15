@@ -75,7 +75,7 @@ await client.request("POST", "/api/session/name", { body: { name: "Reviewed" } }
 | --- | --- |
 | `sessions.read` | GET `/api/state`, `/api/messages`, `/api/messages/image`, `/api/session/reference`, `/api/models` |
 | `sessions.create` | POST `/api/new-chat`, `/api/sessions/new` |
-| `sessions.write` | POST `/api/prompt`, `/api/abort`, `/api/session/name`, `/api/model`, `/api/session-ui-state/read` |
+| `sessions.write` | POST `/api/prompt`, `/api/abort`, `/api/session/completion`, `/api/session/name`, `/api/model`, `/api/session-ui-state/read` |
 | `sessions.delete` | POST `/api/sessions/delete` |
 
 All other route/method combinations are denied, including auth management,
@@ -110,6 +110,109 @@ verified package provenance**. Access logs include the core-bound parent agent
 session and this label, never the credential. Scopes limit the supported API and
 credential blast radius; they do not sandbox malicious in-process extensions,
 prevent prompt-driven code execution, or introduce multi-user resource ownership.
+
+## Admission, interruption, and completion receipts
+
+These opt-in contracts are intentionally narrower than general inter-agent
+messaging. They work without the Notepad example or browser viewer identity.
+Older hosts may not support them; fail closed rather than treating HTTP 202 or
+`await pi.sendMessage(...)` as proof that a message was saved.
+
+### Prompt admission and consumption
+
+`POST /api/prompt` retains its existing asynchronous **202** response by default.
+Add `waitFor: "admission"` to wait for SDK preflight and receive **200** with
+`{ ok: true, sessionId, admission: "accepted", dispatchId? }`. Rejected preflight
+returns a non-success response; this does not wait for the whole agent run.
+Streaming acceptance means the prompt entered the SDK memory queue, not that it
+was consumed or persisted. A request timeout or client disposal is not proof that
+an already admitted operation was canceled.
+
+An optional UUID `dispatchId` causes the host to append exactly
+`\n\n[pi-web-dispatch:<dispatchId>]` to the submitted text and echo that ID in the
+receipt. This marker is visible to the model. Find the actual saved **user** entry
+containing that marker before treating later assistant replies as this task's
+result. A transcript snapshot taken before admission is not a consumption
+watermark: an older task can finish while the new prompt remains queued. Extension
+commands or input handlers can consume a prompt without producing that user
+entry; admission alone never makes an old final reply eligible.
+
+### Awaiting abort
+
+`POST /api/abort` retains **202** by default. Add `waitFor: "idle"` for **200** with
+`{ ok: true, sessionId, idle: true }` only after the local SDK abort settles.
+Failures propagate. This does not wait for recursively tracked workers to settle
+and does not clear queued human or agent steering. An interrupt-and-redirect
+caller should await this receipt instead of sleeping for a fixed duration.
+
+### Idempotent completion delivery
+
+Send a custom completion message through `POST /api/session/completion`:
+
+```ts
+const payload = {
+  sessionId: parentId,
+  deliveryId: "worker-id:dispatch-id:completion",
+  branchAnchorEntryId: savedParentWatchEntryId, // optional; actual branch entry ID
+  message: {
+    customType: "worker-wakeup",
+    content: "Outcome: finished\\nVerified: tests passed",
+    display: true,
+    details: { workers: [{ sessionId: workerId }] },
+  },
+};
+const response = await client.request("POST", "/api/session/completion", { body: payload });
+// { ok: true, sessionId, deliveryId, state: "pending" | "saved", entryId? }
+```
+
+Repeat the **same ID and immutable payload**, including any branch anchor, to
+retrieve its current receipt or retry delivery. Reusing an ID with another payload
+returns **409**. `deliveryId` is 1–160 ASCII letters, digits, `.`, `_`, `:`, or `-`;
+`customType` uses the same characters with a 100-character limit. Content must be a
+nonempty string, display a boolean, and optional details an object. The normalized
+JSON payload is limited to 64 KiB. The host adds `details.deliveryId`; a conflicting
+caller-supplied value is rejected. Accepted receipt lookups return **200** even
+when still pending.
+
+Core first persists an independent outbox record beside the session file, in
+`<session-file>.completions/`, using private file permissions and atomic writes.
+File data is fsynced before rename. Directory metadata is fsynced where supported;
+Windows rejects some directory-handle/fsync operations, so the host tolerates only
+those explicitly unsupported Windows errors (power-loss rename durability then
+depends on the filesystem). File write/fsync/rename errors still fail the request.
+The SDK may keep even appended entries only in memory before its first assistant
+message, so **only a matching custom message observed in the actual session JSONL
+file** yields `saved` and an `entryId`. Pending is not a delivery acknowledgement.
+Keep the watch and durable pending payload until saved. Saved records are retained
+for deduplication; receipt lookup does not delete them.
+
+A host/raw-runtime-scoped claim prevents extension reloads or concurrent retries
+from submitting another copy of a surviving queued message. On runtime replacement
+or restart, core checks disk before replaying persisted records. Owned runtime
+disposal awaits SDK abort/idle and operation-owned host preflight/navigation work
+before replacement, so an in-flight message-end hook
+cannot save an old copy after replay begins. Delivery means one saved completion,
+not exactly-once model execution or proof that the model read it.
+
+When `branchAnchorEntryId` is supplied, core checks that exact entry is on the
+active branch immediately before SDK submission. Missing anchors leave the record
+pending without injection. Host history navigation is blocked while session work
+(including custom-message preflight) is active or a submitted completion remains
+unsaved, even if the SDK briefly reports idle. Abort does not erase operation-owned
+prompt, navigation, or completion leases before their owners finish. Completion submission is deferred
+while host navigation is already in progress. Use a persisted watch/dispatch
+anchor, not merely the last user entry. Returning to the intended branch and
+repeating the unchanged request retries it.
+
+**Recovery limitations:** arbitrary trusted extensions can directly mutate the raw
+SDK runtime outside these host boundaries. If a third party clears its queues, or
+custom-message submission rejects after an ambiguous partial operation, core keeps
+the receipt pending and its runtime claim rather than risk duplicate delivery.
+Replace the raw runtime to replay safely after disk reconciliation; extension reload
+alone is not replacement. Core never clears queues just to reconcile delivery,
+since doing so could discard human steering. Direct raw history navigation is
+likewise outside the host branch guarantee. A stalled runtime still requires the
+separate runtime-recovery mechanism; a pending receipt must not be called saved.
 
 ## Transcript images
 

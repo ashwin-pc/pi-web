@@ -1343,7 +1343,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
+        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown; waitFor?: unknown; dispatchId?: unknown };
+        if (body.waitFor !== undefined && body.waitFor !== "admission") throw new SessionServiceError("waitFor must be admission");
+        if (body.dispatchId !== undefined && typeof body.dispatchId !== "string") throw new SessionServiceError("dispatchId must be a UUID");
         const message = String(body.message || "").trim();
         const target = await sessionService.require(resolveSessionId(body.sessionId));
         const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);
@@ -1362,8 +1364,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           attachments,
           clientMessageId,
           sourceClientId,
+          ...(body.waitFor === "admission" ? { waitFor: "admission" as const } : {}),
+          ...(typeof body.dispatchId === "string" ? { dispatchId: body.dispatchId } : {}),
         });
-        return sendJson(res, 202, { ok: true, ...result });
+        return sendJson(res, body.waitFor === "admission" ? 200 : 202, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/session/retry") {
@@ -1372,8 +1376,18 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/abort") {
-        const body = await readBody(req) as { sessionId?: unknown };
-        return sendJson(res, 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId)) });
+        const body = await readBody(req) as { sessionId?: unknown; waitFor?: unknown };
+        if (body.waitFor !== undefined && body.waitFor !== "idle") throw new SessionServiceError("waitFor must be idle");
+        return sendJson(res, body.waitFor === "idle" ? 200 : 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId), body.waitFor) });
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/completion") {
+        const body = await readBody(req) as { sessionId?: unknown; deliveryId: string; message: import("./server/session/completionOutbox.js").CompletionMessage; branchAnchorEntryId?: string };
+        const result = await sessionService.deliverCompletion(resolveSessionId(body.sessionId), {
+          deliveryId: body.deliveryId, message: body.message,
+          ...(body.branchAnchorEntryId !== undefined ? { branchAnchorEntryId: body.branchAnchorEntryId } : {}),
+        });
+        return sendJson(res, 200, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/compaction/abort") {

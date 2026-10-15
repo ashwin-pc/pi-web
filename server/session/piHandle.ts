@@ -61,6 +61,10 @@ export class PiSessionHandle {
   }
 
   private async disposeOnce(reason: string) {
+    // dispose() only signals abort/disconnect in the SDK. An in-flight
+    // message_end hook can still append afterwards. Settle it before a new raw
+    // runtime is allowed to replay durable completions into the same file.
+    await this.raw.abort();
     const runner = this.raw.extensionRunner as (PiWebSession["extensionRunner"] & {
       hasHandlers?(name: string): boolean;
       emit?(event: { type: "session_shutdown"; reason: "quit" }): Promise<unknown>;
