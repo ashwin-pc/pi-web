@@ -1199,6 +1199,14 @@ describe("additional API coverage", () => {
 
     const state = await (await fetch(`${baseUrl}/api/state`)).json();
     expect(state.isStreaming).toBe(false);
+    // Legacy 202 and the SDK streaming flag do not prove that the detached
+    // prompt operation has settled. Finish cleanup before later model mutations.
+    const settled = await fetch(`${baseUrl}/api/abort`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ waitFor: "idle" }),
+    });
+    expect(settled.status).toBe(200);
+    expect(await settled.json()).toMatchObject({ ok: true, idle: true });
   });
 
   it("switches model via POST /api/model", async () => {
