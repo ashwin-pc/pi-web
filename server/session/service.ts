@@ -99,6 +99,8 @@ type WorkLease = {
   watchdogTimer?: ReturnType<typeof setTimeout>;
   settled?: Promise<void>;
   canceled?: boolean;
+  /** True only after SDK preflight accepted this prompt in the current epoch. */
+  promptAdmitted?: boolean;
 };
 
 type LiveSessionEntry = {
@@ -324,7 +326,7 @@ export class LocalSessionService implements SessionService {
   private readonly completionOutbox = new CompletionOutbox(
     (value, message) => {
       const entry = this.liveSessions.get(sessionPathKey(value));
-      if (entry?.session !== value || entry.disposing || entry.disposal || this.requiresRecovery(entry) || Array.from(entry.operations.values()).some(lease => lease.label === "navigate")) throw new CompletionDeferredError("Runtime unavailable or navigating");
+      if (entry?.session !== value || entry.disposing || entry.disposal || this.requiresRecovery(entry) || Array.from(entry.operations.values()).some(lease => lease.label === "navigate" || lease.canceled)) throw new CompletionDeferredError("Runtime unavailable or navigating");
       return this.withWorkLease(value, "completion", "general", () => {
         if (!value.sendCustomMessage) throw new SessionServiceError("Custom message delivery is unavailable", 503);
         return value.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer" });
@@ -469,8 +471,16 @@ export class LocalSessionService implements SessionService {
     return value;
   }
 
+  private reconcilePromptQueue(entry: LiveSessionEntry) {
+    // This latch belongs only to ambiguous USER prompt queueing. The SDK's
+    // public count excludes custom completion queues; their outbox claims stay
+    // independent and can never be cleared using this count.
+    if (entry.recoveryRequired && entry.session.isIdle === true && entry.session.pendingMessageCount === 0) entry.recoveryRequired = false;
+  }
+
   private requiresRecovery(entry: LiveSessionEntry) {
-    return Boolean(entry.recoveryRequired || Array.from(entry.operations.values()).some(operation => operation.canceled));
+    this.reconcilePromptQueue(entry);
+    return Boolean(entry.recoveryRequired || Array.from(entry.operations.values()).some(operation => operation.canceled && !(operation.label === "prompt" && operation.promptAdmitted)));
   }
 
   private assertMutable(value: PiWebSession) {
@@ -768,7 +778,7 @@ export class LocalSessionService implements SessionService {
       await this.waitForSettlement(this.abortSession(value, true).then(async () => {
         const entry = this.liveSessions.get(sessionPathKey(value));
         await Promise.all(Array.from(entry?.operations.values() || []).map(operation => operation.settled));
-        if (entry?.recoveryRequired) throw new SessionServiceError("Canceled prompt queue ownership is ambiguous; restart the server to recover", 503, true);
+        if (entry && this.requiresRecovery(entry)) throw new SessionServiceError("Canceled prompt queue ownership is ambiguous; wait for SDK idle and an empty user queue or restart the server", 503, true);
       }), "Session interruption");
     } else void this.abortSession(value);
     return { sessionId: value.sessionId, ...(waitFor === "idle" ? { idle: true as const } : {}) };
@@ -799,7 +809,7 @@ export class LocalSessionService implements SessionService {
     const value = await this.requireMutable(sessionId);
     if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before navigating the tree", 409);
     if (value.isCompacting) throw new SessionServiceError("Wait for the current compaction to finish before navigating the tree", 409);
-    if (this.hasActiveWorkForPath(sessionPathKey(value))) throw new SessionServiceError("Wait for active session work to finish before navigating the tree", 409);
+    if (this.hasActiveWorkForPath(sessionPathKey(value)) || this.liveSessions.get(sessionPathKey(value))?.operations.size) throw new SessionServiceError("Wait for active session work to finish before navigating the tree", 409);
     if (!value.navigateTree) throw new SessionServiceError("Tree navigation is not available");
     return this.withWorkLease(value, "navigate", "general", async () => {
       try { await this.completionOutbox.assertNavigationSafe(value); }
@@ -1107,6 +1117,11 @@ export class LocalSessionService implements SessionService {
     const sessionFile = value.sessionFile;
     const mapped = mapPiEvent(e);
     const raw = event as any;
+    const liveEntry = this.liveSessions.get(sessionPathKey(value));
+    if (liveEntry) {
+      this.reconcilePromptQueue(liveEntry);
+      if (raw?.type === "agent_settled" || raw?.type === "queue_update") queueMicrotask(() => this.reconcilePromptQueue(liveEntry));
+    }
     if (mapped.kind === "entry") {
       this.emit({ type: "entry", sessionId, sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, entryKind: mapped.entryKind });
       return;
@@ -1231,14 +1246,14 @@ export class LocalSessionService implements SessionService {
     this.emitRuntime(value, "changed");
   }
 
-  private async withWorkLease<T>(value: PiWebSession, label: string, kind: WorkLeaseKind, operation: () => T | Promise<T>): Promise<T> {
+  private async withWorkLease<T>(value: PiWebSession, label: string, kind: WorkLeaseKind, operation: (lease?: WorkLease) => T | Promise<T>): Promise<T> {
     const token = this.acquireWorkLease(value, label, kind);
     let settle!: () => void;
     const settled = new Promise<void>(resolve => { settle = resolve; });
     const entry = token && this.liveSessions.get(token.sessionKey);
     const lease = entry && entry.workLeases.get(token!.key);
     if (lease) { lease.settled = settled; entry!.operations.set(token!.key, lease); }
-    try { return await operation(); }
+    try { return await operation(lease || undefined); }
     finally { if (token) entry?.operations.delete(token.key); this.releaseWorkLease(value, token); settle(); }
   }
 
@@ -1553,7 +1568,7 @@ export class LocalSessionService implements SessionService {
     const runtimeEntry = this.liveSessions.get(sessionPathKey(value));
     const abortEpoch = runtimeEntry?.abortEpoch;
     const streamingBehavior = value.isStreaming ? input.mode : undefined;
-    void this.withWorkLease(value, "prompt", "general", () => this.runtimeFor(value).prompt(promptText, {
+    void this.withWorkLease(value, "prompt", "general", operation => this.runtimeFor(value).prompt(promptText, {
       ...(streamingBehavior ? { streamingBehavior } : {}),
       preflightResult: (success: boolean) => {
         if (!success) return;
@@ -1565,6 +1580,7 @@ export class LocalSessionService implements SessionService {
           if (ambiguousQueue) runtimeEntry.recoveryRequired = true;
           throw new SessionServiceError("Prompt canceled before admission", ambiguousQueue ? 503 : 409, ambiguousQueue);
         }
+        if (operation) operation.promptAdmitted = true;
         if (admission) accept();
       },
     })).then(() => {
@@ -1623,7 +1639,7 @@ export class LocalSessionService implements SessionService {
   }
 
   private assertCanRetry(value: PiWebSession) {
-    if (this.hasActiveWorkForPath(value.sessionFile)) throw new Error("Wait for the current response to finish before retrying.");
+    if (this.hasActiveWorkForPath(value.sessionFile) || this.liveSessions.get(sessionPathKey(value))?.operations.size) throw new Error("Wait for the current response to finish before retrying.");
     if (value.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
     if (value.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
     if (!this.trailingRetryTarget(value)) throw new Error("There is no failed or incomplete response to retry.");

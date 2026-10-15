@@ -224,28 +224,41 @@ describe("dispatch history and attachment projection", () => {
 });
 
 describe("bounded recovery without unsafe runtime replacement", () => {
-  it("rejects model changes after asynchronous Stop until the accepted prompt operation actually settles", async () => {
+  it.each([true, false])("allows independent steering/model after admitted Stop, while whole-operation delivery barriers remain (streaming=%s)", async stillStreaming => {
     const { raw, service } = await fixture();
     let finish!: () => void;
+    let first = true;
     raw.prompt = vi.fn((_text, options) => {
       options?.preflightResult?.(true);
+      if (!first) return Promise.resolve();
+      first = false;
+      raw.isStreaming = true;
       return new Promise<void>(resolve => { finish = resolve; });
     });
+    raw.abort = vi.fn(async () => { raw.isStreaming = stillStreaming; });
+    raw.setSessionName = vi.fn();
     await service.prompt(raw.sessionId, { message: "accepted work", mode: "steer", attachments: [] });
-    await service.abort(raw.sessionId); // Legacy asynchronous Stop, not idle confirmation.
-    expect(raw.isStreaming).toBe(false);
-    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
-    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({
-      status: 409, recoveryRequired: true,
-      message: "A canceled session operation is still settling; retry after it finishes or restart the server",
+    try {
+      await service.abort(raw.sessionId);
+      expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ provider: "test", id: "model" });
+      await service.rename(raw.sessionId, "Renamed");
+      for (const mode of ["steer", "followUp"]) {
+        expect(await service.prompt(raw.sessionId, { ...prompt, mode })).toMatchObject({ admission: "accepted" });
+        if (stillStreaming) expect(vi.mocked(raw.prompt).mock.calls.at(-1)?.[1]).toMatchObject({ streamingBehavior: mode });
+      }
+      await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
+      expect((await service.deliverCompletion(raw.sessionId, completion)).state).toBe("pending");
+      await Promise.resolve();
+      expect(raw.sendCustomMessage).not.toHaveBeenCalled();
+    } finally { raw.isStreaming = false; finish(); }
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    await vi.waitFor(async () => {
+      await service.deliverCompletion(raw.sessionId, completion);
+      expect(raw.sendCustomMessage).toHaveBeenCalledOnce();
     });
-    let settled = false;
-    const idle = service.abort(raw.sessionId, "idle").then(result => { settled = true; return result; });
-    await Promise.resolve();
-    expect(settled).toBe(false);
-    finish();
-    expect(await idle).toMatchObject({ idle: true });
-    expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ provider: "test", id: "model" });
+    // Even after user work settles, an unsaved CUSTOM completion still owns its
+    // independent navigation barrier (not the SDK's user pending-message count).
+    await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
   });
 
   it("returns recoveryRequired instead of idle:true while canceled navigation remains unresolved", async () => {
@@ -287,11 +300,15 @@ describe("bounded recovery without unsafe runtime replacement", () => {
     await service.disposeAll();
   });
 
-  it("does not treat canceled streaming enqueue as safely canceled preflight", async () => {
+  it("recovers canceled USER queue ambiguity only at known SDK idle/empty without releasing CUSTOM claims", async () => {
     const { raw, service } = await fixture(15);
     raw.isStreaming = true;
-    let admit!: () => void;
     const queued: string[] = [];
+    Object.defineProperty(raw, "isIdle", { configurable: true, get: () => !raw.isStreaming });
+    Object.defineProperty(raw, "pendingMessageCount", { configurable: true, get: () => queued.length });
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    let admit!: () => void;
     raw.prompt = vi.fn((text, options) => new Promise<void>((resolve, reject) => {
       admit = () => {
         queued.push(text); // SDK streaming path queues BEFORE the callback.
@@ -304,10 +321,43 @@ describe("bounded recovery without unsafe runtime replacement", () => {
     raw.abort = vi.fn(async () => { raw.isStreaming = false; });
     await service.abort(raw.sessionId);
     expect(raw.isStreaming).toBe(false); // Queue lane survives Stop's transition to idle.
+    expect(raw.pendingMessageCount).toBe(0);
+    // An idle/empty observation CANNOT clear a still-pending canceled input hook:
+    // that future can queue after this observation, before its callback fires.
+    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({ status: 409, recoveryRequired: true });
     admit(); await rejected;
-    expect(queued).toHaveLength(1); // Never clear a possibly human-bearing queue.
-    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    expect(queued).toHaveLength(1);
+    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({ status: 409, recoveryRequired: true });
     await expect(service.abort(raw.sessionId, "idle")).rejects.toMatchObject({ status: 503, recoveryRequired: true });
-    raw.isStreaming = false;
+    queued.splice(0); // Simulate the SDK consuming/dropping only user text.
+    expect(await service.abort(raw.sessionId, "idle")).toMatchObject({ idle: true });
+    expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ id: "model" });
+    await service.deliverCompletion(raw.sessionId, completion);
+    expect(raw.sendCustomMessage).toHaveBeenCalledOnce(); // No duplicate custom injection.
+    await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("recovers a captured streaming submission that actually reaches idle preflight without queueing", async () => {
+    const { raw, service } = await fixture();
+    raw.isStreaming = true;
+    Object.defineProperty(raw, "isIdle", { configurable: true, value: false, writable: true });
+    raw.pendingMessageCount = undefined; // Missing count is not empty-queue proof.
+    let admit!: () => void;
+    raw.prompt = vi.fn((_text, options) => new Promise<void>((resolve, reject) => {
+      admit = () => { try { options?.preflightResult?.(true); resolve(); } catch (error) { reject(error); } };
+    }));
+    const request = service.prompt(raw.sessionId, prompt);
+    const rejected = expect(request).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    await vi.waitFor(() => expect(raw.prompt).toHaveBeenCalledOnce());
+    raw.abort = vi.fn(async () => { raw.isStreaming = false; });
+    await service.abort(raw.sessionId);
+    admit(); await rejected; // Conservative captured-lane detection remains intact.
+    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({ status: 409 });
+    Object.defineProperty(raw, "isIdle", { value: true });
+    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({ status: 409 });
+    raw.pendingMessageCount = 0;
+    expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ id: "model" });
+    raw.prompt = vi.fn(async (_text, options) => { options?.preflightResult?.(true); });
+    expect(await service.prompt(raw.sessionId, prompt)).toMatchObject({ admission: "accepted" });
   });
 });
