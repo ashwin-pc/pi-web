@@ -256,6 +256,8 @@ export interface SessionService {
   stats(sessionId: string): Promise<{ sessionId: string; stats: SessionStatsDto }>;
   tree(sessionId: string): Promise<ConversationTreeDto>;
   messages(sessionId: string): Promise<MessageDto[]>;
+  /** Uncompacted active lineage starting at this dispatch; image bytes omitted. */
+  history(sessionId: string, dispatchId: string): Promise<MessageDto[]>;
   /** Read bounded saved text without opening or mutating a session runtime. */
   readSession(reference: import("../shared/sessionReference.js").SessionReference, tail: number): Promise<import("./referenceTools.js").SessionReadResult>;
   commands(sessionId: string): Promise<SlashCommandDto[]>;

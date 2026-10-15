@@ -39,6 +39,7 @@ const MAX_WORKERS = 4;
 const POLL_MS = 2500;
 const WAKEUP_SUMMARY_CHARS = 2000;
 const MAX_TRANSCRIPT_FAILURES = 20;
+const MAX_MISSING_MARKER_POLLS = 12;
 // At most three 2,000-character reports plus bounded headers/status prose.
 const WAKEUP_BATCH_CHARS = 8000;
 const WAKEUP_BATCH_WORKERS = Math.floor((WAKEUP_BATCH_CHARS - 2000) / WAKEUP_SUMMARY_CHARS);
@@ -160,7 +161,7 @@ function reportPresentation(label: string, preview: string, tone: "accent" | "da
 // Transcript helpers (uses /api/messages simplified message shape)
 // ---------------------------------------------------------------------------
 
-type WorkerReport = { text: string; isError: boolean; outcome: "finished" | "failed" | "interrupted" | "report unavailable"; entryId?: string };
+type WorkerReport = { text: string; isError: boolean; outcome: "finished" | "failed" | "interrupted" | "report unavailable"; entryId?: string; attributionUnavailable?: boolean };
 
 /** Classify the last activity, never an earlier assistant's optimistic prose. */
 export function workerReport(messages: any[] | null): WorkerReport {
@@ -205,8 +206,11 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!res.ok || json?.ok === false) throw new ApiError(`${method} ${path} failed (${res.status}): ${json?.error || "unknown error"}`, res.status);
     return json;
   }
-  async function fetchMessages(sessionId: string): Promise<any[]> {
-    const json = await api("GET", `/api/messages?sessionId=${encodeURIComponent(sessionId)}`);
+  async function fetchMessages(sessionId: string, dispatchId?: string): Promise<any[]> {
+    const path = dispatchId
+      ? `/api/session/history?sessionId=${encodeURIComponent(sessionId)}&dispatchId=${encodeURIComponent(dispatchId)}`
+      : `/api/messages?sessionId=${encodeURIComponent(sessionId)}`;
+    const json = await api("GET", path);
     if (!Array.isArray(json.messages)) throw new Error("Transcript response did not contain messages");
     return json.messages;
   }
@@ -246,11 +250,15 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   function onBranch(a: string | null): boolean { return a === null || branchEntries().some((e) => e.id === a); }
   function journalPath(): string {
     const directory = process.env.PI_WEB_ORCHESTRATOR_STATE_DIR || join(homedir(), ".pi", "agent", "orchestrator-state");
-    mkdirSync(directory, { recursive: true, mode: 0o700 });
     return join(directory, `${encodeURIComponent(selfSessionId)}.json`);
   }
   function persist() {
     const path = journalPath();
+    if (!watched.size && !pending.length && !quarantinedWatches.length && !quarantinedPending.length) {
+      try { unlinkSync(path); } catch (error: any) { if (error?.code !== "ENOENT") throw error; }
+      return;
+    }
+    mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     const temp = `${path}.${randomUUID()}.tmp`;
     try {
       const fd = openSync(temp, "wx", 0o600);
@@ -755,6 +763,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
         if (!isActive(spawnGeneration)) throw new Error("Orchestrator instance was replaced");
         if (!onBranch(dispatchAnchor)) throw new Error("Dispatch branch was abandoned during admission");
         intent.admissionPending = false;
+        dismissSupersededQuarantine(sessionId);
         persist();
         appendLedger(WATCH_ENTRY, sessionId, params.name, categoryName || "Default", true);
 
@@ -860,6 +869,14 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     await poll(expectedGeneration);
   }
 
+  function dismissSupersededQuarantine(childId: string) {
+    quarantinedWatches = quarantinedWatches.filter((w) => w.id !== childId || [...pending, ...quarantinedPending].some((p) => p.members.some((m) => m.watchId === w.watchId)));
+    // A host may already own this immutable batch even after an uncertain
+    // response. Keep its delivery ID and payload until saved acknowledgement;
+    // dropping it could let sibling watches prepare duplicate deliveries.
+    // Generation checks prevent its acknowledgement resolving the new task.
+  }
+
   function promoteQuarantined() {
     if (!isActive()) return;
     let moved = false;
@@ -889,7 +906,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       // A frozen older report can coexist with a renewed task, but cannot
       // resolve that task. Do not deliver across abandoned parent branches.
       const receipt = await api("POST", "/api/session/completion", {
-        sessionId: selfSessionId, deliveryId: delivery.deliveryId, branchAnchorEntryId: delivery.branchAnchorEntryId, message: delivery.message,
+        sessionId: selfSessionId, deliveryId: delivery.deliveryId, ...(delivery.branchAnchorEntryId ? { branchAnchorEntryId: delivery.branchAnchorEntryId } : {}), message: delivery.message,
       });
       if (!isActive(expectedGeneration)) return;
       if (receipt.state !== "saved") continue;
@@ -918,7 +935,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       const completed: { w: Watched; summary: WorkerReport }[] = [];
       for (const w of [...watched.values()]) {
         if (!isActive(expectedGeneration)) return;
-        if (!current(w) || pending.some((p) => p.members.some((m) => m.watchId === w.watchId))) continue;
+        if (!current(w) || [...pending, ...quarantinedPending].some((p) => p.members.some((m) => m.watchId === w.watchId))) continue;
         try {
           const state = await api("GET", `/api/state?sessionId=${encodeURIComponent(w.id)}`);
           if (!isActive(expectedGeneration) || !current(w)) continue;
@@ -928,7 +945,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             w.idlePolls = 0; w.fingerprint = undefined; continue;
           }
           let messages: any[];
-          try { messages = await fetchMessages(w.id); }
+          try { messages = await fetchMessages(w.id, w.dispatchId); }
           catch {
             if (!isActive(expectedGeneration) || !current(w)) continue;
             w.idlePolls = 0;
@@ -940,12 +957,15 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           w.transcriptFailures = 0;
           const marker = w.dispatchId ? `[pi-web-dispatch:${w.dispatchId}]` : undefined;
           const boundary = marker ? messages.findIndex((m) => m.role === "user" && String(m.text ?? "").includes(marker)) : -1;
-          if (marker && boundary < 0) { w.idlePolls = 0; w.fingerprint = undefined; continue; }
-          if (w.admissionPending && boundary >= 0) { w.admissionPending = false; persist(); }
-          const activity = marker ? messages.slice(boundary + 1) : [];
           const fingerprint = createHash("sha256").update(JSON.stringify(messages)).digest("hex");
           w.idlePolls = w.fingerprint === fingerprint ? w.idlePolls + 1 : 1;
           w.fingerprint = fingerprint;
+          if (marker && boundary < 0) {
+            if (w.idlePolls >= MAX_MISSING_MARKER_POLLS) completed.push({ w, summary: { outcome: "report unavailable", isError: false, attributionUnavailable: true, text: `Task attribution unavailable: dispatch marker was absent after ${MAX_MISSING_MARKER_POLLS} stable idle observations. No older reply has been attributed to this task. The watch will be released after this report is saved; inspect or explicitly reassign the task.` } });
+            continue;
+          }
+          if (w.admissionPending && boundary >= 0) { w.admissionPending = false; dismissSupersededQuarantine(w.id); persist(); }
+          const activity = marker ? messages.slice(boundary + 1) : [];
           if (w.idlePolls < 3) continue;
           let summary = marker ? workerReport(activity) : { text: "Task attribution unavailable: this legacy watch has no dispatch watermark. Inspect the worker transcript.", outcome: "report unavailable" as const, isError: false };
           if (!marker && w.unavailableReported) continue;
@@ -971,7 +991,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           presentation: reportPresentation(eligible.length === 1 ? `${eligible[0].w.name} · ${eligible[0].summary.outcome}` : `${eligible.length} workers · outcomes reported`, eligible.map(({ summary }) => summary.text).join(" · "), eligible.some(({ summary }) => summary.isError) ? "danger" : "accent"),
         };
         const deliveryId = randomUUID();
-        pending.push({ deliveryId, branchAnchorEntryId: branchEntries().at(-1)?.id ?? null, members: eligible.map(({ w, summary }) => ({ id: w.id, watchId: w.watchId, anchor: w.anchor, resolves: summary.outcome !== "report unavailable" || w.transcriptFailures >= MAX_TRANSCRIPT_FAILURES })), message: {
+        pending.push({ deliveryId, branchAnchorEntryId: branchEntries().at(-1)?.id ?? null, members: eligible.map(({ w, summary }) => ({ id: w.id, watchId: w.watchId, anchor: w.anchor, resolves: !!summary.attributionUnavailable || !w.dispatchId || summary.outcome !== "report unavailable" || w.transcriptFailures >= MAX_TRANSCRIPT_FAILURES })), message: {
           customType: WAKEUP_CUSTOM_TYPE, display: true,
           content: `🔔 [orchestrator] ${eligible.length} worker outcome(s) reported.\n\n` + eligible.map(({ w, summary }) => `Worker "${w.name}" (session ${w.id}, assignment ${w.watchId}): ${summary.outcome}.\n${formatWorkerReport(summary, w.id)}`).join("\n\n---\n\n"),
           details: { ...details, deliveryId },
@@ -1003,9 +1023,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       promoteQuarantined();
       const ids: string[] = params.ids?.length ? params.ids : Array.from(watched.keys());
       const quarantined = quarantinedWatches.length + [...watched.values()].filter((w) => !onBranch(w.anchor)).length;
-      if (quarantined) return { content: [{ type: "text", text: `Recovery warning: ${quarantined} task watch(es) quarantined because their dispatch branch anchors are absent. Durable records are retained; return to the original branch or explicitly reassign the task. No result will be attributed to this branch.` }], details: {} };
+      const warning = quarantined ? `Recovery warning: ${quarantined} task watch(es) quarantined because their dispatch branch anchors are absent. Durable records are retained; return to the original branch or explicitly reassign the task. No result will be attributed to this branch.` : "";
       if (ids.length === 0) {
-        return { content: [{ type: "text", text: "No tracked workers. (Workers you already received a wakeup for are untracked; pass their session id explicitly to check them.)" }], details: {} };
+        return { content: [{ type: "text", text: "No tracked workers. (Workers you already received a wakeup for are untracked; pass their session id explicitly to check them.)" + (warning ? `\n${warning}` : "") }], details: {} };
       }
       const lines: string[] = [];
       for (const id of ids) {
@@ -1021,7 +1041,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           lines.push(`? — ${id} — status unavailable (${error instanceof Error ? error.message : error})`);
         }
       }
-      return { content: [{ type: "text", text: lines.join("\n") }], details: {} };
+      return { content: [{ type: "text", text: [...lines, ...(warning ? [warning] : [])].join("\n") }], details: {} };
     },
   });
 
@@ -1068,6 +1088,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
           if (!isActive(expectedGeneration)) throw new Error("Orchestrator instance was replaced");
           if (!onBranch(dispatchAnchor)) throw new Error("Dispatch branch was abandoned during admission");
           intent.admissionPending = false;
+          dismissSupersededQuarantine(params.id);
           persist();
           appendLedger(WATCH_ENTRY, params.id, intent.name, intent.categoryName, spawnedWorkers.has(params.id));
           return { content: [{ type: "text" as const, text: `Task admitted to session ${params.id}. You'll get a 🔔 wakeup after its outcome is saved.` }], details: {} };

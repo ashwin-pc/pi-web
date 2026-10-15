@@ -73,7 +73,7 @@ await client.request("POST", "/api/session/name", { body: { name: "Reviewed" } }
 
 | Scope | Exact permitted HTTP operations |
 | --- | --- |
-| `sessions.read` | GET `/api/state`, `/api/messages`, `/api/messages/image`, `/api/session/reference`, `/api/models` |
+| `sessions.read` | GET `/api/state`, `/api/messages`, `/api/messages/image`, `/api/session/reference`, `/api/session/history`, `/api/models` |
 | `sessions.create` | POST `/api/new-chat`, `/api/sessions/new` |
 | `sessions.write` | POST `/api/prompt`, `/api/abort`, `/api/session/completion`, `/api/session/name`, `/api/model`, `/api/session-ui-state/read` |
 | `sessions.delete` | POST `/api/sessions/delete` |
@@ -91,7 +91,8 @@ a caller-provided lineage claim. `sessionIds: [id, ...]` adds explicit targets;
 workers as well as newly spawned children. Neither route scope nor target scope is
 inferred from UI focus. Both are checked server-side even for a copied credential.
 GET routes accept a single `sessionId`. The exact-reference route additionally
-accepts one `entryId`; `/api/messages/image` requires one bounded `imageId`;
+accepts one `entryId`; `/api/session/history` requires exactly one UUID `dispatchId`;
+`/api/messages/image` requires one bounded `imageId`;
 `/api/messages` permits the optional `images=inline` compatibility selector.
 Unknown or duplicate selectors are rejected. POST routes accept no query
 parameters. Browser viewer identity headers are rejected, and extension requests
@@ -129,21 +130,54 @@ was consumed or persisted. A request timeout or client disposal is not proof tha
 an already admitted operation was canceled.
 
 An optional UUID `dispatchId` causes the host to append exactly
-`\n\n[pi-web-dispatch:<dispatchId>]` to the submitted text and echo that ID in the
-receipt. This marker is visible to the model. Find the actual saved **user** entry
+`\n\n[pi-web-dispatch:<dispatchId>]` to the message text **before serializing the
+attachment fence**, and echo that ID in the receipt. Attachments therefore remain
+parseable. This marker is visible to the model. Find the actual saved **user** entry
 containing that marker before treating later assistant replies as this task's
 result. A transcript snapshot taken before admission is not a consumption
 watermark: an older task can finish while the new prompt remains queued. Extension
 commands or input handlers can consume a prompt without producing that user
 entry; admission alone never makes an old final reply eligible.
 
+Use `GET /api/session/history?sessionId=<id>&dispatchId=<uuid>` for compaction-safe
+correlation. It returns `{ ok: true, messages }` in the usual simplified message
+shape (including entry IDs), starting at the actual matching user entry on the
+**uncompacted active branch**. An absent marker yields `messages: []`; alternate
+branches are never searched. Unlike `/api/messages`, compaction cannot hide the
+dispatch boundary. Inline image bytes are omitted, not replaced with invalid
+compacted-history image URLs. Raw session-manager entries can still be memory-only
+before their first disk flush: this route proves consumption/lineage, not the
+on-disk completion receipt described below.
+
 ### Awaiting abort
 
 `POST /api/abort` retains **202** by default. Add `waitFor: "idle"` for **200** with
 `{ ok: true, sessionId, idle: true }` only after the local SDK abort settles.
-Failures propagate. This does not wait for recursively tracked workers to settle
-and does not clear queued human or agent steering. An interrupt-and-redirect
-caller should await this receipt instead of sleeping for a fixed duration.
+Failures propagate. This waits for both SDK interruption and previously admitted
+host operations; it does not wait for recursively tracked workers to settle and
+does not clear queued human or agent steering. An interrupt-and-redirect caller
+should await this receipt instead of sleeping for a fixed duration. A bounded
+wait that cannot establish safety returns **503** with `recoveryRequired: true`,
+never `idle: true`; callers must not redirect in that case.
+
+Ordinary Stop/abort still releases visible work leases when the SDK is idle, so a
+hung preflight/navigation hook no longer leaves the UI falsely running. Separate
+safety ownership remains until the operation actually finishes. While a canceled
+operation is unresolved, same-runtime mutations (prompt, Retry, model changes,
+reload, history navigation, completion injection, and extension actions) return
+**409** with `recoveryRequired: true`. Reads and Stop remain available, as does
+starting an independent session. A cancellation epoch prevents a late **idle**
+prompt preflight from starting an agent run; streaming preflight may already have
+enqueued before its callback, so that ambiguous queue remains fenced instead.
+Arbitrary JavaScript hooks cannot be forcibly canceled through the SDK. If they
+never settle, recover by restarting the server process (the stalled-runtime issue
+remains separate), not by clearing safety ownership and overlapping old work.
+
+Disposal waits are also bounded (`PI_WEB_OPERATION_SETTLE_TIMEOUT_MS`, default
+10 seconds). Failure resets the closing flag and leaves reads/retry-disposal
+available. A timed-out retirement keeps its original promise/runtime and pending
+claims; no replacement can replay while old hooks may still persist. A later
+successful settlement completes that same retirement.
 
 ### Idempotent completion delivery
 
@@ -182,7 +216,10 @@ those explicitly unsupported Windows errors (power-loss rename durability then
 depends on the filesystem). File write/fsync/rename errors still fail the request.
 The SDK may keep even appended entries only in memory before its first assistant
 message, so **only a matching custom message observed in the actual session JSONL
-file** yields `saved` and an `entryId`. Pending is not a delivery acknowledgement.
+file** yields `saved` and an `entryId`. A bounded disk index scans only appended
+bytes (plus a small boundary check), invalidating on file replacement, truncation,
+or same-size rewrite; unchanged receipt polls do not reread the transcript.
+Pending is not a delivery acknowledgement.
 Keep the watch and durable pending payload until saved. Saved records are retained
 for deduplication; receipt lookup does not delete them.
 
@@ -198,8 +235,8 @@ When `branchAnchorEntryId` is supplied, core checks that exact entry is on the
 active branch immediately before SDK submission. Missing anchors leave the record
 pending without injection. Host history navigation is blocked while session work
 (including custom-message preflight) is active or a submitted completion remains
-unsaved, even if the SDK briefly reports idle. Abort does not erase operation-owned
-prompt, navigation, or completion leases before their owners finish. Completion submission is deferred
+unsaved, even if the SDK briefly reports idle. Abort may release visible leases,
+but does not erase separate operation-owned safety fences before their owners finish. Completion submission is deferred
 while host navigation is already in progress. Use a persisted watch/dispatch
 anchor, not merely the last user entry. Returning to the intended branch and
 repeating the unchanged request retries it.

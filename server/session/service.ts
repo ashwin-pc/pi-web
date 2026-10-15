@@ -17,7 +17,7 @@ import { EphemeralCaptureStore } from "../extensions/captureStore.js";
 import type { ResilientResourceLoader } from "../extensions/resilientLoader.js";
 import { mapPiEvent } from "./piEventMap.js";
 import { PiSessionHandle } from "./piHandle.js";
-import { CompletionDeferredError, CompletionOutbox, CompletionOutboxError, type CompletionInput } from "./completionOutbox.js";
+import { CompletionDeferredError, CompletionOutbox, CompletionOutboxError, validateCompletionInput, type CompletionInput } from "./completionOutbox.js";
 import { resolveRawTranscriptImage } from "./transcriptImages.js";
 import { createSettingsStore } from "../settings.js";
 import type {
@@ -48,6 +48,8 @@ import {
   isAssistantFailureMessage,
   isIncompleteToolResultMessage,
   projectCommittedMessage,
+  entryMessage,
+  simplifyMessage,
   sessionDisplayName,
   textFromContent,
   toolCallName,
@@ -61,7 +63,7 @@ function isMissingPath(error: unknown): boolean {
 }
 
 export class SessionServiceError extends Error {
-  constructor(message: string, readonly status = 400) { super(message); }
+  constructor(message: string, readonly status = 400, readonly recoveryRequired = false) { super(message); }
 }
 
 export interface SessionDefaults {
@@ -96,6 +98,7 @@ type WorkLease = {
   acquiredAt: number;
   watchdogTimer?: ReturnType<typeof setTimeout>;
   settled?: Promise<void>;
+  canceled?: boolean;
 };
 
 type LiveSessionEntry = {
@@ -103,8 +106,13 @@ type LiveSessionEntry = {
   handle: PiSessionHandle;
   viewerClientIds: Set<string>;
   workLeases: Map<symbol, WorkLease>;
+  /** Safety ownership survives Stop releasing the visible UI/work leases. */
+  operations: Map<symbol, WorkLease>;
+  abortEpoch: number;
+  recoveryRequired?: boolean;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
+  disposal?: Promise<void>;
 };
 
 type ViewerLease = {
@@ -311,11 +319,12 @@ export class LocalSessionService implements SessionService {
   private readonly idleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 24 * 60 * 60 * 1000);
   private readonly viewerGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, this.idleGraceMs));
   private readonly workLeaseWatchdogMs = envMs("PI_WEB_WORK_LEASE_WATCHDOG_MS", 3 * 60 * 1000);
+  private readonly operationSettleTimeoutMs = Math.max(1, envMs("PI_WEB_OPERATION_SETTLE_TIMEOUT_MS", 10_000));
   private readonly captureStore = new EphemeralCaptureStore();
   private readonly completionOutbox = new CompletionOutbox(
     (value, message) => {
       const entry = this.liveSessions.get(sessionPathKey(value));
-      if (entry?.session !== value || entry.disposing || Array.from(entry.workLeases.values()).some(lease => lease.label === "navigate")) throw new CompletionDeferredError("Runtime unavailable or navigating");
+      if (entry?.session !== value || entry.disposing || entry.disposal || this.requiresRecovery(entry) || Array.from(entry.operations.values()).some(lease => lease.label === "navigate")) throw new CompletionDeferredError("Runtime unavailable or navigating");
       return this.withWorkLease(value, "completion", "general", () => {
         if (!value.sendCustomMessage) throw new SessionServiceError("Custom message delivery is unavailable", 503);
         return value.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer" });
@@ -457,8 +466,32 @@ export class LocalSessionService implements SessionService {
   async require(sessionId?: string): Promise<PiWebSession> {
     const value = sessionId ? await this.find(sessionId) : this.currentSession();
     if (!value) throw new SessionServiceError("Session not found", 404);
-    if (this.liveSessions.get(sessionPathKey(value))?.disposing) throw new SessionServiceError("Session runtime is closing", 409);
     return value;
+  }
+
+  private requiresRecovery(entry: LiveSessionEntry) {
+    return Boolean(entry.recoveryRequired || Array.from(entry.operations.values()).some(operation => operation.canceled));
+  }
+
+  private assertMutable(value: PiWebSession) {
+    const entry = this.liveSessions.get(sessionPathKey(value));
+    if (entry?.disposing || entry?.disposal) throw new SessionServiceError("Session runtime is closing; wait for settlement or restart the server", 409, true);
+    if (entry && this.requiresRecovery(entry)) throw new SessionServiceError("A canceled session operation is still settling; retry after it finishes or restart the server", 409, true);
+  }
+
+  private async requireMutable(sessionId?: string) {
+    const value = await this.require(sessionId);
+    this.assertMutable(value);
+    return value;
+  }
+
+  private async waitForSettlement(operation: Promise<unknown>, label: string) {
+    let timer!: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new SessionServiceError(`${label} did not settle; runtime retained to prevent late delivery. Restart the server to recover.`, 503, true)), this.operationSettleTimeoutMs);
+    });
+    try { await Promise.race([operation, timeout]); }
+    finally { clearTimeout(timer); }
   }
 
   async state(sessionId: string) { return this.projectState(await this.require(sessionId)); }
@@ -573,6 +606,31 @@ export class LocalSessionService implements SessionService {
     return jsonSafe(this.runtimeFor(await this.require(sessionId)).messages());
   }
 
+  /** Uncompacted active lineage, starting at an actually consumed dispatch. This
+   * is correlation evidence, not proof that the SDK flushed entries to disk.
+   */
+  async history(sessionId: string, dispatchId: string): Promise<MessageDto[]> {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(dispatchId)) throw new SessionServiceError("dispatchId must be a UUID");
+    const value = await this.require(sessionId);
+    if (!value.sessionManager.getBranch) throw new SessionServiceError("Active session history is unavailable", 503);
+    const branch = value.sessionManager.getBranch() as Array<{ id?: string; parentId?: string }>;
+    const marker = `[pi-web-dispatch:${dispatchId}]`;
+    const start = branch.findIndex(entry => {
+      const message = entryMessage(entry);
+      return message?.role === "user" && textFromContent(message.content).includes(marker);
+    });
+    if (start < 0) return [];
+    return branch.slice(start).flatMap(entry => {
+      const message = entryMessage(entry);
+      if (!message) return [];
+      // Historic image indices differ from compacted /api/messages indices.
+      // Omit their bytes rather than emit broken image URLs or inline payloads.
+      const content = Array.isArray(message.content) ? message.content.map((part: any) => part?.type === "image" ? { type: "image", mimeType: part.mimeType, omitted: true } : part) : message.content;
+      const projected = simplifyMessage({ ...message, content }, { entryId: entry.id, parentEntryId: entry.parentId });
+      return projected ? [projected] : [];
+    });
+  }
+
   async transcriptImage(sessionId: string, imageId: string): Promise<{ data: Buffer; mimeType: string } | undefined> {
     return resolveRawTranscriptImage((await this.require(sessionId)).messages, imageId);
   }
@@ -661,7 +719,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     const model = value.modelRuntime.getModel(provider, id);
     if (!model) throw new SessionServiceError("Model not found", 404);
     await value.setModel(model);
@@ -670,7 +728,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async executeShell(sessionId: string, command: string, excludeFromContext: boolean) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     if (!value.executeBash) throw new SessionServiceError("Bash execution is not available in this session.");
     return jsonSafe({ command, cwd: this.sessionCwd(value), ...await value.executeBash(command, undefined, { excludeFromContext }), excludeFromContext });
   }
@@ -681,31 +739,38 @@ export class LocalSessionService implements SessionService {
 
   async prompt(sessionId: string, input: SessionPromptInput) {
     if (input.dispatchId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.dispatchId)) throw new SessionServiceError("dispatchId must be a UUID");
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     await this.startSessionPrompt(value, input);
     return { sessionId: value.sessionId, ...(input.waitFor === "admission" ? { admission: "accepted" as const } : {}), ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}) };
   }
 
   async deliverCompletion(sessionId: string, input: CompletionInput) {
-    const value = await this.require(sessionId);
-    if (!value.sendCustomMessage) throw new SessionServiceError("Custom message delivery is unavailable", 503);
-    try { return await this.completionOutbox.deliver(value, input); }
-    catch (error) {
+    try {
+      const normalized = validateCompletionInput(input);
+      const value = await this.requireMutable(sessionId);
+      if (!value.sendCustomMessage) throw new SessionServiceError("Custom message delivery is unavailable", 503);
+      return await this.completionOutbox.deliver(value, normalized);
+    } catch (error) {
       if (error instanceof CompletionOutboxError) throw new SessionServiceError(error.message, error.status);
       throw error;
     }
   }
 
   async retry(sessionId: string) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     await this.startSessionRetry(value);
     return { sessionId: value.sessionId };
   }
 
   async abort(sessionId: string, waitFor?: "idle") {
     const value = await this.require(sessionId);
-    if (waitFor === "idle") await this.abortSession(value, true);
-    else void this.abortSession(value);
+    if (waitFor === "idle") {
+      await this.waitForSettlement(this.abortSession(value, true).then(async () => {
+        const entry = this.liveSessions.get(sessionPathKey(value));
+        await Promise.all(Array.from(entry?.operations.values() || []).map(operation => operation.settled));
+        if (entry?.recoveryRequired) throw new SessionServiceError("Canceled prompt queue ownership is ambiguous; restart the server to recover", 503, true);
+      }), "Session interruption");
+    } else void this.abortSession(value);
     return { sessionId: value.sessionId, ...(waitFor === "idle" ? { idle: true as const } : {}) };
   }
 
@@ -723,7 +788,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async rename(sessionId: string, name: string) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     if (!value.setSessionName) throw new SessionServiceError("Renaming sessions is not available");
     value.setSessionName(name);
     this.rememberSessionName(value);
@@ -731,7 +796,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult> {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before navigating the tree", 409);
     if (value.isCompacting) throw new SessionServiceError("Wait for the current compaction to finish before navigating the tree", 409);
     if (this.hasActiveWorkForPath(sessionPathKey(value))) throw new SessionServiceError("Wait for active session work to finish before navigating the tree", 409);
@@ -750,14 +815,14 @@ export class LocalSessionService implements SessionService {
   }
 
   async storeCapture(sessionId: string | undefined, key: unknown, registrationId: unknown, input: { mimeType: string; durationMs: number; bytes: Uint8Array }) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     const registration = this.webUiBridge.captureRegistration(value, key, registrationId);
     if (!registration) throw new SessionServiceError("Composer capture registration is stale or missing", 409);
     return this.captureStore.store({ sessionId: value.sessionId, contributionKey: registration.key, registrationId: registration.registrationId, policy: registration.policy, ...input });
   }
 
   async invokeContribution(sessionId: string | undefined, input: Record<string, unknown>, signal?: AbortSignal) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     const invoke = () => this.webUiBridge.invokeContribution(value, input, signal);
     // Capture handlers can run long enough to outlive an unviewed session, so
     // keep their runtime alive. Existing rendered actions must not acquire a
@@ -769,19 +834,19 @@ export class LocalSessionService implements SessionService {
   }
 
   invokeHeaderAction(sessionId: string | undefined, key: unknown) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokeHeaderAction(value, key));
+    return this.require(sessionId).then((value) => { this.assertMutable(value); return this.webUiBridge.invokeHeaderAction(value, key); });
   }
 
   invokeArtifactAction(sessionId: string | undefined, input: Record<string, unknown>) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokeArtifactAction(value, input));
+    return this.require(sessionId).then((value) => { this.assertMutable(value); return this.webUiBridge.invokeArtifactAction(value, input); });
   }
 
   invokeGitTab(sessionId: string | undefined, input: Record<string, unknown>) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokeGitTab(value, input));
+    return this.require(sessionId).then((value) => { this.assertMutable(value); return this.webUiBridge.invokeGitTab(value, input); });
   }
 
   invokePanel(sessionId: string | undefined, input: Record<string, unknown>) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokePanel(value, input));
+    return this.require(sessionId).then((value) => { this.assertMutable(value); return this.webUiBridge.invokePanel(value, input); });
   }
 
   respondInteraction(response: InteractionResponseDto) { return this.webUiBridge.respond(response.id, response); }
@@ -808,6 +873,7 @@ export class LocalSessionService implements SessionService {
 
   async reloadExtensions(sessionId: string) {
     const value = this.openExtensionSession(sessionId);
+    this.assertMutable(value);
     if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before retrying extensions.", 409);
     if (value.isCompacting) throw new SessionServiceError("Wait for compaction to finish before retrying extensions.", 409);
     const loader = this.productionFactory.loaderFor(value);
@@ -1024,7 +1090,7 @@ export class LocalSessionService implements SessionService {
     if (!key || this.liveSessions.get(key)?.session === value) return value;
     const handle = this.runtimeFor(value);
     handle.subscribe((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map() });
+    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map(), operations: new Map(), abortEpoch: 0 });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
@@ -1169,10 +1235,11 @@ export class LocalSessionService implements SessionService {
     const token = this.acquireWorkLease(value, label, kind);
     let settle!: () => void;
     const settled = new Promise<void>(resolve => { settle = resolve; });
-    const lease = token && this.liveSessions.get(token.sessionKey)?.workLeases.get(token.key);
-    if (lease) lease.settled = settled;
+    const entry = token && this.liveSessions.get(token.sessionKey);
+    const lease = entry && entry.workLeases.get(token!.key);
+    if (lease) { lease.settled = settled; entry!.operations.set(token!.key, lease); }
     try { return await operation(); }
-    finally { this.releaseWorkLease(value, token); settle(); }
+    finally { if (token) entry?.operations.delete(token.key); this.releaseWorkLease(value, token); settle(); }
   }
 
   private clearWorkLeases(value: PiWebSession, reason: string) {
@@ -1180,13 +1247,11 @@ export class LocalSessionService implements SessionService {
     const key = located?.[0] || sessionPathKey(value);
     const entry = located?.[1] || this.liveSessions.get(key);
     if (!entry?.workLeases.size) return;
-    // SDK idle does not settle host preflight/navigation/custom-message work.
-    // Those leases remain owned until their operations' finally blocks run.
-    const leases = Array.from(entry.workLeases.values()).filter(lease => !["prompt", "navigate", "completion"].includes(lease.label));
-    if (!leases.length) return;
-    for (const [token, lease] of entry.workLeases) {
-      if (!["prompt", "navigate", "completion"].includes(lease.label)) { this.clearTimer(lease.watchdogTimer); entry.workLeases.delete(token); }
-    }
+    // Restore Stop's visible lease recovery without releasing safety ownership:
+    // canceled operations remain in entry.operations until their actual finally.
+    const leases = Array.from(entry.workLeases.values());
+    for (const lease of leases) this.clearTimer(lease.watchdogTimer);
+    entry.workLeases.clear();
     console.warn("Cleared session work leases", {
       sessionId: value.sessionId, sessionFile: value.sessionFile, reason,
       leases: leases.map(({ id, label, kind, acquiredAt }) => ({ id, label, kind, acquiredAt: new Date(acquiredAt).toISOString() })),
@@ -1207,7 +1272,7 @@ export class LocalSessionService implements SessionService {
     if (entry.disposeTimer) return;
     entry.disposeTimer = setTimeout(() => {
       entry.disposeTimer = undefined;
-      void this.disposeLiveSession(key, "idle");
+      void this.disposeLiveSession(key, "idle").catch(error => this.emitError(entry.session, error));
     }, this.idleGraceMs);
   }
 
@@ -1220,32 +1285,47 @@ export class LocalSessionService implements SessionService {
 
   private async disposeLiveSession(key: string, reason: "idle" | "delete" | "reset", force = false) {
     const entry = this.liveSessions.get(key);
-    if (!entry || entry.disposing || (!force && this.shouldKeepLiveSession(entry))) return;
-    entry.disposing = true;
-    this.cancelLiveSessionCleanup(entry);
-    const value = entry.session;
-    // An SDK-idle preflight or history operation can still be in flight. Stop
-    // admission above, then quiesce both SDK and operation-owned host work before
-    // replacing its runtime or replaying its completion outbox.
-    await entry.handle.interrupt();
-    await Promise.all(Array.from(entry.workLeases.values()).filter(lease => ["prompt", "navigate", "completion"].includes(lease.label)).map(lease => lease.settled));
-    for (const lease of entry.workLeases.values()) this.clearTimer(lease.watchdogTimer);
-    entry.workLeases.clear();
-    const sessionId = value.sessionId;
-    const sessionFile = value.sessionFile || key;
-    for (const [clientId, lease] of this.viewerLeases) {
-      if (lease.sessionKey !== key) continue;
-      this.clearTimer(lease.releaseTimer);
-      this.viewerLeases.delete(clientId);
-      for (const connection of lease.sockets) this.viewerConnections.delete(connection);
-      lease.sockets.clear();
+    if (!entry || (!entry.disposal && !force && this.shouldKeepLiveSession(entry))) return;
+    if (!entry.disposal) {
+      entry.disposing = true;
+      this.cancelLiveSessionCleanup(entry);
+      const value = entry.session;
+      entry.abortEpoch += 1;
+      for (const operation of entry.operations.values()) operation.canceled = true;
+      // Keep this one retirement promise after a timeout. Its old runtime must
+      // not be replaced while a delayed hook can still append. Reads and Stop
+      // remain available; retries join the same retirement instead of overlapping.
+      const retirement = (async () => {
+        await entry.handle.interrupt();
+        await Promise.all(Array.from(entry.operations.values()).map(operation => operation.settled));
+        for (const lease of entry.workLeases.values()) this.clearTimer(lease.watchdogTimer);
+        entry.workLeases.clear();
+        const sessionId = value.sessionId;
+        const sessionFile = value.sessionFile || key;
+        for (const [clientId, lease] of this.viewerLeases) {
+          if (lease.sessionKey !== key) continue;
+          this.clearTimer(lease.releaseTimer);
+          this.viewerLeases.delete(clientId);
+          for (const connection of lease.sockets) this.viewerConnections.delete(connection);
+          lease.sockets.clear();
+        }
+        await entry.handle.dispose(reason);
+        this.webUiBridge.releaseSessionSettings(value);
+        this.liveSessions.delete(key);
+        this.pendingPromptCorrelations.delete(key);
+        if (this.liveById.get(sessionId) === value) this.liveById.delete(sessionId);
+        this.emit({ type: "shutdown", sessionId, sessionFile, sessionKey: key });
+      })();
+      entry.disposal = retirement;
+      // Observe late rejection even after the bounded caller stopped waiting.
+      void retirement.then(() => { entry.disposing = false; }, error => {
+        entry.disposing = false;
+        entry.disposal = undefined;
+        this.emitError(value, error);
+      });
     }
-    await entry.handle.dispose(reason);
-    this.webUiBridge.releaseSessionSettings(value);
-    this.liveSessions.delete(key);
-    this.pendingPromptCorrelations.delete(key);
-    if (this.liveById.get(sessionId) === value) this.liveById.delete(sessionId);
-    this.emit({ type: "shutdown", sessionId, sessionFile, sessionKey: key });
+    try { await this.waitForSettlement(entry.disposal!, "Session disposal"); }
+    finally { entry.disposing = false; }
   }
 
   private rememberSessionLocation(info: { id: string; path: string; cwd?: string }, cwd = this.deps.globalCwd()) {
@@ -1395,6 +1475,7 @@ export class LocalSessionService implements SessionService {
     const name = rawName.toLowerCase();
     const args = rest.join(" ").trim();
     const state = (session = value) => this.projectState(session);
+    if (!["help", "?", "commands", "abort", "stop"].includes(name)) this.assertMutable(value);
     switch (name) {
       case "help": case "?": return { message: this.slashHelp(value), state: state() };
       case "commands": return { message: this.formatSlashCommandList(this.getSlashCommands(value)), state: state() };
@@ -1447,6 +1528,8 @@ export class LocalSessionService implements SessionService {
   }
 
   private abortSession(value: PiWebSession, propagateError = false) {
+    const entry = this.liveSessions.get(sessionPathKey(value));
+    if (entry) { entry.abortEpoch += 1; for (const operation of entry.operations.values()) operation.canceled = true; }
     const wasSdkActive = Boolean(value.isStreaming || value.isCompacting);
     const aborting = this.runtimeFor(value).interrupt().catch((error) => {
       this.emitError(value, error);
@@ -1459,17 +1542,31 @@ export class LocalSessionService implements SessionService {
   }
 
   private async startSessionPrompt(value: PiWebSession, input: SessionPromptInput) {
-    const serialized = serializeAttachmentMarkup(input.message || defaultPromptForAttachments(input.attachments), input.attachments);
-    const promptText = `${serialized}${input.dispatchId ? `\n\n[pi-web-dispatch:${input.dispatchId}]` : ""}`;
+    const message = input.message || defaultPromptForAttachments(input.attachments);
+    const promptText = serializeAttachmentMarkup(`${message}${input.dispatchId ? `\n\n[pi-web-dispatch:${input.dispatchId}]` : ""}`, input.attachments);
     let accept!: () => void;
     let reject!: (error: unknown) => void;
     const admission = input.waitFor === "admission" ? new Promise<void>((resolve, fail) => { accept = resolve; reject = fail; }) : undefined;
     if (!this.deps.sessionFactory?.isMock && input.clientMessageId && input.sourceClientId) this.rememberPromptCorrelation(sessionPathKey(value), { clientMessageId: input.clientMessageId, sourceClientId: input.sourceClientId, createdAt: Date.now() });
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;
+    const runtimeEntry = this.liveSessions.get(sessionPathKey(value));
+    const abortEpoch = runtimeEntry?.abortEpoch;
+    const streamingBehavior = value.isStreaming ? input.mode : undefined;
     void this.withWorkLease(value, "prompt", "general", () => this.runtimeFor(value).prompt(promptText, {
-      ...(value.isStreaming ? { streamingBehavior: input.mode } : {}),
-      ...(admission ? { preflightResult: (success: boolean) => { if (success) accept(); } } : {}),
+      ...(streamingBehavior ? { streamingBehavior } : {}),
+      preflightResult: (success: boolean) => {
+        if (!success) return;
+        if (runtimeEntry && runtimeEntry.abortEpoch !== abortEpoch) {
+          // Idle SDK preflight calls this immediately before _runAgentPrompt;
+          // throwing prevents a hung input/before_agent_start hook starting late.
+          // Streaming paths have ALREADY enqueued: retain an ambiguity fence.
+          const ambiguousQueue = streamingBehavior !== undefined || value.isStreaming;
+          if (ambiguousQueue) runtimeEntry.recoveryRequired = true;
+          throw new SessionServiceError("Prompt canceled before admission", ambiguousQueue ? 503 : 409, ambiguousQueue);
+        }
+        if (admission) accept();
+      },
     })).then(() => {
       // Real SDK paths call preflightResult even for consumed extension commands.
       // A missing callback must not turn a completed stub into false admission.
