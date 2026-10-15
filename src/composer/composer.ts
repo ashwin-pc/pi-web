@@ -43,7 +43,7 @@ export function createComposer(options: {
   state: AppState;
   elements: AppElements;
   api: ApiClient;
-  addMessage: (role: "user" | "system", text: string, extraClass?: string, images?: any[]) => void;
+  addMessage: (role: "user" | "system", text: string, extraClass?: string, images?: any[]) => HTMLElement;
   addToolHistoryCard?: (toolName: string, isError: boolean, result: unknown, args?: Record<string, unknown>) => void;
   sessionState: SessionStateController;
   updateThinkingOptions: (levels?: string[]) => void;
@@ -673,7 +673,7 @@ export function createComposer(options: {
     else addMessage("system", typeof data.output === "string" && data.output ? data.output : "(no output)", isShellError(data) ? "error" : "");
   }
 
-  async function runSlashCommand(command: string) {
+  async function runSlashCommand(command: string, ownsOutput: () => boolean) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
     if (name === "new") {
       await options.startNewSession();
@@ -717,7 +717,7 @@ export function createComposer(options: {
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
     if (resetsSession) await refreshMessages();
-    if (data.message && !resetsSession) addMessage("system", data.message);
+    if (data.message && !resetsSession && ownsOutput()) addMessage("system", data.message);
   }
 
   function init() {
@@ -786,11 +786,17 @@ export function createComposer(options: {
           updatePrimaryAction();
           // /new changes the active session synchronously. Unlike ordinary commands,
           // its local echo would be left in an empty tab when that tab is reused.
-          if (slashCommandName(promptMessage) !== "new") addMessage("system", `› ${promptMessage}`);
+          const commandName = slashCommandName(promptMessage);
+          const commandSessionId = state.currentSessionId;
+          const echo = commandName !== "new" ? addMessage("system", `› ${promptMessage}`) : undefined;
+          // A tab can be reopened with the SAME id while this command awaits
+          // its response/model refresh. Its detached echo fences local output
+          // from the replaced transcript (including A -> B -> A navigation).
+          const ownsOutput = () => commandName === "new" || commandName === "clear" || (state.currentSessionId === commandSessionId && Boolean(echo?.isConnected));
           try {
-            await runSlashCommand(promptMessage);
+            await runSlashCommand(promptMessage, ownsOutput);
           } catch (error) {
-            addMessage("system", error instanceof Error ? error.message : String(error), "error");
+            if (ownsOutput()) addMessage("system", error instanceof Error ? error.message : String(error), "error");
           } finally {
             settlePromptFocusAfterSubmit();
           }
