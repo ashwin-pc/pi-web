@@ -11,6 +11,8 @@ export interface PiWebSession {
   sessionId: string;
   sessionFile: string;
   isStreaming: boolean;
+  /** SDK idle proof, distinct from host operation settlement and user queue size. */
+  readonly isIdle?: boolean;
   isRetrying?: boolean;
   isCompacting?: boolean;
   pendingMessageCount?: number;

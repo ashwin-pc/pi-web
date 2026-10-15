@@ -162,16 +162,32 @@ never `idle: true`; callers must not redirect in that case.
 
 Ordinary Stop/abort still releases visible work leases when the SDK is idle, so a
 hung preflight/navigation hook no longer leaves the UI falsely running. Separate
-safety ownership remains until the operation actually finishes. While a canceled
-operation is unresolved, same-runtime mutations (prompt, Retry, model changes,
-reload, history navigation, completion injection, and extension actions) return
-**409** with `recoveryRequired: true`. Reads and Stop remain available, as does
-starting an independent session. A cancellation epoch prevents a late **idle**
-prompt preflight from starting an agent run; streaming preflight may already have
-enqueued before its callback, so that ambiguous queue remains fenced instead.
-Arbitrary JavaScript hooks cannot be forcibly canceled through the SDK. If they
-never settle, recover by restarting the server process (the stalled-runtime issue
-remains separate), not by clearing safety ownership and overlapping old work.
+safety ownership remains until the operation actually finishes. A canceled prompt
+still **awaiting preflight**, or canceled navigation/custom-message work, fences
+same-runtime mutations with **409** and `recoveryRequired: true`. Reads and Stop
+remain available, as does starting an independent session. Once a prompt was
+successfully admitted in its original cancellation epoch, its slow-to-abort agent
+run does **not** globally block independent steer/follow-up prompts, model changes,
+or renaming. Its full operation still blocks history navigation/Retry and defers
+completion injection until actual settlement, even if streaming briefly appears
+idle. An admitted completion request can therefore remain durably pending during
+that interval rather than being injected into a canceled run.
+
+A cancellation epoch prevents late **idle** prompt preflight from starting an
+agent run. A captured streaming submission may instead already have enqueued
+before its callback, so the host conservatively fences ambiguous **user** queue
+ownership. That latch recovers without disposal when the SDK explicitly reports
+idle and its pending **user-message** count is exactly zero (an unavailable count
+is not proof). Admission checks, SDK events, and awaited idle receipts re-evaluate
+this condition. A still-pending canceled preflight remains separately fenced:
+observing an empty queue cannot authorize another mutation while an old input
+handler could yet enqueue. The user count excludes custom messages and never
+releases the completion outbox's independent submission/disk-persistence claims.
+
+Arbitrary JavaScript hooks cannot be forcibly canceled through the SDK. If a
+preflight/navigation/custom-message hook never settles, recover by restarting the
+server process (the stalled-runtime issue remains separate), not by clearing
+safety ownership and overlapping old work.
 
 Disposal waits are also bounded (`PI_WEB_OPERATION_SETTLE_TIMEOUT_MS`, default
 10 seconds). Failure resets the closing flag and leaves reads/retry-disposal
