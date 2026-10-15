@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { wrapRegisteredTool } from "@earendil-works/pi-coding-agent";
 import sessionOrchestrator, {
+  workerReport,
+  formatWorkerReport,
   normalizeBedrockId,
   parseToken,
   resolveModel,
@@ -187,7 +190,13 @@ async function spawn(ctx: any, params: Record<string, unknown>) {
   // sessions_spawn is (re)built from config on session_start, so activate first.
   if (!tools.has("sessions_spawn")) await activate(ctx);
   const tool = tools.get("sessions_spawn");
-  return tool.execute("call-1", params, undefined, undefined, ctx);
+  const wrapped = wrapRegisteredTool({ definition: tool } as any, { createContext: () => ctx } as any);
+  // Model the agent's conversion of a thrown tool failure to a tool result.
+  try {
+    return await wrapped.execute("call-1", params as any, undefined);
+  } catch (error) {
+    return { isError: true, content: [{ type: "text", text: String((error as Error).message) }] };
+  }
 }
 
 function resultText(result: any) {
@@ -207,6 +216,165 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   vi.useRealTimers();
   vi.restoreAllMocks();
+});
+
+describe("issue 190 quick fixes", () => {
+  it("throws spawn refusals through the SDK wrapper rather than returning isError", async () => {
+    const ctx = makeCtx({ worker: true });
+    await activate(ctx);
+    const tool = wrapRegisteredTool({ definition: tools.get("sessions_spawn") } as any, { createContext: () => ctx } as any);
+    await expect(tool.execute("refusal", { name: "nested", task: "work" }, undefined)).rejects.toThrow(/depth cap/);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("asks for four short labelled outcome lines before report details", async () => {
+    await spawn(makeCtx(), { name: "labels", task: "work" });
+    const prompt = calls.find((call) => call.path === "/api/prompt")?.body.message;
+    expect(prompt).toMatch(/Lead your final report.*Outcome:.*Changed:.*Verified:.*Blocked:/);
+  });
+
+  it("does not mistake old assistant prose followed by tool activity for a finished report", () => {
+    const old = { role: "assistant", text: "Done yesterday" };
+    expect(workerReport([old, { role: "toolResult", text: "build started" }])).toMatchObject({ outcome: "interrupted", text: "build started" });
+    expect(workerReport([old, { role: "assistant", text: "Checking", toolCalls: [{ toolName: "bash" }] }]).outcome).toBe("interrupted");
+    expect(workerReport([{ role: "assistant", text: "Stopped", isError: true, raw: { stopReason: "aborted" } }]).outcome).toBe("interrupted");
+    expect(workerReport([{ role: "assistant", text: "Bad credentials", isError: true }]).outcome).toBe("failed");
+    expect(workerReport([{ role: "assistant", text: "All checks pass", entryId: "final-1" }])).toMatchObject({ outcome: "finished", entryId: "final-1" });
+    expect(workerReport(null).outcome).toBe("report unavailable");
+    expect(workerReport([]).outcome).toBe("interrupted");
+  });
+
+  it("ignores trailing metadata while retaining the terminal assistant's exact entry link", () => {
+    const assistant = { role: "assistant", text: "Outcome: complete\n" + "details ".repeat(500) + "Verified: passes", entryId: "real-final" };
+    const metadata = ["custom", "system", "compactionSummary"].map((role) => ({ role, text: "metadata", entryId: `${role}-entry` }));
+    for (const trailing of [...metadata.map((entry) => [entry]), metadata]) {
+      const summary = workerReport([assistant, ...trailing]);
+      expect(summary).toMatchObject({ outcome: "finished", entryId: "real-final" });
+      const output = formatWorkerReport(summary, "worker-123");
+      expect(output).toContain("&entryId=real-final.");
+      expect(output).not.toContain("&entryId=custom-entry");
+    }
+    for (const role of ["user", "toolResult", "bashExecution"]) {
+      expect(workerReport([assistant, { role, text: "new activity" }, ...metadata])).toMatchObject({ outcome: "interrupted", text: "new activity" });
+    }
+  });
+
+  it("prioritizes terminal assistant errors over partial tool calls, but preserves explicit aborts", () => {
+    const message = {
+      role: "assistant", text: "[API Error] stream ended unexpectedly", isError: true,
+      raw: { stopReason: "error" },
+      toolCalls: [{ id: "partial-call", toolName: "bash", args: {} }],
+    };
+    expect(workerReport([message])).toMatchObject({ outcome: "failed", isError: true });
+    expect(workerReport([{ ...message, isError: false }])).toMatchObject({ outcome: "failed", isError: true });
+    expect(workerReport([{ ...message, raw: {} }])).toMatchObject({ outcome: "failed", isError: true });
+    expect(workerReport([{ ...message, raw: { stopReason: "aborted" } }])).toMatchObject({ outcome: "interrupted", isError: false });
+    expect(workerReport([{ role: "toolResult", text: "command failed", isError: true }])).toMatchObject({ outcome: "interrupted", isError: false });
+  });
+
+  it("keeps labelled head and evidence tail inside 2000 chars with exact final-entry link", () => {
+    const head = "Outcome: fixed\nChanged: src/a.ts\nVerified: tests pass\nBlocked: none\n";
+    const text = head + "middle ".repeat(700) + "TAIL: concrete evidence";
+    const report = workerReport([{ role: "assistant", text, entryId: "final-123" }]);
+    const output = formatWorkerReport(report, "worker-123");
+    expect(output.length).toBeLessThanOrEqual(2000);
+    expect(output.startsWith(head)).toBe(true);
+    expect(output).toContain("TAIL: concrete evidence");
+    expect(output).toMatch(/Report truncated, full final message: \/\?sessionId=worker-123&entryId=final-123\.$/);
+    expect(formatWorkerReport(workerReport([{ role: "assistant", text: head }]), "worker-123")).toBe(head.trim());
+  });
+
+  it("reports unavailable once, retains the watch, and retries until a readable terminal reply", async () => {
+    vi.useFakeTimers();
+    const pi = makeExtension();
+    const ctx = makeCtx();
+    await spawn(ctx, { name: "retry", task: "work" });
+    let readable = false;
+    const fetchBefore = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => {
+      if (String(url).startsWith("/api/messages")) {
+        if (!readable) throw new Error("offline");
+        return { ok: true, json: async () => ({ messages: [{ role: "assistant", text: "Verified: recovered", entryId: "final-1" }] }) };
+      }
+      return fetchBefore(url, init);
+    }) as any;
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(pi.sendMessage.mock.calls[0][0].content).toContain("report unavailable");
+    expect(pi.sendMessage.mock.calls[0][0].content).not.toContain("finished");
+    expect(resultText(await tools.get("sessions_status").execute("status", {}))).toContain("worker-1");
+    readable = true;
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+    expect(pi.sendMessage.mock.calls[1][0].content).toContain("finished");
+    expect(resultText(await tools.get("sessions_status").execute("status", {}))).toContain("No tracked workers");
+  });
+
+  it.each([false, true])("bounds permanent transcript failures and releases spawn capacity (catch-up: %s)", async (catchUp) => {
+    vi.useFakeTimers();
+    const pi = makeExtension();
+    const ctx = makeCtx();
+    let transcriptFetches = 0;
+    const fetchBefore = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => {
+      const path = String(url);
+      if (path.startsWith("/api/messages")) {
+        transcriptFetches += 1;
+        throw new Error("permanent projection failure");
+      }
+      if (path.startsWith("/api/state")) {
+        return { ok: true, json: async () => ({ runtime: { isRunning: !path.endsWith(catchUp ? "ledger-worker" : "worker-1") } }) };
+      }
+      return fetchBefore(url, init);
+    }) as any;
+    if (catchUp) {
+      ctx.sessionManager.getBranch = () => [{ type: "custom", customType: "orchestrator-watch", data: { childId: "ledger-worker", name: "unreadable", spawned: true } }];
+      await activate(ctx);
+      await vi.advanceTimersByTimeAsync(0);
+    } else {
+      await spawn(ctx, { name: "unreadable", task: "work" });
+    }
+    for (let i = 0; i < 3; i++) await spawn(ctx, { name: `busy-${i}`, task: "work" });
+    expect((await spawn(ctx, { name: "overflow", task: "work" })).isError).toBe(true);
+    // Catch-up's initial failure counts toward the same 20-fetch budget.
+    await vi.advanceTimersByTimeAsync(catchUp ? 52500 : 55000);
+    expect(transcriptFetches).toBe(19);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(pi.appendEntry).not.toHaveBeenCalledWith("orchestrator-watch-resolved", expect.anything());
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(transcriptFetches).toBe(20);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+    const final = pi.sendMessage.mock.calls[1][0];
+    expect(final.content).toContain("report unavailable");
+    expect(final.content).toContain("automatic retries stopped");
+    expect(final.content).toContain("sessions_read");
+    expect(final.content).not.toContain("finished");
+    expect(pi.appendEntry).toHaveBeenCalledWith("orchestrator-watch-resolved", { childId: catchUp ? "ledger-worker" : "worker-1" });
+    expect(ctx.ui.web.reportSettlementDependencies.mock.calls.at(-1)?.[0].sessionIds).not.toContain(catchUp ? "ledger-worker" : "worker-1");
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(transcriptFetches).toBe(20);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+    expect((await spawn(ctx, { name: "replacement", task: "work" })).isError).toBeFalsy();
+  });
+
+  it("bounds a simultaneous completion batch and reports deferred workers on the next poll", async () => {
+    vi.useFakeTimers();
+    const pi = makeExtension();
+    const ctx = makeCtx();
+    for (let i = 0; i < 4; i++) await spawn(ctx, { name: `batch-${i}`, task: "work" });
+    const fetchBefore = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => String(url).startsWith("/api/messages")
+      ? { ok: true, json: async () => ({ messages: [{ role: "assistant", text: "HEAD" + "x".repeat(5000) + "TAIL", entryId: "final-1" }] }) }
+      : fetchBefore(url, init)) as any;
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(pi.sendMessage.mock.calls[0][0].details.workers).toHaveLength(3);
+    expect(pi.sendMessage.mock.calls[0][0].content.length).toBeLessThanOrEqual(8000);
+    expect(pi.sendMessage.mock.calls[0][0].content.match(/Report truncated/g)).toHaveLength(3);
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(pi.sendMessage).toHaveBeenCalledTimes(2);
+    expect(pi.sendMessage.mock.calls[1][0].details.workers).toHaveLength(1);
+  });
 });
 
 describe("sessions_spawn tool surface", () => {
@@ -445,7 +613,7 @@ describe("sessions_spawn fail-closed resolution", () => {
     expect(resultText(result)).toMatch(/may remain/i);
     expect(resultText(result)).toMatch(/please remove it/i);
     expect(resultText(result)).not.toMatch(/no orphan/i);
-    expect(result.details.cleanedUp).toBe(false);
+    // Failed tools expose the cleanup warning through the thrown error text.
   });
 
   it("adds the parent's region prefix to an unprefixed configured model", async () => {
@@ -555,10 +723,8 @@ describe("sessions_spawn fail-closed resolution", () => {
   it("reserves spawn slots before awaits so concurrent calls cannot exceed the cap", async () => {
     const ctx = makeCtx({ categories: [FAST], defaultCategory: "Fast" });
     await activate(ctx);
-    const tool = tools.get("sessions_spawn");
-
     const results = await Promise.all(Array.from({ length: 6 }, (_, index) =>
-      tool.execute(`call-${index}`, { name: `worker-${index}`, task: "work" }, undefined, undefined, ctx),
+      spawn(ctx, { name: `worker-${index}`, task: "work" }),
     ));
 
     expect(results.filter((result) => !result.isError)).toHaveLength(4);
