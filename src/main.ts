@@ -68,6 +68,8 @@ import { createStatusBar, type StatusBar } from "./status/statusBar.js";
 import { createSessionInfo, type SessionInfoController } from "./sessionInfo/sessionInfo.js";
 import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
+import { initViews, takeArtifactParam } from "./views/index.js";
+import { VR_VIEW_ID } from "./views/vr/index.js";
 
 initAppHeightSync();
 initSwAutoReload();
@@ -783,6 +785,14 @@ conversationTree = createConversationTree({
   addMessage: messages.addMessage,
 });
 
+// Client state layer and root-view slot (#181): wired alongside the 2D app,
+// sharing its API headers and realtime socket.
+const views = initViews({
+  headers: api.headers,
+  appEl: document.querySelector<HTMLElement>("main.app")!,
+  headerAnchor: elements.settingsButton,
+});
+
 realtime = createRealtime({
   state,
   elements,
@@ -804,6 +814,7 @@ realtime = createRealtime({
     webPanels?.update(key);
     gitPanel?.updateExtensionTab(key);
   },
+  onEnvelope: views.onRealtimeEnvelope,
   addMessage: messages.addMessage,
 });
 
@@ -903,6 +914,16 @@ const keyboardShortcuts: Shortcut[] = [
     allowInEditable: true,
     when: () => elements.tokenOverlay.hidden,
     run: () => sessions.startNewSession(),
+  },
+  {
+    id: "views.openVr",
+    key: "x",
+    description: "Open VR view",
+    scope: "global",
+    mod: true,
+    shift: true,
+    when: () => elements.tokenOverlay.hidden && !views.activeViewId && !hasBlockingShortcutOverlay(),
+    run: () => views.openView(VR_VIEW_ID),
   },
   {
     id: "app.showKeyboardShortcuts",
@@ -1009,5 +1030,6 @@ window.addEventListener("popstate", (event) => {
 });
 composer.updatePrimaryAction();
 queueCitation(readSessionCitationFromUrl());
-refreshState().catch(showSystemError);
+const artifactFromView = takeArtifactParam();
+refreshState().then(() => { if (artifactFromView) filesPanel.openArtifact(artifactFromView); }).catch(showSystemError);
 realtime.connect();

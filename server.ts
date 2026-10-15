@@ -211,7 +211,8 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
 function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   const pathname = decodeURIComponent(url.pathname);
-  const reqPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+  // Alternative root views (/view/<id>, issue #181) are the same app shell.
+  const reqPath = pathname === "/" || /^\/view\/[a-z0-9][a-z0-9-]*\/?$/i.test(pathname) ? "index.html" : pathname.replace(/^\/+/, "");
   const file = resolve(staticDir, reqPath);
   const relPath = relative(staticDir, file);
 

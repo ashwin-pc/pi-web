@@ -59,9 +59,11 @@ export function createRealtime(options: {
   updateWebContribution?: (key: string, sessionId: string) => void;
   applySettlementDependencies?: (sessionId: unknown, childIds: readonly unknown[]) => boolean;
   onSettlementDependenciesChanged?: () => void;
+  /** Every parsed envelope, for the client state layer (src/client/), which shares this socket. */
+  onEnvelope?: (envelope: Record<string, unknown>) => void;
   addMessage: (role: "system", text: string, extraClass?: string) => HTMLDivElement;
 }): RealtimeController {
-  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, applySettlementDependencies, onSettlementDependenciesChanged, addMessage } = options;
+  const { state, elements, api, composer, messages, models, sessions, settings, status, tools, conversationTree, sessionState, refreshMessages, refreshState, updateWebContribution, applySettlementDependencies, onSettlementDependenciesChanged, onEnvelope, addMessage } = options;
   let compactionMessage: HTMLDivElement | null = null;
   let retryErrorCard: HTMLDivElement | null = null;
   let terminalFailureCard: HTMLDivElement | null = null;
@@ -737,6 +739,9 @@ export function createRealtime(options: {
     });
     ws.addEventListener("message", (message) => {
       const data = JSON.parse(String(message.data));
+      if (onEnvelope) {
+        try { onEnvelope(data); } catch (error) { console.error("Realtime envelope listener failed", error); }
+      }
       if (typeof data.seq === "number" && Number.isFinite(data.seq) && data.seq > state.lastRealtimeSeq) {
         state.lastRealtimeSeq = data.seq;
       }
