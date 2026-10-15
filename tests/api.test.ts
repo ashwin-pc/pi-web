@@ -1137,6 +1137,14 @@ describe("additional API coverage", () => {
     expect(await admitted.json()).toMatchObject({ ok: true, admission: "accepted", dispatchId });
     const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
     expect(JSON.stringify(messages)).toContain(`[pi-web-dispatch:${dispatchId}]`);
+    const history = await fetch(`${baseUrl}/api/session/history?dispatchId=${dispatchId}`);
+    expect(history.status).toBe(200);
+    expect(JSON.stringify(await history.json())).toContain(`[pi-web-dispatch:${dispatchId}]`);
+    const invalidCompletion = await fetch(`${baseUrl}/api/session/completion`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deliveryId: 123, branchAnchorEntryId: null, message: { customType: "wakeup", content: "Done", display: true } }),
+    });
+    expect(invalidCompletion.status).toBe(400);
     const idle = await fetch(`${baseUrl}/api/abort`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ waitFor: "idle" }),
     });
