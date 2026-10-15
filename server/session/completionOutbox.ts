@@ -36,13 +36,13 @@ function canonical(value: unknown): string {
 }
 
 export function validateCompletionInput(input: CompletionInput): CompletionInput {
-  if (!input || !/^[A-Za-z0-9._:-]{1,160}$/.test(input.deliveryId || "")) throw new CompletionOutboxError("Invalid deliveryId");
-  if (input.branchAnchorEntryId !== undefined && (typeof input.branchAnchorEntryId !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(input.branchAnchorEntryId))) throw new CompletionOutboxError("Invalid branchAnchorEntryId");
+  if (!input || typeof input.deliveryId !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(input.deliveryId)) throw new CompletionOutboxError("Invalid deliveryId");
+  if (input.branchAnchorEntryId != null && (typeof input.branchAnchorEntryId !== "string" || !/^[A-Za-z0-9_-]{1,256}$/.test(input.branchAnchorEntryId))) throw new CompletionOutboxError("Invalid branchAnchorEntryId");
   const message = input.message;
   if (!message || typeof message.customType !== "string" || !/^[A-Za-z0-9._:-]{1,100}$/.test(message.customType) || typeof message.content !== "string" || !message.content || typeof message.display !== "boolean") throw new CompletionOutboxError("Invalid completion message");
   if (message.details !== undefined && (!message.details || typeof message.details !== "object" || Array.isArray(message.details))) throw new CompletionOutboxError("Completion details must be an object");
   if (message.details?.deliveryId !== undefined && message.details.deliveryId !== input.deliveryId) throw new CompletionOutboxError("Completion details.deliveryId conflicts with deliveryId");
-  const normalized = JSON.parse(JSON.stringify({ deliveryId: input.deliveryId, message: { customType: message.customType, content: message.content, display: message.display, ...(message.details ? { details: message.details } : {}) }, ...(input.branchAnchorEntryId !== undefined ? { branchAnchorEntryId: input.branchAnchorEntryId } : {}) })) as CompletionInput;
+  const normalized = JSON.parse(JSON.stringify({ deliveryId: input.deliveryId, message: { customType: message.customType, content: message.content, display: message.display, ...(message.details ? { details: message.details } : {}) }, ...(input.branchAnchorEntryId != null ? { branchAnchorEntryId: input.branchAnchorEntryId } : {}) })) as CompletionInput;
   if (Buffer.byteLength(JSON.stringify(normalized)) > 64 * 1024) throw new CompletionOutboxError("Completion payload exceeds 64 KiB", 413);
   return normalized;
 }
@@ -85,21 +85,70 @@ function entryId(entry: unknown, deliveryId: string): string | undefined {
   return typeof value?.id === "string" && ((value.type === "custom_message" && value.details?.deliveryId === deliveryId) || (value.type === "message" && messageId(value.message) === deliveryId)) ? value.id : undefined;
 }
 
-/** Disk, not getBranch/getEntries, is the delivery acknowledgement. Entries before
- * the first assistant may exist only in the SDK's memory, including appendEntry.
+type DiskIndex = {
+  identity: string;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  offset: number;
+  boundary: Buffer;
+  ids: Map<string, string>;
+};
+const diskIndexes = new Map<string, DiskIndex>();
+
+/** Disk, not getBranch/getEntries, is the delivery acknowledgement. Scan an
+ * append-only tail once per file change; invalidate on replacement, observed
+ * truncation, or same-size rewrite. A partial final line is never acknowledged.
+ * The bounded LRU only caches verified disk entries, never SDK memory entries.
  */
 async function savedEntry(value: PiWebSession, deliveryId: string): Promise<string | undefined> {
-  let text: string;
-  try { text = await readFile(value.sessionFile, "utf8"); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-  for (const line of text.split("\n")) {
-    if (!line.trim()) continue;
-    let entry: unknown;
-    try { entry = JSON.parse(line); }
-    catch { throw new CompletionOutboxError("Cannot verify completion: malformed session JSONL", 503); }
-    const id = entryId(entry, deliveryId);
-    if (id) return id;
-  }
+  return serialized(`scan:${value.sessionFile}`, async () => {
+    let handle;
+    try { handle = await open(value.sessionFile, "r"); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") { diskIndexes.delete(value.sessionFile); return; }
+      throw error;
+    }
+    try {
+      const info = await handle.stat();
+      const identity = `${info.dev}:${info.ino}:${info.birthtimeMs}`;
+      let index = diskIndexes.get(value.sessionFile);
+      if (index && (index.identity !== identity || info.size < index.size || (info.size === index.size && (info.mtimeMs !== index.mtimeMs || info.ctimeMs !== index.ctimeMs)))) index = undefined;
+      if (index && info.size !== index.size && index.offset > 0) {
+        // Detect truncate-and-regrow/rewrite between polls rather than assuming
+        // every size increase is an append. Only a bounded boundary is reread.
+        const boundary = Buffer.alloc(index.boundary.length);
+        const result = await handle.read(boundary, 0, boundary.length, index.offset - boundary.length);
+        if (result.bytesRead !== boundary.length || !boundary.equals(index.boundary)) index = undefined;
+      }
+      const next: DiskIndex = index ? { ...index, ids: new Map(index.ids) } : { identity, size: 0, mtimeMs: 0, ctimeMs: 0, offset: 0, boundary: Buffer.alloc(0), ids: new Map() };
+      if (!index || info.size !== index.size || info.mtimeMs !== index.mtimeMs || info.ctimeMs !== index.ctimeMs) {
+        const buffer = Buffer.alloc(info.size - next.offset);
+        let read = 0;
+        while (read < buffer.length) {
+          const result = await handle.read(buffer, read, buffer.length - read, next.offset + read);
+          if (!result.bytesRead) break;
+          read += result.bytesRead;
+        }
+        const complete = buffer.subarray(0, read).lastIndexOf(10) + 1;
+        for (const line of buffer.subarray(0, complete).toString("utf8").split("\n")) {
+          if (!line.trim()) continue;
+          let entry: any;
+          try { entry = JSON.parse(line); }
+          catch { diskIndexes.delete(value.sessionFile); throw new CompletionOutboxError("Cannot verify completion: malformed session JSONL", 503); }
+          const id = entry.type === "custom_message" ? entry.details?.deliveryId : messageId(entry.message);
+          if (typeof id === "string" && typeof entry.id === "string") next.ids.set(id, entry.id);
+        }
+        next.boundary = Buffer.from(Buffer.concat([next.boundary, buffer.subarray(Math.max(0, complete - 64), complete)]).subarray(-64));
+        next.offset += complete;
+      }
+      next.size = info.size; next.mtimeMs = info.mtimeMs; next.ctimeMs = info.ctimeMs;
+      diskIndexes.delete(value.sessionFile);
+      diskIndexes.set(value.sessionFile, next);
+      while (diskIndexes.size > 64) diskIndexes.delete(diskIndexes.keys().next().value!);
+      return next.ids.get(deliveryId);
+    } finally { await handle.close(); }
+  });
 }
 function presentInMemory(value: PiWebSession, id: string) {
   // All entries, not just the active branch: a partially saved or branched-away

@@ -1029,6 +1029,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return await sendNegotiatedJson(req, res, 200, { ok: true, messages: wireMessages });
       }
 
+      if (method === "GET" && url.pathname === "/api/session/history") {
+        const dispatchIds = url.searchParams.getAll("dispatchId");
+        if (dispatchIds.length !== 1) throw new SessionServiceError("Exactly one dispatchId is required");
+        const messages = await sessionService.history(resolveSessionId(url.searchParams.get("sessionId")), dispatchIds[0]);
+        return await sendNegotiatedJson(req, res, 200, { ok: true, messages });
+      }
+
       if (method === "GET" && url.pathname === "/api/messages/image") {
         const sessionId = url.searchParams.get("sessionId")?.trim();
         const imageId = url.searchParams.get("imageId") || "";
@@ -1385,7 +1392,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const body = await readBody(req) as { sessionId?: unknown; deliveryId: string; message: import("./server/session/completionOutbox.js").CompletionMessage; branchAnchorEntryId?: string };
         const result = await sessionService.deliverCompletion(resolveSessionId(body.sessionId), {
           deliveryId: body.deliveryId, message: body.message,
-          ...(body.branchAnchorEntryId !== undefined ? { branchAnchorEntryId: body.branchAnchorEntryId } : {}),
+          ...(body.branchAnchorEntryId != null ? { branchAnchorEntryId: body.branchAnchorEntryId } : {}),
         });
         return sendJson(res, 200, { ok: true, ...result });
       }
@@ -1472,7 +1479,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
     serveStatic(req, res);
   } catch (error) {
     const status = error instanceof SessionUiStateUnavailableError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
-    sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error), ...(error instanceof SessionServiceError && error.recoveryRequired ? { recoveryRequired: true } : {}) });
   }
 }));
 

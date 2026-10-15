@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, open, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -174,6 +174,71 @@ describe("durable completion outbox", () => {
     await replacement.makeOutbox().resume(replacement.raw);
     expect(replacement.raw.sendCustomMessage).not.toHaveBeenCalled();
     expect(await savedCount(f.path)).toBe(1);
+  });
+
+  it("rejects non-string delivery identifiers with a validation error", async () => {
+    const f = await fixture();
+    for (const deliveryId of [123, null, {}, []]) {
+      await expect(f.makeOutbox().deliver(f.raw, { ...input, deliveryId } as unknown as CompletionInput)).rejects.toMatchObject({ status: 400 });
+    }
+    expect(f.raw.sendCustomMessage).not.toHaveBeenCalled();
+    expect((await f.makeOutbox().deliver(f.raw, { ...input, branchAnchorEntryId: null } as unknown as CompletionInput)).state).toBe("pending");
+    // Null and omitted anchors normalize to the same immutable payload.
+    expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+  });
+
+  it("scans disk only once when unchanged, then reads only the appended tail across IDs", async () => {
+    const f = await fixture();
+    const handle = await open(f.path, "r");
+    const read = vi.spyOn(Object.getPrototypeOf(handle), "read");
+    await handle.close();
+    try {
+      const outbox = f.makeOutbox();
+      await outbox.deliver(f.raw, input);
+      const initialReads = read.mock.calls.length;
+      expect(initialReads).toBeGreaterThan(0);
+      await outbox.deliver(f.raw, input);
+      await outbox.deliver(f.raw, { ...input, deliveryId: "another-completion" });
+      expect(read.mock.calls).toHaveLength(initialReads);
+      const originalSize = (await stat(f.path)).size;
+      await appendFile(f.path, `${JSON.stringify({ type: "message", id: "tail", message: { role: "assistant", content: "Other work" } })}\n`);
+      await outbox.deliver(f.raw, input);
+      expect(read.mock.calls).toHaveLength(initialReads + 2); // <=64-byte boundary check + appended tail.
+      expect(read.mock.calls.at(-1)?.[3]).toBe(originalSize);
+    } finally { read.mockRestore(); }
+  });
+
+  it("invalidates cached IDs on truncation, replacement and same-size rewrite", async () => {
+    const f = await fixture();
+    const record = `${JSON.stringify({ type: "custom_message", id: "saved", ...input.message, details: { deliveryId: input.deliveryId } })}\n`;
+    await writeFile(f.path, record);
+    const outbox = f.makeOutbox();
+    expect((await outbox.deliver(f.raw, input)).state).toBe("saved");
+    const rewritten = record.replace(input.deliveryId, "worker:task-2:finished");
+    expect(rewritten.length).toBe(record.length);
+    await writeFile(f.path, rewritten);
+    await utimes(f.path, new Date(), new Date(Date.now() + 2000));
+    expect((await outbox.deliver(f.raw, input)).state).toBe("pending");
+    await writeFile(f.path, record);
+    expect((await outbox.deliver(f.raw, input)).state).toBe("saved");
+    await writeFile(f.path, "{}\n");
+    expect((await outbox.deliver(f.raw, input)).state).toBe("pending");
+    await writeFile(f.path, record);
+    expect((await outbox.deliver(f.raw, input)).state).toBe("saved");
+    const replacement = `${f.path}.replacement`;
+    await writeFile(replacement, rewritten);
+    await rename(replacement, f.path);
+    expect((await outbox.deliver(f.raw, input)).state).toBe("pending");
+  });
+
+  it("does not acknowledge a partially written final JSONL line", async () => {
+    const f = await fixture();
+    await f.makeOutbox().deliver(f.raw, input);
+    const record = JSON.stringify({ type: "custom_message", id: "partial", ...input.message, details: { deliveryId: input.deliveryId } });
+    await appendFile(f.path, record);
+    expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+    await appendFile(f.path, "\n");
+    expect(await f.makeOutbox().deliver(f.raw, input)).toMatchObject({ state: "saved", entryId: "partial" });
   });
 
   it("does not inject when disk verification is uncertain", async () => {

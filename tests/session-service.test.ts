@@ -901,7 +901,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     warn.mockRestore();
   });
 
-  it("retains an operation-owned navigation lease through SDK-idle abort", async () => {
+  it("lets Stop recover a visible gated lease while ignoring its late scoped release", async () => {
     const { service, initial } = await fixtureService();
     let finishNavigate!: () => void;
     let markEntered!: () => void;
@@ -914,13 +914,13 @@ describe("LocalSessionService standalone lifecycle", () => {
     await entered;
     expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(true);
     await service.abort(initial.sessionId);
-    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(true);
+    expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
     const changedAfterAbort = events.filter((event) => event.type === "runtime" && event.action === "changed").length;
 
     finishNavigate();
     await navigation;
     expect(service.hasActiveWorkForPath(initial.sessionFile)).toBe(false);
-    expect(events.filter((event) => event.type === "runtime" && event.action === "changed")).toHaveLength(changedAfterAbort + 1);
+    expect(events.filter((event) => event.type === "runtime" && event.action === "changed")).toHaveLength(changedAfterAbort);
   });
 
   it("orders viewer acquisitions per client and retains legacy acquisitions", async () => {

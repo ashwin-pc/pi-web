@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalSessionService, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
+import { parseAttachmentMarkup } from "../server/shared/attachments.js";
 
 const cleanups: Array<() => Promise<unknown>> = [];
-afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
 const dispatchId = "12345678-1234-1234-1234-123456789abc";
-async function fixture() {
+async function fixture(settleTimeoutMs?: number) {
+  if (settleTimeoutMs !== undefined) vi.stubEnv("PI_WEB_OPERATION_SETTLE_TIMEOUT_MS", String(settleTimeoutMs));
   const cwd = await mkdtemp(join(tmpdir(), "pi-web-admission-"));
   const model = { provider: "test", id: "model" };
   const raw = {
@@ -63,21 +65,37 @@ describe("host prompt admission and settled interruption", () => {
     expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
   });
 
-  it("preserves a host preflight lease across SDK-idle abort and blocks navigation", async () => {
+  it("releases Stop's visible lease but fences mutations and cancels late idle preflight before a run", async () => {
     const { raw, service } = await fixture();
     let admit!: () => void;
-    let finish!: () => void;
-    raw.prompt = vi.fn((_message, options) => new Promise<void>(resolve => {
-      admit = () => options?.preflightResult?.(true); finish = resolve;
+    const run = vi.fn();
+    raw.prompt = vi.fn((_message, options) => new Promise<void>((resolve, reject) => {
+      admit = () => {
+        try { options?.preflightResult?.(true); run(); resolve(); }
+        catch (error) { reject(error); }
+      };
     }));
     const request = service.prompt(raw.sessionId, prompt);
+    const rejected = expect(request).rejects.toMatchObject({ status: 409 });
     await vi.waitFor(() => expect(raw.prompt).toHaveBeenCalledOnce());
-    await service.abort(raw.sessionId, "idle");
+    await service.abort(raw.sessionId);
     expect(raw.isStreaming).toBe(false);
-    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(true);
-    await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
+    for (const mutation of [
+      () => service.prompt(raw.sessionId, prompt), () => service.retry(raw.sessionId),
+      () => service.navigate(raw.sessionId, "earlier", {}), () => service.setModel(raw.sessionId, "test", "model"),
+      () => service.reloadExtensions(raw.sessionId), () => service.executeCommand(raw.sessionId, "/reload"),
+      () => service.deliverCompletion(raw.sessionId, completion), () => service.rename(raw.sessionId, "Renamed"),
+      () => service.executeShell(raw.sessionId, "true", false), () => service.invokeContribution(raw.sessionId, {}),
+      () => service.invokeHeaderAction(raw.sessionId, "key"), () => service.invokeArtifactAction(raw.sessionId, {}),
+      () => service.invokeGitTab(raw.sessionId, {}), () => service.invokePanel(raw.sessionId, {}),
+    ]) await expect(mutation()).rejects.toMatchObject({ status: 409, recoveryRequired: true });
     expect(raw.navigateTree).not.toHaveBeenCalled();
-    admit(); await request; finish();
+    admit(); await rejected;
+    expect(run).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    await service.navigate(raw.sessionId, "earlier", {}); // Fence retires only after actual finally.
   });
 
   it("waits for SDK-idle preflight before disposal and rejects new admission while closing", async () => {
@@ -107,7 +125,7 @@ describe("host prompt admission and settled interruption", () => {
     let finish!: () => void;
     raw.prompt = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
     expect(await service.prompt(raw.sessionId, { message: "legacy", mode: "steer", attachments: [] })).toEqual({ sessionId: "parent" });
-    expect(vi.mocked(raw.prompt).mock.calls[0]).toEqual(["legacy", {}]);
+    expect(vi.mocked(raw.prompt).mock.calls[0]).toEqual(["legacy", { preflightResult: expect.any(Function) }]);
     finish();
   });
 
@@ -160,13 +178,112 @@ describe("owned completion/navigation admission boundary", () => {
     raw.navigateTree = vi.fn(() => new Promise(resolve => { finish = () => resolve({ cancelled: false }); }));
     const navigation = service.navigate(raw.sessionId, "earlier", {});
     await vi.waitFor(() => expect(raw.navigateTree).toHaveBeenCalledOnce());
-    await service.abort(raw.sessionId, "idle");
-    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(true);
-    await service.deliverCompletion(raw.sessionId, completion);
+    await service.abort(raw.sessionId);
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    await expect(service.deliverCompletion(raw.sessionId, completion)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
     await Promise.resolve();
     expect(raw.sendCustomMessage).not.toHaveBeenCalled();
     finish(); await navigation;
     await service.deliverCompletion(raw.sessionId, completion);
     await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+  });
+});
+
+
+describe("dispatch history and attachment projection", () => {
+  it("keeps dispatch markers before the attachment fence so attachments still project", async () => {
+    const { raw, service } = await fixture();
+    const attachment = { type: "quote-reply" as const, id: "quote-1", label: "Review comment", quote: "hello", question: "Explain this", source: { startOffset: 0, endOffset: 5 } };
+    await service.prompt(raw.sessionId, { ...prompt, attachments: [attachment] });
+    const submitted = vi.mocked(raw.prompt).mock.calls[0][0];
+    const parsed = parseAttachmentMarkup(submitted);
+    expect(parsed.text).toBe(`Inspect workspace\n\n[pi-web-dispatch:${dispatchId}]`);
+    expect(parsed.attachments).toEqual([attachment]);
+    expect(submitted.endsWith("\n~~~")).toBe(true);
+  });
+
+  it("finds a consumed dispatch through compaction without returning inline images or alternate branches", async () => {
+    const { raw, service } = await fixture();
+    const entries = [
+      { id: "old", type: "message", message: { role: "assistant", content: "Older result" } },
+      { id: "dispatch", type: "message", message: { role: "user", content: [{ type: "text", text: `Task\n\n[pi-web-dispatch:${dispatchId}]` }, { type: "image", mimeType: "image/png", data: "private-image-bytes" }] } },
+      { id: "compaction", type: "compaction", summary: "Compacted task" },
+      { id: "final", parentId: "compaction", type: "message", message: { role: "assistant", content: "Final task result", stopReason: "stop" } },
+    ];
+    raw.messages = [{ role: "compactionSummary", content: "Compacted task" }, entries[3].message];
+    raw.agent.state.messages = raw.messages;
+    raw.sessionManager.getBranch = () => entries;
+    const history = await service.history(raw.sessionId, dispatchId);
+    expect(history.map(message => message.entryId)).toEqual(["dispatch", "final"]);
+    expect(history[1].text).toBe("Final task result");
+    expect(JSON.stringify(history)).not.toContain("private-image-bytes");
+    expect(history[0].raw).toMatchObject({ content: [{ type: "text" }, { type: "image", omitted: true }] });
+    expect(await service.history(raw.sessionId, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")).toEqual([]);
+    await expect(service.history(raw.sessionId, "invalid")).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("bounded recovery without unsafe runtime replacement", () => {
+  it("returns recoveryRequired instead of idle:true while canceled navigation remains unresolved", async () => {
+    const { raw, service } = await fixture(15);
+    let finish!: () => void;
+    raw.navigateTree = vi.fn(() => new Promise(resolve => { finish = () => resolve({ cancelled: false }); }));
+    const navigation = service.navigate(raw.sessionId, "earlier", {});
+    await vi.waitFor(() => expect(raw.navigateTree).toHaveBeenCalledOnce());
+    await expect(service.abort(raw.sessionId, "idle")).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    finish(); await navigation;
+    expect(await service.abort(raw.sessionId, "idle")).toMatchObject({ idle: true });
+  });
+
+  it("bounds disposal, keeps reads accessible, and never replaces a runtime with delayed persistence", async () => {
+    const { raw, service } = await fixture(15);
+    let finish!: () => void;
+    raw.sendCustomMessage = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    await expect(service.disposeAll()).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
+    expect(await service.require(raw.sessionId)).toBe(raw);
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    await expect(service.disposeAll()).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    finish();
+    await service.disposeAll(); // Joins the same retirement; no replacement/replay.
+  });
+
+  it("resets disposing on interrupt rejection so reads and a later delete/disposal attempt remain possible", async () => {
+    const { raw, service } = await fixture(15);
+    raw.abort = vi.fn(async () => { throw new Error("interrupt rejected"); });
+    await expect(service.disposeAll()).rejects.toThrow("interrupt rejected");
+    expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
+    expect(await service.require(raw.sessionId)).toBe(raw);
+    raw.abort = vi.fn(async () => {});
+    await service.disposeAll();
+  });
+
+  it("does not treat canceled streaming enqueue as safely canceled preflight", async () => {
+    const { raw, service } = await fixture(15);
+    raw.isStreaming = true;
+    let admit!: () => void;
+    const queued: string[] = [];
+    raw.prompt = vi.fn((text, options) => new Promise<void>((resolve, reject) => {
+      admit = () => {
+        queued.push(text); // SDK streaming path queues BEFORE the callback.
+        try { options?.preflightResult?.(true); resolve(); } catch (error) { reject(error); }
+      };
+    }));
+    const request = service.prompt(raw.sessionId, prompt);
+    const rejected = expect(request).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    await vi.waitFor(() => expect(raw.prompt).toHaveBeenCalledOnce());
+    raw.abort = vi.fn(async () => { raw.isStreaming = false; });
+    await service.abort(raw.sessionId);
+    expect(raw.isStreaming).toBe(false); // Queue lane survives Stop's transition to idle.
+    admit(); await rejected;
+    expect(queued).toHaveLength(1); // Never clear a possibly human-bearing queue.
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    await expect(service.abort(raw.sessionId, "idle")).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    raw.isStreaming = false;
   });
 });

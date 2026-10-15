@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { wrapRegisteredTool } from "@earendil-works/pi-coding-agent";
@@ -83,7 +83,10 @@ let handlers: Map<string, (event: any, ctx: any) => any>;
 let realFetch: typeof globalThis.fetch;
 let stateDir: string;
 let branch: any[];
+let entrySequence: number;
 let workerMessages: Map<string, any[]>;
+let historyMessages: Map<string, any[]>;
+function transcriptRoute(url: unknown) { return String(url).startsWith("/api/messages") || String(url).startsWith("/api/session/history"); }
 let saved: Map<string, any>;
 let completionPending = false;
 
@@ -99,7 +102,7 @@ function makeExtension(options: { wakeupFails?: boolean } = {}) {
     sendUserMessage: options.wakeupFails
       ? vi.fn(() => { throw new Error("user-message unavailable"); })
       : vi.fn(),
-    appendEntry: vi.fn((customType: string, data: any) => { branch.push({ type: "custom", id: `entry-${branch.length}`, customType, data }); }),
+    appendEntry: vi.fn((customType: string, data: any) => { branch.push({ type: "custom", id: `entry-${entrySequence++}`, customType, data }); }),
   };
   sessionOrchestrator(pi);
   return pi;
@@ -168,8 +171,12 @@ function stubFetch(options: {
       payload = { ok: true, models: options.models ?? registry };
     } else if (path.startsWith("/api/state")) {
       payload = { ok: true, model: { provider: "anthropic", id: options.parentModelId ?? "fast-1" } };
-    } else if (path.startsWith("/api/messages")) {
-      payload = { ok: true, messages: workerMessages.get(new URL(path, "http://local").searchParams.get("sessionId")!) || [] };
+    } else if (transcriptRoute(path)) {
+      const query = new URL(path, "http://local").searchParams;
+      const id = query.get("sessionId")!;
+      const messages = (path.startsWith("/api/session/history") ? historyMessages.get(id) : undefined) || workerMessages.get(id) || [];
+      const boundary = messages.findIndex((m) => m.role === "user" && String(m.text).includes(`[pi-web-dispatch:${query.get("dispatchId")}]`));
+      payload = { ok: true, messages: path.startsWith("/api/session/history") ? boundary < 0 ? [] : messages.slice(boundary) : messages };
     } else if (path === "/api/session/completion") {
       if (!completionPending) saved.set(body.deliveryId, body);
       payload = { ok: true, deliveryId: body.deliveryId, state: completionPending ? "pending" : "saved", entryId: completionPending ? undefined : `saved-${body.deliveryId}` };
@@ -224,7 +231,9 @@ beforeEach(() => {
   stateDir = mkdtempSync(join(tmpdir(), "orchestrator-test-"));
   vi.stubEnv("PI_WEB_ORCHESTRATOR_STATE_DIR", stateDir);
   branch = [];
+  entrySequence = 0;
   workerMessages = new Map();
+  historyMessages = new Map();
   saved = new Map();
   completionPending = false;
   calls = [];
@@ -683,7 +692,7 @@ describe("sessions_spawn fail-closed resolution", () => {
 function finalReply(id = "worker-1", text = "Verified: all checks pass") {
   workerMessages.get(id)!.push({ role: "assistant", text, entryId: `final-${workerMessages.get(id)!.length}` });
 }
-function journal() { return JSON.parse(readFileSync(join(stateDir, "parent-1.json"), "utf8")); }
+function journal() { const path = join(stateDir, "parent-1.json"); return existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { version: 1, watches: [], pending: [] }; }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; }
 async function restart(ctx: any) {
   handlers.get("session_shutdown")?.({}, ctx);
@@ -743,7 +752,7 @@ describe("issue 190 durable delivery", () => {
     const fetch = globalThis.fetch;
     let heldOnce = false;
     globalThis.fetch = (async (url: any, init: any) => {
-      if (String(url).startsWith("/api/messages") && !heldOnce) { heldOnce = true; return held.promise; }
+      if (transcriptRoute(url) && !heldOnce) { heldOnce = true; return held.promise; }
       return fetch(url, init);
     }) as any;
     await vi.advanceTimersByTimeAsync(2500);
@@ -762,7 +771,7 @@ describe("issue 190 durable delivery", () => {
     const oldMessages = workerMessages.get("worker-1");
     const held = deferred<any>(); const fetch = globalThis.fetch;
     let hold = true;
-    globalThis.fetch = (async (url: any, init: any) => String(url).startsWith("/api/messages") && hold ? held.promise : fetch(url, init)) as any;
+    globalThis.fetch = (async (url: any, init: any) => transcriptRoute(url) && hold ? held.promise : fetch(url, init)) as any;
     await vi.advanceTimersByTimeAsync(2500);
     await tools.get("sessions_prompt").execute("follow", { id: "worker-1", message: "new task" });
     const newId = journal().watches[0].watchId;
@@ -997,16 +1006,130 @@ describe("issue 190 durable delivery", () => {
     expect(report).toContain("Task attribution unavailable");
     expect(report).not.toContain("OLD RESULT");
     expect(report).not.toContain("finished");
-    expect(journal().watches).toHaveLength(1);
+    expect(journal().watches).toHaveLength(0);
+    expect(ctx.ui.web.reportSettlementDependencies).toHaveBeenLastCalledWith({ sessionIds: [] });
   });
 
-  it("stays pending after accepted handled input or a missing compacted watermark", async () => {
+  it("bounds stable idle missing-marker attribution rather than waiting silently forever", async () => {
     const ctx = makeCtx(); await spawn(ctx, { name: "work", task: "task" });
-    // Admission succeeded, but input interception or projection omitted the prompt.
     workerMessages.set("worker-1", [{ role: "assistant", text: "unattributed terminal", entryId: "old" }]);
     await vi.advanceTimersByTimeAsync(20000);
     expect(saved.size).toBe(0);
     expect(journal().watches).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(saved.size).toBe(1);
+    const report = [...saved.values()][0].message.content;
+    expect(report).toContain("Task attribution unavailable");
+    expect(report).not.toContain("unattributed terminal");
+    expect(journal().watches).toHaveLength(0);
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(saved.size).toBe(1);
+  });
+
+  it("reads the legitimate final from attribution history after context compaction", async () => {
+    const ctx = makeCtx(); await spawn(ctx, { name: "long worker", task: "long task" });
+    finalReply("worker-1", "LEGITIMATE COMPACTED TASK RESULT");
+    historyMessages.set("worker-1", [...workerMessages.get("worker-1")!]);
+    workerMessages.set("worker-1", [{ role: "compactionSummary", text: "marker omitted" }, { role: "assistant", text: "unrelated projected reply" }]);
+    await vi.advanceTimersByTimeAsync(7500);
+    expect(saved.size).toBe(1);
+    expect([...saved.values()][0].message.content).toContain("LEGITIMATE COMPACTED TASK RESULT");
+    expect([...saved.values()][0].message.content).not.toContain("unrelated projected reply");
+    expect(calls.some((c) => c.path.startsWith("/api/session/history?") && c.path.includes("dispatchId="))).toBe(true);
+  });
+
+  it("keeps healthy status output and retains host-owned quarantine on re-dispatch", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ctx = makeCtx(); await spawn(ctx, { name: "old", task: "task" }); finalReply(); completionPending = true;
+    await vi.advanceTimersByTimeAsync(7500);
+    branch = []; await restart(ctx);
+    const status = resultText(await tools.get("sessions_status").execute("status", { ids: ["healthy-worker"] }));
+    expect(status).toContain("healthy-worker");
+    expect(status).toContain("Recovery warning");
+    await tools.get("sessions_prompt").execute("follow", { id: "worker-1", message: "replacement" });
+    expect(journal().watches).toHaveLength(2); // Old assignment is still owned by the unresolved batch.
+    expect(journal().pending).toHaveLength(1); // Host-owned immutable delivery remains recoverable.
+    const updated = resultText(await tools.get("sessions_status").execute("status", { ids: ["healthy-worker"] }));
+    expect(updated).toContain("healthy-worker");
+    expect(updated).toContain("Recovery warning");
+  });
+
+  it("does not prepare a fresh sibling batch while a quarantined batch still owns its generation", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ctx = makeCtx();
+    await spawn(ctx, { name: "B", task: "task B" }); finalReply("worker-1", "B RESULT");
+    const branchWithB = [...branch];
+    await spawn(ctx, { name: "A", task: "task A" }); finalReply("worker-2", "A RESULT");
+    completionPending = true;
+    await vi.advanceTimersByTimeAsync(7500);
+    const owned = journal().pending[0];
+    branch = branchWithB;
+    await restart(ctx);
+    completionPending = false;
+    await vi.advanceTimersByTimeAsync(20000);
+    expect(saved.size).toBe(0);
+    expect(journal().pending).toHaveLength(1);
+    expect(journal().pending[0]).toEqual(owned);
+    expect(journal().watches.some((w: any) => w.id === "worker-1")).toBe(true);
+  });
+
+  it("retains a host-owned batch across sibling re-dispatch and replay without duplicate reports", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const ctx = makeCtx();
+    await spawn(ctx, { name: "A", task: "task A" }); finalReply("worker-1", "A RESULT");
+    await spawn(ctx, { name: "B", task: "task B" }); finalReply("worker-2", "B RESULT");
+    const hostOwned = new Map<string, any>();
+    const fetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => {
+      if (String(url) === "/api/session/completion") {
+        const input = JSON.parse(init.body);
+        const previous = hostOwned.get(input.deliveryId);
+        if (previous) expect(input).toEqual(previous);
+        hostOwned.set(input.deliveryId, input);
+      }
+      return fetch(url, init);
+    }) as any;
+    completionPending = true;
+    await vi.advanceTimersByTimeAsync(7500);
+    const originalDelivery = journal().pending[0];
+    expect(originalDelivery.members).toHaveLength(2);
+    expect(hostOwned.size).toBe(1);
+    const originalBranch = [...branch];
+    branch = []; await restart(ctx);
+    await tools.get("sessions_prompt").execute("replace A", { id: "worker-1", message: "new A assignment" });
+    expect(journal().pending[0]).toEqual(originalDelivery);
+    branch = originalBranch;
+    // Simulate durable host replay on runtime restart before extension reconciliation.
+    completionPending = false;
+    for (const [id, input] of hostOwned) saved.set(id, input);
+    await restart(ctx);
+    await vi.advanceTimersByTimeAsync(15000);
+    expect(hostOwned.size).toBe(1);
+    expect(saved.size).toBe(1);
+    expect([...saved.values()][0].message.content).toContain("B RESULT");
+    expect(journal().pending).toHaveLength(0);
+    expect(journal().watches.some((w: any) => w.id === "worker-2")).toBe(false);
+    // New A's watch is quarantined, not resolved by the old batch's saved receipt.
+    expect(journal().watches.some((w: any) => w.id === "worker-1" && w.watchId !== originalDelivery.members[0].watchId)).toBe(true);
+  });
+
+  it("does not create empty journals on ordinary session startup and removes resolved journals", async () => {
+    const ctx = makeCtx(); await activate(ctx); await vi.advanceTimersByTimeAsync(0);
+    expect(readdirSync(stateDir)).toEqual([]);
+    await spawn(ctx, { name: "work", task: "task" });
+    expect(existsSync(join(stateDir, "parent-1.json"))).toBe(true);
+    finalReply(); await vi.advanceTimersByTimeAsync(7500);
+    expect(existsSync(join(stateDir, "parent-1.json"))).toBe(false);
+  });
+
+  it("omits an absent batch anchor rather than sending null to host validation", async () => {
+    const dispatchId = "00000000-0000-4000-8000-000000000001";
+    writeFileSync(join(stateDir, "parent-1.json"), JSON.stringify({ version: 1, watches: [{ id: "worker-1", name: "restored", watchId: "restored-watch", dispatchId, anchor: null, idlePolls: 0, errorPolls: 0, transcriptFailures: 0 }], pending: [] }));
+    workerMessages.set("worker-1", [{ role: "user", text: `[pi-web-dispatch:${dispatchId}]` }, { role: "assistant", text: "restored result" }]);
+    await activate(makeCtx()); await vi.advanceTimersByTimeAsync(5000);
+    const submission = calls.find((c) => c.path === "/api/session/completion")!;
+    expect(submission.body).not.toHaveProperty("branchAnchorEntryId");
+    expect(saved.size).toBe(1);
   });
 
   it("does not mutate a newer runtime's journal after old prompt admission returns", async () => {
@@ -1042,7 +1165,7 @@ describe("issue 190 durable delivery", () => {
     vi.spyOn(console, "error").mockImplementation(() => {});
     const ctx = makeCtx(); await spawn(ctx, { name: "work", task: "task" });
     const fetch = globalThis.fetch;
-    globalThis.fetch = (async (url: any, init: any) => { if (String(url).startsWith("/api/messages")) throw new Error("unreadable"); return fetch(url, init); }) as any;
+    globalThis.fetch = (async (url: any, init: any) => { if (transcriptRoute(url)) throw new Error("unreadable"); return fetch(url, init); }) as any;
     await vi.advanceTimersByTimeAsync(2500);
     expect(saved.size).toBe(1);
     expect(journal().watches).toHaveLength(1);

@@ -58,6 +58,20 @@ describe("scoped extension HTTP credentials", () => {
     expect((await h.registry.authenticate(request(h.auth, "/api/prompt?unknown=x", "POST"))).ok).toBe(false);
   });
 
+  it("permits dispatch-scoped history reads with exactly one validated selector", async () => {
+    const h = harness();
+    const dispatchId = "12345678-1234-1234-1234-123456789abc";
+    const path = `/api/session/history?dispatchId=${dispatchId}`;
+    await h.client.request("GET", path);
+    expect((await h.registry.authenticate(request(h.auth, `${path}&sessionId=parent`))).ok).toBe(true);
+    expect((await h.registry.authenticate(request(h.auth, `${path}&sessionId=other`))).ok).toBe(false);
+    for (const query of ["", "?dispatchId=invalid", `?dispatchId=${dispatchId}&dispatchId=${dispatchId}`, `?dispatchId=${dispatchId}&unknown=x`]) {
+      await expect(h.client.request("GET", `/api/session/history${query}`)).rejects.toThrow();
+    }
+    const writeOnly = h.registry.createClient({}, "parent", () => true, { name: "writer", scopes: ["sessions.write"] });
+    await expect(writeOnly.request("GET", path)).rejects.toThrow("scope");
+  });
+
   it("permits completion delivery only with write scope and an authorized target", async () => {
     const h = harness();
     await h.client.request("POST", "/api/session/completion", { body: { deliveryId: "completion-1", message: { customType: "wakeup", content: "Done", display: true } } });
