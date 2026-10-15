@@ -215,7 +215,91 @@ test.describe("new-session defaults", () => {
     expect(newPosts).toBe(0);
   });
 
-  for (const outcome of ["success", "error"] as const) test(`does not restore delayed local help ${outcome} after reopening the same empty tab`, async ({ page }, testInfo) => {
+  for (const outcome of ["success", "error"] as const) test(`retains delayed local command ${outcome} after ordinary same-session refresh`, async ({ page }, testInfo) => {
+    await setPinNewSessions(page, true);
+    const sessionId = await createNewSession(page);
+    const command = outcome === "success" ? "/stop" : "/model invalid";
+    const feedback = outcome === "success" ? "Delayed stop completed" : "Delayed model failure";
+    let releaseCommand!: () => void;
+    const gate = new Promise<void>(resolve => { releaseCommand = resolve; });
+    let commandReady!: () => void;
+    const pendingCommand = new Promise<void>(resolve => { commandReady = resolve; });
+    await page.route("**/api/command", async route => {
+      if (route.request().postDataJSON()?.command !== command) return route.continue();
+      const response = await route.fetch();
+      commandReady();
+      await gate;
+      if (outcome === "error") await route.fulfill({ status: 503, json: { ok: false, error: feedback } });
+      else await route.fulfill({ response, json: { ...await response.json(), message: feedback } });
+    });
+    await page.locator("#prompt").fill(command);
+    await page.locator("#primaryButton").click();
+    await pendingCommand;
+    await expect(page.locator("#messages")).toContainText(`› ${command}`);
+    try {
+      const refreshed = page.waitForResponse(response => new URL(response.url()).pathname === "/api/messages" && new URL(response.url()).searchParams.get("sessionId") === sessionId && response.ok());
+      expect((await page.request.post("/api/mock/event", { data: { type: "agent_event", sessionId, event: { type: "agent_settled" } } })).ok()).toBe(true);
+      await (await refreshed).finished();
+      // Prove the ordinary refresh replaced the DOM echo before the command
+      // finishes, without changing the transcript's session-open ownership.
+      await expect(page.locator("#messages")).not.toContainText(`› ${command}`);
+      expect(await activeSessionId(page)).toBe(sessionId);
+      releaseCommand();
+      await expect(page.locator("#messages")).toContainText(feedback);
+      await testInfo.attach(`refreshed-command-${outcome}`, { body: await page.screenshot(), contentType: "image/png" });
+    } finally { releaseCommand(); }
+  });
+
+  for (const navigation of ["same-ID reopen", "other session"] as const) test(`does not append a stale command echo after delayed lookup and ${navigation}`, async ({ page }) => {
+    await setPinNewSessions(page, true);
+    const submittedSessionId = await createNewSession(page);
+    let releaseLookup!: () => void;
+    const gate = new Promise<void>(resolve => { releaseLookup = resolve; });
+    let lookupRequests = 0;
+    await page.route("**/api/commands**", async route => {
+      const response = await route.fetch();
+      lookupRequests += 1;
+      await gate;
+      await route.fulfill({ response });
+    });
+    // Expire only the command metadata cache, without sleeping through its TTL.
+    await page.evaluate(() => { const now = Date.now.bind(Date); Date.now = () => now() + 6000; });
+    await page.locator("#prompt").fill("/help");
+    await expect.poll(() => lookupRequests).toBeGreaterThanOrEqual(1);
+    await page.locator("#primaryButton").click();
+    await expect.poll(() => lookupRequests).toBeGreaterThanOrEqual(2);
+    // Submit captured /help, but the lookup await precedes draft clearing.
+    // Clear that draft explicitly so header New can reopen this blank tab.
+    await page.locator("#prompt").fill("");
+    try {
+      if (navigation === "same-ID reopen") {
+        const opened = page.waitForResponse(response => response.url().endsWith("/api/sessions/open") && response.request().postDataJSON()?.sessionId === submittedSessionId && response.ok());
+        await clickHeaderNew(page);
+        await opened;
+        await expect.poll(() => activeSessionId(page)).toBe(submittedSessionId);
+      } else {
+        await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+        await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
+        await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+      }
+      await expect(page.locator("#messages")).not.toContainText("› /help");
+      const replacementDraft = `replacement draft after ${navigation}`;
+      await page.locator("#prompt").fill(replacementDraft);
+      const command = page.waitForRequest(request => request.url().endsWith("/api/command"));
+      const commandFinished = page.waitForResponse(response => response.url().endsWith("/api/command"));
+      const modelsFinished = page.waitForResponse(response => new URL(response.url()).pathname === "/api/models" && response.ok());
+      releaseLookup();
+      expect((await command).postDataJSON().sessionId).toBe(submittedSessionId);
+      await commandFinished;
+      await (await modelsFinished).finished();
+      await page.waitForTimeout(100);
+      await expect(page.locator("#messages")).not.toContainText("› /help");
+      await expect(page.locator("#prompt")).toHaveValue(replacementDraft);
+    } finally { releaseLookup(); }
+  });
+
+  for (const reopen of ["same empty tab", "A -> B -> A"] as const)
+  for (const outcome of ["success", "error"] as const) test(`does not restore delayed local help ${outcome} after reopening the ${reopen}`, async ({ page }, testInfo) => {
     await setPinNewSessions(page, true);
     const emptyId = await createNewSession(page);
     let releaseHelp!: () => void;
@@ -235,8 +319,14 @@ test.describe("new-session defaults", () => {
     await pendingHelp;
     await expect(page.locator("#messages")).toContainText("› /help");
     try {
+      if (reopen === "A -> B -> A") {
+        await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
+        await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
+        await expect.poll(() => activeSessionId(page)).toBe("mock-current");
+      }
       const opened = page.waitForResponse(response => response.url().endsWith("/api/sessions/open") && response.request().postDataJSON()?.sessionId === emptyId && response.ok());
-      await clickHeaderNew(page);
+      if (reopen === "same empty tab") await clickHeaderNew(page);
+      else await page.locator(`.sessionBarTab[data-session-id="${emptyId}"] .sessionBarTabOpen`).evaluate((button: HTMLButtonElement) => button.click());
       await opened;
       await expect(page.locator("#messages")).toBeEmpty();
       const commandFinished = page.waitForResponse(response => response.url().endsWith("/api/command"));
