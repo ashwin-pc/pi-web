@@ -224,6 +224,30 @@ describe("dispatch history and attachment projection", () => {
 });
 
 describe("bounded recovery without unsafe runtime replacement", () => {
+  it("rejects model changes after asynchronous Stop until the accepted prompt operation actually settles", async () => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    raw.prompt = vi.fn((_text, options) => {
+      options?.preflightResult?.(true);
+      return new Promise<void>(resolve => { finish = resolve; });
+    });
+    await service.prompt(raw.sessionId, { message: "accepted work", mode: "steer", attachments: [] });
+    await service.abort(raw.sessionId); // Legacy asynchronous Stop, not idle confirmation.
+    expect(raw.isStreaming).toBe(false);
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({
+      status: 409, recoveryRequired: true,
+      message: "A canceled session operation is still settling; retry after it finishes or restart the server",
+    });
+    let settled = false;
+    const idle = service.abort(raw.sessionId, "idle").then(result => { settled = true; return result; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finish();
+    expect(await idle).toMatchObject({ idle: true });
+    expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ provider: "test", id: "model" });
+  });
+
   it("returns recoveryRequired instead of idle:true while canceled navigation remains unresolved", async () => {
     const { raw, service } = await fixture(15);
     let finish!: () => void;
