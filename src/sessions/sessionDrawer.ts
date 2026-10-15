@@ -36,6 +36,7 @@ export type SessionsController = {
   updateSessionName: (sessionId: string, name: string) => void;
   removeSession: (sessionId: string) => void;
   beginTranscriptLoading: () => void;
+  transcriptOwner: () => number;
   updateEmptyCwdChooser: () => void;
   finishTranscriptLoading: () => void;
   renderSessionBar: () => void;
@@ -2974,6 +2975,7 @@ export function createSessions(options: {
     startNewSession,
     toggleCurrentSessionPin,
     beginTranscriptLoading,
+    transcriptOwner: () => sessionOpenGeneration,
     updateEmptyCwdChooser,
     finishTranscriptLoading,
     updateSessionRuntime,

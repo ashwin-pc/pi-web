@@ -766,6 +766,7 @@ composer = createComposer({
   startNewSession: () => sessions.startNewSession(),
   onSessionUiStateWarning: handleSessionUiStateWarning,
   beginTranscriptLoading: () => sessions.beginTranscriptLoading(),
+  transcriptOwner: () => sessions.transcriptOwner(),
   beginStreamFollow: messages.beginStreamFollow,
   endStreamFollow: messages.endStreamFollow,
   quoteReplies,
