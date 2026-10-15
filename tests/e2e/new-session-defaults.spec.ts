@@ -215,6 +215,45 @@ test.describe("new-session defaults", () => {
     expect(newPosts).toBe(0);
   });
 
+  for (const outcome of ["success", "error"] as const) test(`does not restore delayed local help ${outcome} after reopening the same empty tab`, async ({ page }, testInfo) => {
+    await setPinNewSessions(page, true);
+    const emptyId = await createNewSession(page);
+    let releaseHelp!: () => void;
+    const helpGate = new Promise<void>(resolve => { releaseHelp = resolve; });
+    let helpReady!: () => void;
+    const pendingHelp = new Promise<void>(resolve => { helpReady = resolve; });
+    await page.route("**/api/command", async route => {
+      if (route.request().postDataJSON()?.command !== "/help") return route.continue();
+      const response = await route.fetch();
+      helpReady();
+      await helpGate;
+      if (outcome === "error") await route.fulfill({ status: 503, json: { ok: false, error: "Delayed help failure" } });
+      else await route.fulfill({ response });
+    });
+    await page.locator("#prompt").fill("/help");
+    await page.locator("#primaryButton").click();
+    await pendingHelp;
+    await expect(page.locator("#messages")).toContainText("› /help");
+    try {
+      const opened = page.waitForResponse(response => response.url().endsWith("/api/sessions/open") && response.request().postDataJSON()?.sessionId === emptyId && response.ok());
+      await clickHeaderNew(page);
+      await opened;
+      await expect(page.locator("#messages")).toBeEmpty();
+      const commandFinished = page.waitForResponse(response => response.url().endsWith("/api/command"));
+      const modelsFinished = outcome === "success" ? page.waitForResponse(response => new URL(response.url()).pathname === "/api/models" && response.ok()) : undefined;
+      releaseHelp();
+      await commandFinished;
+      if (modelsFinished) await (await modelsFinished).finished();
+      // The command's model refresh has returned; allow its rendering microtask
+      // to run before asserting that obsolete local output stayed discarded.
+      await page.waitForTimeout(100);
+      await expect(page.locator("#messages")).toBeEmpty();
+      await expect(page.locator("#emptyCwdChooser")).toBeVisible();
+      expect(await activeSessionId(page)).toBe(emptyId);
+      await testInfo.attach(`delayed-help-${outcome}`, { body: await page.screenshot(), contentType: "image/png" });
+    } finally { releaseHelp(); }
+  });
+
   test("latest tab-open intent wins over a delayed earlier open", async ({ page }) => {
     await setPinNewSessions(page, true);
     const a = await createNewSession(page);
