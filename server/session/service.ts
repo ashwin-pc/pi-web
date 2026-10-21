@@ -41,7 +41,7 @@ import type {
 } from "./dto.js";
 import { PiSessionFactory, piSessionDirectory, type LocalSessionFactory, type LocalSessionInfo } from "./piFactory.js";
 export type { LocalSessionFactory, LocalSessionFactoryInput } from "./piFactory.js";
-import { sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
+import { dispatchHistory, sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -49,8 +49,6 @@ import {
   isAssistantFailureMessage,
   isIncompleteToolResultMessage,
   projectCommittedMessage,
-  entryMessage,
-  simplifyMessage,
   sessionDisplayName,
   textFromContent,
   toolCallName,
@@ -603,22 +601,7 @@ export class LocalSessionService implements SessionService {
     if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(dispatchId)) throw new SessionServiceError("dispatchId must be a UUID");
     const value = await this.require(sessionId);
     if (!value.sessionManager.getBranch) throw new SessionServiceError("Active session history is unavailable", 503);
-    const branch = value.sessionManager.getBranch() as Array<{ id?: string; parentId?: string }>;
-    const marker = `[pi-web-dispatch:${dispatchId}]`;
-    const start = branch.findIndex(entry => {
-      const message = entryMessage(entry);
-      return message?.role === "user" && textFromContent(message.content).includes(marker);
-    });
-    if (start < 0) return [];
-    return branch.slice(start).flatMap(entry => {
-      const message = entryMessage(entry);
-      if (!message) return [];
-      // Historic image indices differ from compacted /api/messages indices.
-      // Omit their bytes rather than emit broken image URLs or inline payloads.
-      const content = Array.isArray(message.content) ? message.content.map((part: any) => part?.type === "image" ? { type: "image", mimeType: part.mimeType, omitted: true } : part) : message.content;
-      const projected = simplifyMessage({ ...message, content }, { entryId: entry.id, parentEntryId: entry.parentId });
-      return projected ? [projected] : [];
-    });
+    return dispatchHistory(value.sessionManager.getBranch(), dispatchId);
   }
 
   async transcriptImage(sessionId: string, imageId: string): Promise<{ data: Buffer; mimeType: string } | undefined> {
@@ -721,7 +704,7 @@ export class LocalSessionService implements SessionService {
     // Even excluded shell output is persisted in the transcript by the SDK.
     const value = await this.requireMutable(sessionId, true);
     if (!value.executeBash) throw new SessionServiceError("Bash execution is not available in this session.");
-    return this.withWorkLease(value, "shell", "general", async () => jsonSafe({ command, cwd: this.sessionCwd(value), ...await value.executeBash!(command, undefined, { excludeFromContext }), excludeFromContext }), "transcript");
+    return this.withWorkLease(value, "shell", "general", async () => jsonSafe({ command, cwd: this.sessionCwd(value), ...await value.executeBash!(command, undefined, { excludeFromContext }), excludeFromContext }), "shell");
   }
 
   async executeCommand(sessionId: string, command: string) {
@@ -730,8 +713,23 @@ export class LocalSessionService implements SessionService {
 
   async prompt(sessionId: string, input: SessionPromptInput) {
     if (input.dispatchId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.dispatchId)) throw new SessionServiceError("dispatchId must be a UUID");
-    if (input.dispatchId && /^\s*\//.test(input.message || "")) throw new SessionServiceError("Tracked slash-command/template dispatch is unsupported; send a natural-language task or invoke separately without completion attribution", 400);
-    const value = await this.requireMutable(sessionId, true);
+    const value = await this.require(sessionId);
+    if (input.dispatchId) {
+      const text = input.message || "";
+      if (/^\s*\//.test(text)) {
+        let commands: SlashCommandDto[];
+        try { commands = this.getSlashCommands(value); }
+        catch { throw new SessionServiceError("Command registry unavailable; tracked slash dispatch cannot be validated", 503); }
+        // Mirror SDK parsing, not browser command parsing: extension/skill
+        // tokens end at ASCII space, templates at any whitespace. Leading
+        // whitespace and browser-only names are literal SDK prompts.
+        const space = text.indexOf(" ");
+        const sdkName = text.startsWith("/") ? text.slice(1, space < 0 ? undefined : space) : undefined;
+        const templateName = text.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)?.[1];
+        if (commands.some(command => command.source === "prompt" ? command.name === templateName : (command.source === "extension" || command.source === "skill") && command.name === sdkName)) throw new SessionServiceError("Tracked slash-command/template dispatch is unsupported; send a natural-language task or invoke separately without completion attribution", 400);
+      }
+    }
+    this.assertMutable(value, true);
     await this.startSessionPrompt(value, input);
     return { sessionId: value.sessionId, ...(input.waitFor === "admission" ? { admission: "accepted" as const } : {}), ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}) };
   }

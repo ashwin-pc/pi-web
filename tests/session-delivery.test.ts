@@ -4,17 +4,18 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocalSessionService, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { parseAttachmentMarkup } from "../server/shared/attachments.js";
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
 const dispatchId = "12345678-1234-1234-1234-123456789abc";
-async function fixture(settleTimeoutMs?: number) {
+async function fixture(settleTimeoutMs?: number, createRaw?: (cwd: string) => Promise<PiWebSession>) {
   if (settleTimeoutMs !== undefined) vi.stubEnv("PI_WEB_OPERATION_SETTLE_TIMEOUT_MS", String(settleTimeoutMs));
   const cwd = await mkdtemp(join(tmpdir(), "pi-web-admission-"));
   await writeFile(join(cwd, "parent.jsonl"), `${JSON.stringify({ type: "session", id: "parent", version: 3 })}\n`);
   const model = { provider: "test", id: "model" };
-  const raw = {
+  let raw = {
     sessionId: "parent", sessionFile: join(cwd, "parent.jsonl"), isStreaming: false,
     model, thinkingLevel: "off", systemPrompt: "", messages: [], agent: { state: { messages: [] } },
     sessionManager: { getCwd: () => cwd, buildSessionContext: () => ({ messages: [] }), getBranch: () => [{ id: "anchor" }], getSessionName: () => "Parent" },
@@ -25,6 +26,7 @@ async function fixture(settleTimeoutMs?: number) {
     navigateTree: vi.fn(async () => ({ cancelled: false })),
     sendCustomMessage: vi.fn(async () => {}),
   } as unknown as PiWebSession;
+  if (createRaw) raw = await createRaw(cwd);
   const service = new LocalSessionService({
     modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
     sessionFactory: { create: async () => ({ session: raw }), list: async () => [] },
@@ -132,13 +134,81 @@ describe("host prompt admission and settled interruption", () => {
     finish();
   });
 
-  it.each(["/my-command foo", "/template args", "/skill:foo", "  /unknown args"])("rejects tracked slash dispatch before leases/SDK: %s", async message => {
+  it.each(["/my-command foo", "/template args", "/skill:foo", "/template\targs"])("rejects tracked slash dispatch before leases/SDK: %s", async message => {
     const { raw, service } = await fixture();
+    raw.extensionRunner = { getRegisteredCommands: () => [{ name: "my-command" }] };
+    raw.promptTemplates = [{ name: "template" }];
+    raw.resourceLoader = { getSkills: () => ({ skills: [{ name: "foo" }] }) };
+    expect((await service.commands(raw.sessionId)).map(command => command.name)).toEqual(expect.arrayContaining(["my-command", "template", "skill:foo", "commands"]));
     await expect(service.prompt(raw.sessionId, { ...prompt, message })).rejects.toMatchObject({ status: 400 });
     expect(raw.prompt).not.toHaveBeenCalled();
     expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
     await service.prompt(raw.sessionId, { ...prompt, message, dispatchId: undefined });
     expect(vi.mocked(raw.prompt).mock.calls[0][0]).toBe(message);
+  });
+
+  it.each(["/src/foo.ts fails, fix it", "/unknown args", "/help explain this", "  /template literal text", "/my-command\targs", "/skill:foo\targs"])("admits literal path/unknown slash task: %s", async message => {
+    const { raw, service } = await fixture();
+    raw.extensionRunner = { getRegisteredCommands: () => [{ name: "my-command" }] };
+    raw.promptTemplates = [{ name: "template" }];
+    raw.resourceLoader = { getSkills: () => ({ skills: [{ name: "foo" }] }) };
+    await expect(service.prompt(raw.sessionId, { ...prompt, message })).resolves.toMatchObject({ admission: "accepted" });
+    expect(raw.prompt).toHaveBeenCalledWith(`${message}\n\n[pi-web-dispatch:${dispatchId}]`, expect.anything());
+  });
+
+  it("fails closed if the command registry cannot be loaded, without blocking untracked commands", async () => {
+    const { raw, service } = await fixture();
+    raw.extensionRunner = { getRegisteredCommands: () => { throw new Error("registry failed"); } };
+    await expect(service.prompt(raw.sessionId, { ...prompt, message: "/maybe" })).rejects.toMatchObject({ status: 503 });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    await service.prompt(raw.sessionId, { ...prompt, message: "/maybe", dispatchId: undefined });
+    expect(raw.prompt).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])("Stop during pending bash permits a prompt (abortBash available: %s) and retains retirement ownership", async available => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    raw.executeBash = vi.fn(() => new Promise(resolve => { finish = () => resolve({ output: "", exitCode: 0, cancelled: true, truncated: false }); }));
+    if (available) raw.abortBash = vi.fn(() => finish());
+    const shell = service.executeShell(raw.sessionId, "sleep 60", false);
+    await vi.waitFor(() => expect(raw.executeBash).toHaveBeenCalledOnce());
+    await service.abort(raw.sessionId);
+    try {
+      if (available) expect(raw.abortBash).toHaveBeenCalledOnce();
+      await expect(service.prompt(raw.sessionId, prompt)).resolves.toMatchObject({ admission: "accepted" });
+      if (!available) {
+        let retired = false;
+        const retirement = service.disposeAll().then(() => { retired = true; });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        expect(retired).toBe(false);
+        finish(); await retirement;
+      }
+    } finally { finish(); await shell; }
+  });
+
+  it("Stop aborts actual public SDK bash, saves its result, and admits the next prompt", async () => {
+    let sdk!: Awaited<ReturnType<typeof createAgentSession>>["session"];
+    const { raw, service } = await fixture(undefined, async cwd => {
+      const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+      await resourceLoader.reload();
+      const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null, refreshOnCreate: false });
+      await modelRuntime.setRuntimeApiKey("openai", "offline-test-key");
+      ({ session: sdk } = await createAgentSession({ cwd, agentDir: cwd, modelRuntime, model: modelRuntime.getAvailableSnapshot().find(model => model.provider === "openai"), settingsManager: SettingsManager.inMemory(), sessionManager: SessionManager.open(join(cwd, "parent.jsonl")), resourceLoader }));
+      sdk.agent.streamFn = () => { throw new Error("offline provider"); };
+      return sdk as unknown as PiWebSession;
+    });
+    const abortBash = vi.spyOn(sdk, "abortBash");
+    const shell = service.executeShell(raw.sessionId, "sleep 60", false);
+    await vi.waitFor(() => expect(sdk.isBashRunning).toBe(true));
+    try {
+      await service.abort(raw.sessionId, "idle");
+      expect(abortBash).toHaveBeenCalledOnce();
+      expect(await shell).toMatchObject({ cancelled: true });
+      expect(sdk.isBashRunning).toBe(false);
+      expect(sdk.sessionManager.getEntries().some((entry: any) => entry.message?.role === "bashExecution" && entry.message.cancelled)).toBe(true);
+      await expect(service.prompt(raw.sessionId, prompt)).resolves.toMatchObject({ admission: "accepted" });
+    } finally { sdk.abortBash(); await shell; abortBash.mockRestore(); }
   });
 
   it("rejects invalid dispatch identifiers without SDK admission", async () => {

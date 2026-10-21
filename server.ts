@@ -1389,10 +1389,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/session/completion") {
-        const body = await readBody(req) as { sessionId?: unknown; deliveryId: string; message: import("./server/session/completionOutbox.js").CompletionMessage; branchAnchorEntryId?: string };
+        const body = await readBody(req) as { sessionId?: unknown; deliveryId: string; message: import("./server/session/completionOutbox.js").CompletionMessage };
         const result = await sessionService.deliverCompletion(resolveSessionId(body.sessionId), {
           deliveryId: body.deliveryId, message: body.message,
-          ...(body.branchAnchorEntryId != null ? { branchAnchorEntryId: body.branchAnchorEntryId } : {}),
         });
         return sendJson(res, 200, { ok: true, ...result });
       }

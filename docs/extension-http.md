@@ -73,7 +73,7 @@ await client.request("POST", "/api/session/name", { body: { name: "Reviewed" } }
 
 | Scope | Exact permitted HTTP operations |
 | --- | --- |
-| `sessions.read` | GET `/api/state`, `/api/messages`, `/api/messages/image`, `/api/session/reference`, `/api/session/history`, `/api/models` |
+| `sessions.read` | GET `/api/state`, `/api/messages`, `/api/messages/image`, `/api/session/reference`, `/api/session/history`, `/api/models`, `/api/commands` |
 | `sessions.create` | POST `/api/new-chat`, `/api/sessions/new` |
 | `sessions.write` | POST `/api/prompt`, `/api/abort`, `/api/session/completion`, `/api/session/name`, `/api/model`, `/api/session-ui-state/read` |
 | `sessions.delete` | POST `/api/sessions/delete` |
@@ -133,10 +133,16 @@ An optional UUID `dispatchId` causes the host to append exactly
 `\n\n[pi-web-dispatch:<dispatchId>]` to the message text **before serializing the
 attachment fence**, and echo that ID in the receipt. Attachments therefore remain
 parseable. This marker is visible to the model **and transcript UI**. Tracked
-slash commands/templates (`dispatchId` plus a message matching `/^\s*\//`)
-are explicitly unsupported and return **400 before SDK dispatch or work leases**.
-Use a natural-language task, or invoke the command separately without completion
-attribution. Untracked slash prompts keep their existing SDK behavior and arguments.
+registered SDK extension commands, prompt templates, and skills are unsupported
+and return **400 before SDK dispatch or work leases**. Read-only preflight via
+`GET /api/commands?sessionId=<target>` lists their invocation names (`source` is
+`extension`, `prompt`, or `skill`; `web` entries are browser-only). The usual
+`sessions.read` scope and session-target restrictions apply. Matching preserves
+SDK parsing: no leading trim; extension/skill names end at ASCII space, template
+names at whitespace. Unknown slash literals and path-led tasks such as
+`/src/foo.ts fails, fix it` remain valid tracked text. Registry errors fail closed
+with 503. Invoke registered commands separately without completion attribution.
+Untracked slash prompts keep their existing SDK behavior and arguments.
 Find the actual saved **user** entry
 containing that marker before treating later assistant replies as this task's
 result. A transcript snapshot taken before admission is not a consumption

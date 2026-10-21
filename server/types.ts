@@ -72,6 +72,7 @@ export interface PiWebSession {
   abortBranchSummary?(): void;
   compact?(customInstructions?: string): Promise<unknown>;
   abortCompaction?(): void;
+  abortBash?(): void;
   executeBash?(command: string, onChunk?: (chunk: string) => void, options?: { excludeFromContext?: boolean; operations?: unknown }): Promise<{ output: string; exitCode: number | undefined; cancelled: boolean; truncated: boolean; fullOutputPath?: string }>;
   prompt(message: string, options?: { images?: unknown[]; streamingBehavior?: string; preflightResult?: (success: boolean) => void }): Promise<void>;
   sendCustomMessage?(message: import("./session/completionOutbox.js").CompletionMessage, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }): Promise<void>;

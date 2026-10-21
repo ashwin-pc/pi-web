@@ -8,6 +8,17 @@ describe("operation safety policy", () => {
     expect(dialog.canceled).toBe(false); expect(f.requiresRecovery({})).toBe(false);
     expect(f.hasTranscriptWork).toBe(false); await f.settleTranscript(); dialog.finish();
   });
+  it("keeps shell settlement ownership without canceling or fencing the next prompt", async () => {
+    const f = fences(); const shell = f.begin("shell"); f.stop();
+    expect(shell.canceled).toBe(false);
+    expect(f.requiresRecovery({})).toBe(false);
+    expect(() => f.assertTranscript({})).not.toThrow();
+    expect(f.hasTranscriptWork).toBe(true);
+    let settled = false;
+    const wait = f.settleTranscript().then(() => { settled = true; });
+    await Promise.resolve(); expect(settled).toBe(false);
+    shell.finish(); await wait; expect(settled).toBe(true);
+  });
   it("distinguishes admitted prompts from canceled preflight and cannot resurrect old epochs", () => {
     const f = fences(); const admitted = f.begin("prompt"); f.admitted(admitted, f.epoch, false); f.stop();
     expect(f.requiresRecovery({})).toBe(false);

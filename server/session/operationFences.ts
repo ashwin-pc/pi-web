@@ -1,4 +1,4 @@
-export type OperationEffect = "lifetime" | "transcript" | "prompt" | "navigation";
+export type OperationEffect = "lifetime" | "shell" | "transcript" | "prompt" | "navigation";
 export interface OperationToken {
   effect: OperationEffect;
   canceled: boolean;
@@ -34,7 +34,10 @@ export class OperationFences {
   }
   stop() {
     this.epoch++;
-    for (const token of this.operations) if (token.effect !== "lifetime") token.canceled = true;
+    // Bash appends one atomic entry on completion. Keep its settlement ownership
+    // for retirement/navigation, but do not fence new prompts if abortBash is
+    // absent (or the process takes time to terminate).
+    for (const token of this.operations) if (token.effect !== "lifetime" && token.effect !== "shell") token.canceled = true;
   }
   admitted(token: OperationToken | undefined, epoch: number | undefined, ambiguousQueue: boolean) {
     if (epoch !== undefined && epoch !== this.epoch) {
