@@ -49,7 +49,6 @@ export function createComposer(options: {
   updateThinkingOptions: (levels?: string[]) => void;
   refreshModels: () => Promise<void>;
   refreshMessages: () => Promise<void>;
-  transcriptOwner: () => number;
   refreshState: () => Promise<void>;
   startNewSession: () => Promise<void>;
   onSessionUiStateWarning: (warning: string) => void;
@@ -674,7 +673,7 @@ export function createComposer(options: {
     else addMessage("system", typeof data.output === "string" && data.output ? data.output : "(no output)", isShellError(data) ? "error" : "");
   }
 
-  async function runSlashCommand(command: string, ownsOutput: () => boolean, commandSessionId: string) {
+  async function runSlashCommand(command: string) {
     const name = command.trim().replace(/^\/+/, "").split(/\s+/, 1)[0]?.toLowerCase();
     if (name === "new") {
       await options.startNewSession();
@@ -701,7 +700,7 @@ export function createComposer(options: {
     const res = await fetch("/api/command", {
       method: "POST",
       headers: api.headers(),
-      body: JSON.stringify({ sessionId: commandSessionId, command }),
+      body: JSON.stringify({ sessionId: state.currentSessionId, command }),
     });
     const text = await res.text();
     const data = text ? JSON.parse(text) : {};
@@ -718,7 +717,7 @@ export function createComposer(options: {
     await refreshModels();
     if (name === "reload" || name === "commands") await refreshSlashCommands(true).catch(() => undefined);
     if (resetsSession) await refreshMessages();
-    if (data.message && !resetsSession && ownsOutput()) addMessage("system", data.message);
+    if (data.message && !resetsSession) addMessage("system", data.message);
   }
 
   function init() {
@@ -732,8 +731,6 @@ export function createComposer(options: {
       if ((activeRuntime.isStreaming || activeRuntime.isRetrying) && !elements.promptEl.value.trim() && state.attachedImages.length === 0 && contextAttachments.length === 0 && !quoteReplies.hasDrafts()) return;
 
       const rawMessage = elements.promptEl.value;
-      const commandSessionId = state.currentSessionId;
-      const commandOwner = options.transcriptOwner();
       const sessionId = ownedSessionId;
       const promptMessage = rawMessage.trim();
       const contexts = [...contextAttachments];
@@ -781,29 +778,21 @@ export function createComposer(options: {
         }
 
         if (!commandInfo || commandInfo.source === "web") {
-          const ownsTranscript = () => state.currentSessionId === commandSessionId && options.transcriptOwner() === commandOwner;
-          if (ownsTranscript()) {
-            composerCapture.cancel();
-            elements.promptEl.value = "";
-            promptRevision += 1;
-            clearDraft();
-            hideSlashCommands();
-            updatePrimaryAction();
-          }
+          composerCapture.cancel();
+          elements.promptEl.value = "";
+          promptRevision += 1;
+          clearDraft();
+          hideSlashCommands();
+          updatePrimaryAction();
           // /new changes the active session synchronously. Unlike ordinary commands,
           // its local echo would be left in an empty tab when that tab is reused.
-          const commandName = slashCommandName(promptMessage);
-          if (commandName !== "new" && ownsTranscript()) addMessage("system", `› ${promptMessage}`);
-          // Session-open/reset intents replace ownership, including same-ID
-          // reopen and A -> B -> A. Ordinary history refreshes do not: they may
-          // detach the local echo while this command's valid result is pending.
-          const ownsOutput = () => commandName === "new" || commandName === "clear" || ownsTranscript();
+          if (slashCommandName(promptMessage) !== "new") addMessage("system", `› ${promptMessage}`);
           try {
-            await runSlashCommand(promptMessage, ownsOutput, commandSessionId);
+            await runSlashCommand(promptMessage);
           } catch (error) {
-            if (ownsOutput()) addMessage("system", error instanceof Error ? error.message : String(error), "error");
+            addMessage("system", error instanceof Error ? error.message : String(error), "error");
           } finally {
-            if (ownsOutput()) settlePromptFocusAfterSubmit();
+            settlePromptFocusAfterSubmit();
           }
           return;
         }

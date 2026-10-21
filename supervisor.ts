@@ -9,7 +9,6 @@ import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
-import { stopChildProcess } from "./server/supervisorLifecycle.js";
 
 const publicHost = process.env.HOST || "127.0.0.1";
 const publicPort = Number(process.env.PORT || 8787);
@@ -87,10 +86,23 @@ function startChild(): void {
 }
 
 function stopChild(): Promise<void> {
-  const current = child;
-  if (!current || current.pid === undefined || current.exitCode !== null || current.signalCode !== null) return Promise.resolve();
-  intentionalStops.add(current.pid);
-  return stopChildProcess(current);
+  return new Promise((resolve) => {
+    const current = child;
+    if (!current || current.pid === undefined || current.exitCode !== null) return resolve();
+    intentionalStops.add(current.pid);
+
+    const timeout = setTimeout(() => {
+      current.kill("SIGKILL");
+      resolve();
+    }, 5000);
+
+    current.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+
+    if (!current.killed) current.kill("SIGTERM");
+  });
 }
 
 async function restartChild(): Promise<void> {
