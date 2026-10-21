@@ -652,7 +652,12 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
-      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+      // CSRF intent gate: enforce for every credential class a browser can supply
+      // ambiently (cookie `session`, reverse-proxy `external` identity header, and
+      // `open` policy fallback). Only Authorization-bearer callers (`token`, `legacy`)
+      // and the loopback-only `extension` scheme are exempt — those are not sent by a
+      // browser cross-site.
+      if ((auth.via === "session" || auth.via === "external" || auth.via === "open") && !["GET", "HEAD", "OPTIONS"].includes(method)) {
         const validOrigin = trustedOrigin(req, authOrigin);
         if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
       }
