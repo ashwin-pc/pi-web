@@ -266,8 +266,10 @@ SDK runtime outside these host boundaries. If a third party clears its queues, o
 custom-message submission rejects after an ambiguous partial operation, core keeps
 the receipt pending and its runtime claim rather than risk duplicate delivery.
 Host refusal before SDK invocation may retry. The narrow Pi adapter also permits
-retry after an audited immediate SDK rejection only when disk, all entries and
-agent messages show absence and SDK idle is known. Fulfilled queue admission and
+retry after an audited immediate SDK rejection only when both SDK send and agent
+prompt retain their original module-load identities, disk/all entries/agent
+messages show absence, and SDK idle is known. Replaced instance or prototype
+methods are unknown admission, even if they reject with no visible history. Fulfilled queue admission and
 unknown/custom send rejection retain ownership regardless of user pending count.
 Replace the raw runtime to replay safely after disk reconciliation; extension reload
 alone is not replacement. Core never clears queues just to reconcile delivery,

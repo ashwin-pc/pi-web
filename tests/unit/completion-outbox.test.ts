@@ -1,7 +1,7 @@
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompletionDeferredError, CompletionOutbox, type CompletionInput, type CompletionMessage } from "../../server/session/completionOutbox.js";
 import { PiSessionHandle } from "../../server/session/piHandle.js";
@@ -90,15 +90,15 @@ describe("runtime completion ownership and disk receipts", () => {
     expect(f.raw.sendCustomMessage).not.toHaveBeenCalled(); refuse = false;
     await outbox.deliver(f.raw, input); await vi.waitFor(() => expect(f.queue).toHaveLength(1));
   });
-  it.each(["absent", "memory", "agent", "disk", "uncertain"])("audited SDK rejection verifies ownership before same-runtime retry (%s)", async mode => {
+  it.each(["absent", "memory", "agent", "disk", "uncertain"])("replaced prompt rejection retains unknown ownership (%s)", async mode => {
     const f = await fixture(); const cwd = join(f.path, "..");
     const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true }); await loader.reload();
     const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null, refreshOnCreate: false });
     const { session } = await createAgentSession({ cwd, agentDir: cwd, modelRuntime, settingsManager: SettingsManager.inMemory(), sessionManager: SessionManager.open(f.path), resourceLoader: loader });
     const raw = session as unknown as PiWebSession;
     const handle = new PiSessionHandle(raw);
-    // The actual SDK send runs, but its immediate agent call rejects before
-    // admission. No stub of sendCompletion/sendCustomMessage or runtime replacement.
+    // SDK send is intact, but a replaced public agent.prompt is UNKNOWN even
+    // when no admission is visible. No runtime replacement may release its claim.
     const prompt = vi.spyOn(session.agent, "prompt").mockImplementationOnce(async () => {
       const message = { ...input.message, details: { ...input.message.details, deliveryId: input.deliveryId } };
       if (mode === "memory") vi.spyOn(session.sessionManager, "getEntries").mockReturnValue([{ type: "custom_message", id: "memory-only", ...message } as any]);
@@ -115,15 +115,40 @@ describe("runtime completion ownership and disk receipts", () => {
     expect(session.isIdle).toBe(true);
     if (mode === "uncertain") { await rm(f.path, { recursive: true }); await writeFile(f.path, header); }
     await outbox.deliver(raw, input);
-    if (mode === "absent") {
-      await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
-      await vi.waitFor(async () => expect((await outbox.deliver(raw, input)).state).toBe("saved"));
-    } else {
-      expect(prompt).toHaveBeenCalledOnce();
-      expect((await outbox.deliver(raw, input)).state).toBe(mode === "disk" ? "saved" : "pending");
-    }
+    expect(prompt).toHaveBeenCalledOnce();
+    expect((await outbox.deliver(raw, input)).state).toBe(mode === "disk" ? "saved" : "pending");
     session.dispose();
   });
+  it.each(["instance-prompt", "prototype-prompt", "instance-send", "prototype-send"])("keeps one invisible queued copy after replacement enqueue-then-reject (%s)", async replacement => {
+    const f = await fixture(); const cwd = join(f.path, "..");
+    const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true }); await loader.reload();
+    const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null, refreshOnCreate: false });
+    const { session } = await createAgentSession({ cwd, agentDir: cwd, modelRuntime, settingsManager: SettingsManager.inMemory(), sessionManager: SessionManager.open(f.path), resourceLoader: loader });
+    const raw = session as unknown as PiWebSession;
+    const enqueueThenReject = vi.fn(async (message: any) => {
+      session.agent.steer({ role: "custom", ...message, timestamp: Date.now() });
+      throw new Error("rejected after invisible enqueue");
+    });
+    const override = replacement === "prototype-send" ? vi.spyOn(AgentSession.prototype, "sendCustomMessage")
+      : replacement === "instance-send" ? vi.spyOn(session, "sendCustomMessage")
+      : replacement === "prototype-prompt" ? vi.spyOn(Object.getPrototypeOf(session.agent), "prompt")
+      : vi.spyOn(session.agent, "prompt");
+    override.mockImplementation(enqueueThenReject);
+    try {
+      const outbox = new CompletionOutbox((_value, message) => new PiSessionHandle(raw).sendCompletion(message), f.errors);
+      await outbox.deliver(raw, input);
+      await vi.waitFor(() => expect(f.errors).toHaveBeenCalled());
+      expect(session.isIdle).toBe(true); expect(session.pendingMessageCount).toBe(0);
+      expect(session.agent.state.messages).toEqual([]);
+      expect(session.sessionManager.getEntries().some((entry: any) => entry.details?.deliveryId === input.deliveryId)).toBe(false);
+      expect((await outbox.deliver(raw, input)).state).toBe("pending");
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(enqueueThenReject).toHaveBeenCalledOnce();
+      expect(session.agent.peekQueuedMessages()).toHaveLength(1);
+      expect(f.errors.mock.calls[0][1].constructor.name).toBe("Error");
+    } finally { override.mockRestore(); session.dispose(); }
+  });
+
   it("retries the real SDK's busy-agent rejection with no send/prompt replacement", async () => {
     const f = await fixture(); const cwd = join(f.path, "..");
     const loader = new DefaultResourceLoader({ cwd, agentDir: cwd, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true }); await loader.reload();

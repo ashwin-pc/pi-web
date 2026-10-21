@@ -1,7 +1,19 @@
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { PiWebSession } from "../types.js";
 import { CompletionDeferredError, CompletionNotAdmittedError, type CompletionMessage } from "./completionOutbox.js";
 import { projectMessages, projectSessionState } from "./projection.js";
+
+// Capture genuine identities once, before extensions can replace instance OR
+// prototype methods. Resolve the SDK's own agent-core version through its public
+// package.json export and public root import (not a private dist/subpath import).
+const originalSdkSend = AgentSession.prototype.sendCustomMessage;
+const sdkRequire = createRequire(import.meta.resolve("@earendil-works/pi-coding-agent"));
+const agentPackage = sdkRequire("@earendil-works/pi-agent-core/package.json") as { exports: { ".": { import: string } } };
+const agentEntry = new URL(agentPackage.exports["."].import, pathToFileURL(sdkRequire.resolve("@earendil-works/pi-agent-core/package.json")));
+const { Agent } = await import(agentEntry.href) as { Agent: { prototype: Pick<AgentSession["agent"], "prompt"> } };
+const originalAgentPrompt = Agent.prototype.prompt;
 
 /** Pi-only operational slice isolated from the PR145 PiSessionHandle draft.
  * The host still owns identity, admission, work/viewer leases and the web bridge.
@@ -26,10 +38,11 @@ export class PiSessionHandle {
     if (!this.raw.sendCustomMessage || this.lifetime !== "open") throw new CompletionDeferredError("Custom message delivery is unavailable");
     // Audited SDK sendCustomMessage: steer/followUp and settled deferral enqueue
     // synchronously and FULFILL. Only the immediate triggerTurn path awaits a
-    // run and rejects. Do not apply this proof to supplied/custom implementations
-    // or an overridden SDK method. Rejection still requires disk/history/idle
-    // verification in the outbox; absence alone never proves custom-queue absence.
-    const audited = this.raw instanceof AgentSession && this.raw.sendCustomMessage === AgentSession.prototype.sendCustomMessage && !this.raw.isStreaming;
+    // run and rejects. Both invoked public methods must still be genuine: a
+    // replacement agent.prompt can enqueue then reject with no visible history.
+    // Rejection still requires disk/history/idle verification in the outbox;
+    // absence alone never proves custom-queue absence.
+    const audited = this.raw instanceof AgentSession && this.raw.sendCustomMessage === originalSdkSend && this.raw.agent.prompt === originalAgentPrompt && !this.raw.isStreaming;
     try { await this.raw.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer" }); }
     catch (error) { if (audited) throw new CompletionNotAdmittedError(error); throw error; }
   }
