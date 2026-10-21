@@ -3,14 +3,47 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON, WebAuthnCredential } from "@simplewebauthn/server";
 import { AuthKernel, hashSecret, isLoopback, type AuthStore } from "./kernel.js";
+import { loginPeer } from "./password.js";
 
-const challenges = new Map<string, { challenge: string; expiresAt: number; kind: "register" | "login"; bootstrapHash?: string }>();
+const challenges = new Map<string, { challenge: string; expiresAt: number; kind: "register" | "login"; bootstrapHash?: string; peer: string }>();
 const MAX_CHALLENGES = 256;
-function rememberChallenge(challenge: string, value: (typeof challenges extends Map<string, infer V> ? V : never)) {
+const MAX_CHALLENGES_PER_PEER = 4;
+const optionsRate = new Map<string, { resetAt: number; nextAt: number }>();
+const OPTIONS_COOLDOWN_MS = 250;
+const OPTIONS_WINDOW_MS = 60_000;
+const MAX_OPTIONS_PEERS = 4096;
+function allowOptions(peer: string) {
   const now = Date.now();
-  for (const [key, pending] of challenges) if (pending.expiresAt <= now) challenges.delete(key);
-  while (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value!);
-  challenges.set(challenge, value);
+  for (const [id, rate] of optionsRate) if (rate.resetAt <= now) optionsRate.delete(id);
+  const existing = optionsRate.get(peer);
+  if (!existing && optionsRate.size >= MAX_OPTIONS_PEERS) return false;
+  if (existing && now < existing.nextAt) return false;
+  optionsRate.set(peer, { resetAt: now + OPTIONS_WINDOW_MS, nextAt: now + OPTIONS_COOLDOWN_MS });
+  return true;
+}
+function rememberChallenge(peer: string, challenge: string, value: Omit<(typeof challenges extends Map<string, infer V> ? V : never), "peer">): boolean {
+  const now = Date.now();
+  let perPeer = 0;
+  for (const [key, pending] of challenges) {
+    if (pending.expiresAt <= now) challenges.delete(key);
+    else if (pending.peer === peer) perPeer++;
+  }
+  // Enforce a small per-peer quota so a single unauthenticated peer cannot
+  // exhaust the shared slot pool and evict another peer's in-flight ceremony.
+  if (perPeer >= MAX_CHALLENGES_PER_PEER) return false;
+  // When the global cap is reached only evict entries that belong to the same
+  // peer, so a flooding peer cannot force the eviction of another peer's
+  // challenge.
+  while (challenges.size >= MAX_CHALLENGES) {
+    let victim: string | undefined;
+    for (const [key, pending] of challenges) {
+      if (pending.peer === peer) { victim = key; break; }
+    }
+    if (!victim) return false;
+    challenges.delete(victim);
+  }
+  challenges.set(challenge, { ...value, peer });
+  return true;
 }
 function bootstrapRequiresLoopback(config: PasskeyConfig) { return new URL(config.origin).hostname === "localhost"; }
 function clientChallenge(response: unknown): string | undefined {
@@ -38,9 +71,12 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
     res.writeHead(200, loginPageHeaders); res.end(html); return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/passkey/options") {
+    const peer = loginPeer(req);
+    if (!allowOptions(peer)) { res.setHeader("retry-after", "1"); json(res, 429, { ok: false, error: "Too many requests" }); return true; }
     const state = await store.read();
     const options = await generateAuthenticationOptions({ rpID: config.rpID, allowCredentials: state.credentials.filter(c => !c.revokedAt).map(c => ({ id: c.id, transports: c.transports as AuthenticatorTransport[] | undefined })), userVerification: "required" });
-    rememberChallenge(options.challenge, { challenge: options.challenge, expiresAt: Date.now() + 120_000, kind: "login" }); json(res, 200, options); return true;
+    if (!rememberChallenge(peer, options.challenge, { challenge: options.challenge, expiresAt: Date.now() + 120_000, kind: "login" })) { res.setHeader("retry-after", "2"); json(res, 429, { ok: false, error: "Too many pending ceremonies" }); return true; }
+    json(res, 200, options); return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/passkey/verify") {
     const response = await body(req) as AuthenticationResponseJSON; const challenge = clientChallenge(response);
@@ -55,10 +91,13 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
   }
   if (req.method === "POST" && url.pathname === "/api/auth/bootstrap/options") {
     if (bootstrapRequiresLoopback(config) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap requires loopback access for localhost origins" }); return true; }
+    const peer = loginPeer(req);
+    if (!allowOptions(peer)) { res.setHeader("retry-after", "1"); json(res, 429, { ok: false, error: "Too many requests" }); return true; }
     const input = await body(req) as { token?: string; name?: string }; const state = await store.read();
     if (!input.token || !state.bootstrap || state.bootstrap.usedAt || state.bootstrap.expiresAt < Date.now() || hashSecret(input.token) !== state.bootstrap.hash) { json(res, 401, { ok: false, error: "Invalid bootstrap token" }); return true; }
     const options = await generateRegistrationOptions({ rpName: config.rpName, rpID: config.rpID, userName: "pi-web-owner", userDisplayName: "Pi Web Owner", attestationType: "none", authenticatorSelection: { residentKey: "preferred", userVerification: "required" }, excludeCredentials: state.credentials.filter(c => !c.revokedAt).map(c => ({ id: c.id })) });
-    rememberChallenge(options.challenge, { challenge: options.challenge, expiresAt: Date.now() + 120_000, kind: "register", bootstrapHash: state.bootstrap.hash }); json(res, 200, options); return true;
+    if (!rememberChallenge(peer, options.challenge, { challenge: options.challenge, expiresAt: Date.now() + 120_000, kind: "register", bootstrapHash: state.bootstrap.hash })) { res.setHeader("retry-after", "2"); json(res, 429, { ok: false, error: "Too many pending ceremonies" }); return true; }
+    json(res, 200, options); return true;
   }
   if (req.method === "POST" && url.pathname === "/api/auth/bootstrap/verify") {
     if (bootstrapRequiresLoopback(config) && !isLoopback(req)) { json(res, 403, { ok: false, error: "Bootstrap requires loopback access for localhost origins" }); return true; }
