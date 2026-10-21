@@ -403,6 +403,10 @@ export class LocalSessionService implements SessionService {
     return info.cwd || this.deps.globalCwd();
   }
   knownCwds() { return new Set([resolve(this.deps.globalCwd()), ...this.knownSessionCwds]); }
+  currentSessionCwd(): string | undefined {
+    const value = this.currentSession();
+    return value ? this.sessionCwd(value) : undefined;
+  }
   webUiEntries(value: PiWebSession) { return this.webUiBridge.entries(value); }
   settingsSchemas() { return this.webUiBridge.settingsSchemas(); }
   settingsSchemaEntry(id: string) { return this.webUiBridge.settingsSchemaEntry(id); }

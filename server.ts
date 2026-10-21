@@ -168,7 +168,7 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
   }
   const artifactRoots = sessionScoped
     ? new Set([preferredCwd])
-    : new Set([...(preferredCwd ? [preferredCwd] : []), piCwd, ...knownCwds, ...sessionService.knownCwds()]);
+    : new Set([preferredCwd || sessionService.currentSessionCwd() || piCwd]);
   const resolvedFile = findArtifactFile(artifactRoots, artifactPath);
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
