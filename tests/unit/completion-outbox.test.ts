@@ -1,11 +1,39 @@
-import { appendFile, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime, parseSessionEntries, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { CompletionDeferredError, CompletionOutbox, type CompletionInput, type CompletionMessage } from "../../server/session/completionOutbox.js";
+import { CompletionDeferredError, CompletionNotAdmittedError, CompletionOutbox, type CompletionInput, type CompletionMessage } from "../../server/session/completionOutbox.js";
 import { PiSessionHandle } from "../../server/session/piHandle.js";
 import type { PiWebSession } from "../../server/types.js";
+
+// Count actual JSONL bytes returned by both the old whole-file path and the
+// incremental FileHandle path. Wall-clock-only checks miss event-loop work.
+const io = vi.hoisted(() => ({ path: "", bytes: 0 }));
+vi.mock("node:fs/promises", async importOriginal => {
+  const fs = await importOriginal<typeof import("node:fs/promises")>();
+  return {
+    ...fs,
+    readFile: async (...args: Parameters<typeof fs.readFile>) => {
+      const result = await fs.readFile(...args);
+      if (args[0] === io.path) io.bytes += Buffer.byteLength(result);
+      return result;
+    },
+    open: async (...args: Parameters<typeof fs.open>) => {
+      const file = await fs.open(...args);
+      if (args[0] === io.path) {
+        const read = file.read.bind(file);
+        file.read = (async (...parameters: any[]) => {
+          const result = await (read as any)(...parameters);
+          io.bytes += result.bytesRead;
+          return result;
+        }) as typeof file.read;
+      }
+      return file;
+    },
+  };
+});
 
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
@@ -22,7 +50,8 @@ async function fixture() {
 }
 function runtime(path: string) {
   const queue: CompletionMessage[] = [];
-  const entries: any[] = [];
+  // A restarted SDK SessionManager loads persisted entries into memory.
+  const entries: any[] = parseSessionEntries(readFileSync(path, "utf8"));
   const errors = vi.fn();
   const raw = {
     sessionId: "parent", sessionFile: path, isStreaming: false, isIdle: true, pendingMessageCount: 0,
@@ -33,7 +62,7 @@ function runtime(path: string) {
   const makeOutbox = () => new CompletionOutbox((value, message) => new PiSessionHandle(value).sendCompletion(message), errors);
   async function consume(persist = true) {
     for (const message of queue.splice(0)) {
-      const entry = { type: "custom_message", id: `saved-${entries.length}`, ...message };
+      const entry = { type: "custom_message", id: `saved-${entries.filter(entry => entry.type === "custom_message").length}`, ...message };
       entries.push(entry); raw.agent.state.messages.push({ role: "custom", ...message });
       if (persist) await appendFile(path, `${JSON.stringify(entry)}\n`);
     }
@@ -42,6 +71,68 @@ function runtime(path: string) {
 }
 
 describe("runtime completion ownership and disk receipts", () => {
+  it("reads zero JSONL bytes on queued polls and only appended bytes for a memory candidate on a 64 MiB parent", async () => {
+    const f = await fixture();
+    const row = `${JSON.stringify({ type: "custom", id: "old", data: "x".repeat(64 * 1024) })}\n`;
+    await appendFile(f.path, row.repeat(1024));
+    io.path = f.path; io.bytes = 0;
+    await f.makeOutbox().deliver(f.raw, input);
+    const initialBytes = io.bytes;
+    await vi.waitFor(() => expect(f.queue).toHaveLength(1));
+    io.bytes = 0;
+    for (let poll = 0; poll < 5; poll++) expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+    console.log(`receipt-perf: initial-read=${initialBytes} queued-poll-read=${io.bytes}`);
+    expect(io.bytes).toBe(0);
+    expect(initialBytes).toBeLessThanOrEqual(4096); // header, not the 64 MiB transcript
+    // A failed SDK write can leave exactly this memory-only candidate.
+    f.entries.push(JSON.parse(record()));
+    for (let poll = 0; poll < 5; poll++) expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+    expect(io.bytes).toBe(0);
+    const appended = `${row}${record("appended")}\n`;
+    await appendFile(f.path, appended); io.bytes = 0;
+    const receipts = await Promise.all(Array.from({ length: 8 }, () => f.makeOutbox().deliver(f.raw, input)));
+    expect(receipts.every(receipt => receipt.entryId === "appended")).toBe(true);
+    expect(io.bytes).toBe(Buffer.byteLength(appended));
+    console.log(`receipt-perf: parent=${Buffer.byteLength(header + row.repeat(1024))} queued+memory-only-polls=0 appended-read=${io.bytes}`);
+  });
+  it("scans an existing memory candidate once, then only new bytes including split UTF-8 records", async () => {
+    const f = await fixture(); f.entries.push(JSON.parse(record()));
+    await appendFile(f.path, `${JSON.stringify({ type: "custom", id: "old", data: "x".repeat(1024 * 1024) })}\n`);
+    io.path = f.path; io.bytes = 0;
+    expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+    expect(io.bytes).toBeGreaterThan(1024 * 1024);
+    io.bytes = 0;
+    for (let poll = 0; poll < 5; poll++) expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+    expect(io.bytes).toBe(0);
+    const bytes = Buffer.from(`${JSON.stringify({ type: "custom", data: "👋" })}\n${record()}\n`);
+    const split = bytes.indexOf(Buffer.from("👋")) + 2;
+    await appendFile(f.path, bytes.subarray(0, split));
+    expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+    expect(io.bytes).toBe(split);
+    await appendFile(f.path, bytes.subarray(split));
+    expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("saved");
+    expect(io.bytes).toBe(bytes.length);
+    expect(f.raw.sendCustomMessage).not.toHaveBeenCalled();
+  });
+  it.each(["truncate", "replace", "wrong-session"])("fails closed on file changes after a pending claim (%s)", async change => {
+    const f = await fixture(); await appendFile(f.path, `${JSON.stringify({ type: "custom", data: "padding".repeat(100) })}\n`);
+    await f.makeOutbox().deliver(f.raw, input);
+    await vi.waitFor(() => expect(f.queue).toHaveLength(1));
+    f.entries.push(JSON.parse(record()));
+    if (change === "truncate") await writeFile(f.path, header);
+    else if (change === "replace") { const replacement = `${f.path}.new`; await writeFile(replacement, `${header}${record()}\n`); await rename(replacement, f.path); }
+    else {
+      // A fresh file appearing after an absent-file snapshot must match the SDK session.
+      const absent = await fixture(); await rm(absent.path);
+      await absent.makeOutbox().deliver(absent.raw, input);
+      absent.entries.push(JSON.parse(record()));
+      await writeFile(absent.path, `${header.replace("parent", "wrong")}${record()}\n`);
+      await expect(absent.makeOutbox().deliver(absent.raw, input)).rejects.toMatchObject({ status: 503 });
+      return;
+    }
+    await expect(f.makeOutbox().deliver(f.raw, input)).rejects.toMatchObject({ status: 503 });
+    expect(f.raw.sendCustomMessage).toHaveBeenCalledOnce();
+  });
   it("deduplicates concurrent requests and reload without a second durable payload store", async () => {
     const f = await fixture();
     const receipts = await Promise.all(Array.from({ length: 8 }, () => f.makeOutbox().deliver(f.raw, input)));
@@ -73,12 +164,21 @@ describe("runtime completion ownership and disk receipts", () => {
     f.raw.sendCustomMessage = vi.fn(async message => {
       if (mode === "enqueue") f.queue.push(message);
       if (mode === "memory") f.entries.push({ type: "custom_message", id: "memory", ...message });
-      if (mode === "disk") await appendFile(f.path, `${record()}\n`);
+      if (mode === "disk") { f.entries.push(JSON.parse(record())); await appendFile(f.path, `${record()}\n`); }
       throw new Error("send rejected");
     });
     await f.makeOutbox().deliver(f.raw, input); await vi.waitFor(() => expect(f.errors).toHaveBeenCalled());
     expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe(mode === "disk" ? "saved" : "pending");
     expect(f.raw.sendCustomMessage).toHaveBeenCalledOnce();
+  });
+  it("does not release even a classified rejection when newly appended disk evidence exists", async () => {
+    const f = await fixture();
+    const send = vi.fn(async () => { await appendFile(f.path, `${record()}\n`); throw new CompletionNotAdmittedError(new Error("busy")); });
+    const outbox = new CompletionOutbox(send, f.errors);
+    await outbox.deliver(f.raw, input);
+    await vi.waitFor(() => expect(f.errors).toHaveBeenCalled());
+    await outbox.deliver(f.raw, input);
+    expect(send).toHaveBeenCalledOnce();
   });
   it("retries typed host pre-invocation refusal on the SAME runtime", async () => {
     const f = await fixture(); let refuse = true;
@@ -103,7 +203,7 @@ describe("runtime completion ownership and disk receipts", () => {
       const message = { ...input.message, details: { ...input.message.details, deliveryId: input.deliveryId } };
       if (mode === "memory") vi.spyOn(session.sessionManager, "getEntries").mockReturnValue([{ type: "custom_message", id: "memory-only", ...message } as any]);
       if (mode === "agent") session.agent.state.messages.push({ role: "custom", ...message, timestamp: Date.now() });
-      if (mode === "disk") await appendFile(f.path, `${record()}\n`);
+      if (mode === "disk") { session.sessionManager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details); await appendFile(f.path, `${record()}\n`); }
       if (mode === "uncertain") { await rm(f.path); await mkdir(f.path); }
       throw new Error("immediate rejection");
     });
@@ -193,12 +293,12 @@ describe("runtime completion ownership and disk receipts", () => {
     expect((await replacement.makeOutbox().deliver(replacement.raw, input)).state).toBe("saved");
   });
   it.each([false, true])("acknowledges SDK-decoded complete disk entries without an assistant (nested=%s)", async nested => {
-    const f = await fixture(); await appendFile(f.path, `${record("disk", nested)}\n`);
+    const f = await fixture(); f.entries.push(JSON.parse(record("disk", nested))); await appendFile(f.path, `${record("disk", nested)}\n`);
     expect(await f.makeOutbox().deliver(f.raw, input)).toMatchObject({ state: "saved", entryId: "disk" });
     expect(f.raw.sendCustomMessage).not.toHaveBeenCalled();
   });
   it("never repairs a nonterminated final record", async () => {
-    const f = await fixture(); await appendFile(f.path, record()); const before = await readFile(f.path, "utf8");
+    const f = await fixture(); f.entries.push(JSON.parse(record())); await appendFile(f.path, record()); const before = await readFile(f.path, "utf8");
     expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
     expect(await readFile(f.path, "utf8")).toBe(before);
     await appendFile(f.path, "\n"); expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("saved");

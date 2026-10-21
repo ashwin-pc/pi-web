@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { open, stat } from "node:fs/promises";
 import { parseSessionEntries } from "@earendil-works/pi-coding-agent";
 import type { PiWebSession } from "../types.js";
 
@@ -61,24 +61,72 @@ function matchingEntry(entries: unknown[], input: CompletionInput): string | und
   return found;
 }
 
-/** Read-only receipt: complete records only, decoded by the public SDK. Never
- * open a SessionManager here: opening can repair/initialize the live file.
- * Memory (even with an assistant) is not proof that an SDK write succeeded.
+interface DiskCursor { dev: number; ino: number; offset: number; partial: Buffer[]; verified: boolean; saved?: string }
+function uncertain(): never { throw new CompletionOutboxError("Cannot verify completion: session identity is uncertain", 503); }
+async function snapshot(value: PiWebSession, reconcile: boolean): Promise<DiskCursor | undefined> {
+  try {
+    const file = await stat(value.sessionFile);
+    if (!file.isFile()) uncertain();
+    return { dev: file.dev, ino: file.ino, offset: reconcile ? 0 : file.size, partial: [], verified: false };
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+/** Memory is only a negative fast path, NEVER persistence proof. A new claim
+ * starts at the pre-send EOF; an existing SDK candidate reconciles from zero
+ * once. Thereafter each claim decodes only complete, newly appended records.
+ * Never open a SessionManager here: it can repair/initialize the live file.
  */
-async function savedEntry(value: PiWebSession, input: CompletionInput) {
-  let content: string;
-  try { content = await readFile(value.sessionFile, "utf8"); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
-  const entries = parseSessionEntries(content.slice(0, content.lastIndexOf("\n") + 1));
-  const header = entries[0];
-  if (!header || header.type !== "session" || header.id !== value.sessionId) throw new CompletionOutboxError("Cannot verify completion: session identity is uncertain", 503);
-  return matchingEntry(entries, input);
+async function savedEntry(value: PiWebSession, input: CompletionInput, claim: Claim, verifyIdentity = false) {
+  if (!verifyIdentity && !presentInMemory(value, input)) return;
+  const cursor = claim.cursor ??= await snapshot(value, true);
+  if (!cursor) return;
+  const file = await open(value.sessionFile, "r");
+  try {
+    const before = await file.stat();
+    if (before.dev !== cursor.dev || before.ino !== cursor.ino || before.size < cursor.offset) uncertain();
+    if (!cursor.verified) {
+      // Read just the header, not the parent transcript. Decode via the public SDK.
+      const chunks: Buffer[] = [];
+      let position = 0;
+      while (position < before.size) {
+        const chunk = Buffer.alloc(Math.min(4096, before.size - position));
+        const { bytesRead } = await file.read(chunk, 0, chunk.length, position);
+        if (!bytesRead) uncertain();
+        const end = chunk.subarray(0, bytesRead).indexOf(10);
+        chunks.push(chunk.subarray(0, end < 0 ? bytesRead : end + 1));
+        position += bytesRead;
+        if (end >= 0) break;
+      }
+      const header = parseSessionEntries(Buffer.concat(chunks).toString("utf8"))[0];
+      if (!chunks.length || chunks.at(-1)!.at(-1) !== 10 || header?.type !== "session" || header.id !== value.sessionId) uncertain();
+    }
+    let offset = cursor.offset;
+    let partial = cursor.partial;
+    let saved = cursor.saved;
+    while (offset < before.size) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, before.size - offset));
+      const { bytesRead } = await file.read(chunk, 0, chunk.length, offset);
+      if (!bytesRead) uncertain();
+      offset += bytesRead;
+      const content = chunk.subarray(0, bytesRead);
+      const end = content.lastIndexOf(10) + 1;
+      if (end) {
+        const complete = Buffer.concat([...partial, content.subarray(0, end)]);
+        saved = matchingEntry(parseSessionEntries(complete.toString("utf8")), input) ?? saved;
+        partial = end < bytesRead ? [content.subarray(end)] : [];
+      } else partial = [...partial, content];
+    }
+    // A replaced path or truncation during the read cannot acknowledge a receipt.
+    const after = await stat(value.sessionFile);
+    if (after.dev !== cursor.dev || after.ino !== cursor.ino || after.size < offset) uncertain();
+    Object.assign(cursor, { offset, partial, saved, verified: true });
+    return saved;
+  } finally { await file.close(); }
 }
 function presentInMemory(value: PiWebSession, input: CompletionInput) {
   return Boolean(matchingEntry(value.sessionManager.getEntries?.() || [], input) || (value.agent.state.messages as ReceiptMessage[]).some(message => message?.role === "custom" && message.details?.deliveryId === input.deliveryId));
 }
 
-type Claim = { fingerprint: string; lookup: Promise<CompletionReceipt> };
+type Claim = { fingerprint: string; lookup: Promise<CompletionReceipt>; cursor?: DiskCursor };
 // Runtime ownership survives extension reload, including invisible SDK queues.
 // The caller's journal is the sole durable payload/replay owner.
 const claims = new WeakMap<PiWebSession, Map<string, Claim>>();
@@ -95,21 +143,33 @@ export class CompletionOutbox {
     if (prior && prior.fingerprint !== payload) throw new CompletionOutboxError("deliveryId already belongs to a different payload", 409);
     const receipt = (id?: string): CompletionReceipt => ({ sessionId: value.sessionId, deliveryId: input.deliveryId, state: id ? "saved" : "pending", ...(id ? { entryId: id } : {}) });
     if (prior) {
-      await prior.lookup;
-      return receipt(await savedEntry(value, input));
+      // Serialize cursor updates as well as submission; a failed read may retry.
+      prior.lookup = prior.lookup.catch(() => receipt()).then(async () => receipt(await savedEntry(value, input, prior)));
+      return prior.lookup;
     }
     // Register BEFORE any asynchronous disk lookup or SDK invocation.
     const claim: Claim = { fingerprint: payload, lookup: Promise.resolve(receipt()) };
     ownership.set(input.deliveryId, claim);
     claim.lookup = (async () => {
       let saved: string | undefined;
-      try { saved = await savedEntry(value, input); }
+      try {
+        claim.cursor = await snapshot(value, presentInMemory(value, input));
+        saved = await savedEntry(value, input, claim, true);
+      }
       catch (error) { ownership.delete(input.deliveryId); throw error; } // No SDK invocation.
       if (saved) return receipt(saved);
       if (!presentInMemory(value, input)) {
         void Promise.resolve().then(() => this.send(value, { ...input.message, details: { ...input.message.details, deliveryId: input.deliveryId } })).catch(async error => {
           try {
-            if (error instanceof CompletionDeferredError || (error instanceof CompletionNotAdmittedError && !await savedEntry(value, input) && !presentInMemory(value, input) && value.isIdle === true)) ownership.delete(input.deliveryId);
+            if (error instanceof CompletionDeferredError) ownership.delete(input.deliveryId);
+            else if (error instanceof CompletionNotAdmittedError) {
+              claim.lookup = claim.lookup.then(async () => {
+                const saved = await savedEntry(value, input, claim, true);
+                if (!saved && !presentInMemory(value, input) && value.isIdle === true) ownership.delete(input.deliveryId);
+                return receipt(saved);
+              });
+              await claim.lookup;
+            }
           } catch (verificationError) { this.onError(value, verificationError); }
           // Unknown rejection may have queued invisibly. User pending count is
           // deliberately irrelevant; never clear queues or release that claim.
