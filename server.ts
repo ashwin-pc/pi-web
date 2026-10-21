@@ -1353,7 +1353,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown; waitFor?: unknown; dispatchId?: unknown };
         if (body.waitFor !== undefined && body.waitFor !== "admission") throw new SessionServiceError("waitFor must be admission");
         if (body.dispatchId !== undefined && typeof body.dispatchId !== "string") throw new SessionServiceError("dispatchId must be a UUID");
-        const message = String(body.message || "").trim();
+        const rawMessage = String(body.message || "");
+        const trimmedMessage = rawMessage.trim();
+        // Tracked text must match command preflight exactly; retain legacy UI trimming.
+        const message = body.dispatchId && trimmedMessage ? rawMessage : trimmedMessage;
         const target = await sessionService.require(resolveSessionId(body.sessionId));
         const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);
         if (!message && attachments.length === 0) return sendJson(res, 400, { ok: false, error: "message or attachment is required" });

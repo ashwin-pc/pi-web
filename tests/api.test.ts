@@ -2,6 +2,7 @@ import { isolatedAuthEnv as baseAuthEnv } from "./auth-isolation.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1178,14 +1179,26 @@ describe("additional API coverage", () => {
     expect(invalid.status).toBe(400);
   });
 
-  it("rejects tracked slash commands/templates with HTTP 400 before dispatch", async () => {
-    for (const message of ["/my-command args", "/template args", "/skill:foo", "  /unknown args"]) {
-      const response = await fetch(`${baseUrl}/api/prompt`, {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message, dispatchId: "12345678-1234-1234-1234-123456789abc" }),
-      });
-      expect(response.status).toBe(400);
-      expect(JSON.stringify(await response.json())).toContain("unsupported");
+  it("accepts tracked path-led and unregistered slash literals without rewriting", async () => {
+    for (const message of ["/src/foo.ts fails, fix it", "/my-command args", "/template args", "/skill:foo", "  /unknown args", "/help explain this"]) {
+      const dispatchId = randomUUID();
+      try {
+        const response = await fetch(`${baseUrl}/api/prompt`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message, dispatchId, waitFor: "admission" }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ ok: true, admission: "accepted", dispatchId });
+        const history = await fetch(`${baseUrl}/api/session/history?dispatchId=${dispatchId}`);
+        expect(history.status).toBe(200);
+        expect(JSON.stringify(await history.json())).toContain(JSON.stringify(`${message}\n\n[pi-web-dispatch:${dispatchId}]`).slice(1, -1));
+      } finally {
+        const idle = await fetch(`${baseUrl}/api/abort`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ waitFor: "idle" }),
+        });
+        expect(idle.status).toBe(200);
+      }
     }
   });
 
