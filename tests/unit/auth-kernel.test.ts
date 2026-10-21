@@ -21,26 +21,46 @@ describe("auth kernel", () => {
 
   it("attributes external requests using a configured trusted header and fails closed when absent", async () => {
     const s = await store(); const k = new AuthKernel("external", s, "", false, "Tailscale-User-Login");
-    expect(await k.gate(req({ "tailscale-user-login": "alice@example.com" }))).toMatchObject({ ok: true, identity: { id: "external:alice@example.com", displayName: "alice@example.com" } });
-    expect((await k.gate(req())).ok).toBe(false);
-    expect((await new AuthKernel("external", s).gate(req())).ok).toBe(false);
+    const prevPeers = process.env.PI_WEB_AUTH_PROXY_PEERS;
+    process.env.PI_WEB_AUTH_PROXY_PEERS = "127.0.0.1";
+    try {
+      const trusted = (headers: Record<string, string> = {}) => ({ headers, url: "/", socket: { remoteAddress: "127.0.0.1" } }) as any;
+      expect(await k.gate(trusted({ "tailscale-user-login": "alice@example.com" }))).toMatchObject({ ok: true, identity: { id: "external:alice@example.com", displayName: "alice@example.com" } });
+      // Header asserted from an untrusted peer is ignored.
+      const untrusted = { headers: { "tailscale-user-login": "attacker" }, url: "/", socket: { remoteAddress: "192.0.2.9" } } as any;
+      expect((await k.gate(untrusted)).ok).toBe(false);
+      expect((await k.gate(trusted())).ok).toBe(false);
+      expect((await new AuthKernel("external", s).gate(trusted())).ok).toBe(false);
+    } finally {
+      if (prevPeers === undefined) delete process.env.PI_WEB_AUTH_PROXY_PEERS;
+      else process.env.PI_WEB_AUTH_PROXY_PEERS = prevPeers;
+    }
   });
 
   it.each(["external", "none"] as const)("lets %s identities read security inventory but denies mutations", async mode => {
-    const s = await store(); const k = new AuthKernel(mode, s, "", false, "x-verified-user"); const gated = await k.gate(req({ "x-verified-user": "owner" }));
-    expect(gated.ok).toBe(true);
-    if (!gated.ok) return;
+    const s = await store(); const k = new AuthKernel(mode, s, "", false, "x-verified-user");
+    const prevPeers = process.env.PI_WEB_AUTH_PROXY_PEERS;
+    process.env.PI_WEB_AUTH_PROXY_PEERS = "127.0.0.1";
+    try {
+      const trustedReq = (headers: Record<string, string> = {}, url = "/") => ({ headers, url, socket: { remoteAddress: "127.0.0.1" } }) as any;
+      const gated = await k.gate(trustedReq({ "x-verified-user": "owner" }));
+      expect(gated.ok).toBe(true);
+      if (!gated.ok) return;
 
-    const readReq = req({}, "/api/auth/security"); readReq.method = "GET";
-    const readRes = response();
-    await handleSecurityRoute(readReq, readRes, new URL("http://localhost/api/auth/security"), gated, k, s, {} as any);
-    expect(readRes.status).toBe(200);
-    expect(JSON.parse(readRes.body)).toMatchObject({ mode, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] });
+      const readReq = trustedReq({}, "/api/auth/security"); readReq.method = "GET";
+      const readRes = response();
+      await handleSecurityRoute(readReq, readRes, new URL("http://localhost/api/auth/security"), gated, k, s, {} as any);
+      expect(readRes.status).toBe(200);
+      expect(JSON.parse(readRes.body)).toMatchObject({ mode, passkeys: [], sessions: [], apiTokens: [], deviceGrants: [] });
 
-    const mutationReq = req({}, "/api/auth/tokens"); mutationReq.method = "POST";
-    const mutationRes = response();
-    await handleSecurityRoute(mutationReq, mutationRes, new URL("http://localhost/api/auth/tokens"), gated, k, s, {} as any);
-    expect(mutationRes.status).toBe(403);
+      const mutationReq = trustedReq({}, "/api/auth/tokens"); mutationReq.method = "POST";
+      const mutationRes = response();
+      await handleSecurityRoute(mutationReq, mutationRes, new URL("http://localhost/api/auth/tokens"), gated, k, s, {} as any);
+      expect(mutationRes.status).toBe(403);
+    } finally {
+      if (prevPeers === undefined) delete process.env.PI_WEB_AUTH_PROXY_PEERS;
+      else process.env.PI_WEB_AUTH_PROXY_PEERS = prevPeers;
+    }
   });
 
   it("lets normally gated API tokens read security inventory but denies mutations", async () => {

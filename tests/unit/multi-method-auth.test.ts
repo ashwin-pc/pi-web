@@ -537,25 +537,32 @@ describe("multi-method human authentication", () => {
   it("exchanges trusted external identity for a revocable session without ambient reauthentication", async () => {
     const { store, kernel } = await fixture(),
       res = response();
-    await handlePasswordLogin(
-      req({}, { "x-user": "owner@example.com", "user-agent": "Proxy browser" }),
-      res,
-      new URL("/api/auth/external/login", config.origin),
-      kernel,
-      store,
-    );
-    expect(res.status).toBe(200);
-    const cookie = res.headers["set-cookie"].split(";")[0];
-    expect(await kernel.gate(req({}, { cookie }))).toMatchObject({
-      ok: true,
-      via: "session",
-      identity: { id: "external:owner@example.com" },
-    });
-    await kernel.revokeSession(req({}, { cookie }));
-    expect(
-      (await kernel.gate(req({}, { cookie, "x-user": "owner@example.com" })))
-        .ok,
-    ).toBe(false);
+    const prevPeers = process.env.PI_WEB_AUTH_PROXY_PEERS;
+    process.env.PI_WEB_AUTH_PROXY_PEERS = "127.0.0.1";
+    try {
+      await handlePasswordLogin(
+        req({}, { "x-user": "owner@example.com", "user-agent": "Proxy browser" }),
+        res,
+        new URL("/api/auth/external/login", config.origin),
+        kernel,
+        store,
+      );
+      expect(res.status).toBe(200);
+      const cookie = res.headers["set-cookie"].split(";")[0];
+      expect(await kernel.gate(req({}, { cookie }))).toMatchObject({
+        ok: true,
+        via: "session",
+        identity: { id: "external:owner@example.com" },
+      });
+      await kernel.revokeSession(req({}, { cookie }));
+      expect(
+        (await kernel.gate(req({}, { cookie, "x-user": "owner@example.com" })))
+          .ok,
+      ).toBe(false);
+    } finally {
+      if (prevPeers === undefined) delete process.env.PI_WEB_AUTH_PROXY_PEERS;
+      else process.env.PI_WEB_AUTH_PROXY_PEERS = prevPeers;
+    }
   });
   it("rejects session issuance when a credential changes during verification", async () => {
     const { store, kernel } = await fixture();
