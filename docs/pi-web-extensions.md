@@ -574,9 +574,14 @@ prose + a model) configured through the Settings API above; the concrete model
 mapping stays private to the config and the spawn tool resolves it fail-closed.
 
 Tracked follow-ups through `sessions_prompt` must be natural-language messages.
-Raw slash commands, templates, and skill commands (including whitespace-prefixed
-`/` input) are rejected before aborting a worker or replacing its watch; their
-arguments are never modified. A slash-prefixed `sessions_spawn` task is literal
+Registered SDK slash commands, templates, and skills are rejected before aborting
+a worker or replacing its watch. Only slash-prefixed candidates trigger a read-only
+lookup of the target's `/api/commands` metadata; failed or malformed lookups leave
+the old assignment untouched. Path-led tasks such as `/src/foo.ts fails, fix it`
+and unknown slash literals follow normal SDK handling, unchanged. Matching uses
+SDK parsing (no leading-whitespace trimming; extension/skill names end at an ASCII
+space, template names at any whitespace), excluding browser-only commands.
+Arguments are never modified. A slash-prefixed `sessions_spawn` task is literal
 text inside the worker instruction wrapper, not an executed command. Ordinary
 tracked prompts carry a `[pi-web-dispatch:<uuid>]` watermark visible to the model
 and in the worker transcript. Admission alone is not task completion: the watcher

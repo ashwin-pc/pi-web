@@ -167,6 +167,13 @@ function stubFetch(options: {
     if (path === "/api/new-chat") {
       created += 1;
       payload = options.newChatFails ? { ok: false, error: "boom" } : { ok: true, sessionId: `worker-${created}` };
+    } else if (path.startsWith("/api/commands?")) {
+      payload = { ok: true, commands: [
+        { name: "my-ext-command", source: "extension" },
+        { name: "template", source: "prompt" },
+        { name: "skill:foo", source: "skill" },
+        { name: "help", source: "web" },
+      ] };
     } else if (path.startsWith("/api/models")) {
       payload = { ok: true, models: options.models ?? registry };
     } else if (path.startsWith("/api/state")) {
@@ -967,12 +974,53 @@ describe("issue 190 durable delivery", () => {
     expect(journal().watches).toHaveLength(1);
   });
 
-  it.each(["/my-ext-command foo", "/template args", "/skill:foo", "  /unknown"])("rejects tracked raw slash input %j before interrupt or intent", async (message) => {
+  it.each(["/my-ext-command foo", "/template args", "/template\targs", "/skill:foo"])("rejects registered slash input %j before interrupt or intent", async (message) => {
     const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
     const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
     calls.length = 0;
     await expect(tools.get("sessions_prompt").execute("command", { id: "worker-1", message, interrupt: true })).rejects.toThrow(/slash.*unsupported/i);
-    expect(calls).toHaveLength(0);
+    expect(calls).toEqual([{ method: "GET", path: "/api/commands?sessionId=worker-1", body: undefined }]);
+    expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
+  });
+
+  it.each(["/src/foo.ts fails, fix it", "/unknown literal task", "/skill:unknown literal task", "/help explain this", "  /template literal text", "/my-ext-command\targs", "/skill:foo\targs"])("dispatches slash literal %j unchanged with server-side watermark", async (message) => {
+    const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
+    calls.length = 0;
+    await tools.get("sessions_prompt").execute("literal", { id: "worker-1", message, interrupt: true });
+    expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      "GET /api/commands?sessionId=worker-1", "POST /api/abort", "POST /api/prompt",
+    ]);
+    const body = calls[2].body;
+    expect(body).toMatchObject({ sessionId: "worker-1", message, mode: "steer", waitFor: "admission" });
+    expect(body.dispatchId).toBe(journal().watches[0].dispatchId);
+    expect(workerMessages.get("worker-1")![0].text).toBe(`${message}\\n\\n[pi-web-dispatch:${body.dispatchId}]`);
+    expect(journal().watches[0].admissionPending).toBe(false);
+  });
+
+  it.each(["http", "malformed", "missing-name", "unknown-source"])("preserves prior watch when slash metadata lookup is %s", async (failure) => {
+    const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
+    const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
+    const beforeBranch = JSON.stringify(branch);
+    const fetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => {
+      if (!String(url).startsWith("/api/commands?")) return fetch(url, init);
+      calls.push({ method: init.method, path: String(url) });
+      const commands = failure === "malformed" ? null : failure === "missing-name" ? [{ source: "extension" }] : failure === "unknown-source" ? [{ name: "foo", source: "future" }] : [];
+      return { ok: failure !== "http", status: failure === "http" ? 503 : 200, json: async () => ({ commands }) };
+    }) as any;
+    calls.length = 0;
+    await expect(tools.get("sessions_prompt").execute("literal", { id: "worker-1", message: "/src/foo.ts fails", interrupt: true })).rejects.toThrow();
+    expect(calls).toEqual([{ method: "GET", path: "/api/commands?sessionId=worker-1" }]);
+    expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
+    expect(JSON.stringify(branch)).toBe(beforeBranch);
+  });
+
+  it("restores the old watch on definitive server rejection after a stale slash lookup", async () => {
+    const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
+    const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
+    stubFetch({ promptFails: true, promptFailureStatus: 400 }); calls.length = 0;
+    await expect(tools.get("sessions_prompt").execute("stale", { id: "worker-1", message: "/new-command args" })).rejects.toThrow(/400/);
+    expect(calls.map((call) => call.path)).toEqual(["/api/commands?sessionId=worker-1", "/api/prompt"]);
     expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
   });
 
@@ -1177,11 +1225,13 @@ describe("issue 190 durable delivery", () => {
   });
 
   it("wraps slash-prefixed spawn task text as literal worker instructions", async () => {
-    const result = await spawn(makeCtx(), { name: "literal", task: "/template args" });
+    const task = '/template   "args"\nkeep literal spacing';
+    const result = await spawn(makeCtx(), { name: "literal", task });
     expect(result.isError).toBeFalsy();
     const message = calls.find((c) => c.path === "/api/prompt")!.body.message;
     expect(message).toMatch(/^\[pi-web orchestrated worker\]/);
-    expect(message).toContain("/template args");
+    expect(message).toContain(task);
+    expect(calls.some((call) => call.path.startsWith("/api/commands"))).toBe(false);
     expect(branch.some((entry: any) => entry.customType === "orchestrator-dispatch-anchor")).toBe(false);
   });
 

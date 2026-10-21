@@ -11,7 +11,8 @@
  * into the parent session when a worker goes idle, which starts a new parent
  * turn. The parent can end its turn and "sleep" while workers run. Wakeups go to
  * the active parent branch; pending batches retain immutable assignment ownership.
- * Tracked raw slash commands/templates are rejected before interrupt or dispatch.
+ * Registered SDK commands/templates/skills are rejected before interrupt or dispatch;
+ * path-led and unknown slash literals remain ordinary tracked tasks.
  *
  * Everything goes through the same local HTTP API the web UI uses.
  *
@@ -215,6 +216,28 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     const json = await api("GET", path);
     if (!Array.isArray(json.messages)) throw new Error("Transcript response did not contain messages");
     return json.messages;
+  }
+  async function checkTrackedMessage(sessionId: string, message: string): Promise<void> {
+    if (!/^\s*\//.test(message)) return;
+    // Read the target's current registry, not this extension's parent registry.
+    // Web-only commands are interpreted by the browser, not SDK prompt().
+    const { commands } = await api("GET", `/api/commands?sessionId=${encodeURIComponent(sessionId)}`);
+    if (!Array.isArray(commands) || commands.some((command: any) =>
+      !command || typeof command.name !== "string" || !command.name ||
+      !["web", "extension", "prompt", "skill"].includes(command.source))) {
+      throw new Error("Cannot validate tracked slash input: command metadata unavailable; no task was sent.");
+    }
+    // Mirror SDK parsing without trimming or rewriting the user's input:
+    // extensions/skills split at ASCII space; templates accept any whitespace.
+    if (!message.startsWith("/")) return;
+    const spaceIndex = message.indexOf(" ");
+    const commandName = message.slice(1, spaceIndex === -1 ? undefined : spaceIndex);
+    const templateName = message.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)?.[1];
+    if (commands.some((command: any) =>
+      command.source === "prompt" ? command.name === templateName :
+        (command.source === "extension" || command.source === "skill") && command.name === commandName)) {
+      throw new Error("Tracked registered slash commands/templates/skills are unsupported; send a natural-language task instead.");
+    }
   }
   type Watched = {
     id: string;
@@ -999,7 +1022,7 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
   pi.registerTool({
     name: "sessions_prompt",
     label: "Message worker session",
-    description: "Send a natural-language message to another session. Raw slash commands/templates are unsupported for tracked dispatch. Mid-turn messages are delivered as steering after current tool calls; set interrupt=true to abort the current turn first. You'll receive a wakeup when it next goes idle.",
+    description: "Send a natural-language message to another session. Registered SDK slash commands/templates/skills are unsupported for tracked dispatch; paths and unknown slash literals are allowed. Mid-turn messages are delivered as steering after current tool calls; set interrupt=true to abort the current turn first. You'll receive a wakeup when it next goes idle.",
     promptSnippet: "Send a follow-up or steering message to a worker session (interrupt optional)",
     parameters: Type.Object({
       id: Type.String({ description: "Session id" }),
@@ -1007,12 +1030,13 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       interrupt: Type.Optional(Type.Boolean({ description: "Abort the session's current turn before delivering (default false)" })),
     }),
     async execute(_toolCallId: string, params: any) {
-      // Commands may consume/expand arguments without creating a user entry.
-      // Reject before interrupting the old task or writing a replacement intent.
-      if (/^\s*\//.test(params.message)) throw new Error("Tracked raw slash commands/templates are unsupported; send a natural-language task instead.");
       const expectedGeneration = generation;
       const previous = dispatchQueues.get(params.id) || Promise.resolve();
       const operation = previous.catch(() => {}).then(async () => {
+        if (!isActive(expectedGeneration)) throw new Error("Orchestrator instance was replaced");
+        // Commands may consume/expand input without an attributable user entry.
+        // Lookup must succeed before aborting or replacing the durable intent.
+        await checkTrackedMessage(params.id, params.message);
         if (!isActive(expectedGeneration)) throw new Error("Orchestrator instance was replaced");
         dispatching.add(params.id);
         try {
