@@ -851,7 +851,18 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/push/subscribe") {
-        const body = await readBody(req) as { installationId?: unknown; subscription?: unknown };
+        let body: { installationId?: unknown; subscription?: unknown };
+        try {
+          // Push subscription payloads are tiny (endpoint URL + two short keys). Cap the raw
+          // body well below the 40MB default so a single call cannot be used to inflate the
+          // persisted state file or exhaust memory with multi-megabyte strings.
+          const bytes = await readBytes(req, 16_384);
+          const text = bytes.toString("utf-8");
+          body = (text ? JSON.parse(text) : {}) as { installationId?: unknown; subscription?: unknown };
+        } catch (error) {
+          const status = error instanceof HttpError ? error.status : 400;
+          return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
         try {
           return sendJson(res, 200, { ok: true, ...await pushNotifications.subscribe(body.installationId, body.subscription) });
         } catch (error) {
