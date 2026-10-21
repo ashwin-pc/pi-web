@@ -1,5 +1,6 @@
 import { appendFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { readFileSync } from "node:fs";
+import fs, { readFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentSession, createAgentSession, DefaultResourceLoader, ModelRuntime, parseSessionEntries, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
@@ -92,7 +93,7 @@ describe("runtime completion ownership and disk receipts", () => {
     await appendFile(f.path, appended); io.bytes = 0;
     const receipts = await Promise.all(Array.from({ length: 8 }, () => f.makeOutbox().deliver(f.raw, input)));
     expect(receipts.every(receipt => receipt.entryId === "appended")).toBe(true);
-    expect(io.bytes).toBe(Buffer.byteLength(appended));
+    expect(io.bytes).toBe(Buffer.byteLength(appended) + 1); // one lazy EOF-boundary byte
     console.log(`receipt-perf: parent=${Buffer.byteLength(header + row.repeat(1024))} queued+memory-only-polls=0 appended-read=${io.bytes}`);
   });
   it("scans an existing memory candidate once, then only new bytes including split UTF-8 records", async () => {
@@ -113,6 +114,19 @@ describe("runtime completion ownership and disk receipts", () => {
     expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("saved");
     expect(io.bytes).toBe(bytes.length);
     expect(f.raw.sendCustomMessage).not.toHaveBeenCalled();
+  });
+  it("discards a pre-claim partial record through its first newline across polls", async () => {
+    const f = await fixture(); await appendFile(f.path, '{"broken":');
+    await f.makeOutbox().deliver(f.raw, input);
+    await vi.waitFor(() => expect(f.queue).toHaveLength(1));
+    f.entries.push(JSON.parse(record()));
+    const suffix = record("invalid-suffix");
+    await appendFile(f.path, suffix.slice(0, 30));
+    expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+    await appendFile(f.path, `${suffix.slice(30)}\n`);
+    expect((await f.makeOutbox().deliver(f.raw, input)).state).toBe("pending");
+    await appendFile(f.path, `${record("valid-next-record")}\n`);
+    expect(await f.makeOutbox().deliver(f.raw, input)).toMatchObject({ state: "saved", entryId: "valid-next-record" });
   });
   it.each(["truncate", "replace", "wrong-session"])("fails closed on file changes after a pending claim (%s)", async change => {
     const f = await fixture(); await appendFile(f.path, `${JSON.stringify({ type: "custom", data: "padding".repeat(100) })}\n`);
@@ -335,6 +349,31 @@ describe("runtime completion ownership and disk receipts", () => {
       expect(manager.getEntries().some((entry: any) => entry.details?.deliveryId === second.deliveryId)).toBe(true);
       await expect(outbox.deliver(raw, second)).rejects.toBeDefined();
     }
+  });
+  it("never acknowledges a new SDK append joined to a previous partial failed write", async () => {
+    const f = await fixture(); const manager = SessionManager.create(join(f.path, ".."), join(f.path, ".."));
+    const path = manager.getSessionFile()!;
+    manager.appendMessage({ role: "assistant", content: [], timestamp: Date.now(), stopReason: "stop" } as any);
+    const append = fs.appendFileSync;
+    const injected = vi.spyOn(fs, "appendFileSync").mockImplementationOnce((file, data) => {
+      append(file, Buffer.from(data as string).subarray(0, 30));
+      throw new Error("partial SDK write");
+    });
+    syncBuiltinESMExports();
+    try {
+      expect(() => manager.appendCustomMessageEntry("old", "failed write", true, { deliveryId: "old" })).toThrow("partial SDK write");
+    } finally { injected.mockRestore(); syncBuiltinESMExports(); }
+    expect(readFileSync(path).at(-1)).not.toBe(10);
+    const raw = { ...f.raw, sessionId: manager.getSessionId(), sessionFile: path, sessionManager: manager } as unknown as PiWebSession;
+    raw.sendCustomMessage = vi.fn(async message => { manager.appendCustomMessageEntry(message.customType, message.content, message.display, message.details); });
+    const outbox = f.makeOutbox();
+    expect((await outbox.deliver(raw, input)).state).toBe("pending");
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    const disk = readFileSync(path, "utf8");
+    expect(parseSessionEntries(disk).filter((entry: any) => entry.details?.deliveryId === input.deliveryId)).toHaveLength(0);
+    expect(manager.getEntries().filter((entry: any) => entry.details?.deliveryId === input.deliveryId)).toHaveLength(1);
+    for (let poll = 0; poll < 3; poll++) expect((await outbox.deliver(raw, input)).state).toBe("pending");
+    expect(readFileSync(path, "utf8")).toBe(disk); // receipts must not repair the joined line
   });
   it("never acknowledges an in-memory SessionManager even with an assistant", async () => {
     const f = await fixture(); await rm(f.path);

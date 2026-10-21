@@ -61,13 +61,13 @@ function matchingEntry(entries: unknown[], input: CompletionInput): string | und
   return found;
 }
 
-interface DiskCursor { dev: number; ino: number; offset: number; partial: Buffer[]; verified: boolean; saved?: string }
+interface DiskCursor { dev: number; ino: number; offset: number; partial: Buffer[]; boundary?: boolean; verified: boolean; saved?: string }
 function uncertain(): never { throw new CompletionOutboxError("Cannot verify completion: session identity is uncertain", 503); }
 async function snapshot(value: PiWebSession, reconcile: boolean): Promise<DiskCursor | undefined> {
   try {
     const file = await stat(value.sessionFile);
     if (!file.isFile()) uncertain();
-    return { dev: file.dev, ino: file.ino, offset: reconcile ? 0 : file.size, partial: [], verified: false };
+    return { dev: file.dev, ino: file.ino, offset: reconcile ? 0 : file.size, partial: [], boundary: reconcile || !file.size ? true : undefined, verified: false };
   } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 }
 /** Memory is only a negative fast path, NEVER persistence proof. A new claim
@@ -102,23 +102,37 @@ async function savedEntry(value: PiWebSession, input: CompletionInput, claim: Cl
     let offset = cursor.offset;
     let partial = cursor.partial;
     let saved = cursor.saved;
+    let boundary = cursor.boundary;
+    if (boundary === undefined && offset < before.size) {
+      // A failed SDK append may leave EOF inside a JSONL record. Its next
+      // append is NOT a standalone record, even if that suffix parses alone.
+      const byte = Buffer.alloc(1);
+      if ((await file.read(byte, 0, 1, offset - 1)).bytesRead !== 1) uncertain();
+      boundary = byte[0] === 10;
+    }
     while (offset < before.size) {
       const chunk = Buffer.alloc(Math.min(64 * 1024, before.size - offset));
       const { bytesRead } = await file.read(chunk, 0, chunk.length, offset);
       if (!bytesRead) uncertain();
       offset += bytesRead;
-      const content = chunk.subarray(0, bytesRead);
+      let content = chunk.subarray(0, bytesRead);
+      if (boundary === false) {
+        const newline = content.indexOf(10);
+        if (newline < 0) continue;
+        content = content.subarray(newline + 1);
+        boundary = true;
+      }
       const end = content.lastIndexOf(10) + 1;
       if (end) {
         const complete = Buffer.concat([...partial, content.subarray(0, end)]);
         saved = matchingEntry(parseSessionEntries(complete.toString("utf8")), input) ?? saved;
-        partial = end < bytesRead ? [content.subarray(end)] : [];
+        partial = end < content.length ? [content.subarray(end)] : [];
       } else partial = [...partial, content];
     }
     // A replaced path or truncation during the read cannot acknowledge a receipt.
     const after = await stat(value.sessionFile);
     if (after.dev !== cursor.dev || after.ino !== cursor.ino || after.size < offset) uncertain();
-    Object.assign(cursor, { offset, partial, saved, verified: true });
+    Object.assign(cursor, { offset, partial, boundary, saved, verified: true });
     return saved;
   } finally { await file.close(); }
 }
