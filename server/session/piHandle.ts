@@ -1,4 +1,6 @@
+import { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { PiWebSession } from "../types.js";
+import { CompletionDeferredError, CompletionNotAdmittedError, type CompletionMessage } from "./completionOutbox.js";
 import { projectMessages, projectSessionState } from "./projection.js";
 
 /** Pi-only operational slice isolated from the PR145 PiSessionHandle draft.
@@ -19,6 +21,18 @@ export class PiSessionHandle {
     return this.raw.prompt(text, options);
   }
   interrupt() { return this.raw.abort(); }
+
+  async sendCompletion(message: CompletionMessage) {
+    if (!this.raw.sendCustomMessage || this.lifetime !== "open") throw new CompletionDeferredError("Custom message delivery is unavailable");
+    // Audited SDK sendCustomMessage: steer/followUp and settled deferral enqueue
+    // synchronously and FULFILL. Only the immediate triggerTurn path awaits a
+    // run and rejects. Do not apply this proof to supplied/custom implementations
+    // or an overridden SDK method. Rejection still requires disk/history/idle
+    // verification in the outbox; absence alone never proves custom-queue absence.
+    const audited = this.raw instanceof AgentSession && this.raw.sendCustomMessage === AgentSession.prototype.sendCustomMessage && !this.raw.isStreaming;
+    try { await this.raw.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer" }); }
+    catch (error) { if (audited) throw new CompletionNotAdmittedError(error); throw error; }
+  }
 
   subscribe(listener: (event: unknown) => void): () => void {
     if (this.lifetime !== "open") throw new Error("Pi runtime is closing or disposed");

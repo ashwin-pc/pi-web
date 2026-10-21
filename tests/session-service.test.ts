@@ -685,6 +685,47 @@ describe("LocalSessionService contract", () => {
     expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
   });
 
+  it("Stop does not fence rename/model/prompt/navigation while an unanswered confirm is alive", async () => {
+    const { service, fixture, initial } = await fixtureService({ clientCount: 1 });
+    const events: SessionServiceEvent[] = []; service.subscribe(event => events.push(event));
+    const answer = fixture.extensionOptions.uiContext.confirm("Allow?", "Keep waiting", { timeout: 120_000 });
+    const interaction = events.find(event => event.type === "interaction");
+    if (!interaction || interaction.type !== "interaction") throw new Error("Missing interaction");
+    await service.abort(initial.sessionId);
+    await service.rename(initial.sessionId, "After Stop");
+    await service.setModel(initial.sessionId, "test", "model");
+    fixture.extensionOptions.uiContext.web.setPanel("still-live", { title: "Panel", render: async () => ({ html: "<p>Ready</p>" }) });
+    expect(await service.invokePanel(initial.sessionId, { key: "still-live" })).toMatchObject({ html: "<p>Ready</p>" });
+    await service.abort(initial.sessionId, "idle");
+    await service.navigate(initial.sessionId, "call", {});
+    await service.prompt(initial.sessionId, { message: "new task", mode: "steer", attachments: [] });
+    expect(service.respondInteraction({ id: interaction.request.id, confirmed: true })).toBe(true);
+    await expect(answer).resolves.toBe(true);
+    expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
+  });
+
+  it("Stop during composer capture permits rename/prompt/navigation before capture resolves", async () => {
+    const { service, fixture, initial } = await fixtureService({ clientCount: 1 });
+    let finish!: () => void;
+    const invoke = vi.fn(() => new Promise(resolve => { finish = () => resolve({ effects: [{ type: "insert-composer-text", text: "transcribed", placement: "selection" }] }); }));
+    fixture.extensionOptions.uiContext.web.contribute("voice", {
+      slot: "composer-input", kind: "capture", title: "Voice", icon: "mic",
+      capture: { media: "audio", mimeTypes: ["audio/webm"] }, invoke,
+    });
+    const entries = service.webUiEntries(initial) as any;
+    const registrationId = entries.webContributions.find((entry: any) => entry.key === "voice").capture.registrationId;
+    const stored = await service.storeCapture(initial.sessionId, "voice", registrationId, { mimeType: "audio/webm", durationMs: 100, bytes: new Uint8Array([1]) });
+    const capture = service.invokeContribution(initial.sessionId, { slot: "composer-input", key: "voice", event: { captureId: stored.id } });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+    await service.executeCommand(initial.sessionId, "/stop");
+    await service.rename(initial.sessionId, "After capture Stop");
+    await service.abort(initial.sessionId, "idle");
+    await service.navigate(initial.sessionId, "call", {});
+    await service.prompt(initial.sessionId, { message: "new task", mode: "steer", attachments: [] });
+    finish(); await expect(capture).resolves.toMatchObject({ effects: [{ type: "insert-composer-text", text: "transcribed" }] });
+    expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
+  });
+
   it("denies timed-out and disconnected interactions through the service boundary", async () => {
     vi.useFakeTimers();
     let clients = 1;

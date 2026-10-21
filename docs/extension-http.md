@@ -132,7 +132,12 @@ an already admitted operation was canceled.
 An optional UUID `dispatchId` causes the host to append exactly
 `\n\n[pi-web-dispatch:<dispatchId>]` to the message text **before serializing the
 attachment fence**, and echo that ID in the receipt. Attachments therefore remain
-parseable. This marker is visible to the model. Find the actual saved **user** entry
+parseable. This marker is visible to the model **and transcript UI**. Tracked
+slash commands/templates (`dispatchId` plus a message matching `/^\s*\//`)
+are explicitly unsupported and return **400 before SDK dispatch or work leases**.
+Use a natural-language task, or invoke the command separately without completion
+attribution. Untracked slash prompts keep their existing SDK behavior and arguments.
+Find the actual saved **user** entry
 containing that marker before treating later assistant replies as this task's
 result. A transcript snapshot taken before admission is not a consumption
 watermark: an older task can finish while the new prompt remains queued. Extension
@@ -154,7 +159,8 @@ on-disk completion receipt described below.
 `POST /api/abort` retains **202** by default. Add `waitFor: "idle"` for **200** with
 `{ ok: true, sessionId, idle: true }` only after the local SDK abort settles.
 Failures propagate. This waits for both SDK interruption and previously admitted
-host operations; it does not wait for recursively tracked workers to settle and
+transcript-affecting host operations; lifetime-only extension dialogs and composer
+captures do not block it. It does not wait for recursively tracked workers to settle and
 does not clear queued human or agent steering. An interrupt-and-redirect caller
 should await this receipt instead of sleeping for a fixed duration. A bounded
 wait that cannot establish safety returns **503** with `recoveryRequired: true`,
@@ -164,14 +170,16 @@ Ordinary Stop/abort still releases visible work leases when the SDK is idle, so 
 hung preflight/navigation hook no longer leaves the UI falsely running. Separate
 safety ownership remains until the operation actually finishes. A canceled prompt
 still **awaiting preflight**, or canceled navigation/custom-message work, fences
-same-runtime mutations with **409** and `recoveryRequired: true`. Reads and Stop
+same-runtime transcript/branch mutations with **409** and `recoveryRequired: true`.
+Rename, model changes, panels, and lifetime-only dialogs/captures stay available.
+Reads and Stop
 remain available, as does starting an independent session. Once a prompt was
 successfully admitted in its original cancellation epoch, its slow-to-abort agent
 run does **not** globally block independent steer/follow-up prompts, model changes,
 or renaming. Its full operation still blocks history navigation/Retry and defers
 completion injection until actual settlement, even if streaming briefly appears
-idle. An admitted completion request can therefore remain durably pending during
-that interval rather than being injected into a canceled run.
+idle. An admitted completion request can therefore remain pending in its caller's
+durable journal during that interval rather than being injected into a canceled run.
 
 A cancellation epoch prevents late **idle** prompt preflight from starting an
 agent run. A captured streaming submission may instead already have enqueued
@@ -180,7 +188,7 @@ ownership. That latch recovers without disposal when the SDK explicitly reports
 idle and its pending **user-message** count is exactly zero (an unavailable count
 is not proof). Admission checks, SDK events, and awaited idle receipts re-evaluate
 this condition. A still-pending canceled preflight remains separately fenced:
-observing an empty queue cannot authorize another mutation while an old input
+observing an empty queue cannot authorize another transcript mutation while an old input
 handler could yet enqueue. The user count excludes custom messages and never
 releases the completion outbox's independent submission/disk-persistence claims.
 
@@ -190,8 +198,8 @@ server process (the stalled-runtime issue remains separate), not by clearing
 safety ownership and overlapping old work.
 
 Disposal waits are also bounded (`PI_WEB_OPERATION_SETTLE_TIMEOUT_MS`, default
-10 seconds). Failure resets the closing flag and leaves reads/retry-disposal
-available. A timed-out retirement keeps its original promise/runtime and pending
+10 seconds). Reads and retry-disposal remain available after interrupt failure;
+mutation admission stays closed. A timed-out retirement keeps its original promise/runtime and pending
 claims; no replacement can replay while old hooks may still persist. A later
 successful settlement completes that same retirement.
 
@@ -203,7 +211,6 @@ Send a custom completion message through `POST /api/session/completion`:
 const payload = {
   sessionId: parentId,
   deliveryId: "worker-id:dispatch-id:completion",
-  branchAnchorEntryId: savedParentWatchEntryId, // optional; actual branch entry ID
   message: {
     customType: "worker-wakeup",
     content: "Outcome: finished\\nVerified: tests passed",
@@ -215,7 +222,7 @@ const response = await client.request("POST", "/api/session/completion", { body:
 // { ok: true, sessionId, deliveryId, state: "pending" | "saved", entryId? }
 ```
 
-Repeat the **same ID and immutable payload**, including any branch anchor, to
+Repeat the **same ID and immutable message payload** to
 retrieve its current receipt or retry delivery. Reusing an ID with another payload
 returns **409**. `deliveryId` is 1–160 ASCII letters, digits, `.`, `_`, `:`, or `-`;
 `customType` uses the same characters with a 100-character limit. Content must be a
@@ -224,47 +231,48 @@ JSON payload is limited to 64 KiB. The host adds `details.deliveryId`; a conflic
 caller-supplied value is rejected. Accepted receipt lookups return **200** even
 when still pending.
 
-Core first persists an independent outbox record beside the session file, in
-`<session-file>.completions/`, using private file permissions and atomic writes.
-File data is fsynced before rename. Directory metadata is fsynced where supported;
-Windows rejects some directory-handle/fsync operations, so the host tolerates only
-those explicitly unsupported Windows errors (power-loss rename durability then
-depends on the filesystem). File write/fsync/rename errors still fail the request.
-The SDK may keep even appended entries only in memory before its first assistant
-message, so **only a matching custom message observed in the actual session JSONL
-file** yields `saved` and an `entryId`. A bounded disk index scans only appended
-bytes (plus a small boundary check), invalidating on file replacement, truncation,
-or same-size rewrite; unchanged receipt polls do not reread the transcript.
-Pending is not a delivery acknowledgement.
-Keep the watch and durable pending payload until saved. Saved records are retained
-for deduplication; receipt lookup does not delete them.
+The caller (for example the orchestrator's write-ahead journal) is the **sole
+durable payload/replay owner**. Persist the immutable ID/message before sending,
+and retain it until `saved`. Core creates no `.completions` store and performs no
+automatic restart replay; callers must resubmit their journal obligations. Legacy
+host store files are not deleted automatically because ownership is uncertain.
+
+The SDK may keep appended entries in memory before its first assistant, and failed
+writes can leave both assistant and custom entries in memory. Therefore **only a
+matching custom message in the actual session file** yields `saved` and `entryId`.
+Core reads complete newline-terminated records without modifying the file, decodes
+with the public SDK parser, verifies session identity and compares payloads. This
+is process-restart persistence, not an additional power-loss/fsync guarantee.
+Missing files remain pending; uncertain reads/identity fail closed. Pending is
+not acknowledgement. Saved entries across all branches deduplicate replay.
 
 A host/raw-runtime-scoped claim prevents extension reloads or concurrent retries
 from submitting another copy of a surviving queued message. On runtime replacement
-or restart, core checks disk before replaying persisted records. Owned runtime
+or restart, core checks disk before submitting the caller's journal replay. Owned runtime
 disposal awaits SDK abort/idle and operation-owned host preflight/navigation work
 before replacement, so an in-flight message-end hook
 cannot save an old copy after replay begins. Delivery means one saved completion,
 not exactly-once model execution or proof that the model read it.
 
-When `branchAnchorEntryId` is supplied, core checks that exact entry is on the
-active branch immediately before SDK submission. Missing anchors leave the record
-pending without injection. Host history navigation is blocked while session work
-(including custom-message preflight) is active or a submitted completion remains
-unsaved, even if the SDK briefly reports idle. Abort may release visible leases,
-but does not erase separate operation-owned safety fences before their owners finish. Completion submission is deferred
-while host navigation is already in progress. Use a persisted watch/dispatch
-anchor, not merely the last user entry. Returning to the intended branch and
-repeating the unchanged request retries it.
+Completions go to the **currently active parent branch**. Obsolete anchor fields
+are ignored; there is no quarantine or unsaved-receipt branch lock. Actual
+transcript/navigation operations still exclude overlapping host navigation;
+completion submission defers while navigation is in progress. Once the SDK send
+operation settles, a pending receipt alone does not restrict navigation. Abort
+releasing visible leases does not erase unresolved transcript operation ownership.
 
 **Recovery limitations:** arbitrary trusted extensions can directly mutate the raw
 SDK runtime outside these host boundaries. If a third party clears its queues, or
 custom-message submission rejects after an ambiguous partial operation, core keeps
 the receipt pending and its runtime claim rather than risk duplicate delivery.
+Host refusal before SDK invocation may retry. The narrow Pi adapter also permits
+retry after an audited immediate SDK rejection only when disk, all entries and
+agent messages show absence and SDK idle is known. Fulfilled queue admission and
+unknown/custom send rejection retain ownership regardless of user pending count.
 Replace the raw runtime to replay safely after disk reconciliation; extension reload
 alone is not replacement. Core never clears queues just to reconcile delivery,
 since doing so could discard human steering. Direct raw history navigation is
-likewise outside the host branch guarantee. A stalled runtime still requires the
+likewise outside the host operation-ordering guarantee. A stalled runtime still requires the
 separate runtime-recovery mechanism; a pending receipt must not be called saved.
 
 ## Transcript images

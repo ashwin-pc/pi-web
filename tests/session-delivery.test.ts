@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,13 +12,14 @@ const dispatchId = "12345678-1234-1234-1234-123456789abc";
 async function fixture(settleTimeoutMs?: number) {
   if (settleTimeoutMs !== undefined) vi.stubEnv("PI_WEB_OPERATION_SETTLE_TIMEOUT_MS", String(settleTimeoutMs));
   const cwd = await mkdtemp(join(tmpdir(), "pi-web-admission-"));
+  await writeFile(join(cwd, "parent.jsonl"), `${JSON.stringify({ type: "session", id: "parent", version: 3 })}\n`);
   const model = { provider: "test", id: "model" };
   const raw = {
     sessionId: "parent", sessionFile: join(cwd, "parent.jsonl"), isStreaming: false,
     model, thinkingLevel: "off", systemPrompt: "", messages: [], agent: { state: { messages: [] } },
     sessionManager: { getCwd: () => cwd, buildSessionContext: () => ({ messages: [] }), getBranch: () => [{ id: "anchor" }], getSessionName: () => "Parent" },
     modelRuntime: { getAvailableSnapshot: () => [model], getModel: () => model },
-    getAvailableThinkingLevels: () => ["off"], setModel: async () => {}, setThinkingLevel: () => {},
+    getAvailableThinkingLevels: () => ["off"], setModel: async () => {}, setThinkingLevel: () => {}, setSessionName: vi.fn(),
     prompt: vi.fn(async (_text, options) => { options?.preflightResult?.(true); }),
     abort: vi.fn(async () => {}), subscribe: () => () => {},
     navigateTree: vi.fn(async () => ({ cancelled: false })),
@@ -36,7 +37,7 @@ async function fixture(settleTimeoutMs?: number) {
   return { raw, service };
 }
 const prompt = { message: "Inspect workspace", mode: "steer", attachments: [], waitFor: "admission" as const, dispatchId };
-const completion = { deliveryId: "completion-1", branchAnchorEntryId: "anchor", message: { customType: "wakeup", content: "Done", display: true } };
+const completion = { deliveryId: "completion-1", message: { customType: "wakeup", content: "Done", display: true } };
 
 describe("host prompt admission and settled interruption", () => {
   it("confirms SDK preflight, not HTTP acceptance or whole-run completion, and appends exact dispatch marker", async () => {
@@ -84,13 +85,15 @@ describe("host prompt admission and settled interruption", () => {
     expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
     for (const mutation of [
       () => service.prompt(raw.sessionId, prompt), () => service.retry(raw.sessionId),
-      () => service.navigate(raw.sessionId, "earlier", {}), () => service.setModel(raw.sessionId, "test", "model"),
-      () => service.reloadExtensions(raw.sessionId), () => service.executeCommand(raw.sessionId, "/reload"),
-      () => service.deliverCompletion(raw.sessionId, completion), () => service.rename(raw.sessionId, "Renamed"),
-      () => service.executeShell(raw.sessionId, "true", false), () => service.invokeContribution(raw.sessionId, {}),
-      () => service.invokeHeaderAction(raw.sessionId, "key"), () => service.invokeArtifactAction(raw.sessionId, {}),
-      () => service.invokeGitTab(raw.sessionId, {}), () => service.invokePanel(raw.sessionId, {}),
+      () => service.navigate(raw.sessionId, "earlier", {}),
+      () => service.executeCommand(raw.sessionId, "/reload"),
+      () => service.deliverCompletion(raw.sessionId, completion),
+      () => service.executeShell(raw.sessionId, "true", false),
+      () => service.executeShell(raw.sessionId, "true", true),
     ]) await expect(mutation()).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    await service.setModel(raw.sessionId, "test", "model");
+    await service.rename(raw.sessionId, "Renamed");
+    await expect(service.invokePanel(raw.sessionId, { key: "missing" })).rejects.toThrow("Panel not found");
     expect(raw.navigateTree).not.toHaveBeenCalled();
     admit(); await rejected;
     expect(run).not.toHaveBeenCalled();
@@ -129,6 +132,15 @@ describe("host prompt admission and settled interruption", () => {
     finish();
   });
 
+  it.each(["/my-command foo", "/template args", "/skill:foo", "  /unknown args"])("rejects tracked slash dispatch before leases/SDK: %s", async message => {
+    const { raw, service } = await fixture();
+    await expect(service.prompt(raw.sessionId, { ...prompt, message })).rejects.toMatchObject({ status: 400 });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    await service.prompt(raw.sessionId, { ...prompt, message, dispatchId: undefined });
+    expect(vi.mocked(raw.prompt).mock.calls[0][0]).toBe(message);
+  });
+
   it("rejects invalid dispatch identifiers without SDK admission", async () => {
     const { raw, service } = await fixture();
     await expect(service.prompt(raw.sessionId, { ...prompt, dispatchId: "not-a-uuid" })).rejects.toThrow("UUID");
@@ -164,12 +176,33 @@ describe("owned completion/navigation admission boundary", () => {
     expect(raw.navigateTree).not.toHaveBeenCalled();
     finish();
     await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
-    // Queue acceptance alone must not permit branch changes during idle flicker.
-    await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
-    const message = vi.mocked(raw.sendCustomMessage!).mock.calls[0][0];
-    await appendFile(raw.sessionFile, `${JSON.stringify({ type: "custom_message", id: "saved", ...message })}\n`);
+    // Pending receipt is not a branch restriction after the actual SDK call.
     await service.navigate(raw.sessionId, "earlier", {});
     expect(raw.navigateTree).toHaveBeenCalledOnce();
+  });
+
+  it("retires rejected custom-call fences but retains ambiguous runtime dedup", async () => {
+    const { raw, service } = await fixture();
+    raw.sendCustomMessage = vi.fn(async () => { throw new Error("unknown custom queue admission"); });
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    await service.navigate(raw.sessionId, "earlier", {});
+    expect((await service.deliverCompletion(raw.sessionId, completion)).state).toBe("pending");
+    expect(raw.sendCustomMessage).toHaveBeenCalledOnce();
+  });
+
+  it("defers a journal request during active navigation and retries once on its new branch", async () => {
+    const { raw, service } = await fixture(); let finish!: () => void;
+    raw.navigateTree = vi.fn(() => new Promise(resolve => { finish = () => resolve({ cancelled: false }); }));
+    const navigation = service.navigate(raw.sessionId, "new-branch", {});
+    await vi.waitFor(() => expect(raw.navigateTree).toHaveBeenCalledOnce());
+    expect((await service.deliverCompletion(raw.sessionId, completion)).state).toBe("pending");
+    await new Promise(resolve => setTimeout(resolve, 10)); expect(raw.sendCustomMessage).not.toHaveBeenCalled();
+    finish(); await navigation;
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    await service.deliverCompletion(raw.sessionId, completion); expect(raw.sendCustomMessage).toHaveBeenCalledOnce();
   });
 
   it("does not inject during navigation already admitted by the host", async () => {
@@ -256,9 +289,8 @@ describe("bounded recovery without unsafe runtime replacement", () => {
       await service.deliverCompletion(raw.sessionId, completion);
       expect(raw.sendCustomMessage).toHaveBeenCalledOnce();
     });
-    // Even after user work settles, an unsaved CUSTOM completion still owns its
-    // independent navigation barrier (not the SDK's user pending-message count).
-    await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    await service.navigate(raw.sessionId, "earlier", {}); // Unsaved claim is not a branch lock.
   });
 
   it("returns recoveryRequired instead of idle:true while canceled navigation remains unresolved", async () => {
@@ -322,19 +354,19 @@ describe("bounded recovery without unsafe runtime replacement", () => {
     await service.abort(raw.sessionId);
     expect(raw.isStreaming).toBe(false); // Queue lane survives Stop's transition to idle.
     expect(raw.pendingMessageCount).toBe(0);
-    // An idle/empty observation CANNOT clear a still-pending canceled input hook:
-    // that future can queue after this observation, before its callback fires.
-    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    // A pending canceled hook fences transcript admission, not model/UI work.
+    await service.setModel(raw.sessionId, "test", "model");
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
     admit(); await rejected;
     expect(queued).toHaveLength(1);
-    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
     await expect(service.abort(raw.sessionId, "idle")).rejects.toMatchObject({ status: 503, recoveryRequired: true });
     queued.splice(0); // Simulate the SDK consuming/dropping only user text.
     expect(await service.abort(raw.sessionId, "idle")).toMatchObject({ idle: true });
     expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ id: "model" });
     await service.deliverCompletion(raw.sessionId, completion);
     expect(raw.sendCustomMessage).toHaveBeenCalledOnce(); // No duplicate custom injection.
-    await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
+    await service.navigate(raw.sessionId, "earlier", {});
   });
 
   it("recovers a captured streaming submission that actually reaches idle preflight without queueing", async () => {
@@ -352,9 +384,9 @@ describe("bounded recovery without unsafe runtime replacement", () => {
     raw.abort = vi.fn(async () => { raw.isStreaming = false; });
     await service.abort(raw.sessionId);
     admit(); await rejected; // Conservative captured-lane detection remains intact.
-    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({ status: 409 });
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409 });
     Object.defineProperty(raw, "isIdle", { value: true });
-    await expect(service.setModel(raw.sessionId, "test", "model")).rejects.toMatchObject({ status: 409 });
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409 });
     raw.pendingMessageCount = 0;
     expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ id: "model" });
     raw.prompt = vi.fn(async (_text, options) => { options?.preflightResult?.(true); });

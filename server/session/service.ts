@@ -18,6 +18,7 @@ import type { ResilientResourceLoader } from "../extensions/resilientLoader.js";
 import { mapPiEvent } from "./piEventMap.js";
 import { PiSessionHandle } from "./piHandle.js";
 import { CompletionDeferredError, CompletionOutbox, CompletionOutboxError, validateCompletionInput, type CompletionInput } from "./completionOutbox.js";
+import { OperationFences, type OperationEffect, type OperationToken } from "./operationFences.js";
 import { resolveRawTranscriptImage } from "./transcriptImages.js";
 import { createSettingsStore } from "../settings.js";
 import type {
@@ -97,10 +98,6 @@ type WorkLease = {
   kind: WorkLeaseKind;
   acquiredAt: number;
   watchdogTimer?: ReturnType<typeof setTimeout>;
-  settled?: Promise<void>;
-  canceled?: boolean;
-  /** True only after SDK preflight accepted this prompt in the current epoch. */
-  promptAdmitted?: boolean;
 };
 
 type LiveSessionEntry = {
@@ -108,13 +105,9 @@ type LiveSessionEntry = {
   handle: PiSessionHandle;
   viewerClientIds: Set<string>;
   workLeases: Map<symbol, WorkLease>;
-  /** Safety ownership survives Stop releasing the visible UI/work leases. */
-  operations: Map<symbol, WorkLease>;
-  abortEpoch: number;
-  recoveryRequired?: boolean;
+  fences: OperationFences;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
-  disposal?: Promise<void>;
 };
 
 type ViewerLease = {
@@ -326,11 +319,13 @@ export class LocalSessionService implements SessionService {
   private readonly completionOutbox = new CompletionOutbox(
     (value, message) => {
       const entry = this.liveSessions.get(sessionPathKey(value));
-      if (entry?.session !== value || entry.disposing || entry.disposal || this.requiresRecovery(entry) || Array.from(entry.operations.values()).some(lease => lease.label === "navigate" || lease.canceled)) throw new CompletionDeferredError("Runtime unavailable or navigating");
-      return this.withWorkLease(value, "completion", "general", () => {
-        if (!value.sendCustomMessage) throw new SessionServiceError("Custom message delivery is unavailable", 503);
-        return value.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer" });
-      });
+      if (entry?.session !== value || entry.fences.closing || this.requiresRecovery(entry) || entry.fences.navigating || entry.fences.canceledTranscriptWork) throw new CompletionDeferredError("Runtime unavailable or navigating");
+      return this.withWorkLease(value, "completion", "general", operation => {
+        // Lease publication can synchronously reenter Stop/disposal. Refuse at
+        // the invocation boundary too, with proof that SDK was never called.
+        if (entry.fences.closing || operation?.canceled || entry.fences.navigating) throw new CompletionDeferredError("Runtime closed or canceled before completion invocation");
+        return entry.handle.sendCompletion(message);
+      }, "transcript");
     },
     (value, error) => this.emitError(value, error),
   );
@@ -471,37 +466,22 @@ export class LocalSessionService implements SessionService {
     return value;
   }
 
-  private reconcilePromptQueue(entry: LiveSessionEntry) {
-    // This latch belongs only to ambiguous USER prompt queueing. The SDK's
-    // public count excludes custom completion queues; their outbox claims stay
-    // independent and can never be cleared using this count.
-    if (entry.recoveryRequired && entry.session.isIdle === true && entry.session.pendingMessageCount === 0) entry.recoveryRequired = false;
+  private requiresRecovery(entry: LiveSessionEntry) { return entry.fences.requiresRecovery(entry.session); }
+
+  private assertMutable(value: PiWebSession, transcript = false) {
+    const fences = this.liveSessions.get(sessionPathKey(value))?.fences;
+    if (transcript) fences?.assertTranscript(value);
+    else fences?.assertOpen();
   }
 
-  private requiresRecovery(entry: LiveSessionEntry) {
-    this.reconcilePromptQueue(entry);
-    return Boolean(entry.recoveryRequired || Array.from(entry.operations.values()).some(operation => operation.canceled && !(operation.label === "prompt" && operation.promptAdmitted)));
-  }
-
-  private assertMutable(value: PiWebSession) {
-    const entry = this.liveSessions.get(sessionPathKey(value));
-    if (entry?.disposing || entry?.disposal) throw new SessionServiceError("Session runtime is closing; wait for settlement or restart the server", 409, true);
-    if (entry && this.requiresRecovery(entry)) throw new SessionServiceError("A canceled session operation is still settling; retry after it finishes or restart the server", 409, true);
-  }
-
-  private async requireMutable(sessionId?: string) {
+  private async requireMutable(sessionId?: string, transcript = false) {
     const value = await this.require(sessionId);
-    this.assertMutable(value);
+    this.assertMutable(value, transcript);
     return value;
   }
 
-  private async waitForSettlement(operation: Promise<unknown>, label: string) {
-    let timer!: ReturnType<typeof setTimeout>;
-    const timeout = new Promise<never>((_resolve, reject) => {
-      timer = setTimeout(() => reject(new SessionServiceError(`${label} did not settle; runtime retained to prevent late delivery. Restart the server to recover.`, 503, true)), this.operationSettleTimeoutMs);
-    });
-    try { await Promise.race([operation, timeout]); }
-    finally { clearTimeout(timer); }
+  private waitForSettlement(operation: Promise<unknown>, label: string) {
+    return new OperationFences((message, status, recovery) => new SessionServiceError(message, status, recovery)).wait(operation, label, this.operationSettleTimeoutMs);
   }
 
   async state(sessionId: string) { return this.projectState(await this.require(sessionId)); }
@@ -738,9 +718,10 @@ export class LocalSessionService implements SessionService {
   }
 
   async executeShell(sessionId: string, command: string, excludeFromContext: boolean) {
-    const value = await this.requireMutable(sessionId);
+    // Even excluded shell output is persisted in the transcript by the SDK.
+    const value = await this.requireMutable(sessionId, true);
     if (!value.executeBash) throw new SessionServiceError("Bash execution is not available in this session.");
-    return jsonSafe({ command, cwd: this.sessionCwd(value), ...await value.executeBash(command, undefined, { excludeFromContext }), excludeFromContext });
+    return this.withWorkLease(value, "shell", "general", async () => jsonSafe({ command, cwd: this.sessionCwd(value), ...await value.executeBash!(command, undefined, { excludeFromContext }), excludeFromContext }), "transcript");
   }
 
   async executeCommand(sessionId: string, command: string) {
@@ -749,7 +730,8 @@ export class LocalSessionService implements SessionService {
 
   async prompt(sessionId: string, input: SessionPromptInput) {
     if (input.dispatchId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.dispatchId)) throw new SessionServiceError("dispatchId must be a UUID");
-    const value = await this.requireMutable(sessionId);
+    if (input.dispatchId && /^\s*\//.test(input.message || "")) throw new SessionServiceError("Tracked slash-command/template dispatch is unsupported; send a natural-language task or invoke separately without completion attribution", 400);
+    const value = await this.requireMutable(sessionId, true);
     await this.startSessionPrompt(value, input);
     return { sessionId: value.sessionId, ...(input.waitFor === "admission" ? { admission: "accepted" as const } : {}), ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}) };
   }
@@ -757,7 +739,7 @@ export class LocalSessionService implements SessionService {
   async deliverCompletion(sessionId: string, input: CompletionInput) {
     try {
       const normalized = validateCompletionInput(input);
-      const value = await this.requireMutable(sessionId);
+      const value = await this.requireMutable(sessionId, true);
       if (!value.sendCustomMessage) throw new SessionServiceError("Custom message delivery is unavailable", 503);
       return await this.completionOutbox.deliver(value, normalized);
     } catch (error) {
@@ -767,7 +749,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async retry(sessionId: string) {
-    const value = await this.requireMutable(sessionId);
+    const value = await this.requireMutable(sessionId, true);
     await this.startSessionRetry(value);
     return { sessionId: value.sessionId };
   }
@@ -777,7 +759,7 @@ export class LocalSessionService implements SessionService {
     if (waitFor === "idle") {
       await this.waitForSettlement(this.abortSession(value, true).then(async () => {
         const entry = this.liveSessions.get(sessionPathKey(value));
-        await Promise.all(Array.from(entry?.operations.values() || []).map(operation => operation.settled));
+        await entry?.fences.settleTranscript();
         if (entry && this.requiresRecovery(entry)) throw new SessionServiceError("Canceled prompt queue ownership is ambiguous; wait for SDK idle and an empty user queue or restart the server", 503, true);
       }), "Session interruption");
     } else void this.abortSession(value);
@@ -806,22 +788,17 @@ export class LocalSessionService implements SessionService {
   }
 
   async navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult> {
-    const value = await this.requireMutable(sessionId);
+    const value = await this.requireMutable(sessionId, true);
     if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before navigating the tree", 409);
     if (value.isCompacting) throw new SessionServiceError("Wait for the current compaction to finish before navigating the tree", 409);
-    if (this.hasActiveWorkForPath(sessionPathKey(value)) || this.liveSessions.get(sessionPathKey(value))?.operations.size) throw new SessionServiceError("Wait for active session work to finish before navigating the tree", 409);
+    if (this.liveSessions.get(sessionPathKey(value))?.fences.hasTranscriptWork) throw new SessionServiceError("Wait for active session work to finish before navigating the tree", 409);
     if (!value.navigateTree) throw new SessionServiceError("Tree navigation is not available");
     return this.withWorkLease(value, "navigate", "general", async () => {
-      try { await this.completionOutbox.assertNavigationSafe(value); }
-      catch (error) {
-        if (error instanceof CompletionOutboxError) throw new SessionServiceError(error.message, error.status);
-        throw error;
-      }
       const result = await value.navigateTree!(targetId, options as any);
       const state = this.projectState(value);
       this.emit({ type: "state", state, includeThinkingLevels: true });
       return { ...jsonSafe(result as Record<string, JsonValue>), leafId: value.sessionManager.getLeafId?.() || null, state };
-    });
+    }, "navigation");
   }
 
   async storeCapture(sessionId: string | undefined, key: unknown, registrationId: unknown, input: { mimeType: string; durationMs: number; bytes: Uint8Array }) {
@@ -1100,14 +1077,12 @@ export class LocalSessionService implements SessionService {
     if (!key || this.liveSessions.get(key)?.session === value) return value;
     const handle = this.runtimeFor(value);
     handle.subscribe((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map(), operations: new Map(), abortEpoch: 0 });
+    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map(), fences: new OperationFences((message, status, recovery) => new SessionServiceError(message, status, recovery)) });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
     queueMicrotask(() => this.scheduleLiveSessionCleanup(key));
-    // Replay only into this raw runtime; extension reloads retain its submission
-    // ownership. A replacement first reconciles actual JSONL before injection.
-    if (value.sendCustomMessage) void this.completionOutbox.resume(value).catch(error => this.emitError(value, error));
+    // Durable completion replay belongs to the extension journal, not the host.
     return value;
   }
 
@@ -1119,8 +1094,8 @@ export class LocalSessionService implements SessionService {
     const raw = event as any;
     const liveEntry = this.liveSessions.get(sessionPathKey(value));
     if (liveEntry) {
-      this.reconcilePromptQueue(liveEntry);
-      if (raw?.type === "agent_settled" || raw?.type === "queue_update") queueMicrotask(() => this.reconcilePromptQueue(liveEntry));
+      liveEntry.fences.requiresRecovery(value);
+      if (raw?.type === "agent_settled" || raw?.type === "queue_update") queueMicrotask(() => liveEntry.fences.requiresRecovery(value));
     }
     if (mapped.kind === "entry") {
       this.emit({ type: "entry", sessionId, sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, entryKind: mapped.entryKind });
@@ -1246,15 +1221,12 @@ export class LocalSessionService implements SessionService {
     this.emitRuntime(value, "changed");
   }
 
-  private async withWorkLease<T>(value: PiWebSession, label: string, kind: WorkLeaseKind, operation: (lease?: WorkLease) => T | Promise<T>): Promise<T> {
+  private async withWorkLease<T>(value: PiWebSession, label: string, kind: WorkLeaseKind, operation: (lease?: OperationToken) => T | Promise<T>, effect: OperationEffect = "lifetime"): Promise<T> {
+    const entry = this.liveSessions.get(sessionPathKey(value));
+    const safety = entry?.fences.begin(effect);
     const token = this.acquireWorkLease(value, label, kind);
-    let settle!: () => void;
-    const settled = new Promise<void>(resolve => { settle = resolve; });
-    const entry = token && this.liveSessions.get(token.sessionKey);
-    const lease = entry && entry.workLeases.get(token!.key);
-    if (lease) { lease.settled = settled; entry!.operations.set(token!.key, lease); }
-    try { return await operation(lease || undefined); }
-    finally { if (token) entry?.operations.delete(token.key); this.releaseWorkLease(value, token); settle(); }
+    try { return await operation(safety); }
+    finally { safety?.finish(); this.releaseWorkLease(value, token); }
   }
 
   private clearWorkLeases(value: PiWebSession, reason: string) {
@@ -1263,7 +1235,7 @@ export class LocalSessionService implements SessionService {
     const entry = located?.[1] || this.liveSessions.get(key);
     if (!entry?.workLeases.size) return;
     // Restore Stop's visible lease recovery without releasing safety ownership:
-    // canceled operations remain in entry.operations until their actual finally.
+    // transcript tokens remain in entry.fences until their actual finally.
     const leases = Array.from(entry.workLeases.values());
     for (const lease of leases) this.clearTimer(lease.watchdogTimer);
     entry.workLeases.clear();
@@ -1300,19 +1272,19 @@ export class LocalSessionService implements SessionService {
 
   private async disposeLiveSession(key: string, reason: "idle" | "delete" | "reset", force = false) {
     const entry = this.liveSessions.get(key);
-    if (!entry || (!entry.disposal && !force && this.shouldKeepLiveSession(entry))) return;
-    if (!entry.disposal) {
+    if (!entry || (!entry.fences.retirement && !force && this.shouldKeepLiveSession(entry))) return;
+    if (!entry.fences.retirement) {
       entry.disposing = true;
       this.cancelLiveSessionCleanup(entry);
       const value = entry.session;
-      entry.abortEpoch += 1;
-      for (const operation of entry.operations.values()) operation.canceled = true;
       // Keep this one retirement promise after a timeout. Its old runtime must
       // not be replaced while a delayed hook can still append. Reads and Stop
       // remain available; retries join the same retirement instead of overlapping.
-      const retirement = (async () => {
+      const retirement = entry.fences.retire(async () => {
         await entry.handle.interrupt();
-        await Promise.all(Array.from(entry.operations.values()).map(operation => operation.settled));
+        // Lifetime-only dialogs/capture cannot append on behalf of the host;
+        // shutdown invalidates their UI contexts rather than waiting 120 seconds.
+        await entry.fences.settleTranscript();
         for (const lease of entry.workLeases.values()) this.clearTimer(lease.watchdogTimer);
         entry.workLeases.clear();
         const sessionId = value.sessionId;
@@ -1330,16 +1302,14 @@ export class LocalSessionService implements SessionService {
         this.pendingPromptCorrelations.delete(key);
         if (this.liveById.get(sessionId) === value) this.liveById.delete(sessionId);
         this.emit({ type: "shutdown", sessionId, sessionFile, sessionKey: key });
-      })();
-      entry.disposal = retirement;
+      });
       // Observe late rejection even after the bounded caller stopped waiting.
       void retirement.then(() => { entry.disposing = false; }, error => {
         entry.disposing = false;
-        entry.disposal = undefined;
         this.emitError(value, error);
       });
     }
-    try { await this.waitForSettlement(entry.disposal!, "Session disposal"); }
+    try { await entry.fences.wait(entry.fences.retirement!, "Session disposal", this.operationSettleTimeoutMs); }
     finally { entry.disposing = false; }
   }
 
@@ -1490,7 +1460,7 @@ export class LocalSessionService implements SessionService {
     const name = rawName.toLowerCase();
     const args = rest.join(" ").trim();
     const state = (session = value) => this.projectState(session);
-    if (!["help", "?", "commands", "abort", "stop"].includes(name)) this.assertMutable(value);
+    if (!["help", "?", "commands", "abort", "stop"].includes(name)) this.assertMutable(value, ["compact", "new", "clear", "reload"].includes(name));
     switch (name) {
       case "help": case "?": return { message: this.slashHelp(value), state: state() };
       case "commands": return { message: this.formatSlashCommandList(this.getSlashCommands(value)), state: state() };
@@ -1529,7 +1499,7 @@ export class LocalSessionService implements SessionService {
         if (value.isCompacting) throw new Error("Compaction is already running.");
         if (!value.compact) throw new Error("Compaction is not available in this session.");
         this.emitRuntime(value, "ensure");
-        void this.withWorkLease(value, "compact", "general", () => value.compact!(args || undefined)).catch((error) => {
+        void this.withWorkLease(value, "compact", "general", () => value.compact!(args || undefined), "transcript").catch((error) => {
           this.emitRuntime(value, "clear");
           this.emitError(value, error);
         });
@@ -1544,7 +1514,7 @@ export class LocalSessionService implements SessionService {
 
   private abortSession(value: PiWebSession, propagateError = false) {
     const entry = this.liveSessions.get(sessionPathKey(value));
-    if (entry) { entry.abortEpoch += 1; for (const operation of entry.operations.values()) operation.canceled = true; }
+    entry?.fences.stop();
     const wasSdkActive = Boolean(value.isStreaming || value.isCompacting);
     const aborting = this.runtimeFor(value).interrupt().catch((error) => {
       this.emitError(value, error);
@@ -1566,24 +1536,16 @@ export class LocalSessionService implements SessionService {
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;
     const runtimeEntry = this.liveSessions.get(sessionPathKey(value));
-    const abortEpoch = runtimeEntry?.abortEpoch;
+    const abortEpoch = runtimeEntry?.fences.epoch;
     const streamingBehavior = value.isStreaming ? input.mode : undefined;
     void this.withWorkLease(value, "prompt", "general", operation => this.runtimeFor(value).prompt(promptText, {
       ...(streamingBehavior ? { streamingBehavior } : {}),
       preflightResult: (success: boolean) => {
         if (!success) return;
-        if (runtimeEntry && runtimeEntry.abortEpoch !== abortEpoch) {
-          // Idle SDK preflight calls this immediately before _runAgentPrompt;
-          // throwing prevents a hung input/before_agent_start hook starting late.
-          // Streaming paths have ALREADY enqueued: retain an ambiguity fence.
-          const ambiguousQueue = streamingBehavior !== undefined || value.isStreaming;
-          if (ambiguousQueue) runtimeEntry.recoveryRequired = true;
-          throw new SessionServiceError("Prompt canceled before admission", ambiguousQueue ? 503 : 409, ambiguousQueue);
-        }
-        if (operation) operation.promptAdmitted = true;
+        runtimeEntry?.fences.admitted(operation, abortEpoch, streamingBehavior !== undefined || value.isStreaming);
         if (admission) accept();
       },
-    })).then(() => {
+    }), "prompt").then(() => {
       // Real SDK paths call preflightResult even for consumed extension commands.
       // A missing callback must not turn a completed stub into false admission.
       if (admission) reject(new SessionServiceError("Prompt completed without admission confirmation", 503));
@@ -1639,7 +1601,7 @@ export class LocalSessionService implements SessionService {
   }
 
   private assertCanRetry(value: PiWebSession) {
-    if (this.hasActiveWorkForPath(value.sessionFile) || this.liveSessions.get(sessionPathKey(value))?.operations.size) throw new Error("Wait for the current response to finish before retrying.");
+    if (this.liveSessions.get(sessionPathKey(value))?.fences.hasTranscriptWork) throw new Error("Wait for the current response to finish before retrying.");
     if (value.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
     if (value.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
     if (!this.trailingRetryTarget(value)) throw new Error("There is no failed or incomplete response to retry.");
@@ -1670,7 +1632,7 @@ export class LocalSessionService implements SessionService {
     this.emitRuntime(value, "ensure");
     const retrySessionFile = value.sessionFile;
     const usesCompatibilityFallback = !value.retryFromFailure;
-    void this.withWorkLease(value, "retry", "retry", () => this.retryFromFailure(value)).catch((error) => {
+    void this.withWorkLease(value, "retry", "retry", () => this.retryFromFailure(value), "transcript").catch((error) => {
       this.emitRuntime(value, "clear", retrySessionFile);
       this.emitError(value, error);
     }).finally(() => {

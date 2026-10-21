@@ -1163,7 +1163,7 @@ describe("additional API coverage", () => {
     expect(JSON.stringify(await history.json())).toContain(`[pi-web-dispatch:${dispatchId}]`);
     const invalidCompletion = await fetch(`${baseUrl}/api/session/completion`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ deliveryId: 123, branchAnchorEntryId: null, message: { customType: "wakeup", content: "Done", display: true } }),
+      body: JSON.stringify({ deliveryId: 123, message: { customType: "wakeup", content: "Done", display: true } }),
     });
     expect(invalidCompletion.status).toBe(400);
     const idle = await fetch(`${baseUrl}/api/abort`, {
@@ -1176,6 +1176,17 @@ describe("additional API coverage", () => {
       body: JSON.stringify({ message: "must not submit", waitFor: "admission", dispatchId: "invalid" }),
     });
     expect(invalid.status).toBe(400);
+  });
+
+  it("rejects tracked slash commands/templates with HTTP 400 before dispatch", async () => {
+    for (const message of ["/my-command args", "/template args", "/skill:foo", "  /unknown args"]) {
+      const response = await fetch(`${baseUrl}/api/prompt`, {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ message, dispatchId: "12345678-1234-1234-1234-123456789abc" }),
+      });
+      expect(response.status).toBe(400);
+      expect(JSON.stringify(await response.json())).toContain("unsupported");
+    }
   });
 
   it("aborts the current session via POST /api/abort", async () => {
