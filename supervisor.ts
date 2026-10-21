@@ -42,17 +42,45 @@ function sendJson(res: ServerResponse, status: number, value: unknown): void {
   res.end(body);
 }
 
+function isLoopbackHost(host: string): boolean {
+  if (!host) return false;
+  if (host === "localhost" || host === "::1" || host === "::") return true;
+  if (host.startsWith("127.")) return true;
+  // net.isIP returns 0 if not an IP; for hostnames other than "localhost" we conservatively
+  // treat them as non-loopback (an operator who really wants dev mode on a named host must
+  // bind 127.0.0.1 instead).
+  return false;
+}
+
 function startChild(): void {
   if (childStarting) return;
   childStarting = true;
   childGeneration += 1;
   const generation = childGeneration;
 
+  // Fail-safe default: only enter dev mode when PI_WEB_DEV is explicitly "1".
+  // An unset or empty value yields production mode so that supervised entry
+  // points (e.g. `npm run start:supervised`, systemd units) do not silently
+  // expose the Vite dev middleware chain.
+  const devRequested = process.env.PI_WEB_DEV === "1";
+  let devMode = devRequested;
+  if (devRequested && !isLoopbackHost(publicHost)) {
+    console.error(
+      `[supervisor] refusing dev mode: PI_WEB_DEV=1 requires a loopback HOST, got ${JSON.stringify(publicHost)}. Starting child in production mode.`,
+    );
+    devMode = false;
+  }
+  if (devMode) {
+    console.warn(
+      `[supervisor] !! DEVELOPMENT MODE ENABLED !! child will run the Vite dev server (unauthenticated middleware + HMR). Do not use in production.`,
+    );
+  }
+
   const env = {
     ...process.env,
     HOST: childHost,
     PORT: String(childPort),
-    PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
+    PI_WEB_DEV: devMode ? "1" : "0",
     PI_WEB_SUPERVISED: "1",
     PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
   };
