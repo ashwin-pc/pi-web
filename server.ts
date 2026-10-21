@@ -220,7 +220,26 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  res.writeHead(200, { "content-type": contentTypes[extname(file)] || "application/octet-stream" });
+  const ext = extname(file).toLowerCase();
+  const headers: Record<string, string> = {
+    "content-type": contentTypes[ext] || "application/octet-stream",
+  };
+  if (ext === ".html" || ext === ".htm" || ext === ".xhtml") {
+    // Defence-in-depth CSP for the SPA document shell: pin network sinks that
+    // agent-authored markdown could abuse (img-src / connect-src / frame-src)
+    // to same-origin and inline data: so a sanitizer gap cannot become a
+    // silent egress channel. `blob:` is allowed because the SPA uses object
+    // URLs for downloaded images and files. Script / style directives are
+    // intentionally left as default (allowed) because the SPA relies on
+    // module scripts and dynamically set element styles that would otherwise
+    // require broader `'unsafe-inline'` grants.
+    headers["content-security-policy"] =
+      "img-src 'self' data: blob:; " +
+      "media-src 'self' data: blob:; " +
+      "connect-src 'self' ws: wss:; " +
+      "frame-src 'self'";
+  }
+  res.writeHead(200, headers);
   pipeReadStream(res, file);
 }
 
