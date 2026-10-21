@@ -48,6 +48,10 @@ export class RealtimeHub {
   attach(ws: WebSocket, lastSeq: number): number {
     const client = ws as RealtimeSocket;
     client.missedPongs = 0;
+    client.on("error", (error) => {
+      console.warn("realtime socket error", error);
+      try { client.terminate(); } catch { /* already closed */ }
+    });
     client.on("pong", () => { client.missedPongs = 0; });
     this.clients.add(client);
     this.onClientCountChanged?.(this.clients.size);

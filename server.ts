@@ -46,6 +46,24 @@ const agentDir = getAgentDir();
 const distDir = join(appDir, "dist");
 const staticDir = distDir;
 
+// Backstop against unhandled errors from the WebSocket layer and other I/O
+// callbacks: log loudly and exit cleanly so the supervisor can restart with a
+// known-good state, rather than terminating via ERR_UNHANDLED_ERROR mid-write
+// and leaving in-flight state in an inconsistent place.
+if (!process.listenerCount("uncaughtException")) {
+  process.on("uncaughtException", (error) => {
+    console.error("pi-web uncaughtException", error);
+    // Give the stderr write a tick to flush, then exit so the supervisor can
+    // restart. Avoids a tight restart loop by not exiting synchronously.
+    setTimeout(() => process.exit(1), 50).unref?.();
+  });
+}
+if (!process.listenerCount("unhandledRejection")) {
+  process.on("unhandledRejection", (reason) => {
+    console.error("pi-web unhandledRejection", reason);
+  });
+}
+
 const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "development";
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
@@ -1462,13 +1480,18 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   }
 }));
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 8 * 1024 * 1024 });
 const browserSockets = new Map<import("ws").WebSocket, string>();
 const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) => { const active = new Set([...state.sessions.filter(s => !s.revokedAt && s.expiresAt > Date.now()).map(s => s.hash), ...state.apiTokens.filter(t => !t.revokedAt && t.expiresAt > Date.now()).map(t => `token:${t.id}`)]); for (const [socket, hash] of browserSockets) if (!active.has(hash)) socket.close(1008, "Browser session revoked"); };
 authStore.listeners.add(enforceBrowserSessions);
 const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
 authSessionSweep.unref();
 server.on("upgrade", (req, socket, head) => {
+  // Guard the raw upgrade socket: Node removes its own 'error' listener before
+  // emitting 'upgrade', so a socket error during async admission would otherwise
+  // crash the process. Removed just before wss.handleUpgrade takes ownership.
+  const onSocketError = () => { try { socket.destroy(); } catch { /* already destroyed */ } };
+  socket.on("error", onSocketError);
   let url: URL;
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -1488,6 +1511,7 @@ server.on("upgrade", (req, socket, head) => {
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
+    socket.removeListener("error", onSocketError);
     wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 });
@@ -1497,6 +1521,12 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   const realtimeWs = ws;
   const url = urlParam ?? new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   logWebSocket(url.pathname, "open");
+  // Any protocol/frame error (bad RSV bits, invalid opcode, oversize payload,
+  // invalid UTF-8, etc.) must not become an unhandled EventEmitter 'error'.
+  ws.on("error", (error) => {
+    console.warn("realtime socket error", error);
+    try { ws.terminate(); } catch { /* already closed */ }
+  });
   ws.on("close", () => logWebSocket(url.pathname, "close", performance.now() - wsStart));
   const lastSeq = Number(url.searchParams.get("lastSeq") || 0);
   const latestSeq = realtimeHub.attach(realtimeWs, lastSeq);
