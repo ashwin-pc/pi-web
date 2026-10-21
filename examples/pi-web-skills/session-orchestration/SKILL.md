@@ -19,9 +19,13 @@ complete transcripts the user can open, watch, and even type into.
    final output. This starts a new turn for you if you were idle.
 4. Review, then either finish, `sessions_prompt` a follow-up, or spawn the next phase.
 
-Wakeups are durable: watches are persisted in your session file, so if this
-session is reloaded or the server restarts, watchers re-arm on load and any
-workers that finished in the meantime produce catch-up wakeups.
+Watches and immutable pending wakeup batches are persisted in the extension's
+journal (`~/.pi/agent/orchestrator-state/`, overridden by
+`PI_WEB_ORCHESTRATOR_STATE_DIR`). On reload or server restart, watchers re-arm on
+load and workers that finished in the meantime produce catch-up wakeups. The
+legacy session-file ledger is only a fallback. A watch closes only after the host
+confirms its wakeup was saved. Navigating the parent tree does not quarantine
+workers: their wakeups go into whichever parent branch is active.
 
 **Never poll for completion.** Do not call `sessions_status` in a loop and do
 not sleep in bash while waiting. Wakeups are pushed to you. Ending your turn
@@ -85,7 +89,13 @@ the session's default model. Never guess model ids; pass a category **name**.
   whole process into your context.
 - `sessions_prompt { id, message, interrupt? }` — follow up, or with
   `interrupt: true` stop a worker that is going down the wrong path and
-  redirect it. Also works to re-engage a worker that already went idle.
+  redirect it. Also works to re-engage a worker that already went idle. Send
+  natural-language instructions, not raw `/commands`, `/templates`, or
+  `/skill:...`: tracked slash input is rejected before interrupting or replacing
+  the previous watch. A rejected command leaves the old assignment tracked.
+  Ordinary tasks include a visible dispatch watermark in the worker transcript;
+  admission alone does not prove the worker consumed the task. Do not blindly
+  resend after an ambiguous admission error.
 - `sessions_abort { id }` — stop a worker you no longer need.
 
 Trust evidence, not claims: a worker saying "done" is not done. Check its

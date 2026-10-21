@@ -573,6 +573,26 @@ Worker models are chosen from user-authored **categories** (name + "when to use"
 prose + a model) configured through the Settings API above; the concrete model
 mapping stays private to the config and the spawn tool resolves it fail-closed.
 
+Tracked follow-ups through `sessions_prompt` must be natural-language messages.
+Raw slash commands, templates, and skill commands (including whitespace-prefixed
+`/` input) are rejected before aborting a worker or replacing its watch; their
+arguments are never modified. A slash-prefixed `sessions_spawn` task is literal
+text inside the worker instruction wrapper, not an executed command. Ordinary
+tracked prompts carry a `[pi-web-dispatch:<uuid>]` watermark visible to the model
+and in the worker transcript. Admission alone is not task completion: the watcher
+requires the actual user-entry watermark before attributing later replies.
+
+The extension's durable journal in `~/.pi/agent/orchestrator-state/` (override with
+`PI_WEB_ORCHESTRATOR_STATE_DIR`) owns dispatch intents and immutable pending wakeup
+batches. It re-arms on reload/restart and retains the same delivery ID and payload
+until the host returns a saved receipt. A legacy session-file ledger remains a
+fallback, not the authoritative pending-payload store. A renewed task has a new
+watch ID, so a delayed older batch cannot resolve it. Parent tree navigation does
+not quarantine workers: wakeups are delivered into whichever parent branch is
+active. Existing journal anchors are ignored during recovery, without changing
+pending message payloads. Worker result attribution still uses the worker's active
+history, never an older reply from another branch.
+
 pi-web renders the orchestration state generically: spawned sessions are
 indented under their parent in the session drawer, a waiting indicator shows
 while a session's workers run, wakeups render as notification cards, and both the

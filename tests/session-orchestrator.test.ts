@@ -967,33 +967,54 @@ describe("issue 190 durable delivery", () => {
     expect(journal().watches).toHaveLength(1);
   });
 
-  it("promotes quarantined obligations on returning to their branch without reload", async () => {
+  it.each(["/my-ext-command foo", "/template args", "/skill:foo", "  /unknown"])("rejects tracked raw slash input %j before interrupt or intent", async (message) => {
+    const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
+    const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
+    calls.length = 0;
+    await expect(tools.get("sessions_prompt").execute("command", { id: "worker-1", message, interrupt: true })).rejects.toThrow(/slash.*unsupported/i);
+    expect(calls).toHaveLength(0);
+    expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
+  });
+
+  it("delivers an immutable pending batch on the active branch after navigation", async () => {
+    const ctx = makeCtx(); await spawn(ctx, { name: "work", task: "task" }); finalReply(); completionPending = true;
+    await vi.advanceTimersByTimeAsync(7500);
+    const original = journal().pending[0];
+    branch = [];
+    completionPending = false;
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(saved.size).toBe(1);
+    expect([...saved.values()][0]).toEqual({ sessionId: "parent-1", deliveryId: original.deliveryId, message: original.message });
+    expect(journal().pending).toHaveLength(0);
+    expect(branch.some((entry: any) => entry.customType === "orchestrator-dispatch-anchor")).toBe(false);
+  });
+
+  it("recovers pending obligations on another branch without returning to the original", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const ctx = makeCtx(); await spawn(ctx, { name: "work", task: "task" }); finalReply(); completionPending = true;
     await vi.advanceTimersByTimeAsync(7500);
-    const originalBranch = [...branch];
     branch = []; await restart(ctx);
-    branch = originalBranch; completionPending = false;
+    completionPending = false;
     await vi.advanceTimersByTimeAsync(2500);
     expect(saved.size).toBe(1);
     expect(journal().watches).toHaveLength(0);
     expect(journal().pending).toHaveLength(0);
   });
 
-  it("quarantines missing pre-first-assistant anchors without deleting durable recovery records", async () => {
+  it("retains pending recovery records across navigation without quarantine warnings", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const ctx = makeCtx(); await spawn(ctx, { name: "work", task: "task" }); finalReply(); completionPending = true;
     await vi.advanceTimersByTimeAsync(7500);
     const original = journal();
     branch = []; // SessionManager never flushed this exceptional manually invoked parent.
     await restart(ctx);
-    expect(journal().watches).toEqual(original.watches);
+    expect(journal().watches.map((w: any) => w.watchId)).toEqual(original.watches.map((w: any) => w.watchId));
     expect(journal().pending).toEqual(original.pending);
     const status = await tools.get("sessions_status").execute("status", {});
-    expect(resultText(status)).toMatch(/Recovery warning.*quarantined/);
+    expect(resultText(status)).not.toMatch(/Recovery warning|quarantined/);
     completionPending = false;
     await vi.advanceTimersByTimeAsync(10000);
-    expect(saved.size).toBe(0);
+    expect(saved.size).toBe(1);
   });
 
   it("reports legacy task attribution as unavailable rather than using old prose", async () => {
@@ -1038,23 +1059,23 @@ describe("issue 190 durable delivery", () => {
     expect(calls.some((c) => c.path.startsWith("/api/session/history?") && c.path.includes("dispatchId="))).toBe(true);
   });
 
-  it("keeps healthy status output and retains host-owned quarantine on re-dispatch", async () => {
+  it("keeps healthy status output and retains immutable pending ownership on re-dispatch", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const ctx = makeCtx(); await spawn(ctx, { name: "old", task: "task" }); finalReply(); completionPending = true;
     await vi.advanceTimersByTimeAsync(7500);
     branch = []; await restart(ctx);
     const status = resultText(await tools.get("sessions_status").execute("status", { ids: ["healthy-worker"] }));
     expect(status).toContain("healthy-worker");
-    expect(status).toContain("Recovery warning");
+    expect(status).not.toContain("Recovery warning");
     await tools.get("sessions_prompt").execute("follow", { id: "worker-1", message: "replacement" });
-    expect(journal().watches).toHaveLength(2); // Old assignment is still owned by the unresolved batch.
-    expect(journal().pending).toHaveLength(1); // Host-owned immutable delivery remains recoverable.
+    expect(journal().watches).toHaveLength(1); // Only the current assignment is watched.
+    expect(journal().pending).toHaveLength(1); // Its predecessor is owned independently by this immutable batch.
     const updated = resultText(await tools.get("sessions_status").execute("status", { ids: ["healthy-worker"] }));
     expect(updated).toContain("healthy-worker");
-    expect(updated).toContain("Recovery warning");
+    expect(updated).not.toContain("Recovery warning");
   });
 
-  it("does not prepare a fresh sibling batch while a quarantined batch still owns its generation", async () => {
+  it("does not prepare a fresh sibling batch while a pending batch still owns its generation", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const ctx = makeCtx();
     await spawn(ctx, { name: "B", task: "task B" }); finalReply("worker-1", "B RESULT");
@@ -1065,15 +1086,18 @@ describe("issue 190 durable delivery", () => {
     const owned = journal().pending[0];
     branch = branchWithB;
     await restart(ctx);
-    completionPending = false;
     await vi.advanceTimersByTimeAsync(20000);
     expect(saved.size).toBe(0);
     expect(journal().pending).toHaveLength(1);
     expect(journal().pending[0]).toEqual(owned);
     expect(journal().watches.some((w: any) => w.id === "worker-1")).toBe(true);
+    completionPending = false;
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(saved.size).toBe(1);
+    expect([...saved.values()][0].deliveryId).toBe(owned.deliveryId);
   });
 
-  it("retains a host-owned batch across sibling re-dispatch and replay without duplicate reports", async () => {
+  it("retains a pending batch across sibling re-dispatch and journal replay without duplicate reports", async () => {
     vi.spyOn(console, "warn").mockImplementation(() => {});
     const ctx = makeCtx();
     await spawn(ctx, { name: "A", task: "task A" }); finalReply("worker-1", "A RESULT");
@@ -1094,14 +1118,13 @@ describe("issue 190 durable delivery", () => {
     const originalDelivery = journal().pending[0];
     expect(originalDelivery.members).toHaveLength(2);
     expect(hostOwned.size).toBe(1);
-    const originalBranch = [...branch];
     branch = []; await restart(ctx);
     await tools.get("sessions_prompt").execute("replace A", { id: "worker-1", message: "new A assignment" });
     expect(journal().pending[0]).toEqual(originalDelivery);
-    branch = originalBranch;
-    // Simulate durable host replay on runtime restart before extension reconciliation.
+    // New A is still awaiting SDK continuation and cannot produce a completion.
+    workerMessages.get("worker-1")!.push({ role: "assistant", text: "continuing", raw: { stopReason: "deferred" } });
+    // Restart reconciles by replaying the extension journal, not a host disk store.
     completionPending = false;
-    for (const [id, input] of hostOwned) saved.set(id, input);
     await restart(ctx);
     await vi.advanceTimersByTimeAsync(15000);
     expect(hostOwned.size).toBe(1);
@@ -1109,7 +1132,7 @@ describe("issue 190 durable delivery", () => {
     expect([...saved.values()][0].message.content).toContain("B RESULT");
     expect(journal().pending).toHaveLength(0);
     expect(journal().watches.some((w: any) => w.id === "worker-2")).toBe(false);
-    // New A's watch is quarantined, not resolved by the old batch's saved receipt.
+    // New A's watch is not resolved by the old batch's saved receipt.
     expect(journal().watches.some((w: any) => w.id === "worker-1" && w.watchId !== originalDelivery.members[0].watchId)).toBe(true);
   });
 
@@ -1122,14 +1145,44 @@ describe("issue 190 durable delivery", () => {
     expect(existsSync(join(stateDir, "parent-1.json"))).toBe(false);
   });
 
-  it("omits an absent batch anchor rather than sending null to host validation", async () => {
+  it("migrates legacy watch anchors without creating new anchors or sending them to the host", async () => {
     const dispatchId = "00000000-0000-4000-8000-000000000001";
     writeFileSync(join(stateDir, "parent-1.json"), JSON.stringify({ version: 1, watches: [{ id: "worker-1", name: "restored", watchId: "restored-watch", dispatchId, anchor: null, idlePolls: 0, errorPolls: 0, transcriptFailures: 0 }], pending: [] }));
     workerMessages.set("worker-1", [{ role: "user", text: `[pi-web-dispatch:${dispatchId}]` }, { role: "assistant", text: "restored result" }]);
     await activate(makeCtx()); await vi.advanceTimersByTimeAsync(5000);
     const submission = calls.find((c) => c.path === "/api/session/completion")!;
     expect(submission.body).not.toHaveProperty("branchAnchorEntryId");
+    expect(branch.some((entry: any) => entry.customType === "orchestrator-dispatch-anchor")).toBe(false);
     expect(saved.size).toBe(1);
+  });
+
+  it("migrates legacy duplicate watches while preserving old batch ownership and payload", async () => {
+    const old = { id: "worker-1", name: "old", categoryName: "Default", watchId: "old-watch", anchor: "abandoned", idlePolls: 0, errorPolls: 0, transcriptFailures: 0 };
+    const newer = { ...old, name: "new", watchId: "new-watch", anchor: "also-abandoned" };
+    const message = { customType: "worker-wakeup", content: "Frozen A+B result", display: true, details: { deliveryId: "legacy-batch" } };
+    writeFileSync(join(stateDir, "parent-1.json"), JSON.stringify({ version: 1, watches: [old, { ...old, id: "worker-2", watchId: "sibling-watch" }, newer], pending: [{ deliveryId: "legacy-batch", branchAnchorEntryId: "abandoned", members: [{ id: "worker-1", watchId: "old-watch", anchor: "abandoned", resolves: true }, { id: "worker-2", watchId: "sibling-watch", anchor: "abandoned", resolves: true }], message }] }));
+    completionPending = true;
+    const ctx = makeCtx(); await activate(ctx); await vi.advanceTimersByTimeAsync(0);
+    expect(journal().watches.find((w: any) => w.id === "worker-1").watchId).toBe("new-watch");
+    expect(journal().watches.every((w: any) => !("anchor" in w))).toBe(true);
+    const batch = journal().pending[0];
+    expect(batch).not.toHaveProperty("branchAnchorEntryId");
+    expect(batch.members.every((m: any) => !("anchor" in m))).toBe(true);
+    expect(batch.message).toEqual(message);
+    completionPending = false;
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(saved.get("legacy-batch")).toEqual({ sessionId: "parent-1", deliveryId: "legacy-batch", message });
+    expect(journal().watches.map((w: any) => w.watchId)).toEqual(["new-watch"]);
+    expect(journal().pending).toHaveLength(0);
+  });
+
+  it("wraps slash-prefixed spawn task text as literal worker instructions", async () => {
+    const result = await spawn(makeCtx(), { name: "literal", task: "/template args" });
+    expect(result.isError).toBeFalsy();
+    const message = calls.find((c) => c.path === "/api/prompt")!.body.message;
+    expect(message).toMatch(/^\[pi-web orchestrated worker\]/);
+    expect(message).toContain("/template args");
+    expect(branch.some((entry: any) => entry.customType === "orchestrator-dispatch-anchor")).toBe(false);
   });
 
   it("does not mutate a newer runtime's journal after old prompt admission returns", async () => {
@@ -1187,7 +1240,7 @@ describe("issue 190 durable delivery", () => {
     expect(saved.size).toBe(2);
   });
 
-  it("does not retry a pending batch after navigating before its dispatch anchor", async () => {
+  it("keeps retrying a pending batch after navigating before its dispatch", async () => {
     const ctx = makeCtx();
     branch.push({ id: "shared-user", type: "message", message: { role: "user", content: "task" } });
     branch.push({ id: "assistant-before-spawn", type: "message", message: { role: "assistant" } });
@@ -1196,6 +1249,6 @@ describe("issue 190 durable delivery", () => {
     const count = calls.filter((c) => c.path === "/api/session/completion").length;
     branch = branch.slice(0, 2);
     await vi.advanceTimersByTimeAsync(10000);
-    expect(calls.filter((c) => c.path === "/api/session/completion")).toHaveLength(count);
+    expect(calls.filter((c) => c.path === "/api/session/completion").length).toBeGreaterThan(count);
   });
 });
