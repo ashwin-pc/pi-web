@@ -124,7 +124,8 @@ export async function handleSecurityRoute(
       (url.pathname === "/api/auth/sessions" ||
         (url.pathname.startsWith("/api/auth/sessions/") &&
           ![auth.sessionHash, auth.sessionHash && hashSecret(auth.sessionHash)].includes(url.pathname.slice("/api/auth/sessions/".length))) ||
-        url.pathname.startsWith("/api/auth/passkeys/"))) ||
+        url.pathname.startsWith("/api/auth/passkeys/") ||
+        url.pathname.startsWith("/api/auth/tokens/"))) ||
     (req.method === "POST" &&
       ["/api/auth/tokens", "/api/auth/device-grants", "/api/auth/passkeys/options", "/api/auth/passkeys/verify"].includes(
         url.pathname,
