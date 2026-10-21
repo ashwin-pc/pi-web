@@ -745,8 +745,30 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "GET" && url.pathname === "/api/files/image") {
         try {
           const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
-          const image = await readWorkspaceImage(cwd, url.searchParams.get("path") || "");
-          res.writeHead(200, { "content-type": image.mimeType, "content-length": image.data.length, "cache-control": "no-store" });
+          const requestedPath = url.searchParams.get("path") || "";
+          const image = await readWorkspaceImage(cwd, requestedPath);
+          // Workspace file content is attacker-controllable (agent-authored or ingested).
+          // SVG is an active document in the browser: if served inline with image/svg+xml
+          // and loaded as a top-level document, embedded <script>/event handlers execute
+          // in the application origin. Harden the response like /api/messages/image
+          // (nosniff + null-origin sandbox CSP), and for .svg additionally force a
+          // download disposition so a top-level navigation (agent-emitted link,
+          // "Open in new tab" action) cannot render the SVG as an active document.
+          // The <img>-based preview in the files panel fetches the bytes and creates a
+          // blob: URL from the response, which ignores content-disposition, so legitimate
+          // image previews are unaffected.
+          const isSvg = /\.svg$/i.test(requestedPath);
+          const headers: Record<string, string | number> = {
+            "content-type": image.mimeType,
+            "content-length": image.data.length,
+            "cache-control": "no-store",
+            "x-content-type-options": "nosniff",
+            "content-security-policy": "default-src 'none'; sandbox",
+          };
+          if (isSvg) {
+            headers["content-disposition"] = "attachment";
+          }
+          res.writeHead(200, headers);
           res.end(image.data);
           return;
         } catch (error) {
