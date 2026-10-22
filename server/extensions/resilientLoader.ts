@@ -24,6 +24,14 @@ export type ExtensionLoadStatus = {
   extensionCount: number;
   errors: ExtensionLoadError[];
   message: string;
+  /**
+   * True when a prior extension load exceeded `loadTimeoutMs` and we fell back
+   * to the extension-free loader without being able to stop the primary load.
+   * Extension entry files run in-process on the main thread, so the aborted
+   * module code may still be executing (timers, sockets, child processes).
+   * The status cannot claim containment that did not happen.
+   */
+  loadStillRunning?: boolean;
 };
 
 export type ResilientResourceLoaderOptions = {
@@ -99,18 +107,53 @@ function positiveMs(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) && Number(value) > 0 ? Number(value) : fallback;
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+/**
+ * Race `promise` against `timeoutMs`. On timeout the returned promise rejects
+ * and, if a `controller` is supplied, it is aborted so cooperative loaders can
+ * stop. The inner `promise` is NOT awaited after a timeout: whether it later
+ * resolves or rejects is reported through `onSettled` (useful for logging that
+ * an orphan load eventually finished) rather than surfaced to the caller.
+ *
+ * Note: `AbortSignal` alone cannot interrupt synchronous CPU work on the main
+ * thread. Full isolation (worker_thread / child process) is the only reliable
+ * stop; this helper provides the cooperative half of that story.
+ */
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+  controller?: AbortController,
+  onSettled?: (result: { ok: true; value: T } | { ok: false; error: unknown }) => void,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  // Always observe the inner promise so Node never sees an unhandled rejection
+  // and so callers can learn when an orphaned load eventually completed.
+  if (onSettled) {
+    promise.then(
+      (value) => onSettled({ ok: true, value }),
+      (error) => onSettled({ ok: false, error }),
+    );
+  } else {
+    promise.catch(() => undefined);
+  }
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        timer = setTimeout(() => {
+          timedOut = true;
+          try { controller?.abort(new Error(message)); } catch { /* ignore */ }
+          reject(new Error(message));
+        }, timeoutMs);
         timer.unref?.();
       }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (!timedOut) {
+      // No-op: the promise settled on its own, nothing to abort.
+    }
   }
 }
 
@@ -234,14 +277,43 @@ export class ResilientResourceLoader implements ResourceLoader {
     if (!this.activeIsPrimary) {
       for (const paths of this.extendedResources) candidate.extendResources(paths);
     }
+    // Composite AbortSignal: timeout aborts via `loadController`; any upstream
+    // signal in `options.signal` is relayed so callers can cancel too. This is
+    // cooperative — loaders that honour `signal` will stop, but a synchronously
+    // blocking entry file cannot be interrupted this way (requires isolation).
+    const loadController = new AbortController();
+    const upstreamSignal = (options as { signal?: AbortSignal } | undefined)?.signal;
+    const relayUpstreamAbort = () => {
+      try { loadController.abort(upstreamSignal?.reason); } catch { /* ignore */ }
+    };
+    if (upstreamSignal) {
+      if (upstreamSignal.aborted) relayUpstreamAbort();
+      else upstreamSignal.addEventListener("abort", relayUpstreamAbort, { once: true });
+    }
+    const reloadOptions = {
+      ...(options as Record<string, unknown> | undefined),
+      signal: loadController.signal,
+    } as Parameters<ResourceLoader["reload"]>[0];
+    let loadStillRunning = false;
+    const cwdForLog = this.primaryOptions.cwd;
+    const log = this.log;
     try {
       await withTimeout(
         extensionFetchContext.run(
           { timeoutMs: this.fetchTimeoutMs, log: this.log },
-          () => candidate.reload(options),
+          () => candidate.reload(reloadOptions),
         ),
         this.loadTimeoutMs,
         `Extension loading timed out after ${this.loadTimeoutMs}ms`,
+        loadController,
+        (result) => {
+          if (!loadStillRunning) return;
+          if (result.ok) {
+            log.warn(`[extensions] timed-out load eventually completed cwd=${cwdForLog} attempt=${attempt} (result discarded)`);
+          } else {
+            log.warn(`[extensions] timed-out load eventually rejected cwd=${cwdForLog} attempt=${attempt}: ${errorMessage(result.error)}`);
+          }
+        },
       );
       const result = candidate.getExtensions();
       this.active = candidate;
@@ -267,7 +339,18 @@ export class ResilientResourceLoader implements ResourceLoader {
       return;
     } catch (error) {
       const loadError = errorMessage(error);
+      // A timeout error aborted `loadController`; distinguish it from a plain
+      // loader rejection (which came back before the timer fired) so the status
+      // can report honestly whether an orphan load may still be running.
+      loadStillRunning = loadController.signal.aborted && !upstreamSignal?.aborted
+        && loadError === `Extension loading timed out after ${this.loadTimeoutMs}ms`;
       this.log.error(`[extensions] load failed cwd=${this.primaryOptions.cwd} attempt=${attempt}: ${loadError}`);
+      // When the primary load has timed out we cannot stop extension code that
+      // is already running on the main thread. Drop our reference to the
+      // timed-out loader (its orphan reload promise is observed by withTimeout
+      // so it will not surface as an unhandled rejection) and install an
+      // extension-free fallback for new work — but do NOT claim the extension
+      // code was "disabled" when it may still be executing in-process.
       const fallback = this.createLoader(this.fallbackOptions);
       for (const paths of this.extendedResources) fallback.extendResources(paths);
       try {
@@ -290,9 +373,18 @@ export class ResilientResourceLoader implements ResourceLoader {
         fetchTimeoutMs: this.fetchTimeoutMs,
         extensionCount: 0,
         errors: [{ path: "<extension loader>", error: loadError }],
-        message: "Extensions were disabled after loading failed. Core pi-web is still available.",
+        message: loadStillRunning
+          ? "Extension load timed out and could not be cancelled; the extension-free fallback is active, but the previous extension load may still be running in-process."
+          : "Extensions were disabled after loading failed. Core pi-web is still available.",
+        ...(loadStillRunning ? { loadStillRunning: true } : {}),
       };
-      this.log.warn(`[extensions] continuing without extensions cwd=${this.primaryOptions.cwd} attempt=${attempt} durationMs=${durationMs}`);
+      if (loadStillRunning) {
+        this.log.warn(`[extensions] continuing without extensions cwd=${this.primaryOptions.cwd} attempt=${attempt} durationMs=${durationMs} note=timed-out-load-may-still-be-running`);
+      } else {
+        this.log.warn(`[extensions] continuing without extensions cwd=${this.primaryOptions.cwd} attempt=${attempt} durationMs=${durationMs}`);
+      }
+    } finally {
+      if (upstreamSignal) upstreamSignal.removeEventListener("abort", relayUpstreamAbort);
     }
   }
 }
