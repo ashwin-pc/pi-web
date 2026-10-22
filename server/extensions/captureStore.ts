@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { HttpError } from "../shared/httpError.js";
@@ -79,8 +79,24 @@ export class EphemeralCaptureStore {
 
   constructor(private readonly ttlMs = DEFAULT_TTL_MS) {}
 
-  private root() {
-    return this.rootPromise ??= mkdtemp(join(tmpdir(), "pi-web-captures-"));
+  private async root(): Promise<string> {
+    if (this.rootPromise) {
+      try {
+        const dir = await this.rootPromise;
+        await access(dir);
+        return dir;
+      } catch {
+        this.rootPromise = undefined;
+      }
+    }
+    const promise = mkdtemp(join(tmpdir(), "pi-web-captures-"));
+    this.rootPromise = promise;
+    try {
+      return await promise;
+    } catch (error) {
+      if (this.rootPromise === promise) this.rootPromise = undefined;
+      throw error;
+    }
   }
 
   private releaseReservation(bytes: number) {
