@@ -54,7 +54,9 @@ export function validPng(png: Buffer): boolean {
     return true;
   } catch { return false; }
 }
-export async function receiveAvatar(req: IncomingMessage, settingsFile: string): Promise<string> {
+/** Read and buffer the avatar PNG body from the request socket. Must run
+ * OUTSIDE the avatar/settings mutation lock so a stalled client cannot pin it. */
+export async function readAvatarBody(req: IncomingMessage): Promise<Buffer> {
   if (req.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "image/png") throw new Error("Expected image/png");
   if (Number(req.headers["content-length"]) > maxAvatarBytes) throw new Error("Avatar exceeds 2 MB");
   const chunks: Buffer[] = [];
@@ -64,13 +66,20 @@ export async function receiveAvatar(req: IncomingMessage, settingsFile: string):
     if (size > maxAvatarBytes) throw new Error("Avatar exceeds 2 MB");
     chunks.push(chunk);
   }
-  const png = Buffer.concat(chunks);
+  return Buffer.concat(chunks);
+}
+/** Parse, validate, and persist a buffered avatar PNG. Safe to call inside the
+ * avatar/settings mutation lock; does no network I/O. */
+export async function storeAvatar(png: Buffer, settingsFile: string): Promise<string> {
   if (png.length < 24 || !png.subarray(0, 8).equals(signature) || png.toString("ascii", 12, 16) !== "IHDR") throw new Error("Invalid PNG");
   const width = png.readUInt32BE(16);
   const height = png.readUInt32BE(20);
   if (width < 1 || height < 1 || width > 2048 || height > 2048) throw new Error("Avatar dimensions must be between 1 and 2048 pixels");
   if (!validPng(png)) throw new Error("Invalid PNG");
   return createAvatarGeneration(settingsFile, { still: png, icon: png });
+}
+export async function receiveAvatar(req: IncomingMessage, settingsFile: string): Promise<string> {
+  return storeAvatar(await readAvatarBody(req), settingsFile);
 }
 export function avatarDirectory(settingsFile: string): string {
   return join(dirname(settingsFile), "pi-web-avatars", createHash("sha256").update(resolve(settingsFile)).digest("hex"));
@@ -116,7 +125,10 @@ export function serializeAvatarPackage(assets: AvatarAssets): string {
   parseAvatarPackage(value);
   return JSON.stringify(value, null, 2) + "\n";
 }
-export async function receiveAvatarPackage(req: IncomingMessage, settingsFile: string): Promise<string> {
+export type AvatarPackageBody = { bytes: Buffer; isZip: boolean };
+/** Read and buffer the avatar package body (zip or JSON) from the request
+ * socket. Must run OUTSIDE the avatar/settings mutation lock. */
+export async function readAvatarPackageBody(req: IncomingMessage): Promise<AvatarPackageBody> {
   const type = req.headers["content-type"]?.split(";")[0].trim().toLowerCase();
   const isZip = type === "application/zip";
   if (!isZip && !["application/json", "application/vnd.pi-web-avatar+json"].includes(type ?? "")) throw new Error("Expected application/zip or application/json");
@@ -124,9 +136,16 @@ export async function receiveAvatarPackage(req: IncomingMessage, settingsFile: s
   if (Number(req.headers["content-length"]) > limit) throw new Error("Avatar package too large");
   const chunks: Buffer[] = []; let size = 0;
   for await (const chunk of req) { size += chunk.length; if (size > limit) throw new Error("Avatar package too large"); chunks.push(chunk); }
-  const bytes = Buffer.concat(chunks);
-  const assets = isZip ? await parseAvatarZip(bytes) : parseAvatarPackage(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
+  return { bytes: Buffer.concat(chunks), isZip };
+}
+/** Parse, validate, and persist a buffered avatar package. Safe to call inside
+ * the avatar/settings mutation lock; does no network I/O. */
+export async function storeAvatarPackage(body: AvatarPackageBody, settingsFile: string): Promise<string> {
+  const assets = body.isZip ? await parseAvatarZip(body.bytes) : parseAvatarPackage(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body.bytes)));
   return createAvatarGeneration(settingsFile, assets);
+}
+export async function receiveAvatarPackage(req: IncomingMessage, settingsFile: string): Promise<string> {
+  return storeAvatarPackage(await readAvatarPackageBody(req), settingsFile);
 }
 
 export async function createAvatarGeneration(settingsFile: string, assets: AvatarAssets): Promise<string> {

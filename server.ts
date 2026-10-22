@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile, unlink, rm } from "node:fs/promises";
-import { avatarDirectory, commitAvatarGeneration, exportAvatarPackage, exportAvatarZip, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar, receiveAvatarPackage } from "./server/appIdentity.js";
+import { avatarDirectory, commitAvatarGeneration, exportAvatarPackage, exportAvatarZip, identityManifest, publicIdentityAssets, readAvatar, readAvatarBody, readAvatarPackageBody, storeAvatar, storeAvatarPackage } from "./server/appIdentity.js";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { createServer as createViteServer, type ViteDevServer } from "vite";
 import { fileURLToPath } from "node:url";
@@ -508,11 +508,27 @@ sessionService = new LocalSessionService({
 const settingsStore = sessionService.settingsStore;
 // Serialize avatar uploads, settings patches, and explicit reset cleanup.
 // Otherwise an identity patch could race the revision check and unlink.
+// The chain is bounded in depth and each hop is time-bounded so a single slow
+// operation can never pin the chain indefinitely.
+const maxAvatarMutationDepth = 32;
+const avatarMutationTimeoutMs = 30_000;
+let avatarMutationDepth = 0;
 let avatarMutation: Promise<unknown> = Promise.resolve();
 function withAvatarMutation<T>(operation: () => Promise<T>): Promise<T> {
-  const result = avatarMutation.then(operation);
-  avatarMutation = result.catch(() => undefined);
-  return result;
+  if (avatarMutationDepth >= maxAvatarMutationDepth) {
+    return Promise.reject(new HttpError("Identity/settings mutation queue is full; try again shortly", 503));
+  }
+  avatarMutationDepth++;
+  const result = avatarMutation.then(() => {
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new HttpError("Identity/settings mutation timed out", 503)), avatarMutationTimeoutMs);
+    });
+    const work = (async () => operation())();
+    return Promise.race([work, timeout]).finally(() => { if (timer) clearTimeout(timer); });
+  });
+  avatarMutation = result.catch(() => undefined).finally(() => { avatarMutationDepth--; });
+  return result as Promise<T>;
 }
 sessionService.subscribe((event) => {
   if (event.type === "shutdown") {
@@ -1134,10 +1150,16 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         });
       }
       if (method === "POST" && ["/api/identity/avatar", "/api/identity/avatar/package"].includes(url.pathname)) {
+        const isPackage = url.pathname.endsWith("/package");
+        // Read and buffer the attacker-controlled body OUTSIDE the mutation lock
+        // so a stalled client cannot pin the identity/settings mutation chain.
+        let body: Buffer | { bytes: Buffer; isZip: boolean };
+        try { body = isPackage ? await readAvatarPackageBody(req) : await readAvatarBody(req); }
+        catch (error) { throw new HttpError((error as Error).message, 400); }
         const settings = await withAvatarMutation(async () => {
           const previous = (await settingsStore.read()).identity.avatar;
           let assetId: string;
-          try { assetId = await (url.pathname.endsWith("/package") ? receiveAvatarPackage : receiveAvatar)(req, settingsStore.file); }
+          try { assetId = await (isPackage ? storeAvatarPackage(body as { bytes: Buffer; isZip: boolean }, settingsStore.file) : storeAvatar(body as Buffer, settingsStore.file)); }
           catch (error) { throw new HttpError((error as Error).message, 400); }
           return commitAvatarGeneration(settingsStore.file, assetId, async () => {
             const animated = Boolean(await readAvatar(settingsStore.file, assetId, "newSession"));
@@ -1535,6 +1557,11 @@ if (isDev) {
 startEventLoopTelemetry();
 
 extensionHttpServer = server;
+// Bound how long a single request can occupy a socket (and any lock it holds).
+// Node's default requestTimeout is 300 s on 24.x; make it explicit and shorter
+// so a stalled upload cannot pin the identity/settings mutation chain.
+server.requestTimeout = 60_000;
+server.headersTimeout = 60_000;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
