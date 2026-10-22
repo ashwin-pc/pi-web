@@ -74,6 +74,7 @@ export type AppElements = {
   settingCompletionSoundCheckbox: HTMLInputElement;
   settingCompletionVibrationCheckbox: HTMLInputElement;
   settingRunNotificationsStatus: HTMLParagraphElement;
+  settingRunNotificationsDevices: HTMLUListElement;
   settingRunNotificationsTestButton: HTMLButtonElement;
   settingDefaultBucketColorSelect: HTMLSelectElement;
   settingPinNewSessionsCheckbox: HTMLInputElement;
@@ -177,6 +178,7 @@ export function getAppElements(): AppElements {
     settingCompletionSoundCheckbox: requiredElement<HTMLInputElement>("#settingCompletionSoundCheckbox"),
     settingCompletionVibrationCheckbox: requiredElement<HTMLInputElement>("#settingCompletionVibrationCheckbox"),
     settingRunNotificationsStatus: requiredElement<HTMLParagraphElement>("#settingRunNotificationsStatus"),
+    settingRunNotificationsDevices: requiredElement<HTMLUListElement>("#settingRunNotificationsDevices"),
     settingRunNotificationsTestButton: requiredElement<HTMLButtonElement>("#settingRunNotificationsTestButton"),
     settingDefaultBucketColorSelect: requiredElement<HTMLSelectElement>("#settingDefaultBucketColorSelect"),
     settingPinNewSessionsCheckbox: requiredElement<HTMLInputElement>("#settingPinNewSessionsCheckbox"),

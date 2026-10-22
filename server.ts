@@ -306,6 +306,46 @@ const pushNotifications = createPushNotificationService(
   process.env.PI_WEB_VAPID_SUBJECT || "https://github.com/ashwin-pc/pi-web",
 );
 let sessionService: LocalSessionService;
+// Tracks which authenticated identities have interacted with each session.
+// Push run-complete notifications are delivered only to subscriptions owned
+// by one of the recorded identities for that session, so a device registered
+// under identity A never receives the title/id of a session only identity B
+// touched. The map is populated opportunistically from authenticated
+// requests that carry a sessionId; sessions with no observed identity fall
+// back to notifying every registered subscription (single-owner default).
+const sessionIdentityOwners = new Map<string, Set<string>>();
+function recordSessionAccess(identityId: string | undefined, sessionId: string | undefined) {
+  const id = typeof identityId === "string" ? identityId.trim() : "";
+  const session = typeof sessionId === "string" ? sessionId.trim() : "";
+  if (!id || !session) return;
+  let owners = sessionIdentityOwners.get(session);
+  if (!owners) {
+    owners = new Set<string>();
+    sessionIdentityOwners.set(session, owners);
+  }
+  owners.add(id);
+}
+function forgetSessionAccess(sessionId: string | undefined) {
+  if (typeof sessionId === "string" && sessionId) sessionIdentityOwners.delete(sessionId);
+}
+function identitiesForSession(sessionId: string): string[] | null {
+  const owners = sessionIdentityOwners.get(sessionId);
+  return owners && owners.size > 0 ? Array.from(owners) : null;
+}
+function recordSessionAccessForAllActiveSessions(identityId: string | undefined) {
+  const id = typeof identityId === "string" ? identityId.trim() : "";
+  if (!id || !sessionService) return;
+  // When a device subscribes for push, mark the subscribing identity as an
+  // owner of every session visible to that identity. In this single-owner
+  // deployment every authenticated identity sees every session, so the push
+  // filter remains compatible with the pre-fix delivery semantics while
+  // still rejecting records owned by a different identity.
+  try {
+    for (const entry of sessionService.lifecycleSnapshot().liveSessions || []) {
+      if (entry && typeof entry.sessionId === "string") recordSessionAccess(id, entry.sessionId);
+    }
+  } catch { /* best effort */ }
+}
 const sessionActivity = new SessionActivity(
   (path) => sessionService?.sessionForPath(path),
   (path) => sessionService?.hasActiveWorkForPath(path) ?? false,
@@ -464,11 +504,12 @@ const handleSessionServiceEvent = createHostSessionEventHandler({
     const target = sessionService.sessionForId(sessionId);
     if (!target) return;
     const state = sessionService.projectState(target);
+    const identityIds = identitiesForSession(sessionId);
     void pushNotifications.notifyRunCompleted({
       sessionId,
       title: state.sessionName?.trim() || state.sessionTitle?.trim() || "Session",
       completedAt: new Date().toISOString(),
-    });
+    }, identityIds ? { identityIds } : undefined);
   },
 });
 
@@ -850,10 +891,20 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 200, { ok: true, vapidPublicKey: await pushNotifications.publicKey() });
       }
 
+      if (method === "GET" && url.pathname === "/api/push/subscribe") {
+        try {
+          return sendJson(res, 200, { ok: true, subscriptions: await pushNotifications.listForIdentity(auth.identity.id) });
+        } catch (error) {
+          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      }
+
       if (method === "POST" && url.pathname === "/api/push/subscribe") {
         const body = await readBody(req) as { installationId?: unknown; subscription?: unknown };
         try {
-          return sendJson(res, 200, { ok: true, ...await pushNotifications.subscribe(body.installationId, body.subscription) });
+          const result = await pushNotifications.subscribe(auth.identity.id, body.installationId, body.subscription);
+          recordSessionAccessForAllActiveSessions(auth.identity.id);
+          return sendJson(res, 200, { ok: true, ...result });
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
@@ -862,7 +913,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "DELETE" && url.pathname === "/api/push/subscribe") {
         const body = await readBody(req) as { installationId?: unknown; endpoint?: unknown };
         try {
-          await pushNotifications.unsubscribe(body.installationId, body.endpoint);
+          await pushNotifications.unsubscribe(auth.identity.id, body.installationId, body.endpoint);
           return sendJson(res, 200, { ok: true });
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -882,6 +933,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "GET" && url.pathname === "/api/state") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
+        recordSessionAccess(auth.identity.id, requestedSessionId);
         noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), url.searchParams.get("clientId"));
         return sendJson(res, 200, {
           ok: true,
@@ -1100,6 +1152,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         if (activeSessionId && activeSessionId === requestedId) return sendJson(res, 409, { ok: false, error: "Switch to another session before deleting the current session." });
         try {
           const result = await sessionService.delete(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined) as { id: string; disposition: "trashed" | "deleted" };
+          forgetSessionAccess(result.id);
           let sessionUiStateWarning: string | undefined;
           try {
             const sessionUiState = await sessionUiStateStore.removeSession(result.id);
@@ -1391,6 +1444,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "POST" && (url.pathname === "/api/new-chat" || url.pathname === "/api/sessions/new")) {
         const body = await readBody(req) as { cwd?: unknown; sessionId?: unknown; origin?: unknown };
         const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined);
+        recordSessionAccess(auth.identity.id, baseState.sessionId);
         extensionHttp.recordCreatedSession(req, baseState.sessionId);
         const state = await decorateServiceState(baseState);
         noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));

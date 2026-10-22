@@ -39,6 +39,7 @@ export function createRunNotifications(options: {
   const soundCheckbox = elements.settingCompletionSoundCheckbox;
   const vibrationCheckbox = elements.settingCompletionVibrationCheckbox;
   const status = elements.settingRunNotificationsStatus;
+  const devices = elements.settingRunNotificationsDevices;
   const testButton = elements.settingRunNotificationsTestButton;
   const id = installationId();
   let updating = false;
@@ -50,6 +51,46 @@ export function createRunNotifications(options: {
   function setStatus(message: string, isError = false) {
     status.textContent = message;
     status.classList.toggle("error", isError);
+  }
+
+  function clearDevices() {
+    devices.textContent = "";
+    devices.hidden = true;
+  }
+
+  function renderDevices(records: Array<{ installationId: string; endpointHost: string; updatedAt: string }>) {
+    devices.textContent = "";
+    if (!records.length) {
+      devices.hidden = true;
+      return;
+    }
+    for (const record of records) {
+      const item = document.createElement("li");
+      const installation = typeof record.installationId === "string" ? record.installationId : "";
+      const host = typeof record.endpointHost === "string" ? record.endpointHost : "";
+      const updatedAt = typeof record.updatedAt === "string" ? record.updatedAt : "";
+      const parts: string[] = [];
+      if (installation) {
+        const marker = installation === id ? " (this browser)" : "";
+        parts.push(`installation ${installation.slice(0, 8)}\u2026${marker}`);
+      }
+      if (host) parts.push(host);
+      if (updatedAt) parts.push(`updated ${updatedAt}`);
+      item.textContent = parts.join(" \u2014 ") || "Registered device";
+      devices.appendChild(item);
+    }
+    devices.hidden = false;
+  }
+
+  async function refreshServerDevices() {
+    try {
+      const response = await fetch("/api/push/subscribe", { headers: api.headers() });
+      const data = await response.json().catch(() => ({}));
+      if (response.ok && Array.isArray(data?.subscriptions)) renderDevices(data.subscriptions);
+      else clearDevices();
+    } catch {
+      clearDevices();
+    }
   }
 
   async function registration() {
@@ -83,6 +124,7 @@ export function createRunNotifications(options: {
       : checkbox.checked
         ? "Enabled on this browser. Clicking a notification opens the completed session."
         : "Disabled on this browser.");
+    await refreshServerDevices();
   }
 
   async function enable() {
