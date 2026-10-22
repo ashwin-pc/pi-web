@@ -1535,6 +1535,11 @@ if (isDev) {
 startEventLoopTelemetry();
 
 extensionHttpServer = server;
+// Explicit socket-level bounds so a stalled pre-auth request cannot park an
+// HTTP handler for Node's 300 s default. Keeps a client-abandoned POST from
+// holding downstream credential-verification resources (see server/auth/password.ts).
+server.requestTimeout = 60_000;
+server.headersTimeout = 30_000;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);

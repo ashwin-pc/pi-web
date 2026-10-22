@@ -11,10 +11,15 @@ import {
   type AuthStore,
 } from "./kernel.js";
 
+// Per-peer cooldown table. `attempts` is kept as an insertion-ordered Map so
+// that when it reaches capacity we evict the least-recently-touched entry
+// (Map iteration is insertion order; re-inserting on access moves an entry to
+// the end, i.e. an O(1) LRU) rather than refusing to track new peers.
 const attempts = new Map<
   string,
   { count: number; resetAt: number; nextAt: number }
 >();
+const ATTEMPTS_CAPACITY = 4096;
 export function loginPeer(req: IncomingMessage) {
   const peer = req.socket.remoteAddress || "unknown";
   const forwarded = req.headers["x-forwarded-for"];
@@ -25,7 +30,44 @@ export function loginPeer(req: IncomingMessage) {
     ? forwarded.trim()
     : peer;
 }
+// Credential-verification single-flight. The scrypt bound is what actually
+// needs serializing; the slot is now acquired AFTER the request body has been
+// read and validated so a stalled or malformed request cannot hold it, and
+// cannot deny service to a different peer's cooldown decision either.
 let active = 0;
+const slotWaiters: Array<() => void> = [];
+const SLOT_WAIT_MS = 500; // small queue wait before giving up (<< the 2 s retry-after)
+const SLOT_HOLD_MS = 30_000; // hard upper bound on any single login handler
+const BODY_READ_MS = 5_000; // hard upper bound on reading the JSON request body
+async function acquireSlot(): Promise<boolean> {
+  if (active < 1) {
+    active++;
+    return true;
+  }
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const i = slotWaiters.indexOf(wake);
+      if (i >= 0) slotWaiters.splice(i, 1);
+      resolve(false);
+    }, SLOT_WAIT_MS);
+    const wake = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      active++;
+      resolve(true);
+    };
+    slotWaiters.push(wake);
+  });
+}
+function releaseSlot() {
+  if (active > 0) active--;
+  const next = slotWaiters.shift();
+  if (next) next();
+}
 const send = (res: ServerResponse, status: number, value: unknown) => {
   res.writeHead(status, {
     "content-type": "application/json",
@@ -36,26 +78,56 @@ const send = (res: ServerResponse, status: number, value: unknown) => {
 async function input(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 16_384) throw new Error("Body too large");
-    chunks.push(chunk);
+  // Hard cap on how long an unauthenticated client may keep the handler blocked
+  // in body read. The HTTP server's requestTimeout/headersTimeout cover the raw
+  // socket; this is the per-handler belt-and-braces so the per-request timer
+  // can fire predictably even if those are disabled by a reverse-proxy frontend.
+  let timer: NodeJS.Timeout | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("Request body read timed out")),
+      BODY_READ_MS,
+    );
+    if (typeof (timer as unknown as { unref?: () => void })?.unref === "function")
+      (timer as unknown as { unref: () => void }).unref();
+  });
+  const read = (async () => {
+    for await (const chunk of req) {
+      size += chunk.length;
+      if (size > 16_384) throw new Error("Body too large");
+      chunks.push(chunk);
+    }
+    return JSON.parse(Buffer.concat(chunks).toString() || "{}");
+  })();
+  try {
+    return (await Promise.race([read, deadline])) as Record<string, unknown>;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  return JSON.parse(Buffer.concat(chunks).toString() || "{}");
 }
+// Per-peer cooldown decision. Independent of the global single-flight slot so
+// one peer's hold on the slot never denies another peer the right to attempt
+// sign-in; and insertion-ordered LRU eviction keeps new peers trackable even
+// under pressure from an attacker-controlled address pool.
 function allow(req: IncomingMessage, store: AuthStore) {
   const now = Date.now();
   for (const [id, rate] of attempts)
     if (rate.resetAt <= now) attempts.delete(id);
   const id = `${store.path}:${loginPeer(req)}`;
-  if ((!attempts.has(id) && attempts.size >= 4096) || active >= 1) return false;
-  const rate = attempts.get(id) || {
-    count: 0,
-    resetAt: now + 60_000,
-    nextAt: 0,
-  };
-  attempts.set(id, rate);
-  return now >= rate.nextAt;
+  const existing = attempts.get(id);
+  if (existing) {
+    // Touch for LRU: re-insert to move to the end of iteration order.
+    attempts.delete(id);
+    attempts.set(id, existing);
+    return now >= existing.nextAt;
+  }
+  if (attempts.size >= ATTEMPTS_CAPACITY) {
+    // Evict least-recently-touched entry rather than refuse new peers.
+    const oldest = attempts.keys().next().value;
+    if (oldest !== undefined) attempts.delete(oldest);
+  }
+  attempts.set(id, { count: 0, resetAt: now + 60_000, nextAt: 0 });
+  return true;
 }
 export function passwordLoginPage(
   res: ServerResponse,
@@ -94,9 +166,36 @@ export async function handlePasswordLogin(
     send(res, 429, { error: "Too many attempts. Try again later." });
     return true;
   }
-  active++;
+  // Read and validate the request body BEFORE taking the single-flight slot
+  // so a stalled or malformed pre-auth request can never hold it. The slot
+  // only needs to cover credential verification (which is what the scrypt
+  // memory bound actually cares about).
+  let body: Record<string, unknown>;
   try {
-    const body = await input(req);
+    body = await input(req);
+  } catch (error) {
+    send(res, 400, {
+      error: error instanceof Error ? error.message : "Invalid request",
+    });
+    return true;
+  }
+  const slotAcquired = await acquireSlot();
+  if (!slotAcquired) {
+    res.setHeader("retry-after", "2");
+    send(res, 429, { error: "Too many attempts. Try again later." });
+    return true;
+  }
+  // Hard upper bound on how long any one login handler may hold the slot.
+  const holdTimer = setTimeout(() => {
+    try {
+      req.destroy(new Error("Login handler exceeded time budget"));
+    } catch {
+      /* already closed */
+    }
+  }, SLOT_HOLD_MS);
+  if (typeof (holdTimer as unknown as { unref?: () => void })?.unref === "function")
+    (holdTimer as unknown as { unref: () => void }).unref();
+  try {
     const state = await store.read();
     let passwordHash = state.password?.hash;
     if (setup) {
@@ -189,6 +288,7 @@ export async function handlePasswordLogin(
     });
     return true;
   } finally {
+    clearTimeout(holdTimer);
     const id = `${store.path}:${loginPeer(req)}`;
     if (res.statusCode < 400) attempts.delete(id);
     else if (res.statusCode === 401) {
@@ -199,7 +299,7 @@ export async function handlePasswordLogin(
           Date.now() + Math.min(2000, 100 * 2 ** Math.min(rate.count - 1, 5));
       }
     }
-    active--;
+    releaseSlot();
   }
 }
 export async function validatedPasswordHash(password: unknown) {
