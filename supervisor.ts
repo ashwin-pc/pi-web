@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
-import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { trustedOrigin, originFailureHint, hostAllowed } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
@@ -119,6 +119,9 @@ function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Err
 const supervisor = createServer(async (req, res) => {
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
+  // Anti-rebinding guard for the loopback-bound supervisor listener.
+  if (!hostAllowed(req)) return sendJson(res, 403, { ok: false, error: originFailureHint });
+
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
     if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
     if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) return sendJson(res, 403, { ok: false, error: originFailureHint });
@@ -153,6 +156,10 @@ function sanitizeProxyHeaders(req: IncomingMessage) {
 }
 
 supervisor.on("upgrade", (req, socket, head) => {
+  if (!hostAllowed(req)) {
+    socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
+    return;
+  }
   if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
     socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
     return;

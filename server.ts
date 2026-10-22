@@ -587,7 +587,7 @@ function withAccessLog(
   };
 }
 
-import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { trustedOrigin, originFailureHint, hostAllowed } from "./server/auth/origin.js";
 
 async function loginPresentation() {
   const settings = await settingsStore.read();
@@ -597,6 +597,10 @@ async function loginPresentation() {
 
 const server = createServer(withAccessLog(async (req, res, url) => {
   const method = req.method || "GET";
+  // Anti-rebinding guard for a loopback-bound dev server: when the operator
+  // sets PI_WEB_AUTH_ALLOWED_HOSTS, refuse requests whose Host authority (or
+  // trusted X-Forwarded-Host) is not in the allowlist before any routing.
+  if (!hostAllowed(req)) return sendJson(res, 403, { error: originFailureHint });
   try {
     if (method === "GET" && ["/manifest.webmanifest", "/identity/config.json", "/identity/avatar.png", "/identity/icon.png", "/identity/fab.png", "/identity/new-session.apng"].includes(url.pathname)) {
       res.setHeader("cache-control", "no-store");
@@ -1479,6 +1483,7 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   if (url.pathname !== "/ws") return;
+  if (!hostAllowed(req)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
 
   void (async () => {
     const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "mock" }, sessionHash: undefined } : undefined);
