@@ -105,6 +105,69 @@ const contentTypes: Record<string, string> = {
   ".pdf": "application/pdf",
 };
 
+// Agent-authored or user-uploaded files are untrusted content. When they
+// are served from the authenticated app origin a top-level navigation (an
+// `Open` anchor click or a cross-site `window.open`) must not be able to
+// execute script with access to the owner's session cookie or
+// localStorage. These response headers follow the sibling pattern used by
+// /api/messages/image:
+//   - `X-Content-Type-Options: nosniff` prevents the browser from
+//     promoting a benign content-type into an active one via sniffing.
+//   - `Content-Security-Policy: default-src 'none'; sandbox` loads the
+//     response in an opaque origin, so even a top-level `report.html`
+//     cannot read `document.cookie`/`localStorage`, cannot be reached by
+//     `postMessage` with a usable origin check, and credentialed fetches
+//     back to the app origin fail (Origin is `null` and the SameSite=Lax
+//     cookie is not attached in third-party contexts). The `sandbox`
+//     directive also blocks inline script execution via `default-src`.
+const inertArtifactSecurityHeaders = {
+  "x-content-type-options": "nosniff",
+  "content-security-policy": "default-src 'none'; sandbox",
+} as const;
+
+// Allowlist of attachment content types that are safe to serve inline on
+// the app origin even with CSP sandbox in place. Anything else is served
+// as `application/octet-stream` with `Content-Disposition: attachment` so
+// a prompt-injected agent cannot smuggle active content past the filename
+// check (`safeStoredNamePattern` deliberately permits `.html`/`.svg`).
+const inertAttachmentMediaTypes = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/bmp",
+  "audio/mpeg",
+  "audio/wav",
+  "audio/flac",
+  "audio/ogg",
+  "video/mp4",
+  "video/webm",
+  "video/ogg",
+  "video/quicktime",
+  "application/pdf",
+  "text/plain",
+  "text/markdown",
+]);
+
+function normalizeAttachmentMediaType(value: string | undefined): string {
+  if (!value) return "";
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) return "";
+  const base = trimmed.split(";", 1)[0].trim();
+  if (!inertAttachmentMediaTypes.has(base)) return "";
+  if (base === "text/plain") return "text/plain; charset=utf-8";
+  if (base === "text/markdown") return "text/markdown; charset=utf-8";
+  return base;
+}
+
+// RFC 6266 Content-Disposition filename. Keep the simple quoted form
+// (printable ASCII only) and provide filename* for anything outside that.
+function attachmentDispositionFilename(name: string) {
+  const ascii = name.replace(/[^\x20-\x7e]+/g, "_").replaceAll('"', "").replaceAll("\\", "_");
+  const encoded = encodeURIComponent(name);
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
+}
+
 function sendJson(res: ServerResponse, status: number, value: unknown) {
   const body = JSON.stringify(value);
   res.writeHead(status, {
@@ -173,12 +236,22 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
   const size = statSync(resolvedFile).size;
+  const extension = extname(resolvedFile).toLowerCase();
   const headers: Record<string, string | number> = {
-    "content-type": contentTypes[extname(resolvedFile).toLowerCase()] || "application/octet-stream",
+    "content-type": contentTypes[extension] || "application/octet-stream",
     "content-length": size,
     "accept-ranges": "bytes",
     "cache-control": "no-store",
+    ...inertArtifactSecurityHeaders,
   };
+  // The CSP `sandbox` directive loads this response into an opaque origin,
+  // which (a) blocks inline script execution (via `default-src 'none'`),
+  // (b) prevents access to `document.cookie` / `localStorage` on the app
+  // origin and (c) causes same-origin fetches back to the app to carry
+  // `Origin: null` and no SameSite=Lax cookie, so even a prompt-injected
+  // `report.html` opened at the top level cannot reach POST /api/shell.
+  // Rendering is preserved so the artifact browser's iframe preview and
+  // existing media previews continue to work.
   const rangeHeader = req.headers.range?.trim();
   if (!rangeHeader) {
     res.writeHead(200, headers);
@@ -746,7 +819,16 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         try {
           const cwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           const image = await readWorkspaceImage(cwd, url.searchParams.get("path") || "");
-          res.writeHead(200, { "content-type": image.mimeType, "content-length": image.data.length, "cache-control": "no-store" });
+          // Workspace images include user-authored SVG, which can embed
+          // active content. Pair the content type with CSP sandbox and
+          // nosniff so a top-level open cannot script against the owner's
+          // app origin.
+          res.writeHead(200, {
+            "content-type": image.mimeType,
+            "content-length": image.data.length,
+            "cache-control": "no-store",
+            ...inertArtifactSecurityHeaders,
+          });
           res.end(image.data);
           return;
         } catch (error) {
@@ -1321,11 +1403,25 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const roots = new Set([piCwd, ...knownCwds, ...sessionService.knownCwds()]);
         const file = resolveAttachmentFile(roots, id, name);
         if (!file) return sendJson(res, 410, { ok: false, error: "Attachment unavailable" });
+        // Attachments are user-supplied content: `safeStoredNamePattern`
+        // deliberately permits names like `x.html` or `x.svg`, so deriving
+        // the content type from the filename extension lets a prompt-
+        // injected agent (which has workspace write access) serve active
+        // content on the app origin. Serve from an inert allowlist and
+        // force a download disposition for anything else, plus the same
+        // CSP sandbox / nosniff pair used by /api/messages/image.
+        const extension = extname(file).toLowerCase();
+        const mapped = contentTypes[extension];
+        const allowInline = mapped ? normalizeAttachmentMediaType(mapped) : "";
+        const inlineName = name.replaceAll('"', "").replace(/[^\x20-\x7e]+/g, "_");
         res.writeHead(200, {
-          "content-type": contentTypes[extname(file).toLowerCase()] || "application/octet-stream",
+          "content-type": allowInline || "application/octet-stream",
           "content-length": statSync(file).size,
           "cache-control": "private, no-store",
-          "content-disposition": `inline; filename="${name.replaceAll('"', "")}"`,
+          "content-disposition": allowInline
+            ? `inline; filename="${inlineName}"`
+            : attachmentDispositionFilename(name),
+          ...inertArtifactSecurityHeaders,
         });
         pipeReadStream(res, file);
         return;
