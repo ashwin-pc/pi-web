@@ -45,6 +45,29 @@ const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const agentDir = getAgentDir();
 const distDir = join(appDir, "dist");
 const staticDir = distDir;
+const publicDir = join(appDir, "public");
+
+// Dev-only: ONLY requests whose decoded path resolves to a real file under
+// <appDir>/public/ are served to unauthenticated callers by the Vite dev
+// middleware chain. Everything else (project source via /src/*, Vite
+// internals via /@vite/*, arbitrary filesystem access via /@fs/*, workspace
+// state under .pi/, etc.) must pass authKernel.gate() first. The production
+// build is unaffected: serveStatic is confined to dist/.
+function isDevPublicAsset(pathname: string): boolean {
+  let decoded: string;
+  try { decoded = decodeURIComponent(pathname); }
+  catch { return false; }
+  // Vite's own virtual paths and the /@fs/ absolute-path reader are never
+  // public, even if the textual form happens to look traversal-free.
+  if (decoded.startsWith("/@") || decoded.includes("\0")) return false;
+  const rel = decoded.replace(/^\/+/, "");
+  if (!rel) return false;
+  const file = resolve(publicDir, rel);
+  const relPath = relative(publicDir, file);
+  if (relPath.startsWith("..") || isAbsolute(relPath)) return false;
+  try { return statSync(file).isFile(); }
+  catch { return false; }
+}
 
 const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "development";
 const host = process.env.HOST || "127.0.0.1";
@@ -1449,6 +1472,32 @@ const server = createServer(withAccessLog(async (req, res, url) => {
     }
 
     if (viteDevServer) {
+      // The Vite dev middleware chain exposes transformed project source
+      // (/src/*, /vite.config.ts, ...), Vite's /@fs/<abs> absolute-path
+      // reader (which can reach <cwd>/.pi/web/ when PI_WEB_CWD is the
+      // project root), and the HMR WebSocket. None of that is safe for an
+      // unauthenticated caller, so gate everything that is not an
+      // explicitly public asset (a file physically present under
+      // <appDir>/public/) with the same auth check the /api/ branch uses.
+      // The production path is unaffected: serveStatic is confined to dist/.
+      if (!isDevPublicAsset(url.pathname)) {
+        await authKernel.refreshConfig();
+        const auth = await authKernel.gate(req);
+        if (!auth.ok) {
+          // Preserve the login UX production gets via index.html -> SPA ->
+          // /api/auth/challenge: for an unauthenticated browser navigation
+          // (GET + text/html), redirect to the server-rendered login page.
+          // Non-navigation callers (XHR, fetch, curl, HMR probes) still get
+          // the same JSON 401 the /api/ branch returns.
+          if (method === "GET" && (req.headers.accept || "").includes("text/html")) {
+            res.statusCode = 302;
+            res.setHeader("location", "/api/auth/login");
+            res.end();
+            return;
+          }
+          return unauthorized(res);
+        }
+      }
       viteDevServer.middlewares(req, res, () => {
         if (!res.writableEnded) sendJson(res, 404, { ok: false, error: "Not found" });
       });
@@ -1468,7 +1517,8 @@ const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) =
 authStore.listeners.add(enforceBrowserSessions);
 const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
 authSessionSweep.unref();
-server.on("upgrade", (req, socket, head) => {
+let viteUpgradeListeners: Array<(req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => void> = [];
+const upgradeListener = (req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
   let url: URL;
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -1478,7 +1528,24 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (url.pathname !== "/ws") return;
+  if (url.pathname !== "/ws") {
+    // The embedded Vite HMR WebSocket listener (hmr.server = this HTTP
+    // server) accepts upgrades on any path it is handed. Letting an
+    // unauthenticated upgrade fall through would let any caller connect to
+    // HMR. In dev, run authKernel.gate() first and only re-invoke Vite's
+    // captured upgrade listener when the gate succeeds. In prod there is no
+    // other upgrade consumer, so drop the socket outright.
+    if (!viteDevServer || viteUpgradeListeners.length === 0) { socket.destroy(); return; }
+    socket.pause();
+    void authKernel.gate(req).then((auth) => {
+      if (!auth.ok) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+      socket.resume();
+      for (const listener of viteUpgradeListeners) {
+        try { listener(req, socket, head); } catch { socket.destroy(); return; }
+      }
+    }).catch(() => socket.destroy());
+    return;
+  }
 
   void (async () => {
     const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "mock" }, sessionHash: undefined } : undefined);
@@ -1490,7 +1557,8 @@ server.on("upgrade", (req, socket, head) => {
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
     wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
-});
+};
+server.on("upgrade", upgradeListener);
 
 wss.on("connection", async (ws, req, urlParam?: URL) => {
   const wsStart = performance.now();
@@ -1530,6 +1598,14 @@ if (isDev) {
       hmr: { server },
     },
   });
+  // Vite registered its own 'upgrade' listener on the shared HTTP server to
+  // run the HMR handshake. If we leave it attached, our auth check races
+  // with Vite's listener and an unauthenticated caller still gets upgraded.
+  // Capture Vite's listeners, detach them, and only re-invoke them for a
+  // caller our auth gate has already accepted.
+  const existing = server.listeners("upgrade") as Array<(req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => void>;
+  viteUpgradeListeners = existing.filter((listener) => listener !== upgradeListener);
+  for (const listener of viteUpgradeListeners) server.removeListener("upgrade", listener as any);
 }
 
 startEventLoopTelemetry();
