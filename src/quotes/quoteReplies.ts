@@ -43,6 +43,10 @@ export type QuoteRepliesController = {
 
 const selectableBlockSelector = "p, li, blockquote, pre, td, th";
 
+function draftNoteMarkup(id: number) {
+  return `<span class="quoteFootnoteNumber">${id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><textarea rows="2" aria-label="Question for quote ${id}" placeholder="Question for this quote…"></textarea><div class="quoteFootnoteActions"><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Save question (Ctrl/Cmd+Enter)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
+}
+
 function textOffset(root: HTMLElement, target: Node, targetOffset: number) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let offset = 0;
@@ -269,7 +273,7 @@ export function createQuoteReplies(options: {
         summaryPopover.hidden = true;
         summaryButton.setAttribute("aria-expanded", "false");
         jumpToReference(reference);
-        if (!reference.question.trim()) window.setTimeout(() => reference.note.querySelector<HTMLInputElement>("input")?.focus(), 350);
+        if (!reference.question.trim()) window.setTimeout(() => reference.note.querySelector<HTMLTextAreaElement>("textarea")?.focus(), 350);
       });
       summaryPopover.append(row);
     }
@@ -327,8 +331,47 @@ export function createQuoteReplies(options: {
     updateSummary();
   }
 
+  function bindDraftEditor(reference: QuoteReference) {
+    const { note } = reference;
+    const input = note.querySelector<HTMLTextAreaElement>("textarea")!;
+    let originalQuestion = reference.question;
+    input.addEventListener("input", () => {
+      reference.question = input.value;
+      schedulePersistDrafts();
+      updateSummary();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.isComposing) return;
+      if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+        event.preventDefault();
+        saveReference(reference);
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        if (originalQuestion.trim()) {
+          input.value = originalQuestion;
+          saveReference(reference);
+        } else {
+          removeReference(reference);
+        }
+      }
+    });
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
+    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
+    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
+      if (reference.submitted) return;
+      originalQuestion = reference.question;
+      note.classList.remove("saved");
+      note.classList.add("editing", "open");
+      input.focus();
+      input.select();
+    });
+    note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
+    return input;
+  }
+
   function saveReference(reference: QuoteReference) {
-    if (!reference.note.querySelector<HTMLInputElement>("input")!.value.trim()) {
+    if (!reference.note.querySelector<HTMLTextAreaElement>("textarea")!.value.trim()) {
       saveReferenceImmediately(reference);
       return;
     }
@@ -336,7 +379,7 @@ export function createQuoteReplies(options: {
   }
 
   function saveReferenceImmediately(reference: QuoteReference) {
-    const input = reference.note.querySelector<HTMLInputElement>("input")!;
+    const input = reference.note.querySelector<HTMLTextAreaElement>("textarea")!;
     const question = input.value.trim();
     if (!question) {
       reference.note.classList.remove("shake");
@@ -439,8 +482,8 @@ export function createQuoteReplies(options: {
     const note = document.createElement("div");
     note.className = `quoteFootnote ${draft.question.trim() ? "saved" : "editing"}`;
     note.dataset.quoteReplyUi = "true";
-    note.innerHTML = `<span class="quoteFootnoteNumber">${draft.id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><input aria-label="Question for quote ${draft.id}" placeholder="Question for this quote…"><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Confirm question">✓</button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
-    const input = note.querySelector<HTMLInputElement>("input")!;
+    note.innerHTML = draftNoteMarkup(draft.id);
+    const input = note.querySelector<HTMLTextAreaElement>("textarea")!;
     input.value = draft.question;
     note.querySelector<HTMLElement>(".quoteFootnoteQuestion")!.textContent = draft.question;
     let noteAnchor: Element = mark.closest(selectableBlockSelector) || body;
@@ -450,19 +493,7 @@ export function createQuoteReplies(options: {
     const reference: QuoteReference = { ...draft, mark, pin, note, submitted: false };
     references.push(reference);
     nextId = Math.max(nextId, draft.id + 1);
-    input.addEventListener("input", () => { reference.question = input.value; schedulePersistDrafts(); updateSummary(); });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") { event.preventDefault(); saveReference(reference); }
-    });
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
-    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
-      note.classList.remove("saved");
-      note.classList.add("editing", "open");
-      input.focus();
-      input.select();
-    });
-    note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
+    bindDraftEditor(reference);
     pin.addEventListener("click", () => {
       note.classList.toggle("open");
       if (note.classList.contains("open")) jumpToReference(reference);
@@ -522,7 +553,7 @@ export function createQuoteReplies(options: {
     const note = document.createElement("div");
     note.className = "quoteFootnote editing open quoteFootnoteEntering";
     note.dataset.quoteReplyUi = "true";
-    note.innerHTML = `<span class="quoteFootnoteNumber">${id}</span><div class="quoteFootnoteBody"><div class="quoteFootnoteEditor"><input aria-label="Question for quote ${id}" placeholder="Question for this quote…"><button class="quoteFootnoteConfirm" type="button" aria-label="Confirm question" title="Confirm question">✓</button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div><div class="quoteFootnoteRead"><span class="quoteFootnoteQuestion"></span><button class="quoteFootnoteEdit" type="button" aria-label="Edit question" title="Edit question"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4l11-11-4-4L4 16v4Zm9.5-13.5 4 4"/></svg></button><button class="quoteFootnoteRemove" type="button" aria-label="Remove quote" title="Remove quote">×</button></div></div>`;
+    note.innerHTML = draftNoteMarkup(id);
     let noteAnchor: Element = selection.block;
     while (noteAnchor.nextElementSibling?.classList.contains("quoteFootnote")) noteAnchor = noteAnchor.nextElementSibling;
     noteAnchor.after(note);
@@ -541,28 +572,7 @@ export function createQuoteReplies(options: {
     };
     references.push(reference);
     persistDrafts();
-    const input = note.querySelector<HTMLInputElement>("input")!;
-    input.addEventListener("input", () => {
-      reference.question = input.value;
-      schedulePersistDrafts();
-      updateSummary();
-    });
-    input.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        saveReference(reference);
-      }
-    });
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteConfirm")!.addEventListener("click", () => saveReference(reference));
-    // DOM-only actions stay synchronous: a rerender must not erase a deferred click.
-    note.querySelector<HTMLButtonElement>(".quoteFootnoteEdit")!.addEventListener("click", () => {
-      if (reference.submitted) return;
-      note.classList.remove("saved");
-      note.classList.add("editing", "open");
-      input.focus();
-      input.select();
-    });
-    note.querySelectorAll<HTMLButtonElement>(".quoteFootnoteRemove").forEach((button) => button.addEventListener("click", () => removeReference(reference)));
+    const input = bindDraftEditor(reference);
     pin.addEventListener("click", () => {
       note.classList.toggle("open");
       if (note.classList.contains("open")) jumpToReference(reference);
@@ -617,7 +627,7 @@ export function createQuoteReplies(options: {
       const incomplete = drafts.find((reference) => !reference.question.trim());
       if (incomplete) {
         jumpToReference(incomplete);
-        window.setTimeout(() => incomplete.note.querySelector<HTMLInputElement>("input")?.focus(), 350);
+        window.setTimeout(() => incomplete.note.querySelector<HTMLTextAreaElement>("textarea")?.focus(), 350);
         throw new Error("Each linked quote needs its own question.");
       }
       return {

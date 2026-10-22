@@ -75,6 +75,51 @@ async function selectAssistantExcerpt(page: Page, text: string) {
   }, text);
 }
 
+test("linked questions preserve newlines through saving, restoring and cancelling edits", async ({ page }) => {
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  const input = page.getByRole("textbox", { name: "Question for quote 1" });
+  await expect(input).toHaveJSProperty("tagName", "TEXTAREA");
+  await input.fill("First line");
+  await input.press("End");
+  await input.press("Enter");
+  await input.pressSequentially("Second line");
+  const question = "First line\nSecond line";
+  await expect(input).toHaveValue(question);
+  await expect(page.locator(".composer")).toBeHidden();
+  await input.press("Control+Enter");
+  await expect(page.locator(".composer")).toBeVisible();
+  await page.reload();
+  await page.locator(".quoteReplyPin").click();
+  await expect(page.locator(".quoteFootnoteQuestion")).toHaveText(question);
+  await expect(page.locator(".quoteFootnoteQuestion")).toHaveCSS("white-space", "pre-wrap");
+  await page.getByRole("button", { name: "Edit question" }).click();
+  await expect(input).toHaveValue(question);
+  await input.fill("Cancelled edit");
+  await input.press("Escape");
+  await expect(page.locator(".composer")).toBeVisible();
+  await page.locator(".quoteReplyPin").click();
+  await expect(page.locator(".quoteFootnoteQuestion")).toHaveText(question);
+  await page.getByRole("button", { name: "Edit question" }).click();
+  await input.fill(`${question}\nThird line`);
+  await input.press("Meta+Enter");
+  await expect(page.locator(".composer")).toBeVisible();
+  await page.locator(".quoteReplyPin").click();
+  await expect(page.locator(".quoteFootnoteQuestion")).toHaveText(`${question}\nThird line`);
+});
+
+test("Escape cancels a new linked question", async ({ page }) => {
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  const input = page.getByRole("textbox", { name: "Question for quote 1" });
+  await input.fill("Discard this draft");
+  await input.press("Escape");
+  await expect(page.locator(".quoteReplyMark")).toHaveCount(0);
+  await expect(page.locator(".composer")).toBeVisible();
+});
+
 test("keeps one reply action tethered to the highlighted text and dismisses it with Escape", async ({ page }) => {
   await page.goto("/");
   await selectAssistantExcerpt(page, "Image attachment support");
@@ -154,7 +199,7 @@ for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 
     await expect(footer).toBeHidden();
     await expect(tabs).toBeVisible();
     await input.fill("A linked question");
-    await input.press("Enter");
+    await page.getByRole("button", { name: "Confirm question" }).click();
     await expect(composer).toBeVisible();
     await expect(tabs).toBeVisible();
     await expect(page.locator("#prompt")).toHaveValue("Preserved main composer draft");
@@ -461,6 +506,25 @@ test("does not delete destination quote drafts during a fast session switch", as
   await page.waitForTimeout(1_100);
 
   await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("pi-web-session-drafts-v1") || "{}").sessions?.["mock-older"]?.quoteReplies)).toEqual(destinationDraft);
+});
+
+test("sends a linked quote from the collapsed composer with no prompt text", async ({ page }) => {
+  await page.goto("/");
+  await selectAssistantExcerpt(page, "Image attachment support");
+  await page.getByRole("button", { name: "Reply", exact: true }).click();
+  await page.getByRole("textbox", { name: "Question for quote 1" }).fill("Question without prompt text");
+  await page.getByRole("button", { name: "Confirm question" }).click();
+  await page.locator("#prompt").blur();
+  await expect(page.locator("#promptForm")).toHaveClass(/compactInactive/);
+  await expect(page.locator("#primaryButton")).toBeVisible();
+  await expect(page.locator("#primaryButton")).toBeEnabled();
+  const height = await page.locator("#promptForm").evaluate((el) => el.getBoundingClientRect().height);
+  expect(height).toBe(46);
+  const request = page.waitForRequest((candidate) => candidate.url().endsWith("/api/prompt") && candidate.method() === "POST");
+  await page.locator("#primaryButton").click();
+  expect((await request).postDataJSON().attachments).toEqual(expect.arrayContaining([
+    expect.objectContaining({ type: "quote-reply", question: "Question without prompt text" }),
+  ]));
 });
 
 test("links questions to multiple assistant responses and sends structured quote pairs", async ({ page }) => {
