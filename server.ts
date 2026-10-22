@@ -117,6 +117,22 @@ function sendJson(res: ServerResponse, status: number, value: unknown) {
 function pipeReadStream(res: ServerResponse, file: string, range?: { start: number; end: number }) {
   const stream = createReadStream(file, range);
   res.on("close", () => stream.destroy());
+  // Install an error handler on the readable so a late open/read failure (EISDIR,
+  // ENOENT after a stat-then-stream race, mid-stream I/O errors) does not become
+  // an unhandled 'error' event that terminates the process. Readable.pipe() does
+  // not forward source errors, so without this listener Node would rethrow from
+  // EventEmitter.emit on a later tick and bypass the request handler's try/catch.
+  stream.on("error", (err) => {
+    try {
+      if (!res.headersSent) {
+        sendJson(res, 500, { ok: false, error: err instanceof Error ? err.message : String(err) });
+      } else if (!res.writableEnded) {
+        res.destroy(err instanceof Error ? err : new Error(String(err)));
+      }
+    } catch {
+      // swallow — the connection is already being torn down
+    }
+  });
   stream.pipe(res);
 }
 
@@ -216,6 +232,14 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const relPath = relative(staticDir, file);
 
   if (relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(file)) {
+    sendJson(res, 404, { ok: false, error: "Not found" });
+    return;
+  }
+  // Reject non-regular files (directories, sockets, ...). createReadStream on a
+  // directory emits EISDIR asynchronously, which previously crashed the server.
+  let stats;
+  try { stats = statSync(file); } catch { stats = undefined; }
+  if (!stats || !stats.isFile()) {
     sendJson(res, 404, { ok: false, error: "Not found" });
     return;
   }
@@ -1535,6 +1559,19 @@ if (isDev) {
 startEventLoopTelemetry();
 
 extensionHttpServer = server;
+// Backstop guard: if any asynchronous error still escapes a request handler
+// (e.g. a late I/O failure on a stream whose owning handler returned long ago),
+// log it but keep the process alive so a single bad request cannot take down
+// WebSocket clients, live sessions, and in-flight agent work. Specific error
+// handling at the call sites (see pipeReadStream above) remains the primary
+// defense; this is only the last line.
+process.on("uncaughtException", (err) => {
+  console.error("[pi-web] uncaughtException", err);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("[pi-web] unhandledRejection", reason);
+});
+
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
