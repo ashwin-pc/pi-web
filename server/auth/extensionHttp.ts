@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { isIP, type AddressInfo } from "node:net";
+import { effectivePeerAddress } from "./peer.js";
 
 /** Inspect the socket, never client-controlled forwarding headers. */
 export function isLoopbackAddress(address: string | undefined): boolean {
@@ -180,7 +181,7 @@ export class ExtensionHttpRegistry {
 
   async authenticate(req: IncomingMessage): Promise<GateResult> {
     this.sweep();
-    if (!isLoopbackAddress(req.socket?.remoteAddress)) return { ok: false };
+    if (!isLoopbackAddress(effectivePeerAddress(req))) return { ok: false };
     if (req.headers["x-pi-web-client-id"] !== undefined) return { ok: false, status: 403 };
     const match = /^PiWebExtension ([A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || "");
     const credential = match && this.credentials.get(hash(match[1]));
