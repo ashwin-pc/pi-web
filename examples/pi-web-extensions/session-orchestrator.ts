@@ -227,6 +227,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       !["web", "extension", "prompt", "skill"].includes(command.source))) {
       throw new Error("Cannot validate tracked slash input: command metadata unavailable; no task was sent.");
     }
+    // Paired with LocalSessionService.prompt() in server/session/service.ts;
+    // this standalone example cannot import server code. Keep both in sync with
+    // SDK-parse parity cases in tests/session-delivery.test.ts and tests/session-orchestrator.test.ts.
     // Mirror SDK parsing without trimming or rewriting the user's input:
     // extensions/skills split at ASCII space; templates accept any whitespace.
     if (!message.startsWith("/")) return;

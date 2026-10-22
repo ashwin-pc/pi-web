@@ -720,6 +720,9 @@ export class LocalSessionService implements SessionService {
         let commands: SlashCommandDto[];
         try { commands = this.getSlashCommands(value); }
         catch { throw new SessionServiceError("Command registry unavailable; tracked slash dispatch cannot be validated", 503); }
+        // Paired with checkTrackedMessage() in examples/pi-web-extensions/session-orchestrator.ts;
+        // the standalone example cannot import server code. Keep both in sync with
+        // SDK-parse parity cases in tests/session-delivery.test.ts and tests/session-orchestrator.test.ts.
         // Mirror SDK parsing, not browser command parsing: extension/skill
         // tokens end at ASCII space, templates at any whitespace. Leading
         // whitespace and browser-only names are literal SDK prompts.
