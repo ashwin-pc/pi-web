@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
 import type { AuthenticationResponseJSON, RegistrationResponseJSON, WebAuthnCredential } from "@simplewebauthn/server";
 import { AuthKernel, hashSecret, isLoopback, type AuthStore } from "./kernel.js";
+import { requiresBootstrapLoopback } from "./password.js";
 
 const challenges = new Map<string, { challenge: string; expiresAt: number; kind: "register" | "login"; bootstrapHash?: string }>();
 const MAX_CHALLENGES = 256;
@@ -12,7 +13,7 @@ function rememberChallenge(challenge: string, value: (typeof challenges extends 
   while (challenges.size >= MAX_CHALLENGES) challenges.delete(challenges.keys().next().value!);
   challenges.set(challenge, value);
 }
-function bootstrapRequiresLoopback(config: PasskeyConfig) { return new URL(config.origin).hostname === "localhost"; }
+function bootstrapRequiresLoopback(config: PasskeyConfig) { return requiresBootstrapLoopback(config.origin); }
 function clientChallenge(response: unknown): string | undefined {
   try {
     const value = (response as { response?: { clientDataJSON?: unknown } })?.response?.clientDataJSON;

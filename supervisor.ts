@@ -1,12 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
-import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
+import { forwardedHost, trustedProxyPeer, SUPERVISOR_PEER_HEADER, SUPERVISOR_SECRET_HEADER } from "./server/auth/proxy.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 
@@ -16,6 +17,14 @@ const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
 const token = process.env.PI_WEB_TOKEN || "";
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
+/**
+ * Per-start shared secret used to authenticate `x-pi-supervisor-*` client
+ * markers between this process and its child. Lives only in memory for this
+ * supervisor instance; never written to disk or sent to the public listener.
+ */
+const supervisorSecret = process.env.PI_WEB_SUPERVISOR_SECRET || randomBytes(32).toString("base64url");
+// Share the resolved value with the authorization helper that spins up its own kernel.
+process.env.PI_WEB_SUPERVISOR_SECRET = supervisorSecret;
 
 let child: ChildProcess | undefined;
 let childStarting = false;
@@ -54,6 +63,7 @@ function startChild(): void {
     PORT: String(childPort),
     PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
     PI_WEB_SUPERVISED: "1",
+    PI_WEB_SUPERVISOR_SECRET: supervisorSecret,
     PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
   };
 
@@ -117,6 +127,10 @@ function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Err
 }
 
 const supervisor = createServer(async (req, res) => {
+  // Strip any inbound supervisor marker before trust decisions on the public
+  // listener; only this process may stamp it for the child.
+  delete req.headers[SUPERVISOR_SECRET_HEADER];
+  delete req.headers[SUPERVISOR_PEER_HEADER];
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
@@ -150,9 +164,21 @@ function sanitizeProxyHeaders(req: IncomingMessage) {
   if (!trustedProxyPeer(req)) delete req.headers["x-forwarded-for"];
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
+  // Strip any inbound copy before stamping our own: a network peer must never
+  // be able to forge the supervisor->child client marker.
+  delete req.headers[SUPERVISOR_SECRET_HEADER];
+  delete req.headers[SUPERVISOR_PEER_HEADER];
+  const peer = req.socket?.remoteAddress;
+  if (peer) {
+    req.headers[SUPERVISOR_SECRET_HEADER] = supervisorSecret;
+    req.headers[SUPERVISOR_PEER_HEADER] = peer;
+  }
 }
 
 supervisor.on("upgrade", (req, socket, head) => {
+  // Strip any inbound supervisor marker on upgrades too; only this process may stamp it.
+  delete req.headers[SUPERVISOR_SECRET_HEADER];
+  delete req.headers[SUPERVISOR_PEER_HEADER];
   if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
     socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
     return;

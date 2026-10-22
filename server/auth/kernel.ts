@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { AccessPolicy, HumanAuthMethod } from "./config.js";
+import { effectivePeer, isLoopbackIP } from "./proxy.js";
 import {
   mkdir,
   open,
@@ -533,8 +534,12 @@ export class AuthKernel {
 }
 
 export function isLoopback(req: IncomingMessage) {
-  const ip = req.socket.remoteAddress || "";
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  // Resolve the true client via the supervisor's authenticated marker when
+  // present, so a loopback TCP peer under the bundled reverse proxy is not
+  // mistaken for a loopback caller. Fallback to the raw socket for the
+  // non-supervised deployment where the socket is the real client.
+  const peer = effectivePeer(req);
+  return isLoopbackIP(peer);
 }
 export function randomSecret() {
   return randomBytes(32).toString("base64url");

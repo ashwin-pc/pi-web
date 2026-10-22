@@ -22,6 +22,7 @@ export function extensionHttpOrigin(address: AddressInfo | string | null): strin
 }
 import type { PiWebHttpClient, PiWebHttpClientOptions, PiWebHttpScope } from "../../src/extensionHttp.js";
 import type { GateResult } from "./kernel.js";
+import { effectivePeer, isLoopbackIP } from "./proxy.js";
 
 const SCHEME = "PiWebExtension";
 const TTL = 5 * 60_000;
@@ -180,7 +181,9 @@ export class ExtensionHttpRegistry {
 
   async authenticate(req: IncomingMessage): Promise<GateResult> {
     this.sweep();
-    if (!isLoopbackAddress(req.socket?.remoteAddress)) return { ok: false };
+    // Trust the supervisor-forwarded peer when present; a loopback TCP
+    // socket under the bundled reverse proxy is not proof of a local caller.
+    if (!isLoopbackIP(effectivePeer(req))) return { ok: false };
     if (req.headers["x-pi-web-client-id"] !== undefined) return { ok: false, status: 403 };
     const match = /^PiWebExtension ([A-Za-z0-9_-]{43})$/.exec(req.headers.authorization || "");
     const credential = match && this.credentials.get(hash(match[1]));
