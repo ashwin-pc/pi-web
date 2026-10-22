@@ -305,7 +305,18 @@ export function initGitPanel(options: {
     state.error = undefined;
     render();
     try {
-      await syncGit(apiHeaders(), repo.path, getSessionId?.());
+      // Step 1: ask the server without confirm=1 to surface the configured
+      // remote URL. The server runs no mutating git operation on this call.
+      const preview = await syncGit(apiHeaders(), repo.path, getSessionId?.());
+      if (!preview.ok && preview.requiresConfirmation) {
+        const prompt = `Sync '${repoDisplayPath(repo)}' from ${preview.remote} (${preview.remoteUrl || "no remote URL configured"}) on branch ${preview.branch}?\n\nThis runs 'git fetch' and 'git pull --rebase' against that remote.`;
+        const confirmed = typeof window !== "undefined" && typeof window.confirm === "function" ? window.confirm(prompt) : false;
+        if (!confirmed) {
+          state.error = "Sync cancelled.";
+          return;
+        }
+        await syncGit(apiHeaders(), repo.path, getSessionId?.(), true);
+      }
       const repoList = await fetchGitRepos(apiHeaders(), getSessionId?.());
       state.repos = repoList.repos;
       state.repoCwd = repoList.cwd;

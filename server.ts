@@ -840,7 +840,23 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           const baseCwd = await requestCwdFromSessionId(url.searchParams.get("sessionId"));
           const cwd = await gitCwdFromRepoParam(url.searchParams.get("repo"), baseCwd);
           if (!await isGitRepo(cwd)) return sendJson(res, 404, { ok: false, error: "Not a Git repository" });
-          return sendJson(res, 200, await gitSync(cwd));
+          const confirm = url.searchParams.get("confirm") === "1";
+          const result = await gitSync(cwd, { confirm });
+          if ("requiresConfirmation" in result && result.requiresConfirmation) {
+            // Surface the configured remote URL so the UI can prompt the operator
+            // before any mutating fetch/pull is executed against an untrusted repo.
+            // Return 200 with ok:false+requiresConfirmation so the client reads the
+            // body instead of raising on an HTTP error status.
+            return sendJson(res, 200, {
+              ok: false,
+              requiresConfirmation: true,
+              remote: result.remote,
+              remoteUrl: result.remoteUrl,
+              branch: result.branch,
+              error: "Sync requires explicit confirmation for this repository.",
+            });
+          }
+          return sendJson(res, 200, result);
         } catch (error) {
           return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }

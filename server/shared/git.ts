@@ -6,6 +6,35 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+// Harden every git subprocess against repository-controlled command execution.
+// The selected cwd can hold attacker-written .git/config or .git/hooks (archives
+// extracted into the workspace, agent file writes); without these flags git would
+// honour core.fsmonitor / diff.external / credential.helper / core.sshCommand and
+// run per-repo hooks as the server's OS user. We neutralise all repository-local
+// escape hatches and run every git invocation with a scrubbed environment.
+const GIT_HARDENING_ARGS: readonly string[] = [
+  "-c", "core.fsmonitor=",
+  "-c", "core.hooksPath=/dev/null",
+  "-c", "diff.external=",
+  "-c", "credential.helper=",
+  "-c", "protocol.ext.allow=never",
+  "--no-optional-locks",
+];
+
+function gitHardenedEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GIT_ASKPASS: "",
+    GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
+  };
+}
+
+function gitArgs(args: string[]): string[] {
+  return [...GIT_HARDENING_ARGS, ...args];
+}
+
 export interface GitFileStatus {
   path: string;
   oldPath?: string;
@@ -16,12 +45,12 @@ export interface GitFileStatus {
 }
 
 export async function git(args: string[], timeout = 15_000, cwd = process.cwd()) {
-  return execFileAsync("git", args, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 });
+  return execFileAsync("git", gitArgs(args), { cwd, timeout, maxBuffer: 10 * 1024 * 1024, env: gitHardenedEnv() });
 }
 
 export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.cwd()) {
   return new Promise<Buffer>((resolvePromise, reject) => {
-    execFile("git", args, { cwd, timeout, maxBuffer: 50 * 1024 * 1024, encoding: "buffer" }, (error, stdout) => {
+    execFile("git", gitArgs(args), { cwd, timeout, maxBuffer: 50 * 1024 * 1024, encoding: "buffer", env: gitHardenedEnv() }, (error, stdout) => {
       if (error) {
         (error as Error & { stdout?: Buffer }).stdout = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
         reject(error);
@@ -30,6 +59,15 @@ export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.
       resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
     });
   });
+}
+
+async function gitRemoteUrl(cwd: string, remote = "origin"): Promise<string> {
+  try {
+    const { stdout } = await git(["config", "--get", `remote.${remote}.url`], 15_000, cwd);
+    return stdout.trim();
+  } catch {
+    return "";
+  }
 }
 
 export async function isGitRepo(cwd = process.cwd()) {
@@ -246,11 +284,37 @@ export async function gitDiff(options: { cwd: string; path: string; staged: bool
   return { ok: true as const, path: filePath, staged: options.staged, diff: stdout };
 }
 
-export async function gitSync(cwd: string) {
+export interface GitSyncOptions {
+  /**
+   * Explicit per-call opt-in that the caller has reviewed the remote URL and
+   * confirmed the mutating fetch/pull. Without this the sync is refused and the
+   * configured remote URL is returned so the UI can prompt the operator.
+   */
+  confirm?: boolean;
+}
+
+export async function gitSync(cwd: string, options: GitSyncOptions = {}) {
   const status = await gitStatus(cwd);
   const branch = status.isRepo ? status.branch : "";
   if (!branch) throw new Error("Cannot sync detached HEAD");
+  const remoteUrl = await gitRemoteUrl(cwd, "origin");
+  if (!options.confirm) {
+    return {
+      ok: false as const,
+      requiresConfirmation: true as const,
+      remote: "origin",
+      remoteUrl,
+      branch,
+      status,
+    };
+  }
   const fetchResult = await git(["fetch", "--prune", "origin"], 60_000, cwd);
   const pullResult = await git(["pull", "--rebase", "--autostash", "origin", branch], 120_000, cwd);
-  return { ok: true as const, output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`, status: await gitStatus(cwd) };
+  return {
+    ok: true as const,
+    remote: "origin",
+    remoteUrl,
+    output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`,
+    status: await gitStatus(cwd),
+  };
 }
