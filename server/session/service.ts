@@ -102,6 +102,10 @@ type LiveSessionEntry = {
   workLeases: Map<symbol, WorkLease>;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
+  /** True when the entry was admitted by a read-only id lookup and has not been touched by a viewer or work lease since. */
+  openedForRead?: boolean;
+  /** Monotonic touch timestamp used to pick an LRU victim when evicting idle entries above the cap. */
+  lastTouched: number;
 };
 
 type ViewerLease = {
@@ -308,6 +312,12 @@ export class LocalSessionService implements SessionService {
   private readonly idleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 24 * 60 * 60 * 1000);
   private readonly viewerGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, this.idleGraceMs));
   private readonly workLeaseWatchdogMs = envMs("PI_WEB_WORK_LEASE_WATCHDOG_MS", 3 * 60 * 1000);
+  /** Short grace for sessions admitted by read-only id lookups that never became attached to a viewer or work lease. */
+  private readonly unviewedIdleGraceMs = envMs("PI_WEB_UNVIEWED_SESSION_IDLE_GRACE_MS", Math.min(10_000, this.idleGraceMs));
+  /** Soft cap on how many live sessions may be resident; 0 disables the cap. */
+  private readonly liveSessionLimit = Math.max(0, Math.floor(envMs("PI_WEB_LIVE_SESSION_LIMIT", 16)));
+  /** Hard cap on how many concurrent id-based admissions may be in flight; 0 disables the cap. */
+  private readonly openingByIdLimit = Math.max(0, Math.floor(envMs("PI_WEB_SESSION_OPENING_LIMIT", 4)));
   private readonly captureStore = new EphemeralCaptureStore();
   private readonly webUiBridge;
 
@@ -853,6 +863,8 @@ export class LocalSessionService implements SessionService {
     const key = sessionPathKey(value);
     const entry = this.liveSessions.get(key);
     if (!entry) return;
+    entry.openedForRead = false;
+    entry.lastTouched = Date.now();
     let lease = this.viewerLeases.get(clientId);
     // Check before touching timers or either session's lease membership.
     const validSeq = seq !== undefined && Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
@@ -991,12 +1003,28 @@ export class LocalSessionService implements SessionService {
     if (!key || this.liveSessions.get(key)?.session === value) return value;
     const handle = this.runtimeFor(value);
     handle.subscribe((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map() });
+    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map(), lastTouched: Date.now() });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
     queueMicrotask(() => this.scheduleLiveSessionCleanup(key));
+    this.enforceLiveSessionLimit(key);
     return value;
+  }
+
+  /** Evict the oldest-touched evictable live session when the resident count exceeds the configured cap. */
+  private enforceLiveSessionLimit(exemptKey?: string) {
+    if (this.liveSessionLimit <= 0) return;
+    while (this.liveSessions.size > this.liveSessionLimit) {
+      let victim: { key: string; lastTouched: number } | undefined;
+      for (const [key, entry] of this.liveSessions) {
+        if (key === exemptKey || entry.disposing) continue;
+        if (this.shouldKeepLiveSession(entry)) continue;
+        if (!victim || entry.lastTouched < victim.lastTouched) victim = { key, lastTouched: entry.lastTouched };
+      }
+      if (!victim) break;
+      void this.disposeLiveSession(victim.key, "idle", true);
+    }
   }
 
   private handlePiEvent(value: PiWebSession, event: unknown) {
@@ -1113,6 +1141,8 @@ export class LocalSessionService implements SessionService {
       lease.watchdogTimer.unref?.();
     }
     entry.workLeases.set(token, lease);
+    entry.openedForRead = false;
+    entry.lastTouched = Date.now();
     this.cancelLiveSessionCleanup(entry);
     this.emitRuntime(value, "changed");
     return { sessionKey: key, key: token } satisfies WorkLeaseToken;
@@ -1161,10 +1191,14 @@ export class LocalSessionService implements SessionService {
     if (!entry || entry.disposing) return;
     if (this.shouldKeepLiveSession(entry)) { this.cancelLiveSessionCleanup(entry); return; }
     if (entry.disposeTimer) return;
+    // Sessions admitted only to answer a read-only id lookup, and never touched by a viewer
+    // or work lease, use a much shorter grace so an enumeration of saved session ids cannot
+    // pin an unbounded number of runtimes for the full idle window.
+    const graceMs = entry.openedForRead ? Math.min(this.unviewedIdleGraceMs, this.idleGraceMs) : this.idleGraceMs;
     entry.disposeTimer = setTimeout(() => {
       entry.disposeTimer = undefined;
       void this.disposeLiveSession(key, "idle");
-    }, this.idleGraceMs);
+    }, graceMs);
   }
 
   private scheduleViewerLeaseRelease(clientId: string) {
@@ -1295,9 +1329,17 @@ export class LocalSessionService implements SessionService {
 
   private async getOrCreateLiveSessionById(id: string, cwd?: string) {
     const existing = this.liveById.get(id);
-    if (existing) return existing;
+    if (existing) {
+      // Touch the entry on re-use so LRU eviction prefers truly cold runtimes.
+      const entry = this.liveSessions.get(sessionPathKey(existing));
+      if (entry) entry.lastTouched = Date.now();
+      return existing;
+    }
     const pending = this.openingById.get(id);
     if (pending) return pending;
+    if (this.openingByIdLimit > 0 && this.openingById.size >= this.openingByIdLimit) {
+      throw new SessionServiceError("Too many concurrent session admissions; retry shortly.", 503);
+    }
     const opening = (async () => {
       const remembered = this.sessionLocations.get(id);
       if (remembered) {
@@ -1311,7 +1353,21 @@ export class LocalSessionService implements SessionService {
       return location ? this.openSessionAtLocation(id, location) : undefined;
     })();
     this.openingById.set(id, opening);
-    try { return await opening; }
+    try {
+      const admitted = await opening;
+      // Newly admitted via a read-only id lookup: mark for short-grace disposal
+      // unless and until a viewer or work lease attaches.
+      if (admitted) {
+        const entry = this.liveSessions.get(sessionPathKey(admitted));
+        if (entry && !this.shouldKeepLiveSession(entry)) {
+          entry.openedForRead = true;
+          // Reset any already-armed timer so the shorter grace takes effect.
+          this.cancelLiveSessionCleanup(entry);
+          this.scheduleLiveSessionCleanup(sessionPathKey(admitted));
+        }
+      }
+      return admitted;
+    }
     finally { this.openingById.delete(id); }
   }
 
