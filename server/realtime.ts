@@ -7,6 +7,8 @@ export type RealtimeEnvelope = Record<string, unknown> & { seq: number };
 export class RealtimeHub {
   private readonly clients = new Set<RealtimeSocket>();
   private readonly eventLog: RealtimeEnvelope[] = [];
+  private readonly eventLogSizes: number[] = [];
+  private eventLogBytes = 0;
   private nextSeq = 1;
 
   constructor(
@@ -15,6 +17,7 @@ export class RealtimeHub {
     private readonly onBroadcast: (value: unknown) => void,
     private readonly maxEventLogSize = 1000,
     private readonly onClientCountChanged?: (count: number) => void,
+    private readonly maxEventLogBytes = 4_000_000,
   ) {
     if (heartbeatMs > 0) {
       const timer = setInterval(() => this.checkHeartbeats(), heartbeatMs);
@@ -32,8 +35,20 @@ export class RealtimeHub {
 
   private record(value: unknown): RealtimeEnvelope {
     const envelope = { ...(typeof value === "object" && value !== null ? value as Record<string, unknown> : { value }), seq: this.nextSeq++ };
+    let size = 0;
+    try { size = Buffer.byteLength(JSON.stringify(envelope), "utf-8"); } catch { size = 0; }
     this.eventLog.push(envelope);
-    if (this.eventLog.length > this.maxEventLogSize) this.eventLog.splice(0, this.eventLog.length - this.maxEventLogSize);
+    this.eventLogSizes.push(size);
+    this.eventLogBytes += size;
+    while (this.eventLog.length > this.maxEventLogSize) {
+      this.eventLogBytes -= this.eventLogSizes.shift() || 0;
+      this.eventLog.shift();
+    }
+    while (this.eventLog.length > 1 && this.eventLogBytes > this.maxEventLogBytes) {
+      this.eventLogBytes -= this.eventLogSizes.shift() || 0;
+      this.eventLog.shift();
+    }
+    if (this.eventLogBytes < 0) this.eventLogBytes = 0;
     return envelope;
   }
 
