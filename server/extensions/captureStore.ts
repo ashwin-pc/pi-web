@@ -12,6 +12,19 @@ const MAX_PENDING_BYTES = 100_000_000;
 const MAX_ACTIVE_UPLOADS = 4;
 const MAX_ACTIVE_UPLOAD_BYTES = 50_000_000;
 
+// RFC 6838 restricted-name grammar for the subtype: an alphanumeric first
+// character followed by at most 126 alphanumeric or !#$&-^_.+ characters.
+// Mirrors `normalizeAudioMimeTypes` in webUi.ts so network-supplied
+// Content-Type values are validated with the same shape as extension-declared
+// types before being stored and forwarded to extension code.
+const AUDIO_SUBTYPE_RE = /^[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+
+export function isValidAudioMimeType(mimeType: string): boolean {
+  if (!mimeType.startsWith("audio/")) return false;
+  const subtype = mimeType.slice("audio/".length);
+  return subtype.length > 0 && subtype.length <= 127 && AUDIO_SUBTYPE_RE.test(subtype);
+}
+
 export type AudioCapturePolicy = {
   media: "audio";
   maxSeconds: number;
@@ -102,7 +115,7 @@ export class EphemeralCaptureStore {
     if (input.bytes.byteLength > policy.maxBytes || input.bytes.byteLength > MAX_CAPTURE_BYTES) throw new HttpError("Audio capture is too large", 413);
     if (!Number.isFinite(input.durationMs) || input.durationMs <= 0 || input.durationMs > policy.maxSeconds * 1000) throw new HttpError("Audio capture duration is invalid", 400);
     const mimeType = input.mimeType.split(";", 1)[0]?.trim().toLowerCase() || "";
-    if (!mimeType.startsWith("audio/")) throw new HttpError("Audio capture MIME type is invalid", 400);
+    if (!isValidAudioMimeType(mimeType)) throw new HttpError("Audio capture MIME type is invalid", 400);
     if (policy.mimeTypes?.length && !policy.mimeTypes.includes(mimeType)) throw new HttpError("Audio capture MIME type is not accepted", 400);
 
     // Reserve synchronously before the first await so parallel stores cannot all
