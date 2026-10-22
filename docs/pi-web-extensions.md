@@ -225,12 +225,17 @@ ctx.ui.web.setPanel("notes", {
 
 Assistant and user messages can deep-link into a panel with Markdown such as
 `[Open task](#panel:global-notepad:note=oncall%2Fw34&task=t-3f2a)`. Clicking it
+prompts the user to confirm (the link text is agent/transcript-authored and the
+payload is passed to the panel's server-side handler) and, on confirmation,
 opens the registered panel and calls `render()` with
 `{ action: "deep-link", payload: { note: "oncall/w34", task: "t-3f2a" } }`.
 Core treats the query as opaque strings; duplicate names use their final value.
 Links are limited to an 80-character key, 8 KiB query, and 64 parameters.
 The extension owns scrolling, highlighting, and fallback behavior; unknown or
-malformed panel links are a quiet no-op.
+malformed panel links are a quiet no-op. User-role messages are always rendered
+as plain text, so a `#panel:` deep-link in a user message appears literally and
+is not clickable — use an assistant/report-authored link if a deep link is
+intended.
 
 Panel HTML is trusted and uses the same local extension trust model as custom
 footer and Git-tab HTML. Scripts inserted through `innerHTML` do not execute;

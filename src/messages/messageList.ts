@@ -534,6 +534,18 @@ export function createMessageList(options: {
     const params = new URLSearchParams(query);
     if (Array.from(params).length > 64) return;
     const payload = Object.fromEntries(params);
+    // Deep links in transcript markdown are agent/user-authored text. Before
+    // invoking a server-side panel handler with that payload, require the
+    // owner to explicitly confirm. Anchors the app itself built can opt out
+    // by tagging themselves with data-pi-web-deep-link="trusted".
+    const trusted = anchor.dataset.piWebDeepLink === "trusted";
+    if (!trusted) {
+      const label = (anchor.textContent || "").trim().slice(0, 120) || key;
+      const confirmed = window.confirm(
+        `Open the "${key}" panel from this message?\n\nLink: ${label}`,
+      );
+      if (!confirmed) return;
+    }
     openPanel?.(key, { action: "deep-link", payload });
   });
   function settlePointerIntent() {
@@ -879,8 +891,12 @@ export function createMessageList(options: {
     const renderedQuoteReplies = role === "user" && quoteReplies?.renderSubmittedMessage(body, text, images);
     const standardAttachments = images.filter((attachment) => attachment.type !== "quote-reply");
     const renderUserText = (container: HTMLElement, value: string) => {
+      // User-role transcript text is always rendered as plain text: the
+      // previous heuristic (switch to the markdown/HTML pipeline when the
+      // text happened to contain `](#panel:`) let any attacker-controlled
+      // content that reached a user message silently activate markdown
+      // rendering (remote images, sanitized anchors, deep links, ...).
       container.textContent = value;
-      if (/\]\(\s*#panel:/i.test(value)) markdown.renderAssistantMarkdown(container, value);
     };
     if (renderedQuoteReplies) {
       // Structured quote prompts render as a compact linked-excerpt summary.
