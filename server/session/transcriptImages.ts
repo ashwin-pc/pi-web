@@ -22,19 +22,37 @@ function imageDigest(image: EmbeddedImage): string {
   return createHash("sha256").update(image.mimeType).update("\0").update(image.data).digest("hex");
 }
 
-/** Copy only modified messages/blocks; never mutate runtime or live event content. */
+function isImageBlock(value: unknown): value is Record<string, JsonValue> & { type: "image" } {
+  return !!value && typeof value === "object" && !Array.isArray(value) && (value as { type?: unknown }).type === "image";
+}
+
+/** Copy only modified messages/blocks; never mutate runtime or live event content.
+ *
+ * Any `imageUrl` on an image block that is not server-generated here is
+ * dropped so a transcript-supplied absolute URL cannot be forwarded to the
+ * client (where it would otherwise be fetched with the viewer's API
+ * credentials). Only blocks we rewrite from inline base64 data receive a
+ * server-generated same-origin `imageUrl`.
+ */
 export function referenceTranscriptImages<T extends MessageDto>(messages: T[], sessionId: string): T[] {
   return messages.map((message, messageIndex) => {
     const raw = message.raw;
     if (!raw || typeof raw !== "object" || Array.isArray(raw) || !Array.isArray(raw.content)) return message;
     let changed = false;
     const content = raw.content.map((block, contentIndex) => {
-      if (!embeddedImage(block)) return block;
-      changed = true;
-      const { data: _data, ...metadata } = block;
-      const imageId = `${messageIndex}.${contentIndex}.${imageDigest(block)}`;
-      const query = new URLSearchParams({ sessionId, imageId });
-      return { ...metadata, imageUrl: `/api/messages/image?${query}` };
+      if (embeddedImage(block)) {
+        changed = true;
+        const { data: _data, imageUrl: _imageUrl, ...metadata } = block;
+        const imageId = `${messageIndex}.${contentIndex}.${imageDigest(block)}`;
+        const query = new URLSearchParams({ sessionId, imageId });
+        return { ...metadata, imageUrl: `/api/messages/image?${query}` };
+      }
+      if (isImageBlock(block) && "imageUrl" in block) {
+        changed = true;
+        const { imageUrl: _imageUrl, ...metadata } = block;
+        return metadata;
+      }
+      return block;
     });
     return changed ? { ...message, raw: { ...raw, content } } as T : message;
   });

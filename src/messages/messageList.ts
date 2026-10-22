@@ -112,21 +112,40 @@ function appendAttachedImage(container: HTMLElement, attachment: AttachedImage, 
     image.alt = name;
     if (attachment.data) image.src = `data:${mediaType};base64,${attachment.data}`;
     else if (attachment.contentUrl) {
-      void fetch(attachment.contentUrl, { headers: apiHeaders?.() })
-        .then((response) => {
-          if (!response.ok) throw new Error("Attachment unavailable");
-          return response.blob();
-        })
-        .then((blob) => {
-          const objectUrl = URL.createObjectURL(blob);
-          image.src = objectUrl;
-        })
-        .catch(() => {
-          item.classList.add("missing");
-          item.textContent = "!";
-          item.title = `${name} · Unavailable`;
-          onMissing?.();
-        });
+      // Only attach API credentials to same-origin fetches. Transcript image
+      // references are supposed to be server-generated relative URLs; refuse
+      // anything that resolves cross-origin so a transcript-injected absolute
+      // URL cannot cause the browser to deliver the viewer's API bearer token
+      // to an attacker-controlled host.
+      let sameOrigin = false;
+      try {
+        const resolved = new URL(attachment.contentUrl, location.origin);
+        sameOrigin = resolved.origin === location.origin;
+      } catch {
+        sameOrigin = false;
+      }
+      if (!sameOrigin) {
+        item.classList.add("missing");
+        item.textContent = "!";
+        item.title = `${name} · Unavailable`;
+        onMissing?.();
+      } else {
+        void fetch(attachment.contentUrl, { headers: apiHeaders?.() })
+          .then((response) => {
+            if (!response.ok) throw new Error("Attachment unavailable");
+            return response.blob();
+          })
+          .then((blob) => {
+            const objectUrl = URL.createObjectURL(blob);
+            image.src = objectUrl;
+          })
+          .catch(() => {
+            item.classList.add("missing");
+            item.textContent = "!";
+            item.title = `${name} · Unavailable`;
+            onMissing?.();
+          });
+      }
     }
     item.append(image);
     attachImageActions(image, "thumbnail");
