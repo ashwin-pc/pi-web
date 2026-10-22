@@ -1542,3 +1542,32 @@ server.listen(port, host, () => {
   console.log(`Auth: ${authMode}${authMode === "legacy" && token ? " (bearer token required)" : ""}`);
   if (authMode === "passkey") console.log(`Passkey origin: ${authOrigin}`);
 });
+
+// Shutdown hygiene: the supervisor sends SIGTERM on restart (then SIGKILL
+// after 5s) and operators send SIGINT at the terminal. Without a handler the
+// EphemeralCaptureStore mkdtemp root and any in-flight capture (recorded
+// microphone audio) would survive in the OS temp directory. Awaiting
+// sessionService.disposeAll() also removes the capture-store root via
+// SessionService.disposeAll -> captureStore.dispose.
+let shuttingDown = false;
+async function gracefulShutdown(signal: string) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  try {
+    await sessionService.disposeAll("reset");
+  } catch (error) {
+    console.error(`pi-web: dispose on ${signal} failed`, error);
+  }
+  try {
+    server.close();
+  } catch { /* ignore */ }
+  if (signal === "SIGINT" || signal === "SIGTERM") {
+    // Preserve conventional exit codes so the supervisor can distinguish
+    // signal-driven exits from crashes.
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  }
+}
+process.on("SIGINT", () => { void gracefulShutdown("SIGINT"); });
+process.on("SIGTERM", () => { void gracefulShutdown("SIGTERM"); });
+process.on("beforeExit", () => { void gracefulShutdown("beforeExit"); });
+
