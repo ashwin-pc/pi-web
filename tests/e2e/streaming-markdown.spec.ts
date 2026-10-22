@@ -145,7 +145,11 @@ async function assertFinalConversation(page: Page) {
   const diagram = page.locator(".message.assistant .mermaidDiagram");
   await diagram.scrollIntoViewIfNeeded();
   await expect(diagram.locator(":scope > svg")).toBeVisible({ timeout: 10_000 });
-  await expect(page.locator(".message.assistant .htmlPreview iframe").contentFrame().locator(".ok")).toHaveText("Sandboxed preview");
+  // Agent-authored html-preview fences require an explicit user gesture to
+  // mount the sandboxed frame; click "Run preview" before asserting content.
+  const htmlPreview = page.locator(".message.assistant .htmlPreview").last();
+  await htmlPreview.getByRole("button", { name: "Run preview" }).click();
+  await expect(htmlPreview.locator("iframe").contentFrame().locator(".ok")).toHaveText("Sandboxed preview");
   expect(await page.evaluate(() => (globalThis as typeof globalThis & { __streamingUnsafe?: boolean }).__streamingUnsafe)).not.toBe(true);
   await expect(page.locator(".message.assistant script")).toHaveCount(0);
 }

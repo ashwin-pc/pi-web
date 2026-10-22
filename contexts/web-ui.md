@@ -36,7 +36,7 @@ Tables can be useful for genuinely tabular data or direct comparisons. Mermaid d
 
 Do not add a table, diagram, or interactive preview solely because the format is available. Ordinary prose, lists, and code examples are often clearer.
 
-`html-preview` blocks render in a sandboxed opaque-origin iframe. Keep them self-contained, and guard access to `localStorage` or `sessionStorage` with `try`/`catch`.
+`html-preview` blocks render in a sandboxed opaque-origin iframe that is only mounted after the owner clicks "Run preview". Keep them self-contained, and guard access to `localStorage` or `sessionStorage` with `try`/`catch`. The frame also carries a strict Content-Security-Policy that blocks outbound network connections, so previews must not depend on `fetch`, `WebSocket`, or external resources.
 
 ## Diagrams
 
