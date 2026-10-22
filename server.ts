@@ -14,7 +14,7 @@ import { HttpError } from "./server/shared/httpError.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
 import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
-import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
+import { createSessionUiStateStore, SessionUiStateBoundsError, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError, sessionUiStateLimits } from "./server/sessionUiState.js";
 import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
@@ -147,6 +147,24 @@ function readBody(req: IncomingMessage): Promise<unknown> {
     });
     jsonBodies.set(req, body);
   }
+  return body;
+}
+
+/**
+ * Read a JSON body with a route-specific byte cap, bypassing the generic 40 MB
+ * `readBody` ceiling. Use for small-payload routes where the generic cap is
+ * dangerous amplification (e.g. UI state PATCH, which otherwise fans out to
+ * five rotating backups and the realtime replay log).
+ */
+function readBoundedBody(req: IncomingMessage, maxBytes: number): Promise<unknown> {
+  const existing = jsonBodies.get(req);
+  if (existing) return existing;
+  const effective = Math.min(maxBytes, hasExtensionCredential(req) ? 1_000_000 : 40_000_000);
+  const body = readBytes(req, effective).then(bytes => {
+    const text = bytes.toString("utf-8");
+    return text ? JSON.parse(text) : {};
+  });
+  jsonBodies.set(req, body);
   return body;
 }
 
@@ -1071,12 +1089,17 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
         try {
-          const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+          // Cap the request body far below the generic 40 MB readBody limit.
+          // Allow some JSON overhead above the committed-state byte cap so a
+          // patch body with reasonable framing is always acceptable when its
+          // normalized state fits.
+          const sessionUiState = await sessionUiStateStore.patch(await readBoundedBody(req, sessionUiStateLimits.maxBytes * 2));
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, sessionUiState });
         } catch (error) {
           if (error instanceof SessionUiStateConflictError) return sendJson(res, 409, { ok: false, error: error.message, revision: error.revision });
           if (error instanceof SessionUiStatePreconditionError) return sendJson(res, error.status, { ok: false, error: error.message });
+          if (error instanceof SessionUiStateBoundsError) return sendJson(res, error.status, { ok: false, error: error.message });
           if (error instanceof SessionUiStateUnavailableError) return sendJson(res, 503, { ok: false, error: error.message });
           throw error;
         }
@@ -1084,7 +1107,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "POST" && (url.pathname === "/api/session-ui-state/read" || url.pathname === "/api/session-ui-state/unread")) {
         const body = await readBody(req) as { sessionId?: unknown };
-        const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : session.sessionId;
+        const bodySessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+        // Reject unreasonably long client-supplied sessionIds up front so
+        // fabricated ids can neither inflate the committed state nor accumulate
+        // via the unread list (which is also hard-capped in the store).
+        if (bodySessionId && bodySessionId.length > sessionUiStateLimits.maxSessionIdLength) {
+          return sendJson(res, 400, { ok: false, error: "sessionId is too long" });
+        }
+        const sessionId = bodySessionId || session.sessionId;
         const sessionUiState = url.pathname.endsWith("/unread")
           ? await sessionUiStateStore.markUnread(sessionId)
           : await sessionUiStateStore.markRead(sessionId);

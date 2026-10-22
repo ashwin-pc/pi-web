@@ -72,13 +72,41 @@ export type SessionUiStatePatch = Partial<{
 }>;
 
 export class SessionUiStatePreconditionError extends Error {
-  constructor(readonly status: 428 | 400, message: string) { super(message); this.name = "SessionUiStatePreconditionError"; }
+  constructor(readonly status: 428 | 400 | 413, message: string) { super(message); this.name = "SessionUiStatePreconditionError"; }
 }
 export class SessionUiStateConflictError extends Error {
   constructor(readonly revision: number, message = "Session UI state revision conflict") { super(message); this.name = "SessionUiStateConflictError"; }
 }
 export class SessionUiStateUnavailableError extends Error {
   constructor(message: string) { super(message); this.name = "SessionUiStateUnavailableError"; }
+}
+
+/**
+ * Explicit per-field and per-collection bounds for the persisted session UI
+ * state. Keep these generous enough for real use but small enough that a
+ * malicious or runaway writer cannot inflate the on-disk primary + five
+ * rotating backups or the realtime replay snapshot into hundreds of MB.
+ *
+ * The sibling extension-settings store (`server/settings.ts`) enforces the
+ * same shape of caps for a lower-trust writer; applying them here closes the
+ * amplification gap even for the authenticated owner.
+ */
+export const sessionUiStateLimits = {
+  /** Hard byte cap for the full serialized state object (JSON.stringify). */
+  maxBytes: 256 * 1024,
+  /** Element cap applied to every top-level array collection. */
+  maxEntriesPerCollection: 500,
+  /** String caps per field. */
+  maxSessionIdLength: 256,
+  maxNoteLength: 4 * 1024,
+  maxCwdLength: 1024,
+  maxFolderPathLength: 1024,
+  maxKindLength: 64,
+  maxBucketLabelLength: 40,
+} as const;
+
+export class SessionUiStateBoundsError extends Error {
+  constructor(readonly status: 413 | 400, message: string) { super(message); this.name = "SessionUiStateBoundsError"; }
 }
 
 const defaultBucketOrder: SessionMarkerColorId[] = ["blue", "purple", "yellow", "red", "green", "orange", "cyan", "pink"];
@@ -116,6 +144,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Trim and cap a string to the given byte-insensitive character length; returns "" for non-strings. */
+function clampString(value: unknown, maxLength: number): string {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  return trimmed.length > maxLength ? trimmed.slice(0, maxLength) : trimmed;
+}
+
+/** Cap an array to at most `max` entries, preserving order (first-wins). */
+function capArray<T>(items: readonly T[], max: number): T[] {
+  return items.length > max ? items.slice(0, max) : items.slice();
+}
+
 function normalizeMarkerColor(value: unknown): SessionMarkerColorId | undefined {
   return typeof value === "string" && markerColors.has(value as SessionMarkerColorId)
     ? value as SessionMarkerColorId
@@ -127,7 +167,7 @@ function normalizeBucketLabels(value: unknown): Partial<Record<SessionMarkerColo
   const result: Partial<Record<SessionMarkerColorId, string>> = {};
   for (const [key, rawLabel] of Object.entries(value)) {
     const color = normalizeMarkerColor(key);
-    const label = typeof rawLabel === "string" ? rawLabel.trim().slice(0, 40) : "";
+    const label = clampString(rawLabel, sessionUiStateLimits.maxBucketLabelLength);
     if (color && label) result[color] = label;
   }
   return result;
@@ -154,10 +194,11 @@ function normalizeBucketOrder(value: unknown): SessionMarkerColorId[] {
 
 function normalizeLaneEntry(value: unknown): SessionLaneEntry | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  const sessionId = clampString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
   const lane = value.lane;
   if (!sessionId || (lane !== "pinned" && lane !== "parked" && lane !== "bookmarks")) return undefined;
-  const cwd = typeof value.cwd === "string" && value.cwd.trim() ? value.cwd.trim() : undefined;
+  const cwdRaw = clampString(value.cwd, sessionUiStateLimits.maxCwdLength);
+  const cwd = cwdRaw ? cwdRaw : undefined;
   const parsedSince = typeof value.since === "string" ? new Date(value.since) : new Date(NaN);
   const since = Number.isNaN(parsedSince.getTime()) ? new Date().toISOString() : parsedSince.toISOString();
   return { sessionId, lane, ...(cwd ? { cwd } : {}), since };
@@ -196,14 +237,14 @@ export function migrateSessionUiState(raw: unknown): unknown {
 }
 
 function normalizePinnedFolder(value: unknown): string | undefined {
-  const cwd = typeof value === "string" ? value.trim() : "";
+  const cwd = clampString(value, sessionUiStateLimits.maxFolderPathLength);
   return cwd || undefined;
 }
 
 function normalizeSessionNote(value: unknown): SessionNote | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
-  const note = typeof value.note === "string" ? value.note.trim() : "";
+  const sessionId = clampString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
+  const note = clampString(value.note, sessionUiStateLimits.maxNoteLength);
   if (!sessionId || !note) return undefined;
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
   return { sessionId, note, updatedAt };
@@ -211,7 +252,7 @@ function normalizeSessionNote(value: unknown): SessionNote | undefined {
 
 function normalizeSessionMarker(value: unknown): SessionMarker | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  const sessionId = clampString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
   const color = normalizeMarkerColor(value.color) || (typeof value.bucket === "string" ? legacyBucketToColor[value.bucket] : undefined);
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
   if (!sessionId || !color) return undefined;
@@ -220,7 +261,7 @@ function normalizeSessionMarker(value: unknown): SessionMarker | undefined {
 
 function normalizeSessionUnreadState(value: unknown): SessionUnreadState | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  const sessionId = clampString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
   if (!sessionId) return undefined;
   const unreadAt = typeof value.unreadAt === "string" && value.unreadAt.trim() ? value.unreadAt.trim() : new Date().toISOString();
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : unreadAt;
@@ -229,9 +270,10 @@ function normalizeSessionUnreadState(value: unknown): SessionUnreadState | undef
 
 function normalizeSessionOrigin(value: unknown): SessionOrigin | undefined {
   if (!isRecord(value)) return undefined;
-  const sessionId = typeof value.sessionId === "string" ? value.sessionId.trim() : "";
-  const originSessionId = typeof value.originSessionId === "string" ? value.originSessionId.trim() : "";
-  const kind = typeof value.kind === "string" && value.kind.trim() ? value.kind.trim() : "spawn";
+  const sessionId = clampString(value.sessionId, sessionUiStateLimits.maxSessionIdLength);
+  const originSessionId = clampString(value.originSessionId, sessionUiStateLimits.maxSessionIdLength);
+  const kindRaw = clampString(value.kind, sessionUiStateLimits.maxKindLength);
+  const kind = kindRaw || "spawn";
   if (!sessionId || !originSessionId || sessionId === originSessionId) return undefined;
   const updatedAt = typeof value.updatedAt === "string" && value.updatedAt.trim() ? value.updatedAt.trim() : new Date().toISOString();
   return { sessionId, originSessionId, kind, updatedAt };
@@ -252,33 +294,34 @@ function uniqueBy<T>(items: T[], key: (item: T) => string) {
 export function normalizeSessionUiState(value: unknown): SessionUiState {
   const state = cloneState(defaultSessionUiState);
   if (!isRecord(value)) return state;
+  const cap = sessionUiStateLimits.maxEntriesPerCollection;
 
   if (typeof value.revision === "number" && Number.isSafeInteger(value.revision) && value.revision >= 0) state.revision = value.revision;
   if (typeof value.initialized === "boolean") state.initialized = value.initialized;
 
-  if (Array.isArray(value.lanes)) state.lanes = uniqueBy(value.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId);
+  if (Array.isArray(value.lanes)) state.lanes = capArray(uniqueBy(value.lanes.map(normalizeLaneEntry).filter(Boolean) as SessionLaneEntry[], (item) => item.sessionId), cap);
 
   const notes = Array.isArray(value.sessionNotes) ? value.sessionNotes.map(normalizeSessionNote).filter(Boolean) as SessionNote[] : [];
   const migratedLaneNotes = Array.isArray(value.lanes) ? value.lanes.map(normalizeSessionNote).filter(Boolean) as SessionNote[] : [];
-  state.sessionNotes = uniqueBy([...notes, ...migratedLaneNotes], (item) => item.sessionId);
+  state.sessionNotes = capArray(uniqueBy([...notes, ...migratedLaneNotes], (item) => item.sessionId), cap);
 
   if (Array.isArray(value.pinnedFolders)) {
-    state.pinnedFolders = uniqueBy(value.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+    state.pinnedFolders = capArray(uniqueBy(value.pinnedFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item), cap);
   }
   if (Array.isArray(value.favoriteFolders)) {
-    state.favoriteFolders = uniqueBy(value.favoriteFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item);
+    state.favoriteFolders = capArray(uniqueBy(value.favoriteFolders.map(normalizePinnedFolder).filter(Boolean) as string[], (item) => item), cap);
   }
 
   if (Array.isArray(value.sessionMarkers)) {
-    state.sessionMarkers = uniqueBy(value.sessionMarkers.map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId);
+    state.sessionMarkers = capArray(uniqueBy(value.sessionMarkers.map(normalizeSessionMarker).filter(Boolean) as SessionMarker[], (item) => item.sessionId), cap);
   }
 
   if (Array.isArray(value.sessionUnreadStates)) {
-    state.sessionUnreadStates = uniqueBy(value.sessionUnreadStates.map(normalizeSessionUnreadState).filter(Boolean) as SessionUnreadState[], (item) => item.sessionId);
+    state.sessionUnreadStates = capArray(uniqueBy(value.sessionUnreadStates.map(normalizeSessionUnreadState).filter(Boolean) as SessionUnreadState[], (item) => item.sessionId), cap);
   }
 
   if (Array.isArray(value.sessionOrigins)) {
-    state.sessionOrigins = uniqueBy(value.sessionOrigins.map(normalizeSessionOrigin).filter(Boolean) as SessionOrigin[], (item) => item.sessionId);
+    state.sessionOrigins = capArray(uniqueBy(value.sessionOrigins.map(normalizeSessionOrigin).filter(Boolean) as SessionOrigin[], (item) => item.sessionId), cap);
   }
 
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;
@@ -474,6 +517,14 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
     // Validate before touching history, backups, temp files, or the cache.
     try { validPersistedState(next); }
     catch { throw new SessionUiStatePreconditionError(400, "Invalid session UI state payload"); }
+    // Enforce a hard byte cap on the committed state so one bad PATCH cannot
+    // inflate the primary + five rotating backups (6x on disk) or the realtime
+    // replay snapshot. Checked after normalization/caps so legitimate growth
+    // from within caps is always writeable, and before any filesystem work.
+    const serializedBytes = Buffer.byteLength(JSON.stringify(next), "utf8");
+    if (serializedBytes > sessionUiStateLimits.maxBytes) {
+      throw new SessionUiStateBoundsError(413, `Session UI state payload too large (${serializedBytes} > ${sessionUiStateLimits.maxBytes} bytes)`);
+    }
     await mkdir(dirname(file), { recursive: true });
     const temp = tempPath(file);
     try {
@@ -518,12 +569,19 @@ export function createSessionUiStateStore(file: string, hooks: { beforeLoad?: ()
   }
 
   async function markUnread(sessionId: string, unreadAt = new Date().toISOString()) {
-    const id = sessionId.trim();
+    const id = clampString(sessionId, sessionUiStateLimits.maxSessionIdLength);
     if (!id) return read();
     return update((current) => {
       if (current.sessionUnreadStates.some((item) => item.sessionId === id)) return undefined;
       const next: SessionUnreadState = { sessionId: id, unreadAt, updatedAt: new Date().toISOString() };
-      return { ...current, sessionUnreadStates: [next, ...current.sessionUnreadStates] };
+      // Cap retained unread entries so a client cannot accumulate state by
+      // submitting an unbounded stream of fabricated sessionIds. Newest first;
+      // oldest entries beyond the cap are evicted.
+      const combined = [next, ...current.sessionUnreadStates];
+      const sessionUnreadStates = combined.length > sessionUiStateLimits.maxEntriesPerCollection
+        ? combined.slice(0, sessionUiStateLimits.maxEntriesPerCollection)
+        : combined;
+      return { ...current, sessionUnreadStates };
     });
   }
 
