@@ -369,7 +369,24 @@ function clientIdFromRequest(req: IncomingMessage, fallback?: unknown) {
   if (hasExtensionCredential(req)) return "";
   const raw = req.headers["x-pi-web-client-id"];
   const headerValue = Array.isArray(raw) ? raw[0] : raw;
-  return cleanClientId(headerValue) || cleanClientId(fallback);
+  // Prefer the per-connection header. Only fall back to the caller-supplied
+  // query/body value when no header is present; this preserves bootstrap
+  // flows while making the normal authenticated path header-bound.
+  const fromHeader = cleanClientId(headerValue);
+  return fromHeader || cleanClientId(fallback);
+}
+
+// Derive a stable, server-side principal identifier for the caller. Session
+// cookies yield the session hash; token/legacy/external identities fall back
+// to their immutable identity id. Returns undefined when no stable principal
+// is available (open-policy anonymous access): in that case lease binding
+// cannot be enforced and the historical behaviour applies.
+function principalFromGate(auth: { via?: string; identity?: { id?: string }; sessionHash?: string } | undefined): string | undefined {
+  if (!auth) return undefined;
+  if (auth.sessionHash) return `session:${auth.sessionHash}`;
+  const id = auth.identity?.id;
+  if (id && id !== "none" && id !== "mock") return `identity:${id}`;
+  return undefined;
 }
 
 function parseViewerSeq(value: unknown): number | undefined {
@@ -378,13 +395,13 @@ function parseViewerSeq(value: unknown): number | undefined {
   return Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
 }
 
-function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, fallbackClientId?: unknown) {
+function noteViewerLeaseFromRequest(req: IncomingMessage, value: PiWebSession, fallbackClientId?: unknown, principal?: string) {
   const clientId = clientIdFromRequest(req, fallbackClientId);
-  if (clientId) sessionService.acquireViewer(value.sessionId, clientId, parseViewerSeq(req.headers["x-pi-web-viewer-seq"]));
+  if (clientId) sessionService.acquireViewer(value.sessionId, clientId, parseViewerSeq(req.headers["x-pi-web-viewer-seq"]), principal);
 }
 
-function bindViewerSocket(clientId: string, ws: WebSocket) {
-  const connection = sessionService.connectViewer(clientId);
+function bindViewerSocket(clientId: string, ws: WebSocket, principal?: string) {
+  const connection = sessionService.connectViewer(clientId, principal);
   if (connection) ws.on("close", () => sessionService.disconnectViewer(connection));
 }
 
@@ -704,7 +721,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (mockMode && method === "GET" && url.pathname === "/api/mock/live-sessions") {
-        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(), lifecycle: getMockLifecycle() });
+        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(principalFromGate(auth)), lifecycle: getMockLifecycle() });
       }
 
       if (method === "GET" && url.pathname === "/api/fs/dirs") {
@@ -882,7 +899,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "GET" && url.pathname === "/api/state") {
         const requestedSessionId = resolveSessionId(url.searchParams.get("sessionId"));
-        noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), url.searchParams.get("clientId"));
+        noteViewerLeaseFromRequest(req, await sessionService.require(requestedSessionId), url.searchParams.get("clientId"), principalFromGate(auth));
         return sendJson(res, 200, {
           ok: true,
           ...await decorateServiceState(await sessionService.state(requestedSessionId)),
@@ -984,7 +1001,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "GET" && url.pathname === "/api/session/lifecycle") {
-        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot() });
+        return sendJson(res, 200, { ok: true, ...sessionService.lifecycleSnapshot(principalFromGate(auth)) });
       }
 
       if (method === "GET" && url.pathname === "/api/session/stats") {
@@ -1293,7 +1310,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
             console.warn(`Could not transfer session UI metadata for ${decorated.sessionId}:`, error);
           }
         }
-        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
+        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId), undefined, principalFromGate(auth));
         return sendJson(res, 200, { ok: true, message: result.message, state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
       }
 
@@ -1393,7 +1410,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const baseState = await sessionService.create(resolveSessionId(body.sessionId), typeof body.cwd === "string" ? body.cwd : undefined);
         extensionHttp.recordCreatedSession(req, baseState.sessionId);
         const state = await decorateServiceState(baseState);
-        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
+        noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId), undefined, principalFromGate(auth));
         const origin = body.origin && typeof body.origin === "object" ? body.origin as { sessionId?: unknown; kind?: unknown } : undefined;
         let originWarning: string | undefined;
         if (origin && typeof origin.sessionId === "string" && origin.sessionId.trim() && state.sessionId) {
@@ -1425,7 +1442,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           const previousSessionId = resolveSessionId(body.sessionId);
           const baseState = await sessionService.switchCwd(previousSessionId, cwd);
           const state = await decorateServiceState(baseState);
-          noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId));
+          noteViewerLeaseFromRequest(req, await sessionService.require(state.sessionId), undefined, principalFromGate(auth));
           broadcast({ type: "state_changed", ...state });
           const sessionUiStateWarning = state.sessionId !== previousSessionId ? takeCreatedSessionUiWarning(state.sessionId) : undefined;
           return sendJson(res, 200, { ok: true, ...state, ...(sessionUiStateWarning ? { sessionUiStateWarning } : {}) });
@@ -1441,7 +1458,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         if (!requestedId) return sendJson(res, 400, { ok: false, error: "sessionId is required" });
 
         const state = await decorateServiceState(await sessionService.open(requestedId, typeof body.cwd === "string" && body.cwd.trim() ? body.cwd : undefined));
-        noteViewerLeaseFromRequest(req, await sessionService.require(requestedId), body.clientId);
+        noteViewerLeaseFromRequest(req, await sessionService.require(requestedId), body.clientId, principalFromGate(auth));
         return sendJson(res, 200, { ok: true, ...state });
       }
 
@@ -1487,7 +1504,8 @@ server.on("upgrade", (req, socket, head) => {
     if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
-    (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
+    (req as IncomingMessage & { authIdentity?: typeof identity; authSessionHash?: string }).authIdentity = identity;
+    (req as IncomingMessage & { authIdentity?: typeof identity; authSessionHash?: string }).authSessionHash = ticket?.sessionHash;
     wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 });
@@ -1511,8 +1529,10 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   }
   const clientId = cleanClientId(url.searchParams.get("clientId") || "");
   if (clientId) {
-    sessionService.acquireViewer((targetSession || session).sessionId, clientId, parseViewerSeq(url.searchParams.get("viewerSeq")));
-    bindViewerSocket(clientId, realtimeWs);
+    const wsAuth = req as IncomingMessage & { authIdentity?: { id?: string }; authSessionHash?: string };
+    const wsPrincipal = principalFromGate({ identity: wsAuth.authIdentity, sessionHash: wsAuth.authSessionHash });
+    sessionService.acquireViewer((targetSession || session).sessionId, clientId, parseViewerSeq(url.searchParams.get("viewerSeq")), wsPrincipal);
+    bindViewerSocket(clientId, realtimeWs, wsPrincipal);
   }
   const helloState = targetSession ? currentState(targetSession) : currentState();
   realtimeWs.send(JSON.stringify({

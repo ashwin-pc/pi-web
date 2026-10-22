@@ -959,6 +959,35 @@ describe("LocalSessionService standalone lifecycle", () => {
     await service.disposeAll("reset");
   });
 
+  it("rejects viewer-lease operations from a different authenticated principal", async () => {
+    const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
+    // Owner principal binds the lease to session S1.
+    service.acquireViewer(initial.sessionId, "client", 5, "owner");
+    expect(service.lifecycleSnapshot().viewerLeases).toEqual([
+      expect.objectContaining({ clientId: "client", sessionKey: initial.sessionFile }),
+    ]);
+    // An attacker principal naming the same clientId must not steal, move,
+    // or poison the lease.
+    service.acquireViewer(second.sessionId, "client", 9007199254740991, "attacker");
+    expect(service.connectViewer("client", "attacker")).toBeUndefined();
+    expect(service.lifecycleSnapshot().viewerLeases).toEqual([
+      expect.objectContaining({ clientId: "client", sessionKey: initial.sessionFile }),
+    ]);
+    // The real owner can still re-acquire with a legitimate (smaller) seq
+    // because the attacker's seq was never recorded.
+    service.acquireViewer(initial.sessionId, "client", 6, "owner");
+    expect(service.lifecycleSnapshot().liveSessions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ sessionId: initial.sessionId, viewerLeases: 1 }),
+    ]));
+    // Lifecycle snapshot scoped to the attacker exposes nothing of the
+    // owner's lease and omits other sessions' sessionFile paths.
+    const scoped = service.lifecycleSnapshot("attacker");
+    expect(scoped.viewerLeases).toEqual([]);
+    expect(scoped.liveSessions.every((entry: any) => entry.sessionFile === undefined)).toBe(true);
+    service.releaseViewer("client");
+  });
+
   it("does not let a stale socket release a replacement viewer lease", async () => {
     const { service, cwd } = await fixtureService();
     const first = await service.create(undefined);
