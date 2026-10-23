@@ -251,6 +251,13 @@ and retain it until `saved`. Core creates no `.completions` store and performs n
 automatic restart replay; callers must resubmit their journal obligations. Legacy
 host store files are not deleted automatically because ownership is uncertain.
 
+**pi-web owns this delivery contract**, not the SDK. Core's delivery coordinator
+owns immutable payloads, runtime claims and retry decisions. Its SDK adapter owns
+session-file decoding, memory/queue observations and verification of rejected
+sends, exposing only saved/pending or proven-non-admission facts to the coordinator.
+Neither requires an SDK fork or a new SDK receipt API; uncertain observations stay
+pending rather than becoming permission to resend.
+
 The SDK may keep appended entries in memory before its first assistant, and failed
 writes can leave both assistant and custom entries in memory. Therefore **only a
 matching custom message in the actual session file** yields `saved` and `entryId`.
