@@ -314,7 +314,7 @@ export class LocalSessionService implements SessionService {
   private readonly workLeaseWatchdogMs = envMs("PI_WEB_WORK_LEASE_WATCHDOG_MS", 3 * 60 * 1000);
   private readonly operationSettleTimeoutMs = Math.max(1, envMs("PI_WEB_OPERATION_SETTLE_TIMEOUT_MS", 10_000));
   private readonly captureStore = new EphemeralCaptureStore();
-  private readonly completionOutbox = new CompletionOutbox(
+  private readonly completionOutbox = new CompletionOutbox<PiWebSession>(
     (value, message) => {
       const entry = this.liveSessions.get(sessionPathKey(value));
       if (entry?.session !== value || entry.fences.closing || this.requiresRecovery(entry) || entry.fences.navigating || entry.fences.canceledTranscriptWork) throw new CompletionDeferredError("Runtime unavailable or navigating");
@@ -326,6 +326,7 @@ export class LocalSessionService implements SessionService {
       }, "transcript");
     },
     (value, error) => this.emitError(value, error),
+    value => this.runtimeFor(value),
   );
   private readonly webUiBridge;
 

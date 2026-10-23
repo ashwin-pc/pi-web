@@ -53,7 +53,7 @@ describe("optional SDK identity proof", () => {
     await vi.waitFor(() => expect(session.agent.state.isStreaming).toBe(true));
     try {
       const errors = vi.fn();
-      const outbox = new CompletionOutbox((_value, message) => handle.sendCompletion(message), errors);
+      const outbox = new CompletionOutbox<typeof raw>((_value, message) => handle.sendCompletion(message), errors, value => new PiSessionHandle(value));
       const input = { deliveryId: "audit-failure", message: { customType: "wakeup", content: "Done", display: true } };
       await outbox.deliver(raw, input);
       await vi.waitFor(() => expect(errors).toHaveBeenCalledOnce());
