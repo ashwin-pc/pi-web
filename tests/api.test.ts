@@ -305,6 +305,27 @@ describe("pi-web mock API", () => {
     }
   }, 25_000);
 
+  it("uses a deterministic synthetic path in showcase tool calls and results", async () => {
+    const response = await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "showcase" }),
+    });
+    expect(response.status).toBe(202);
+
+    const { messages } = await (await fetch(`${baseUrl}/api/messages`)).json();
+    const assistant = messages.findLast((message: any) => message.toolCalls?.some((call: any) => call.id === "call-showcase-read"));
+    expect(assistant.toolCalls).toEqual([
+      expect.objectContaining({ id: "call-showcase-read", args: { path: "/workspace/pi-web/src/style.css" } }),
+      expect.objectContaining({ id: "call-showcase-edit", args: expect.objectContaining({ path: "/workspace/pi-web/src/style.css" }) }),
+    ]);
+    for (const toolCallId of ["call-showcase-read", "call-showcase-edit"]) {
+      expect(messages.findLast((message: any) => message.toolCallId === toolCallId).toolArgs.path).toBe("/workspace/pi-web/src/style.css");
+    }
+    expect(messages.findLast((message: any) => message.toolCallId === "call-showcase-edit").text)
+      .toBe("Successfully replaced 1 block(s) in /workspace/pi-web/src/style.css.");
+  });
+
   it("uploads generic attachments and keeps their bytes out of agent context", async () => {
     const upload = await fetch(`${baseUrl}/api/attachments?name=tiny.png&mediaType=image%2Fpng`, {
       method: "POST",

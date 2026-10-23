@@ -1,5 +1,4 @@
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import type { PiWebSession, PiWebSessionInfo } from "./types.js";
 import { simplifyMessage } from "./session/projection.js";
@@ -872,7 +871,7 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "toolResult", toolCallId: "call-launch-read", toolName: "read", content: "14 interview summaries, 38 tagged observations, and 6 supporting market notes.", timestamp });
           appendMockMessage({ role: "toolResult", toolCallId: "call-launch-write", toolName: "write", content: "Visual launch brief saved to /workspace/launch-plan/deliverables/spring-launch-brief.html", timestamp });
         } else if (withShowcase) {
-          const showcasePath = join(tmpdir(), "pi-web-mock", "src", "style.css");
+          const showcasePath = "/workspace/pi-web/src/style.css";
           const editArgs = { path: showcasePath, edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };
           const editDetails = { diff: " 118 .sessionList { overflow-y: auto; }\n 119 \n 120 .sessionItem {\n-121   min-height: 40px;\n+121   height: auto;\n+122   min-height: 0;\n 123 }\n+124 \n+125 @media (max-width: 700px) {\n+126   .sessionDrawer { width: 100vw; }\n+127 }", firstChangedLine: 121 };
           appendMockMessage({ role: "assistant", content: [
