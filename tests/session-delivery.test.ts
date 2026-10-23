@@ -134,12 +134,26 @@ describe("host prompt admission and settled interruption", () => {
     finish();
   });
 
+  it("validates without admission or leases and revalidates a changed registry on send", async () => {
+    const { raw, service } = await fixture();
+    const input = { message: "/new-command args", dispatchId };
+    await expect(service.validatePrompt(raw.sessionId, input)).resolves.toEqual({ valid: true });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    raw.extensionRunner = { getRegisteredCommands: () => [{ name: "new-command" }] };
+    await expect(service.validatePrompt(raw.sessionId, input)).rejects.toMatchObject({ status: 400 });
+    await expect(service.prompt(raw.sessionId, { ...prompt, ...input })).rejects.toMatchObject({ status: 400 });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+  });
+
   it.each(["/my-command foo", "/template args", "/skill:foo", "/template\targs"])("rejects tracked slash dispatch before leases/SDK: %s", async message => {
     const { raw, service } = await fixture();
     raw.extensionRunner = { getRegisteredCommands: () => [{ name: "my-command" }] };
     raw.promptTemplates = [{ name: "template" }];
     raw.resourceLoader = { getSkills: () => ({ skills: [{ name: "foo" }] }) };
     expect((await service.commands(raw.sessionId)).map(command => command.name)).toEqual(expect.arrayContaining(["my-command", "template", "skill:foo", "commands"]));
+    await expect(service.validatePrompt(raw.sessionId, { message, dispatchId })).rejects.toMatchObject({ status: 400 });
     await expect(service.prompt(raw.sessionId, { ...prompt, message })).rejects.toMatchObject({ status: 400 });
     expect(raw.prompt).not.toHaveBeenCalled();
     expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
@@ -152,6 +166,9 @@ describe("host prompt admission and settled interruption", () => {
     raw.extensionRunner = { getRegisteredCommands: () => [{ name: "my-command" }] };
     raw.promptTemplates = [{ name: "template" }];
     raw.resourceLoader = { getSkills: () => ({ skills: [{ name: "foo" }] }) };
+    await expect(service.validatePrompt(raw.sessionId, { message, dispatchId })).resolves.toEqual({ valid: true });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
     await expect(service.prompt(raw.sessionId, { ...prompt, message })).resolves.toMatchObject({ admission: "accepted" });
     expect(raw.prompt).toHaveBeenCalledWith(`${message}\n\n[pi-web-dispatch:${dispatchId}]`, expect.anything());
   });
@@ -159,6 +176,7 @@ describe("host prompt admission and settled interruption", () => {
   it("fails closed if the command registry cannot be loaded, without blocking untracked commands", async () => {
     const { raw, service } = await fixture();
     raw.extensionRunner = { getRegisteredCommands: () => { throw new Error("registry failed"); } };
+    await expect(service.validatePrompt(raw.sessionId, { message: "/maybe", dispatchId })).rejects.toMatchObject({ status: 503 });
     await expect(service.prompt(raw.sessionId, { ...prompt, message: "/maybe" })).rejects.toMatchObject({ status: 503 });
     expect(raw.prompt).not.toHaveBeenCalled();
     expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);

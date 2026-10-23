@@ -93,9 +93,9 @@ the session's default model. Never guess model ids; pass a category **name**.
   natural-language instructions, not registered SDK `/commands`, `/templates`, or
   `/skill:...`: these are rejected before interrupting or replacing the previous
   watch. Path-led tasks (`/src/foo.ts fails, fix it`) and unknown slash literals
-  are allowed unchanged. Slash-prefixed messages first require a successful
-  read-only lookup of the target's command metadata; a rejected command or failed
-  lookup leaves the old assignment tracked.
+  are allowed unchanged. Every follow-up first requires successful read-only core
+  validation; rejection or validation failure leaves the old assignment tracked.
+  Validation is not admission: the actual send revalidates the current registry.
   Ordinary tasks include a visible dispatch watermark in the worker transcript;
   admission alone does not prove the worker consumed the task. Do not blindly
   resend after an ambiguous admission error.

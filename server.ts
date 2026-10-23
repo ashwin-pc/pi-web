@@ -1349,13 +1349,20 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 201, { ok: true, attachment });
       }
 
+      if (method === "POST" && url.pathname === "/api/prompt/validate") {
+        const body = await readBody(req) as { sessionId?: unknown; message?: unknown; dispatchId?: unknown };
+        if (typeof body.message !== "string") throw new SessionServiceError("message is required");
+        if (typeof body.dispatchId !== "string") throw new SessionServiceError("dispatchId must be a UUID");
+        return sendJson(res, 200, { ok: true, ...await sessionService.validatePrompt(resolveSessionId(body.sessionId), { message: body.message, dispatchId: body.dispatchId }) });
+      }
+
       if (method === "POST" && url.pathname === "/api/prompt") {
         const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown; waitFor?: unknown; dispatchId?: unknown };
         if (body.waitFor !== undefined && body.waitFor !== "admission") throw new SessionServiceError("waitFor must be admission");
         if (body.dispatchId !== undefined && typeof body.dispatchId !== "string") throw new SessionServiceError("dispatchId must be a UUID");
         const rawMessage = String(body.message || "");
         const trimmedMessage = rawMessage.trim();
-        // Tracked text must match command preflight exactly; retain legacy UI trimming.
+        // Preserve literal tracked text for core validation and dispatch; retain legacy UI trimming.
         const message = body.dispatchId && trimmedMessage ? rawMessage : trimmedMessage;
         const target = await sessionService.require(resolveSessionId(body.sessionId));
         const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);

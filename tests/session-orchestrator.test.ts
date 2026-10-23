@@ -167,13 +167,11 @@ function stubFetch(options: {
     if (path === "/api/new-chat") {
       created += 1;
       payload = options.newChatFails ? { ok: false, error: "boom" } : { ok: true, sessionId: `worker-${created}` };
-    } else if (path.startsWith("/api/commands?")) {
-      payload = { ok: true, commands: [
-        { name: "my-ext-command", source: "extension" },
-        { name: "template", source: "prompt" },
-        { name: "skill:foo", source: "skill" },
-        { name: "help", source: "web" },
-      ] };
+    } else if (path === "/api/prompt/validate") {
+      // Core owns command matching; this mock only supplies validation decisions.
+      payload = ["/my-ext-command foo", "/template args", "/template\targs", "/skill:foo"].includes(body.message)
+        ? { ok: false, status: 400, error: "Tracked slash dispatch unsupported" }
+        : { ok: true, valid: true };
     } else if (path.startsWith("/api/models")) {
       payload = { ok: true, models: options.models ?? registry };
     } else if (path.startsWith("/api/state")) {
@@ -979,48 +977,89 @@ describe("issue 190 durable delivery", () => {
     const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
     calls.length = 0;
     await expect(tools.get("sessions_prompt").execute("command", { id: "worker-1", message, interrupt: true })).rejects.toThrow(/slash.*unsupported/i);
-    expect(calls).toEqual([{ method: "GET", path: "/api/commands?sessionId=worker-1", body: undefined }]);
+    expect(calls).toEqual([{ method: "POST", path: "/api/prompt/validate", body: { sessionId: "worker-1", message, dispatchId: expect.any(String) } }]);
     expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
   });
 
-  it.each(["/src/foo.ts fails, fix it", "/unknown literal task", "/skill:unknown literal task", "/help explain this", "  /template literal text", "/my-ext-command\targs", "/skill:foo\targs"])("dispatches slash literal %j unchanged with server-side watermark", async (message) => {
+  it.each(["plain text", "/src/foo.ts fails, fix it", "/unknown literal task", "/skill:unknown literal task", "/help explain this", "  /template literal text", "/my-ext-command\targs", "/skill:foo\targs"])("dispatches slash literal %j unchanged with server-side watermark", async (message) => {
     const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
     calls.length = 0;
     await tools.get("sessions_prompt").execute("literal", { id: "worker-1", message, interrupt: true });
     expect(calls.map(({ method, path }) => `${method} ${path}`)).toEqual([
-      "GET /api/commands?sessionId=worker-1", "POST /api/abort", "POST /api/prompt",
+      "POST /api/prompt/validate", "POST /api/abort", "POST /api/prompt",
     ]);
     const body = calls[2].body;
     expect(body).toMatchObject({ sessionId: "worker-1", message, mode: "steer", waitFor: "admission" });
+    expect(body.dispatchId).toBe(calls[0].body.dispatchId);
     expect(body.dispatchId).toBe(journal().watches[0].dispatchId);
     expect(workerMessages.get("worker-1")![0].text).toBe(`${message}\\n\\n[pi-web-dispatch:${body.dispatchId}]`);
     expect(journal().watches[0].admissionPending).toBe(false);
   });
 
-  it.each(["http", "malformed", "missing-name", "unknown-source"])("preserves prior watch when slash metadata lookup is %s", async (failure) => {
+  it.each(["http", "network", "malformed", "not-valid"])("preserves prior watch when core validation fails: %s", async (failure) => {
     const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
     const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
     const beforeBranch = JSON.stringify(branch);
     const fetch = globalThis.fetch;
     globalThis.fetch = (async (url: any, init: any) => {
-      if (!String(url).startsWith("/api/commands?")) return fetch(url, init);
+      if (String(url) !== "/api/prompt/validate") return fetch(url, init);
       calls.push({ method: init.method, path: String(url) });
-      const commands = failure === "malformed" ? null : failure === "missing-name" ? [{ source: "extension" }] : failure === "unknown-source" ? [{ name: "foo", source: "future" }] : [];
-      return { ok: failure !== "http", status: failure === "http" ? 503 : 200, json: async () => ({ commands }) };
+      if (failure === "network") throw new Error("network unavailable");
+      return { ok: failure !== "http", status: failure === "http" ? 503 : 200, json: async () => failure === "malformed" ? {} : { ok: true, valid: false } };
     }) as any;
     calls.length = 0;
-    await expect(tools.get("sessions_prompt").execute("literal", { id: "worker-1", message: "/src/foo.ts fails", interrupt: true })).rejects.toThrow();
-    expect(calls).toEqual([{ method: "GET", path: "/api/commands?sessionId=worker-1" }]);
+    await expect(tools.get("sessions_prompt").execute("literal", { id: "worker-1", message: "plain text still requires core validation", interrupt: true })).rejects.toThrow();
+    expect(calls).toEqual([{ method: "POST", path: "/api/prompt/validate" }]);
     expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
     expect(JSON.stringify(branch)).toBe(beforeBranch);
   });
 
-  it("restores the old watch on definitive server rejection after a stale slash lookup", async () => {
+  it.each([true, false])("treats core validation as authoritative, regardless of message syntax (valid=%s)", async (valid) => {
+    const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
+    const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
+    const fetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => {
+      if (String(url) !== "/api/prompt/validate") return fetch(url, init);
+      calls.push({ method: init.method, path: String(url), body: JSON.parse(init.body) });
+      return { ok: valid, status: valid ? 200 : 400, json: async () => valid ? { ok: true, valid: true } : { ok: false, error: "core rejected text" } };
+    }) as any;
+    calls.length = 0;
+    const message = valid ? "/my-ext-command foo" : "ordinary text";
+    const result = tools.get("sessions_prompt").execute("core-authority", { id: "worker-1", message, interrupt: true });
+    if (valid) {
+      await result;
+      expect(calls.map(call => call.path)).toEqual(["/api/prompt/validate", "/api/abort", "/api/prompt"]);
+      expect(calls[2].body).toMatchObject({ message, dispatchId: calls[0].body.dispatchId });
+    } else {
+      await expect(result).rejects.toThrow(/core rejected text/);
+      expect(calls.map(call => call.path)).toEqual(["/api/prompt/validate"]);
+      expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
+    }
+  });
+
+  it("cannot dispatch a stale successful validation after runtime replacement", async () => {
+    const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
+    const held = deferred<any>(); const fetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init: any) => String(url) === "/api/prompt/validate" ? held.promise : fetch(url, init)) as any;
+    calls.length = 0;
+    const pending = tools.get("sessions_prompt").execute("stale-validation", { id: "worker-1", message: "new task", interrupt: true });
+    const rejected = expect(pending).rejects.toThrow(/replaced/);
+    await vi.advanceTimersByTimeAsync(0);
+    await restart(ctx);
+    const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
+    calls.length = 0;
+    held.resolve({ ok: true, json: async () => ({ ok: true, valid: true }) });
+    await rejected;
+    expect(calls).toEqual([]);
+    expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
+  });
+
+  it("restores the old watch on definitive send rejection after successful validation", async () => {
     const ctx = makeCtx(); await spawn(ctx, { name: "existing", task: "old task" });
     const before = readFileSync(join(stateDir, "parent-1.json"), "utf8");
     stubFetch({ promptFails: true, promptFailureStatus: 400 }); calls.length = 0;
     await expect(tools.get("sessions_prompt").execute("stale", { id: "worker-1", message: "/new-command args" })).rejects.toThrow(/400/);
-    expect(calls.map((call) => call.path)).toEqual(["/api/commands?sessionId=worker-1", "/api/prompt"]);
+    expect(calls.map((call) => call.path)).toEqual(["/api/prompt/validate", "/api/prompt"]);
     expect(readFileSync(join(stateDir, "parent-1.json"), "utf8")).toBe(before);
   });
 

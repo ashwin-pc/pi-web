@@ -727,6 +727,20 @@ describe("pi-web mock API", () => {
     ws.close();
   });
 
+  it("validates tracked prompt text without dispatching it", async () => {
+    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const before = await (await fetch(`${baseUrl}/api/messages`)).json();
+    const input = { sessionId: "mock-current", message: " /unknown literal ", dispatchId: "11111111-1111-4111-8111-111111111111" };
+    const valid = await post("/api/prompt/validate", input);
+    expect(valid.status).toBe(200);
+    expect(await valid.json()).toEqual({ ok: true, valid: true });
+    for (const invalid of [{ ...input, dispatchId: "bad" }, { ...input, message: "" }, { ...input, message: 42 }, { ...input, dispatchId: undefined }]) {
+      expect((await post("/api/prompt/validate", invalid)).status).toBe(400);
+    }
+    expect((await post("/api/prompt/validate", { ...input, sessionId: "missing-session" })).status).toBe(404);
+    expect(await (await fetch(`${baseUrl}/api/messages`)).json()).toEqual(before);
+  });
+
   it("rejects empty prompts", async () => {
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",

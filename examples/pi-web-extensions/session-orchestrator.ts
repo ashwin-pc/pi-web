@@ -217,30 +217,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
     if (!Array.isArray(json.messages)) throw new Error("Transcript response did not contain messages");
     return json.messages;
   }
-  async function checkTrackedMessage(sessionId: string, message: string): Promise<void> {
-    if (!/^\s*\//.test(message)) return;
-    // Read the target's current registry, not this extension's parent registry.
-    // Web-only commands are interpreted by the browser, not SDK prompt().
-    const { commands } = await api("GET", `/api/commands?sessionId=${encodeURIComponent(sessionId)}`);
-    if (!Array.isArray(commands) || commands.some((command: any) =>
-      !command || typeof command.name !== "string" || !command.name ||
-      !["web", "extension", "prompt", "skill"].includes(command.source))) {
-      throw new Error("Cannot validate tracked slash input: command metadata unavailable; no task was sent.");
-    }
-    // Paired with LocalSessionService.prompt() in server/session/service.ts;
-    // this standalone example cannot import server code. Keep both in sync with
-    // SDK-parse parity cases in tests/session-delivery.test.ts and tests/session-orchestrator.test.ts.
-    // Mirror SDK parsing without trimming or rewriting the user's input:
-    // extensions/skills split at ASCII space; templates accept any whitespace.
-    if (!message.startsWith("/")) return;
-    const spaceIndex = message.indexOf(" ");
-    const commandName = message.slice(1, spaceIndex === -1 ? undefined : spaceIndex);
-    const templateName = message.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)?.[1];
-    if (commands.some((command: any) =>
-      command.source === "prompt" ? command.name === templateName :
-        (command.source === "extension" || command.source === "skill") && command.name === commandName)) {
-      throw new Error("Tracked registered slash commands/templates/skills are unsupported; send a natural-language task instead.");
-    }
+  async function checkTrackedMessage(sessionId: string, message: string, dispatchId: string): Promise<void> {
+    const result = await api("POST", "/api/prompt/validate", { sessionId, message, dispatchId });
+    if (result.ok !== true || result.valid !== true) throw new Error("Core did not confirm tracked prompt validation; no task was sent.");
   }
   type Watched = {
     id: string;
@@ -1037,9 +1016,9 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
       const previous = dispatchQueues.get(params.id) || Promise.resolve();
       const operation = previous.catch(() => {}).then(async () => {
         if (!isActive(expectedGeneration)) throw new Error("Orchestrator instance was replaced");
-        // Commands may consume/expand input without an attributable user entry.
-        // Lookup must succeed before aborting or replacing the durable intent.
-        await checkTrackedMessage(params.id, params.message);
+        // Validation is read-only, not admission. Keep the old watch until it succeeds.
+        const dispatchId = randomUUID();
+        await checkTrackedMessage(params.id, params.message, dispatchId);
         if (!isActive(expectedGeneration)) throw new Error("Orchestrator instance was replaced");
         dispatching.add(params.id);
         try {
@@ -1048,7 +1027,6 @@ export default function sessionOrchestrator(pi: PiWebExtensionAPI) {
             if (!isActive(expectedGeneration)) throw new Error("Orchestrator instance was replaced");
             if (aborted.idle !== true) throw new Error("Abort did not confirm idle; redirect not sent");
           }
-          const dispatchId = randomUUID();
           const old = watched.get(params.id);
           watch(params.id, old?.name || shortId(params.id), old?.categoryName, dispatchId, true);
           const intent = watched.get(params.id)!;

@@ -711,7 +711,15 @@ export class LocalSessionService implements SessionService {
     return this.executeSlashCommand(command, await this.require(sessionId));
   }
 
-  async prompt(sessionId: string, input: SessionPromptInput) {
+  /** Read-only validation, not admission: the eventual send must revalidate. */
+  async validatePrompt(sessionId: string, input: { message: string; dispatchId: string }) {
+    if (typeof input.message !== "string" || !input.message.trim()) throw new SessionServiceError("message is required");
+    if (typeof input.dispatchId !== "string") throw new SessionServiceError("dispatchId must be a UUID");
+    await this.validatePromptTarget(sessionId, input);
+    return { valid: true as const };
+  }
+
+  private async validatePromptTarget(sessionId: string, input: Pick<SessionPromptInput, "message" | "dispatchId">) {
     if (input.dispatchId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.dispatchId)) throw new SessionServiceError("dispatchId must be a UUID");
     const value = await this.require(sessionId);
     if (input.dispatchId) {
@@ -720,9 +728,6 @@ export class LocalSessionService implements SessionService {
         let commands: SlashCommandDto[];
         try { commands = this.getSlashCommands(value); }
         catch { throw new SessionServiceError("Command registry unavailable; tracked slash dispatch cannot be validated", 503); }
-        // Paired with checkTrackedMessage() in examples/pi-web-extensions/session-orchestrator.ts;
-        // the standalone example cannot import server code. Keep both in sync with
-        // SDK-parse parity cases in tests/session-delivery.test.ts and tests/session-orchestrator.test.ts.
         // Mirror SDK parsing, not browser command parsing: extension/skill
         // tokens end at ASCII space, templates at any whitespace. Leading
         // whitespace and browser-only names are literal SDK prompts.
@@ -732,6 +737,11 @@ export class LocalSessionService implements SessionService {
         if (commands.some(command => command.source === "prompt" ? command.name === templateName : (command.source === "extension" || command.source === "skill") && command.name === sdkName)) throw new SessionServiceError("Tracked slash-command/template dispatch is unsupported; send a natural-language task or invoke separately without completion attribution", 400);
       }
     }
+    return value;
+  }
+
+  async prompt(sessionId: string, input: SessionPromptInput) {
+    const value = await this.validatePromptTarget(sessionId, input);
     this.assertMutable(value, true);
     await this.startSessionPrompt(value, input);
     return { sessionId: value.sessionId, ...(input.waitFor === "admission" ? { admission: "accepted" as const } : {}), ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}) };

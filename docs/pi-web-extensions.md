@@ -575,13 +575,14 @@ mapping stays private to the config and the spawn tool resolves it fail-closed.
 
 Tracked follow-ups through `sessions_prompt` must be natural-language messages.
 Registered SDK slash commands, templates, and skills are rejected before aborting
-a worker or replacing its watch. Only slash-prefixed candidates trigger a read-only
-lookup of the target's `/api/commands` metadata; failed or malformed lookups leave
-the old assignment untouched. Path-led tasks such as `/src/foo.ts fails, fix it`
-and unknown slash literals follow normal SDK handling, unchanged. Matching uses
-SDK parsing (no leading-whitespace trimming; extension/skill names end at an ASCII
-space, template names at any whitespace), excluding browser-only commands.
-Arguments are never modified. A slash-prefixed `sessions_spawn` task is literal
+a worker or replacing its watch. Every tracked follow-up calls the read-only
+`POST /api/prompt/validate` with literal text and an ephemeral dispatch UUID;
+failed or malformed validation leaves the old assignment untouched. The extension
+does not parse commands or command metadata. Core owns the single SDK matcher,
+excluding browser-only commands. Path-led tasks such as `/src/foo.ts fails, fix it`
+and unknown slash literals follow normal SDK handling, unchanged. Arguments are
+never modified. Validation is not admission: the actual send revalidates the current
+registry, using the same UUID, and a definitive rejection restores the prior watch. A slash-prefixed `sessions_spawn` task is literal
 text inside the worker instruction wrapper, not an executed command. Ordinary
 tracked prompts carry a `[pi-web-dispatch:<uuid>]` watermark visible to the model
 and in the worker transcript. Admission alone is not task completion: the watcher

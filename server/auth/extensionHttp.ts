@@ -33,7 +33,7 @@ const routes: Readonly<Record<string, PiWebHttpScope>> = Object.freeze({
   "GET /api/session/reference": "sessions.read",
   "GET /api/session/history": "sessions.read",
   "GET /api/models": "sessions.read",
-  "GET /api/commands": "sessions.read",
+  "POST /api/prompt/validate": "sessions.read",
   "POST /api/new-chat": "sessions.create",
   "POST /api/sessions/new": "sessions.create",
   "POST /api/prompt": "sessions.write",

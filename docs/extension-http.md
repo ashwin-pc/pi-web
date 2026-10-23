@@ -73,7 +73,7 @@ await client.request("POST", "/api/session/name", { body: { name: "Reviewed" } }
 
 | Scope | Exact permitted HTTP operations |
 | --- | --- |
-| `sessions.read` | GET `/api/state`, `/api/messages`, `/api/messages/image`, `/api/session/reference`, `/api/session/history`, `/api/models`, `/api/commands` |
+| `sessions.read` | GET `/api/state`, `/api/messages`, `/api/messages/image`, `/api/session/reference`, `/api/session/history`, `/api/models`; POST `/api/prompt/validate` |
 | `sessions.create` | POST `/api/new-chat`, `/api/sessions/new` |
 | `sessions.write` | POST `/api/prompt`, `/api/abort`, `/api/session/completion`, `/api/session/name`, `/api/model`, `/api/session-ui-state/read` |
 | `sessions.delete` | POST `/api/sessions/delete` |
@@ -134,14 +134,22 @@ An optional UUID `dispatchId` causes the host to append exactly
 attachment fence**, and echo that ID in the receipt. Attachments therefore remain
 parseable. This marker is visible to the model **and transcript UI**. Tracked
 registered SDK extension commands, prompt templates, and skills are unsupported
-and return **400 before SDK dispatch or work leases**. Read-only preflight via
-`GET /api/commands?sessionId=<target>` lists their invocation names (`source` is
-`extension`, `prompt`, or `skill`; `web` entries are browser-only). The usual
-`sessions.read` scope and session-target restrictions apply. Matching preserves
-SDK parsing: no leading trim; extension/skill names end at ASCII space, template
-names at whitespace. Unknown slash literals and path-led tasks such as
-`/src/foo.ts fails, fix it` remain valid tracked text. Registry errors fail closed
-with 503. Invoke registered commands separately without completion attribution.
+and return **400 before SDK dispatch or work leases**. Before interrupting a worker
+or replacing its durable watch, validate every tracked follow-up through
+`POST /api/prompt/validate` with `{ sessionId, message, dispatchId }`. The UUID is
+ephemeral until validation succeeds; reuse that same ID for the later intent and
+prompt. Success is **200** `{ ok: true, valid: true }`; invalid input returns **400**
+and an unavailable command registry returns **503**. This read-only route requires
+`sessions.read` and normal session-target restrictions. It invokes no SDK prompt,
+preflight callback, reservation, work lease, or journal mutation. Validation is
+**not admission**: the actual prompt reuses the same core validation helper against
+the current registry, and can still reject after a successful check.
+
+Core alone owns SDK command matching. It preserves literal text and arguments:
+no leading trim; extension/skill names end at ASCII space, template names at
+whitespace. Browser-only commands are excluded. Unknown slash literals and
+path-led tasks such as `/src/foo.ts fails, fix it` remain valid tracked text.
+Invoke registered commands separately without completion attribution.
 Untracked slash prompts keep their existing SDK behavior and arguments.
 Find the actual saved **user** entry
 containing that marker before treating later assistant replies as this task's

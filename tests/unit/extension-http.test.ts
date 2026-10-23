@@ -211,17 +211,25 @@ describe("scoped extension HTTP credentials", () => {
     await expect(writeOnly.request("GET", `/api/messages/image?imageId=${imageId}`)).rejects.toThrow("scope");
   });
 
-  it("permits read-only command preflight only for authorized session targets", async () => {
+  it("permits read-only prompt validation only for authorized session targets", async () => {
     const h = harness();
-    const reader = h.registry.createClient({}, "parent", () => true, { name: "commands", scopes: ["sessions.read"] });
-    await reader.request("GET", "/api/commands?sessionId=parent");
-    expect((await h.registry.authenticate(request(h.auth, "/api/commands?sessionId=parent"))).ok).toBe(true);
-    for (const path of ["/api/commands?sessionId=other", "/api/commands?sessionId=parent&sessionId=parent", "/api/commands?sessionId=parent&extra=1"]) {
-      await expect(reader.request("GET", path)).rejects.toThrow();
-      expect((await h.registry.authenticate(request(h.auth, path))).ok).toBe(false);
+    const path = "/api/prompt/validate";
+    const reader = h.registry.createClient({}, "parent", () => true, { name: "validation", scopes: ["sessions.read"] });
+    await reader.request("POST", path, { body: { message: "literal", dispatchId: "12345678-1234-1234-1234-123456789abc" } });
+    expect((await h.registry.authenticate(request(h.auth, path, "POST"))).ok).toBe(true);
+    await expect(reader.request("POST", path, { body: { sessionId: "other" } })).rejects.toThrow("targets");
+    h.body.sessionId = "other";
+    expect((await h.registry.authenticate(request(h.auth, path, "POST"))).ok).toBe(false);
+    h.body.sessionId = "parent";
+    for (const invalid of [`${path}?sessionId=parent`, `${path}?extra=1`]) {
+      await expect(reader.request("POST", invalid)).rejects.toThrow();
+      expect((await h.registry.authenticate(request(h.auth, invalid, "POST"))).ok).toBe(false);
     }
     const writer = h.registry.createClient({}, "parent", () => true, { name: "writer", scopes: ["sessions.write"] });
-    await expect(writer.request("GET", "/api/commands?sessionId=parent")).rejects.toThrow("scope");
+    await expect(writer.request("POST", path)).rejects.toThrow("scope");
+    await expect(reader.request("POST", "/api/prompt")).rejects.toThrow("scope");
+    await expect(reader.request("GET", "/api/commands?sessionId=parent")).rejects.toThrow("scope");
+    expect((await h.registry.authenticate(request(h.auth, "/api/commands?sessionId=parent"))).ok).toBe(false);
   });
 
   it("adds created sessions only after server-authorized creation and supports explicit all-session tools", async () => {
