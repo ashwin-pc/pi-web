@@ -85,7 +85,7 @@ describe("pi-web mock API", () => {
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
+      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "", PI_WEB_CWD: settingsDir, PI_WEB_SETTINGS_FILE: join(settingsDir, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(settingsDir, "session-ui-state.json") },
       stdio: ["ignore", "pipe", "pipe"],
     });
     child.stderr?.on("data", (data) => process.stderr.write(data));
@@ -320,6 +320,10 @@ describe("pi-web mock API", () => {
       body: JSON.stringify({ message: "describe this", attachments: [attachment] }),
     });
     expect(res.status).toBe(202);
+    await waitForCondition(async () => {
+      const current = await (await fetch(`${baseUrl}/api/messages`)).json();
+      return current.messages.at(-1)?.text === "Mock response.";
+    });
 
     const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
     expect(messages.messages.at(-2)).toMatchObject({
