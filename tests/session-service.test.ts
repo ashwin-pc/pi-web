@@ -27,8 +27,8 @@ describe("owned Pi runtime handle", () => {
     (fixture.session as PiWebSession & { dispose(): void }).dispose = () => { order.push("dispose"); reentrant.push(handle.dispose("reset")); };
     handle.subscribe(() => undefined);
     const disposal = handle.dispose("reset");
-    expect(order).toEqual(shutdown ? ["shutdown", "unsubscribe", "dispose"] : ["unsubscribe", "dispose"]);
     await disposal;
+    expect(order).toEqual(shutdown ? ["shutdown", "unsubscribe", "dispose"] : ["unsubscribe", "dispose"]);
     expect(reentrant.every((promise) => promise === disposal)).toBe(true);
     expect(handle.dispose("reset")).toBe(disposal);
   });
@@ -40,9 +40,9 @@ describe("owned Pi runtime handle", () => {
     let disposal!: Promise<void>;
     fixture.session.subscribe = (listener) => { listener({ type: "agent_end" }); return unsubscribe; };
     const release = handle.subscribe(() => { disposal = handle.dispose("reset"); });
+    await disposal;
     expect(unsubscribe).toHaveBeenCalledOnce();
     release();
-    await disposal;
     expect(unsubscribe).toHaveBeenCalledOnce();
     expect(fixture.disposeCalls).toBe(1);
   });
@@ -55,6 +55,7 @@ describe("owned Pi runtime handle", () => {
     const subscribe = vi.spyOn(fixture.session, "subscribe");
     const disposal = handle.dispose("reset");
     expect(() => handle.subscribe(() => undefined)).toThrow("closing or disposed");
+    await Promise.resolve();
     finish();
     await disposal;
     expect(() => handle.subscribe(() => undefined)).toThrow("closing or disposed");
@@ -684,6 +685,47 @@ describe("LocalSessionService contract", () => {
     expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
   });
 
+  it("Stop does not fence rename/model/prompt/navigation while an unanswered confirm is alive", async () => {
+    const { service, fixture, initial } = await fixtureService({ clientCount: 1 });
+    const events: SessionServiceEvent[] = []; service.subscribe(event => events.push(event));
+    const answer = fixture.extensionOptions.uiContext.confirm("Allow?", "Keep waiting", { timeout: 120_000 });
+    const interaction = events.find(event => event.type === "interaction");
+    if (!interaction || interaction.type !== "interaction") throw new Error("Missing interaction");
+    await service.abort(initial.sessionId);
+    await service.rename(initial.sessionId, "After Stop");
+    await service.setModel(initial.sessionId, "test", "model");
+    fixture.extensionOptions.uiContext.web.setPanel("still-live", { title: "Panel", render: async () => ({ html: "<p>Ready</p>" }) });
+    expect(await service.invokePanel(initial.sessionId, { key: "still-live" })).toMatchObject({ html: "<p>Ready</p>" });
+    await service.abort(initial.sessionId, "idle");
+    await service.navigate(initial.sessionId, "call", {});
+    await service.prompt(initial.sessionId, { message: "new task", mode: "steer", attachments: [] });
+    expect(service.respondInteraction({ id: interaction.request.id, confirmed: true })).toBe(true);
+    await expect(answer).resolves.toBe(true);
+    expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
+  });
+
+  it("Stop during composer capture permits rename/prompt/navigation before capture resolves", async () => {
+    const { service, fixture, initial } = await fixtureService({ clientCount: 1 });
+    let finish!: () => void;
+    const invoke = vi.fn(() => new Promise(resolve => { finish = () => resolve({ effects: [{ type: "insert-composer-text", text: "transcribed", placement: "selection" }] }); }));
+    fixture.extensionOptions.uiContext.web.contribute("voice", {
+      slot: "composer-input", kind: "capture", title: "Voice", icon: "mic",
+      capture: { media: "audio", mimeTypes: ["audio/webm"] }, invoke,
+    });
+    const entries = service.webUiEntries(initial) as any;
+    const registrationId = entries.webContributions.find((entry: any) => entry.key === "voice").capture.registrationId;
+    const stored = await service.storeCapture(initial.sessionId, "voice", registrationId, { mimeType: "audio/webm", durationMs: 100, bytes: new Uint8Array([1]) });
+    const capture = service.invokeContribution(initial.sessionId, { slot: "composer-input", key: "voice", event: { captureId: stored.id } });
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledOnce());
+    await service.executeCommand(initial.sessionId, "/stop");
+    await service.rename(initial.sessionId, "After capture Stop");
+    await service.abort(initial.sessionId, "idle");
+    await service.navigate(initial.sessionId, "call", {});
+    await service.prompt(initial.sessionId, { message: "new task", mode: "steer", attachments: [] });
+    finish(); await expect(capture).resolves.toMatchObject({ effects: [{ type: "insert-composer-text", text: "transcribed" }] });
+    expect(service.lifecycleSnapshot().liveSessions[0]?.leases).toEqual([]);
+  });
+
   it("denies timed-out and disconnected interactions through the service boundary", async () => {
     vi.useFakeTimers();
     let clients = 1;
@@ -900,7 +942,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     warn.mockRestore();
   });
 
-  it("lets abort recover a gated lease and ignores its late scoped release", async () => {
+  it("lets Stop recover a visible gated lease while ignoring its late scoped release", async () => {
     const { service, initial } = await fixtureService();
     let finishNavigate!: () => void;
     let markEntered!: () => void;
@@ -990,8 +1032,7 @@ describe("LocalSessionService standalone lifecycle", () => {
 
     const first = service.disposeAll("reset");
     const second = service.disposeAll("reset");
-    await Promise.resolve();
-    expect(emit).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
     releaseShutdown();
     await Promise.all([first, second]);
     expect(fixture.disposeCalls).toBe(1);

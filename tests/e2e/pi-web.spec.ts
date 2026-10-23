@@ -5,6 +5,9 @@ import { openSessionDrawerFooterAction, shouldCloseSessionDrawerAfterSwitch } fr
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
+// playwright.config.ts starts the mock server with PI_WEB_CWD=$PWD.
+const fixtureCwd = process.cwd();
+
 test.beforeEach(async ({ page }) => {
   await page.request.post("/api/mock/reset");
   await page.request.patch("/api/settings", {
@@ -22,7 +25,7 @@ test.describe("composer layout", () => {
 
     await expect(page.locator("#statusBar")).toBeVisible();
     await expect(page.locator("#statusTitle")).toHaveText("Current mock session");
-    await expect(page.locator("#statusPath")).toContainText("pi-web");
+    await expect(page.locator("#statusPath")).toHaveText(fixtureCwd);
   });
 
   test("running activity badge keeps the header within the viewport", async ({ page }) => {
@@ -1110,7 +1113,7 @@ test.describe("sessions drawer", () => {
     await expect(animation).toBeVisible();
     await expect.poll(() => animation.evaluate((image: HTMLImageElement) => image.naturalWidth)).toBeGreaterThan(0);
     const cwdButton = emptyState.getByRole("button", { name: "Change working directory" });
-    await expect(cwdButton).toContainText(/pi-web/);
+    await expect(cwdButton.locator(".emptyCwdPath")).toHaveText(fixtureCwd);
     const trailingSpace = await cwdButton.evaluate((button) => {
       const buttonRect = button.getBoundingClientRect();
       const chevronRect = button.querySelector(".emptyControlChevron")!.getBoundingClientRect();

@@ -1,0 +1,483 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { LocalSessionService, type LocalSessionServiceDependencies } from "../server/session/service.js";
+import type { PiWebSession } from "../server/types.js";
+import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { parseAttachmentMarkup } from "../server/shared/attachments.js";
+
+const cleanups: Array<() => Promise<unknown>> = [];
+afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.unstubAllEnvs(); });
+const dispatchId = "12345678-1234-1234-1234-123456789abc";
+async function fixture(settleTimeoutMs?: number, createRaw?: (cwd: string) => Promise<PiWebSession>) {
+  if (settleTimeoutMs !== undefined) vi.stubEnv("PI_WEB_OPERATION_SETTLE_TIMEOUT_MS", String(settleTimeoutMs));
+  const cwd = await mkdtemp(join(tmpdir(), "pi-web-admission-"));
+  await writeFile(join(cwd, "parent.jsonl"), `${JSON.stringify({ type: "session", id: "parent", version: 3 })}\n`);
+  const model = { provider: "test", id: "model" };
+  let raw = {
+    sessionId: "parent", sessionFile: join(cwd, "parent.jsonl"), isStreaming: false,
+    model, thinkingLevel: "off", systemPrompt: "", messages: [], agent: { state: { messages: [] } },
+    sessionManager: { getCwd: () => cwd, buildSessionContext: () => ({ messages: [] }), getBranch: () => [{ id: "anchor" }], getSessionName: () => "Parent" },
+    modelRuntime: { getAvailableSnapshot: () => [model], getModel: () => model },
+    getAvailableThinkingLevels: () => ["off"], setModel: async () => {}, setThinkingLevel: () => {}, setSessionName: vi.fn(),
+    prompt: vi.fn(async (_text, options) => { options?.preflightResult?.(true); }),
+    abort: vi.fn(async () => {}), subscribe: () => () => {},
+    navigateTree: vi.fn(async () => ({ cancelled: false })),
+    sendCustomMessage: vi.fn(async () => {}),
+  } as unknown as PiWebSession;
+  if (createRaw) raw = await createRaw(cwd);
+  const service = new LocalSessionService({
+    modelRuntime: {} as LocalSessionServiceDependencies["modelRuntime"],
+    sessionFactory: { create: async () => ({ session: raw }), list: async () => [] },
+    additionalExtensionPaths: () => [],
+    sessionConfig: { defaultsFor: async () => ({}), finalizeCreatedSession: async () => {} },
+    globalCwd: () => cwd, clientCount: () => 0,
+  });
+  await service.initialize();
+  cleanups.push(async () => { await service.disposeAll(); await rm(cwd, { recursive: true, force: true }); });
+  return { raw, service };
+}
+const prompt = { message: "Inspect workspace", mode: "steer", attachments: [], waitFor: "admission" as const, dispatchId };
+const completion = { deliveryId: "completion-1", message: { customType: "wakeup", content: "Done", display: true } };
+
+describe("host prompt admission and settled interruption", () => {
+  it("confirms SDK preflight, not HTTP acceptance or whole-run completion, and appends exact dispatch marker", async () => {
+    const { raw, service } = await fixture();
+    let admit!: () => void;
+    let finish!: () => void;
+    raw.prompt = vi.fn((_message, options) => new Promise<void>(resolve => {
+      admit = () => options?.preflightResult?.(true); finish = resolve;
+    }));
+    let settled = false;
+    const request = service.prompt(raw.sessionId, prompt).then(result => { settled = true; return result; });
+    await vi.waitFor(() => expect(raw.prompt).toHaveBeenCalledOnce());
+    expect(settled).toBe(false);
+    expect(vi.mocked(raw.prompt).mock.calls[0][0]).toBe(`Inspect workspace\n\n[pi-web-dispatch:${dispatchId}]`);
+    admit();
+    expect(await request).toEqual({ sessionId: "parent", admission: "accepted", dispatchId });
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(true);
+    finish();
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+  });
+
+  it.each(["compaction in progress", "no model available"])("rejects admission: %s", async error => {
+    const { raw, service } = await fixture();
+    raw.prompt = vi.fn(async (_message, options) => { options?.preflightResult?.(false); throw new Error(error); });
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toThrow(error);
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+  });
+
+  it("releases Stop's visible lease but fences mutations and cancels late idle preflight before a run", async () => {
+    const { raw, service } = await fixture();
+    let admit!: () => void;
+    const run = vi.fn();
+    raw.prompt = vi.fn((_message, options) => new Promise<void>((resolve, reject) => {
+      admit = () => {
+        try { options?.preflightResult?.(true); run(); resolve(); }
+        catch (error) { reject(error); }
+      };
+    }));
+    const request = service.prompt(raw.sessionId, prompt);
+    const rejected = expect(request).rejects.toMatchObject({ status: 409 });
+    await vi.waitFor(() => expect(raw.prompt).toHaveBeenCalledOnce());
+    await service.abort(raw.sessionId);
+    expect(raw.isStreaming).toBe(false);
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
+    for (const mutation of [
+      () => service.prompt(raw.sessionId, prompt), () => service.retry(raw.sessionId),
+      () => service.navigate(raw.sessionId, "earlier", {}),
+      () => service.executeCommand(raw.sessionId, "/reload"),
+      () => service.deliverCompletion(raw.sessionId, completion),
+      () => service.executeShell(raw.sessionId, "true", false),
+      () => service.executeShell(raw.sessionId, "true", true),
+    ]) await expect(mutation()).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    await service.setModel(raw.sessionId, "test", "model");
+    await service.rename(raw.sessionId, "Renamed");
+    await expect(service.invokePanel(raw.sessionId, { key: "missing" })).rejects.toThrow("Panel not found");
+    expect(raw.navigateTree).not.toHaveBeenCalled();
+    admit(); await rejected;
+    expect(run).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    await service.navigate(raw.sessionId, "earlier", {}); // Fence retires only after actual finally.
+  });
+
+  it("waits for SDK-idle preflight before disposal and rejects new admission while closing", async () => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    raw.prompt = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    await service.prompt(raw.sessionId, { message: "pending preflight", mode: "steer", attachments: [] });
+    let disposed = false;
+    const disposal = service.disposeAll().then(() => { disposed = true; });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409 });
+    finish(); await disposal;
+    expect(disposed).toBe(true);
+  });
+
+  it("treats accepted streaming admission only as queue acceptance", async () => {
+    const { raw, service } = await fixture();
+    raw.isStreaming = true;
+    expect(await service.prompt(raw.sessionId, prompt)).toMatchObject({ admission: "accepted" });
+    expect(vi.mocked(raw.prompt).mock.calls[0][1]).toMatchObject({ streamingBehavior: "steer" });
+    expect(raw.agent.state.messages).toEqual([]); // No false claim of consumption.
+  });
+
+  it("preserves fire-and-forget prompting without the admission option", async () => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    raw.prompt = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    expect(await service.prompt(raw.sessionId, { message: "legacy", mode: "steer", attachments: [] })).toEqual({ sessionId: "parent" });
+    expect(vi.mocked(raw.prompt).mock.calls[0]).toEqual(["legacy", { preflightResult: expect.any(Function) }]);
+    finish();
+  });
+
+  it("validates without admission or leases and revalidates a changed registry on send", async () => {
+    const { raw, service } = await fixture();
+    const input = { message: "/new-command args", dispatchId };
+    await expect(service.validatePrompt(raw.sessionId, input)).resolves.toEqual({ valid: true });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    raw.extensionRunner = { getRegisteredCommands: () => [{ name: "new-command" }] };
+    await expect(service.validatePrompt(raw.sessionId, input)).rejects.toMatchObject({ status: 400 });
+    await expect(service.prompt(raw.sessionId, { ...prompt, ...input })).rejects.toMatchObject({ status: 400 });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+  });
+
+  it.each(["/my-command foo", "/template args", "/skill:foo", "/template\targs"])("rejects tracked slash dispatch before leases/SDK: %s", async message => {
+    const { raw, service } = await fixture();
+    raw.extensionRunner = { getRegisteredCommands: () => [{ name: "my-command" }] };
+    raw.promptTemplates = [{ name: "template" }];
+    raw.resourceLoader = { getSkills: () => ({ skills: [{ name: "foo" }] }) };
+    expect((await service.commands(raw.sessionId)).map(command => command.name)).toEqual(expect.arrayContaining(["my-command", "template", "skill:foo", "commands"]));
+    await expect(service.validatePrompt(raw.sessionId, { message, dispatchId })).rejects.toMatchObject({ status: 400 });
+    await expect(service.prompt(raw.sessionId, { ...prompt, message })).rejects.toMatchObject({ status: 400 });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    await service.prompt(raw.sessionId, { ...prompt, message, dispatchId: undefined });
+    expect(vi.mocked(raw.prompt).mock.calls[0][0]).toBe(message);
+  });
+
+  it.each(["/src/foo.ts fails, fix it", "/unknown args", "/help explain this", "  /template literal text", "/my-command\targs", "/skill:foo\targs"])("admits literal path/unknown slash task: %s", async message => {
+    const { raw, service } = await fixture();
+    raw.extensionRunner = { getRegisteredCommands: () => [{ name: "my-command" }] };
+    raw.promptTemplates = [{ name: "template" }];
+    raw.resourceLoader = { getSkills: () => ({ skills: [{ name: "foo" }] }) };
+    await expect(service.validatePrompt(raw.sessionId, { message, dispatchId })).resolves.toEqual({ valid: true });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    await expect(service.prompt(raw.sessionId, { ...prompt, message })).resolves.toMatchObject({ admission: "accepted" });
+    expect(raw.prompt).toHaveBeenCalledWith(`${message}\n\n[pi-web-dispatch:${dispatchId}]`, expect.anything());
+  });
+
+  it("fails closed if the command registry cannot be loaded, without blocking untracked commands", async () => {
+    const { raw, service } = await fixture();
+    raw.extensionRunner = { getRegisteredCommands: () => { throw new Error("registry failed"); } };
+    await expect(service.validatePrompt(raw.sessionId, { message: "/maybe", dispatchId })).rejects.toMatchObject({ status: 503 });
+    await expect(service.prompt(raw.sessionId, { ...prompt, message: "/maybe" })).rejects.toMatchObject({ status: 503 });
+    expect(raw.prompt).not.toHaveBeenCalled();
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    await service.prompt(raw.sessionId, { ...prompt, message: "/maybe", dispatchId: undefined });
+    expect(raw.prompt).toHaveBeenCalledOnce();
+  });
+
+  it.each([true, false])("Stop during pending bash permits a prompt (abortBash available: %s) and retains retirement ownership", async available => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    raw.executeBash = vi.fn(() => new Promise(resolve => { finish = () => resolve({ output: "", exitCode: 0, cancelled: true, truncated: false }); }));
+    if (available) raw.abortBash = vi.fn(() => finish());
+    const shell = service.executeShell(raw.sessionId, "sleep 60", false);
+    await vi.waitFor(() => expect(raw.executeBash).toHaveBeenCalledOnce());
+    await service.abort(raw.sessionId);
+    try {
+      if (available) expect(raw.abortBash).toHaveBeenCalledOnce();
+      await expect(service.prompt(raw.sessionId, prompt)).resolves.toMatchObject({ admission: "accepted" });
+      if (!available) {
+        let retired = false;
+        const retirement = service.disposeAll().then(() => { retired = true; });
+        await new Promise(resolve => setTimeout(resolve, 10));
+        expect(retired).toBe(false);
+        finish(); await retirement;
+      }
+    } finally { finish(); await shell; }
+  });
+
+  it("Stop aborts actual public SDK bash, saves its result, and admits the next prompt", async () => {
+    let sdk!: Awaited<ReturnType<typeof createAgentSession>>["session"];
+    const { raw, service } = await fixture(undefined, async cwd => {
+      const resourceLoader = new DefaultResourceLoader({ cwd, agentDir: cwd, noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true });
+      await resourceLoader.reload();
+      const modelRuntime = await ModelRuntime.create({ authPath: join(cwd, "auth.json"), modelsPath: null, refreshOnCreate: false });
+      await modelRuntime.setRuntimeApiKey("openai", "offline-test-key");
+      ({ session: sdk } = await createAgentSession({ cwd, agentDir: cwd, modelRuntime, model: modelRuntime.getAvailableSnapshot().find(model => model.provider === "openai"), settingsManager: SettingsManager.inMemory(), sessionManager: SessionManager.open(join(cwd, "parent.jsonl")), resourceLoader }));
+      sdk.agent.streamFn = () => { throw new Error("offline provider"); };
+      return sdk as unknown as PiWebSession;
+    });
+    const abortBash = vi.spyOn(sdk, "abortBash");
+    const shell = service.executeShell(raw.sessionId, "sleep 60", false);
+    await vi.waitFor(() => expect(sdk.isBashRunning).toBe(true));
+    try {
+      await service.abort(raw.sessionId, "idle");
+      expect(abortBash).toHaveBeenCalledOnce();
+      expect(await shell).toMatchObject({ cancelled: true });
+      expect(sdk.isBashRunning).toBe(false);
+      expect(sdk.sessionManager.getEntries().some((entry: any) => entry.message?.role === "bashExecution" && entry.message.cancelled)).toBe(true);
+      await expect(service.prompt(raw.sessionId, prompt)).resolves.toMatchObject({ admission: "accepted" });
+    } finally { sdk.abortBash(); await shell; abortBash.mockRestore(); }
+  });
+
+  it("rejects invalid dispatch identifiers without SDK admission", async () => {
+    const { raw, service } = await fixture();
+    await expect(service.prompt(raw.sessionId, { ...prompt, dispatchId: "not-a-uuid" })).rejects.toThrow("UUID");
+    expect(raw.prompt).not.toHaveBeenCalled();
+  });
+
+  it("waits for a slow abort and propagates abort rejection", async () => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    raw.abort = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    let settled = false;
+    const request = service.abort(raw.sessionId, "idle").then(result => { settled = true; return result; });
+    await vi.waitFor(() => expect(raw.abort).toHaveBeenCalledOnce());
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    finish();
+    expect(await request).toEqual({ sessionId: "parent", idle: true });
+    raw.abort = vi.fn(async () => { throw new Error("abort failed"); });
+    await expect(service.abort(raw.sessionId, "idle")).rejects.toThrow("abort failed");
+    raw.abort = vi.fn(async () => {}); // Allow fixture disposal to settle.
+  });
+});
+
+describe("owned completion/navigation admission boundary", () => {
+  it("blocks history navigation while idle custom-message preflight is still active", async () => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    raw.sendCustomMessage = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    expect((await service.deliverCompletion(raw.sessionId, completion)).state).toBe("pending");
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    expect(raw.isStreaming).toBe(false);
+    await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
+    expect(raw.navigateTree).not.toHaveBeenCalled();
+    finish();
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    // Pending receipt is not a branch restriction after the actual SDK call.
+    await service.navigate(raw.sessionId, "earlier", {});
+    expect(raw.navigateTree).toHaveBeenCalledOnce();
+  });
+
+  it("retires rejected custom-call fences but retains ambiguous runtime dedup", async () => {
+    const { raw, service } = await fixture();
+    raw.sendCustomMessage = vi.fn(async () => { throw new Error("unknown custom queue admission"); });
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    await service.navigate(raw.sessionId, "earlier", {});
+    expect((await service.deliverCompletion(raw.sessionId, completion)).state).toBe("pending");
+    expect(raw.sendCustomMessage).toHaveBeenCalledOnce();
+  });
+
+  it("defers a journal request during active navigation and retries once on its new branch", async () => {
+    const { raw, service } = await fixture(); let finish!: () => void;
+    raw.navigateTree = vi.fn(() => new Promise(resolve => { finish = () => resolve({ cancelled: false }); }));
+    const navigation = service.navigate(raw.sessionId, "new-branch", {});
+    await vi.waitFor(() => expect(raw.navigateTree).toHaveBeenCalledOnce());
+    expect((await service.deliverCompletion(raw.sessionId, completion)).state).toBe("pending");
+    await new Promise(resolve => setTimeout(resolve, 10)); expect(raw.sendCustomMessage).not.toHaveBeenCalled();
+    finish(); await navigation;
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    await service.deliverCompletion(raw.sessionId, completion); expect(raw.sendCustomMessage).toHaveBeenCalledOnce();
+  });
+
+  it("does not inject during navigation already admitted by the host", async () => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    raw.navigateTree = vi.fn(() => new Promise(resolve => { finish = () => resolve({ cancelled: false }); }));
+    const navigation = service.navigate(raw.sessionId, "earlier", {});
+    await vi.waitFor(() => expect(raw.navigateTree).toHaveBeenCalledOnce());
+    await service.abort(raw.sessionId);
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    await expect(service.deliverCompletion(raw.sessionId, completion)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    await Promise.resolve();
+    expect(raw.sendCustomMessage).not.toHaveBeenCalled();
+    finish(); await navigation;
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+  });
+});
+
+
+describe("dispatch history and attachment projection", () => {
+  it("keeps dispatch markers before the attachment fence so attachments still project", async () => {
+    const { raw, service } = await fixture();
+    const attachment = { type: "quote-reply" as const, id: "quote-1", label: "Review comment", quote: "hello", question: "Explain this", source: { startOffset: 0, endOffset: 5 } };
+    await service.prompt(raw.sessionId, { ...prompt, attachments: [attachment] });
+    const submitted = vi.mocked(raw.prompt).mock.calls[0][0];
+    const parsed = parseAttachmentMarkup(submitted);
+    expect(parsed.text).toBe(`Inspect workspace\n\n[pi-web-dispatch:${dispatchId}]`);
+    expect(parsed.attachments).toEqual([attachment]);
+    expect(submitted.endsWith("\n~~~")).toBe(true);
+  });
+
+  it("finds a consumed dispatch through compaction without returning inline images or alternate branches", async () => {
+    const { raw, service } = await fixture();
+    const entries = [
+      { id: "old", type: "message", message: { role: "assistant", content: "Older result" } },
+      { id: "dispatch", type: "message", message: { role: "user", content: [{ type: "text", text: `Task\n\n[pi-web-dispatch:${dispatchId}]` }, { type: "image", mimeType: "image/png", data: "private-image-bytes" }] } },
+      { id: "compaction", type: "compaction", summary: "Compacted task" },
+      { id: "final", parentId: "compaction", type: "message", message: { role: "assistant", content: "Final task result", stopReason: "stop" } },
+    ];
+    raw.messages = [{ role: "compactionSummary", content: "Compacted task" }, entries[3].message];
+    raw.agent.state.messages = raw.messages;
+    raw.sessionManager.getBranch = () => entries;
+    const history = await service.history(raw.sessionId, dispatchId);
+    expect(history.map(message => message.entryId)).toEqual(["dispatch", "final"]);
+    expect(history[1].text).toBe("Final task result");
+    expect(JSON.stringify(history)).not.toContain("private-image-bytes");
+    expect(history[0].raw).toMatchObject({ content: [{ type: "text" }, { type: "image", omitted: true }] });
+    expect(await service.history(raw.sessionId, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")).toEqual([]);
+    await expect(service.history(raw.sessionId, "invalid")).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("bounded recovery without unsafe runtime replacement", () => {
+  it.each([true, false])("allows independent steering/model after admitted Stop, while whole-operation delivery barriers remain (streaming=%s)", async stillStreaming => {
+    const { raw, service } = await fixture();
+    let finish!: () => void;
+    let first = true;
+    raw.prompt = vi.fn((_text, options) => {
+      options?.preflightResult?.(true);
+      if (!first) return Promise.resolve();
+      first = false;
+      raw.isStreaming = true;
+      return new Promise<void>(resolve => { finish = resolve; });
+    });
+    raw.abort = vi.fn(async () => { raw.isStreaming = stillStreaming; });
+    raw.setSessionName = vi.fn();
+    await service.prompt(raw.sessionId, { message: "accepted work", mode: "steer", attachments: [] });
+    try {
+      await service.abort(raw.sessionId);
+      expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ provider: "test", id: "model" });
+      await service.rename(raw.sessionId, "Renamed");
+      for (const mode of ["steer", "followUp"]) {
+        expect(await service.prompt(raw.sessionId, { ...prompt, mode })).toMatchObject({ admission: "accepted" });
+        if (stillStreaming) expect(vi.mocked(raw.prompt).mock.calls.at(-1)?.[1]).toMatchObject({ streamingBehavior: mode });
+      }
+      await expect(service.navigate(raw.sessionId, "earlier", {})).rejects.toMatchObject({ status: 409 });
+      expect((await service.deliverCompletion(raw.sessionId, completion)).state).toBe("pending");
+      await Promise.resolve();
+      expect(raw.sendCustomMessage).not.toHaveBeenCalled();
+    } finally { raw.isStreaming = false; finish(); }
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    await vi.waitFor(async () => {
+      await service.deliverCompletion(raw.sessionId, completion);
+      expect(raw.sendCustomMessage).toHaveBeenCalledOnce();
+    });
+    await vi.waitFor(() => expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false));
+    await service.navigate(raw.sessionId, "earlier", {}); // Unsaved claim is not a branch lock.
+  });
+
+  it("returns recoveryRequired instead of idle:true while canceled navigation remains unresolved", async () => {
+    const { raw, service } = await fixture(15);
+    let finish!: () => void;
+    raw.navigateTree = vi.fn(() => new Promise(resolve => { finish = () => resolve({ cancelled: false }); }));
+    const navigation = service.navigate(raw.sessionId, "earlier", {});
+    await vi.waitFor(() => expect(raw.navigateTree).toHaveBeenCalledOnce());
+    await expect(service.abort(raw.sessionId, "idle")).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    expect(service.hasActiveWorkForPath(raw.sessionFile)).toBe(false);
+    expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    finish(); await navigation;
+    expect(await service.abort(raw.sessionId, "idle")).toMatchObject({ idle: true });
+  });
+
+  it("bounds disposal, keeps reads accessible, and never replaces a runtime with delayed persistence", async () => {
+    const { raw, service } = await fixture(15);
+    let finish!: () => void;
+    raw.sendCustomMessage = vi.fn(() => new Promise<void>(resolve => { finish = resolve; }));
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    await expect(service.disposeAll()).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
+    expect(await service.require(raw.sessionId)).toBe(raw);
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    await expect(service.disposeAll()).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    finish();
+    await service.disposeAll(); // Joins the same retirement; no replacement/replay.
+  });
+
+  it("resets disposing on interrupt rejection so reads and a later delete/disposal attempt remain possible", async () => {
+    const { raw, service } = await fixture(15);
+    raw.abort = vi.fn(async () => { throw new Error("interrupt rejected"); });
+    await expect(service.disposeAll()).rejects.toThrow("interrupt rejected");
+    expect((await service.state(raw.sessionId)).sessionId).toBe(raw.sessionId);
+    expect(await service.require(raw.sessionId)).toBe(raw);
+    raw.abort = vi.fn(async () => {});
+    await service.disposeAll();
+  });
+
+  it("recovers canceled USER queue ambiguity only at known SDK idle/empty without releasing CUSTOM claims", async () => {
+    const { raw, service } = await fixture(15);
+    raw.isStreaming = true;
+    const queued: string[] = [];
+    Object.defineProperty(raw, "isIdle", { configurable: true, get: () => !raw.isStreaming });
+    Object.defineProperty(raw, "pendingMessageCount", { configurable: true, get: () => queued.length });
+    await service.deliverCompletion(raw.sessionId, completion);
+    await vi.waitFor(() => expect(raw.sendCustomMessage).toHaveBeenCalledOnce());
+    let admit!: () => void;
+    raw.prompt = vi.fn((text, options) => new Promise<void>((resolve, reject) => {
+      admit = () => {
+        queued.push(text); // SDK streaming path queues BEFORE the callback.
+        try { options?.preflightResult?.(true); resolve(); } catch (error) { reject(error); }
+      };
+    }));
+    const request = service.prompt(raw.sessionId, prompt);
+    const rejected = expect(request).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    await vi.waitFor(() => expect(raw.prompt).toHaveBeenCalledOnce());
+    raw.abort = vi.fn(async () => { raw.isStreaming = false; });
+    await service.abort(raw.sessionId);
+    expect(raw.isStreaming).toBe(false); // Queue lane survives Stop's transition to idle.
+    expect(raw.pendingMessageCount).toBe(0);
+    // A pending canceled hook fences transcript admission, not model/UI work.
+    await service.setModel(raw.sessionId, "test", "model");
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    admit(); await rejected;
+    expect(queued).toHaveLength(1);
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409, recoveryRequired: true });
+    await expect(service.abort(raw.sessionId, "idle")).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    queued.splice(0); // Simulate the SDK consuming/dropping only user text.
+    expect(await service.abort(raw.sessionId, "idle")).toMatchObject({ idle: true });
+    expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ id: "model" });
+    await service.deliverCompletion(raw.sessionId, completion);
+    expect(raw.sendCustomMessage).toHaveBeenCalledOnce(); // No duplicate custom injection.
+    await service.navigate(raw.sessionId, "earlier", {});
+  });
+
+  it("recovers a captured streaming submission that actually reaches idle preflight without queueing", async () => {
+    const { raw, service } = await fixture();
+    raw.isStreaming = true;
+    Object.defineProperty(raw, "isIdle", { configurable: true, value: false, writable: true });
+    raw.pendingMessageCount = undefined; // Missing count is not empty-queue proof.
+    let admit!: () => void;
+    raw.prompt = vi.fn((_text, options) => new Promise<void>((resolve, reject) => {
+      admit = () => { try { options?.preflightResult?.(true); resolve(); } catch (error) { reject(error); } };
+    }));
+    const request = service.prompt(raw.sessionId, prompt);
+    const rejected = expect(request).rejects.toMatchObject({ status: 503, recoveryRequired: true });
+    await vi.waitFor(() => expect(raw.prompt).toHaveBeenCalledOnce());
+    raw.abort = vi.fn(async () => { raw.isStreaming = false; });
+    await service.abort(raw.sessionId);
+    admit(); await rejected; // Conservative captured-lane detection remains intact.
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409 });
+    Object.defineProperty(raw, "isIdle", { value: true });
+    await expect(service.prompt(raw.sessionId, prompt)).rejects.toMatchObject({ status: 409 });
+    raw.pendingMessageCount = 0;
+    expect((await service.setModel(raw.sessionId, "test", "model")).model).toMatchObject({ id: "model" });
+    raw.prompt = vi.fn(async (_text, options) => { options?.preflightResult?.(true); });
+    expect(await service.prompt(raw.sessionId, prompt)).toMatchObject({ admission: "accepted" });
+  });
+});

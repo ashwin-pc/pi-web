@@ -17,6 +17,8 @@ import { EphemeralCaptureStore } from "../extensions/captureStore.js";
 import type { ResilientResourceLoader } from "../extensions/resilientLoader.js";
 import { mapPiEvent } from "./piEventMap.js";
 import { PiSessionHandle } from "./piHandle.js";
+import { CompletionDeferredError, CompletionOutbox, CompletionOutboxError, validateCompletionInput, type CompletionInput } from "./completionOutbox.js";
+import { OperationFences, type OperationEffect, type OperationToken } from "./operationFences.js";
 import { resolveRawTranscriptImage } from "./transcriptImages.js";
 import { createSettingsStore } from "../settings.js";
 import type {
@@ -33,12 +35,13 @@ import type {
   PromptProvenanceDto,
   PromptProvenanceSourceKind,
   SessionService,
+  SessionPromptInput,
   SessionServiceEvent,
   SlashCommandDto,
 } from "./dto.js";
 import { PiSessionFactory, piSessionDirectory, type LocalSessionFactory, type LocalSessionInfo } from "./piFactory.js";
 export type { LocalSessionFactory, LocalSessionFactoryInput } from "./piFactory.js";
-import { sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
+import { dispatchHistory, sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
 import {
   conversationTreeForSession,
   getSessionSlashCommands,
@@ -59,7 +62,7 @@ function isMissingPath(error: unknown): boolean {
 }
 
 export class SessionServiceError extends Error {
-  constructor(message: string, readonly status = 400) { super(message); }
+  constructor(message: string, readonly status = 400, readonly recoveryRequired = false) { super(message); }
 }
 
 export interface SessionDefaults {
@@ -100,6 +103,7 @@ type LiveSessionEntry = {
   handle: PiSessionHandle;
   viewerClientIds: Set<string>;
   workLeases: Map<symbol, WorkLease>;
+  fences: OperationFences;
   disposeTimer?: ReturnType<typeof setTimeout>;
   disposing?: boolean;
 };
@@ -308,7 +312,22 @@ export class LocalSessionService implements SessionService {
   private readonly idleGraceMs = envMs("PI_WEB_SESSION_IDLE_GRACE_MS", 24 * 60 * 60 * 1000);
   private readonly viewerGraceMs = envMs("PI_WEB_VIEWER_LEASE_GRACE_MS", Math.min(30_000, this.idleGraceMs));
   private readonly workLeaseWatchdogMs = envMs("PI_WEB_WORK_LEASE_WATCHDOG_MS", 3 * 60 * 1000);
+  private readonly operationSettleTimeoutMs = Math.max(1, envMs("PI_WEB_OPERATION_SETTLE_TIMEOUT_MS", 10_000));
   private readonly captureStore = new EphemeralCaptureStore();
+  private readonly completionOutbox = new CompletionOutbox<PiWebSession>(
+    (value, message) => {
+      const entry = this.liveSessions.get(sessionPathKey(value));
+      if (entry?.session !== value || entry.fences.closing || this.requiresRecovery(entry) || entry.fences.navigating || entry.fences.canceledTranscriptWork) throw new CompletionDeferredError("Runtime unavailable or navigating");
+      return this.withWorkLease(value, "completion", "general", operation => {
+        // Lease publication can synchronously reenter Stop/disposal. Refuse at
+        // the invocation boundary too, with proof that SDK was never called.
+        if (entry.fences.closing || operation?.canceled || entry.fences.navigating) throw new CompletionDeferredError("Runtime closed or canceled before completion invocation");
+        return entry.handle.sendCompletion(message);
+      }, "transcript");
+    },
+    (value, error) => this.emitError(value, error),
+    value => this.runtimeFor(value),
+  );
   private readonly webUiBridge;
 
   constructor(private readonly deps: LocalSessionServiceDependencies) {
@@ -446,6 +465,24 @@ export class LocalSessionService implements SessionService {
     return value;
   }
 
+  private requiresRecovery(entry: LiveSessionEntry) { return entry.fences.requiresRecovery(entry.session); }
+
+  private assertMutable(value: PiWebSession, transcript = false) {
+    const fences = this.liveSessions.get(sessionPathKey(value))?.fences;
+    if (transcript) fences?.assertTranscript(value);
+    else fences?.assertOpen();
+  }
+
+  private async requireMutable(sessionId?: string, transcript = false) {
+    const value = await this.require(sessionId);
+    this.assertMutable(value, transcript);
+    return value;
+  }
+
+  private waitForSettlement(operation: Promise<unknown>, label: string) {
+    return new OperationFences((message, status, recovery) => new SessionServiceError(message, status, recovery)).wait(operation, label, this.operationSettleTimeoutMs);
+  }
+
   async state(sessionId: string) { return this.projectState(await this.require(sessionId)); }
 
   async context(sessionId: string): Promise<SessionContextDto> {
@@ -558,6 +595,16 @@ export class LocalSessionService implements SessionService {
     return jsonSafe(this.runtimeFor(await this.require(sessionId)).messages());
   }
 
+  /** Uncompacted active lineage, starting at an actually consumed dispatch. This
+   * is correlation evidence, not proof that the SDK flushed entries to disk.
+   */
+  async history(sessionId: string, dispatchId: string): Promise<MessageDto[]> {
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(dispatchId)) throw new SessionServiceError("dispatchId must be a UUID");
+    const value = await this.require(sessionId);
+    if (!value.sessionManager.getBranch) throw new SessionServiceError("Active session history is unavailable", 503);
+    return dispatchHistory(value.sessionManager.getBranch(), dispatchId);
+  }
+
   async transcriptImage(sessionId: string, imageId: string): Promise<{ data: Buffer; mimeType: string } | undefined> {
     return resolveRawTranscriptImage((await this.require(sessionId)).messages, imageId);
   }
@@ -646,7 +693,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async setModel(sessionId: string, provider: string, id: string, thinkingLevel?: string) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     const model = value.modelRuntime.getModel(provider, id);
     if (!model) throw new SessionServiceError("Model not found", 404);
     await value.setModel(model);
@@ -655,31 +702,80 @@ export class LocalSessionService implements SessionService {
   }
 
   async executeShell(sessionId: string, command: string, excludeFromContext: boolean) {
-    const value = await this.require(sessionId);
+    // Even excluded shell output is persisted in the transcript by the SDK.
+    const value = await this.requireMutable(sessionId, true);
     if (!value.executeBash) throw new SessionServiceError("Bash execution is not available in this session.");
-    return jsonSafe({ command, cwd: this.sessionCwd(value), ...await value.executeBash(command, undefined, { excludeFromContext }), excludeFromContext });
+    return this.withWorkLease(value, "shell", "general", async () => jsonSafe({ command, cwd: this.sessionCwd(value), ...await value.executeBash!(command, undefined, { excludeFromContext }), excludeFromContext }), "shell");
   }
 
   async executeCommand(sessionId: string, command: string) {
     return this.executeSlashCommand(command, await this.require(sessionId));
   }
 
-  async prompt(sessionId: string, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }) {
+  /** Read-only validation, not admission: the eventual send must revalidate. */
+  async validatePrompt(sessionId: string, input: { message: string; dispatchId: string }) {
+    if (typeof input.message !== "string" || !input.message.trim()) throw new SessionServiceError("message is required");
+    if (typeof input.dispatchId !== "string") throw new SessionServiceError("dispatchId must be a UUID");
+    await this.validatePromptTarget(sessionId, input);
+    return { valid: true as const };
+  }
+
+  private async validatePromptTarget(sessionId: string, input: Pick<SessionPromptInput, "message" | "dispatchId">) {
+    if (input.dispatchId !== undefined && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(input.dispatchId)) throw new SessionServiceError("dispatchId must be a UUID");
     const value = await this.require(sessionId);
+    if (input.dispatchId) {
+      const text = input.message || "";
+      if (/^\s*\//.test(text)) {
+        let commands: SlashCommandDto[];
+        try { commands = this.getSlashCommands(value); }
+        catch { throw new SessionServiceError("Command registry unavailable; tracked slash dispatch cannot be validated", 503); }
+        // Mirror SDK parsing, not browser command parsing: extension/skill
+        // tokens end at ASCII space, templates at any whitespace. Leading
+        // whitespace and browser-only names are literal SDK prompts.
+        const space = text.indexOf(" ");
+        const sdkName = text.startsWith("/") ? text.slice(1, space < 0 ? undefined : space) : undefined;
+        const templateName = text.match(/^\/([^\s]+)(?:\s+([\s\S]*))?$/)?.[1];
+        if (commands.some(command => command.source === "prompt" ? command.name === templateName : (command.source === "extension" || command.source === "skill") && command.name === sdkName)) throw new SessionServiceError("Tracked slash-command/template dispatch is unsupported; send a natural-language task or invoke separately without completion attribution", 400);
+      }
+    }
+    return value;
+  }
+
+  async prompt(sessionId: string, input: SessionPromptInput) {
+    const value = await this.validatePromptTarget(sessionId, input);
+    this.assertMutable(value, true);
     await this.startSessionPrompt(value, input);
-    return { sessionId: value.sessionId };
+    return { sessionId: value.sessionId, ...(input.waitFor === "admission" ? { admission: "accepted" as const } : {}), ...(input.dispatchId ? { dispatchId: input.dispatchId } : {}) };
+  }
+
+  async deliverCompletion(sessionId: string, input: CompletionInput) {
+    try {
+      const normalized = validateCompletionInput(input);
+      const value = await this.requireMutable(sessionId, true);
+      if (!value.sendCustomMessage) throw new SessionServiceError("Custom message delivery is unavailable", 503);
+      return await this.completionOutbox.deliver(value, normalized);
+    } catch (error) {
+      if (error instanceof CompletionOutboxError) throw new SessionServiceError(error.message, error.status);
+      throw error;
+    }
   }
 
   async retry(sessionId: string) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId, true);
     await this.startSessionRetry(value);
     return { sessionId: value.sessionId };
   }
 
-  async abort(sessionId: string) {
+  async abort(sessionId: string, waitFor?: "idle") {
     const value = await this.require(sessionId);
-    void this.abortSession(value);
-    return { sessionId: value.sessionId };
+    if (waitFor === "idle") {
+      await this.waitForSettlement(this.abortSession(value, true).then(async () => {
+        const entry = this.liveSessions.get(sessionPathKey(value));
+        await entry?.fences.settleTranscript();
+        if (entry && this.requiresRecovery(entry)) throw new SessionServiceError("Canceled prompt queue ownership is ambiguous; wait for SDK idle and an empty user queue or restart the server", 503, true);
+      }), "Session interruption");
+    } else void this.abortSession(value);
+    return { sessionId: value.sessionId, ...(waitFor === "idle" ? { idle: true as const } : {}) };
   }
 
   async abortCompaction(sessionId: string) {
@@ -696,7 +792,7 @@ export class LocalSessionService implements SessionService {
   }
 
   async rename(sessionId: string, name: string) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     if (!value.setSessionName) throw new SessionServiceError("Renaming sessions is not available");
     value.setSessionName(name);
     this.rememberSessionName(value);
@@ -704,27 +800,28 @@ export class LocalSessionService implements SessionService {
   }
 
   async navigate(sessionId: string, targetId: string, options: Record<string, unknown>): Promise<NavigationResult> {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId, true);
     if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before navigating the tree", 409);
     if (value.isCompacting) throw new SessionServiceError("Wait for the current compaction to finish before navigating the tree", 409);
+    if (this.liveSessions.get(sessionPathKey(value))?.fences.hasTranscriptWork) throw new SessionServiceError("Wait for active session work to finish before navigating the tree", 409);
     if (!value.navigateTree) throw new SessionServiceError("Tree navigation is not available");
     return this.withWorkLease(value, "navigate", "general", async () => {
       const result = await value.navigateTree!(targetId, options as any);
       const state = this.projectState(value);
       this.emit({ type: "state", state, includeThinkingLevels: true });
       return { ...jsonSafe(result as Record<string, JsonValue>), leafId: value.sessionManager.getLeafId?.() || null, state };
-    });
+    }, "navigation");
   }
 
   async storeCapture(sessionId: string | undefined, key: unknown, registrationId: unknown, input: { mimeType: string; durationMs: number; bytes: Uint8Array }) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     const registration = this.webUiBridge.captureRegistration(value, key, registrationId);
     if (!registration) throw new SessionServiceError("Composer capture registration is stale or missing", 409);
     return this.captureStore.store({ sessionId: value.sessionId, contributionKey: registration.key, registrationId: registration.registrationId, policy: registration.policy, ...input });
   }
 
   async invokeContribution(sessionId: string | undefined, input: Record<string, unknown>, signal?: AbortSignal) {
-    const value = await this.require(sessionId);
+    const value = await this.requireMutable(sessionId);
     const invoke = () => this.webUiBridge.invokeContribution(value, input, signal);
     // Capture handlers can run long enough to outlive an unviewed session, so
     // keep their runtime alive. Existing rendered actions must not acquire a
@@ -736,19 +833,19 @@ export class LocalSessionService implements SessionService {
   }
 
   invokeHeaderAction(sessionId: string | undefined, key: unknown) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokeHeaderAction(value, key));
+    return this.require(sessionId).then((value) => { this.assertMutable(value); return this.webUiBridge.invokeHeaderAction(value, key); });
   }
 
   invokeArtifactAction(sessionId: string | undefined, input: Record<string, unknown>) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokeArtifactAction(value, input));
+    return this.require(sessionId).then((value) => { this.assertMutable(value); return this.webUiBridge.invokeArtifactAction(value, input); });
   }
 
   invokeGitTab(sessionId: string | undefined, input: Record<string, unknown>) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokeGitTab(value, input));
+    return this.require(sessionId).then((value) => { this.assertMutable(value); return this.webUiBridge.invokeGitTab(value, input); });
   }
 
   invokePanel(sessionId: string | undefined, input: Record<string, unknown>) {
-    return this.require(sessionId).then((value) => this.webUiBridge.invokePanel(value, input));
+    return this.require(sessionId).then((value) => { this.assertMutable(value); return this.webUiBridge.invokePanel(value, input); });
   }
 
   respondInteraction(response: InteractionResponseDto) { return this.webUiBridge.respond(response.id, response); }
@@ -775,6 +872,7 @@ export class LocalSessionService implements SessionService {
 
   async reloadExtensions(sessionId: string) {
     const value = this.openExtensionSession(sessionId);
+    this.assertMutable(value);
     if (value.isStreaming) throw new SessionServiceError("Wait for the current response to finish before retrying extensions.", 409);
     if (value.isCompacting) throw new SessionServiceError("Wait for compaction to finish before retrying extensions.", 409);
     const loader = this.productionFactory.loaderFor(value);
@@ -991,11 +1089,12 @@ export class LocalSessionService implements SessionService {
     if (!key || this.liveSessions.get(key)?.session === value) return value;
     const handle = this.runtimeFor(value);
     handle.subscribe((event) => this.handlePiEvent(value, event));
-    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map() });
+    this.liveSessions.set(key, { session: value, handle, viewerClientIds: new Set(), workLeases: new Map(), fences: new OperationFences((message, status, recovery) => new SessionServiceError(message, status, recovery)) });
     this.liveById.set(value.sessionId, value);
     if (value.sessionFile) this.sessionLocations.set(value.sessionId, { path: resolve(value.sessionFile), cwd: resolve(this.sessionCwd(value)) });
     this.rememberSessionName(value);
     queueMicrotask(() => this.scheduleLiveSessionCleanup(key));
+    // Durable completion replay belongs to the extension journal, not the host.
     return value;
   }
 
@@ -1005,6 +1104,11 @@ export class LocalSessionService implements SessionService {
     const sessionFile = value.sessionFile;
     const mapped = mapPiEvent(e);
     const raw = event as any;
+    const liveEntry = this.liveSessions.get(sessionPathKey(value));
+    if (liveEntry) {
+      liveEntry.fences.requiresRecovery(value);
+      if (raw?.type === "agent_settled" || raw?.type === "queue_update") queueMicrotask(() => liveEntry.fences.requiresRecovery(value));
+    }
     if (mapped.kind === "entry") {
       this.emit({ type: "entry", sessionId, sessionFile, entryId: mapped.entryId, parentId: mapped.parentId, entryKind: mapped.entryKind });
       return;
@@ -1129,10 +1233,12 @@ export class LocalSessionService implements SessionService {
     this.emitRuntime(value, "changed");
   }
 
-  private async withWorkLease<T>(value: PiWebSession, label: string, kind: WorkLeaseKind, operation: () => T | Promise<T>): Promise<T> {
+  private async withWorkLease<T>(value: PiWebSession, label: string, kind: WorkLeaseKind, operation: (lease?: OperationToken) => T | Promise<T>, effect: OperationEffect = "lifetime"): Promise<T> {
+    const entry = this.liveSessions.get(sessionPathKey(value));
+    const safety = entry?.fences.begin(effect);
     const token = this.acquireWorkLease(value, label, kind);
-    try { return await operation(); }
-    finally { this.releaseWorkLease(value, token); }
+    try { return await operation(safety); }
+    finally { safety?.finish(); this.releaseWorkLease(value, token); }
   }
 
   private clearWorkLeases(value: PiWebSession, reason: string) {
@@ -1140,6 +1246,8 @@ export class LocalSessionService implements SessionService {
     const key = located?.[0] || sessionPathKey(value);
     const entry = located?.[1] || this.liveSessions.get(key);
     if (!entry?.workLeases.size) return;
+    // Restore Stop's visible lease recovery without releasing safety ownership:
+    // transcript tokens remain in entry.fences until their actual finally.
     const leases = Array.from(entry.workLeases.values());
     for (const lease of leases) this.clearTimer(lease.watchdogTimer);
     entry.workLeases.clear();
@@ -1163,7 +1271,7 @@ export class LocalSessionService implements SessionService {
     if (entry.disposeTimer) return;
     entry.disposeTimer = setTimeout(() => {
       entry.disposeTimer = undefined;
-      void this.disposeLiveSession(key, "idle");
+      void this.disposeLiveSession(key, "idle").catch(error => this.emitError(entry.session, error));
     }, this.idleGraceMs);
   }
 
@@ -1176,27 +1284,45 @@ export class LocalSessionService implements SessionService {
 
   private async disposeLiveSession(key: string, reason: "idle" | "delete" | "reset", force = false) {
     const entry = this.liveSessions.get(key);
-    if (!entry || entry.disposing || (!force && this.shouldKeepLiveSession(entry))) return;
-    entry.disposing = true;
-    this.cancelLiveSessionCleanup(entry);
-    for (const lease of entry.workLeases.values()) this.clearTimer(lease.watchdogTimer);
-    entry.workLeases.clear();
-    const value = entry.session;
-    const sessionId = value.sessionId;
-    const sessionFile = value.sessionFile || key;
-    for (const [clientId, lease] of this.viewerLeases) {
-      if (lease.sessionKey !== key) continue;
-      this.clearTimer(lease.releaseTimer);
-      this.viewerLeases.delete(clientId);
-      for (const connection of lease.sockets) this.viewerConnections.delete(connection);
-      lease.sockets.clear();
+    if (!entry || (!entry.fences.retirement && !force && this.shouldKeepLiveSession(entry))) return;
+    if (!entry.fences.retirement) {
+      entry.disposing = true;
+      this.cancelLiveSessionCleanup(entry);
+      const value = entry.session;
+      // Keep this one retirement promise after a timeout. Its old runtime must
+      // not be replaced while a delayed hook can still append. Reads and Stop
+      // remain available; retries join the same retirement instead of overlapping.
+      const retirement = entry.fences.retire(async () => {
+        await entry.handle.interrupt();
+        // Lifetime-only dialogs/capture cannot append on behalf of the host;
+        // shutdown invalidates their UI contexts rather than waiting 120 seconds.
+        await entry.fences.settleTranscript();
+        for (const lease of entry.workLeases.values()) this.clearTimer(lease.watchdogTimer);
+        entry.workLeases.clear();
+        const sessionId = value.sessionId;
+        const sessionFile = value.sessionFile || key;
+        for (const [clientId, lease] of this.viewerLeases) {
+          if (lease.sessionKey !== key) continue;
+          this.clearTimer(lease.releaseTimer);
+          this.viewerLeases.delete(clientId);
+          for (const connection of lease.sockets) this.viewerConnections.delete(connection);
+          lease.sockets.clear();
+        }
+        await entry.handle.dispose(reason);
+        this.webUiBridge.releaseSessionSettings(value);
+        this.liveSessions.delete(key);
+        this.pendingPromptCorrelations.delete(key);
+        if (this.liveById.get(sessionId) === value) this.liveById.delete(sessionId);
+        this.emit({ type: "shutdown", sessionId, sessionFile, sessionKey: key });
+      });
+      // Observe late rejection even after the bounded caller stopped waiting.
+      void retirement.then(() => { entry.disposing = false; }, error => {
+        entry.disposing = false;
+        this.emitError(value, error);
+      });
     }
-    await entry.handle.dispose(reason);
-    this.webUiBridge.releaseSessionSettings(value);
-    this.liveSessions.delete(key);
-    this.pendingPromptCorrelations.delete(key);
-    if (this.liveById.get(sessionId) === value) this.liveById.delete(sessionId);
-    this.emit({ type: "shutdown", sessionId, sessionFile, sessionKey: key });
+    try { await entry.fences.wait(entry.fences.retirement!, "Session disposal", this.operationSettleTimeoutMs); }
+    finally { entry.disposing = false; }
   }
 
   private rememberSessionLocation(info: { id: string; path: string; cwd?: string }, cwd = this.deps.globalCwd()) {
@@ -1346,6 +1472,7 @@ export class LocalSessionService implements SessionService {
     const name = rawName.toLowerCase();
     const args = rest.join(" ").trim();
     const state = (session = value) => this.projectState(session);
+    if (!["help", "?", "commands", "abort", "stop"].includes(name)) this.assertMutable(value, ["compact", "new", "clear", "reload"].includes(name));
     switch (name) {
       case "help": case "?": return { message: this.slashHelp(value), state: state() };
       case "commands": return { message: this.formatSlashCommandList(this.getSlashCommands(value)), state: state() };
@@ -1384,7 +1511,7 @@ export class LocalSessionService implements SessionService {
         if (value.isCompacting) throw new Error("Compaction is already running.");
         if (!value.compact) throw new Error("Compaction is not available in this session.");
         this.emitRuntime(value, "ensure");
-        void this.withWorkLease(value, "compact", "general", () => value.compact!(args || undefined)).catch((error) => {
+        void this.withWorkLease(value, "compact", "general", () => value.compact!(args || undefined), "transcript").catch((error) => {
           this.emitRuntime(value, "clear");
           this.emitError(value, error);
         });
@@ -1397,30 +1524,52 @@ export class LocalSessionService implements SessionService {
     }
   }
 
-  private abortSession(value: PiWebSession) {
+  private abortSession(value: PiWebSession, propagateError = false) {
+    const entry = this.liveSessions.get(sessionPathKey(value));
+    entry?.fences.stop();
     const wasSdkActive = Boolean(value.isStreaming || value.isCompacting);
-    const aborting = this.runtimeFor(value).interrupt().catch((error) => this.emitError(value, error));
-    if (!wasSdkActive) this.clearWorkLeases(value, "abort while SDK idle");
-    else void aborting.then(() => {
-      if (!value.isStreaming && !value.isCompacting) this.clearWorkLeases(value, "active abort settled");
+    const aborting = this.runtimeFor(value).interrupt().catch((error) => {
+      this.emitError(value, error);
+      if (propagateError) throw error;
     });
-    return aborting;
+    if (!wasSdkActive) this.clearWorkLeases(value, "abort while SDK idle");
+    return aborting.then(() => {
+      if (wasSdkActive && !value.isStreaming && !value.isCompacting) this.clearWorkLeases(value, "active abort settled");
+    });
   }
 
-  private async startSessionPrompt(value: PiWebSession, input: { message: string; mode: string; attachments: AttachmentDto[]; clientMessageId?: string; sourceClientId?: string }) {
-    const promptText = serializeAttachmentMarkup(input.message || defaultPromptForAttachments(input.attachments), input.attachments);
+  private async startSessionPrompt(value: PiWebSession, input: SessionPromptInput) {
+    const message = input.message || defaultPromptForAttachments(input.attachments);
+    const promptText = serializeAttachmentMarkup(`${message}${input.dispatchId ? `\n\n[pi-web-dispatch:${input.dispatchId}]` : ""}`, input.attachments);
+    let accept!: () => void;
+    let reject!: (error: unknown) => void;
+    const admission = input.waitFor === "admission" ? new Promise<void>((resolve, fail) => { accept = resolve; reject = fail; }) : undefined;
     if (!this.deps.sessionFactory?.isMock && input.clientMessageId && input.sourceClientId) this.rememberPromptCorrelation(sessionPathKey(value), { clientMessageId: input.clientMessageId, sourceClientId: input.sourceClientId, createdAt: Date.now() });
     if (!value.isStreaming && !value.isCompacting) this.emitRuntime(value, "ensure");
     const promptSessionFile = value.sessionFile;
-    void this.withWorkLease(value, "prompt", "general", () => this.runtimeFor(value).prompt(promptText, {
-      ...(value.isStreaming ? { streamingBehavior: input.mode } : {}),
-    })).catch((error) => {
+    const runtimeEntry = this.liveSessions.get(sessionPathKey(value));
+    const abortEpoch = runtimeEntry?.fences.epoch;
+    const streamingBehavior = value.isStreaming ? input.mode : undefined;
+    void this.withWorkLease(value, "prompt", "general", operation => this.runtimeFor(value).prompt(promptText, {
+      ...(streamingBehavior ? { streamingBehavior } : {}),
+      preflightResult: (success: boolean) => {
+        if (!success) return;
+        runtimeEntry?.fences.admitted(operation, abortEpoch, streamingBehavior !== undefined || value.isStreaming);
+        if (admission) accept();
+      },
+    }), "prompt").then(() => {
+      // Real SDK paths call preflightResult even for consumed extension commands.
+      // A missing callback must not turn a completed stub into false admission.
+      if (admission) reject(new SessionServiceError("Prompt completed without admission confirmation", 503));
+    }).catch((error) => {
+      if (admission) reject(error);
       if (!this.deps.sessionFactory?.isMock && input.clientMessageId) this.forgetPromptCorrelation(sessionPathKey(value), input.clientMessageId);
       this.emitError(value, error, input.clientMessageId);
     }).finally(() => {
       const lastMessage = Array.isArray(value.agent?.state?.messages) ? value.agent.state.messages.at(-1) : undefined;
       this.emitRuntime(value, "completed", promptSessionFile, isAssistantAbortedMessage(lastMessage));
     });
+    if (admission) await admission;
   }
 
   private trailingRetryTarget(value: PiWebSession): RetrySessionTarget | undefined {
@@ -1464,7 +1613,7 @@ export class LocalSessionService implements SessionService {
   }
 
   private assertCanRetry(value: PiWebSession) {
-    if (this.hasActiveWorkForPath(value.sessionFile)) throw new Error("Wait for the current response to finish before retrying.");
+    if (this.liveSessions.get(sessionPathKey(value))?.fences.hasTranscriptWork) throw new Error("Wait for the current response to finish before retrying.");
     if (value.isStreaming) throw new Error("Wait for the current response to finish before retrying.");
     if (value.isCompacting) throw new Error("Wait for compaction to finish before retrying.");
     if (!this.trailingRetryTarget(value)) throw new Error("There is no failed or incomplete response to retry.");
@@ -1495,7 +1644,7 @@ export class LocalSessionService implements SessionService {
     this.emitRuntime(value, "ensure");
     const retrySessionFile = value.sessionFile;
     const usesCompatibilityFallback = !value.retryFromFailure;
-    void this.withWorkLease(value, "retry", "retry", () => this.retryFromFailure(value)).catch((error) => {
+    void this.withWorkLease(value, "retry", "retry", () => this.retryFromFailure(value), "transcript").catch((error) => {
       this.emitRuntime(value, "clear", retrySessionFile);
       this.emitError(value, error);
     }).finally(() => {

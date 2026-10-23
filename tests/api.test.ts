@@ -2,6 +2,7 @@ import { isolatedAuthEnv as baseAuthEnv } from "./auth-isolation.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { mkdir, mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -726,6 +727,20 @@ describe("pi-web mock API", () => {
     ws.close();
   });
 
+  it("validates tracked prompt text without dispatching it", async () => {
+    const post = (path: string, body: unknown) => fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const before = await (await fetch(`${baseUrl}/api/messages`)).json();
+    const input = { sessionId: "mock-current", message: " /unknown literal ", dispatchId: "11111111-1111-4111-8111-111111111111" };
+    const valid = await post("/api/prompt/validate", input);
+    expect(valid.status).toBe(200);
+    expect(await valid.json()).toEqual({ ok: true, valid: true });
+    for (const invalid of [{ ...input, dispatchId: "bad" }, { ...input, message: "" }, { ...input, message: 42 }, { ...input, dispatchId: undefined }]) {
+      expect((await post("/api/prompt/validate", invalid)).status).toBe(400);
+    }
+    expect((await post("/api/prompt/validate", { ...input, sessionId: "missing-session" })).status).toBe(404);
+    expect(await (await fetch(`${baseUrl}/api/messages`)).json()).toEqual(before);
+  });
+
   it("rejects empty prompts", async () => {
     const res = await fetch(`${baseUrl}/api/prompt`, {
       method: "POST",
@@ -1148,6 +1163,59 @@ describe("additional API coverage", () => {
     }
   }, 25_000);
 
+  it("offers explicit prompt admission and awaited idle receipts without changing legacy 202", async () => {
+    const dispatchId = "12345678-1234-1234-1234-123456789abc";
+    const admitted = await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "slow admission receipt", waitFor: "admission", dispatchId }),
+    });
+    expect(admitted.status).toBe(200);
+    expect(await admitted.json()).toMatchObject({ ok: true, admission: "accepted", dispatchId });
+    const messages = await (await fetch(`${baseUrl}/api/messages`)).json();
+    expect(JSON.stringify(messages)).toContain(`[pi-web-dispatch:${dispatchId}]`);
+    const history = await fetch(`${baseUrl}/api/session/history?dispatchId=${dispatchId}`);
+    expect(history.status).toBe(200);
+    expect(JSON.stringify(await history.json())).toContain(`[pi-web-dispatch:${dispatchId}]`);
+    const invalidCompletion = await fetch(`${baseUrl}/api/session/completion`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ deliveryId: 123, message: { customType: "wakeup", content: "Done", display: true } }),
+    });
+    expect(invalidCompletion.status).toBe(400);
+    const idle = await fetch(`${baseUrl}/api/abort`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ waitFor: "idle" }),
+    });
+    expect(idle.status).toBe(200);
+    expect(await idle.json()).toMatchObject({ ok: true, idle: true });
+    const invalid = await fetch(`${baseUrl}/api/prompt`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: "must not submit", waitFor: "admission", dispatchId: "invalid" }),
+    });
+    expect(invalid.status).toBe(400);
+  });
+
+  it("accepts tracked path-led and unregistered slash literals without rewriting", async () => {
+    for (const message of ["/src/foo.ts fails, fix it", "/my-command args", "/template args", "/skill:foo", "  /unknown args", "/help explain this"]) {
+      const dispatchId = randomUUID();
+      try {
+        const response = await fetch(`${baseUrl}/api/prompt`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ message, dispatchId, waitFor: "admission" }),
+        });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ ok: true, admission: "accepted", dispatchId });
+        const history = await fetch(`${baseUrl}/api/session/history?dispatchId=${dispatchId}`);
+        expect(history.status).toBe(200);
+        expect(JSON.stringify(await history.json())).toContain(JSON.stringify(`${message}\n\n[pi-web-dispatch:${dispatchId}]`).slice(1, -1));
+      } finally {
+        const idle = await fetch(`${baseUrl}/api/abort`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ waitFor: "idle" }),
+        });
+        expect(idle.status).toBe(200);
+      }
+    }
+  });
+
   it("aborts the current session via POST /api/abort", async () => {
     // Start a slow prompt so the session is streaming
     void fetch(`${baseUrl}/api/prompt`, {
@@ -1169,6 +1237,14 @@ describe("additional API coverage", () => {
 
     const state = await (await fetch(`${baseUrl}/api/state`)).json();
     expect(state.isStreaming).toBe(false);
+    // Legacy 202 and the SDK streaming flag do not prove that the detached
+    // prompt operation has settled. Finish cleanup before later model mutations.
+    const settled = await fetch(`${baseUrl}/api/abort`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ waitFor: "idle" }),
+    });
+    expect(settled.status).toBe(200);
+    expect(await settled.json()).toMatchObject({ ok: true, idle: true });
   });
 
   it("switches model via POST /api/model", async () => {

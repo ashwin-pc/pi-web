@@ -23,7 +23,7 @@ Existing per-file overrides take precedence. With `PI_WEB_HOME` unset (or empty)
 | Global web extensions | `extensions/` | — |
 | Example notepad | `notepad.json`, `notepad-archive.jsonl`, legacy `notepad.md` | `PI_WEB_NOTEPAD_FILE` (archive/markdown follow its location) |
 
-Project extensions remain in `<cwd>/.pi/web/extensions`. This version's notepad has no separate database/vault, and the session orchestrator uses a ledger in agent session files rather than a delegation spool; those sessions remain under the agent home. Extensions with their own resolvable `@ashwin-pc/pi-web` dependency can import the shared `resolveWebHomePath(file, legacyPath, override?)` helper from `@ashwin-pc/pi-web/extensions`. Copied standalone extensions should keep runtime path helpers self-contained and package imports type-only: a global or `npx` install is not on their Node package resolution path.
+Project extensions remain in `<cwd>/.pi/web/extensions`. This version's notepad has no separate database/vault, and the session orchestrator keeps durable watches and pending wakeup batches in `~/.pi/agent/orchestrator-state/` (override with `PI_WEB_ORCHESTRATOR_STATE_DIR`), with a legacy watch ledger in agent session files. Those sessions remain under the agent home. Extensions with their own resolvable `@ashwin-pc/pi-web` dependency can import the shared `resolveWebHomePath(file, legacyPath, override?)` helper from `@ashwin-pc/pi-web/extensions`. Copied standalone extensions should keep runtime path helpers self-contained and package imports type-only: a global or `npx` install is not on their Node package resolution path.
 
 ### Launcher (requires tmux)
 

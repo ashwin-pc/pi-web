@@ -1029,6 +1029,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return await sendNegotiatedJson(req, res, 200, { ok: true, messages: wireMessages });
       }
 
+      if (method === "GET" && url.pathname === "/api/session/history") {
+        const dispatchIds = url.searchParams.getAll("dispatchId");
+        if (dispatchIds.length !== 1) throw new SessionServiceError("Exactly one dispatchId is required");
+        const messages = await sessionService.history(resolveSessionId(url.searchParams.get("sessionId")), dispatchIds[0]);
+        return await sendNegotiatedJson(req, res, 200, { ok: true, messages });
+      }
+
       if (method === "GET" && url.pathname === "/api/messages/image") {
         const sessionId = url.searchParams.get("sessionId")?.trim();
         const imageId = url.searchParams.get("imageId") || "";
@@ -1342,9 +1349,21 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         return sendJson(res, 201, { ok: true, attachment });
       }
 
+      if (method === "POST" && url.pathname === "/api/prompt/validate") {
+        const body = await readBody(req) as { sessionId?: unknown; message?: unknown; dispatchId?: unknown };
+        if (typeof body.message !== "string") throw new SessionServiceError("message is required");
+        if (typeof body.dispatchId !== "string") throw new SessionServiceError("dispatchId must be a UUID");
+        return sendJson(res, 200, { ok: true, ...await sessionService.validatePrompt(resolveSessionId(body.sessionId), { message: body.message, dispatchId: body.dispatchId }) });
+      }
+
       if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
-        const message = String(body.message || "").trim();
+        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown; waitFor?: unknown; dispatchId?: unknown };
+        if (body.waitFor !== undefined && body.waitFor !== "admission") throw new SessionServiceError("waitFor must be admission");
+        if (body.dispatchId !== undefined && typeof body.dispatchId !== "string") throw new SessionServiceError("dispatchId must be a UUID");
+        const rawMessage = String(body.message || "");
+        const trimmedMessage = rawMessage.trim();
+        // Preserve literal tracked text for core validation and dispatch; retain legacy UI trimming.
+        const message = body.dispatchId && trimmedMessage ? rawMessage : trimmedMessage;
         const target = await sessionService.require(resolveSessionId(body.sessionId));
         const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);
         if (!message && attachments.length === 0) return sendJson(res, 400, { ok: false, error: "message or attachment is required" });
@@ -1362,8 +1381,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           attachments,
           clientMessageId,
           sourceClientId,
+          ...(body.waitFor === "admission" ? { waitFor: "admission" as const } : {}),
+          ...(typeof body.dispatchId === "string" ? { dispatchId: body.dispatchId } : {}),
         });
-        return sendJson(res, 202, { ok: true, ...result });
+        return sendJson(res, body.waitFor === "admission" ? 200 : 202, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/session/retry") {
@@ -1372,8 +1393,17 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/abort") {
-        const body = await readBody(req) as { sessionId?: unknown };
-        return sendJson(res, 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId)) });
+        const body = await readBody(req) as { sessionId?: unknown; waitFor?: unknown };
+        if (body.waitFor !== undefined && body.waitFor !== "idle") throw new SessionServiceError("waitFor must be idle");
+        return sendJson(res, body.waitFor === "idle" ? 200 : 202, { ok: true, ...await sessionService.abort(resolveSessionId(body.sessionId), body.waitFor) });
+      }
+
+      if (method === "POST" && url.pathname === "/api/session/completion") {
+        const body = await readBody(req) as { sessionId?: unknown; deliveryId: string; message: import("./server/session/completionOutbox.js").CompletionMessage };
+        const result = await sessionService.deliverCompletion(resolveSessionId(body.sessionId), {
+          deliveryId: body.deliveryId, message: body.message,
+        });
+        return sendJson(res, 200, { ok: true, ...result });
       }
 
       if (method === "POST" && url.pathname === "/api/compaction/abort") {
@@ -1458,7 +1488,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
     serveStatic(req, res);
   } catch (error) {
     const status = error instanceof SessionUiStateUnavailableError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
-    sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error), ...(error instanceof SessionServiceError && error.recoveryRequired ? { recoveryRequired: true } : {}) });
   }
 }));
 
