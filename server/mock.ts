@@ -871,17 +871,18 @@ export function createMockHarness(options: MockSessionOptions) {
           appendMockMessage({ role: "toolResult", toolCallId: "call-launch-read", toolName: "read", content: "14 interview summaries, 38 tagged observations, and 6 supporting market notes.", timestamp });
           appendMockMessage({ role: "toolResult", toolCallId: "call-launch-write", toolName: "write", content: "Visual launch brief saved to /workspace/launch-plan/deliverables/spring-launch-brief.html", timestamp });
         } else if (withShowcase) {
-          const editArgs = { path: "/Users/ashwin/projects/pi-web/src/style.css", edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };
+          const showcasePath = "/workspace/pi-web/src/style.css";
+          const editArgs = { path: showcasePath, edits: [{ oldText: ".sessionItem {\n  min-height: 40px;\n}", newText: ".sessionItem {\n  height: auto;\n  min-height: 0;\n}\n\n@media (max-width: 700px) {\n  .sessionDrawer { width: 100vw; }\n}" }] };
           const editDetails = { diff: " 118 .sessionList { overflow-y: auto; }\n 119 \n 120 .sessionItem {\n-121   min-height: 40px;\n+121   height: auto;\n+122   min-height: 0;\n 123 }\n+124 \n+125 @media (max-width: 700px) {\n+126   .sessionDrawer { width: 100vw; }\n+127 }", firstChangedLine: 121 };
           appendMockMessage({ role: "assistant", content: [
             { type: "text", text: "## Mobile-first coding UI\n\nI reviewed the session drawer, checked the CSS, and tightened the responsive layout.\n\n```ts\nawait runVisualRegression({ projects: [\"mobile\", \"desktop\"] });\n```" },
-            { type: "toolCall", id: "call-showcase-read", toolName: "read", arguments: { path: "/Users/ashwin/projects/pi-web/src/style.css" } },
+            { type: "toolCall", id: "call-showcase-read", toolName: "read", arguments: { path: showcasePath } },
             { type: "text", text: "The global button height was constraining session rows, so I patched the drawer-specific styles." },
             { type: "toolCall", id: "call-showcase-edit", toolName: "edit", arguments: editArgs },
             { type: "text", text: "Visual snapshots now cover the polished desktop and mobile states.\n\n![pi-web workflow](/api/artifacts/e2e-test.jpg)" },
           ], timestamp: new Date().toISOString() });
           appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-read", toolName: "read", content: "session drawer CSS and responsive composer styles", timestamp: new Date().toISOString() });
-          appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: "Successfully replaced 1 block(s) in /Users/ashwin/projects/pi-web/src/style.css.", details: editDetails, timestamp: new Date().toISOString() });
+          appendMockMessage({ role: "toolResult", toolCallId: "call-showcase-edit", toolName: "edit", toolArgs: editArgs, content: `Successfully replaced 1 block(s) in ${showcasePath}.`, details: editDetails, timestamp: new Date().toISOString() });
         } else if (withEditTool || withFlatEditTool || withMalformedEditTool) {
           const editArgs = withMalformedEditTool
             ? { path: "/some/file.ts", edits: [{ newText: "const answer = 42;" }, { oldText: "console.log(answer);" }] }

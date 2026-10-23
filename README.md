@@ -130,7 +130,7 @@ Edit files under `src/` and Vite will update the UI live. If the agent edits `se
 By default, Pi operates in the directory where you start this server. To point Pi at another project:
 
 ```bash
-PI_WEB_CWD=/Users/ashwin/projects/comfy-lan-webapp npm run dev
+PI_WEB_CWD="$HOME/projects/example-app" npm run dev
 ```
 
 ## Core features
