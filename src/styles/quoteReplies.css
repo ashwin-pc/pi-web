@@ -160,25 +160,29 @@ html.quoteReplyTransition::view-transition-new(root) { animation: none; }
 .quoteFootnoteBody { flex: 1; min-width: 0; }
 .quoteFootnoteEditor,
 .quoteFootnoteRead { display: flex; align-items: center; gap: 3px; min-height: 30px; }
-.quoteFootnoteEditor { position: relative; overflow: hidden; padding-left: 4px; border-radius: 8px; transition: background .15s, box-shadow .15s; }
+.quoteFootnoteEditor { position: relative; align-items: flex-start; overflow: hidden; padding-left: 4px; border-radius: 8px; transition: background .15s, box-shadow .15s; }
+.quoteFootnoteActions { display: flex; flex: 0 0 auto; gap: 1px; padding-top: 3px; }
 .quoteFootnoteEditor > * { position: relative; z-index: 1; }
 .quoteFootnoteEditor:focus-within {
   background: color-mix(in srgb, var(--accent) 4%, transparent);
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 13%, transparent);
 }
-.quoteFootnoteEditor input {
+.quoteFootnoteEditor textarea {
   flex: 1;
   min-width: 0;
-  height: 30px;
-  padding: 3px 1px;
+  min-height: 44px;
+  max-height: 180px;
+  resize: vertical;
+  padding: 5px 1px;
   border: 0;
   outline: 0;
   background: transparent;
   color: var(--text);
   font: inherit;
   font-size: 11px;
+  line-height: 1.5;
 }
-.quoteFootnoteEditor input::placeholder { color: color-mix(in srgb, var(--muted) 76%, transparent); }
+.quoteFootnoteEditor textarea::placeholder { color: color-mix(in srgb, var(--muted) 76%, transparent); }
 .quoteFootnoteConfirm,
 .quoteFootnoteRemove,
 .quoteFootnoteEdit {
@@ -195,7 +199,9 @@ html.quoteReplyTransition::view-transition-new(root) { animation: none; }
   background: transparent;
   color: var(--muted);
 }
-.quoteFootnoteConfirm { color: var(--accent); font-size: 14px; font-weight: 800; }
+.quoteFootnoteConfirm { color: var(--accent); }
+.quoteFootnoteActions button { flex-basis: 24px; width: 24px; min-width: 24px; height: 24px; min-height: 24px; }
+.quoteFootnoteConfirm svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; }
 .quoteFootnoteConfirm:hover,
 .quoteFootnoteRemove:hover,
 .quoteFootnoteEdit:hover { border: 0; background: transparent; color: var(--text); }
@@ -203,7 +209,7 @@ html.quoteReplyTransition::view-transition-new(root) { animation: none; }
 .quoteFootnoteRemove:focus-visible,
 .quoteFootnoteEdit:focus-visible { outline: 1px solid color-mix(in srgb, var(--accent) 45%, transparent); outline-offset: 1px; }
 .quoteFootnoteRead { color: var(--text); font-size: 11px; }
-.quoteFootnoteQuestion { flex: 1; overflow-wrap: anywhere; }
+.quoteFootnoteQuestion { flex: 1; overflow-wrap: anywhere; white-space: pre-wrap; }
 .quoteFootnoteEdit svg { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 1.8; }
 .quoteFootnote.saved .quoteFootnoteEditor { display: none; }
 .quoteFootnote:not(.saved) .quoteFootnoteRead { display: none; }

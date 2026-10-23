@@ -960,6 +960,13 @@ export function createComposer(options: {
       void attachFiles(Array.from(event.dataTransfer?.files || []));
     });
 
+    const consumeCompactSendClick = bindCompactInactiveAction(elements.primaryButton, elements.formEl, () => {
+      if (!elements.primaryButton.disabled) elements.formEl.requestSubmit(elements.primaryButton);
+    });
+    elements.primaryButton.addEventListener("click", (event) => {
+      consumeCompactSendClick(event);
+    });
+
     const consumeCompactStopClick = bindCompactInactiveAction(elements.stopButton, elements.formEl, () => {
       void stopStreaming();
     });

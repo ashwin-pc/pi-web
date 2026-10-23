@@ -933,8 +933,7 @@ button:disabled:hover { border-color: var(--border); }
   white-space: nowrap;
 }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .expandButton,
-.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #queueToggle,
-.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #primaryButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #queueToggle {
   display: none !important;
 }
 /* Queue and send join the expanded footer as zero-width slots, then consume
@@ -1028,7 +1027,8 @@ button:disabled:hover { border-color: var(--border); }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureButton,
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) .composerCaptureCancel,
-.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #primaryButton {
   flex-basis: var(--composer-control-size);
   width: var(--composer-control-size);
   min-width: var(--composer-control-size);
@@ -1040,7 +1040,8 @@ button:disabled:hover { border-color: var(--border); }
 .composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #attachButton {
   background: transparent;
 }
-.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton {
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #stopButton,
+.composer.compactInactive:not(:has(#prompt:focus)):not(.expanded) #primaryButton {
   margin-left: 2px;
 }
 .primaryAction {
