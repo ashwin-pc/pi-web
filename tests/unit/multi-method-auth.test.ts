@@ -143,6 +143,30 @@ describe("multi-method human authentication", () => {
       else process.env.PI_WEB_AUTH_PROXY_PEERS = old;
     }
   });
+  it("anchors trust in configuration: rejects missing Origin, scheme downgrade, and off-allowlist hosts", () => {
+    // (a) A missing Origin is only trusted when the browser's Fetch-Metadata
+    //     signal confirms the request is same-origin (foreign pages cannot
+    //     set `sec-fetch-site`).
+    expect(trustedOrigin(req({}, { host: "pi.example.com" }), "https://pi.example.com")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.com", "sec-fetch-site": "cross-site" }), "https://pi.example.com")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.com", "sec-fetch-site": "same-origin" }), "https://pi.example.com")).toBe(true);
+    expect(trustedOrigin(req({}, { host: "pi.example.com", "sec-fetch-site": "none" }), "https://pi.example.com")).toBe(true);
+    // (b) The Host fallback refuses an HTTP Origin against an HTTPS-pinned
+    //     deployment, closing the scheme-downgrade path.
+    expect(trustedOrigin(req({}, { host: "pi.example.com", origin: "http://pi.example.com" }), "https://pi.example.com")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.com", origin: "https://pi.example.com" }), "https://pi.example.com")).toBe(true);
+    // (c) When PI_WEB_AUTH_ALLOWED_HOSTS is set the self-referential Host
+    //     match is restricted to the allowlist, closing DNS rebinding.
+    const oldAllow = process.env.PI_WEB_AUTH_ALLOWED_HOSTS;
+    try {
+      process.env.PI_WEB_AUTH_ALLOWED_HOSTS = "pi.local:8787";
+      expect(trustedOrigin(req({}, { host: "evil.example:8787", origin: "http://evil.example:8787" }), "http://localhost:8787")).toBe(false);
+      expect(trustedOrigin(req({}, { host: "pi.local:8787", origin: "http://pi.local:8787" }), "http://localhost:8787")).toBe(true);
+    } finally {
+      if (oldAllow === undefined) delete process.env.PI_WEB_AUTH_ALLOWED_HOSTS;
+      else process.env.PI_WEB_AUTH_ALLOWED_HOSTS = oldAllow;
+    }
+  });
   it("denies stale-cookie and grant persistence and other-device lockout", async () => {
     for (const grant of [false, true]) {
       const { kernel, store } = await fixture(); const res = response();
