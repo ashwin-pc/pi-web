@@ -80,6 +80,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * Absolute upper bound on any single scalar string value, applied before any
+ * extension-supplied regex runs. Caps worst-case regex work and also guards
+ * benign linear patterns against multi-megabyte inputs. Fields with a smaller
+ * `maxLength` are capped at that value. Chosen well above every realistic
+ * field (longest documented maxLength is 400 chars) while remaining far short
+ * of the per-owner serialized budget enforced at persist time
+ * (`extensionSettingsLimits.maxBytesPerOwner` = 64 KiB).
+ */
+const ABSOLUTE_SCALAR_MAX_LENGTH = 8 * 1024;
+
+/**
+ * Absolute upper bound on list rows coerced per request, applied before any
+ * row's scalar fields (and thus any regex) run. Fields with a smaller
+ * `maxItems` are capped at that value. Keeps `coerceList` from amplifying
+ * per-row work by an attacker-controlled factor before `maxItems` is checked.
+ */
+const ABSOLUTE_LIST_MAX_ITEMS = 1024;
+
 let rowSeq = 0;
 function newRowId(): string {
   rowSeq = (rowSeq + 1) % Number.MAX_SAFE_INTEGER;
@@ -132,12 +151,37 @@ function coerceScalar(field: FieldDescriptor, raw: unknown, path: string, errors
     case "textarea":
     case "select": {
       const s = typeof raw === "string" ? raw : raw === undefined || raw === null ? "" : String(raw);
-      const trimmed = field.type === "select" ? s.trim() : s;
+      let trimmed = field.type === "select" ? s.trim() : s;
+      // Length gate must precede the extension-declared regex: `new RegExp(field.pattern).test(trimmed)`
+      // runs synchronously on the shared Node event loop with no match-time
+      // budget, so an uncapped input (or an input that violates the schema's
+      // own `maxLength`) could stall the server. Record the length error and
+      // truncate before any pattern evaluation so the regex sees a bounded
+      // string and the match-time budget stays O(cap).
+      const cap = Math.min(
+        field.maxLength ?? ABSOLUTE_SCALAR_MAX_LENGTH,
+        ABSOLUTE_SCALAR_MAX_LENGTH,
+      );
+      if (trimmed.length > cap) {
+        if (field.maxLength !== undefined && trimmed.length > field.maxLength) {
+          errors.push({ path, message: `${field.label} must be ≤ ${field.maxLength} chars` });
+        } else {
+          errors.push({ path, message: `${field.label} must be ≤ ${ABSOLUTE_SCALAR_MAX_LENGTH} chars` });
+        }
+        trimmed = trimmed.slice(0, cap);
+      }
       if (field.required && !trimmed.trim()) errors.push({ path, message: `${field.label} is required` });
       if (field.minLength !== undefined && trimmed.length < field.minLength) {
         errors.push({ path, message: `${field.label} must be ≥ ${field.minLength} chars` });
       }
-      if (field.maxLength !== undefined && trimmed.length > field.maxLength) {
+      if (
+        field.maxLength !== undefined
+        && trimmed.length > field.maxLength
+        && trimmed.length <= cap
+      ) {
+        // Covers field.maxLength < cap when the input exceeds the field bound
+        // but not the absolute bound; the earlier branch handled the opposite
+        // case (and already truncated).
         errors.push({ path, message: `${field.label} must be ≤ ${field.maxLength} chars` });
       }
       if (field.pattern && trimmed) {
@@ -234,7 +278,13 @@ function coerceList(field: FieldDescriptor, raw: unknown, path: string, errors: 
   if (raw !== undefined && raw !== null && !Array.isArray(raw)) {
     errors.push({ path, message: `${field.label} must be a list` });
   }
-  const arr = Array.isArray(raw) ? raw : [];
+  const fullArr = Array.isArray(raw) ? raw : [];
+  // Row count gate must precede per-row coercion: each row's scalar fields may
+  // run an extension-declared regex. Cap at the smaller of the schema's
+  // `maxItems` and the absolute bound before amplifying work by an
+  // attacker-controlled factor; the (soft) count error is still reported.
+  const itemCap = Math.min(field.maxItems ?? ABSOLUTE_LIST_MAX_ITEMS, ABSOLUTE_LIST_MAX_ITEMS);
+  const arr = fullArr.length > itemCap ? fullArr.slice(0, itemCap) : fullArr;
   const itemFields = field.itemFields ?? [];
   const rows: JsonObject[] = arr.map((rawRow, i) => {
     const row: JsonObject = {};
@@ -255,8 +305,12 @@ function coerceList(field: FieldDescriptor, raw: unknown, path: string, errors: 
   if (field.minItems !== undefined && rows.length < field.minItems) {
     errors.push({ path, message: `${field.label} needs at least ${field.minItems}` });
   }
-  if (field.maxItems !== undefined && rows.length > field.maxItems) {
+  // Report the `maxItems` violation against the pre-cap length so callers see
+  // the schema-declared limit (not the absolute hard cap applied above).
+  if (field.maxItems !== undefined && fullArr.length > field.maxItems) {
     errors.push({ path, message: `${field.label} allows at most ${field.maxItems}` });
+  } else if (fullArr.length > ABSOLUTE_LIST_MAX_ITEMS) {
+    errors.push({ path, message: `${field.label} allows at most ${ABSOLUTE_LIST_MAX_ITEMS}` });
   }
 
   // per-column case-insensitive uniqueness
