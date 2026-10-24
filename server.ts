@@ -173,12 +173,43 @@ async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionS
   if (!resolvedFile) return sendJson(res, 404, { ok: false, error: "Artifact not found" });
 
   const size = statSync(resolvedFile).size;
+  const resolvedExt = extname(resolvedFile).toLowerCase();
+  const fetchDest = String(req.headers["sec-fetch-dest"] || "").toLowerCase();
+  const topLevelNav = fetchDest === "document";
+  // Iframes/embeds carry their own sandbox attribute (see enhanceArtifactLinks
+  // and the artifact browser preview). A response CSP sandbox would intersect
+  // with that attribute and strip legitimate preview scripts, so we only emit
+  // the hardening response for navigations that can escape the preview card
+  // (top-level document, workers, service workers, etc.).
+  const embeddedLoad = fetchDest === "iframe" || fetchDest === "frame" || fetchDest === "embed" || fetchDest === "object";
   const headers: Record<string, string | number> = {
-    "content-type": contentTypes[extname(resolvedFile).toLowerCase()] || "application/octet-stream",
+    "content-type": contentTypes[resolvedExt] || "application/octet-stream",
     "content-length": size,
     "accept-ranges": "bytes",
     "cache-control": "no-store",
+    // Prevent MIME sniffing from upgrading an uploaded blob to script content.
+    "x-content-type-options": "nosniff",
+    "cross-origin-resource-policy": "same-origin",
   };
+  if (!embeddedLoad) {
+    // Harden the artifact origin for top-level and ambiguous loads: a strict
+    // CSP + sandbox denies script and network access, so agent-authored
+    // HTML/SVG cannot read storage, call same-origin APIs, or exfiltrate
+    // credentials even if the owner clicks a link that opens the artifact as
+    // a top-level document. Allow 'self' for inline media so an <img>/<video>
+    // preview still renders in Safari.
+    headers["content-security-policy"] = "default-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'; font-src 'self' data:; sandbox";
+    headers["cross-origin-opener-policy"] = "same-origin";
+  }
+  // Force attachment downloads for top-level navigations to active-content
+  // kinds. Iframe/embed loads (preview cards, artifact browser previews) still
+  // get inline content so sandboxed previews keep working.
+  const activeArtifactExts = new Set([".html", ".htm", ".xhtml", ".svg", ".xml", ".mathml"]);
+  if (activeArtifactExts.has(resolvedExt) && topLevelNav) {
+    const baseName = resolvedFile.split(/[\\/]/).pop() || "artifact";
+    const safeName = baseName.replace(/[\r\n"]/g, "_");
+    headers["content-disposition"] = `attachment; filename="${safeName}"`;
+  }
   const rangeHeader = req.headers.range?.trim();
   if (!rangeHeader) {
     res.writeHead(200, headers);
@@ -220,7 +251,36 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  res.writeHead(200, { "content-type": contentTypes[extname(file)] || "application/octet-stream" });
+  const ext = extname(file).toLowerCase();
+  const headers: Record<string, string | number> = {
+    "content-type": contentTypes[ext] || "application/octet-stream",
+    "x-content-type-options": "nosniff",
+  };
+  if (ext === ".html" || ext === ".htm") {
+    // SPA document CSP. The pi-web client relies on inline scripts/styles for
+    // bootstrapping and loads additional modules from the same origin, so we
+    // keep self + inline enabled but block all cross-origin executable sources.
+    // frame-src is restricted so an agent-authored artifact URL cannot be
+    // framed back into the owner's main document; artifact previews use
+    // iframes created by trusted code with explicit sandbox attributes.
+    headers["content-security-policy"] = [
+      "default-src 'self'",
+      "script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:",
+      "style-src 'self' 'unsafe-inline'",
+      "img-src 'self' data: blob: https:",
+      "media-src 'self' blob:",
+      "font-src 'self' data:",
+      "connect-src 'self' blob: https: ws: wss:",
+      "worker-src 'self' blob:",
+      "frame-src 'self' blob:",
+      "object-src 'none'",
+      "base-uri 'self'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+    ].join("; ");
+    headers["referrer-policy"] = "strict-origin-when-cross-origin";
+  }
+  res.writeHead(200, headers);
   pipeReadStream(res, file);
 }
 

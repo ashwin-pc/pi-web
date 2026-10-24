@@ -29,6 +29,82 @@ const allowedMarkdownTags = new Set([
   "li", "ol", "p", "pre", "span", "strong", "table", "tbody", "td", "th", "thead", "tr", "ul",
 ]);
 const allowedMarkdownAttributes = new Set(["alt", "class", "href", "rel", "src", "target", "title"]);
+// Extensions whose /api/artifacts/* or /api/session-artifacts/* content is
+// active content in the browser (HTML/SVG/XML variants). Markdown <img src>
+// targets to these are stripped (an <img> cannot legitimately point at active
+// content), and the server emits a sandboxing CSP on the response so a top-
+// level navigation to such an artifact cannot execute agent-authored script.
+// Markdown anchors to active content are kept so the sandboxed preview card
+// (enhanceArtifactLinks) can still render them, and the link's own click is
+// rewritten to open the in-app sandboxed viewer instead of top-level nav.
+const activeArtifactExtensions = new Set([".html", ".htm", ".xhtml", ".svg", ".xml", ".mathml"]);
+const inertArtifactImageExtensions = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".avif"]);
+
+function markdownBaseOrigin() {
+  try { return (typeof window !== "undefined" && window.location && window.location.origin) || "http://localhost"; }
+  catch { return "http://localhost"; }
+}
+
+function parseMarkdownUrl(value: string): URL | null {
+  try { return new URL(value, markdownBaseOrigin()); } catch { return null; }
+}
+
+function extensionOf(pathname: string): string {
+  const slash = pathname.lastIndexOf("/");
+  const tail = slash >= 0 ? pathname.slice(slash + 1) : pathname;
+  const dot = tail.lastIndexOf(".");
+  return dot >= 0 ? tail.slice(dot).toLowerCase() : "";
+}
+
+function isArtifactPathname(pathname: string): boolean {
+  return pathname.startsWith("/api/artifacts/") || pathname.startsWith("/api/session-artifacts/");
+}
+
+// Policy for markdown anchor hrefs. Returns the href string to keep, or null to
+// strip the attribute. Fragment-only, mailto:, http(s): to a third-party, same
+// origin app routes, and artifact downloads are permitted; same-origin paths
+// that resolve to arbitrary API routes are refused. Links to active-content
+// artifacts (e.g. .html, .svg) are kept but neutralized at click time by
+// enhanceArtifactLinks, and the server emits a sandboxing CSP on the response
+// so direct navigation cannot execute agent-authored script.
+function policedMarkdownHref(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+  if (value.startsWith("#")) return value;
+  if (/^mailto:/i.test(value)) return value;
+  const url = parseMarkdownUrl(value);
+  if (!url) return null;
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  const sameOrigin = url.origin === markdownBaseOrigin();
+  if (!sameOrigin) return url.toString();
+  const path = url.pathname;
+  // Entry route and panel deep links.
+  if (path === "/" || path === "") return url.pathname + url.search + url.hash;
+  // Artifact downloads. URL normalization defeats /api/artifacts/../... path
+  // traversal attempts because the test runs on the normalized pathname.
+  if (isArtifactPathname(path)) return path + url.search + url.hash;
+  return null;
+}
+
+// Policy for markdown src attributes. http(s) to any origin, data: for images,
+// and same-origin inert artifact images are allowed. Path traversal is caught
+// because the URL is normalized before the prefix test.
+function policedMarkdownSrc(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+  if (/^data:image\/(png|jpeg|jpg|gif|webp);base64,/i.test(value)) return value;
+  const url = parseMarkdownUrl(value);
+  if (!url) return null;
+  if (url.protocol === "http:" || url.protocol === "https:") {
+    if (url.origin !== markdownBaseOrigin()) return url.toString();
+    if (!isArtifactPathname(url.pathname)) return null;
+    const ext = extensionOf(url.pathname);
+    if (activeArtifactExtensions.has(ext)) return null;
+    if (ext && !inertArtifactImageExtensions.has(ext)) return null;
+    return url.pathname + url.search + url.hash;
+  }
+  return null;
+}
 
 type ArtifactPreviewAction = { key?: unknown; title?: unknown; label?: unknown; kinds?: unknown; extensions?: unknown };
 let artifactPreviewActions: ArtifactPreviewAction[] = [];
@@ -89,15 +165,15 @@ function sanitizeMarkdownHtml(html: string) {
       }
 
       if (name === "href") {
-        const href = attribute.value.trim();
-        if (!/^(https?:|mailto:|#|\/)/i.test(href)) element.removeAttribute(attribute.name);
+        const policed = policedMarkdownHref(attribute.value);
+        if (policed === null) element.removeAttribute(attribute.name);
+        else if (policed !== attribute.value) element.setAttribute(attribute.name, policed);
       }
 
       if (name === "src") {
-        const src = attribute.value.trim();
-        if (!/^(https?:|data:image\/(png|jpeg|jpg|gif|webp);base64,|\/api\/artifacts\/)/i.test(src)) {
-          element.removeAttribute(attribute.name);
-        }
+        const policed = policedMarkdownSrc(attribute.value);
+        if (policed === null) element.removeAttribute(attribute.name);
+        else if (policed !== attribute.value) element.setAttribute(attribute.name, policed);
       }
     }
 
@@ -660,6 +736,17 @@ function enhanceArtifactLinks(root: ParentNode) {
     if (!builtInKind && !customPreview) continue;
     const kind = builtInKind || "file";
     link.dataset.artifactPreviewEnhanced = "true";
+    // Rewrite artifact anchors to open the sandboxed in-app viewer instead of
+    // navigating the owner's top-level tab to agent-authored active content.
+    // Modifier-click still allows opening the raw URL in a new tab, where the
+    // server emits a sandboxing CSP so no script executes.
+    link.addEventListener("click", (event) => {
+      if (event.defaultPrevented) return;
+      if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (event.button !== 0) return;
+      event.preventDefault();
+      openArtifactInPanel(url.pathname, link);
+    });
 
     const displayName = link.textContent?.trim() || fileName;
     const card = document.createElement("div");
