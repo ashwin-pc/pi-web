@@ -1541,8 +1541,15 @@ test.describe("assistant markdown rendering", () => {
 
     const assistant = page.locator(".message.assistant", { hasText: "Interactive result" }).last();
     const preview = assistant.locator(".htmlPreview");
+    // Agent-authored previews require an explicit user gesture before the
+    // live frame is mounted; confirm the untrusted gating UI is present.
+    await expect(preview).toHaveClass(/htmlPreview--untrusted/);
+    await expect(preview).toHaveClass(/htmlPreview--unarmed/);
+    await expect(preview.locator(".htmlPreviewNotice")).toContainText("Untrusted");
+    await preview.getByRole("button", { name: "Run preview" }).click();
     const frame = preview.locator("iframe");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
+    await expect(frame).toHaveAttribute("referrerpolicy", "no-referrer");
     await expect(frame.contentFrame().locator("#ran")).toHaveText("script ran");
     await expect.poll(() => preview.evaluate((element) => element.getBoundingClientRect().width)).toBeLessThan(300);
     await expect(preview).toHaveClass(/htmlPreview--compact/);
@@ -1566,6 +1573,9 @@ test.describe("assistant markdown rendering", () => {
     const assistant = page.locator(".message.assistant", { hasText: "Stable previews" }).last();
     const previews = assistant.locator(".htmlPreview");
     await expect(previews).toHaveCount(2);
+    // Arm both previews with an explicit user gesture before asserting layout.
+    await previews.nth(0).getByRole("button", { name: "Run preview" }).click();
+    await previews.nth(1).getByRole("button", { name: "Run preview" }).click();
     await expect(previews.nth(0).locator("iframe").contentFrame().getByText("Full-width preview")).toBeVisible();
     await expect(previews.nth(1).locator("iframe").contentFrame().getByText("Bare preview text")).toBeVisible();
 
@@ -1872,6 +1882,9 @@ test.describe("image rendering", () => {
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
     const content = page.locator(".artifactPreview--markdown").last().locator(".artifactPreviewContent");
     await expect(content.locator("h1")).toHaveText("Preview reproduction");
+    // Preview fences require an explicit user gesture before the sandboxed
+    // iframe is mounted; click "Run preview" to arm the preview.
+    await content.getByRole("button", { name: "Run preview" }).click();
     await expect(content.locator("iframe.htmlPreviewFrame")).toHaveCount(1);
     await expect(content.frameLocator("iframe.htmlPreviewFrame").locator("#repro")).toHaveText("Interactive artifact");
   });

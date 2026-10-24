@@ -381,6 +381,49 @@ function inlineHtmlReporter() {
   return `<script>(()=>{const report=()=>{const b=document.body,e=document.documentElement,cs=getComputedStyle(b);let right=0,bottom=0,measured=false;for(const n of b.childNodes){let r;if(n.nodeType===1)r=n.getBoundingClientRect();else if(n.nodeType===3&&n.textContent.trim()){const range=document.createRange();range.selectNodeContents(n);r=range.getBoundingClientRect()}if(!r)continue;measured=true;right=Math.max(right,r.right);bottom=Math.max(bottom,r.bottom)}const width=measured?Math.ceil(right+parseFloat(cs.marginRight||'0')+parseFloat(cs.paddingRight||'0')):e.clientWidth;parent.postMessage({type:'pi-web-html-preview-size',height:Math.ceil(bottom+parseFloat(cs.marginBottom||'0')+parseFloat(cs.paddingBottom||'0')),width},'*')};addEventListener('load',report);new ResizeObserver(report).observe(document.documentElement);new MutationObserver(report).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});report()})()<\/script>`;
 }
 
+// Content-Security-Policy meta that is injected at the top of every agent- or
+// artifact-authored preview srcdoc. It keeps inline scripts and styles working
+// (which the preview feature intentionally supports) but blocks the frame from
+// opening any outbound connection, so a prompt-injected payload cannot beacon
+// data to an attacker-controlled host from inside the opaque-origin sandbox.
+const inlineHtmlPreviewCspMeta =
+  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; form-action 'none'; frame-src 'none'; child-src 'none'; base-uri 'none';\">";
+
+// Inject the preview CSP meta into an existing <head> when possible so a
+// well-formed artifact document stays well-formed (keeps standards mode and
+// honors any existing head content). Falls back to a minimal <!doctype
+// html><head>...</head> prelude for sources without a document shell.
+function injectPreviewCsp(html: string) {
+  const headMatch = /<head\b[^>]*>/i.exec(html);
+  if (headMatch) {
+    const insertAt = headMatch.index + headMatch[0].length;
+    return html.slice(0, insertAt) + inlineHtmlPreviewCspMeta + html.slice(insertAt);
+  }
+  const htmlMatch = /<html\b[^>]*>/i.exec(html);
+  if (htmlMatch) {
+    const insertAt = htmlMatch.index + htmlMatch[0].length;
+    return html.slice(0, insertAt) + "<head>" + inlineHtmlPreviewCspMeta + "</head>" + html.slice(insertAt);
+  }
+  return `<!doctype html><html><head>${inlineHtmlPreviewCspMeta}</head><body>${html}</body></html>`;
+}
+
+function composeInlineHtmlSrcdoc(source: string) {
+  // injectPreviewCsp picks the right place for the CSP meta whether or not
+  // the agent-authored source already has <html>/<head>, and preserves
+  // standards mode.
+  return injectPreviewCsp(source + inlineHtmlReporter());
+}
+
+function hardenPreviewIframe(frame: HTMLIFrameElement) {
+  // Keep the opaque-origin sandbox and tighten referrer leakage. The `csp`
+  // attribute asks the browser to additionally enforce a required policy on
+  // the embedded document (ignored by browsers that do not implement it, but
+  // the srcdoc meta above remains the primary enforcement).
+  frame.setAttribute("sandbox", "allow-scripts");
+  frame.setAttribute("referrerpolicy", "no-referrer");
+  frame.setAttribute("loading", "lazy");
+}
+
 function enhanceInlineHtmlPreviews(root: ParentNode) {
   for (const code of Array.from(root.querySelectorAll<HTMLElement>("pre > code.language-html-preview"))) {
     const pre = code.closest<HTMLPreElement>("pre");
@@ -390,22 +433,66 @@ function enhanceInlineHtmlPreviews(root: ParentNode) {
     pre.dataset.htmlPreviewEnhanced = "true";
     code.classList.remove("language-html-preview");
     code.classList.add("language-html");
-    pre.hidden = true;
+
+    // Default to showing the HTML source. The live preview iframe is only
+    // mounted after an explicit user click on "Run preview", so prompt-
+    // injected content in agent-authored markdown cannot execute scripts
+    // (even inside the sandboxed opaque origin) without the owner opting in.
+    pre.hidden = false;
 
     const container = document.createElement("div");
-    container.className = "htmlPreview";
+    container.className = "htmlPreview htmlPreview--untrusted htmlPreview--source htmlPreview--unarmed";
+    container.setAttribute("role", "group");
+    container.setAttribute("aria-label", "Untrusted HTML preview");
+
+    const notice = document.createElement("div");
+    notice.className = "htmlPreviewNotice";
+    notice.textContent = "Untrusted HTML preview \u2014 click Run preview to execute this agent-authored content in a sandboxed frame.";
+
+    const run = document.createElement("button");
+    run.type = "button";
+    run.className = "htmlPreviewRun";
+    run.textContent = "Run preview";
+    run.title = "Run this agent-authored HTML in a sandboxed iframe";
+    run.setAttribute("aria-label", run.title);
+
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "htmlPreviewToggle";
-    toggle.textContent = "Source";
-    toggle.title = "Show HTML source";
+    toggle.textContent = "Preview";
+    toggle.title = "Show interactive preview";
     toggle.setAttribute("aria-label", toggle.title);
-    const frame = document.createElement("iframe");
-    frame.className = "htmlPreviewFrame";
-    frame.title = "Interactive HTML preview";
-    frame.setAttribute("sandbox", "allow-scripts");
-    frame.srcdoc = source + inlineHtmlReporter();
+    toggle.hidden = true;
+
+    let frame: HTMLIFrameElement | null = null;
+    const mountFrame = () => {
+      if (frame) return frame;
+      const el = document.createElement("iframe");
+      el.className = "htmlPreviewFrame";
+      el.title = "Interactive HTML preview (untrusted agent-authored content)";
+      hardenPreviewIframe(el);
+      el.srcdoc = composeInlineHtmlSrcdoc(source);
+      container.insertBefore(el, container.firstChild);
+      inlineHtmlFrames.add(el);
+      ensureInlineHtmlResizeListener();
+      frame = el;
+      return el;
+    };
+
+    run.addEventListener("click", () => {
+      const el = mountFrame();
+      pre.hidden = true;
+      el.hidden = false;
+      container.classList.remove("htmlPreview--unarmed", "htmlPreview--source");
+      run.hidden = true;
+      toggle.hidden = false;
+      toggle.textContent = "Source";
+      toggle.title = "Show HTML source";
+      toggle.setAttribute("aria-label", toggle.title);
+    });
+
     toggle.addEventListener("click", () => {
+      if (!frame) return;
       const showingSource = pre.hidden;
       pre.hidden = !showingSource;
       frame.hidden = showingSource;
@@ -414,10 +501,9 @@ function enhanceInlineHtmlPreviews(root: ParentNode) {
       toggle.title = showingSource ? "Show interactive preview" : "Show HTML source";
       toggle.setAttribute("aria-label", toggle.title);
     });
+
     pre.replaceWith(container);
-    container.append(frame, pre, toggle);
-    inlineHtmlFrames.add(frame);
-    ensureInlineHtmlResizeListener();
+    container.append(notice, pre, run, toggle);
   }
 }
 
@@ -759,11 +845,13 @@ function enhanceArtifactLinks(root: ParentNode) {
       iframe.className = "artifactPreviewFrame";
       iframe.title = `Preview of ${title.textContent}`;
       void fetch(url.pathname, { headers: artifactActionHeaders(), credentials: "same-origin" })
-        .then(async response => { if (!response.ok) throw new Error(`Preview failed (${response.status})`); iframe.srcdoc = await response.text(); })
+        .then(async response => { if (!response.ok) throw new Error(`Preview failed (${response.status})`); iframe.srcdoc = injectPreviewCsp(await response.text()); })
         .catch(error => { content.textContent = error instanceof Error ? error.message : "Preview failed"; });
       // Allow artifact scripts (for diagrams and interactive previews) while omitting
       // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
-      iframe.setAttribute("sandbox", "allow-scripts");
+      // Also pin referrer and (where supported) a required CSP; the srcdoc meta above is
+      // the primary enforcement that blocks outbound beaconing from the sandboxed origin.
+      hardenPreviewIframe(iframe);
       const shield = document.createElement("button");
       shield.type = "button";
       shield.className = "artifactPreviewShield";

@@ -3,6 +3,18 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+    <!--
+      Content-Security-Policy backstop for agent- and artifact-authored
+      previews. The individual iframe `srcdoc` payloads carry their own
+      stricter CSP meta (connect-src 'none', form-action 'none', etc.); this
+      document-level policy is a defensive floor so that `object-src`,
+      `base-uri`, form-action and plugin surfaces cannot escalate if a future
+      embed site forgets to set the sandbox attribute. The SPA relies on
+      inline styles (dynamic theming) and inline script shims across the UI,
+      so `script-src` / `style-src` must keep allowing `'unsafe-inline'`;
+      see src/markdown/render.ts for the strict per-frame policy.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self';" />
     <title>pi web</title>
     <meta name="theme-color" content="#1a1a1a" />
     <link rel="manifest" href="/manifest.webmanifest" />

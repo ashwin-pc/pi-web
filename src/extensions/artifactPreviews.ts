@@ -75,9 +75,35 @@ export async function mountArtifactPreview(
   if (options.isCurrent && !options.isCurrent()) return true;
   const frame = document.createElement("iframe");
   if (options.className) frame.className = options.className;
-  frame.srcdoc = html;
+  // Inject a strict CSP meta so the extension-authored HTML cannot beacon or
+  // open outbound connections from inside the opaque-origin sandbox, even
+  // though it already runs with no same-origin / top-navigation / popup
+  // ambient authority.
+  frame.srcdoc = injectArtifactPreviewCsp(html);
   frame.title = options.title;
   frame.setAttribute("sandbox", "allow-scripts");
+  frame.setAttribute("referrerpolicy", "no-referrer");
+  frame.setAttribute("loading", "lazy");
   host.replaceChildren(frame);
   return true;
+}
+
+// Same policy as the agent-authored html-preview fence: keep inline script
+// and style working (which the preview feature intentionally supports) but
+// prevent any outbound network traffic from the embedded document.
+const ARTIFACT_PREVIEW_CSP_META =
+  "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; form-action 'none'; frame-src 'none'; child-src 'none'; base-uri 'none';\">";
+
+function injectArtifactPreviewCsp(html: string) {
+  const headMatch = /<head\b[^>]*>/i.exec(html);
+  if (headMatch) {
+    const insertAt = headMatch.index + headMatch[0].length;
+    return html.slice(0, insertAt) + ARTIFACT_PREVIEW_CSP_META + html.slice(insertAt);
+  }
+  const htmlMatch = /<html\b[^>]*>/i.exec(html);
+  if (htmlMatch) {
+    const insertAt = htmlMatch.index + htmlMatch[0].length;
+    return html.slice(0, insertAt) + "<head>" + ARTIFACT_PREVIEW_CSP_META + "</head>" + html.slice(insertAt);
+  }
+  return `<!doctype html><html><head>${ARTIFACT_PREVIEW_CSP_META}</head><body>${html}</body></html>`;
 }

@@ -195,6 +195,39 @@ body.artifactPreviewDocument {
   background: #fff;
   box-shadow: 0 5px 18px rgba(0,0,0,.12);
 }
+.htmlPreview--untrusted {
+  border-color: color-mix(in srgb, #f59e0b 60%, var(--border));
+  box-shadow: 0 5px 18px rgba(245, 158, 11, .18);
+}
+.htmlPreviewNotice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .5em;
+  padding: 6px 10px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: #78350f;
+  background: #fef3c7;
+  border-bottom: 1px solid color-mix(in srgb, #f59e0b 50%, transparent);
+}
+.htmlPreview--untrusted:not(.htmlPreview--unarmed) .htmlPreviewNotice {
+  background: #fffbeb;
+}
+.htmlPreviewRun {
+  min-height: 26px;
+  margin: 6px 10px;
+  padding: 3px 10px;
+  border: 1px solid #b45309;
+  border-radius: 6px;
+  background: #f59e0b;
+  color: #1f2937;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.htmlPreviewRun:hover { background: #fbbf24; }
+.htmlPreviewRun[hidden] { display: none; }
 .htmlPreviewFrame {
   display: block;
   width: 100%;
