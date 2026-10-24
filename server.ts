@@ -692,12 +692,47 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/event") {
-        const body = await readBody(req);
+        // Mock-only fixture route: cap the body tightly, require a known
+        // envelope shape, and reject oversize serialized payloads so a
+        // caller cannot pin large attacker-controlled JSON in the realtime
+        // replay log.
+        const MOCK_EVENT_MAX_BODY_BYTES = 64_000;
+        const MOCK_EVENT_MAX_SERIALIZED_BYTES = 64_000;
+        const MOCK_EVENT_MAX_CHILD_IDS = 256;
+        const ALLOWED_MOCK_EVENT_TYPES = new Set([
+          "agent_event",
+          "session_runtime_changed",
+          "settlement_dependencies_changed",
+          "web_contribution_updated",
+        ]);
+        const raw = await readBytes(req, MOCK_EVENT_MAX_BODY_BYTES);
+        let body: unknown;
+        try {
+          const text = raw.toString("utf-8");
+          body = text ? JSON.parse(text) : {};
+        } catch {
+          return sendJson(res, 400, { ok: false, error: "Mock event body must be JSON" });
+        }
         if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as any).type !== "string") {
           return sendJson(res, 400, { ok: false, error: "Mock event requires a type" });
         }
-        if ((body as any).type === "settlement_dependencies_changed") {
-          settlementTracker.report(String((body as any).sessionId || ""), Array.isArray((body as any).childIds) ? (body as any).childIds : []);
+        const eventType = (body as any).type as string;
+        if (!ALLOWED_MOCK_EVENT_TYPES.has(eventType)) {
+          return sendJson(res, 400, { ok: false, error: "Mock event type is not allowed" });
+        }
+        let serializedSize: number;
+        try {
+          serializedSize = Buffer.byteLength(JSON.stringify(body), "utf-8");
+        } catch {
+          return sendJson(res, 400, { ok: false, error: "Mock event body is not serializable" });
+        }
+        if (serializedSize > MOCK_EVENT_MAX_SERIALIZED_BYTES) {
+          return sendJson(res, 413, { ok: false, error: "Mock event body is too large" });
+        }
+        if (eventType === "settlement_dependencies_changed") {
+          const rawChildIds = Array.isArray((body as any).childIds) ? (body as any).childIds : [];
+          const childIds = rawChildIds.slice(0, MOCK_EVENT_MAX_CHILD_IDS);
+          settlementTracker.report(String((body as any).sessionId || ""), childIds);
         }
         broadcast(body);
         return sendJson(res, 200, { ok: true });

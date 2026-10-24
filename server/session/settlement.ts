@@ -40,6 +40,8 @@ type EvaluatedStatus = {
  * and all of its transitive parents.
  */
 export class SessionSettlementTracker {
+  /** Cap on how many child ids a single report() call will accept. */
+  static readonly maxChildIdsPerReport = 256;
   private readonly dependenciesByParent = new Map<string, Set<string>>();
   private readonly parentsByChild = new Map<string, Set<string>>();
   private readonly lastSettled = new Map<string, boolean>();
@@ -58,8 +60,11 @@ export class SessionSettlementTracker {
     const parent = parentId.trim();
     if (!parent) return;
 
+    const sanitizedChildIds = Array.isArray(childIds)
+      ? childIds.slice(0, SessionSettlementTracker.maxChildIdsPerReport)
+      : [];
     const next = new Set(
-      childIds
+      sanitizedChildIds
         .map((id) => typeof id === "string" ? id.trim() : "")
         .filter((id) => id.length > 0 && id !== parent),
     );
