@@ -70,8 +70,25 @@ export default defineConfig((env) => ({
     // Runtime uploads and generated artifacts live below .pi. Watching those
     // files makes Vite reload the page as soon as an attachment is persisted.
     watch: { ignored: ["**/.pi/**"] },
-    // Dev server is protected by PI_WEB_TOKEN and commonly accessed via
-    // Tailscale MagicDNS names like http://studio:8787.
+    // Dev server is gated by authKernel.gate() in server.ts before any
+    // non-public-asset request reaches this middleware chain, but keep
+    // Vite's own strict fs policy on and extend fs.deny with workspace
+    // state so a configuration regression still cannot leak .pi/ via
+    // /@fs/<abs> or a transformed import. The project root is already the
+    // default fs.allow root; globs below extend the default fs.deny
+    // (.env*, *.{pem,crt}, .git/).
+    fs: {
+      strict: true,
+      deny: [
+        ".env",
+        ".env.*",
+        "*.{crt,pem}",
+        "**/.git/**",
+        "**/.pi/**",
+      ],
+    },
+    // Dev server is protected by authKernel.gate() and commonly accessed
+    // via Tailscale MagicDNS names like http://studio:8787.
     allowedHosts: true,
   },
 }));
