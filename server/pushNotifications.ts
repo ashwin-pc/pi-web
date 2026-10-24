@@ -37,15 +37,16 @@ function validSubscription(value: unknown): value is PushSubscription {
 
 export function createPushNotificationService(file: string, subject = "https://github.com/ashwin-pc/pi-web") {
   let cached: PushState | undefined;
+  let loading: Promise<PushState> | undefined;
   let writeQueue = Promise.resolve();
 
-  async function persist(state: PushState) {
-    cached = state;
+  async function persist(next: PushState) {
     await mkdir(dirname(file), { recursive: true });
     const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
+    await writeFile(tmp, `${JSON.stringify(next, null, 2)}\n`, { encoding: "utf-8", mode: 0o600 });
     await rename(tmp, file);
-    return state;
+    cached = next;
+    return next;
   }
 
   async function serialize<T>(operation: () => Promise<T>) {
@@ -54,29 +55,73 @@ export function createPushNotificationService(file: string, subject = "https://g
     return result;
   }
 
-  async function state() {
-    if (cached) return cached;
+  async function loadOrInitialize(): Promise<PushState> {
+    let loaded: PushState;
     try {
       const raw = JSON.parse(await readFile(file, "utf-8")) as Partial<PushState>;
       if (!raw.vapid?.publicKey || !raw.vapid.privateKey || !Array.isArray(raw.subscriptions)) throw new Error("Invalid push state");
-      cached = { version: 1, vapid: raw.vapid, subscriptions: raw.subscriptions.filter((item) => validSubscription(item?.subscription)) as StoredSubscription[] };
+      loaded = { version: 1, vapid: raw.vapid, subscriptions: raw.subscriptions.filter((item) => validSubscription(item?.subscription)) as StoredSubscription[] };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.warn(`Could not read pi-web push state at ${file}:`, error);
-      cached = await persist({ version: 1, vapid: webPush.generateVAPIDKeys(), subscriptions: [] });
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        // Fail loudly instead of silently regenerating the VAPID key pair and
+        // discarding every stored subscription when the state file exists but
+        // cannot be read or parsed.
+        console.warn(`Could not read pi-web push state at ${file}:`, error);
+        throw error;
+      }
+      // No existing state file: generate a single VAPID key pair and persist
+      // it. Concurrent callers share this single init through the memoized
+      // `loading` promise in state(), so only one key pair is ever generated.
+      loaded = await persist({ version: 1, vapid: webPush.generateVAPIDKeys(), subscriptions: [] });
     }
-    webPush.setVapidDetails(subject, cached.vapid.publicKey, cached.vapid.privateKey);
-    return cached;
+    cached = loaded;
+    // Only publish the VAPID identity after the state is committed to disk
+    // (or successfully loaded from it) so the in-memory signing key always
+    // matches what /api/push/status will advertise.
+    webPush.setVapidDetails(subject, loaded.vapid.publicKey, loaded.vapid.privateKey);
+    return loaded;
+  }
+
+  async function state(): Promise<PushState> {
+    if (cached) return cached;
+    // Memoize the in-flight initialization so concurrent callers await one
+    // single load/generate cycle and observe the same VAPID key pair.
+    if (!loading) {
+      loading = loadOrInitialize().finally(() => {
+        loading = undefined;
+      });
+    }
+    return loading;
   }
 
   async function publicKey() {
     return (await state()).vapid.publicKey;
   }
 
+  async function reloadFromDisk(): Promise<PushState> {
+    const raw = JSON.parse(await readFile(file, "utf-8")) as Partial<PushState>;
+    if (!raw.vapid?.publicKey || !raw.vapid.privateKey || !Array.isArray(raw.subscriptions)) throw new Error("Invalid push state");
+    const refreshed: PushState = { version: 1, vapid: raw.vapid, subscriptions: raw.subscriptions.filter((item) => validSubscription(item?.subscription)) as StoredSubscription[] };
+    cached = refreshed;
+    return refreshed;
+  }
+
   async function subscribe(installationIdValue: unknown, value: unknown) {
     const installationId = typeof installationIdValue === "string" ? installationIdValue.trim().slice(0, 160) : "";
     if (!installationId || !validSubscription(value)) throw new Error("A valid installationId and push subscription are required");
     return serialize(async () => {
-      const current = await state();
+      // Ensure state is loaded (and the VAPID identity set) before mutating.
+      await state();
+      // Re-read the file inside the serialized operation so an out-of-band
+      // writer (e.g. a concurrent pi-web process sharing the state file) does
+      // not get blindly overwritten by a stale in-memory snapshot.
+      let current: PushState;
+      try {
+        current = await reloadFromDisk();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        current = cached!;
+      }
       const now = new Date().toISOString();
       const id = subscriptionId(value.endpoint);
       const existing = current.subscriptions.find((item) => item.id === id);
@@ -91,7 +136,14 @@ export function createPushNotificationService(file: string, subject = "https://g
     const endpoint = typeof endpointValue === "string" ? endpointValue.trim() : "";
     if (!installationId && !endpoint) throw new Error("installationId or endpoint is required");
     return serialize(async () => {
-      const current = await state();
+      await state();
+      let current: PushState;
+      try {
+        current = await reloadFromDisk();
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        current = cached!;
+      }
       const subscriptions = current.subscriptions.filter((item) => item.installationId !== installationId && item.subscription.endpoint !== endpoint);
       if (subscriptions.length !== current.subscriptions.length) await persist({ ...current, subscriptions });
     });
@@ -112,7 +164,13 @@ export function createPushNotificationService(file: string, subject = "https://g
     }));
     if (expired.size > 0) {
       await serialize(async () => {
-        const latest = await state();
+        let latest: PushState;
+        try {
+          latest = await reloadFromDisk();
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          latest = cached!;
+        }
         await persist({ ...latest, subscriptions: latest.subscriptions.filter((item) => !expired.has(item.id)) });
       });
     }
