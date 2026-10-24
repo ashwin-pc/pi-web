@@ -109,6 +109,11 @@ type ViewerLease = {
   lastAcceptedSeq?: number;
   sockets: Set<symbol>;
   releaseTimer?: ReturnType<typeof setTimeout>;
+  // Authenticated-principal binding (session hash or identity id). When set,
+  // only requests whose caller resolves to the same principal may acquire,
+  // move or attach a socket to this lease. Internal callers that do not
+  // supply a principal preserve existing behaviour (see tests).
+  principal?: string;
 };
 
 type RetrySessionTarget =
@@ -847,25 +852,33 @@ export class LocalSessionService implements SessionService {
     return this.projectState(await this.createNewLiveSession(cwd, value.sessionFile));
   }
 
-  acquireViewer(sessionId: string, clientId: string, seq?: number) {
+  acquireViewer(sessionId: string, clientId: string, seq?: number, principal?: string) {
     const value = this.liveById.get(sessionId);
     if (!clientId || !value) return;
     const key = sessionPathKey(value);
     const entry = this.liveSessions.get(key);
     if (!entry) return;
     let lease = this.viewerLeases.get(clientId);
+    // Reject acquisitions whose authenticated principal does not already own
+    // this lease. Prevents one caller from naming another tab's clientId to
+    // move its session or poison lastAcceptedSeq.
+    if (lease && principal !== undefined && lease.principal !== undefined && lease.principal !== principal) return;
     // Check before touching timers or either session's lease membership.
     const validSeq = seq !== undefined && Number.isSafeInteger(seq) && seq >= 0 ? seq : undefined;
     if (validSeq !== undefined && lease?.lastAcceptedSeq !== undefined && validSeq < lease.lastAcceptedSeq) return;
     this.clearTimer(lease?.releaseTimer);
     if (!lease) {
       lease = { sessionKey: key, sockets: new Set() };
+      if (principal !== undefined) lease.principal = principal;
       this.viewerLeases.set(clientId, lease);
-    } else if (lease.sessionKey !== key) {
-      const previousKey = lease.sessionKey;
-      this.liveSessions.get(previousKey)?.viewerClientIds.delete(clientId);
-      this.scheduleLiveSessionCleanup(previousKey);
-      lease.sessionKey = key;
+    } else {
+      if (lease.principal === undefined && principal !== undefined) lease.principal = principal;
+      if (lease.sessionKey !== key) {
+        const previousKey = lease.sessionKey;
+        this.liveSessions.get(previousKey)?.viewerClientIds.delete(clientId);
+        this.scheduleLiveSessionCleanup(previousKey);
+        lease.sessionKey = key;
+      }
     }
     if (validSeq !== undefined) lease.lastAcceptedSeq = validSeq;
     entry.viewerClientIds.add(clientId);
@@ -873,9 +886,12 @@ export class LocalSessionService implements SessionService {
     if (lease.sockets.size === 0) this.scheduleViewerLeaseRelease(clientId);
   }
 
-  connectViewer(clientId: string) {
+  connectViewer(clientId: string, principal?: string) {
     const lease = this.viewerLeases.get(clientId);
     if (!lease) return undefined;
+    // Only the owning principal may attach a socket to an existing lease.
+    if (principal !== undefined && lease.principal !== undefined && lease.principal !== principal) return undefined;
+    if (lease.principal === undefined && principal !== undefined) lease.principal = principal;
     this.clearTimer(lease.releaseTimer);
     lease.releaseTimer = undefined;
     const connection = Symbol(clientId);
@@ -907,31 +923,49 @@ export class LocalSessionService implements SessionService {
     }
   }
 
-  lifecycleSnapshot() {
+  lifecycleSnapshot(principal?: string) {
+    // Scope viewer-lease disclosure to the caller's own principal when one is
+    // supplied. Absolute sessionFile paths are only exposed when the caller
+    // owns a lease on that session (or when the snapshot is unscoped for
+    // internal callers and tests).
+    const matchesPrincipal = (leasePrincipal: string | undefined) =>
+      principal === undefined || (leasePrincipal !== undefined && leasePrincipal === principal);
+    const callerSessionKeys = new Set<string>();
+    if (principal !== undefined) {
+      for (const lease of this.viewerLeases.values()) {
+        if (matchesPrincipal(lease.principal)) callerSessionKeys.add(lease.sessionKey);
+      }
+    }
     return {
-      liveSessions: Array.from(this.liveSessions.values()).map((entry) => ({
-        sessionId: entry.session.sessionId,
-        sessionFile: entry.session.sessionFile,
-        viewerLeases: entry.viewerClientIds.size,
-        workLeases: entry.workLeases.size,
-        retryLeases: Array.from(entry.workLeases.values()).filter((lease) => lease.kind === "retry").length,
-        leases: Array.from(entry.workLeases.values()).map((lease) => ({
-          id: lease.id,
-          label: lease.label,
-          kind: lease.kind,
-          acquiredAt: new Date(lease.acquiredAt).toISOString(),
-          heldForMs: Math.max(0, Date.now() - lease.acquiredAt),
+      liveSessions: Array.from(this.liveSessions.values()).map((entry) => {
+        const key = sessionPathKey(entry.session);
+        const exposeSessionFile = principal === undefined || callerSessionKeys.has(key);
+        return {
+          sessionId: entry.session.sessionId,
+          ...(exposeSessionFile ? { sessionFile: entry.session.sessionFile } : {}),
+          viewerLeases: entry.viewerClientIds.size,
+          workLeases: entry.workLeases.size,
+          retryLeases: Array.from(entry.workLeases.values()).filter((lease) => lease.kind === "retry").length,
+          leases: Array.from(entry.workLeases.values()).map((lease) => ({
+            id: lease.id,
+            label: lease.label,
+            kind: lease.kind,
+            acquiredAt: new Date(lease.acquiredAt).toISOString(),
+            heldForMs: Math.max(0, Date.now() - lease.acquiredAt),
+          })),
+          hasDisposeTimer: Boolean(entry.disposeTimer),
+          isStreaming: Boolean(entry.session.isStreaming),
+          isCompacting: Boolean(entry.session.isCompacting),
+        };
+      }),
+      viewerLeases: Array.from(this.viewerLeases.entries())
+        .filter(([, lease]) => matchesPrincipal(lease.principal))
+        .map(([clientId, lease]) => ({
+          clientId,
+          sessionKey: lease.sessionKey,
+          sockets: lease.sockets.size,
+          hasReleaseTimer: Boolean(lease.releaseTimer),
         })),
-        hasDisposeTimer: Boolean(entry.disposeTimer),
-        isStreaming: Boolean(entry.session.isStreaming),
-        isCompacting: Boolean(entry.session.isCompacting),
-      })),
-      viewerLeases: Array.from(this.viewerLeases.entries()).map(([clientId, lease]) => ({
-        clientId,
-        sessionKey: lease.sessionKey,
-        sockets: lease.sockets.size,
-        hasReleaseTimer: Boolean(lease.releaseTimer),
-      })),
     };
   }
 
