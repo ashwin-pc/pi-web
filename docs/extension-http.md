@@ -92,7 +92,10 @@ workers as well as newly spawned children. Neither route scope nor target scope 
 inferred from UI focus. Both are checked server-side even for a copied credential.
 GET routes accept a single `sessionId`. The exact-reference route additionally
 accepts one `entryId`; `/api/messages/image` requires one bounded `imageId`;
-`/api/messages` permits the optional `images=inline` compatibility selector.
+`/api/messages` permits the optional `images=inline` compatibility selector;
+`/api/state` permits the `includeSessionUiState` opt-out (clients that do not
+hold `sessionIds: "all"` are forced to `includeSessionUiState=false` so the
+response honours their target set).
 Unknown or duplicate selectors are rejected. POST routes accept no query
 parameters. Browser viewer identity headers are rejected, and extension requests
 never acquire or move browser viewer leases (including body `clientId`).

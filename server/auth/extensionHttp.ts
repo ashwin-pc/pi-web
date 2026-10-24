@@ -126,6 +126,13 @@ export class ExtensionHttpRegistry {
         if (method === "GET") {
           if (input?.body !== undefined) throw new TypeError("GET requests cannot have a body");
           if (!url.searchParams.has("sessionId")) url.searchParams.set("sessionId", ownerSessionId);
+          // Scoped clients cannot see instance-wide session UI metadata through the
+          // allow-listed /api/state read, so force the documented opt-out before the
+          // request reaches the handler. Clients explicitly scoped to all sessions
+          // retain the full payload for compatibility with existing consumers.
+          if (url.pathname === "/api/state" && client.targets !== "all") {
+            url.searchParams.set("includeSessionUiState", "false");
+          }
         } else if (body.sessionId === undefined) body.sessionId = ownerSessionId;
         this.validateTarget(client, method, url, body);
         if (!credential || credential.expiresAt - this.now() < 30_000) {
@@ -148,14 +155,27 @@ export class ExtensionHttpRegistry {
 
   private validateTarget(client: ClientRecord, method: string, url: URL, body: unknown) {
     // Each read route explicitly permits only its own bounded selectors.
-    const selectors: Record<string, string> = {
-      "/api/session/reference": "entryId",
-      "/api/messages/image": "imageId",
-      "/api/messages": "images",
+    const selectors: Record<string, ReadonlyArray<string>> = {
+      "/api/session/reference": ["entryId"],
+      "/api/messages/image": ["imageId"],
+      "/api/messages": ["images"],
+      "/api/state": ["includeSessionUiState"],
     };
+    const allowed = selectors[url.pathname];
     for (const key of url.searchParams.keys()) {
-      if (method !== "GET" || (key !== "sessionId" && key !== selectors[url.pathname])) {
+      if (method !== "GET" || (key !== "sessionId" && !(allowed && allowed.includes(key)))) {
         throw new Error("Extension API query parameter is not permitted");
+      }
+    }
+    const includeSessionUiState = url.searchParams.getAll("includeSessionUiState");
+    if (url.pathname === "/api/state" && includeSessionUiState.length) {
+      if (includeSessionUiState.length !== 1 || (includeSessionUiState[0] !== "false" && includeSessionUiState[0] !== "true")) {
+        throw new Error("includeSessionUiState must be 'true' or 'false'");
+      }
+      // Only all-session clients may request the instance-wide session UI document;
+      // every other client must opt out so its target set is honoured end-to-end.
+      if (includeSessionUiState[0] !== "false" && client.targets !== "all") {
+        throw new Error("Session is outside this extension client's targets");
       }
     }
     const imageIds = url.searchParams.getAll("imageId");

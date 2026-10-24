@@ -136,7 +136,7 @@ describe("scoped extension HTTP credentials", () => {
     const h = harness();
     await h.client.request("GET", "/api/state");
     expect(h.auth).toMatch(/^PiWebExtension [A-Za-z0-9_-]{43}$/);
-    expect(h.url).toBe("http://127.0.0.1:9999/api/state?sessionId=parent");
+    expect(h.url).toBe("http://127.0.0.1:9999/api/state?sessionId=parent&includeSessionUiState=false");
     const req = request(h.auth);
     expect(await h.registry.authenticate(req)).toMatchObject({ ok: true, via: "extension", identity: { id: "extension:parent:test" } });
     expect(h.registry.caller(req)).toBe("extension:parent:test");
