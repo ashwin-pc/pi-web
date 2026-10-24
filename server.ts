@@ -1468,28 +1468,64 @@ const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) =
 authStore.listeners.add(enforceBrowserSessions);
 const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
 authSessionSweep.unref();
+// Defence-in-depth timeouts: these apply to pre-upgrade HTTP parsing. Node
+// detaches the parser before emitting 'upgrade', so they do not bound an
+// abandoned upgrade socket on their own, but they do keep slow-header /
+// slow-request attackers from piling up pre-upgrade sockets.
+server.headersTimeout = 30_000;
+server.requestTimeout = 60_000;
+
+const onPreUpgradeSocketError = (): void => { /* swallow: destroy handled by handler */ };
 server.on("upgrade", (req, socket, head) => {
+  // The 'ws' authentication example installs a socket error handler as the
+  // first statement of the upgrade handler so that an EPIPE / ECONNRESET on
+  // the raw socket (whose default 'error' listener was removed by Node when
+  // it emitted 'upgrade') cannot bubble up as an unhandled 'error' event and
+  // kill the process. It is removed just before wss.handleUpgrade() takes
+  // ownership of the socket.
+  socket.on("error", onPreUpgradeSocketError);
+  const destroySocket = () => { socket.removeListener("error", onPreUpgradeSocketError); socket.destroy(); };
+
   let url: URL;
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
   } catch {
     // Malformed Host header must not crash the process (#112 review follow-up:
     // same hostile-input class as the request-path guard this PR added).
-    socket.destroy();
+    destroySocket();
     return;
   }
-  if (url.pathname !== "/ws") return;
+  if (url.pathname !== "/ws") {
+    // In dev mode, Vite registers its own 'upgrade' listener on this same
+    // server for HMR; Node delivers 'upgrade' to every registered listener,
+    // so we must not claim/destroy a socket that another listener is going
+    // to adopt. If we are the only upgrade listener, we own the socket's
+    // lifecycle on this path and must release it (CWE-772) with a 404,
+    // rather than letting it leak one FD per request.
+    if (server.listenerCount("upgrade") <= 1) {
+      socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      destroySocket();
+    } else {
+      // Another listener (e.g. Vite HMR) may claim this socket; stay out of
+      // its way but still drop our error handler so we do not leak it.
+      socket.removeListener("error", onPreUpgradeSocketError);
+    }
+    return;
+  }
 
   void (async () => {
     const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "mock" }, sessionHash: undefined } : undefined);
     const identity = ticket?.identity;
-    if (ticket?.sessionHash && !(await authStore.read()).sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
+    if (ticket?.sessionHash && !(await authStore.read()).sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); destroySocket(); return; }
+    if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); destroySocket(); return; }
+    if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); destroySocket(); return; }
+    if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); destroySocket(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
+    // Hand ownership to ws: remove our pre-upgrade error listener so ws can
+    // install its own, as recommended by the ws authentication example.
+    socket.removeListener("error", onPreUpgradeSocketError);
     wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
-  })().catch(() => socket.destroy());
+  })().catch(() => destroySocket());
 });
 
 wss.on("connection", async (ws, req, urlParam?: URL) => {
