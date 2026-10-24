@@ -7,11 +7,21 @@ export function validAvatarAnimation(bytes: Buffer): boolean {
     if (bytes.length > maxAvatarAnimationBytes || !bytes.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return false;
     let offset = 8, width = 0, height = 0, frames = 0, declared = 0, sequence = 0, duration = 0, ended = false;
     let frameWidth = 0, frameHeight = 0, data: Buffer[] = [], firstData = false, separatePoster = false, sawPalette = false;
+    // Cumulative decompression budget across every frame of this file. A single
+    // 240-frame, 512x512 RGBA APNG can inflate to ~253 MB on the main thread
+    // from ~265 KB of input; cap the total output at a fixed ceiling (also at
+    // least 4x the 8 MB input cap so legitimate frames fit) so one upload
+    // cannot stall the event loop. See CWE-409 (data amplification).
+    const maxTotalInflate = 32 * 1024 * 1024;
+    let remainingBudget = maxTotalInflate;
     const finish = () => {
       if (!data.length) throw new Error("Missing frame data");
       const stride = frameWidth * 4 + 1;
-      const raw = inflateSync(Buffer.concat(data), { maxOutputLength: stride * frameHeight });
-      if (raw.length !== stride * frameHeight) throw new Error("Invalid frame size");
+      const frameOutput = stride * frameHeight;
+      if (frameOutput > remainingBudget) throw new Error("Inflate budget exceeded");
+      const raw = inflateSync(Buffer.concat(data), { maxOutputLength: Math.min(frameOutput, remainingBudget) });
+      if (raw.length !== frameOutput) throw new Error("Invalid frame size");
+      remainingBudget -= raw.length;
       for (let y = 0; y < frameHeight; y++) if (raw[y * stride] > 4) throw new Error("Invalid filter");
       data = [];
     };

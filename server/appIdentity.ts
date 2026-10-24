@@ -47,9 +47,13 @@ export function validPng(png: Buffer): boolean {
     const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
     if (width < 1 || height < 1 || width > 2048 || height > 2048) return false;
     const channels = png[25] === 6 ? 4 : 3;
-    const decoded = inflateSync(Buffer.concat(imageData), { maxOutputLength: 2048 * 2048 * 4 + 2048 });
     const stride = width * channels;
-    if (decoded.length !== height * (stride + 1)) return false;
+    // Tie the inflate cap to the IHDR-declared payload (height * (stride + 1))
+    // rather than the global 2048*2048*4 ceiling, so a small declared image
+    // cannot drive a 16 MB inflate per PNG and compound across roles/passes.
+    const expected = height * (stride + 1);
+    const decoded = inflateSync(Buffer.concat(imageData), { maxOutputLength: expected });
+    if (decoded.length !== expected) return false;
     for (let row = 0; row < height; row++) if (decoded[row * (stride + 1)] > 4) return false;
     return true;
   } catch { return false; }
@@ -93,11 +97,33 @@ export function parseAvatarPackage(value: unknown): AvatarAssets {
   return validateAvatarAssets({ still: decode("still"), icon: decode("icon"), ...(value.assets.newSession !== undefined ? { newSession: decode("newSession") } : {}), ...(value.assets.fab !== undefined ? { fab: decode("fab") } : {}), ...(value.label !== undefined ? { label: value.label as string } : {}) });
 }
 export type AvatarAssets = { still: Buffer; icon: Buffer; fab?: Buffer; newSession?: Buffer; label?: string };
+// Buffers that have already passed `validateAvatarAssets` within this process.
+// Re-validating multi-megabyte PNG/APNG payloads on every upload second pass
+// or every export would re-run bounded-but-expensive synchronous zlib inflate
+// on the main thread (CWE-409 amplification); the marks let callers skip the
+// redundant work for buffers whose provenance is this validator. Keep the
+// static-PNG and APNG verdicts separate so an APNG buffer resubmitted under
+// a static-image role is not skipped incorrectly.
+const validatedStaticPng = new WeakSet<Buffer>();
+const validatedAnimation = new WeakSet<Buffer>();
+function markValidated(assets: AvatarAssets): void {
+  validatedStaticPng.add(assets.still);
+  validatedStaticPng.add(assets.icon);
+  if (assets.fab) validatedStaticPng.add(assets.fab);
+  if (assets.newSession) validatedAnimation.add(assets.newSession);
+}
 export function validateAvatarAssets(assets: AvatarAssets): AvatarAssets {
-  for (const png of [assets.still, assets.icon, ...(assets.fab ? [assets.fab] : [])]) if (png.length > maxAvatarBytes || !validPng(png)) throw new Error("Invalid static PNG asset");
+  // Reuse the prior verdict for any Buffer this validator produced earlier in
+  // the request lifetime. `createAvatarGeneration` is called after parse and
+  // export routes read stored (already-validated) bytes; without this the
+  // same ~250 MB APNG inflate would run two or three times per request.
+  const needsStatic = [assets.still, assets.icon, ...(assets.fab ? [assets.fab] : [])].filter(png => !validatedStaticPng.has(png));
+  for (const png of needsStatic) if (png.length > maxAvatarBytes || !validPng(png)) throw new Error("Invalid static PNG asset");
   if (assets.label !== undefined && (typeof assets.label !== "string" || !assets.label.trim() || assets.label.length > 80 || /[\x00-\x1f\x7f<>]/.test(assets.label))) throw new Error("Invalid avatar label");
-  if (assets.newSession && !validAvatarAnimation(assets.newSession)) throw new Error("Invalid single-play RGBA APNG (maximum 512×512, 240 frames, 15 seconds, 8 MB)");
-  return { still: assets.still, icon: assets.icon, ...(assets.fab ? { fab: assets.fab } : {}), ...(assets.newSession ? { newSession: assets.newSession } : {}), ...(assets.label !== undefined ? { label: assets.label.trim() } : {}) };
+  if (assets.newSession && !validatedAnimation.has(assets.newSession) && !validAvatarAnimation(assets.newSession)) throw new Error("Invalid single-play RGBA APNG (maximum 512×512, 240 frames, 15 seconds, 8 MB)");
+  const normalized: AvatarAssets = { still: assets.still, icon: assets.icon, ...(assets.fab ? { fab: assets.fab } : {}), ...(assets.newSession ? { newSession: assets.newSession } : {}), ...(assets.label !== undefined ? { label: assets.label.trim() } : {}) };
+  markValidated(normalized);
+  return normalized;
 }
 export async function parseAvatarZip(bytes: Buffer): Promise<AvatarAssets> {
   const files = await decodeAvatarZip(bytes);
@@ -112,8 +138,10 @@ export function serializeAvatarZip(assets: AvatarAssets): Buffer {
 }
 
 export function serializeAvatarPackage(assets: AvatarAssets): string {
-  const value: AvatarPackage = { format: "pi-web-avatar", version: 1, assets: { still: { mediaType: "image/png", base64: assets.still.toString("base64") }, icon: { mediaType: "image/png", base64: assets.icon.toString("base64") }, ...(assets.fab ? { fab: { mediaType: "image/png" as const, base64: assets.fab.toString("base64") } } : {}), ...(assets.newSession ? { newSession: { mediaType: "image/apng" as const, base64: assets.newSession.toString("base64") } } : {}) }, ...(assets.label ? { label: assets.label } : {}) };
-  parseAvatarPackage(value);
+  // Export streams validated/stored bytes; avoid the parseAvatarPackage self-
+  // check so a 240-frame APNG does not pay a second ~250 MB inflate per export.
+  const valid = validateAvatarAssets(assets);
+  const value: AvatarPackage = { format: "pi-web-avatar", version: 1, assets: { still: { mediaType: "image/png", base64: valid.still.toString("base64") }, icon: { mediaType: "image/png", base64: valid.icon.toString("base64") }, ...(valid.fab ? { fab: { mediaType: "image/png" as const, base64: valid.fab.toString("base64") } } : {}), ...(valid.newSession ? { newSession: { mediaType: "image/apng" as const, base64: valid.newSession.toString("base64") } } : {}) }, ...(valid.label ? { label: valid.label } : {}) };
   return JSON.stringify(value, null, 2) + "\n";
 }
 export async function receiveAvatarPackage(req: IncomingMessage, settingsFile: string): Promise<string> {
@@ -162,7 +190,18 @@ async function selectedAvatarAssets(settingsFile: string, assetId?: string): Pro
   if (!still || !icon) throw new Error("Custom avatar is unavailable");
   let label: string | undefined;
   if (assetId) { try { label = JSON.parse(await readFile(join(avatarDirectory(settingsFile), assetId, "label.json"), "utf8")); } catch {} }
-  return { still, icon, label, fab: await readAvatar(settingsFile, assetId, "fab"), newSession: await readAvatar(settingsFile, assetId, "newSession") };
+  const fab = await readAvatar(settingsFile, assetId, "fab");
+  const newSession = await readAvatar(settingsFile, assetId, "newSession");
+  // Stored generations only exist because `createAvatarGeneration` validated
+  // them before writing to disk. Mark the freshly read buffers as validated
+  // so export routes do not re-run synchronous PNG/APNG inflate on bytes we
+  // already trust (CWE-409 amplification was multiplied by this re-pass).
+  const assets: AvatarAssets = { still, icon, label, ...(fab ? { fab } : {}), ...(newSession ? { newSession } : {}) };
+  validatedStaticPng.add(still);
+  validatedStaticPng.add(icon);
+  if (fab) validatedStaticPng.add(fab);
+  if (newSession) validatedAnimation.add(newSession);
+  return assets;
 }
 export async function exportAvatarPackage(settingsFile: string, assetId?: string): Promise<string> { return serializeAvatarPackage(await selectedAvatarAssets(settingsFile, assetId)); }
 export async function exportAvatarZip(settingsFile: string, assetId?: string): Promise<Buffer> { return serializeAvatarZip(await selectedAvatarAssets(settingsFile, assetId)); }
