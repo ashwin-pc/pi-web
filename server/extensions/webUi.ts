@@ -5,6 +5,7 @@ import type { createSettingsStore } from "../settings.js";
 import type { AudioCapturePolicy, ValidatedAudioCapture } from "./captureStore.js";
 import { MAX_CAPTURE_BYTES, MAX_CAPTURE_SECONDS } from "./captureStore.js";
 import { HttpError } from "../shared/httpError.js";
+import { isValidArtifactPath } from "../shared/artifacts.js";
 import { ExtensionRevisionConflictError, isValidExtensionOwnerId } from "../settings.js";
 import { canonicalSchemaKey, defaultSettingsValues, validateSettingsValues } from "../extensionSettings.js";
 
@@ -852,6 +853,7 @@ async function bindWebExtensions(value: any) {
     const kind = artifactKinds.includes(input.kind as typeof artifactKinds[number])
       ? input.kind as typeof artifactKinds[number]
       : undefined;
+    let decodedArtifactPath: string | undefined;
     let pathName: string | undefined;
     try {
       const artifactPath = path?.startsWith("/api/artifacts/")
@@ -859,9 +861,20 @@ async function bindWebExtensions(value: any) {
         : path?.startsWith("/api/session-artifacts/")
           ? path.split("/").slice(4).join("/")
           : undefined;
-      if (artifactPath) pathName = decodeURIComponent(artifactPath).split("/").at(-1);
+      if (artifactPath) {
+        decodedArtifactPath = decodeURIComponent(artifactPath);
+        pathName = decodedArtifactPath.split("/").at(-1);
+      }
     } catch { /* invalid encoded artifact path */ }
-    if (!name || !path || !kind || pathName !== name) throw new Error("Invalid artifact context");
+    if (
+      !name
+      || !path
+      || !kind
+      || !decodedArtifactPath
+      || pathName !== name
+      || decodedArtifactPath.includes("\0")
+      || !isValidArtifactPath(decodedArtifactPath)
+    ) throw new Error("Invalid artifact context");
     return { name, path, kind };
   }
 
