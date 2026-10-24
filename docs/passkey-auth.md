@@ -78,7 +78,7 @@ PI_WEB_AUTH_TRUSTED_HEADER=Tailscale-User-Login
 
 External identity is accepted only from the explicitly configured header. The app exchanges it for the same human session cookie; explicit proxy sign-in is also available on the login page. Missing identity does not become an anonymous owner.
 
-**Only enable external authentication when the backend is reachable exclusively through a trusted proxy which removes caller-supplied copies and sets the verified header.** Direct callers, including loopback callers, can forge headers. This release does not infer trust from Tailscale or implement OIDC/GitHub flows. Header selection and network restrictions are server-operator decisions, not unauthenticated web settings.
+**Only enable external authentication when the backend is reachable exclusively through a trusted proxy which removes caller-supplied copies and sets the verified header.** Direct callers, including loopback callers, can forge headers. The server refuses to start with `external` enabled unless `PI_WEB_AUTH_PROXY_PEERS` lists the exact IP(s) of the proxy that is allowed to assert the identity header, and `AuthKernel.gate()` ignores the configured identity header on requests whose socket address is not one of those peers. This release does not infer trust from Tailscale or implement OIDC/GitHub flows. Header selection and network restrictions are server-operator decisions, not unauthenticated web settings.
 
 ## Machine credentials and request security
 

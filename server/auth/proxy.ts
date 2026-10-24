@@ -12,7 +12,7 @@ function canonicalIP(value: string): string | undefined {
   return `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
 }
 export function trustedProxyPeer(req: IncomingMessage): boolean {
-  const peer = canonicalIP(req.socket.remoteAddress || "");
+  const peer = canonicalIP(req.socket?.remoteAddress || "");
   return !!peer && (process.env.PI_WEB_AUTH_PROXY_PEERS || "").split(",")
     .some(value => canonicalIP(value.trim()) === peer);
 }

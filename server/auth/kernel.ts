@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { AccessPolicy, HumanAuthMethod } from "./config.js";
+import { trustedProxyPeer } from "./proxy.js";
 import {
   mkdir,
   open,
@@ -330,6 +331,20 @@ export class AuthKernel {
       warn(
         "No usable login method; run pi-web auth bootstrap, configure credentials, or deliberately set PI_WEB_AUTH_POLICY=open on an unconfigured store. Saved store policy takes precedence.",
       );
+    // External (reverse-proxy identity header) authentication is only safe
+    // when the backend is reachable exclusively via a trusted proxy whose
+    // socket address is pinned in PI_WEB_AUTH_PROXY_PEERS. Without that
+    // binding, any direct caller can forge the identity header. Refuse to
+    // start in that misconfiguration rather than silently accept forgeries.
+    const storeMethods = state.config?.methods || [...this.methods];
+    if (
+      storeMethods.includes("external") &&
+      this.trustedHeader &&
+      !(process.env.PI_WEB_AUTH_PROXY_PEERS || "").split(",").map((v) => v.trim()).filter(Boolean).length
+    )
+      throw new Error(
+        "PI_WEB_AUTH_PROXY_PEERS must list the exact IP(s) of the proxy that sets the trusted identity header when the `external` auth method is enabled. Refusing to start to prevent header spoofing by direct callers.",
+      );
   }
   async configure(methods: HumanAuthMethod[]) {
     await this.store.update((state) => {
@@ -426,7 +441,11 @@ export class AuthKernel {
       if (safeEqual(supplied, this.legacyToken))
         return { ok: true, identity: { id: "legacy:token" }, via: "legacy" };
     }
-    if (methods.has("external") && this.trustedHeader) {
+    // External identity is only trusted when the request arrives from a
+    // configured proxy peer; otherwise any caller that can reach the port
+    // directly could forge the header. Mirrors forwardedHost()/loginPeer()
+    // handling of X-Forwarded-Host/X-Forwarded-For in the same subsystem.
+    if (methods.has("external") && this.trustedHeader && trustedProxyPeer(req)) {
       const value = req.headers[this.trustedHeader.toLowerCase()];
       const user = (Array.isArray(value) ? value[0] : value)?.trim();
       if (user)

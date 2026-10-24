@@ -656,6 +656,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const validOrigin = trustedOrigin(req, authOrigin);
         if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
       }
+      // External proxy identity grants the same browser-equivalent authority
+      // as a cookie session; apply identical CSRF checks to state-changing
+      // requests so a malicious same-origin page cannot ride the proxy's
+      // ambient identity.
+      if (auth.via === "external" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+        const validOrigin = trustedOrigin(req, authOrigin);
+        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
+      }
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
       if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
