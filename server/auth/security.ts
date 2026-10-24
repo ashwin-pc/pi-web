@@ -29,13 +29,38 @@ function send(res: ServerResponse, status: number, value: unknown) {
   });
   res.end(text);
 }
+// Bound how long a security-route body may take to arrive so a trickled body
+// cannot widen the step-up / revocation window between the authorization
+// check and the committed write. The limit covers both an idle gap between
+// chunks and total time to receive the body; either tripping aborts the
+// request. Node's default `server.requestTimeout` is 300s, which would
+// otherwise let a client stall `await input(req)` for minutes.
+const INPUT_IDLE_TIMEOUT_MS = 10_000;
+const INPUT_TOTAL_TIMEOUT_MS = 15_000;
 async function input(req: IncomingMessage) {
   const chunks: Buffer[] = [];
   let n = 0;
-  for await (const chunk of req) {
-    n += chunk.length;
-    if (n > 1_000_000) throw new Error("Body too large");
-    chunks.push(chunk);
+  let idleTimer: NodeJS.Timeout | undefined;
+  let totalTimer: NodeJS.Timeout | undefined;
+  const bail = (message: string) => {
+    try { req.destroy(new Error(message)); } catch { /* best-effort */ }
+  };
+  const resetIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => bail("Request body timed out"), INPUT_IDLE_TIMEOUT_MS);
+  };
+  totalTimer = setTimeout(() => bail("Request body timed out"), INPUT_TOTAL_TIMEOUT_MS);
+  resetIdle();
+  try {
+    for await (const chunk of req) {
+      resetIdle();
+      n += chunk.length;
+      if (n > 1_000_000) throw new Error("Body too large");
+      chunks.push(chunk);
+    }
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer);
+    if (totalTimer) clearTimeout(totalTimer);
   }
   return JSON.parse(Buffer.concat(chunks).toString() || "{}");
 }
@@ -265,21 +290,35 @@ export async function handleSecurityRoute(
       send(res, 400, { error: "No legacy token configured" });
       return true;
     }
+    // Re-read the auth store AFTER the body is consumed so the readiness and
+    // retirement guards are evaluated against live state rather than the
+    // snapshot taken at route entry (a concurrent passkey deletion or password
+    // change could otherwise be masked by the pre-body snapshot).
+    const liveState = await store.read();
     const retiring = [...kernel.methods].some((m) => !methods.includes(m));
-    const usable = methods.filter((m) => kernel.methodReady(m, state));
+    const usable = methods.filter((m) => kernel.methodReady(m, liveState));
     if (usable.length !== methods.length) {
       send(res, 409, {
         error: "Enroll credentials before enabling a sign-in method",
       });
       return true;
     }
-    if (retiring && !usable.some((m) => state.verifiedMethods?.includes(m))) {
+    if (retiring && !usable.some((m) => liveState.verifiedMethods?.includes(m))) {
       send(res, 409, {
         error: "Enroll and verify a replacement login before retiring a method",
       });
       return true;
     }
-    await kernel.configure([...new Set(methods)]);
+    // Commit through the same guarded transaction every other destructive
+    // route uses: `updateSecurity` re-asserts "session still live, un-revoked
+    // and authenticated within 5 minutes" INSIDE the locked store update, so a
+    // trickled body or a mid-request revoke-all/password-rotation cannot land
+    // a method change after the step-up window has closed.
+    const nextMethods = [...new Set(methods)];
+    await updateSecurity((live) => {
+      live.config = { policy: kernel.policy, methods: nextMethods };
+    });
+    await kernel.refreshConfig();
     send(res, 200, { ok: true });
     return true;
   }
