@@ -1,7 +1,6 @@
 import { loginPageHeaders, renderLoginPage, type LoginPresentation } from "./loginPage.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { isIP } from "node:net";
-import { trustedProxyPeer } from "./proxy.js";
+import { effectivePeer } from "./proxy.js";
 import {
   hashPassword,
   hashSecret,
@@ -16,14 +15,23 @@ const attempts = new Map<
   { count: number; resetAt: number; nextAt: number }
 >();
 export function loginPeer(req: IncomingMessage) {
-  const peer = req.socket.remoteAddress || "unknown";
-  const forwarded = req.headers["x-forwarded-for"];
-  // Opt-in exact proxy peers; require one sanitized IP, never take an arbitrary chain.
-  return trustedProxyPeer(req) &&
-    typeof forwarded === "string" &&
-    isIP(forwarded.trim())
-    ? forwarded.trim()
-    : peer;
+  // The caller identity used to partition the per-peer login cooldown. Behind
+  // the bundled supervisor every request shares req.socket.remoteAddress, so
+  // trust the supervisor's authenticated marker first; otherwise fall back to
+  // an explicitly trusted proxy's sanitized X-Forwarded-For; otherwise use the
+  // raw socket. See server/auth/proxy.ts for the resolution rules.
+  return effectivePeer(req);
+}
+/**
+ * Bootstrap must be reachable only from the host itself. The ceremony is
+ * documented as terminal-only, so this guard is armed for every origin —
+ * including non-literal local spellings (`127.0.0.0/8`, `::1`, `pi.local`,
+ * tailnet DNS names) that previously slipped through the `hostname === "localhost"`
+ * check. The caller's loopback status is derived from the authenticated
+ * supervisor marker (see server/auth/proxy.ts), not the TCP peer address.
+ */
+export function requiresBootstrapLoopback(_origin: string): boolean {
+  return true;
 }
 let active = 0;
 const send = (res: ServerResponse, status: number, value: unknown) => {
@@ -100,9 +108,9 @@ export async function handlePasswordLogin(
     const state = await store.read();
     let passwordHash = state.password?.hash;
     if (setup) {
-      if (new URL(origin).hostname === "localhost" && !isLoopback(req)) {
+      if (requiresBootstrapLoopback(origin) && !isLoopback(req)) {
         send(res, 403, {
-          error: "Bootstrap requires loopback access for localhost origins",
+          error: "Bootstrap requires loopback access",
         });
         return true;
       }
