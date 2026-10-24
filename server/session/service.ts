@@ -829,8 +829,17 @@ export class LocalSessionService implements SessionService {
     if (this.noSession) throw new Error("Sessions are disabled.");
     const info = await this.findSessionLocationById(sessionId, cwd);
     if (!info) throw new SessionServiceError("Session not found", 404);
+    // Refuse to delete the process's protected (boot/current) session: the host
+    // caches the module-level `session` reference from startup and does not
+    // refresh it, so removing the protected session would leave every
+    // sessionId-less route resolving a stale id and returning 404 until the
+    // process restarts. Callers must switch to another session first.
+    if (this.protectedSessionIds.has(sessionId)) throw new SessionServiceError("Switch to another session before deleting the current session.", 409);
     const live = this.liveSessions.get(info.path);
-    if (live?.session.isStreaming || live?.session.isCompacting) throw new SessionServiceError("Wait for the session to finish before deleting it.", 409);
+    // Widen the busy guard beyond streaming/compacting to the service's own
+    // invariant: any work lease (retry compatibility fallback, navigate,
+    // compact, composer-capture) must prevent force-disposal mid-run.
+    if (live && this.isLiveSessionBusy(live)) throw new SessionServiceError("Wait for the session to finish before deleting it.", 409);
     if (live) await this.disposeLiveSession(info.path, "delete", true);
     const disposition = this.deps.sessionFactory?.remove
       ? await this.deps.sessionFactory.remove(sessionId, info.path)
