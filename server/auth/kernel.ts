@@ -330,10 +330,30 @@ export class AuthKernel {
       warn(
         "No usable login method; run pi-web auth bootstrap, configure credentials, or deliberately set PI_WEB_AUTH_POLICY=open on an unconfigured store. Saved store policy takes precedence.",
       );
+    // Guard against an "open" policy that still advertises login methods: the
+    // gate authorizes every peer as identity "none" while the login page keeps
+    // offering password/passkey, so operators must see this contradiction.
+    if (this.policy === "open" && this.methods.size)
+      warn(
+        `Auth policy is "open" while login methods are enabled (${[...this.methods].join(", ")}). Every /api/* request is authorized as identity "none" and credential prompts shown to users will not be enforced. Set PI_WEB_AUTH_POLICY=authenticated (or clear PI_WEB_AUTH_METHODS) to fail closed.`,
+      );
   }
   async configure(methods: HumanAuthMethod[]) {
     await this.store.update((state) => {
-      state.config = { policy: this.policy, methods };
+      // Preserve the authoritative stored policy when it exists: a transient
+      // environment-derived "open" must not be persisted as canonical just
+      // because a method set changed. Policy transitions go through setPolicy.
+      const policy = state.config?.policy || this.policy;
+      state.config = { policy, methods };
+    });
+    await this.refreshConfig();
+  }
+  /** Explicit, audited policy transition. Callers must have verified operator
+   * intent (recent sign-in, CLI possession, etc.) before invoking this. */
+  async setPolicy(policy: AccessPolicy) {
+    await this.store.update((state) => {
+      const methods = state.config?.methods || [...this.methods];
+      state.config = { policy, methods };
     });
     await this.refreshConfig();
   }
