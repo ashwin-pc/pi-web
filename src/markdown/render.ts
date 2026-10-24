@@ -95,7 +95,14 @@ function sanitizeMarkdownHtml(html: string) {
 
       if (name === "src") {
         const src = attribute.value.trim();
-        if (!/^(https?:|data:image\/(png|jpeg|jpg|gif|webp);base64,|\/api\/artifacts\/)/i.test(src)) {
+        // Restrict image/media sources to same-origin app endpoints and inline
+        // raster data: URIs. Remote (`http(s):`) sources are dropped so that
+        // agent-authored markdown cannot be used as a zero-click outbound
+        // channel (data encoded in an image URL that the owner's browser
+        // fetches on render). See CWE-359 / finding 01a160d4993e75f1a601b2e6b2f04ba0.
+        const sameOriginImagePath = /^\/(api\/artifacts\/|api\/session-artifacts\/|api\/attachments\/|api\/messages\/image(?:[/?#]|$))/i;
+        const inlineImageData = /^data:image\/(png|jpeg|jpg|gif|webp);base64,/i;
+        if (!sameOriginImagePath.test(src) && !inlineImageData.test(src)) {
           element.removeAttribute(attribute.name);
         }
       }
@@ -108,6 +115,11 @@ function sanitizeMarkdownHtml(html: string) {
 
     if (tagName === "img" && !element.getAttribute("src")) {
       element.remove();
+    } else if (tagName === "img") {
+      // Even for allowed same-origin images, avoid leaking the full referring
+      // URL (which can contain session identifiers) to any resource loader.
+      element.setAttribute("referrerpolicy", "no-referrer");
+      if (!element.hasAttribute("loading")) element.setAttribute("loading", "lazy");
     }
   }
 
