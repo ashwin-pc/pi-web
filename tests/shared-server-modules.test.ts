@@ -156,6 +156,7 @@ describe("shared Git helpers", () => {
     runGit(cwd, "add", "tracked.txt", "untracked.txt", "image.png");
     runGit(cwd, "commit", "-m", "update");
     runGit(cwd, "push", "-u", "origin", "main");
-    await expect(gitSync(cwd)).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
+    await expect(gitSync(cwd)).resolves.toMatchObject({ ok: false, requiresConfirmation: true, remote: "origin", branch: "main" });
+    await expect(gitSync(cwd, { confirm: true })).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
   }, 15_000);
 });

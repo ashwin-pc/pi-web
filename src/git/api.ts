@@ -44,7 +44,7 @@ export function fetchGitCommit(headers: HeadersInit, hash: string, repo?: string
   return getJson<GitCommitDetailsResponse>(`/api/git/commit?${query}`, headers);
 }
 
-export function syncGit(headers: HeadersInit, repo?: string, sessionId?: string) {
-  const query = queryWithRepo({}, repo, sessionId);
+export function syncGit(headers: HeadersInit, repo?: string, sessionId?: string, confirm = false) {
+  const query = queryWithRepo(confirm ? { confirm: "1" } : {}, repo, sessionId);
   return postJson<GitSyncResponse>(`/api/git/sync?${query}`, headers);
 }

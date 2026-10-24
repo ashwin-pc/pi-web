@@ -56,7 +56,9 @@ export type GitLogResponse = { ok: true; isRepo: boolean; commits: GitCommit[] }
 export type GitDiffResponse = { ok: true; path: string; staged: boolean; diff: string };
 export type GitCommitFile = { path: string; status: string; additions?: number; deletions?: number };
 export type GitCommitDetailsResponse = { ok: true; commit: GitCommit; files: GitCommitFile[]; diff: string };
-export type GitSyncResponse = { ok: true; output: string; status: GitStatusResponse };
+export type GitSyncResponse =
+  | { ok: true; remote: string; remoteUrl: string; output: string; status: GitStatusResponse }
+  | { ok: false; requiresConfirmation: true; remote: string; remoteUrl: string; branch: string; error?: string };
 
 export type GitState = {
   isOpen: boolean;
