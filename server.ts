@@ -652,7 +652,12 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
-      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+      // Treat GET /api/git/status?fetch=1 as state-changing: it runs `git fetch --prune`
+      // in the server's workspace, which is reachable cross-site via a top-level navigation
+      // because the session cookie is SameSite=Lax. Any other side-effecting GET under
+      // /api/git/* that opts in via fetch=1 is covered too.
+      const sideEffectingGet = method === "GET" && url.pathname.startsWith("/api/git/") && url.searchParams.get("fetch") === "1";
+      if (auth.via === "session" && (!["GET", "HEAD", "OPTIONS"].includes(method) || sideEffectingGet)) {
         const validOrigin = trustedOrigin(req, authOrigin);
         if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
       }
