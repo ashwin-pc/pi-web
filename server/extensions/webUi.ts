@@ -27,6 +27,12 @@ export interface WebUiBridgeDependencies {
 }
 
 export function createWebUiBridge(deps: WebUiBridgeDependencies) {
+/** Bounds concurrent composer-capture invocations. Each in-flight invocation
+ * can hold a ≤25 MB audio file in the OS temp directory for the entire
+ * extension invocation (up to the 3-minute abort), so this complements the
+ * per-store MAX_PENDING_BYTES / MAX_PENDING_CAPTURES bound. */
+const MAX_COMPOSER_CAPTURE_IN_FLIGHT = 4;
+let composerCaptureInFlight = 0;
 const plainExtensionTheme = {
   fg: (_color: string, text: string) => text,
   bg: (_color: string, text: string) => text,
@@ -987,9 +993,29 @@ async function bindWebExtensions(value: any) {
     if (!contribution || contribution.slot !== "composer-input") throw new Error("Composer capture contribution not found");
     const captureId = typeof input.captureId === "string" ? input.captureId : "";
     if (!captureId || !deps.captureStore) throw new Error("Audio capture is unavailable");
-    const capture = await deps.captureStore.consume(captureId, {
-      sessionId: String(value.sessionId), contributionKey: key, registrationId: contribution.registrationId,
-    }, contribution.policy);
+    // Bound the number of concurrent composer-capture invocations so an
+    // authenticated session cannot pile up unbounded ≤25 MB temp files by
+    // kicking off many simultaneous invocations that each hold a capture
+    // on disk for the entire extension invocation.
+    if (composerCaptureInFlight >= MAX_COMPOSER_CAPTURE_IN_FLIGHT) {
+      throw new HttpError("Too many composer capture invocations", 429);
+    }
+    composerCaptureInFlight += 1;
+    let releasedSlot = false;
+    const releaseSlot = () => {
+      if (releasedSlot) return;
+      releasedSlot = true;
+      composerCaptureInFlight = Math.max(0, composerCaptureInFlight - 1);
+    };
+    let capture: ValidatedAudioCapture;
+    try {
+      capture = await deps.captureStore.consume(captureId, {
+        sessionId: String(value.sessionId), contributionKey: key, registrationId: contribution.registrationId,
+      }, contribution.policy);
+    } catch (error) {
+      releaseSlot();
+      throw error;
+    }
     try {
       const signal = input.signal ?? new AbortController().signal;
       if (signal.aborted) throw new HttpError("Composer capture invocation aborted", 408);
@@ -1013,6 +1039,7 @@ async function bindWebExtensions(value: any) {
       return { label: cleanHeaderActionText(contribution.source.label) || cleanHeaderActionText(contribution.source.title) || key, effects };
     } finally {
       await deps.captureStore.releasePath(capture.path);
+      releaseSlot();
     }
   }
 

@@ -71,9 +71,20 @@ export class CaptureUploadLimiter {
 }
 
 export class EphemeralCaptureStore {
+  /** Captures that have been stored but not yet consumed. */
   private readonly captures = new Map<string, StoredCapture>();
+  /**
+   * Captures that have been consumed (handed to an invocation) but whose file
+   * has not yet been removed via releasePath(). These continue to count
+   * against the pending quota and keep a hard expiry timer armed, so the
+   * documented bound still bounds real disk usage and nothing is leaked if
+   * the caller skips its finally block or the process is killed.
+   */
+  private readonly inFlight = new Map<string, StoredCapture>();
+  /** Secondary index: capture file path -> inFlight id. */
+  private readonly inFlightByPath = new Map<string, string>();
   private rootPromise?: Promise<string>;
-  /** Includes both writes in flight and completed captures. */
+  /** Includes writes in flight, pending captures, and consumed-but-not-released captures. */
   private pendingCount = 0;
   private pendingBytes = 0;
 
@@ -153,34 +164,62 @@ export class EphemeralCaptureStore {
       await this.delete(id);
       throw new HttpError("Audio capture no longer satisfies the contribution policy", 409);
     }
+    // Transfer ownership to the inFlight map: the file is still accounted
+    // against the pending quota and still has a hard expiry timer armed, so
+    // leaked captures do not accumulate indefinitely even if the caller's
+    // releasePath() is never reached.
     this.captures.delete(id);
-    this.releaseReservation(capture.size);
     clearTimeout(capture.timer);
+    const expiresAt = Date.now() + this.ttlMs;
+    const timer = setTimeout(() => { void this.delete(id); }, this.ttlMs);
+    timer.unref?.();
+    const inFlight: StoredCapture = { ...capture, expiresAt, timer };
+    this.inFlight.set(id, inFlight);
+    this.inFlightByPath.set(capture.path, id);
     return { path: capture.path, mimeType: capture.mimeType, size: capture.size, durationMs: capture.durationMs };
   }
 
   async releasePath(path: string) {
+    const id = this.inFlightByPath.get(path);
+    const capture = id ? this.inFlight.get(id) : undefined;
+    if (id && capture) {
+      this.inFlight.delete(id);
+      this.inFlightByPath.delete(path);
+      clearTimeout(capture.timer);
+      this.releaseReservation(capture.size);
+    }
     await rm(dirname(path), { recursive: true, force: true });
   }
 
   async delete(id: string) {
-    const capture = this.captures.get(id);
+    const capture = this.captures.get(id) ?? this.inFlight.get(id);
     if (!capture) return;
-    this.captures.delete(id);
-    this.releaseReservation(capture.size);
+    if (this.captures.delete(id)) {
+      // Only release once; inFlight entries release on their own path below.
+      this.releaseReservation(capture.size);
+    } else if (this.inFlight.delete(id)) {
+      this.inFlightByPath.delete(capture.path);
+      this.releaseReservation(capture.size);
+    }
     clearTimeout(capture.timer);
-    await this.releasePath(capture.path);
+    await rm(dirname(capture.path), { recursive: true, force: true });
   }
 
   async releaseOwner(sessionId: string) {
-    await Promise.all([...this.captures.values()].filter((capture) => capture.sessionId === sessionId).map((capture) => this.delete(capture.id)));
+    const victims = [
+      ...this.captures.values(),
+      ...this.inFlight.values(),
+    ].filter((capture) => capture.sessionId === sessionId);
+    await Promise.all(victims.map((capture) => this.delete(capture.id)));
   }
 
   async dispose() {
-    await Promise.all([...this.captures.keys()].map((id) => this.delete(id)));
+    const ids = new Set<string>([...this.captures.keys(), ...this.inFlight.keys()]);
+    await Promise.all([...ids].map((id) => this.delete(id)));
     if (this.rootPromise) await rm(await this.rootPromise, { recursive: true, force: true });
     this.rootPromise = undefined;
     this.pendingCount = 0;
     this.pendingBytes = 0;
+    this.inFlightByPath.clear();
   }
 }
