@@ -787,20 +787,58 @@ export class LocalSessionService implements SessionService {
 
   async list(extraCwds: string[] = []): Promise<SessionInfoDto[]> {
     if (this.noSession) return [];
+    // Known cwds have already been validated by create/switchCwd (assertDirectory).
+    // They are canonical and trusted, so they are not subject to the extra-cwd cap.
     const cwds = this.knownCwds();
-    for (const cwd of extraCwds) if (typeof cwd === "string" && cwd.trim()) cwds.add(resolve(cwd));
+    // Bound and validate caller-supplied cwds. Each one triggers a full session
+    // directory scan, so an unbounded list (or a list of aliases that collapse
+    // to the same storage directory via piSessionDirectory's lossy mapping) can
+    // be amplified into many concurrent readdir+stat+bounded-read fan-outs.
+    const MAX_EXTRA_CWDS = 8;
+    const extras: string[] = [];
+    for (const cwd of extraCwds) {
+      if (extras.length >= MAX_EXTRA_CWDS) break;
+      if (typeof cwd !== "string" || !cwd.trim()) continue;
+      try {
+        const validated = await assertDirectory(cwd, this.deps.globalCwd());
+        extras.push(validated);
+      } catch { /* skip missing/non-directory entries silently, matches per-cwd scan tolerance */ }
+    }
+    for (const cwd of extras) cwds.add(cwd);
     const orderedCwds = Array.from(cwds).sort();
+    // Deduplicate on the *resolved storage directory* so aliased cwd spellings
+    // (e.g. '/a/b', '/a:b', '/a-b' when piSessionDirectory collapses '/', '\\'
+    // and ':' to '-') collapse to a single scan rather than remaining distinct
+    // in the Set and launching redundant concurrent scans of the same files.
+    const byStorageDir = new Map<string, string>();
+    for (const cwd of orderedCwds) {
+      const dir = piSessionDirectory(cwd);
+      if (!byStorageDir.has(dir)) byStorageDir.set(dir, cwd);
+    }
+    const scanCwds = Array.from(byStorageDir.values());
     const key = orderedCwds.join("\n");
     const pending = this.sessionListRequests.get(key);
     if (pending) return pending;
     const request = (async () => {
-      const groups = await Promise.all(orderedCwds.map(async (cwd) => {
-        try {
-          const factory = this.deps.sessionFactory?.list ? this.deps.sessionFactory : this.productionFactory;
-          const infos = await factory.list!(cwd);
-          return infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
-        } catch { return []; }
-      }));
+      // Bounded concurrency: each scan is expensive (readdir + per-file stat +
+      // up to 40 KiB bounded read + JSON.parse at SCAN_CONCURRENCY=16 inside
+      // shallowList), so run a small number of per-cwd scans in parallel.
+      const LIST_CONCURRENCY = 4;
+      const groups: SessionInfoDto[][] = new Array(scanCwds.length);
+      let next = 0;
+      const workers = Array.from({ length: Math.min(LIST_CONCURRENCY, scanCwds.length) }, async () => {
+        for (;;) {
+          const i = next++;
+          if (i >= scanCwds.length) break;
+          const cwd = scanCwds[i];
+          try {
+            const factory = this.deps.sessionFactory?.list ? this.deps.sessionFactory : this.productionFactory;
+            const infos = await factory.list!(cwd);
+            groups[i] = infos.map((info) => this.overlaySessionName(this.simplifySessionInfo(info, cwd)));
+          } catch { groups[i] = []; }
+        }
+      });
+      await Promise.all(workers);
       return groups.flat().sort((a, b) => Date.parse(b.modified) - Date.parse(a.modified));
     })();
     this.sessionListRequests.set(key, request);
