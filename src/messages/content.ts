@@ -4,15 +4,31 @@ export function shouldCollapseMessage(text: string) {
   return text.length > 1800 || text.split("\n").length > 28;
 }
 
+// Image URLs embedded in transcript content are only safe to fetch with the
+// viewer's API credentials when they target this origin (the server rewrites
+// its own image references to a `/api/...` relative URL). Any absolute URL
+// here comes from untrusted transcript content and must not be forwarded to
+// `appendAttachedImage`, which would otherwise send the API bearer token to
+// that origin.
+function sameOriginImageUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined;
+  // Reject protocol-relative URLs (`//host/...`) and any scheme-qualified URL.
+  // Only accept server-generated same-origin paths.
+  return /^\/[^/]/.test(value) ? value : undefined;
+}
+
 export function imagesFromRawContent(content: unknown): AttachedImage[] {
   if (!Array.isArray(content)) return [];
   return content
     .filter((part): part is Record<string, unknown> => !!part && typeof part === "object" && (part as any).type === "image")
-    .map((part) => ({
-      data: part.data as string | undefined,
-      mimeType: part.mimeType as string | undefined,
-      ...(typeof part.imageUrl === "string" ? { contentUrl: part.imageUrl } : {}),
-    }));
+    .map((part) => {
+      const contentUrl = sameOriginImageUrl(part.imageUrl);
+      return {
+        data: part.data as string | undefined,
+        mimeType: part.mimeType as string | undefined,
+        ...(contentUrl ? { contentUrl } : {}),
+      };
+    });
 }
 
 export function stripImagePathNote(text: string) {
