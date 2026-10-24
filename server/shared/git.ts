@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -142,9 +142,18 @@ export async function readGitImage(options: { cwd: string; path: string; oldPath
   const resolved = resolve(options.cwd, filePath);
   const rel = relative(options.cwd, resolved);
   if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Image path is outside the repository");
-  const info = await stat(resolved);
+  const linkInfo = await lstat(resolved).catch(() => undefined);
+  if (!linkInfo) throw new Error("Image not found");
+  if (linkInfo.isSymbolicLink()) throw new Error("Image path is outside the repository");
+  const rootReal = await realpath(options.cwd);
+  const targetReal = await realpath(resolved);
+  const realRel = relative(rootReal, targetReal);
+  if (realRel !== "" && (realRel.startsWith(`..${sep}`) || realRel === ".." || isAbsolute(realRel))) {
+    throw new Error("Image path is outside the repository");
+  }
+  const info = await stat(targetReal);
   if (!info.isFile()) throw new Error("Image not found");
-  return { file: resolved, displayPath };
+  return { file: targetReal, displayPath };
 }
 
 export async function gitCwdFromRepoParam(repo: string | null, baseCwd: string) {
