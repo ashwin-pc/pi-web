@@ -7,6 +7,7 @@ import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
+import { SUPERVISOR_PEER_HEADER, canonicalPeerAddress } from "./server/auth/peer.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 
@@ -147,9 +148,25 @@ const supervisor = createServer(async (req, res) => {
 function sanitizeProxyHeaders(req: IncomingMessage) {
   const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
-  if (!trustedProxyPeer(req)) delete req.headers["x-forwarded-for"];
+  const trustedXff = trustedProxyPeer(req);
+  if (!trustedXff) delete req.headers["x-forwarded-for"];
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
+  // Always strip caller-supplied internal peer and auth-trust headers so that
+  // only the supervisor can author them on the loopback hop.
+  delete req.headers[SUPERVISOR_PEER_HEADER];
+  const trustedHeader = process.env.PI_WEB_AUTH_TRUSTED_HEADER;
+  if (trustedHeader) delete req.headers[trustedHeader.toLowerCase()];
+  // Convey the real public client address to the loopback child so its
+  // isLoopback / isLoopbackAddress gates and per-peer attribution reflect the
+  // actual caller, not the supervisor's loopback socket.
+  const publicPeer = canonicalPeerAddress(req.socket?.remoteAddress || undefined);
+  if (publicPeer) {
+    req.headers[SUPERVISOR_PEER_HEADER] = publicPeer;
+    if (!trustedXff || typeof req.headers["x-forwarded-for"] !== "string") {
+      req.headers["x-forwarded-for"] = publicPeer;
+    }
+  }
 }
 
 supervisor.on("upgrade", (req, socket, head) => {

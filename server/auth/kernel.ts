@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { effectivePeerAddress, isLoopbackSocketAddress } from "./peer.js";
 
 export type AuthMode = "none" | "legacy" | "passkey" | "external";
 export type Identity = { id: string; displayName?: string };
@@ -463,7 +464,7 @@ export class AuthKernel {
     const raw = randomBytes(32).toString("base64url"),
       now = Date.now();
     const device = req?.headers["user-agent"]?.slice(0, 200),
-      ip = req?.socket?.remoteAddress;
+      ip = req ? effectivePeerAddress(req) : undefined;
     if (!method) {
       const prefix = identity.id.split(":")[0];
       if (["legacy", "passkey", "password", "external"].includes(prefix))
@@ -533,8 +534,7 @@ export class AuthKernel {
 }
 
 export function isLoopback(req: IncomingMessage) {
-  const ip = req.socket.remoteAddress || "";
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  return isLoopbackSocketAddress(effectivePeerAddress(req));
 }
 export function randomSecret() {
   return randomBytes(32).toString("base64url");
