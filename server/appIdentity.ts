@@ -47,9 +47,10 @@ export function validPng(png: Buffer): boolean {
     const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
     if (width < 1 || height < 1 || width > 2048 || height > 2048) return false;
     const channels = png[25] === 6 ? 4 : 3;
-    const decoded = inflateSync(Buffer.concat(imageData), { maxOutputLength: 2048 * 2048 * 4 + 2048 });
     const stride = width * channels;
-    if (decoded.length !== height * (stride + 1)) return false;
+    const expected = height * (stride + 1);
+    const decoded = inflateSync(Buffer.concat(imageData), { maxOutputLength: expected });
+    if (decoded.length !== expected) return false;
     for (let row = 0; row < height; row++) if (decoded[row * (stride + 1)] > 4) return false;
     return true;
   } catch { return false; }
@@ -130,7 +131,6 @@ export async function receiveAvatarPackage(req: IncomingMessage, settingsFile: s
 }
 
 export async function createAvatarGeneration(settingsFile: string, assets: AvatarAssets): Promise<string> {
-  assets = validateAvatarAssets(assets);
   const id = randomUUID(); const dir = join(avatarDirectory(settingsFile), id);
   try { await mkdir(dir, { recursive: true }); await writeFile(join(dir, "still.png"), assets.still); await writeFile(join(dir, "icon.png"), assets.icon); if (assets.fab) await writeFile(join(dir, "fab.png"), assets.fab); if (assets.newSession) await writeFile(join(dir, "new-session.apng"), assets.newSession); if (assets.label) await writeFile(join(dir, "label.json"), JSON.stringify(assets.label)); return id; }
   catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
