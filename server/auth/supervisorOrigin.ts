@@ -24,17 +24,23 @@ export function stampSupervisorOrigin(
   req.headers[SUPERVISOR_SECRET_HEADER] = secret;
 }
 
-/** Accept only an origin decision made by this run's supervisor over its loopback child hop. */
-export function authenticatedSupervisorOrigin(
-  req: Pick<IncomingMessage, "headers" | "socket">,
-): boolean {
-  const secret = process.env.PI_WEB_SUPERVISOR_SECRET;
-  if (process.env.PI_WEB_SUPERVISED !== "1" || !secret || !isLoopback(req.socket.remoteAddress)) return false;
-  if (req.headers[SUPERVISOR_ORIGIN_HEADER] !== "1") return false;
-  const provided = req.headers[SUPERVISOR_SECRET_HEADER];
-  if (typeof provided !== "string") return false;
-  const expectedBytes = Buffer.from(secret);
-  const providedBytes = Buffer.from(provided);
-  return providedBytes.length === expectedBytes.length
-    && timingSafeEqual(providedBytes, expectedBytes);
+export function createAuthenticatedSupervisorOrigin(
+  env: NodeJS.ProcessEnv,
+): (req: Pick<IncomingMessage, "headers" | "socket">) => boolean {
+  const supervised = env.PI_WEB_SUPERVISED === "1";
+  const secret = env.PI_WEB_SUPERVISOR_SECRET;
+
+  /** Accept only an origin decision made by this run's supervisor over its loopback child hop. */
+  return (req) => {
+    if (!supervised || !secret || !isLoopback(req.socket.remoteAddress)) return false;
+    if (req.headers[SUPERVISOR_ORIGIN_HEADER] !== "1") return false;
+    const provided = req.headers[SUPERVISOR_SECRET_HEADER];
+    if (typeof provided !== "string") return false;
+    const expectedBytes = Buffer.from(secret);
+    const providedBytes = Buffer.from(provided);
+    return providedBytes.length === expectedBytes.length
+      && timingSafeEqual(providedBytes, expectedBytes);
+  };
 }
+
+export const authenticatedSupervisorOrigin = createAuthenticatedSupervisorOrigin(process.env);

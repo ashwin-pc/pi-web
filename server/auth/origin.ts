@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
-import { forwardedHost } from "./proxy.js";
+import { isIP } from "node:net";
+import { forwardedHost, normalizedAuthority } from "./proxy.js";
 import { authenticatedSupervisorOrigin } from "./supervisorOrigin.js";
 
 export const originFailureHint = "Origin does not match the configured public origin. Set PI_WEB_AUTH_ORIGIN to the exact public origin or configure trusted proxy peers for a local HTTP origin.";
@@ -19,6 +20,12 @@ function localLoopbackAlias(origin: URL, configured: URL): boolean {
     && isCanonicalLoopback(origin.hostname)
     && isCanonicalLoopback(configured.hostname)
     && effectivePort(origin) === effectivePort(configured);
+}
+
+function safeMatchingHost(req: IncomingMessage, origin: URL): boolean {
+  const hostname = origin.hostname.replace(/^\[|\]$/g, "");
+  if (hostname !== "localhost" && isIP(hostname) === 0) return false;
+  return normalizedAuthority(req.headers.host, origin.protocol as "http:" | "https:") === origin.host.toLowerCase();
 }
 
 function trustedProxyOrigin(req: IncomingMessage, origin: URL, configured: URL): boolean {
@@ -41,6 +48,7 @@ export function trustedOrigin(req: IncomingMessage, configuredOrigin: string): b
     const configured = new URL(configuredOrigin);
     valid = parsed.origin === configured.origin
       || localLoopbackAlias(parsed, configured)
+      || safeMatchingHost(req, parsed)
       || trustedProxyOrigin(req, parsed, configured);
   } catch { /* Reject malformed origins. */ }
   if (!valid && req.headers["x-forwarded-host"] && req.headers["x-forwarded-host"] !== req.headers.host && !warned) {

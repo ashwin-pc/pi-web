@@ -86,13 +86,13 @@ describe("mock WebSocket authentication policy", () => {
 
     const ticketResponse = await fetch(`${origin}/api/ws-ticket`, {
       method: "POST",
-      headers: { origin, "x-pi-web-test-client-intent": "ws-policy-test" },
+      headers: { origin, "x-pi-web-client-id": "ws-policy-test" },
     });
     expect(ticketResponse.status).toBe(201);
     const { ticket } = await ticketResponse.json() as { ticket: string };
     const staleTicketResponse = await fetch(`${origin}/api/ws-ticket`, {
       method: "POST",
-      headers: { origin, "x-pi-web-test-client-intent": "ws-policy-test" },
+      headers: { origin, "x-pi-web-client-id": "ws-policy-test" },
     });
     expect(staleTicketResponse.status).toBe(201);
     const { ticket: staleTicket } = await staleTicketResponse.json() as { ticket: string };
@@ -120,7 +120,7 @@ describe("mock WebSocket authentication policy", () => {
 
     const denied = await fetch(`${origin}/api/ws-ticket`, {
       method: "POST",
-      headers: { origin, "x-pi-web-test-client-intent": "ws-policy-test" },
+      headers: { origin, "x-pi-web-client-id": "ws-policy-test" },
     });
     expect(denied.status).toBe(401);
   }, 40_000);

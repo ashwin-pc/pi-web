@@ -37,7 +37,9 @@ describe("browser mutation admission", () => {
     expect(browserMutationFailure(request(synthetic), "open", origin)).toBe("origin");
     expect(browserMutationFailure(request(synthetic), "open", origin, true)).toBeUndefined();
     expect(browserMutationFailure(request({ ...synthetic, origin }), "open", origin)).toBe("intent");
-    expect(browserMutationFailure(request({ ...synthetic, origin }), "open", origin, true)).toBeUndefined();
+    expect(browserMutationFailure(request({ ...synthetic, origin }), "open", origin, true)).toBe("intent");
+    expect(browserMutationFailure(request({ ...synthetic, origin, "x-pi-web-client-id": "browser" }), "open", origin, true)).toBeUndefined();
+    expect(browserMutationFailure(request({ ...synthetic, "sec-fetch-site": "same-origin" }), "open", origin, true)).toBe("intent");
     expect(browserMutationFailure(request({ ...synthetic, "sec-fetch-site": "cross-site" }), "open", origin, true)).toBe("origin");
     expect(browserMutationFailure(request({ ...synthetic, origin: "https://other.example.test" }), "open", origin, true)).toBe("origin");
   });

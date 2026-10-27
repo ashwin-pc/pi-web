@@ -587,7 +587,7 @@ function withAccessLog(
   };
 }
 
-import { browserMutationFailure, isIdempotentMethod } from "./server/auth/admission.js";
+import { browserMutationFailure, isAmbientBrowserAuth, isIdempotentMethod } from "./server/auth/admission.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 
 async function loginPresentation() {
@@ -1490,7 +1490,7 @@ server.on("upgrade", (req, socket, head) => {
     if (identity?.id.startsWith("token:") && !authState?.apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (ticket?.via === "open" && (authState?.config?.policy || authKernel.policy) !== "open") { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
+    if (ticket && isAmbientBrowserAuth(ticket.via) && !trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
     const trackingKey = ticket?.sessionHash || (identity.id.startsWith("token:") ? identity.id : ticket?.via === "open" ? "policy:open" : undefined);
     wss.handleUpgrade(req, socket, head, (ws) => { if (trackingKey) { browserSockets.set(ws, trackingKey); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });

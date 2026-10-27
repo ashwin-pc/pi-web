@@ -327,6 +327,26 @@ describe("pi-web supervisor", () => {
       headers: { host: publicHost, authorization: `Bearer ${machineSecret}` },
     });
     expect(machineTicket.status).toBe(201);
+    const connectMachine = async (ticketResponse: Response) => {
+      const { ticket } = await ticketResponse.json() as { ticket: string };
+      const socket = new WebSocket(`ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
+        headers: { host: publicHost },
+      });
+      await new Promise<void>((resolve, reject) => {
+        socket.once("message", data => {
+          expect(JSON.parse(String(data)).type).toBe("hello");
+          resolve();
+        });
+        socket.once("error", reject);
+      });
+      socket.close();
+      await new Promise<void>(resolve => socket.once("close", () => resolve()));
+    };
+    await connectMachine(machineTicket);
+    await connectMachine(await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+      method: "POST",
+      headers: { host: publicHost, authorization: `Bearer ${machineSecret}` },
+    }));
 
     const externalCrossSite = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
       method: "POST",
@@ -370,6 +390,30 @@ describe("pi-web supervisor", () => {
     });
     expect(matchingHostWrongOrigin.status).toBe(403);
 
+    const expectAmbientSocketRejected = async (socketOrigin?: string) => {
+      const response = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
+        method: "POST",
+        headers: browserHeaders,
+      });
+      expect(response.status).toBe(201);
+      const { ticket } = await response.json() as { ticket: string };
+      await expect(new Promise<void>((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
+          ...(socketOrigin ? { origin: socketOrigin } : {}),
+          headers: { host: publicHost },
+        });
+        socket.once("unexpected-response", (_request, response) => {
+          expect(response.statusCode).toBe(403);
+          socket.terminate();
+          resolve();
+        });
+        socket.once("open", () => reject(new Error("Ambient ticket opened without a trusted browser Origin")));
+        socket.once("error", reject);
+      })).resolves.toBeUndefined();
+    };
+    await expectAmbientSocketRejected();
+    await expectAmbientSocketRejected("https://hostile.example.test");
+
     const connect = async () => {
       const response = await fetch(`http://127.0.0.1:${publicPort}/api/ws-ticket`, {
         method: "POST",
@@ -393,6 +437,17 @@ describe("pi-web supervisor", () => {
     };
     await connect();
     await connect();
+
+    const missingIntentRestart = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
+      method: "POST",
+      headers: {
+        host: publicHost,
+        cookie: cookie!,
+        origin: publicOrigin,
+      },
+    });
+    expect(missingIntentRestart.status).toBe(403);
+    expect(await missingIntentRestart.json()).toMatchObject({ error: "CSRF validation failed" });
 
     const beforeRestart = await status(publicPort, supervisor, machineSecret, publicHost);
     const restart = await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {

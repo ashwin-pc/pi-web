@@ -100,16 +100,31 @@ describe("multi-method human authentication", () => {
         ),
       ).toBe(true);
     }
-    for (const origin of [
-      "http://127.0.0.1:9301",
-      "http://192.168.1.5:9300",
-      "http://machine.tailnet:9300",
-      "https://localhost:9300",
+    for (const [origin, host] of [
+      ["http://localhost:9300", "localhost:9300"],
+      ["http://localhost", "localhost:80"],
+      ["http://127.0.0.1:9301", "127.0.0.1:9301"],
+      ["http://192.168.1.5:9300", "192.168.1.5:9300"],
+      ["http://[::1]:9300", "[0:0:0:0:0:0:0:1]:9300"],
+      ["https://[2001:db8::1]", "[2001:0db8:0:0:0:0:0:1]:443"],
     ]) {
       expect(
         trustedOrigin(
-          req({}, { host: new URL(origin).host, origin }),
-          "http://localhost:9300",
+          req({}, { host, origin }),
+          "https://machine.tailnet.ts.net",
+        ),
+      ).toBe(true);
+    }
+    for (const [origin, host] of [
+      ["http://localhost:9300", "localhost:9301"],
+      ["http://192.168.1.5:9300", "192.168.1.6:9300"],
+      ["http://machine.tailnet:9300", "machine.tailnet:9300"],
+      ["https://other.example:9300", "other.example:9300"],
+    ]) {
+      expect(
+        trustedOrigin(
+          req({}, { host, origin }),
+          "https://public.example",
         ),
       ).toBe(false);
     }
