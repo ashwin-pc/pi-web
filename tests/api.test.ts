@@ -117,6 +117,22 @@ describe("pi-web mock API", () => {
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
+  it("prevents successful JSON API responses from being cached", async () => {
+    const response = await fetch(`${baseUrl}/api/state`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(await response.text())).toMatchObject({ sessionId: "mock-current", model: { provider: "mock" } });
+  });
+
+  it("prevents JSON API errors from being cached without changing their status or body", async () => {
+    const response = await fetch(`${baseUrl}/api/unknown-route`);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(JSON.parse(await response.text())).toEqual({ ok: false, error: "Unknown API route" });
+  });
+
   it("deletes a requested session and its independent note", async () => {
     try {
       const beforeSeed = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
