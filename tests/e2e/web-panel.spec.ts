@@ -61,18 +61,19 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
   await expect(panel).toBeHidden();
   expect(invocations).toEqual([]);
 
-  let confirmation = "";
-  page.once("dialog", async (dialog) => {
-    confirmation = dialog.message();
+  let unexpectedDialogs = 0;
+  const dismissUnexpected = async (dialog: import("@playwright/test").Dialog) => {
+    unexpectedDialogs += 1;
     await dialog.dismiss();
-  });
+  };
+  page.on("dialog", dismissUnexpected);
   await page.getByRole("link", { name: "Missing panel" }).click();
-  expect(confirmation).toContain("Target: missing");
-  expect(confirmation).toContain('"note": "ignored"');
+  page.off("dialog", dismissUnexpected);
+  expect(unexpectedDialogs).toBe(0);
   expect(invocations).toEqual([]);
 
+  let confirmation = "";
   const assistantLink = page.getByRole("link", { name: "Open assistant task" });
-  await assistantLink.evaluate((anchor) => { (anchor as HTMLElement).dataset.piWebDeepLink = "trusted"; });
   page.once("dialog", async (dialog) => {
     confirmation = dialog.message();
     await dialog.accept();

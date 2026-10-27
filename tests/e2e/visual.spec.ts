@@ -117,6 +117,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
   await expect(page.locator(".toolCard.toolCard--success", { hasText: "write" })).toBeVisible();
   const artifact = page.locator(".artifactPreview--html", { hasText: "Open the visual launch brief" });
   await expect(artifact).toBeVisible();
+  await artifact.getByRole("button", { name: "Run preview" }).click();
   await expect(artifact.locator("iframe").contentFrame().locator("h1")).toHaveText("Make every handoff feel effortless.");
   await page.locator("#modelSettingsButton").click();
   await page.locator(".modelPickerChoice").filter({ hasText: "anthropic/claude-sonnet-4" }).click();
@@ -848,8 +849,9 @@ test.describe("visual regression", () => {
     await openLauncherAction(page, "File explorer");
     await page.locator("#filesArtifactsScope").click();
     await expect(page.locator(`.artifactGalleryCard[data-artifact-path="${visualArtifactRoot}/launch-preview.png"] img`)).toBeVisible();
-    const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${visualArtifactRoot}/concept.html"] iframe`);
-    await expect(thumbnail.contentFrame().locator("h1")).toHaveText("Constellation");
+    const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${visualArtifactRoot}/concept.html"] .artifactGalleryCardVisual`);
+    await expect(thumbnail).toContainText("Interactive HTML");
+    await expect(thumbnail.locator("iframe")).toHaveCount(0);
 
     await expect(page).toHaveScreenshot(`artifacts-explorer-${testInfo.project.name}.png`, {
       fullPage: true,

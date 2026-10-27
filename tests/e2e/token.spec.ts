@@ -260,7 +260,9 @@ test.describe("token overlay", () => {
     await page.waitForTimeout(500);
     await page.locator("#prompt").fill("show html artifact");
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
-    const frame = page.locator(".artifactPreview--html iframe.artifactPreviewFrame").last();
+    const preview = page.locator(".artifactPreview--html").last();
+    await preview.getByRole("button", { name: "Run preview" }).click();
+    const frame = preview.locator("iframe.artifactPreviewFrame");
     await expect(frame).toHaveAttribute("srcdoc", /HTML artifact/);
     await expect(frame.contentFrame().locator("#script-status")).toHaveText("script ran");
   });

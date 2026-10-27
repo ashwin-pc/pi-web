@@ -2044,20 +2044,15 @@ test.describe("image rendering", () => {
 
     const preview = page.locator(".artifactPreview--html").last();
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("Interactive preview");
+    await expect(preview.locator("iframe")).toHaveCount(0);
+    await preview.getByRole("button", { name: "Run preview" }).click();
     const frame = preview.locator("iframe.artifactPreviewFrame");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
     await expect(frame).toHaveAttribute("srcdoc", /HTML artifact/);
     await expect(frame).not.toHaveAttribute("src");
-    await expect(frame).toHaveCSS("pointer-events", "none");
-    const shield = preview.locator(".artifactPreviewShield");
-    await expect(shield).toBeVisible();
-    await shield.click();
     await expect(preview).toHaveClass(/artifactPreview--interactive/);
     await expect(frame).toHaveCSS("pointer-events", "auto");
-    await page.mouse.move(0, 0);
-    await expect(preview).not.toHaveClass(/artifactPreview--interactive/);
-    await expect(frame).toHaveCSS("pointer-events", "none");
     const artifactFrame = frame.contentFrame();
     await expect(artifactFrame.locator("#script-status")).toHaveText("script ran");
     await expect(artifactFrame.locator("#sandbox-status")).toContainText("parent blocked");
@@ -2094,6 +2089,8 @@ test.describe("image rendering", () => {
     const preview = page.locator(".artifactPreview--file");
     await expect(preview).toHaveCount(1);
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-toolpath.gcode");
+    await expect(preview.locator("iframe")).toHaveCount(0);
+    await preview.getByRole("button", { name: "Run preview" }).click();
     const frame = preview.locator("iframe.artifactPreviewFrame");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     await expect(frame).not.toHaveAttribute("sandbox", /allow-same-origin/);
@@ -2247,7 +2244,9 @@ test.describe("image rendering", () => {
     await expect(video).toHaveAttribute("controls", "");
     expect(await video.evaluate((element) => !element.dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, ctrlKey: true })))).toBe(false);
     await next.click();
-    await expect(page.locator("#artifactBrowserPreviewBody iframe")).toHaveAttribute("srcdoc", /Toolpath ready/);
+    const customPreview = page.locator("#artifactBrowserPreviewBody");
+    await customPreview.getByRole("button", { name: "Run preview" }).click();
+    await expect(customPreview.locator("iframe")).toHaveAttribute("srcdoc", /Toolpath ready/);
     await next.click();
     await expect(page.locator("#artifactBrowserPreviewBody iframe")).toHaveAttribute("src", "/api/artifacts/preview-brief.pdf");
     await next.click();

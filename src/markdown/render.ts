@@ -42,8 +42,6 @@ let artifactActionHeaders: () => Record<string, string> = () => ({ "content-type
 let artifactActionSessionId = () => "";
 let openArtifactInPanel: (url: string, opener?: HTMLElement) => void = () => {};
 let artifactPreviewId = 0;
-const interactiveArtifactCards = new Set<HTMLElement>();
-let artifactInteractionListenerAttached = false;
 
 export function configureArtifactPreviewActions(options: { headers: () => Record<string, string>; getSessionId: () => string }) {
   artifactActionHeaders = options.headers;
@@ -411,12 +409,18 @@ function enhanceInlineHtmlPreviews(root: ParentNode) {
     pre.dataset.htmlPreviewEnhanced = "true";
     code.classList.remove("language-html-preview");
     code.classList.add("language-html");
-    const container = createHtmlPreviewGate(source, inlineHtmlReporter(), (frame) => {
-      inlineHtmlFrames.add(frame);
-      ensureInlineHtmlResizeListener();
+    const marker = document.createComment("html-preview");
+    pre.replaceWith(marker);
+    const container = createHtmlPreviewGate({
+      source,
+      sourceElement: pre,
+      mount: (frame) => { frame.srcdoc = source + inlineHtmlReporter(); },
+      onMount: (frame) => {
+        inlineHtmlFrames.add(frame);
+        ensureInlineHtmlResizeListener();
+      },
     });
-    pre.replaceWith(container);
-    container.append(pre);
+    marker.replaceWith(container);
   }
 }
 
@@ -561,22 +565,20 @@ function renderArtifactActions(card: HTMLElement, name: string, path: string, ki
 
 function setArtifactFrameInteraction(card: HTMLElement, interactive: boolean) {
   card.classList.toggle("artifactPreview--interactive", interactive);
-  if (interactive) interactiveArtifactCards.add(card);
-  else interactiveArtifactCards.delete(card);
-}
-
-function ensureArtifactInteractionListener() {
-  if (artifactInteractionListenerAttached) return;
-  artifactInteractionListenerAttached = true;
-  document.addEventListener("pointerdown", (event) => {
-    for (const card of interactiveArtifactCards) {
-      if (!card.isConnected) {
-        interactiveArtifactCards.delete(card);
-        continue;
-      }
-      if (!card.contains(event.target as Node)) setArtifactFrameInteraction(card, false);
+  const message = card.closest<HTMLElement>(".message.assistant");
+  const messageToggle = message?.querySelector<HTMLButtonElement>(":scope > .messageToggle");
+  const hasActivePreview = Boolean(message?.querySelector(".artifactPreview--interactive"));
+  if (hasActivePreview) {
+    message?.classList.remove("collapsed");
+    if (messageToggle) {
+      messageToggle.textContent = "Show less";
+      messageToggle.disabled = true;
+      messageToggle.title = "Stop the active preview before collapsing this response";
     }
-  }, true);
+  } else if (messageToggle) {
+    messageToggle.disabled = false;
+    messageToggle.removeAttribute("title");
+  }
 }
 
 function attachArtifactDisclosure(card: HTMLElement, header: HTMLElement, content: HTMLElement) {
@@ -717,32 +719,15 @@ function enhanceArtifactLinks(root: ParentNode) {
     container.insertAdjacentElement("afterend", card);
 
     if (customPreview) {
-      // Custom previews are sandboxed HTML too. Give their content the same
-      // positioning context as built-in HTML so the interaction shield covers
-      // only the iframe instead of resolving against the larger artifact card.
       card.classList.add("artifactPreview--html");
       void mountArtifactPreview(content, { name: fileName, path: url.pathname, kind: "file" }, {
         title: `Interactive preview of ${title.textContent}`,
-        className: "artifactPreviewFrame",
+        className: "htmlPreviewFrame artifactPreviewFrame",
         isCurrent: () => card.isConnected,
+        onMount: () => setArtifactFrameInteraction(card, true),
+        onStop: () => setArtifactFrameInteraction(card, false),
       }).then((mounted) => {
         if (!mounted || !card.isConnected) return;
-        const iframe = content.querySelector<HTMLIFrameElement>("iframe");
-        if (!iframe) return;
-        const shield = document.createElement("button");
-        shield.type = "button";
-        shield.className = "artifactPreviewShield";
-        shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
-        const shieldHint = document.createElement("span");
-        shieldHint.textContent = "Click to interact";
-        shield.append(shieldHint);
-        shield.addEventListener("click", () => {
-          setArtifactFrameInteraction(card, true);
-          iframe.focus();
-        });
-        card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
-        content.append(shield);
-        ensureArtifactInteractionListener();
         refreshOverflow();
       }).catch((error) => {
         if (!card.isConnected) return;
@@ -754,31 +739,29 @@ function enhanceArtifactLinks(root: ParentNode) {
     }
 
     if (kind === "html") {
-      content.textContent = "";
-      const iframe = document.createElement("iframe");
-      iframe.className = "artifactPreviewFrame";
-      iframe.title = `Preview of ${title.textContent}`;
       void fetch(url.pathname, { headers: artifactActionHeaders(), credentials: "same-origin" })
-        .then(async response => { if (!response.ok) throw new Error(`Preview failed (${response.status})`); iframe.srcdoc = await response.text(); })
-        .catch(error => { content.textContent = error instanceof Error ? error.message : "Preview failed"; });
-      // Allow artifact scripts (for diagrams and interactive previews) while omitting
-      // allow-same-origin so the frame keeps an opaque origin and cannot access app storage.
-      iframe.setAttribute("sandbox", "allow-scripts");
-      const shield = document.createElement("button");
-      shield.type = "button";
-      shield.className = "artifactPreviewShield";
-      shield.setAttribute("aria-label", `Click to interact with ${title.textContent}`);
-      const shieldHint = document.createElement("span");
-      shieldHint.textContent = "Click to interact";
-      shield.append(shieldHint);
-      shield.addEventListener("click", () => {
-        setArtifactFrameInteraction(card, true);
-        iframe.focus();
-      });
-      card.addEventListener("pointerleave", () => setArtifactFrameInteraction(card, false));
-      content.append(iframe, shield);
-      ensureArtifactInteractionListener();
-      refreshOverflow();
+        .then(async (response) => {
+          if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+          const source = await response.text();
+          if (!card.isConnected) return;
+          const gate = createHtmlPreviewGate({
+            source,
+            showSourceInitially: false,
+            frameClassName: "htmlPreviewFrame artifactPreviewFrame",
+            frameTitle: `Preview of ${title.textContent}`,
+            mount: (frame) => { frame.srcdoc = source; },
+            onMount: () => setArtifactFrameInteraction(card, true),
+            onStop: () => setArtifactFrameInteraction(card, false),
+          });
+          content.replaceChildren(gate);
+          refreshOverflow();
+        })
+        .catch((error) => {
+          if (!card.isConnected) return;
+          content.textContent = error instanceof Error ? error.message : "Preview failed";
+          card.classList.add("artifactPreview--error");
+          refreshOverflow();
+        });
       continue;
     }
 

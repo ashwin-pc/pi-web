@@ -1,21 +1,44 @@
-export function createHtmlPreviewGate(
-  source: string,
-  reporter: string,
-  onMount: (frame: HTMLIFrameElement) => void,
-) {
+export type HtmlPreviewGateOptions = {
+  source: string;
+  mount: (frame: HTMLIFrameElement) => void;
+  sourceElement?: HTMLPreElement;
+  showSourceInitially?: boolean;
+  frameClassName?: string;
+  frameTitle?: string;
+  onMount?: (frame: HTMLIFrameElement) => void;
+  onStop?: () => void;
+};
+
+function createSourceElement(source: string) {
+  const pre = document.createElement("pre");
+  const code = document.createElement("code");
+  code.className = "language-html";
+  code.textContent = source;
+  pre.append(code);
+  return pre;
+}
+
+export function createHtmlPreviewGate(options: HtmlPreviewGateOptions) {
+  const {
+    source,
+    mount,
+    sourceElement = createSourceElement(source),
+    showSourceInitially = true,
+    frameClassName = "htmlPreviewFrame",
+    frameTitle = "Interactive HTML preview",
+    onMount,
+    onStop,
+  } = options;
   const container = document.createElement("div");
-  container.className = "htmlPreview htmlPreview--source htmlPreview--unarmed";
+  container.className = "htmlPreview htmlPreview--unarmed";
   container.setAttribute("role", "group");
   container.setAttribute("aria-label", "HTML preview");
 
-  const notice = document.createElement("div");
-  notice.className = "htmlPreviewNotice";
-  const inactiveNotice = "HTML preview is inactive. Review the source, then run it in a sandboxed frame.";
-  const activeNotice = "HTML preview is active in a sandboxed frame.";
-  notice.textContent = inactiveNotice;
-
   const header = document.createElement("div");
   header.className = "htmlPreviewHeader";
+
+  const status = document.createElement("span");
+  status.className = "htmlPreviewStatus";
 
   const actions = document.createElement("div");
   actions.className = "htmlPreviewActions";
@@ -28,17 +51,24 @@ export function createHtmlPreviewGate(
   const toggle = document.createElement("button");
   toggle.type = "button";
   toggle.className = "htmlPreviewToggle";
-  toggle.hidden = true;
 
   let frame: HTMLIFrameElement | undefined;
-  const showSource = (showing: boolean) => {
-    const pre = container.querySelector<HTMLPreElement>(":scope > pre");
-    if (!pre || !frame) return;
-    pre.hidden = !showing;
-    frame.hidden = showing;
-    container.classList.toggle("htmlPreview--source", showing);
-    toggle.textContent = showing ? "Preview" : "Source";
-    toggle.title = showing ? "Show interactive preview" : "Show HTML source";
+  let showingSource = showSourceInitially;
+  const placeholder = document.createElement("div");
+  placeholder.className = "htmlPreviewPlaceholder";
+  placeholder.textContent = "HTML preview is inactive.";
+
+  const renderState = () => {
+    sourceElement.hidden = !showingSource;
+    placeholder.hidden = showingSource || Boolean(frame);
+    if (frame) frame.hidden = showingSource;
+    container.classList.toggle("htmlPreview--source", showingSource);
+    status.textContent = frame ? (showingSource ? "Running · source" : "Running") : (showingSource ? "Inactive · source" : "Inactive");
+    toggle.hidden = !frame && showSourceInitially;
+    toggle.textContent = showingSource ? (frame ? "Preview" : "Hide source") : "Source";
+    toggle.title = showingSource
+      ? (frame ? "Show interactive preview" : "Hide HTML source")
+      : "Show HTML source";
     toggle.setAttribute("aria-label", toggle.title);
   };
 
@@ -46,35 +76,37 @@ export function createHtmlPreviewGate(
     if (frame) {
       frame.remove();
       frame = undefined;
-      const pre = container.querySelector<HTMLPreElement>(":scope > pre");
-      if (pre) pre.hidden = false;
-      container.classList.add("htmlPreview--source", "htmlPreview--unarmed");
+      showingSource = showSourceInitially;
+      container.classList.add("htmlPreview--unarmed");
       container.classList.remove("htmlPreview--compact");
       container.style.width = "";
       delete container.dataset.pinnedAvailable;
-      notice.textContent = inactiveNotice;
       run.textContent = "Run preview";
-      toggle.hidden = true;
+      onStop?.();
+      renderState();
       return;
     }
 
     frame = document.createElement("iframe");
-    frame.className = "htmlPreviewFrame";
-    frame.title = "Interactive HTML preview";
+    frame.className = frameClassName;
+    frame.title = frameTitle;
     frame.setAttribute("sandbox", "allow-scripts");
     frame.setAttribute("referrerpolicy", "no-referrer");
-    frame.srcdoc = source + reporter;
+    mount(frame);
     header.after(frame);
-    onMount(frame);
+    onMount?.(frame);
     container.classList.remove("htmlPreview--unarmed");
-    notice.textContent = activeNotice;
     run.textContent = "Stop preview";
-    toggle.hidden = false;
-    showSource(false);
+    showingSource = false;
+    renderState();
   });
-  toggle.addEventListener("click", () => showSource(frame?.hidden === false));
+  toggle.addEventListener("click", () => {
+    showingSource = !showingSource;
+    renderState();
+  });
   actions.append(run, toggle);
-  header.append(notice, actions);
-  container.append(header);
+  header.append(status, actions);
+  container.append(header, sourceElement, placeholder);
+  renderState();
   return container;
 }

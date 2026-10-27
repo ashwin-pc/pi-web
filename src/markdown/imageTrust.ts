@@ -58,7 +58,9 @@ export function enhanceRemoteMarkdownImages(root: ParentNode, enhanceImage: (ima
     load.type = "button";
     load.className = "remoteMarkdownImageLoad";
     load.textContent = "Load image";
-    load.addEventListener("click", () => {
+    load.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
       const checked = classifyMarkdownImageSource(placeholder.dataset.remoteImageSrc || "");
       if (checked.kind !== "remote" || checked.host !== placeholder.dataset.remoteImageHost) {
         placeholder.textContent = "Remote image URL is no longer valid.";

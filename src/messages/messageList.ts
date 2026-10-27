@@ -292,13 +292,15 @@ export function createMessageList(options: {
   citationHref?: (reference: SessionCitation) => string;
   /** Open an extension panel from a transcript deep link. */
   openPanel?: (key: string, initialEvent: PiWebPanelEvent) => void;
+  /** Check the live extension registry before asking for deep-link consent. */
+  isPanelRegistered?: (key: string) => boolean;
   messagesEl: HTMLDivElement;
   markdown: MarkdownRenderer;
   onMessageAction?: (context: MessageActionContext) => void | Promise<void>;
   apiHeaders?: ApiHeaders;
   quoteReplies?: QuoteRepliesController;
 }): MessageList {
-  const { messagesEl, markdown, onMessageAction, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, apiHeaders, quoteReplies } = options;
+  const { messagesEl, markdown, onMessageAction, openSession, openCitation, getSessionId = () => "", citationHref, openPanel, isPanelRegistered, apiHeaders, quoteReplies } = options;
   let streamingAssistant: HTMLDivElement | null = null;
   const streamingTextBlocks = new Map<string, HTMLDivElement>();
   const streamingTextContent = new Map<string, string>();
@@ -528,6 +530,7 @@ export function createMessageList(options: {
     const panelLink = parsePanelDeepLink(href);
     if (!panelLink) return;
     event.preventDefault();
+    if (!isPanelRegistered?.(panelLink.key)) return;
     if (!confirmPanelDeepLink(panelLink)) return;
     openPanel?.(panelLink.key, { action: "deep-link", payload: panelLink.payload });
   });
@@ -820,9 +823,10 @@ export function createMessageList(options: {
     for (const message of prose) {
       if (!message.classList.contains("collapsible") || message.dataset.collapsePreference) continue;
       const latest = Boolean(latestResponseKey && message.dataset.assistantResponseKey === latestResponseKey);
-      message.classList.toggle("collapsed", !latest);
+      const hasActivePreview = Boolean(message.querySelector(".artifactPreview--interactive"));
+      message.classList.toggle("collapsed", !latest && !hasActivePreview);
       const toggle = message.querySelector<HTMLButtonElement>(".messageToggle");
-      if (toggle) toggle.textContent = latest ? "Show less" : "Show more";
+      if (toggle) toggle.textContent = message.classList.contains("collapsed") ? "Show more" : "Show less";
       if (latest && !bulkRendering) {
         const body = message.querySelector<HTMLElement>(":scope > .body");
         const text = assistantMessageText.get(message) || "";
@@ -842,6 +846,7 @@ export function createMessageList(options: {
     toggle.className = "messageToggle";
     toggle.textContent = div.classList.contains("collapsed") ? "Show more" : "Show less";
     toggle.addEventListener("click", () => {
+      if (!div.classList.contains("collapsed") && div.querySelector(".artifactPreview--interactive")) return;
       const collapsed = div.classList.toggle("collapsed");
       div.dataset.collapsePreference = collapsed ? "collapsed" : "expanded";
       const text = assistantMessageText.get(div) || "";

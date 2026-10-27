@@ -177,17 +177,28 @@ test("artifact preview history returns to its owning gallery directory", async (
 });
 
 test("large artifact preview renders interactive HTML, Markdown, and video", async ({ page }) => {
+  let htmlMarkers = 0;
+  await page.route("https://markers.example.test/thumbnail", (route) => {
+    htmlMarkers += 1;
+    return route.fulfill({ contentType: "image/svg+xml", body: '<svg xmlns="http://www.w3.org/2000/svg"/>' });
+  });
+  await page.route(/\/api\/(?:session-)?artifacts\/.*concept\.html$/, (route) => route.fulfill({
+    contentType: "text/html",
+    body: '<!doctype html><img src="https://markers.example.test/thumbnail"><button id="interactive">Ready</button><script>interactive.onclick=()=>interactive.textContent="Clicked"</script>',
+  }));
   await page.goto("/");
   await openLauncherAction(page, "File explorer");
   await page.locator("#filesArtifactsScope").click();
 
-  const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${artifactRoot}/concept.html"] iframe`);
-  await expect(thumbnail).toHaveAttribute("inert", "");
-  await expect(thumbnail).toHaveAttribute("aria-hidden", "true");
+  const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${artifactRoot}/concept.html"] .artifactGalleryCardVisual`);
+  await expect(thumbnail).toContainText("Interactive HTML");
+  await expect(thumbnail.locator("iframe")).toHaveCount(0);
+  expect(htmlMarkers).toBe(0);
   await page.getByRole("button", { name: "Preview concept.html" }).click();
   const htmlFrame = page.locator("#artifactBrowserPreviewBody iframe");
   await expect(htmlFrame).toHaveAttribute("sandbox", "allow-scripts");
   await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveText("Ready");
+  await expect.poll(() => htmlMarkers).toBe(1);
   await htmlFrame.contentFrame().locator("#interactive").click();
   await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveText("Clicked");
   await page.goBack();

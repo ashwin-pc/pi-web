@@ -306,8 +306,9 @@ export function initArtifactBrowser(options: {
       return;
     }
     if (kind === "html") {
-      const frame = document.createElement("iframe"); frame.title = `Thumbnail of ${entry.name}`; frame.tabIndex = -1; frame.inert = true; frame.loading = "lazy"; frame.setAttribute("aria-hidden", "true"); frame.setAttribute("sandbox", "allow-scripts"); host.append(frame);
-      deferPreview(frame, () => { frame.src = url; });
+      const mark = document.createElement("span"); mark.className = "artifactGalleryHtmlMark"; mark.textContent = "</>";
+      const label = document.createElement("strong"); label.textContent = "Interactive HTML";
+      host.append(mark, label);
       return;
     }
     if (kind === "markdown") {
