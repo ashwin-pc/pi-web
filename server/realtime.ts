@@ -69,8 +69,21 @@ export class RealtimeHub {
       if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
         this.send(client, JSON.stringify({ type: "sync_required", latestSeq }));
       } else {
+        const replay: string[] = [];
+        let replayBytes = 0;
         for (const event of this.eventLog) {
-          if (event.seq > lastSeq && !this.send(client, JSON.stringify({ ...event, replay: true }))) break;
+          if (event.seq <= lastSeq) continue;
+          const data = JSON.stringify({ ...event, replay: true });
+          replay.push(data);
+          replayBytes += Buffer.byteLength(data);
+          if (replayBytes > this.maxBufferedBytes) break;
+        }
+        if (replayBytes > this.maxBufferedBytes) {
+          this.send(client, JSON.stringify({ type: "sync_required", latestSeq }));
+        } else {
+          for (const data of replay) {
+            if (!this.send(client, data)) break;
+          }
         }
       }
     }

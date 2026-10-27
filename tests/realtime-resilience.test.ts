@@ -91,9 +91,9 @@ describe("RealtimeHub transport resilience", () => {
     expect(fake.pings).toHaveLength(2);
   });
 
-  it("still replays missed events to a reconnecting client", () => {
+  it("replays a bounded set of missed events to a reconnecting client", () => {
     const first = socket();
-    const hub = new RealtimeHub(0, 1, () => {});
+    const hub = new RealtimeHub(0, 1, () => {}, 1000, undefined, 256);
     hub.attach(first, 0);
     hub.broadcast({ type: "one" });
     hub.broadcast({ type: "two" });
@@ -105,27 +105,30 @@ describe("RealtimeHub transport resilience", () => {
     ]);
   });
 
-  it("stops a replay once its queued frames cross the backlog bound", () => {
+  it("requests one sync instead of starting an oversized replay", () => {
     const hub = new RealtimeHub(0, 1, () => {}, 10, undefined, 64);
-    hub.broadcast({ type: "one" });
-    hub.broadcast({ type: "two" });
-    hub.broadcast({ type: "three" });
-    hub.broadcast({ type: "four" });
+    hub.broadcast({ type: "baseline" });
+    hub.broadcast({ type: "large", value: "x".repeat(128) });
+    hub.broadcast({ type: "next" });
 
     const replay = socket();
     hub.attach(replay, 1);
-    expect((replay as unknown as FakeSocket).terminate).toHaveBeenCalledOnce();
-    expect((replay as unknown as FakeSocket).send.mock.calls.length).toBeGreaterThan(0);
-    expect((replay as unknown as FakeSocket).send.mock.calls.length).toBeLessThan(3);
+    const fake = replay as unknown as FakeSocket;
+    expect(fake.sent.map((value) => JSON.parse(value))).toEqual([
+      { type: "sync_required", latestSeq: 3 },
+    ]);
+    expect(fake.terminate).not.toHaveBeenCalled();
   });
 
-  it("applies the backlog bound to sync-required sends", () => {
-    const hub = new RealtimeHub(0, 1, () => {}, 1, undefined, 64);
-    hub.broadcast({ type: "one" });
-    const stale = socket();
-    (stale as unknown as FakeSocket).bufferedAmount = 65;
-    hub.attach(stale, 99);
-    expect((stale as unknown as FakeSocket).terminate).toHaveBeenCalledOnce();
-    expect((stale as unknown as FakeSocket).send).not.toHaveBeenCalled();
+  it("still terminates an actually slow client before sending replay recovery", () => {
+    const hub = new RealtimeHub(0, 1, () => {}, 10, undefined, 64);
+    hub.broadcast({ type: "baseline" });
+    hub.broadcast({ type: "large", value: "x".repeat(128) });
+    const replay = socket();
+    const fake = replay as unknown as FakeSocket;
+    fake.bufferedAmount = 65;
+    hub.attach(replay, 1);
+    expect(fake.terminate).toHaveBeenCalledOnce();
+    expect(fake.send).not.toHaveBeenCalled();
   });
 });

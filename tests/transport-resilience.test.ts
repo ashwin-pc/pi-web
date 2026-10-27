@@ -1,10 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { createServer as createHttpServer } from "node:http";
 import { createConnection, createServer as createNetServer } from "node:net";
 import { once } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import WebSocket, { WebSocketServer } from "ws";
+import { RealtimeHub } from "../server/realtime.js";
 import { isolatedAuthEnv } from "./auth-isolation.js";
 
 const children: ChildProcess[] = [];
@@ -80,6 +83,41 @@ async function firstResponse(socket: ReturnType<typeof rawUpgrade>, timeoutMs = 
 }
 
 describe("server transport resilience", () => {
+  it("keeps a healthy reconnect open when an 8MB missed event requires resync", async () => {
+    const server = createHttpServer();
+    const sockets = new WebSocketServer({ server });
+    const hub = new RealtimeHub(0, 1, () => {});
+    sockets.on("connection", (socket, request) => {
+      const lastSeq = Number(new URL(request.url || "/", "http://localhost").searchParams.get("lastSeq"));
+      hub.attach(socket, lastSeq);
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Could not allocate realtime test port");
+
+    hub.broadcast({ type: "baseline" });
+    hub.broadcast({ type: "large", value: "x".repeat(8 * 1024 * 1024) });
+    hub.broadcast({ type: "next" });
+
+    const reconnect = new WebSocket(`ws://127.0.0.1:${address.port}/?lastSeq=1`);
+    try {
+      const [recovery] = await once(reconnect, "message");
+      expect(JSON.parse(String(recovery))).toEqual({ type: "sync_required", latestSeq: 3 });
+      expect(reconnect.readyState).toBe(WebSocket.OPEN);
+
+      const liveMessage = once(reconnect, "message");
+      hub.broadcast({ type: "live" });
+      const [live] = await liveMessage;
+      expect(JSON.parse(String(live))).toMatchObject({ type: "live", seq: 4 });
+      expect(reconnect.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      reconnect.close();
+      sockets.close();
+      server.close();
+    }
+  });
+
   it("rejects oversized control JSON but preserves large workspace writes and attachments", async () => {
     const { baseUrl, cwd } = await startServer();
     const oversized = JSON.stringify({ sessionId: "mock-current", padding: "x".repeat(65_536) });
