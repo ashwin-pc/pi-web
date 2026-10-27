@@ -35,8 +35,6 @@ export const settingsFieldLimits = {
   maxPatchBytes: 256 * 1024,
   maxFileBytes: 4 * 1024 * 1024,
   thinkingLevel: 32,
-  modelProvider: 64,
-  modelId: 128,
 } as const;
 
 /** Namespaced owner id: `<extensionName>.<schemaId>` (at least one dot). */
@@ -284,8 +282,7 @@ function normalizeModel(value: unknown) {
   if (!isRecord(value)) return undefined;
   const provider = typeof value.provider === "string" ? value.provider.trim() : "";
   const id = typeof value.id === "string" ? value.id.trim() : "";
-  return provider && provider.length <= settingsFieldLimits.modelProvider &&
-    id && id.length <= settingsFieldLimits.modelId ? { provider, id } : undefined;
+  return provider && id ? { provider, id } : undefined;
 }
 
 function assertSettingsString(value: unknown, field: string, maxLength: number) {
@@ -410,10 +407,6 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
 
   if (isRecord(patch.defaults)) {
     if ("model" in patch.defaults) {
-      if (isRecord(patch.defaults.model)) {
-        assertSettingsString(patch.defaults.model.provider, "defaults.model.provider", settingsFieldLimits.modelProvider);
-        assertSettingsString(patch.defaults.model.id, "defaults.model.id", settingsFieldLimits.modelId);
-      }
       const model = normalizeModel(patch.defaults.model);
       if (model) next.defaults.model = model;
       else delete next.defaults.model;

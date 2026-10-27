@@ -86,7 +86,7 @@ export class SessionUiStateBoundsError extends Error {
 }
 
 export const sessionUiStateLimits = {
-  maxBytes: 2 * 1024 * 1024,
+  maxBytes: 8 * 1024 * 1024,
   maxEntriesPerCollection: 4096,
   maxSessionIdLength: 512,
   maxNoteLength: 8 * 1024,
@@ -143,9 +143,9 @@ function assertBoundedString(value: unknown, maxLength: number, field: string) {
   }
 }
 
-function assertCollection(value: Record<string, unknown>, key: string) {
+function assertCollection(value: Record<string, unknown>, key: string, bounded = true) {
   const collection = value[key];
-  if (Array.isArray(collection) && collection.length > sessionUiStateLimits.maxEntriesPerCollection) {
+  if (bounded && Array.isArray(collection) && collection.length > sessionUiStateLimits.maxEntriesPerCollection) {
     throw new SessionUiStateBoundsError(`${key} has too many entries`);
   }
   return Array.isArray(collection) ? collection : [];
@@ -167,7 +167,7 @@ function assertSessionUiStateBounds(value: unknown) {
   assertEntryStrings(assertCollection(value, "sessionNotes"), [...ids, ["note", sessionUiStateLimits.maxNoteLength], ...timestamps], "sessionNotes");
   assertEntryStrings(assertCollection(value, "sessionMarkers"), [...ids, ...timestamps], "sessionMarkers");
   assertEntryStrings(assertCollection(value, "sessionUnreadStates"), [...ids, ["unreadAt", sessionUiStateLimits.maxTimestampLength], ...timestamps], "sessionUnreadStates");
-  assertEntryStrings(assertCollection(value, "sessionOrigins"), [
+  assertEntryStrings(assertCollection(value, "sessionOrigins", false), [
     ...ids,
     ["originSessionId", sessionUiStateLimits.maxSessionIdLength],
     ["kind", sessionUiStateLimits.maxKindLength],
@@ -345,7 +345,7 @@ export function normalizeSessionUiState(value: unknown): SessionUiState {
   }
 
   if (Array.isArray(value.sessionOrigins)) {
-    state.sessionOrigins = uniqueBy(capped(value.sessionOrigins).map(normalizeSessionOrigin).filter(Boolean) as SessionOrigin[], (item) => item.sessionId);
+    state.sessionOrigins = uniqueBy(value.sessionOrigins.map(normalizeSessionOrigin).filter(Boolean) as SessionOrigin[], (item) => item.sessionId);
   }
 
   state.selectedMarkerColor = normalizeMarkerColor(value.selectedMarkerColor) || state.selectedMarkerColor;

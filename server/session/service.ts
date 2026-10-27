@@ -40,11 +40,10 @@ import { PiSessionFactory, piSessionDirectory, type LocalSessionFactory, type Lo
 export type { LocalSessionFactory, LocalSessionFactoryInput } from "./piFactory.js";
 import { sessionsReadTail, type SessionReadResult } from "./referenceTools.js";
 import {
-  mapWithConcurrency,
   SessionAdmissionController,
-  SessionAdmissionLimitError,
   sessionResourceLimits,
 } from "./resourceLimits.js";
+import { mapConcurrent } from "./shallowList.js";
 import { readSavedTranscript, SavedTranscriptReadError } from "./savedTranscript.js";
 import { boundSessionReferenceText, projectSessionReferenceRecord } from "./referenceProjection.js";
 import {
@@ -746,10 +745,9 @@ export class LocalSessionService implements SessionService {
   async list(extraCwds: string[] = []): Promise<SessionInfoDto[]> {
     if (this.noSession) return [];
     const cwds = this.knownCwds();
-    for (const cwd of extraCwds.slice(0, sessionResourceLimits.maxExtraListCwds)) {
+    for (const cwd of extraCwds) {
       if (typeof cwd !== "string" || !cwd.trim()) continue;
-      try { cwds.add(await assertDirectory(cwd, this.deps.globalCwd())); }
-      catch { /* Invalid optional roots are omitted just like unreadable stores. */ }
+      cwds.add(resolve(cwd));
     }
     const byStorageDirectory = new Map<string, string>();
     for (const cwd of Array.from(cwds).sort()) {
@@ -761,7 +759,7 @@ export class LocalSessionService implements SessionService {
     const pending = this.sessionListRequests.get(key);
     if (pending) return pending;
     const request = (async () => {
-      const groups = await mapWithConcurrency(scanCwds, sessionResourceLimits.listConcurrency, async (cwd) => {
+      const groups = await mapConcurrent(scanCwds, sessionResourceLimits.listConcurrency, async (cwd) => {
         try {
           const factory = this.deps.sessionFactory?.list ? this.deps.sessionFactory : this.productionFactory;
           const infos = await factory.list!(cwd);
@@ -1119,19 +1117,14 @@ export class LocalSessionService implements SessionService {
   private shouldKeepLiveSession(entry: LiveSessionEntry) { return this.protectedSessionIds.has(entry.session.sessionId) || entry.viewerClientIds.size > 0 || this.isLiveSessionBusy(entry); }
 
   private async reserveRuntimeAdmission() {
-    try {
-      return await this.admissions.reserve({
-        residentCount: () => this.liveSessions.size,
-        evictableKeys: () => Array.from(this.liveSessions.entries())
-          .filter(([, entry]) => !entry.disposing && !this.shouldKeepLiveSession(entry))
-          .sort(([, a], [, b]) => a.lastTouched - b.lastTouched)
-          .map(([key]) => key),
-        evict: (key) => this.disposeLiveSession(key, "idle"),
-      });
-    } catch (error) {
-      if (error instanceof SessionAdmissionLimitError) throw new SessionServiceError(error.message, 503);
-      throw error;
-    }
+    return this.admissions.reserve({
+      residentCount: () => this.liveSessions.size,
+      evictableKeys: () => Array.from(this.liveSessions.entries())
+        .filter(([, entry]) => !entry.disposing && !this.shouldKeepLiveSession(entry))
+        .sort(([, a], [, b]) => a.lastTouched - b.lastTouched)
+        .map(([key]) => key),
+      evict: (key) => this.disposeLiveSession(key, "idle"),
+    });
   }
 
   private scheduleLiveSessionCleanup(key: string) {
@@ -1286,18 +1279,20 @@ export class LocalSessionService implements SessionService {
     const pending = this.openingById.get(id);
     if (pending) return pending;
     const opening = (async () => {
+      let location = this.sessionLocations.get(id);
+      if (location && !this.deps.sessionFactory) {
+        try { await stat(location.path); }
+        catch (error) {
+          if (!isMissingPath(error)) throw error;
+          this.sessionLocations.delete(id);
+          location = undefined;
+        }
+      }
+      location ||= await this.resolveSessionLocation(id, cwd);
+      if (!location) return undefined;
       const releaseAdmission = await this.reserveRuntimeAdmission();
       try {
-        const remembered = this.sessionLocations.get(id);
-        if (remembered) {
-          try { return await this.openSessionAtLocation(id, remembered); }
-          catch (error) {
-            if (!(error instanceof SessionServiceError) || error.status !== 404) throw error;
-            this.sessionLocations.delete(id);
-          }
-        }
-        const location = await this.resolveSessionLocation(id, cwd);
-        return location ? await this.openSessionAtLocation(id, location) : undefined;
+        return await this.openSessionAtLocation(id, location);
       } finally {
         releaseAdmission();
       }

@@ -204,7 +204,7 @@ export default function settingsTest(pi) {
     expect(await (await fetch(`${baseUrl}/api/settings`)).json()).toEqual(before);
 
     const largeUiBody = await chunkedJsonRequest(port, "/api/session-ui-state", "PATCH", {
-      padding: "x".repeat(2 * 1024 * 1024),
+      padding: "x".repeat(8 * 1024 * 1024),
     });
     expect(largeUiBody).toMatchObject({ status: 413, body: { ok: false, error: "Request body is too large" } });
     expect(await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).toEqual(beforeUi);

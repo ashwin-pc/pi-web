@@ -1,16 +1,8 @@
 export const sessionResourceLimits = {
-  maxExtraListCwds: 8,
   listConcurrency: 4,
-  maxLiveSessions: 16,
+  idleResidencyTarget: 16,
   maxConcurrentAdmissions: 4,
 } as const;
-
-export class SessionAdmissionLimitError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SessionAdmissionLimitError";
-  }
-}
 
 type AdmissionCallbacks = {
   residentCount(): number;
@@ -19,65 +11,42 @@ type AdmissionCallbacks = {
 };
 
 /**
- * Counts reservations before runtime allocation and serializes capacity checks.
- * A reservation remains active until its caller either registers the runtime or
- * abandons the allocation.
+ * FIFO semaphore for runtime allocations. Idle runtimes are evicted toward the
+ * residency target, while protected, viewed, and work-leased runtimes may exceed
+ * it so busy worker fan-outs keep making progress.
  */
 export class SessionAdmissionController {
-  private pending = 0;
-  private capacityQueue = Promise.resolve();
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
 
   async reserve(callbacks: AdmissionCallbacks): Promise<() => void> {
-    if (this.pending >= sessionResourceLimits.maxConcurrentAdmissions) {
-      throw new SessionAdmissionLimitError("Too many concurrent session openings; retry shortly.");
-    }
-    this.pending += 1;
+    await this.acquire();
     let released = false;
     try {
-      await this.serializeCapacityCheck(async () => {
-        const requiredEvictions = callbacks.residentCount() + this.pending - sessionResourceLimits.maxLiveSessions;
-        if (requiredEvictions <= 0) return;
-        const victims = callbacks.evictableKeys();
-        if (victims.length < requiredEvictions) {
-          throw new SessionAdmissionLimitError("All live session slots are busy; close a session and retry.");
-        }
-        for (const key of victims.slice(0, requiredEvictions)) await callbacks.evict(key);
-        if (callbacks.residentCount() + this.pending > sessionResourceLimits.maxLiveSessions) {
-          throw new SessionAdmissionLimitError("All live session slots are busy; close a session and retry.");
-        }
-      });
+      const excessIdle = callbacks.residentCount() + 1 - sessionResourceLimits.idleResidencyTarget;
+      for (const key of callbacks.evictableKeys().slice(0, Math.max(0, excessIdle))) await callbacks.evict(key);
     } catch (error) {
-      this.pending -= 1;
+      this.release();
       throw error;
     }
     return () => {
       if (released) return;
       released = true;
-      this.pending -= 1;
+      this.release();
     };
   }
 
-  private serializeCapacityCheck<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.capacityQueue.then(operation, operation);
-    this.capacityQueue = result.then(() => undefined, () => undefined);
-    return result;
-  }
-}
-
-export async function mapWithConcurrency<T, R>(
-  values: readonly T[],
-  concurrency: number,
-  operation: (value: T, index: number) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(values.length);
-  let next = 0;
-  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
-    for (;;) {
-      const index = next++;
-      if (index >= values.length) return;
-      results[index] = await operation(values[index], index);
+  private acquire(): Promise<void> {
+    if (this.active < sessionResourceLimits.maxConcurrentAdmissions) {
+      this.active += 1;
+      return Promise.resolve();
     }
-  });
-  await Promise.all(workers);
-  return results;
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  private release() {
+    const next = this.waiters.shift();
+    if (next) next();
+    else this.active -= 1;
+  }
 }

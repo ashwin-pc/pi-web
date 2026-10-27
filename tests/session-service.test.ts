@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +13,6 @@ import { LocalSessionService, SessionServiceError, type LocalSessionFactory, typ
 import type { PiWebSession } from "../server/types.js";
 import { PiSessionHandle } from "../server/session/piHandle.js";
 
-const MAX_SAVED_TRANSCRIPT_BYTES = 128 * 1024 * 1024;
 const MAX_SAVED_TRANSCRIPT_LINE_BYTES = 1024 * 1024;
 
 describe("owned Pi runtime handle", () => {
@@ -570,7 +569,7 @@ describe("LocalSessionService contract", () => {
     expect((await service.list([extraCwd])).map((info) => info.id)).toEqual(["duplicate", "duplicate"]);
   });
 
-  it("bounds, validates, storage-deduplicates, and concurrency-limits optional session roots", async () => {
+  it("lists every remembered root, including deleted roots, with storage deduplication and bounded concurrency", async () => {
     const listed: string[] = [];
     let active = 0;
     let maxActive = 0;
@@ -589,18 +588,17 @@ describe("LocalSessionService contract", () => {
     const extras = [
       join(cwd, "same-path"),
       join(cwd, "same:path"),
-      ...Array.from({ length: 8 }, (_, index) => join(cwd, `extra-${index}`)),
+      ...Array.from({ length: 10 }, (_, index) => join(cwd, `extra-${index}`)),
     ];
-    await Promise.all(extras.map((path) => mkdir(path)));
+    await Promise.all(extras.slice(0, 2).map((path) => mkdir(path)));
     const request = service.list(extras);
     await vi.waitFor(() => expect(maxActive).toBe(4));
     release();
     await request;
     expect(maxActive).toBe(4);
-    expect(listed).toHaveLength(8); // global cwd + seven unique stores from the first eight extras
+    expect(listed).toHaveLength(12); // global cwd + one aliased store + all ten remembered roots
     expect(listed.filter((path) => path === extras[0] || path === extras[1])).toHaveLength(1);
-    expect(listed).not.toContain(extras[8]);
-    expect(listed).not.toContain(extras[9]);
+    expect(listed).toContain(extras.at(-1));
     await service.disposeAll();
   });
 
@@ -846,8 +844,8 @@ describe("LocalSessionService contract", () => {
 });
 
 describe("LocalSessionService standalone lifecycle", () => {
-  it("reuses one runtime, bounds concurrent distinct openings, and rejects the excess before allocation", async () => {
-    const ids = Array.from({ length: 5 }, (_, index) => `cold-${index}`);
+  it("reuses one runtime and admits queued distinct openings in FIFO order", async () => {
+    const ids = Array.from({ length: 6 }, (_, index) => `cold-${index}`);
     const unblock: Array<() => void> = [];
     const opened: string[] = [];
     const { service, cwd, creates } = await fixtureService({
@@ -860,7 +858,7 @@ describe("LocalSessionService standalone lifecycle", () => {
         await new Promise<void>((resolve) => unblock.push(resolve));
       },
     });
-    const requests = [
+    const firstRequests = [
       service.open(ids[0]),
       service.open(ids[0]),
       service.open(ids[1]),
@@ -868,34 +866,83 @@ describe("LocalSessionService standalone lifecycle", () => {
       service.open(ids[3]),
     ];
     await vi.waitFor(() => expect(opened).toHaveLength(4));
-    await expect(service.open(ids[4])).rejects.toMatchObject({ status: 503 });
+    const queued = [service.open(ids[4]), service.open(ids[5])];
     expect(opened).toHaveLength(4);
-    unblock.forEach((resolve) => resolve());
-    await Promise.all(requests);
+    unblock.shift()?.();
+    await vi.waitFor(() => expect(opened.at(-1)).toBe(join(cwd, `${ids[4]}.jsonl`)));
+    unblock.shift()?.();
+    await vi.waitFor(() => expect(opened.at(-1)).toBe(join(cwd, `${ids[5]}.jsonl`)));
+    unblock.splice(0).forEach((resolve) => resolve());
+    await Promise.all([...firstRequests, ...queued]);
     expect(creates.filter((entry) => entry.path?.endsWith(`${ids[0]}.jsonl`))).toHaveLength(1);
     await service.open(ids[0]);
-    expect(creates).toHaveLength(5); // initial runtime plus four distinct cold runtimes
+    expect(creates).toHaveLength(7); // initial runtime plus six distinct cold runtimes
     await service.disposeAll();
   });
 
-  it("rejects admission at the resident cap when every runtime is protected, viewed, or busy", async () => {
+  it("queues five-plus parallel creates until allocation slots are available", async () => {
+    let initialized = false;
+    let active = 0;
+    let maxActive = 0;
+    const unblock: Array<() => void> = [];
+    const { service, creates } = await fixtureService({
+      beforeCreate: async () => {
+        if (!initialized) {
+          initialized = true;
+          return;
+        }
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) => unblock.push(() => {
+          active -= 1;
+          resolve();
+        }));
+      },
+    });
+    const requests = Array.from({ length: 6 }, () => service.create(undefined));
+    await vi.waitFor(() => expect(unblock).toHaveLength(4));
+    expect(maxActive).toBe(4);
+    unblock.splice(0).forEach((resolve) => resolve());
+    await vi.waitFor(() => expect(unblock).toHaveLength(2));
+    unblock.splice(0).forEach((resolve) => resolve());
+    const states = await Promise.all(requests);
+    expect(new Set(states.map((state) => state.sessionId))).toHaveLength(6);
+    expect(creates).toHaveLength(7); // initial runtime plus every queued create
+    await service.disposeAll();
+  });
+
+  it("allows protected, viewed, and busy worker fan-outs above the idle residency target", async () => {
     const coldId = "over-cap";
-    const { service, initial, cwd, creates } = await fixtureService({
+    const { service, initial, cwd } = await fixtureService({
       list: async () => [{
         id: coldId, path: join(cwd, `${coldId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
       }],
     });
     const admitted = [];
-    for (let index = 0; index < 15; index += 1) admitted.push(await service.create(undefined));
-    for (const [index, state] of admitted.entries()) {
+    for (let index = 0; index < 15; index += 1) {
+      const state = await service.create(undefined);
+      admitted.push(state);
       if (index < 7) service.acquireViewer(state.sessionId, `viewer-${index}`);
       else service.sessionForPath(state.sessionFile)!.isStreaming = true;
     }
     expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
     expect(service.sessionForId(initial.sessionId)).toBe(initial);
-    await expect(service.open(coldId)).rejects.toMatchObject({ status: 503 });
-    expect(creates).toHaveLength(16);
+    await expect(service.open(coldId)).resolves.toMatchObject({ sessionId: coldId });
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(17);
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    await service.disposeAll();
+  });
+
+  it("does not evict an idle runtime when an unknown session ID cannot be resolved", async () => {
+    const { service, initial } = await fixtureService({ list: async () => [] });
+    const admitted = [];
+    for (let index = 0; index < 15; index += 1) admitted.push(await service.create(undefined));
+    const idle = admitted[0];
+    for (const [index, state] of admitted.slice(1).entries()) service.acquireViewer(state.sessionId, `kept-${index}`);
+
+    await expect(service.open("unknown")).rejects.toMatchObject({ status: 404 });
     expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(idle.sessionId)).toBeDefined();
     expect(service.sessionForId(initial.sessionId)).toBe(initial);
     await service.disposeAll();
   });
@@ -1163,7 +1210,7 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(await readFile(coldPath, "utf8")).toBe(original);
   });
 
-  it("rejects oversized cold transcript files and JSONL records without allocating a runtime", async () => {
+  it("streams past oversized cold transcript records without allocating a runtime", async () => {
     let coldPath = "";
     const { service, cwd, creates } = await fixtureService({
       list: async () => coldPath ? [{
@@ -1171,17 +1218,60 @@ describe("LocalSessionService standalone lifecycle", () => {
       }] : [],
     });
     coldPath = join(cwd, "bounded-cold.jsonl");
-    await writeFile(coldPath, `${JSON.stringify({ type: "session", id: "bounded-cold", cwd })}\n`);
-    await truncate(coldPath, MAX_SAVED_TRANSCRIPT_BYTES + 1);
-    await expect(service.readSession({ sessionId: "bounded-cold" }, 20)).rejects.toMatchObject({ status: 413 });
-    expect(creates).toHaveLength(1);
-
     const oversizedRecord = JSON.stringify({
-      type: "message", id: "large", parentId: null,
+      type: "message", id: "large-before", parentId: null,
       message: { role: "assistant", content: "x".repeat(MAX_SAVED_TRANSCRIPT_LINE_BYTES) },
     });
-    await writeFile(coldPath, `${JSON.stringify({ type: "session", id: "bounded-cold", cwd })}\n${oversizedRecord}\n`);
-    await expect(service.readSession({ sessionId: "bounded-cold" }, 20)).rejects.toMatchObject({ status: 413 });
+    const target = JSON.stringify({
+      type: "message", id: "target", parentId: null,
+      message: { role: "assistant", content: "small target" },
+    });
+    await writeFile(coldPath, [
+      JSON.stringify({ type: "session", id: "bounded-cold", cwd }),
+      oversizedRecord,
+      target,
+      oversizedRecord.replace("large-before", "large-after"),
+      JSON.stringify({ type: "message", id: "after", parentId: "target", message: { role: "assistant", content: "small after" } }),
+      "",
+    ].join("\n"));
+    await expect(service.readSession({ sessionId: "bounded-cold", entryId: "target" }, 20)).resolves.toMatchObject({
+      entries: [expect.objectContaining({ entryId: "target", text: expect.stringContaining("small target") })],
+      truncated: true,
+    });
+    await expect(service.readSession({ sessionId: "bounded-cold" }, 20)).resolves.toMatchObject({
+      entries: [
+        expect.objectContaining({ entryId: "target" }),
+        expect.objectContaining({ entryId: "after" }),
+      ],
+      truncated: true,
+    });
+    expect(creates).toHaveLength(1);
+    await service.disposeAll();
+  });
+
+  it("streams a sparse transcript beyond the former total-file ceiling", async () => {
+    let coldPath = "";
+    const { service, cwd, creates } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "large-cold", path: coldPath, cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      }] : [],
+    });
+    coldPath = join(cwd, "large-cold.jsonl");
+    const handle = await open(coldPath, "w");
+    try {
+      await handle.write(`${JSON.stringify({ type: "session", id: "large-cold", cwd })}\n`);
+      await handle.truncate(128 * 1024 * 1024 + 1);
+      await handle.write(`\n${JSON.stringify({
+        type: "message", id: "target", parentId: null,
+        message: { role: "assistant", content: "found after sparse oversized record" },
+      })}\n`, 128 * 1024 * 1024 + 1);
+    } finally {
+      await handle.close();
+    }
+    await expect(service.readSession({ sessionId: "large-cold", entryId: "target" }, 20)).resolves.toMatchObject({
+      entries: [expect.objectContaining({ entryId: "target", text: expect.stringContaining("found after sparse oversized record") })],
+      truncated: true,
+    });
     expect(creates).toHaveLength(1);
     await service.disposeAll();
   });

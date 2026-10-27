@@ -3,7 +3,6 @@ import { stat } from "node:fs/promises";
 import type { SessionReadText } from "./referenceTools.js";
 
 export const savedTranscriptLimits = {
-  maxFileBytes: 128 * 1024 * 1024,
   maxLineBytes: 1024 * 1024,
 } as const;
 
@@ -29,17 +28,14 @@ export type SavedTranscriptReadResult = {
 };
 
 export async function readSavedTranscript(options: ReadSavedTranscriptOptions): Promise<SavedTranscriptReadResult> {
-  let size: number;
-  try { size = (await stat(options.path)).size; }
+  try { await stat(options.path); }
   catch { throw new SavedTranscriptReadError("Session not found", 404); }
-  if (size > savedTranscriptLimits.maxFileBytes) {
-    throw new SavedTranscriptReadError("Session transcript is too large to read", 413);
-  }
 
   const stream = createReadStream(options.path);
-  let totalBytes = 0;
   let lineBytes = 0;
   let fragments: Buffer[] = [];
+  let discardingOversizedLine = false;
+  let skippedOversizedLine = false;
   let sawHeader = false;
   let readableEntries = 0;
   let matchedEntry = false;
@@ -82,31 +78,38 @@ export async function readSavedTranscript(options: ReadSavedTranscriptOptions): 
   try {
     for await (const chunk of stream) {
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-      totalBytes += bytes.length;
-      if (totalBytes > savedTranscriptLimits.maxFileBytes) {
-        throw new SavedTranscriptReadError("Session transcript is too large to read", 413);
-      }
       let offset = 0;
       for (;;) {
         const newline = bytes.indexOf(0x0a, offset);
         const end = newline < 0 ? bytes.length : newline;
         const slice = bytes.subarray(offset, end);
-        lineBytes += slice.length;
-        if (lineBytes > savedTranscriptLimits.maxLineBytes) {
-          throw new SavedTranscriptReadError("Session transcript contains an oversized record", 413);
+        if (!discardingOversizedLine) {
+          lineBytes += slice.length;
+          if (lineBytes > savedTranscriptLimits.maxLineBytes) {
+            fragments = [];
+            lineBytes = 0;
+            discardingOversizedLine = true;
+            skippedOversizedLine = true;
+          }
         }
         if (newline < 0) {
-          if (slice.length) fragments.push(slice);
+          if (!discardingOversizedLine && slice.length) fragments.push(slice);
           break;
         }
-        if (consumeLine(slice)) return { entries, truncatedBeforeTail: false, matchedEntry };
+        if (discardingOversizedLine) {
+          discardingOversizedLine = false;
+        } else if (consumeLine(slice)) {
+          return { entries, truncatedBeforeTail: skippedOversizedLine, matchedEntry };
+        }
         offset = newline + 1;
       }
     }
-    if (lineBytes && consumeLine()) return { entries, truncatedBeforeTail: false, matchedEntry };
+    if (!discardingOversizedLine && lineBytes && consumeLine()) {
+      return { entries, truncatedBeforeTail: skippedOversizedLine, matchedEntry };
+    }
   } finally {
     stream.destroy();
   }
   if (!sawHeader) throw new SavedTranscriptReadError("Session not found", 404);
-  return { entries, truncatedBeforeTail: readableEntries > entries.length, matchedEntry };
+  return { entries, truncatedBeforeTail: skippedOversizedLine || readableEntries > entries.length, matchedEntry };
 }

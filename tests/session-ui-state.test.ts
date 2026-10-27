@@ -11,7 +11,7 @@ import {
 } from "../server/sessionUiState.js";
 
 const since = "2025-01-01T00:00:00.000Z";
-const MAX_UI_STATE_BYTES = 2 * 1024 * 1024;
+const MAX_UI_STATE_BYTES = 8 * 1024 * 1024;
 const MAX_UI_STATE_ENTRIES = 4096;
 const MAX_UI_STATE_NOTE_LENGTH = 8 * 1024;
 const lanes = (count: number) => Array.from({ length: count }, (_, index) => ({ sessionId: `session-${index}`, lane: "pinned" as const, since }));
@@ -22,29 +22,32 @@ afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { 
 async function tempFile() { const dir = await mkdtemp(join(tmpdir(), "pi-web-session-ui-")); dirs.push(dir); return join(dir, "state.json"); }
 
 describe("session UI state store", () => {
-  it("preserves 2,352 session origins while rejecting excess collections without changing stored state", async () => {
+  it("round-trips more than 4,096 origins and inserts new lineage while retaining collection and byte bounds", async () => {
     const file = await tempFile();
     const store = createSessionUiStateStore(file);
-    const origins = Array.from({ length: 2352 }, (_, index) => ({
+    const origins = Array.from({ length: MAX_UI_STATE_ENTRIES + 1 }, (_, index) => ({
       sessionId: `worker-${index}`,
       originSessionId: `parent-${index}`,
       kind: "spawn",
       updatedAt: since,
     }));
     const saved = await store.patch({ expectedRevision: 0, initialize: true, sessionOrigins: origins });
-    expect(saved.sessionOrigins).toHaveLength(2352);
+    expect(saved.sessionOrigins).toHaveLength(MAX_UI_STATE_ENTRIES + 1);
+    expect((await createSessionUiStateStore(file).read()).sessionOrigins).toEqual(origins);
+
+    const inserted = await store.setSessionOrigin("new-worker", "new-parent");
+    expect(inserted.sessionOrigins).toHaveLength(MAX_UI_STATE_ENTRIES + 2);
+    expect(inserted.sessionOrigins[0]).toMatchObject({
+      sessionId: "new-worker",
+      originSessionId: "new-parent",
+      kind: "spawn",
+    });
     const primary = await readFile(file, "utf8");
 
-    const excessive = Array.from({ length: MAX_UI_STATE_ENTRIES + 1 }, (_, index) => ({
-      sessionId: `excess-${index}`,
-      originSessionId: `parent-${index}`,
-      kind: "spawn",
-      updatedAt: since,
-    }));
-    await expect(store.patch({ expectedRevision: saved.revision, sessionOrigins: excessive }))
+    await expect(store.patch({ expectedRevision: inserted.revision, lanes: lanes(MAX_UI_STATE_ENTRIES + 1) }))
       .rejects.toMatchObject({ name: "SessionUiStateBoundsError", status: 413 });
     expect(await readFile(file, "utf8")).toBe(primary);
-    expect((await store.read()).sessionOrigins).toEqual(origins);
+    expect((await store.read()).sessionOrigins).toEqual(inserted.sessionOrigins);
   });
 
   it("rejects overlong UI strings and oversized serialized state without truncating prior values", async () => {
@@ -62,7 +65,7 @@ describe("session UI state store", () => {
     })).rejects.toMatchObject({ name: "SessionUiStateBoundsError", status: 413 });
     await expect(store.patch({
       expectedRevision: saved.revision,
-      sessionNotes: Array.from({ length: 300 }, (_, index) => ({
+      sessionNotes: Array.from({ length: 1100 }, (_, index) => ({
         sessionId: `note-${index}`,
         note: "x".repeat(MAX_UI_STATE_NOTE_LENGTH),
         updatedAt: since,
