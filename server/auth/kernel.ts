@@ -459,7 +459,7 @@ export class AuthKernel {
     req?: IncomingMessage,
     verified = true,
     credential?: { passwordHash?: string; passkeyId?: string; grantHash?: string },
-  ) {
+  ): Promise<string> {
     const raw = randomBytes(32).toString("base64url"),
       now = Date.now();
     const device = req?.headers["user-agent"]?.slice(0, 200),
@@ -523,6 +523,7 @@ export class AuthKernel {
       "set-cookie",
       `${SESSION_COOKIE}=${raw}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${this.secureCookie ? "; Secure" : ""}`,
     );
+    return hashSecret(raw);
   }
   clearSession(res: ServerResponse) {
     res.setHeader(
