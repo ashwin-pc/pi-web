@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -138,7 +138,7 @@ describe("bundled extension path discovery", () => {
 
     expect(resolvePiWebExtensionPaths(cwd)).toEqual([]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${join(extensionsDir, "outside-link.ts")}"`));
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${extensionsDir}"`));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${await realpath(extensionsDir)}"`));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${outsideExtension}"`));
     warn.mockRestore();
   });
