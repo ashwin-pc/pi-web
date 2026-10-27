@@ -40,7 +40,9 @@ import { handlePasskeyRoute } from "./server/auth/passkey.js";
 import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.js";
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
 import { AuthenticatedViteUpgrades, serveAuthenticatedViteRequest } from "./server/auth/devAccess.js";
+import { initializeSupervisorPeerContext } from "./server/auth/supervisorPeer.js";
 
+initializeSupervisorPeerContext(process.env);
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const agentDir = getAgentDir();

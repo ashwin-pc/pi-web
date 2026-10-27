@@ -248,7 +248,7 @@ In another terminal:
 tailscale serve --bg http://127.0.0.1:8787
 ```
 
-Open the configured HTTPS origin. On a new installation, follow the single-use setup URL printed by `pi-web`; no legacy token is needed. Existing legacy installations should enroll and verify a replacement in **Settings → Security** before retiring legacy. For exact proxy-header requirements, authentication migration, recovery commands, and alternative methods, follow the [authentication guide](docs/passkey-auth.md).
+Open the configured HTTPS origin. On a new installation, follow the random, short-lived, single-use setup URL printed by `pi-web`; public HTTPS origins support remote password or passkey setup, while loopback/localhost origins additionally require a loopback peer. Existing legacy installations should enroll and verify a replacement in **Settings → Security** before retiring legacy. For exact proxy-header requirements, authentication migration, recovery commands, and alternative methods, follow the [authentication guide](docs/passkey-auth.md).
 
 ## Environment variables
 

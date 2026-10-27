@@ -1,6 +1,7 @@
 import { loginPageHeaders, renderLoginPage, type LoginPresentation } from "./loginPage.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
+import { bootstrapRequiresLoopback } from "./bootstrapAccess.js";
 import { trustedProxyPeer } from "./proxy.js";
 import { effectivePeerAddress } from "./supervisorPeer.js";
 import {
@@ -101,7 +102,7 @@ export async function handlePasswordLogin(
     const state = await store.read();
     let passwordHash = state.password?.hash;
     if (setup) {
-      if (!isLoopback(req)) {
+      if (bootstrapRequiresLoopback(origin) && !isLoopback(req)) {
         send(res, 403, {
           error: "Bootstrap requires loopback access",
         });

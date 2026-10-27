@@ -2,17 +2,9 @@ import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import { isIP, type AddressInfo } from "node:net";
 import { effectivePeerAddress } from "./supervisorPeer.js";
+import { isLoopbackAddress } from "./ip.js";
 
-/** Inspect the socket, never client-controlled forwarding headers. */
-export function isLoopbackAddress(address: string | undefined): boolean {
-  if (!address) return false;
-  if (isIP(address) === 4) return address.startsWith("127.");
-  if (isIP(address) !== 6 || address.includes("%")) return false;
-  const normalized = new URL(`http://[${address}]/`).hostname;
-  if (normalized === "[::1]") return true;
-  const mapped = /^\[::ffff:([0-9a-f]+):[0-9a-f]+\]$/.exec(normalized);
-  return !!mapped && (parseInt(mapped[1], 16) >>> 8) === 127;
-}
+export { isLoopbackAddress } from "./ip.js";
 
 /** Resolve lazily: extensions can be initialized before listen(), including port 0. */
 export function extensionHttpOrigin(address: AddressInfo | string | null): string {

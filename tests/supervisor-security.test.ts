@@ -272,9 +272,20 @@ describe("supervisor authentication boundary", () => {
     });
     expect(remoteBootstrap.status).toBe(403);
 
+    const chainedForwardedBootstrap = await fetch(`${instance.origin}/api/auth/password/bootstrap`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin: instance.origin,
+        "x-forwarded-for": "203.0.113.9, 198.51.100.2",
+      },
+      body: JSON.stringify({ token: setupToken, password: "a synthetic setup password" }),
+    });
+    expect(chainedForwardedBootstrap.status).toBe(403);
+
     const localBootstrap = await fetch(`${instance.origin}/api/auth/password/bootstrap`, {
       method: "POST",
-      headers: { "content-type": "application/json", origin: instance.origin },
+      headers: { "content-type": "application/json", origin: instance.origin, "x-forwarded-for": "127.0.0.1" },
       body: JSON.stringify({ token: setupToken, password: "a synthetic setup password" }),
     });
     expect(localBootstrap.status).toBe(200);
@@ -285,7 +296,7 @@ describe("supervisor authentication boundary", () => {
         "content-type": "application/json",
         origin: instance.origin,
         "x-amzn-tunnel-user": "synthetic-owner@example.invalid",
-        "x-forwarded-for": "192.0.2.50",
+        "x-forwarded-for": "192.0.2.50, 198.51.100.2",
       },
       body: "{}",
     });

@@ -9,7 +9,8 @@ import { resolveAuthConfig } from "./server/auth/config.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
-  canonicalPeerAddress,
+  UNKNOWN_SUPERVISOR_PEER,
+  resolveSupervisorPeer,
   stampSupervisorPeer,
   stripSupervisorPeerHeaders,
 } from "./server/auth/supervisorPeer.js";
@@ -159,16 +160,18 @@ function sanitizeProxyHeaders(req: IncomingMessage) {
   if (authority) req.headers.host = authority;
   const trustedForwarder = trustedProxyPeer(req);
   const forwarded = req.headers["x-forwarded-for"];
-  const peer = trustedForwarder && typeof forwarded === "string"
-    ? canonicalPeerAddress(forwarded.trim())
-    : canonicalPeerAddress(req.socket.remoteAddress);
+  const peer = resolveSupervisorPeer(
+    req.socket.remoteAddress,
+    forwarded,
+    trustedForwarder,
+  );
   stripSupervisorPeerHeaders(req.headers);
-  if (peer) {
+  if (peer !== UNKNOWN_SUPERVISOR_PEER) {
     req.headers["x-forwarded-for"] = peer;
-    stampSupervisorPeer(req, peer, supervisorSecret);
   } else {
     delete req.headers["x-forwarded-for"];
   }
+  stampSupervisorPeer(req, peer, supervisorSecret);
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
 }

@@ -47,7 +47,7 @@ pi-web auth credential-revoke <id>
 pi-web auth sessions-revoke-all
 ```
 
-An expired automatic link is not silently regenerated on every restart; use the terminal command. Explicitly configured but unenrolled installations also use the terminal command. Terminal bootstrap/recovery makes both setup ceremonies available without enabling either login method. Only successful enrollment enables the chosen method; recovering a passkey does not restore a retired password method. Resetting a password through recovery revokes existing sessions; enrolling a recovery passkey does not automatically revoke unrelated credentials. Revoke lost credentials/sessions deliberately afterward.
+An expired automatic link is not silently regenerated on every restart; use the terminal command. Explicitly configured but unenrolled installations also use the terminal command. Terminal bootstrap/recovery makes both setup ceremonies available without enabling either login method. For an origin whose host is `localhost`, a `*.localhost` name, `127.0.0.0/8`, `::1`, or an IPv4-mapped loopback address, setup must also arrive from a loopback peer. Public HTTPS origins may redeem the random short-lived token remotely so WebAuthn can use the configured public RP ID. Only successful enrollment enables the chosen method; recovering a passkey does not restore a retired password method. Resetting a password through recovery revokes existing sessions; enrolling a recovery passkey does not automatically revoke unrelated credentials. Revoke lost credentials/sessions deliberately afterward.
 
 ## Password security
 
