@@ -166,12 +166,14 @@ ctx.ui.web.setFooter("git", {
 ```
 
 HTML is sanitized before it enters pi-web's privileged app document. Form controls,
-`data-*` action/payload attributes, accessibility attributes, simple inline or
-scoped `<style>` styling, and static SVG are preserved. Scripts, event-handler
-attributes, active scripting URLs, embedded frames, active CSS URLs, and form
-navigation outside the pi-web origin are removed. Extensions still run
-server-side with the user's permissions, so only install extensions from sources
-you trust; browser contribution HTML is a separate, untrusted boundary.
+`data-*` action/payload attributes, accessibility attributes, inline styles,
+global `<style>` blocks, and static SVG are preserved. Scripts, event-handler
+attributes, active scripting URLs, embedded frames, and form navigation outside
+the pi-web origin are removed. Global style blocks can affect the host UI, so
+extension authors should prefix selectors with an extension-specific class.
+Styles and media may load remote resources. Extensions still run server-side
+with the user's permissions, so only install extensions from sources you trust;
+browser contribution HTML is a separate, untrusted boundary.
 
 ## Header action API
 
