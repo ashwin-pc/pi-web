@@ -363,7 +363,7 @@ describe("LocalSessionService contract", () => {
 
     await expect(service.delete(initial.sessionId)).rejects.toMatchObject({
       status: 409,
-      message: "Switch to another session before deleting the current session.",
+      message: "This session is the server's default session and cannot be deleted while pi-web is running.",
     });
 
     const streaming = await service.create(undefined);
@@ -989,7 +989,7 @@ describe("LocalSessionService standalone lifecycle", () => {
   it("isolates equal client ids by credential principal and scopes lifecycle diagnostics", async () => {
     const { service, initial, cwd } = await fixtureService();
     const second = await service.create(undefined);
-    const browser = "session:browser-a";
+    const browser = "identity:external:alice";
     const automation = "identity:token:automation";
 
     service.acquireViewer(initial.sessionId, "same-client", browser, 10);
@@ -1035,21 +1035,25 @@ describe("LocalSessionService standalone lifecycle", () => {
     await service.disposeAll("reset");
   });
 
-  it("does not attach an obsolete WebSocket to a newer lease", async () => {
+  it("attaches an obsolete WebSocket to the existing lease without repointing or resetting its sequence", async () => {
     const { service, initial } = await fixtureService();
+    const second = await service.create(undefined);
     service.acquireViewer(initial.sessionId, "client", internalViewerPrincipal, 2);
-    const socket = { OPEN: 1, readyState: 1, once: vi.fn() };
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 1)).toBe(false);
+    const connection = service.connectViewer("client", internalViewerPrincipal)!;
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]).toMatchObject({
+      sessionId: initial.sessionId,
+      sockets: 1,
+    });
 
-    await expect(service.resolveViewerSession(
-      socket,
-      "client",
-      internalViewerPrincipal,
-      initial,
-      1,
-      async () => initial,
-    )).resolves.toEqual({ target: initial, closed: false });
-    expect(socket.once).not.toHaveBeenCalled();
-    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]).toMatchObject({ sockets: 0 });
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 1)).toBe(false);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]?.sessionId).toBe(initial.sessionId);
+    expect(service.acquireViewer(second.sessionId, "client", internalViewerPrincipal, 3)).toBe(true);
+    expect(service.lifecycleSnapshot(internalViewerPrincipal).viewerLeases[0]).toMatchObject({
+      sessionId: second.sessionId,
+      sockets: 1,
+    });
+    service.disconnectViewer(connection);
   });
 
   it("does not let a stale socket release a replacement viewer lease", async () => {
@@ -1074,63 +1078,32 @@ describe("LocalSessionService standalone lifecycle", () => {
     service.disconnectViewer(activeConnection);
   });
 
-  it("releases a socket closed during delayed resolution and keeps reconnect sockets independent", async () => {
+  it("does not acquire a lease when a socket closes during delayed resolution", async () => {
     const { service, initial } = await fixtureService();
     const second = await service.create(undefined);
-    const principal = "session:browser";
-    const neverResolve = vi.fn(async () => service.sessionForId(second.sessionId));
-    await expect(service.resolveViewerSession({
-      OPEN: 1,
-      readyState: 3,
-      once: vi.fn(),
-    }, "client", principal, initial, 0, neverResolve)).resolves.toEqual({ closed: true });
-    expect(neverResolve).not.toHaveBeenCalled();
-    expect(service.lifecycleSnapshot(principal).viewerLeases).toEqual([]);
-
+    const principal = "identity:external:alice";
     const socket = {
       OPEN: 1,
       readyState: 1,
-      closeListener: undefined as (() => void) | undefined,
-      once(event: "close", listener: () => void) {
-        if (event === "close") this.closeListener = listener;
-      },
+      once: vi.fn(),
     };
     let finishResolution!: () => void;
     const resolution = new Promise<PiWebSession | undefined>((resolve) => {
       finishResolution = () => resolve(service.sessionForId(second.sessionId));
     });
 
-    const pending = service.resolveViewerSession(socket, "client", principal, initial, 1, () => resolution);
-    expect(service.lifecycleSnapshot(principal).viewerLeases).toEqual([
-      expect.objectContaining({ sessionId: initial.sessionId, sockets: 1 }),
-    ]);
+    const pending = (async () => {
+      const target = await resolution;
+      if (socket.readyState !== socket.OPEN) return;
+      service.acquireViewer((target || initial).sessionId, "client", principal, 1);
+      const connection = service.connectViewer("client", principal);
+      if (connection) socket.once("close", () => service.disconnectViewer(connection));
+    })();
     socket.readyState = 3;
-    socket.closeListener?.();
     finishResolution();
-    await expect(pending).resolves.toEqual({ closed: true });
+    await pending;
     expect(service.lifecycleSnapshot(principal).viewerLeases).toEqual([]);
-
-    const reconnect = (name: string) => {
-      const value = {
-        OPEN: 1,
-        readyState: 1,
-        closeListener: undefined as (() => void) | undefined,
-        once(_event: "close", listener: () => void) { this.closeListener = listener; },
-      };
-      return {
-        socket: value,
-        resolved: service.resolveViewerSession(value, "client", principal, initial, 2, async () => service.sessionForId(second.sessionId)),
-        name,
-      };
-    };
-    const first = reconnect("first");
-    const active = reconnect("active");
-    await Promise.all([first.resolved, active.resolved]);
-    expect(service.lifecycleSnapshot(principal).viewerLeases[0]).toMatchObject({ sessionId: second.sessionId, sockets: 2 });
-    first.socket.closeListener?.();
-    expect(service.lifecycleSnapshot(principal).viewerLeases[0]).toMatchObject({ sockets: 1 });
-    active.socket.closeListener?.();
-    expect(service.lifecycleSnapshot(principal).viewerLeases).toEqual([]);
+    expect(socket.once).not.toHaveBeenCalled();
   });
 
   it("isolates concurrent disposal and disposes each runtime once", async () => {
@@ -1290,5 +1263,19 @@ describe("session route boundary", () => {
     expect(source).toContain('url.pathname === "/api/session/lifecycle"');
     expect(source).toContain("sessionService.lifecycleSnapshot(requestViewerPrincipal)");
     expect(route).not.toContain("setTimeout");
+  });
+
+  it("binds viewer sockets only after resolution and an open-state check", async () => {
+    const source = await readFile(new URL("../server.ts", import.meta.url), "utf8");
+    const resolved = source.indexOf("targetSession = await resolveWebSocketHelloSession");
+    const openCheck = source.indexOf("realtimeWs.readyState !== realtimeWs.OPEN", resolved);
+    const acquire = source.indexOf("sessionService.acquireViewer", openCheck);
+    const connect = source.indexOf("sessionService.connectViewer", acquire);
+    const registerClose = source.indexOf('realtimeWs.once("close"', connect);
+    expect([resolved, openCheck, acquire, connect, registerClose].every((index) => index >= 0)).toBe(true);
+    expect(resolved).toBeLessThan(openCheck);
+    expect(openCheck).toBeLessThan(acquire);
+    expect(acquire).toBeLessThan(connect);
+    expect(connect).toBeLessThan(registerClose);
   });
 });

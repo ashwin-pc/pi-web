@@ -645,10 +645,9 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
       const auth = extensionAuth || await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
-      let requestViewerPrincipal = viewerPrincipal(auth);
+      const requestViewerPrincipal = viewerPrincipal(auth);
       if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
-        const sessionHash = await authKernel.establishSession(res, auth.identity, auth.via, req);
-        requestViewerPrincipal = viewerPrincipal({ identity: auth.identity, sessionHash });
+        await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
       if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
         const validOrigin = trustedOrigin(req, authOrigin);
@@ -1485,10 +1484,7 @@ server.on("upgrade", (req, socket, head) => {
     if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
-    (req as IncomingMessage & { viewerPrincipal?: ViewerPrincipal }).viewerPrincipal = viewerPrincipal({
-      identity,
-      sessionHash: ticket?.sessionHash,
-    });
+    (req as IncomingMessage & { viewerPrincipal?: ViewerPrincipal }).viewerPrincipal = viewerPrincipal({ identity });
     wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 });
@@ -1508,26 +1504,16 @@ wss.on("connection", async (ws, req, urlParam?: URL) => {
   const viewerSeq = parseViewerSeq(url.searchParams.get("viewerSeq"));
   let targetSession: PiWebSession | undefined;
   try {
-    if (clientId && principal) {
-      const resolved = await sessionService.resolveViewerSession(
-        realtimeWs,
-        clientId,
-        principal,
-        session,
-        viewerSeq,
-        () => resolveWebSocketHelloSession(requestedSessionId, session, (id) => sessionService.find(id)),
-      );
-      if (resolved.closed) return;
-      targetSession = resolved.target;
-    } else {
-      targetSession = await resolveWebSocketHelloSession(requestedSessionId, session, (id) => sessionService.find(id));
-    }
+    targetSession = await resolveWebSocketHelloSession(requestedSessionId, session, (id) => sessionService.find(id));
   } catch {
     realtimeWs.close(1011, "Could not open requested session");
     return;
   }
-  if (realtimeWs.readyState !== realtimeWs.OPEN) {
-    return;
+  if (realtimeWs.readyState !== realtimeWs.OPEN) return;
+  if (clientId && principal) {
+    sessionService.acquireViewer((targetSession || session).sessionId, clientId, principal, viewerSeq);
+    const connection = sessionService.connectViewer(clientId, principal);
+    if (connection) realtimeWs.once("close", () => sessionService.disconnectViewer(connection));
   }
   const helloState = targetSession ? currentState(targetSession) : currentState();
   realtimeWs.send(JSON.stringify({

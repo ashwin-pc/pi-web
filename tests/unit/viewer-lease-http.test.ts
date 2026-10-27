@@ -44,6 +44,15 @@ async function waitForServer(origin: string, child: ChildProcess, output: () => 
   throw new Error(`Server did not start:\n${output()}`);
 }
 
+async function waitForCondition(predicate: () => Promise<boolean> | boolean, timeoutMs = 3_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error("Timed out waiting for condition");
+}
+
 function cookieFrom(response: Response) {
   const value = response.headers.get("set-cookie");
   if (!value) throw new Error("Expected browser session cookie");
@@ -71,10 +80,17 @@ async function openSocket(
   ticket: string,
   clientId: string,
   sessionId: string,
+  viewerSeq?: number,
 ) {
   const url = new URL(origin);
+  const query = new URLSearchParams({
+    ticket,
+    clientId,
+    sessionId,
+    ...(viewerSeq === undefined ? {} : { viewerSeq: String(viewerSeq) }),
+  });
   const socket = new WebSocket(
-    `ws://${url.host}/ws?ticket=${encodeURIComponent(ticket)}&clientId=${encodeURIComponent(clientId)}&sessionId=${encodeURIComponent(sessionId)}`,
+    `ws://${url.host}/ws?${query}`,
     { origin },
   );
   const hello = await new Promise<Record<string, unknown>>((resolve, reject) => {
@@ -118,6 +134,7 @@ function expectPrivateLifecycle(
 }
 
 describe("viewer lease credential plumbing over HTTP and WebSocket", () => {
+  const viewerGraceMs = 1_000;
   const apiSecrets = { first: "api-token-first", second: "api-token-second" };
   let child: ChildProcess;
   let origin: string;
@@ -168,6 +185,7 @@ describe("viewer lease credential plumbing over HTTP and WebSocket", () => {
         PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
         PI_WEB_AUTH_ORIGIN: origin,
         PI_WEB_AUTH_STORE: join(home, "auth.json"),
+        PI_WEB_VIEWER_LEASE_GRACE_MS: String(viewerGraceMs),
         PI_WEB_SETTINGS_FILE: join(home, "settings.json"),
         PI_WEB_SESSION_UI_STATE_FILE: join(home, "session-ui-state.json"),
         HOST: "127.0.0.1",
@@ -268,9 +286,97 @@ describe("viewer lease credential plumbing over HTTP and WebSocket", () => {
     }
   });
 
+  it("keeps a first-visit boot socket on the live lease after the cookie switches sessions", async () => {
+    const clientId = "first-visit-browser";
+    const ticketResponse = await fetch(`${origin}/api/ws-ticket`, {
+      method: "POST",
+      headers: {
+        origin,
+        "x-test-user": "alice",
+        "x-pi-web-client-id": clientId,
+        "x-pi-web-viewer-seq": "1",
+      },
+    });
+    expect(ticketResponse.headers.get("set-cookie")).toBeNull();
+    const { ticket } = await json<{ ticket: string }>(ticketResponse);
+
+    const cookie = await bootstrapBrowser("alice", clientId, "mock-current", 2);
+    const opened = await openSocket(origin, ticket, clientId, "mock-current", 3);
+    try {
+      expect(opened.hello.sessionId).toBe("mock-current");
+      const switched = await fetch(`${origin}/api/sessions/open`, {
+        method: "POST",
+        headers: browserHeaders(cookie, clientId, origin, 4),
+        body: JSON.stringify({ sessionId: "mock-older" }),
+      });
+      expect(switched.status).toBe(200);
+
+      const waitStartedAt = Date.now();
+      await waitForCondition(async () => {
+        if (Date.now() - waitStartedAt < viewerGraceMs + 250) return false;
+        const state = await lifecycle({ cookie });
+        return state.viewerLeases.some((lease) =>
+          lease.clientId === clientId
+          && lease.sessionId === "mock-older"
+          && lease.sockets === 1
+        );
+      });
+
+      const state = await lifecycle({ cookie });
+      expect(opened.socket.readyState).toBe(opened.socket.OPEN);
+      expect(state.viewerLeases).toEqual([
+        { clientId, sessionId: "mock-older", sockets: 1, hasReleaseTimer: false },
+      ]);
+      expect(state.liveSessions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sessionId: "mock-current", viewerLeases: 0 }),
+        expect.objectContaining({ sessionId: "mock-older", viewerLeases: 1 }),
+      ]));
+    } finally {
+      await closeSocket(opened.socket);
+    }
+  });
+
+  it("attaches a stale reconnect sequence to the existing lease without repointing it", async () => {
+    const clientId = "stale-reconnect";
+    const cookie = await bootstrapBrowser("alice", clientId, "mock-current", 10);
+    const headers = browserHeaders(cookie, clientId, origin);
+    const { ticket } = await json<{ ticket: string }>(
+      await fetch(`${origin}/api/ws-ticket`, { method: "POST", headers }),
+    );
+    await acquireBrowser(cookie, clientId, "mock-older", 12);
+
+    const opened = await openSocket(origin, ticket, clientId, "mock-current", 11);
+    try {
+      expect(opened.hello.sessionId).toBe("mock-current");
+      const waitStartedAt = Date.now();
+      await waitForCondition(async () => {
+        if (Date.now() - waitStartedAt < viewerGraceMs + 250) return false;
+        return (await lifecycle({ cookie })).viewerLeases.some((lease) =>
+          lease.clientId === clientId
+          && lease.sessionId === "mock-older"
+          && lease.sockets === 1
+        );
+      });
+
+      await acquireBrowser(cookie, clientId, "mock-current", 11);
+      expect((await lifecycle({ cookie })).viewerLeases).toEqual([
+        { clientId, sessionId: "mock-older", sockets: 1, hasReleaseTimer: false },
+      ]);
+
+      await acquireBrowser(cookie, clientId, "mock-current", 13);
+      expect((await lifecycle({ cookie })).viewerLeases).toEqual([
+        { clientId, sessionId: "mock-current", sockets: 1, hasReleaseTimer: false },
+      ]);
+    } finally {
+      await closeSocket(opened.socket);
+    }
+  });
+
   it("isolates equal browser client IDs by credential and rejects foreign-origin lease mutation", async () => {
     const shared = "same-browser-client";
     const aliceCookie = await bootstrapBrowser("alice", shared, "mock-current", 1);
+    const aliceOtherTab = "alice-other-tab";
+    const aliceOtherCookie = await bootstrapBrowser("alice", aliceOtherTab, "mock-current", 1);
     const bobCookie = await bootstrapBrowser("bob", shared, "mock-older", 100);
     await acquireBrowser(aliceCookie, "alice-private", "mock-current");
     await acquireBrowser(bobCookie, "bob-private", "mock-older");
@@ -311,7 +417,12 @@ describe("viewer lease credential plumbing over HTTP and WebSocket", () => {
 
     expectPrivateLifecycle(
       await lifecycle({ cookie: aliceCookie }),
-      [shared, "alice-private"],
+      [shared, aliceOtherTab, "alice-private"],
+      ["bob-private"],
+    );
+    expectPrivateLifecycle(
+      await lifecycle({ cookie: aliceOtherCookie }),
+      [shared, aliceOtherTab, "alice-private"],
       ["bob-private"],
     );
     const bob = await lifecycle({ cookie: bobCookie });

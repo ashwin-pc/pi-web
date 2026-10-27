@@ -1,21 +1,12 @@
 export type ViewerPrincipal = string;
 
-export type ViewerSocketLike = {
-  readyState: number;
-  OPEN: number;
-};
-
-export type ViewerConnectionSocketLike = ViewerSocketLike & {
-  once(event: "close", listener: () => void): unknown;
-};
-
 type ViewerLease = {
   principal: ViewerPrincipal;
   clientId: string;
   sessionId: string;
   sessionKey: string;
   lastAcceptedSeq?: number;
-  sockets: Map<symbol, ViewerSocketLike | undefined>;
+  sockets: Set<symbol>;
   releaseTimer?: ReturnType<typeof setTimeout>;
 };
 
@@ -28,13 +19,12 @@ type ViewerLeaseCallbacks = {
 export const internalViewerPrincipal: ViewerPrincipal = "internal:trusted";
 
 /**
- * Browser sessions use their unguessable server-side session hash. Credentials
- * without a browser session (notably API tokens) use the authenticated identity
- * id, which includes the token id. Open mode is deliberately one shared
- * anonymous authority because it has no credential boundary to preserve.
+ * The authenticated identity is stable across an external or legacy browser's
+ * initial ticket request and the browser session cookie issued alongside state.
+ * API token identity ids include the token id, so distinct tokens stay isolated.
  */
-export function viewerPrincipal(input: { sessionHash?: string; identity: { id: string } }): ViewerPrincipal {
-  return input.sessionHash ? `session:${input.sessionHash}` : `identity:${input.identity.id}`;
+export function viewerPrincipal(input: { identity: { id: string } }): ViewerPrincipal {
+  return `identity:${input.identity.id}`;
 }
 
 function leaseMapKey(principal: ViewerPrincipal, clientId: string) {
@@ -61,7 +51,7 @@ export class ViewerLeaseController {
 
     this.clearTimer(lease?.releaseTimer);
     if (!lease) {
-      lease = { principal, clientId, sessionId, sessionKey, sockets: new Map() };
+      lease = { principal, clientId, sessionId, sessionKey, sockets: new Set() };
       this.leases.set(key, lease);
     } else if (lease.sessionKey !== sessionKey) {
       this.callbacks.removeViewer(lease.sessionKey, key);
@@ -74,15 +64,14 @@ export class ViewerLeaseController {
     return true;
   }
 
-  connect(clientId: string, principal: ViewerPrincipal, socket?: ViewerSocketLike) {
-    if (socket && socket.readyState !== socket.OPEN) return undefined;
+  connect(clientId: string, principal: ViewerPrincipal) {
     const key = leaseMapKey(principal, clientId);
     const lease = this.leases.get(key);
     if (!lease) return undefined;
     this.clearTimer(lease.releaseTimer);
     lease.releaseTimer = undefined;
     const connection = Symbol(clientId);
-    lease.sockets.set(connection, socket);
+    lease.sockets.add(connection);
     this.connections.set(connection, key);
     return connection;
   }
@@ -106,10 +95,6 @@ export class ViewerLeaseController {
     for (const [key, lease] of this.leases) {
       if (lease.sessionKey === sessionKey) this.releaseKey(key, lease);
     }
-  }
-
-  clear() {
-    for (const [key, lease] of this.leases) this.releaseKey(key, lease);
   }
 
   snapshot(principal?: ViewerPrincipal) {
@@ -144,42 +129,5 @@ export class ViewerLeaseController {
 
   private clearTimer(timer?: ReturnType<typeof setTimeout>) {
     if (timer) clearTimeout(timer);
-  }
-}
-
-export async function resolveViewerLease<T extends { sessionId: string }>(input: {
-  controller: ViewerLeaseController;
-  socket: ViewerConnectionSocketLike;
-  clientId: string;
-  principal: ViewerPrincipal;
-  fallback: T;
-  seq?: number;
-  resolve(): Promise<T | undefined>;
-}): Promise<{ target?: T; closed: boolean }> {
-  const { controller, socket, clientId, principal, fallback, seq } = input;
-  const acquired = controller.acquire(fallback.sessionId, clientId, principal, seq);
-  if (!acquired) {
-    const target = await input.resolve();
-    return socket.readyState === socket.OPEN ? { target, closed: false } : { closed: true };
-  }
-  const connection = controller.connect(clientId, principal, socket);
-  if (!connection) {
-    controller.release(clientId, principal);
-    return { closed: true };
-  }
-  socket.once("close", () => controller.disconnect(connection));
-  try {
-    const target = await input.resolve();
-    if (socket.readyState !== socket.OPEN) {
-      controller.disconnect(connection);
-      return { closed: true };
-    }
-    if (target && target.sessionId !== fallback.sessionId) {
-      controller.acquire(target.sessionId, clientId, principal, seq);
-    }
-    return { target, closed: false };
-  } catch (error) {
-    controller.disconnect(connection);
-    throw error;
   }
 }

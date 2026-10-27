@@ -40,11 +40,8 @@ import { PiSessionFactory, piSessionDirectory, type LocalSessionFactory, type Lo
 export type { LocalSessionFactory, LocalSessionFactoryInput } from "./piFactory.js";
 import { sessionsReadTail, truncateSessionText, type SessionReadResult, type SessionReadText } from "./referenceTools.js";
 import {
-  resolveViewerLease,
   ViewerLeaseController,
-  type ViewerConnectionSocketLike,
   type ViewerPrincipal,
-  type ViewerSocketLike,
 } from "./viewerLeases.js";
 import {
   conversationTreeForSession,
@@ -847,7 +844,7 @@ export class LocalSessionService implements SessionService {
 
   async delete(sessionId: string, cwd?: string): Promise<DeleteSessionResultDto> {
     if (this.noSession) throw new Error("Sessions are disabled.");
-    if (this.protectedSessionIds.has(sessionId)) throw new SessionServiceError("Switch to another session before deleting the current session.", 409);
+    if (this.protectedSessionIds.has(sessionId)) throw new SessionServiceError("This session is the server's default session and cannot be deleted while pi-web is running.", 409);
     const liveValue = this.liveById.get(sessionId);
     const liveKey = liveValue ? sessionPathKey(liveValue) : undefined;
     const info = liveValue && liveKey
@@ -876,8 +873,8 @@ export class LocalSessionService implements SessionService {
     return this.viewerLeases.acquire(sessionId, clientId, principal, seq);
   }
 
-  connectViewer(clientId: string, principal: ViewerPrincipal, socket?: ViewerSocketLike) {
-    return this.viewerLeases.connect(clientId, principal, socket);
+  connectViewer(clientId: string, principal: ViewerPrincipal) {
+    return this.viewerLeases.connect(clientId, principal);
   }
 
   disconnectViewer(connection: symbol) {
@@ -886,25 +883,6 @@ export class LocalSessionService implements SessionService {
 
   releaseViewer(clientId: string, principal: ViewerPrincipal) {
     this.viewerLeases.release(clientId, principal);
-  }
-
-  resolveViewerSession(
-    socket: ViewerConnectionSocketLike,
-    clientId: string,
-    principal: ViewerPrincipal,
-    fallback: PiWebSession,
-    seq: number | undefined,
-    resolveTarget: () => Promise<PiWebSession | undefined>,
-  ) {
-    return resolveViewerLease({
-      controller: this.viewerLeases,
-      socket,
-      clientId,
-      principal,
-      fallback,
-      seq,
-      resolve: resolveTarget,
-    });
   }
 
   lifecycleSnapshot(principal?: ViewerPrincipal) {
