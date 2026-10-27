@@ -216,10 +216,11 @@ export function createPushNotificationService(
       const existing = current.subscriptions.find((item) => item.id === id);
       if (existing?.identityId && existing.identityId !== identityId) throw new Error("Push subscription belongs to another identity");
       const replacingInstallation = current.subscriptions.find((item) => item.identityId === identityId && item.installationId === installationId);
-      const isReplacement = Boolean(existing || replacingInstallation);
+      const replacesOwnedRecord = existing?.identityId === identityId || Boolean(replacingInstallation);
+      const isGlobalReplacement = Boolean(existing || replacingInstallation);
       const ownedCount = current.subscriptions.filter((item) => item.identityId === identityId).length;
-      if (!isReplacement && ownedCount >= maxSubscriptionsPerIdentity) throw new Error("Push subscription limit reached for this identity");
-      if (!isReplacement && current.subscriptions.length >= maxSubscriptions) throw new Error("Push subscription limit reached");
+      if (!replacesOwnedRecord && ownedCount >= maxSubscriptionsPerIdentity) throw new Error("Push subscription limit reached for this identity");
+      if (!isGlobalReplacement && current.subscriptions.length >= maxSubscriptions) throw new Error("Push subscription limit reached");
       const record: StoredSubscription = {
         id,
         identityId,

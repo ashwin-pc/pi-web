@@ -102,6 +102,32 @@ describe("push notification subscriptions", () => {
     expect((await storedState(file)).subscriptions).toEqual([]);
   });
 
+  it("applies the per-owner cap when claiming ownerless legacy records", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "pi-web-push-"));
+    const file = join(dir, "push.json");
+    const original = createPushNotificationService(file);
+    const first = { ...subscription, endpoint: "https://fcm.googleapis.com/fcm/send/legacy-a" };
+    const second = { ...subscription, endpoint: "https://fcm.googleapis.com/fcm/send/legacy-b" };
+    await original.subscribe("legacy:a", "browser-a", first);
+    await original.subscribe("legacy:b", "browser-b", second);
+    const legacy = await storedState(file);
+    delete legacy.subscriptions[0].identityId;
+    delete legacy.subscriptions[1].identityId;
+    await writeFile(file, JSON.stringify(legacy));
+
+    const claimed = createPushNotificationService(file, undefined, {
+      maxSubscriptionsPerIdentity: 1,
+    });
+    await claimed.subscribe("user:owner", "browser-a", first);
+    await expect(claimed.subscribe("user:owner", "browser-b", second)).rejects.toThrow("this identity");
+    await claimed.subscribe("user:owner", "browser-a", first);
+
+    expect((await storedState(file)).subscriptions).toMatchObject([
+      { identityId: "user:owner", installationId: "browser-a" },
+      { identityId: "", installationId: "browser-b" },
+    ]);
+  });
+
   it("accepts common browser push providers and rejects arbitrary destinations", async () => {
     const dir = await mkdtemp(join(tmpdir(), "pi-web-push-"));
     const service = createPushNotificationService(join(dir, "push.json"));
