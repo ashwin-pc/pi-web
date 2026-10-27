@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { lstat, readdir, realpath, stat } from "node:fs/promises";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
@@ -8,7 +8,30 @@ const execFileAsync = promisify(execFile);
 
 type GitConfigEntry = { scope: string; key: string; value: string };
 const trustedConfigScopes = new Set(["system", "global"]);
-const executableConfigKeys = ["core.fsmonitor", "core.hookspath", "core.sshcommand", "core.askpass", "core.gitproxy"];
+// Keep these defaults and the dynamic patterns below complete for executable
+// configuration reachable through this module's status/log/diff/show/fetch/pull commands.
+const executableConfigDefaults = new Map([
+  ["core.fsmonitor", "false"],
+  ["core.sshcommand", "ssh"],
+  ["core.askpass", "true"],
+  ["core.gitproxy", "none"],
+  ["core.alternaterefscommand", "true"],
+  ["gpg.program", "gpg"],
+  ["gpg.openpgp.program", "gpg"],
+  ["gpg.x509.program", "gpgsm"],
+  ["gpg.ssh.program", "ssh-keygen"],
+  ["gpg.ssh.defaultkeycommand", "true"],
+]);
+const defaultProtocolPolicies = new Map([
+  ["protocol.allow", "user"],
+  ["protocol.ext.allow", "never"],
+  ["protocol.git.allow", "always"],
+  ["protocol.http.allow", "always"],
+  ["protocol.https.allow", "always"],
+  ["protocol.ssh.allow", "always"],
+]);
+const remoteHelperIdentifier = /^[A-Za-z][A-Za-z0-9+.-]*$/;
+const remoteCommands = new Set(["clone", "fetch", "ls-remote", "pull", "push"]);
 
 function parseGitConfig(output: string): GitConfigEntry[] {
   const fields = output.split("\0");
@@ -23,32 +46,88 @@ function parseGitConfig(output: string): GitConfigEntry[] {
   return entries;
 }
 
+function explicitRemoteHelper(value: string) {
+  const helperSeparator = value.indexOf("::");
+  if (helperSeparator <= 0) return undefined;
+  const urlSeparator = value.indexOf("://");
+  if (urlSeparator >= 0 && urlSeparator < helperSeparator) return undefined;
+  return value.slice(0, helperSeparator);
+}
+
+function assertSafeRemoteHelper(identifier: string) {
+  if (!remoteHelperIdentifier.test(identifier)) {
+    throw new Error(`Unsafe Git remote helper identifier: ${JSON.stringify(identifier)}`);
+  }
+}
+
+function assertSafeRemoteConfig(entries: GitConfigEntry[]) {
+  for (const entry of entries) {
+    const normalized = entry.key.toLowerCase();
+    if (/^remote\..+\.vcs$/.test(normalized)) assertSafeRemoteHelper(entry.value);
+    if (/^remote\..+\.(?:url|pushurl)$/.test(normalized)) {
+      const helper = explicitRemoteHelper(entry.value);
+      if (helper !== undefined) assertSafeRemoteHelper(helper);
+    }
+    if ((entry.scope === "local" || entry.scope === "worktree") && normalized.startsWith("url.") && normalized.endsWith(".insteadof")) {
+      const replacement = entry.key.slice(4, -".insteadof".length);
+      const helper = explicitRemoteHelper(replacement);
+      if (helper !== undefined) assertSafeRemoteHelper(helper);
+    }
+  }
+}
+
 export function gitConfigHardeningArgs(entries: GitConfigEntry[]): string[] {
+  assertSafeRemoteConfig(entries);
   const trusted = entries.filter((entry) => trustedConfigScopes.has(entry.scope));
   const repository = entries.filter((entry) => entry.scope === "local" || entry.scope === "worktree");
   const args: string[] = [];
-  const resetToTrusted = (key: string, fallback = "") => {
+  const repositoryKeys = new Map(repository.map((entry) => [entry.key.toLowerCase(), entry.key]));
+  const trustedProtocolAllow = trusted.filter((entry) => entry.key.toLowerCase() === "protocol.allow").at(-1)?.value;
+  const resetToTrusted = (key: string, fallback: string) => {
     args.push("-c", `${key}=${fallback}`);
     for (const entry of trusted) if (entry.key.toLowerCase() === key.toLowerCase()) args.push("-c", `${entry.key}=${entry.value}`);
   };
-  for (const key of executableConfigKeys) resetToTrusted(key, key === "core.hookspath" ? "/dev/null" : "");
+  const safeFallback = (key: string) => {
+    if (key === "protocol.allow") return "user";
+    if (key.startsWith("protocol.")) return trustedProtocolAllow ?? defaultProtocolPolicies.get(key) ?? "user";
+    if (key.endsWith(".uploadpack")) return "git-upload-pack";
+    if (key.endsWith(".receivepack")) return "git-receive-pack";
+    if (key.endsWith(".proxy")) return "";
+    if (key.startsWith("diff.") || key.startsWith("merge.")) return "false";
+    return "";
+  };
+  // Default repository hooks are executable even without an explicit config key.
+  resetToTrusted("core.hookspath", "/dev/null");
+  for (const [key, fallback] of executableConfigDefaults) {
+    if (repositoryKeys.has(key)) resetToTrusted(repositoryKeys.get(key)!, fallback);
+  }
+  const neutralizedFilters = new Set<string>();
   for (const key of new Set(repository.map((entry) => entry.key).filter((key) => {
     const normalized = key.toLowerCase();
     return normalized === "credential.helper" ||
       /^credential\..+\.helper$/.test(normalized) ||
       /^filter\..+\.(?:clean|smudge|process)$/.test(normalized) ||
+      normalized === "diff.external" ||
+      /^diff\..+\.(?:command|textconv)$/.test(normalized) ||
       /^merge\..+\.driver$/.test(normalized) ||
+      normalized === "protocol.allow" ||
       /^protocol\..+\.allow$/.test(normalized) ||
-      /^remote\..+\.(?:proxy|uploadpack|receivepack|vcs)$/.test(normalized);
-  }))) resetToTrusted(key, key.toLowerCase().startsWith("protocol.") ? "never" : "");
-  args.push(
-    "-c", "protocol.allow=never",
-    "-c", "protocol.file.allow=always",
-    "-c", "protocol.git.allow=always",
-    "-c", "protocol.http.allow=always",
-    "-c", "protocol.https.allow=always",
-    "-c", "protocol.ssh.allow=always",
-  );
+      /^remote\..+\.(?:proxy|uploadpack|receivepack)$/.test(normalized);
+  }))) {
+    const normalized = key.toLowerCase();
+    if (normalized.startsWith("filter.")) neutralizedFilters.add(normalized.split(".").slice(0, -1).join("."));
+    resetToTrusted(key, safeFallback(normalized));
+  }
+  for (const filter of neutralizedFilters) {
+    const requiredKey = repositoryKeys.get(`${filter}.required`) ?? `${filter}.required`;
+    resetToTrusted(requiredKey, "false");
+  }
+  if (repositoryKeys.has("protocol.allow") && trustedProtocolAllow === undefined) {
+    for (const [key, fallback] of defaultProtocolPolicies) {
+      if (key === "protocol.allow" || repositoryKeys.has(key)) continue;
+      resetToTrusted(key, fallback);
+    }
+  }
   return args;
 }
 
@@ -59,12 +138,20 @@ async function gitArgs(args: string[], cwd: string) {
     maxBuffer: 10 * 1024 * 1024,
   });
   const [command, ...commandArgs] = args;
+  if (remoteCommands.has(command)) {
+    for (const arg of commandArgs) {
+      const helper = explicitRemoteHelper(arg);
+      if (helper !== undefined) assertSafeRemoteHelper(helper);
+    }
+  }
   const displayHardening = ["diff", "show", "log"].includes(command) ? ["--no-ext-diff", "--no-textconv"] : [];
+  const signatureHardening = ["show", "log"].includes(command) ? ["--no-show-signature"] : [];
   return [
     ...gitConfigHardeningArgs(parseGitConfig(stdout)),
     "--no-optional-locks",
     command,
     ...displayHardening,
+    ...signatureHardening,
     ...commandArgs,
   ];
 }
@@ -215,11 +302,9 @@ export async function readGitImage(options: { cwd: string; path: string; oldPath
   const resolved = resolve(options.cwd, filePath);
   const rel = relative(options.cwd, resolved);
   if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Image path is outside the repository");
-  const linkInfo = await lstat(resolved).catch(() => undefined);
-  if (!linkInfo) throw new Error("Image not found");
-  if (linkInfo.isSymbolicLink()) throw new Error("Image path is outside the repository");
   const rootReal = await realpath(options.cwd);
-  const targetReal = await realpath(resolved);
+  const targetReal = await realpath(resolved).catch(() => undefined);
+  if (!targetReal) throw new Error("Image not found");
   const realRel = relative(rootReal, targetReal);
   if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
     throw new Error("Image path is outside the repository");
