@@ -35,11 +35,15 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
   for (const method of configured)
     if (!methods.has(method as HumanAuthMethod))
       throw new Error(`Invalid PI_WEB_AUTH_METHODS entry: ${method}`);
+  if (mode === "none" && configured.length)
+    throw new Error(
+      "Invalid auth configuration: PI_WEB_AUTH_MODE=none cannot be combined with non-empty PI_WEB_AUTH_METHODS",
+    );
   const translated: HumanAuthMethod[] = mode === "none" ? [] : [mode];
   return {
     policy:
       (explicitPolicy as AccessPolicy | undefined) ||
-      (mode === "none" ? "open" : "authenticated"),
+      (configured.length || mode !== "none" ? "authenticated" : "open"),
     methods: [
       ...new Set(
         (configured.length ? configured : translated) as HumanAuthMethod[],

@@ -7,6 +7,7 @@ import {
 } from "@simplewebauthn/server";
 import {
   hashSecret,
+  bumpRevocationEpoch,
   randomSecret,
   type AuthKernel,
   type AuthStore,
@@ -226,6 +227,7 @@ export async function handleSecurityRoute(
     if (!requireSession()) return true;
     const body = await input(req) as { revokeApiTokens?: boolean };
     await updateSecurity((s) => {
+      bumpRevocationEpoch(s);
       for (const item of s.sessions) item.revokedAt = now;
       for (const grant of s.deviceGrants || []) grant.cancelledAt = now;
       if (body.revokeApiTokens !== false)

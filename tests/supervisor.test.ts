@@ -3,6 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { AuthStore, hashSecret } from "../server/auth/kernel.js";
 import { afterEach, describe, expect, it } from "vitest";
+import WebSocket from "ws";
 
 const projectRoot = new URL("..", import.meta.url).pathname;
 const token = "supervisor-test-token";
@@ -70,6 +71,125 @@ afterEach(async () => {
 });
 
 describe("pi-web supervisor", () => {
+  it("preserves the synthetic deployment auth contract through the supervisor", async () => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const authEnv = isolatedAuthEnv();
+    const publicOrigin = `http://public.example.test:${publicPort}`;
+    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
+    await store.update((state) => {
+      state.config = { policy: "authenticated", methods: ["external"] };
+      state.apiTokens.push({
+        id: "machine",
+        name: "Machine",
+        hash: hashSecret("synthetic-machine-token"),
+        createdAt: Date.now(),
+        expiresAt: Date.now() + 60_000,
+      });
+    });
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: {
+        ...authEnv,
+        HOST: "127.0.0.1",
+        PORT: String(publicPort),
+        PI_WEB_CHILD_PORT: String(childPort),
+        PI_WEB_AUTH_MODE: "external",
+        PI_WEB_AUTH_POLICY: "authenticated",
+        PI_WEB_AUTH_METHODS: "external",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+        PI_WEB_AUTH_ORIGIN: publicOrigin,
+        PI_WEB_TOKEN: "",
+        PI_WEB_MOCK: "1",
+        PI_WEB_NO_SESSION: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    await waitFor(async () => {
+      const response = await fetch(
+        `http://127.0.0.1:${publicPort}/api/state`,
+        { headers: { authorization: "Bearer synthetic-machine-token" } },
+      );
+      return response.ok ? true : undefined;
+    }, supervisor);
+
+    const external = await fetch(`http://127.0.0.1:${publicPort}/api/auth/info`, {
+      headers: { "x-amzn-tunnel-user": "synthetic-owner" },
+    });
+    expect(await external.json()).toMatchObject({
+      identity: { id: "external:synthetic-owner" },
+    });
+
+    const machineHeaders = {
+      authorization: "Bearer synthetic-machine-token",
+    };
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
+        headers: machineHeaders,
+      })).status,
+    ).toBe(200);
+
+    const sessionResponse = await fetch(
+      `http://127.0.0.1:${publicPort}/api/state`,
+      {
+        headers: {
+          "x-amzn-tunnel-user": "synthetic-owner",
+          "x-pi-web-client-id": "browser",
+          "x-forwarded-proto": "http",
+        },
+      },
+    );
+    expect(sessionResponse.headers.get("set-cookie")).toContain("Secure");
+    const cookie = sessionResponse.headers.get("set-cookie")!.split(";")[0];
+    const browserHeaders = {
+      cookie,
+      origin: publicOrigin,
+      "x-pi-web-client-id": "browser",
+    };
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/auth/authorize`, {
+        method: "POST",
+        headers: browserHeaders,
+      })).status,
+    ).toBe(200);
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/auth/authorize`, {
+        method: "POST",
+        headers: { ...browserHeaders, origin: "http://other.example.test" },
+      })).status,
+    ).toBe(403);
+
+    const connect = async () => {
+      const ticketResponse = await fetch(
+        `http://127.0.0.1:${publicPort}/api/ws-ticket`,
+        { method: "POST", headers: browserHeaders },
+      );
+      expect(ticketResponse.status).toBe(201);
+      const { ticket } = await ticketResponse.json() as { ticket: string };
+      return new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(
+          `ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`,
+          { origin: publicOrigin },
+        );
+        ws.once("message", () => {
+          ws.close();
+          resolve();
+        });
+        ws.once("error", reject);
+      });
+    };
+    await connect();
+    await connect();
+
+    expect(
+      (await fetch(`http://127.0.0.1:${publicPort}/api/restart`, {
+        method: "POST",
+        headers: browserHeaders,
+      })).status,
+    ).toBe(202);
+  }, 25_000);
+
   it("restarts an unexpectedly terminated child without double-spawning on intentional restart", async () => {
     const publicPort = await freePort();
     const childPort = await freePort();

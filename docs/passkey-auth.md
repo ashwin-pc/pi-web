@@ -22,7 +22,7 @@ PI_WEB_AUTH_RP_ID=example.ts.net
 - Once Settings or bootstrap writes canonical configuration, that saved configuration is authoritative across restarts; changing the old mode variable does not silently restore a retired method. Startup prints a warning on environment/store disagreement and when no login method is usable. Use Settings for subsequent method changes, or terminal recovery when locked out.
 - Explicit legacy mode without a token, and external mode without a trusted identity header, now fail closed. Use an explicit open policy if unauthenticated access is genuinely intended.
 
-Use HTTPS for remote access and set the exact public origin, including the public port when nonstandard. Localhost HTTP is supported for local setup and WebAuthn; IP-address RP IDs are not portable across authenticators. The supervisor supplies its public localhost origin by default. Configure the real public origin when using a reverse proxy.
+Use HTTPS for remote access and set the exact public origin, including the public port when nonstandard. Localhost HTTP is supported for local setup and WebAuthn, but a plain HTTP local session must explicitly declare its loopback `PI_WEB_AUTH_ORIGIN`; an omitted origin produces Secure cookies even when the listener is on loopback. This fail-closed default is necessary because a TLS-terminating reverse proxy can also connect to a loopback listener. IP-address RP IDs are not portable across authenticators. The supervisor supplies its public localhost origin by default. Configure the real public origin when using a reverse proxy.
 
 ### Retire legacy deliberately
 
@@ -59,7 +59,7 @@ API-token minting, device-grant minting, revoking another device, password chang
 
 ## Shared sessions and device handoff
 
-All human methods use the same persistent, opaque, revocable HttpOnly session cookie. Cookies have SameSite=Lax, a 30-day absolute lifetime, and Secure when the configured public origin is HTTPS. Session secrets are SHA-256 hashed at rest. Explicit reauthentication rotates the cookie and revokes its predecessor. Last-seen tracking is throttled to five-minute writes; it does not extend the absolute expiry.
+All human methods use the same persistent, opaque, revocable HttpOnly session cookie. Cookies have SameSite=Lax, a 30-day absolute lifetime, and are Secure by default. Secure is omitted only when an explicit valid HTTP loopback origin and a loopback listener establish a local plaintext session; forwarding headers do not affect this decision. Session secrets are SHA-256 hashed at rest. Explicit reauthentication rotates the cookie and revokes its predecessor. Last-seen tracking is throttled to five-minute writes; it does not extend the absolute expiry.
 
 **Settings → Security** opens a responsive overview, with focused views for passkeys, password changes, device links, API tokens, and advanced sign-in options. Loading and request failures appear inside Security, including on mobile. Passkeys run directly from the public sign-in page; password entry expands in place, and only enabled, ready alternatives are offered. Successful self/all-device revocation and passkey deletion clear the saved browser token and navigate to explicit sign-in; cancellation or failed requests do not claim sign-out.
 

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { AuthStore, hashSecret, randomSecret } from "./kernel.js";
+import { AuthStore, bumpRevocationEpoch, hashSecret, randomSecret } from "./kernel.js";
 import { resolveAuthConfig } from "./config.js";
 import { resolveWebHomePath } from "../shared/webHome.js";
 
@@ -25,9 +25,9 @@ if (command === "bootstrap" || command === "recover") {
 } else if (command === "list") {
   const s = await store.read(); console.log(JSON.stringify({ credentials: s.credentials.map(({ publicKey, ...x }) => x), sessions: s.sessions.map(({ hash, ...x }) => x), apiTokens: s.apiTokens.map(({ hash, ...x }) => x) }, null, 2));
 } else if (command === "credential-revoke") {
-  const id = args[0]; await store.update(s => { const item = s.credentials.find(x => x.id === id); if (!item) throw new Error("Credential not found"); item.revokedAt = Date.now(); s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); }); }); console.log("Credential and all sessions revoked.");
+  const id = args[0]; await store.update(s => { const item = s.credentials.find(x => x.id === id); if (!item) throw new Error("Credential not found"); item.revokedAt = Date.now(); bumpRevocationEpoch(s); s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); }); }); console.log("Credential and all sessions revoked.");
 } else if (command === "sessions-revoke-all") {
-  await store.update(s => s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); })); console.log("All sessions revoked.");
+  await store.update(s => { bumpRevocationEpoch(s); s.sessions.forEach(x => { if (!x.revokedAt) x.revokedAt = Date.now(); }); }); console.log("All sessions revoked.");
 } else {
   console.error("Usage: pi-web auth <bootstrap|recover|list|token-create|token-revoke|credential-revoke|sessions-revoke-all> [options]"); process.exitCode = 2;
 }
