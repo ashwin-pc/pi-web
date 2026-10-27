@@ -120,6 +120,72 @@ describe("extension settings validation", () => {
     expect(tooMany.errors.map((error) => error.path)).toContain("categories");
   });
 
+  it("skips patterns for values rejected by declared or absolute scalar bounds", () => {
+    let patternReads = 0;
+    const field = {
+      key: "value", type: "text", label: "Value", maxLength: 4,
+      get pattern() { patternReads += 1; return "^(a+)+$"; },
+    } as SettingsSchema["fields"][number];
+    const boundedSchema: SettingsSchema = {
+      id: "demo-ext.bounded-pattern",
+      title: "Bounded pattern",
+      schemaVersion: 1,
+      fields: [field],
+    };
+
+    const declared = validateSettingsValues(boundedSchema, { value: "aaaaa!" });
+    expect(declared.errors).toContainEqual({ path: "value", message: "Value must be ≤ 4 chars" });
+    expect(declared.values.value).toBe("aaaaa!");
+    expect(patternReads).toBe(0);
+
+    delete field.maxLength;
+    const absolute = validateSettingsValues(boundedSchema, { value: "a".repeat(8 * 1024 + 1) });
+    expect(absolute.errors).toContainEqual({ path: "value", message: "Value must be ≤ 8192 chars" });
+    expect(absolute.values.value).toBe("a".repeat(8 * 1024));
+    expect(patternReads).toBe(0);
+  });
+
+  it("checks patterns normally for inputs within scalar bounds", () => {
+    const patternSchema: SettingsSchema = {
+      id: "demo-ext.pattern",
+      title: "Pattern",
+      schemaVersion: 1,
+      fields: [{ key: "value", type: "text", label: "Value", maxLength: 8, pattern: "^a+$" }],
+    };
+    expect(validateSettingsValues(patternSchema, { value: "aaaa" }).errors).toEqual([]);
+    expect(validateSettingsValues(patternSchema, { value: "aaab" }).errors).toContainEqual({
+      path: "value",
+      message: "Value is invalid",
+    });
+  });
+
+  it("bounds list work before coercing rows while preserving declared-limit compatibility", () => {
+    let patternReads = 0;
+    const listSchema: SettingsSchema = {
+      id: "demo-ext.bounded-list",
+      title: "Bounded list",
+      schemaVersion: 1,
+      fields: [{
+        key: "rows", type: "list", label: "Rows",
+        itemFields: [{
+          key: "value", type: "text", label: "Value",
+          get pattern() { patternReads += 1; return "^(o+)+$"; },
+        }],
+      }],
+    };
+    const input = Array.from({ length: 1025 }, () => ({ value: "ok" }));
+    const absolute = validateSettingsValues(listSchema, { rows: input });
+    expect(absolute.errors).toContainEqual({ path: "rows", message: "Rows allows at most 1024" });
+    expect((absolute.values.rows as unknown[])).toHaveLength(1024);
+    expect(patternReads).toBe(0);
+
+    listSchema.fields[0].maxItems = 2;
+    const declared = validateSettingsValues(listSchema, { rows: input.slice(0, 3) });
+    expect(declared.errors).toContainEqual({ path: "rows", message: "Rows allows at most 2" });
+    expect((declared.values.rows as unknown[])).toHaveLength(3);
+    expect(patternReads).toBe(0);
+  });
+
   it("accepts cleared optional numbers and keeps their persisted round trip stable", () => {
     const numberSchema: SettingsSchema = {
       id: "demo-ext.numbers",

@@ -10,7 +10,7 @@ import { ExtensionHttpRegistry, extensionHttpOrigin, isLoopbackAddress } from ".
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-const request = (secret: string, path = "/api/state?sessionId=parent", method = "GET") => ({
+const request = (secret: string, path = "/api/state?sessionId=parent&includeSessionUiState=false", method = "GET") => ({
   headers: { authorization: secret }, url: path, method, socket: { remoteAddress: "127.0.0.1" },
 }) as IncomingMessage;
 
@@ -136,8 +136,8 @@ describe("scoped extension HTTP credentials", () => {
     const h = harness();
     await h.client.request("GET", "/api/state");
     expect(h.auth).toMatch(/^PiWebExtension [A-Za-z0-9_-]{43}$/);
-    expect(h.url).toBe("http://127.0.0.1:9999/api/state?sessionId=parent");
-    const req = request(h.auth);
+    expect(h.url).toBe("http://127.0.0.1:9999/api/state?sessionId=parent&includeSessionUiState=false");
+    const req = request(h.auth, "/api/state?sessionId=parent&includeSessionUiState=false");
     expect(await h.registry.authenticate(req)).toMatchObject({ ok: true, via: "extension", identity: { id: "extension:parent:test" } });
     expect(h.registry.caller(req)).toBe("extension:parent:test");
     expect(h.fetcher.mock.calls[0][1]).toMatchObject({ redirect: "error", credentials: "omit" });
@@ -157,6 +157,21 @@ describe("scoped extension HTTP credentials", () => {
     h.body.sessionId = "other";
     expect(await h.registry.authenticate(request(h.auth, "/api/prompt", "POST"))).toEqual({ ok: false, status: 403 });
     await expect(h.client.request("POST", "/api/auth/tokens")).rejects.toThrow("scope");
+  });
+
+  it("keeps instance-wide session UI metadata out of scoped state requests", async () => {
+    const h = harness();
+    await h.client.request("GET", "/api/state?includeSessionUiState=true");
+    expect(h.url).toBe("http://127.0.0.1:9999/api/state?includeSessionUiState=false&sessionId=parent");
+    for (const path of [
+      "/api/state?sessionId=parent",
+      "/api/state?sessionId=parent&includeSessionUiState=true",
+      "/api/state?sessionId=parent&includeSessionUiState=false&includeSessionUiState=false",
+      "/api/state?sessionId=parent&includeSessionUiState=unknown",
+    ]) {
+      expect(await h.registry.authenticate(request(h.auth, path))).toEqual({ ok: false, status: 403 });
+    }
+    expect((await h.registry.authenticate(request(h.auth, "/api/state?sessionId=parent&includeSessionUiState=false"))).ok).toBe(true);
   });
 
   it("permits scoped image reads and inline compatibility without widening session targets", async () => {
@@ -192,12 +207,14 @@ describe("scoped extension HTTP credentials", () => {
     const req = request(h.auth, "/api/new-chat", "POST");
     expect((await h.registry.authenticate(req)).ok).toBe(true);
     h.registry.recordCreatedSession(req, "child");
-    expect((await h.registry.authenticate(request(h.auth, "/api/state?sessionId=child"))).ok).toBe(true);
+    expect((await h.registry.authenticate(request(h.auth, "/api/state?sessionId=child&includeSessionUiState=false"))).ok).toBe(true);
     h.registry.recordCreatedSession(request(h.auth), "forged");
     expect((await h.registry.authenticate(request(h.auth, "/api/state?sessionId=forged"))).ok).toBe(false);
     const all = h.registry.createClient({}, "parent", () => true, { name: "all", scopes: ["sessions.read"], sessionIds: "all" });
     await all.request("GET", "/api/state?sessionId=other");
+    expect(h.url).toBe("http://127.0.0.1:9999/api/state?sessionId=other");
     expect((await h.registry.authenticate(request(h.auth, "/api/state?sessionId=other"))).ok).toBe(true);
+    expect((await h.registry.authenticate(request(h.auth, "/api/state?sessionId=other&includeSessionUiState=true"))).ok).toBe(true);
     expect((await h.registry.authenticate(request(h.auth, "/api/prompt", "POST"))).ok).toBe(false);
   });
 

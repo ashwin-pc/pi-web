@@ -1,8 +1,12 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { discoverExtensionEntryPaths, resolveBundledExtensionPaths } from "../server/extensions.js";
+import {
+  discoverExtensionEntryPaths,
+  MAX_EXTENSION_DISCOVERY_OBJECTS,
+  resolveBundledExtensionPaths,
+} from "../server/extensions.js";
 import { createWebUiBridge } from "../server/extensions/webUi.js";
 import { SessionSettlementTracker } from "../server/session/settlement.js";
 import { createSettlementDependencyStore } from "../src/sessions/settlementDependencies.js";
@@ -55,6 +59,61 @@ describe("bundled extension path discovery", () => {
     await writeFile(join(packageDir, "src", "main.ts"), "export default () => {};\n");
 
     expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "src", "main.ts")]);
+  });
+
+  it("rejects manifest paths and symlinks that escape the extension root", async () => {
+    const root = await makeTempDir();
+    const extensionsDir = join(root, "extensions");
+    const packageDir = join(extensionsDir, "bundle");
+    const outsideDir = join(root, "outside");
+    await mkdir(packageDir, { recursive: true });
+    await mkdir(outsideDir, { recursive: true });
+    await writeFile(join(outsideDir, "outside.ts"), "export default () => {};\n");
+    await writeFile(join(packageDir, "inside.ts"), "export default () => {};\n");
+    await symlink(join(outsideDir, "outside.ts"), join(packageDir, "linked.ts"));
+    await symlink(join(outsideDir, "outside.ts"), join(extensionsDir, "outside-link.ts"));
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({
+      pi: { extensions: ["./inside.ts", "../../outside/outside.ts", "./linked.ts", join(outsideDir, "outside.ts")] },
+    }));
+
+    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "inside.ts")]);
+  });
+
+  it("allows manifest entries and symlinks that remain inside the extension root", async () => {
+    const root = await makeTempDir();
+    const extensionsDir = join(root, "extensions");
+    const packageDir = join(extensionsDir, "bundle");
+    const sharedDir = join(extensionsDir, "shared");
+    await mkdir(packageDir, { recursive: true });
+    await mkdir(sharedDir, { recursive: true });
+    await writeFile(join(sharedDir, "main.ts"), "export default () => {};\n");
+    await symlink(join(sharedDir, "main.ts"), join(packageDir, "linked.ts"));
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({ pi: { extensions: ["./linked.ts"] } }));
+
+    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "linked.ts")]);
+  });
+
+  it("uses real directory identity to terminate manifest and symlink cycles", async () => {
+    const root = await makeTempDir();
+    const extensionsDir = join(root, "extensions");
+    const packageDir = join(extensionsDir, "bundle");
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({ pi: { extensions: ["./entry.ts", "./again"] } }));
+    await writeFile(join(packageDir, "entry.ts"), "export default () => {};\n");
+    await symlink(packageDir, join(packageDir, "again"));
+
+    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "entry.ts")]);
+  });
+
+  it("bounds traversal by visited filesystem objects, including ignored entries", async () => {
+    const root = await makeTempDir();
+    const extensionsDir = join(root, "extensions");
+    await mkdir(extensionsDir, { recursive: true });
+    await Promise.all(Array.from({ length: MAX_EXTENSION_DISCOVERY_OBJECTS }, (_, i) =>
+      writeFile(join(extensionsDir, `a-${String(i).padStart(4, "0")}.txt`), "ignored\n")));
+    await writeFile(join(extensionsDir, "z-after-limit.ts"), "export default () => {};\n");
+
+    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([]);
   });
 
   it("does not add bundled extensions while running from the pi-web app directory", async () => {
