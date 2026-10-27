@@ -77,24 +77,42 @@ const config = {
 };
 
 describe("multi-method human authentication", () => {
-  it("accepts the actual authority and configured origin but never forged forwarding headers", () => {
-    for (const host of [
-      "127.0.0.1:9300",
-      "192.168.1.5:9300",
-      "machine.tailnet:9300",
-    ])
-      expect(
-        trustedOrigin(
-          req({}, { host, origin: `http://${host}` }),
-          "http://localhost:9300",
-        ),
-      ).toBe(true);
+  it("enforces the exact configured public origin and only canonical local aliases", () => {
     expect(
       trustedOrigin(
         req({}, { host: "internal", origin: "https://public.example" }),
         "https://public.example",
       ),
     ).toBe(true);
+    // #224 fail-before regression: with the default environment, caller Host
+    // must not authorize an invented HTTPS Origin.
+    expect(
+      trustedOrigin(
+        req({}, { host: "other.example", origin: "https://other.example" }),
+        "https://public.example",
+      ),
+    ).toBe(false);
+    for (const alias of ["localhost", "127.0.0.1", "[::1]"]) {
+      expect(
+        trustedOrigin(
+          req({}, { host: "attacker.example:9300", origin: `http://${alias}:9300` }),
+          "http://localhost:9300",
+        ),
+      ).toBe(true);
+    }
+    for (const origin of [
+      "http://127.0.0.1:9301",
+      "http://192.168.1.5:9300",
+      "http://machine.tailnet:9300",
+      "https://localhost:9300",
+    ]) {
+      expect(
+        trustedOrigin(
+          req({}, { host: new URL(origin).host, origin }),
+          "http://localhost:9300",
+        ),
+      ).toBe(false);
+    }
     for (const origin of [
       "null",
       "garbage",
@@ -127,13 +145,14 @@ describe("multi-method human authentication", () => {
       ] as const) {
         const request = req({}, { ...headers, origin, "x-forwarded-host": authority });
         expect(trustedOrigin(request, config.origin)).toBe(accepted);
-        // The supervisor preserves the explicit authority while stripping XFH;
-        // the child's direct Host comparison must have identical semantics.
         expect(forwardedHost(request)).toBe(authority);
-        expect(trustedOrigin(req({}, { host: authority, origin }), config.origin)).toBe(accepted);
         request.socket.remoteAddress = "192.0.2.1";
         expect(trustedOrigin(request, config.origin)).toBe(false);
       }
+      expect(trustedOrigin(
+        req({}, { host: "other.example", origin: "https://other.example", "x-forwarded-host": "other.example" }),
+        "https://public.example",
+      )).toBe(false);
       const untrusted = req({}, headers); untrusted.socket.remoteAddress = "192.0.2.1";
       expect(trustedOrigin(untrusted, config.origin)).toBe(false);
       for (const host of ["public.example,evil.example", "public.example/path", "public.example@evil.example", " public.example", "public.example:"])
@@ -142,6 +161,13 @@ describe("multi-method human authentication", () => {
       if (old === undefined) delete process.env.PI_WEB_AUTH_PROXY_PEERS;
       else process.env.PI_WEB_AUTH_PROXY_PEERS = old;
     }
+  });
+  it("anchors originless browser signals in operator configuration", () => {
+    expect(trustedOrigin(req({}, { host: "pi.example.test" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", "sec-fetch-site": "cross-site" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", "sec-fetch-site": "same-origin" }), "https://pi.example.test")).toBe(true);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", origin: "http://pi.example.test" }), "https://pi.example.test")).toBe(false);
+    expect(trustedOrigin(req({}, { host: "pi.example.test", origin: "https://pi.example.test" }), "https://pi.example.test")).toBe(true);
   });
   it("denies stale-cookie and grant persistence and other-device lockout", async () => {
     for (const grant of [false, true]) {

@@ -587,6 +587,7 @@ function withAccessLog(
   };
 }
 
+import { browserMutationFailure, isIdempotentMethod } from "./server/auth/admission.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 
 async function loginPresentation() {
@@ -642,7 +643,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (await handlePasswordLogin(req, res, url, authKernel, authStore, authOrigin)) return;
       if (await handlePasskeyRoute(req, res, url, authKernel, authStore, passkeyConfig, loginPresentation)) return;
       if (method === "POST" && url.pathname === "/api/auth/logout") {
-        if (!req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { error: "CSRF validation failed" });
+        const failure = browserMutationFailure(req, "session", authOrigin, mockMode);
+        if (failure) return sendJson(res, 403, { error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
         await authKernel.revokeSession(req);
         authKernel.clearSession(res);
         return sendJson(res, 200, { ok: true });
@@ -652,13 +654,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
-      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
-        const validOrigin = trustedOrigin(req, authOrigin);
-        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
+      if (!isIdempotentMethod(method)) {
+        const failure = browserMutationFailure(req, auth.via, authOrigin, mockMode);
+        if (failure) return sendJson(res, 403, { ok: false, error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
       }
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
-      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
+      if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash, auth.via), expiresIn: 30 });
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {
         return await serveArtifact(req, res, true);
@@ -1464,7 +1466,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
 const wss = new WebSocketServer({ noServer: true });
 const browserSockets = new Map<import("ws").WebSocket, string>();
-const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) => { const active = new Set([...state.sessions.filter(s => !s.revokedAt && s.expiresAt > Date.now()).map(s => s.hash), ...state.apiTokens.filter(t => !t.revokedAt && t.expiresAt > Date.now()).map(t => `token:${t.id}`)]); for (const [socket, hash] of browserSockets) if (!active.has(hash)) socket.close(1008, "Browser session revoked"); };
+const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) => { const active = new Set([...state.sessions.filter(s => !s.revokedAt && s.expiresAt > Date.now()).map(s => s.hash), ...state.apiTokens.filter(t => !t.revokedAt && t.expiresAt > Date.now()).map(t => `token:${t.id}`)]); if ((state.config?.policy || authKernel.policy) === "open") active.add("policy:open"); for (const [socket, hash] of browserSockets) if (!active.has(hash)) socket.close(1008, "Browser session revoked"); };
 authStore.listeners.add(enforceBrowserSessions);
 const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
 authSessionSweep.unref();
@@ -1481,14 +1483,17 @@ server.on("upgrade", (req, socket, head) => {
   if (url.pathname !== "/ws") return;
 
   void (async () => {
-    const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "mock" }, sessionHash: undefined } : undefined);
+    const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "");
     const identity = ticket?.identity;
-    if (ticket?.sessionHash && !(await authStore.read()).sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
-    if (identity?.id.startsWith("token:") && !(await authStore.read()).apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    const authState = ticket ? await authStore.read() : undefined;
+    if (ticket?.sessionHash && !authState?.sessions.some(s => s.hash === ticket.sessionHash && !s.revokedAt && s.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    if (identity?.id.startsWith("token:") && !authState?.apiTokens.some(t => `token:${t.id}` === identity.id && !t.revokedAt && t.expiresAt > Date.now())) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
+    if (ticket?.via === "open" && (authState?.config?.policy || authKernel.policy) !== "open") { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
-    wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
+    const trackingKey = ticket?.sessionHash || (identity.id.startsWith("token:") ? identity.id : ticket?.via === "open" ? "policy:open" : undefined);
+    wss.handleUpgrade(req, socket, head, (ws) => { if (trackingKey) { browserSockets.set(ws, trackingKey); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 });
 

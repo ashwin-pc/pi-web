@@ -288,7 +288,7 @@ export type GateResult =
 export class AuthKernel {
   private wsTickets = new Map<
     string,
-    { identity: Identity; expiresAt: number; sessionHash?: string }
+    { identity: Identity; expiresAt: number; sessionHash?: string; via: AuthVia }
   >();
   policy: AccessPolicy;
   methods: ReadonlySet<HumanAuthMethod>;
@@ -359,7 +359,7 @@ export class AuthKernel {
     this.policy = policy || (mode === "none" ? "open" : "authenticated");
     this.methods = new Set(methods || (mode === "none" ? [] : [mode]));
   }
-  mintWsTicket(identity: Identity, sessionHash?: string) {
+  mintWsTicket(identity: Identity, sessionHash: string | undefined, via: AuthVia) {
     const now = Date.now();
     for (const [key, ticket] of this.wsTickets)
       if (ticket.expiresAt <= now) this.wsTickets.delete(key);
@@ -369,6 +369,7 @@ export class AuthKernel {
     this.wsTickets.set(hashSecret(secret), {
       identity,
       sessionHash,
+      via,
       expiresAt: now + 30_000,
     });
     return secret;

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
+import { browserMutationFailure } from "./server/auth/admission.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
@@ -22,15 +23,16 @@ let childStarting = false;
 let childGeneration = 0;
 const intentionalStops = new Set<number>();
 
-async function isAuthorized(req: IncomingMessage, mutation = false): Promise<boolean> {
+async function authorization(req: IncomingMessage, mutation = false): Promise<"allowed" | "unauthorized" | "forbidden"> {
   try {
     const config = resolveAuthConfig(process.env);
     const kernel = new AuthKernel(config.legacyMode, new AuthStore(resolveWebHomePath("web/auth.json", join(getAgentDir(), "web", "auth.json"), process.env.PI_WEB_AUTH_STORE)), token, true, config.trustedHeader, config.policy, config.methods);
     await kernel.refreshConfig();
     const auth = await kernel.gate(req);
-    if (!auth.ok) return false;
-    return !mutation || auth.via !== "session" || (!!req.headers["x-pi-web-client-id"] && trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`));
-  } catch { return false; }
+    if (!auth.ok) return "unauthorized";
+    if (mutation && browserMutationFailure(req, auth.via, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`, process.env.PI_WEB_MOCK === "1")) return "forbidden";
+    return "allowed";
+  } catch { return "unauthorized"; }
 }
 
 function sendJson(res: ServerResponse, status: number, value: unknown): void {
@@ -121,15 +123,15 @@ const supervisor = createServer(async (req, res) => {
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
     if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
-    if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) return sendJson(res, 403, { ok: false, error: originFailureHint });
-    if (!await isAuthorized(req, true)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+    const auth = await authorization(req, true);
+    if (auth !== "allowed") return sendJson(res, auth === "forbidden" ? 403 : 401, { ok: false, error: auth === "forbidden" ? originFailureHint : "Unauthorized" });
     sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
     void restartChild();
     return;
   }
 
   if (url.pathname === "/__supervisor/status") {
-    if (!await isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+    if (await authorization(req) !== "allowed") return sendJson(res, 401, { ok: false, error: "Unauthorized" });
     return sendJson(res, 200, {
       ok: true,
       childPid: child?.pid,
@@ -139,7 +141,6 @@ const supervisor = createServer(async (req, res) => {
     });
   }
 
-  trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`);
   sanitizeProxyHeaders(req);
   proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
 });
@@ -153,7 +154,8 @@ function sanitizeProxyHeaders(req: IncomingMessage) {
 }
 
 supervisor.on("upgrade", (req, socket, head) => {
-  if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
+  const configuredOrigin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`;
+  if (!trustedOrigin(req, configuredOrigin)) {
     socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
     return;
   }

@@ -94,8 +94,8 @@ describe("auth kernel", () => {
   });
 
   it("mints hashed single-use WebSocket tickets with identity propagation", async () => {
-    const k = new AuthKernel("none", await store()); const ticket = k.mintWsTicket({ id: "token:automation" });
-    expect(k.redeemWsTicket(ticket)?.identity).toEqual({ id: "token:automation" });
+    const k = new AuthKernel("none", await store()); const ticket = k.mintWsTicket({ id: "token:automation" }, undefined, "token");
+    expect(k.redeemWsTicket(ticket)).toMatchObject({ identity: { id: "token:automation" }, via: "token" });
     expect(k.redeemWsTicket(ticket)).toBeUndefined();
   });
 

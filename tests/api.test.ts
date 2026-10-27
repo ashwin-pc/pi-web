@@ -9,6 +9,26 @@ import { dirname, join } from "node:path";
 import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
 
+const nativeFetch = globalThis.fetch;
+function apiFetch(input: string | URL | Request, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  const method = (init.method || (input instanceof Request ? input.method : "GET")).toUpperCase();
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers.has("x-pi-web-client-id")) {
+    headers.set("x-pi-web-test-client-intent", "api-test");
+  }
+  return nativeFetch(input, { ...init, headers });
+}
+const fetch = apiFetch;
+
+async function mockWebSocket(baseUrl: string, query = "", options: { autoPong?: boolean } = {}): Promise<WebSocket> {
+  const origin = new URL(baseUrl).origin;
+  const response = await fetch(`${baseUrl}/api/ws-ticket`, { method: "POST" });
+  if (!response.ok) throw new Error(`Could not mint mock WebSocket ticket: ${response.status}`);
+  const { ticket } = await response.json() as { ticket: string };
+  const suffix = query ? `&${query}` : "";
+  return new WebSocket(`${baseUrl.replace(/^http/, "ws")}/ws?ticket=${encodeURIComponent(ticket)}${suffix}`, { origin, ...options });
+}
+
 function rawGet(port: number, path: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET" }, (res) => {
@@ -115,6 +135,27 @@ describe("pi-web mock API", () => {
 
     const lifecycle = await (await fetch(`${baseUrl}/api/session/lifecycle`)).json();
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
+  });
+
+  it("requires explicit same-origin browser intent for open-policy mutations", async () => {
+    const body = JSON.stringify({ defaults: { thinkingLevel: "high" } });
+    const missingOrigin = await nativeFetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", "x-pi-web-client-id": "browser" },
+      body,
+    });
+    expect(missingOrigin.status).toBe(403);
+    const crossSite = await nativeFetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", origin: "https://other.example.test", "x-pi-web-client-id": "browser" },
+      body,
+    });
+    expect(crossSite.status).toBe(403);
+    expect((await fetch(`${baseUrl}/api/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body,
+    })).status).toBe(200);
   });
 
   it("deletes a requested session and its independent note", async () => {
@@ -225,7 +266,7 @@ describe("pi-web mock API", () => {
 
   it("routes mock agent events through contract shapes and event-before-runtime order", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-current");
     await once(ws, "open");
     const events: any[] = [];
     ws.on("message", (data) => events.push(JSON.parse(String(data))));
@@ -263,7 +304,7 @@ describe("pi-web mock API", () => {
 
   it("returns the tree navigation response and emits its terminal runtime event", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-current");
     await once(ws, "open");
     const runtimeEvents: any[] = [];
     ws.on("message", (data) => {
@@ -672,7 +713,7 @@ describe("pi-web mock API", () => {
   });
 
   it("renames and clears the current session without duplicate state broadcasts", async () => {
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-current");
     await once(ws, "open");
     const events: any[] = [];
     ws.on("message", (data) => events.push(JSON.parse(String(data))));
@@ -698,7 +739,7 @@ describe("pi-web mock API", () => {
 
   it("clears queued mock prompt correlations on reset", async () => {
     await fetch(`${baseUrl}/api/mock/reset`, { method: "POST" });
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-current`);
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-current");
     await once(ws, "open");
     const events: any[] = [];
     ws.on("message", (data) => events.push(JSON.parse(String(data))));
@@ -1402,7 +1443,7 @@ describe("Live session lifecycle", () => {
     await reset();
     const res = await fetch(`${baseUrl}/api/sessions/open`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-pi-web-client-id": "lease-test" },
+      headers: { "content-type": "application/json", origin: baseUrl, "x-pi-web-client-id": "lease-test" },
       body: JSON.stringify({ sessionId: "mock-older", clientId: "lease-test" }),
     });
     expect(res.status).toBe(200);
@@ -1425,14 +1466,14 @@ describe("Live session lifecycle", () => {
     await reset();
     const opened = await fetch(`${baseUrl}/api/sessions/open`, {
       method: "POST",
-      headers: { "content-type": "application/json", "x-pi-web-client-id": "heartbeat-test" },
+      headers: { "content-type": "application/json", origin: baseUrl, "x-pi-web-client-id": "heartbeat-test" },
       body: JSON.stringify({ sessionId: "mock-older", clientId: "heartbeat-test" }),
     });
     expect(opened.status).toBe(200);
 
     let replyToPings = true;
     let acknowledgedPings = 0;
-    const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-older&clientId=heartbeat-test`, { autoPong: false });
+    const ws = await mockWebSocket(baseUrl, "sessionId=mock-older&clientId=heartbeat-test", { autoPong: false });
     const closed = new Promise<void>((resolve) => ws.once("close", resolve));
     ws.on("ping", () => {
       if (!replyToPings) return;
@@ -1515,7 +1556,7 @@ describe("WebSocket authentication", () => {
       expect(ticketResponse.status).toBe(201);
       const { ticket } = await ticketResponse.json() as { ticket: string };
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${encodeURIComponent(ticket)}`);
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${encodeURIComponent(ticket)}`, { origin: `http://127.0.0.1:${port}` });
         ws.on("message", (data) => {
           const msg = JSON.parse(String(data));
           expect(msg.type).toBe("hello");
@@ -1529,7 +1570,7 @@ describe("WebSocket authentication", () => {
     }
   }, 25_000);
 
-  it("sends a hello message with session info on WebSocket connect (no token)", async () => {
+  it("requires a ticket and sends session info for an open-policy mock WebSocket", async () => {
     const port = await freePort();
     const noTokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
       env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_TOKEN: "" },
@@ -1537,8 +1578,19 @@ describe("WebSocket authentication", () => {
     });
     try {
       await waitForServer(`http://127.0.0.1:${port}`);
+      await expect(new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin: `http://127.0.0.1:${port}` });
+        ws.on("unexpected-response", (_req, response) => {
+          expect(response.statusCode).toBe(401);
+          ws.terminate();
+          resolve();
+        });
+        ws.on("open", () => reject(new Error("WebSocket without a ticket should be rejected")));
+        ws.on("error", reject);
+      })).resolves.toBeUndefined();
+
+      const ws = await mockWebSocket(`http://127.0.0.1:${port}`);
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
         ws.on("message", (data) => {
           const msg = JSON.parse(String(data));
           expect(msg.type).toBe("hello");
