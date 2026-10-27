@@ -9,6 +9,7 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
     ok: true,
     messages: [
       { role: "assistant", isError: false, text: "[Missing panel](#panel:missing:note=ignored) · [Malformed panel](#panel::note=ignored)" },
+      { role: "assistant", isError: false, text: "[Open assistant task](#panel:notes:source=assistant)" },
       { role: "user", text: "[Open scanner task](#panel:notes:note=oncall%2Fw34&task=old&task=t-3f2a)" },
     ],
   } }));
@@ -56,15 +57,44 @@ test("opens an extension panel from chat and the FAB, then submits its form", as
   await page.locator("#prompt").blur();
 
   const panel = page.locator("#webExtensionPanel");
-  await page.getByRole("link", { name: "Missing panel" }).click();
   await page.getByRole("link", { name: "Malformed panel" }).click();
   await expect(panel).toBeHidden();
   expect(invocations).toEqual([]);
 
-  await page.getByRole("link", { name: "Open scanner task" }).click();
+  let confirmation = "";
+  page.once("dialog", async (dialog) => {
+    confirmation = dialog.message();
+    await dialog.dismiss();
+  });
+  await page.getByRole("link", { name: "Missing panel" }).click();
+  expect(confirmation).toContain("Target: missing");
+  expect(confirmation).toContain('"note": "ignored"');
+  expect(invocations).toEqual([]);
+
+  const assistantLink = page.getByRole("link", { name: "Open assistant task" });
+  await assistantLink.evaluate((anchor) => { (anchor as HTMLElement).dataset.piWebDeepLink = "trusted"; });
+  page.once("dialog", async (dialog) => {
+    confirmation = dialog.message();
+    await dialog.accept();
+  });
+  await assistantLink.click();
+  expect(confirmation).toContain("Target: notes");
+  expect(confirmation).toContain('"source": "assistant"');
   await expect(panel).toBeVisible();
   await expect.poll(() => invocations.length).toBe(1);
-  expect(invocations[0]).toMatchObject({
+  await panel.getByRole("button", { name: "Close panel" }).click();
+
+  page.once("dialog", async (dialog) => {
+    confirmation = dialog.message();
+    await dialog.accept();
+  });
+  await page.getByRole("link", { name: "Open scanner task" }).click();
+  expect(confirmation).toContain("Target: notes");
+  expect(confirmation).toContain('"note": "oncall/w34"');
+  expect(confirmation).toContain('"task": "t-3f2a"');
+  await expect(panel).toBeVisible();
+  await expect.poll(() => invocations.length).toBe(2);
+  expect(invocations[1]).toMatchObject({
     slot: "panel",
     key: "notes",
     event: { action: "deep-link", payload: { note: "oncall/w34", task: "t-3f2a" } },

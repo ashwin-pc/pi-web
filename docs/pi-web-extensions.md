@@ -229,6 +229,8 @@ opens the registered panel and calls `render()` with
 `{ action: "deep-link", payload: { note: "oncall/w34", task: "t-3f2a" } }`.
 Core treats the query as opaque strings; duplicate names use their final value.
 Links are limited to an 80-character key, 8 KiB query, and 64 parameters.
+Panel keys retain the contribution API's existing punctuation support; deep links
+reject only empty or overlong keys and keys containing control characters.
 The extension owns scrolling, highlighting, and fallback behavior; unknown or
 malformed panel links are a quiet no-op.
 

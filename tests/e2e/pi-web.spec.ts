@@ -1541,6 +1541,9 @@ test.describe("assistant markdown rendering", () => {
 
     const assistant = page.locator(".message.assistant", { hasText: "Interactive result" }).last();
     const preview = assistant.locator(".htmlPreview");
+    await expect(preview.locator("iframe")).toHaveCount(0);
+    await expect(preview.locator("pre code.language-html")).toBeVisible();
+    await preview.getByRole("button", { name: "Run preview" }).click();
     const frame = preview.locator("iframe");
     await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
     await expect(frame.contentFrame().locator("#ran")).toHaveText("script ran");
@@ -1566,6 +1569,8 @@ test.describe("assistant markdown rendering", () => {
     const assistant = page.locator(".message.assistant", { hasText: "Stable previews" }).last();
     const previews = assistant.locator(".htmlPreview");
     await expect(previews).toHaveCount(2);
+    await previews.nth(0).getByRole("button", { name: "Run preview" }).click();
+    await previews.nth(1).getByRole("button", { name: "Run preview" }).click();
     await expect(previews.nth(0).locator("iframe").contentFrame().getByText("Full-width preview")).toBeVisible();
     await expect(previews.nth(1).locator("iframe").contentFrame().getByText("Bare preview text")).toBeVisible();
 
@@ -1872,6 +1877,8 @@ test.describe("image rendering", () => {
     await page.locator("#promptForm").evaluate((form: HTMLFormElement) => form.requestSubmit());
     const content = page.locator(".artifactPreview--markdown").last().locator(".artifactPreviewContent");
     await expect(content.locator("h1")).toHaveText("Preview reproduction");
+    await expect(content.locator("iframe.htmlPreviewFrame")).toHaveCount(0);
+    await content.getByRole("button", { name: "Run preview" }).click();
     await expect(content.locator("iframe.htmlPreviewFrame")).toHaveCount(1);
     await expect(content.frameLocator("iframe.htmlPreviewFrame").locator("#repro")).toHaveText("Interactive artifact");
   });

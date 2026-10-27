@@ -4,6 +4,12 @@ import { Check, Copy, createElement, Download, MessageCircle, PanelRightOpen } f
 import { attachImageActions } from "../components/imageActions.js";
 import { attachDiagramViewer } from "../components/diagramViewer.js";
 import { matchingArtifactPreview, mountArtifactPreview } from "../extensions/artifactPreviews.js";
+import { createHtmlPreviewGate } from "./htmlPreviewGate.js";
+import {
+  classifyMarkdownImageSource,
+  enhanceRemoteMarkdownImages,
+  remoteMarkdownImagePlaceholder,
+} from "./imageTrust.js";
 import { createStreamingBatch, type StreamingBatch } from "./streamingScheduler.js";
 import { createStreamingReveal } from "./streamingReveal.js";
 import { sessionCitationFromHref, sessionCitationHref } from "../app/types.js";
@@ -95,19 +101,34 @@ function sanitizeMarkdownHtml(html: string) {
 
       if (name === "src") {
         const src = attribute.value.trim();
-        if (!/^(https?:|data:image\/(png|jpeg|jpg|gif|webp);base64,|\/api\/artifacts\/)/i.test(src)) {
+        const classified = classifyMarkdownImageSource(src);
+        if (classified.kind === "rejected") {
           element.removeAttribute(attribute.name);
+        } else if (classified.kind === "remote" && tagName === "img") {
+          element.replaceWith(remoteMarkdownImagePlaceholder(
+            classified,
+            element.getAttribute("alt") || "",
+            element.getAttribute("title") || "",
+          ));
+          break;
+        } else {
+          element.setAttribute(attribute.name, classified.src);
         }
       }
     }
 
+    if (!element.parentNode) continue;
     if (tagName === "a") {
       element.setAttribute("target", "_blank");
       element.setAttribute("rel", "noopener noreferrer");
     }
 
-    if (tagName === "img" && !element.getAttribute("src")) {
-      element.remove();
+    if (tagName === "img") {
+      if (!element.getAttribute("src")) element.remove();
+      else {
+        element.setAttribute("referrerpolicy", "no-referrer");
+        element.setAttribute("loading", "lazy");
+      }
     }
   }
 
@@ -390,34 +411,12 @@ function enhanceInlineHtmlPreviews(root: ParentNode) {
     pre.dataset.htmlPreviewEnhanced = "true";
     code.classList.remove("language-html-preview");
     code.classList.add("language-html");
-    pre.hidden = true;
-
-    const container = document.createElement("div");
-    container.className = "htmlPreview";
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "htmlPreviewToggle";
-    toggle.textContent = "Source";
-    toggle.title = "Show HTML source";
-    toggle.setAttribute("aria-label", toggle.title);
-    const frame = document.createElement("iframe");
-    frame.className = "htmlPreviewFrame";
-    frame.title = "Interactive HTML preview";
-    frame.setAttribute("sandbox", "allow-scripts");
-    frame.srcdoc = source + inlineHtmlReporter();
-    toggle.addEventListener("click", () => {
-      const showingSource = pre.hidden;
-      pre.hidden = !showingSource;
-      frame.hidden = showingSource;
-      container.classList.toggle("htmlPreview--source", showingSource);
-      toggle.textContent = showingSource ? "Preview" : "Source";
-      toggle.title = showingSource ? "Show interactive preview" : "Show HTML source";
-      toggle.setAttribute("aria-label", toggle.title);
+    const container = createHtmlPreviewGate(source, inlineHtmlReporter(), (frame) => {
+      inlineHtmlFrames.add(frame);
+      ensureInlineHtmlResizeListener();
     });
     pre.replaceWith(container);
-    container.append(frame, pre, toggle);
-    inlineHtmlFrames.add(frame);
-    ensureInlineHtmlResizeListener();
+    container.append(pre);
   }
 }
 
@@ -454,6 +453,7 @@ function enhanceCodeBlocks(root: ParentNode) {
 }
 
 function enhanceImages(root: ParentNode) {
+  enhanceRemoteMarkdownImages(root, attachImageActions);
   for (const img of Array.from(root.querySelectorAll<HTMLImageElement>("img"))) attachImageActions(img);
 }
 

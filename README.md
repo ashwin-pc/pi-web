@@ -282,3 +282,5 @@ The app is TypeScript end-to-end:
 ## Security
 
 This app can drive Pi tools such as `bash`, `write`, and `edit`. Restrict network access and use authenticated access over HTTPS. Human logins share revocable browser sessions; named API tokens are separate machine credentials. See [security design, recovery, and migration](docs/passkey-auth.md).
+
+Remote images in chat Markdown do not make a request until the user clicks **Load image** beside the disclosed host. After consent, the browser loads the image directly with a no-referrer policy and without pi-web API authorization headers. As with any normal browser image request, the remote host receives the request and the browser may include that host's own existing cookies according to its usual cookie policy.
