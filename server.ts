@@ -138,10 +138,10 @@ async function readBytes(req: IncomingMessage, maxBytes = 30_000_000, onChunk?: 
 }
 
 const jsonBodies = new WeakMap<IncomingMessage, Promise<unknown>>();
-function readBody(req: IncomingMessage): Promise<unknown> {
+function readBody(req: IncomingMessage, maxBytes = hasExtensionCredential(req) ? 1_000_000 : 40_000_000): Promise<unknown> {
   let body = jsonBodies.get(req);
   if (!body) {
-    body = readBytes(req, hasExtensionCredential(req) ? 1_000_000 : 40_000_000).then(bytes => {
+    body = readBytes(req, maxBytes).then(bytes => {
       const text = bytes.toString("utf-8");
       return text ? JSON.parse(text) : {};
     });
@@ -555,7 +555,8 @@ function withAccessLog(
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const start = performance.now();
-    const startBytes = req.socket.bytesWritten; // counts everything, headers included
+    const socket = req.socket;
+    const startBytes = socket.bytesWritten; // counts everything, headers included
     const method = req.method || "GET";
     let pathname = "(malformed)";
     let logged = false;
@@ -567,7 +568,7 @@ function withAccessLog(
         pathname,
         res.statusCode,
         performance.now() - start,
-        Math.max(0, req.socket.bytesWritten - startBytes),
+        Math.max(0, socket.bytesWritten - startBytes),
         aborted,
         extensionHttp.caller(req),
       );
@@ -851,21 +852,23 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/push/subscribe") {
-        const body = await readBody(req) as { installationId?: unknown; subscription?: unknown };
         try {
-          return sendJson(res, 200, { ok: true, ...await pushNotifications.subscribe(body.installationId, body.subscription) });
+          const body = await readBody(req, 16_384) as { installationId?: unknown; subscription?: unknown };
+          return sendJson(res, 200, { ok: true, ...await pushNotifications.subscribe(auth.identity.id, body.installationId, body.subscription) });
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          const status = error instanceof HttpError ? error.status : 400;
+          return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 
       if (method === "DELETE" && url.pathname === "/api/push/subscribe") {
-        const body = await readBody(req) as { installationId?: unknown; endpoint?: unknown };
         try {
-          await pushNotifications.unsubscribe(body.installationId, body.endpoint);
+          const body = await readBody(req, 16_384) as { installationId?: unknown; endpoint?: unknown };
+          await pushNotifications.unsubscribe(auth.identity.id, body.installationId, body.endpoint);
           return sendJson(res, 200, { ok: true });
         } catch (error) {
-          return sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+          const status = error instanceof HttpError ? error.status : 400;
+          return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
         }
       }
 

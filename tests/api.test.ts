@@ -117,6 +117,41 @@ describe("pi-web mock API", () => {
     expect(lifecycle).toMatchObject({ ok: true, liveSessions: [expect.objectContaining({ sessionId: "mock-current", leases: [] })] });
   });
 
+  it("rejects invalid and oversized push subscription requests", async () => {
+    const invalid = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId: "browser-invalid",
+        subscription: {
+          endpoint: "https://push.invalid.example/collect",
+          keys: { p256dh: "public-encryption-key", auth: "auth-secret" },
+        },
+      }),
+    });
+    expect(invalid.status).toBe(400);
+
+    const malformed = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{",
+    });
+    expect(malformed.status).toBe(400);
+
+    const oversized = await fetch(`${baseUrl}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId: "browser-oversized",
+        subscription: {
+          endpoint: `https://fcm.googleapis.com/fcm/send/${"x".repeat(17_000)}`,
+          keys: { p256dh: "public-encryption-key", auth: "auth-secret" },
+        },
+      }),
+    });
+    expect(oversized.status).toBe(413);
+  });
+
   it("deletes a requested session and its independent note", async () => {
     try {
       const beforeSeed = (await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).sessionUiState;
