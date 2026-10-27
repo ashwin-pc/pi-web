@@ -58,3 +58,50 @@ test("authenticated transcript image previews stay same-origin", async ({ page, 
   ]);
   expect(externalRequests).toEqual([]);
 });
+
+test("authenticated tool-result image previews stay same-origin", async ({ page }) => {
+  const externalRequests: string[] = [];
+  const authenticatedPreviewRequests: string[] = [];
+
+  for (const host of ["tool-protocol-relative.invalid", "tool-backslash.invalid"]) {
+    await page.route(`**://${host}/**`, async (route) => {
+      externalRequests.push(route.request().url());
+      await route.abort();
+    });
+  }
+  await page.route("**/api/test-images/tool-same-origin.png", async (route) => {
+    expect(route.request().headers().authorization).toBe(`Bearer ${token}`);
+    authenticatedPreviewRequests.push(new URL(route.request().url()).pathname);
+    await route.fulfill({ status: 200, contentType: "image/png", body: png });
+  });
+  await page.route("**/api/messages?*", async (route) => {
+    await route.fulfill({
+      json: {
+        messages: [{
+          role: "toolResult",
+          toolName: "read",
+          text: "tool image authentication",
+          entryId: "tool-image-auth",
+          raw: {
+            content: [
+              { type: "text", text: "tool image authentication" },
+              { type: "image", name: "protocol relative", url: "//tool-protocol-relative.invalid/image.png" },
+              { type: "image", name: "backslash normalized", url: "/\\tool-backslash.invalid/image.png" },
+              { type: "image", name: "same origin", url: "/api/test-images/tool-same-origin.png" },
+            ],
+          },
+        }],
+      },
+    });
+  });
+
+  await page.goto(`/?token=${token}`);
+
+  const images = page.locator(".toolCardImage img");
+  await expect(images).toHaveCount(3);
+  await expect(images.nth(0)).toHaveAttribute("alt", "protocol relative (failed to load)");
+  await expect(images.nth(1)).toHaveAttribute("alt", "backslash normalized (failed to load)");
+  await expect(images.nth(2)).toHaveAttribute("src", /^blob:/);
+  await expect.poll(() => authenticatedPreviewRequests).toEqual(["/api/test-images/tool-same-origin.png"]);
+  expect(externalRequests).toEqual([]);
+});
