@@ -20,6 +20,22 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
+function pollingErrorCode(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const code = (current as NodeJS.ErrnoException).code;
+    if (typeof code === "string") return code;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
+}
+
+function isTransientPollingError(error: unknown): boolean {
+  return ["ECONNREFUSED", "ECONNRESET"].includes(pollingErrorCode(error) || "");
+}
+
 async function waitFor<T>(
   operation: () => Promise<T | undefined>,
   supervisor: ChildProcess,
@@ -27,7 +43,12 @@ async function waitFor<T>(
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = await operation().catch(() => undefined);
+    let value: T | undefined;
+    try {
+      value = await operation();
+    } catch (error) {
+      if (!isTransientPollingError(error)) throw error;
+    }
     if (value !== undefined) return value;
     if (supervisor.exitCode !== null || supervisor.signalCode !== null) {
       throw new Error(`Supervisor exited early: code=${supervisor.exitCode} signal=${supervisor.signalCode}`);
@@ -113,6 +134,43 @@ function rawRequest(
   });
 }
 
+async function startProxyFixture(
+  authEnv: NodeJS.ProcessEnv,
+  machineSecret: string,
+  trustedPeer: string,
+) {
+  const publicPort = await freePort();
+  const childPort = await freePort();
+  const env: NodeJS.ProcessEnv = {
+    ...authEnv,
+    HOST: "127.0.0.1",
+    PORT: String(publicPort),
+    PI_WEB_CHILD_PORT: String(childPort),
+    PI_WEB_AUTH_MODE: "external",
+    PI_WEB_AUTH_METHODS: "external",
+    PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+    PI_WEB_AUTH_ORIGIN: `http://localhost:${publicPort}`,
+    PI_WEB_AUTH_PROXY_PEERS: trustedPeer,
+    PI_WEB_MOCK: "1",
+    PI_WEB_DEV: "0",
+    NODE_ENV: "test",
+  };
+  delete env.PI_WEB_TOKEN;
+  const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+    cwd: projectRoot,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  supervisors.add(supervisor);
+  const output: string[] = [];
+  supervisor.stdout?.on("data", data => output.push(String(data)));
+  supervisor.stderr?.on("data", data => output.push(String(data)));
+  await status(publicPort, supervisor, machineSecret).catch(error => {
+    throw new Error(`${String(error)}\n${output.join("")}`);
+  });
+  return { publicPort, supervisor, output };
+}
+
 afterEach(async () => {
   await Promise.all(Array.from(supervisors, async (supervisor) => {
     supervisors.delete(supervisor);
@@ -121,6 +179,29 @@ afterEach(async () => {
 });
 
 describe("pi-web supervisor", () => {
+  it("retries transient fixture polling errors but surfaces permanent bind errors", async () => {
+    const runningSupervisor = { exitCode: null, signalCode: null } as ChildProcess;
+    let transientAttempts = 0;
+    await expect(waitFor(async () => {
+      transientAttempts += 1;
+      if (transientAttempts === 1) {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }),
+        });
+      }
+      return "ready";
+    }, runningSupervisor, 500)).resolves.toBe("ready");
+    expect(transientAttempts).toBe(2);
+
+    const bindError = Object.assign(new Error("bind EADDRNOTAVAIL"), { code: "EADDRNOTAVAIL" });
+    let permanentAttempts = 0;
+    await expect(waitFor(async () => {
+      permanentAttempts += 1;
+      throw bindError;
+    }, runningSupervisor, 500)).rejects.toBe(bindError);
+    expect(permanentAttempts).toBe(1);
+  });
+
   it("restarts an unexpectedly terminated child without double-spawning on intentional restart", async () => {
     const publicPort = await freePort();
     const childPort = await freePort();
@@ -327,12 +408,9 @@ describe("pi-web supervisor", () => {
   }, 30_000);
 
   it("carries a trusted proxy's validated local-origin decision only across the supervised child hop", async () => {
-    const publicPort = await freePort();
-    const childPort = await freePort();
-    const configuredOrigin = `http://localhost:${publicPort}`;
     const publicAuthority = "public.example.test";
     const publicOrigin = `https://${publicAuthority}`;
-    const trustedPeer = "127.0.0.2";
+    const trustedPeer = "127.0.0.1";
     const authEnv = isolatedAuthEnv();
     const machineSecret = "synthetic-proxy-machine";
     const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
@@ -340,36 +418,9 @@ describe("pi-web supervisor", () => {
       s.config = { policy: "authenticated", methods: ["external"] };
       s.apiTokens.push({ id: "machine", name: "machine", hash: hashSecret(machineSecret), createdAt: Date.now(), expiresAt: Date.now() + 60_000 });
     });
-    const env = {
-      ...authEnv,
-      HOST: "127.0.0.1",
-      PORT: String(publicPort),
-      PI_WEB_CHILD_PORT: String(childPort),
-      PI_WEB_AUTH_MODE: "external",
-      PI_WEB_AUTH_METHODS: "external",
-      PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
-      PI_WEB_AUTH_ORIGIN: configuredOrigin,
-      PI_WEB_AUTH_PROXY_PEERS: trustedPeer,
-      PI_WEB_MOCK: "1",
-      PI_WEB_DEV: "0",
-      NODE_ENV: "test",
-    };
-    delete env.PI_WEB_TOKEN;
-    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
-      cwd: projectRoot,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    supervisors.add(supervisor);
-    const output: string[] = [];
-    supervisor.stdout?.on("data", data => output.push(String(data)));
-    supervisor.stderr?.on("data", data => output.push(String(data)));
-
-    await status(publicPort, supervisor, machineSecret).catch(error => {
-      throw new Error(`${String(error)}\n${output.join("")}`);
-    });
+    const trustedFixture = await startProxyFixture(authEnv, machineSecret, trustedPeer);
     const external = await waitFor(async () => {
-      const response = await rawRequest(publicPort, {
+      const response = await rawRequest(trustedFixture.publicPort, {
         path: "/api/state",
         localAddress: trustedPeer,
         headers: {
@@ -380,8 +431,8 @@ describe("pi-web supervisor", () => {
         },
       });
       return response.status === 502 ? undefined : response;
-    }, supervisor);
-    expect(external.status, output.join("")).toBe(200);
+    }, trustedFixture.supervisor);
+    expect(external.status, trustedFixture.output.join("")).toBe(200);
     const setCookie = external.headers["set-cookie"];
     const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)?.split(";")[0];
     expect(cookie).toContain("pi_web_session=");
@@ -393,7 +444,7 @@ describe("pi-web supervisor", () => {
       "x-forwarded-host": publicAuthority,
       "x-pi-web-client-id": "browser-client",
     };
-    const ticketResponse = await rawRequest(publicPort, {
+    const ticketResponse = await rawRequest(trustedFixture.publicPort, {
       method: "POST",
       path: "/api/ws-ticket",
       localAddress: trustedPeer,
@@ -401,7 +452,7 @@ describe("pi-web supervisor", () => {
     });
     expect(ticketResponse.status, ticketResponse.body).toBe(201);
     const { ticket } = JSON.parse(ticketResponse.body) as { ticket: string };
-    const socket = new WebSocket(`ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
+    const socket = new WebSocket(`ws://127.0.0.1:${trustedFixture.publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
       origin: publicOrigin,
       localAddress: trustedPeer,
       headers: {
@@ -419,16 +470,24 @@ describe("pi-web supervisor", () => {
     socket.close();
     await new Promise<void>(resolve => socket.once("close", () => resolve()));
 
-    const forged = await rawRequest(publicPort, {
-      method: "POST",
-      path: "/api/ws-ticket",
-      headers: {
-        ...browserHeaders,
-        host: publicAuthority,
-        "x-pi-web-supervisor-origin": "1",
-        "x-pi-web-supervisor-secret": "caller-controlled",
-      },
-    });
+    supervisors.delete(trustedFixture.supervisor);
+    await stopSupervisor(trustedFixture.supervisor);
+    const untrustedFixture = await startProxyFixture(authEnv, machineSecret, "192.0.2.60");
+    const forged = await waitFor(async () => {
+      const response = await rawRequest(untrustedFixture.publicPort, {
+        method: "POST",
+        path: "/api/ws-ticket",
+        localAddress: "127.0.0.1",
+        headers: {
+          ...browserHeaders,
+          host: publicAuthority,
+          "x-pi-web-supervisor-origin": "1",
+          "x-pi-web-supervisor-secret": "caller-controlled",
+        },
+      });
+      return response.status === 502 ? undefined : response;
+    }, untrustedFixture.supervisor);
     expect(forged.status, forged.body).toBe(403);
-  }, 30_000);
+    // Two independent cold supervisor+child startups keep separate 10-second readiness windows.
+  }, 45_000);
 });
