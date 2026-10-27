@@ -653,7 +653,12 @@ function enhanceArtifactLinks(root: ParentNode) {
   );
   for (const link of Array.from(links)) {
     if (link.closest(".artifactPreview") || link.dataset.artifactPreviewEnhanced) continue;
-    const url = new URL(link.href, window.location.origin);
+    let url = new URL(link.href, window.location.origin);
+    const sessionId = artifactActionSessionId().trim();
+    if (sessionId && url.pathname.startsWith("/api/artifacts/")) {
+      link.href = `/api/session-artifacts/${encodeURIComponent(sessionId)}${url.pathname.slice("/api/artifacts".length)}${url.search}${url.hash}`;
+      url = new URL(link.href, window.location.origin);
+    }
     const builtInKind = artifactKind(url.pathname);
     const fileName = artifactName(url.pathname);
     const customPreview = builtInKind ? undefined : matchingArtifactPreview(fileName, "file");

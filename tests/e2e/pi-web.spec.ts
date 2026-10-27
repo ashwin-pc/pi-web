@@ -1864,7 +1864,7 @@ test.describe("image rendering", () => {
   });
 
   test("renders html-preview fences inside inline markdown artifact cards", async ({ page }) => {
-    await page.route("**/api/artifacts/report.md", (route) => route.fulfill({
+    await page.route("**/api/session-artifacts/mock-current/report.md", (route) => route.fulfill({
       contentType: "text/markdown",
       body: '# Preview reproduction\n\n```html-preview\n<div id="repro">Interactive artifact</div>\n```\n',
     }));
@@ -2064,7 +2064,7 @@ test.describe("image rendering", () => {
       expect(request).toMatchObject({
         slot: "artifact-preview",
         key: "gcode-preview",
-        event: { context: { name: "e2e-toolpath.gcode", path: "/api/artifacts/e2e-toolpath.gcode", kind: "file" } },
+        event: { context: { name: "e2e-toolpath.gcode", path: "/api/session-artifacts/mock-current/e2e-toolpath.gcode", kind: "file" } },
       });
       await route.fulfill({ json: { ok: true, html: "<!doctype html><p id='toolpath'>Toolpath ready</p>" } });
     });
@@ -2102,7 +2102,7 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-video-artifact.webm");
     const video = preview.locator("video.artifactPreviewVideo");
     await expect(video).toBeVisible();
-    await expect(video.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-video-artifact.webm");
+    await expect(video.locator("source")).toHaveAttribute("src", "/api/session-artifacts/mock-current/e2e-video-artifact.webm");
     await expect(video.locator("source")).toHaveAttribute("type", "video/webm");
   });
 
@@ -2114,7 +2114,7 @@ test.describe("image rendering", () => {
     await expect(preview.locator(".artifactPreviewTitle")).toHaveText("e2e-audio-artifact.mp3");
     const audio = preview.locator("audio.artifactPreviewAudio");
     await expect(audio).toBeVisible();
-    await expect(audio.locator("source")).toHaveAttribute("src", "/api/artifacts/e2e-audio-artifact.mp3");
+    await expect(audio.locator("source")).toHaveAttribute("src", "/api/session-artifacts/mock-current/e2e-audio-artifact.mp3");
     await expect(audio.locator("source")).toHaveAttribute("type", "audio/mpeg");
 
     const downloadStarted = page.waitForEvent("download");
