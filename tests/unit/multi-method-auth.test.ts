@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -198,30 +198,6 @@ describe("multi-method human authentication", () => {
     warn.mockClear(); await kernel.startupDiagnostics(warn);
     expect(warn.mock.calls[0][0]).toContain("store-only methods=[legacy]");
   });
-  it("fails closed on a crashed-writer lock and never reaps a replacement", async () => {
-    const { store } = await fixture();
-    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: 2147483647 }));
-    const replacement = setTimeout(
-      () =>
-        void writeFile(
-          `${store.path}.lock`,
-          JSON.stringify({ pid: process.pid }),
-        ),
-      100,
-    );
-    await expect(store.update(() => undefined)).rejects.toThrow(
-      "Auth store is locked",
-    );
-    clearTimeout(replacement);
-    expect(JSON.parse(await readFile(`${store.path}.lock`, "utf8")).pid).toBe(
-      process.pid,
-    );
-    await unlink(`${store.path}.lock`);
-    await store.update((s) => {
-      s.verifiedMethods = ["legacy"];
-    });
-    expect((await store.read()).verifiedMethods).toEqual(["legacy"]);
-  }, 10_000);
   it("isolates listener failures from committed writes and other listeners", async () => {
     const { store } = await fixture();
     const seen = vi.fn();

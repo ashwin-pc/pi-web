@@ -7,10 +7,8 @@ import {
 import type { AccessPolicy, HumanAuthMethod } from "./config.js";
 import {
   mkdir,
-  open,
   readFile,
   rename,
-  unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -19,6 +17,10 @@ import {
   PasswordWorkUnavailableError,
   runPasswordWork,
 } from "./passwordWork.js";
+import {
+  acquireAuthStoreLock,
+  releaseAuthStoreLock,
+} from "./storeLock.js";
 
 export type AuthMode = "none" | "legacy" | "passkey" | "external";
 export type Identity = { id: string; displayName?: string };
@@ -181,21 +183,17 @@ export class AuthStore {
       .then(async () => {
         await mkdir(dirname(this.path), { recursive: true });
         const lockPath = `${this.path}.lock`;
-        let lock: Awaited<ReturnType<typeof open>> | undefined;
-        for (let attempt = 0; attempt < 100; attempt++) {
-          try {
-            lock = await open(lockPath, "wx", 0o600);
-            await lock.writeFile(JSON.stringify({ pid: process.pid }));
-            break;
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-            await new Promise((resolve) => setTimeout(resolve, 50));
-          }
+        let lock;
+        try {
+          lock = await acquireAuthStoreLock(lockPath);
+        } catch (error) {
+          if (
+            error instanceof Error &&
+            error.message === `Auth store is locked: ${lockPath}`
+          )
+            throw new AuthStoreBusyError(error.message);
+          throw error;
         }
-        if (!lock)
-          throw new Error(
-            `Auth store is locked: ${lockPath}. If a writer crashed, stop writers before removing the lock.`,
-          );
         try {
           const state = await this.read();
           const now = Date.now();
@@ -226,8 +224,7 @@ export class AuthStore {
             }
           }
         } finally {
-          await lock.close();
-          await unlink(lockPath);
+          await releaseAuthStoreLock(lock);
         }
       })
       .finally(() => {

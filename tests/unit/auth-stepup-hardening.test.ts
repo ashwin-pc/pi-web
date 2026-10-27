@@ -2,10 +2,17 @@ import { PassThrough, Readable } from "node:stream";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  createHash,
+  generateKeyPairSync,
+  sign,
+  type KeyObject,
+} from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   AuthKernel,
   AuthStore,
+  AuthStoreBusyError,
   hashPassword,
   hashSecret,
   verifyPassword,
@@ -25,6 +32,122 @@ const config = {
   rpID: "public.example",
   rpName: "Test",
 };
+
+function cborLength(major: number, length: number) {
+  if (length < 24) return Buffer.from([(major << 5) | length]);
+  if (length < 256) return Buffer.from([(major << 5) | 24, length]);
+  const result = Buffer.alloc(3);
+  result[0] = (major << 5) | 25;
+  result.writeUInt16BE(length, 1);
+  return result;
+}
+
+function cbor(value: string | number | Buffer | Map<string | number, unknown>) {
+  if (typeof value === "number")
+    return value >= 0
+      ? cborLength(0, value)
+      : cborLength(1, -1 - value);
+  if (typeof value === "string") {
+    const bytes = Buffer.from(value);
+    return Buffer.concat([cborLength(3, bytes.length), bytes]);
+  }
+  if (Buffer.isBuffer(value))
+    return Buffer.concat([cborLength(2, value.length), value]);
+  const entries = [...value.entries()];
+  return Buffer.concat([
+    cborLength(5, entries.length),
+    ...entries.flatMap(([key, item]) => [
+      cbor(key),
+      cbor(item as Parameters<typeof cbor>[0]),
+    ]),
+  ]);
+}
+
+function credentialKey(publicKey: KeyObject) {
+  const jwk = publicKey.export({ format: "jwk" });
+  return cbor(
+    new Map<number, unknown>([
+      [1, 2],
+      [3, -7],
+      [-1, 1],
+      [-2, Buffer.from(jwk.x!, "base64url")],
+      [-3, Buffer.from(jwk.y!, "base64url")],
+    ]),
+  );
+}
+
+function clientData(challenge: string, type: string) {
+  return Buffer.from(
+    JSON.stringify({ type, challenge, origin: config.origin }),
+  );
+}
+
+function authenticationResponse(
+  challenge: string,
+  credentialId: string,
+  privateKey: KeyObject,
+) {
+  const client = clientData(challenge, "webauthn.get");
+  const authenticator = Buffer.alloc(37);
+  createHash("sha256").update(config.rpID).digest().copy(authenticator);
+  authenticator[32] = 0x05;
+  authenticator.writeUInt32BE(1, 33);
+  const signature = sign(
+    "sha256",
+    Buffer.concat([
+      authenticator,
+      createHash("sha256").update(client).digest(),
+    ]),
+    privateKey,
+  );
+  return {
+    id: credentialId,
+    rawId: credentialId,
+    type: "public-key" as const,
+    clientExtensionResults: {},
+    response: {
+      authenticatorData: authenticator.toString("base64url"),
+      clientDataJSON: client.toString("base64url"),
+      signature: signature.toString("base64url"),
+    },
+  };
+}
+
+function registrationResponse(
+  challenge: string,
+  credentialId: Buffer,
+  publicKey: KeyObject,
+) {
+  const client = clientData(challenge, "webauthn.create");
+  const fixed = Buffer.alloc(55);
+  createHash("sha256").update(config.rpID).digest().copy(fixed);
+  fixed[32] = 0x45;
+  fixed.writeUInt16BE(credentialId.length, 53);
+  const authData = Buffer.concat([
+    fixed,
+    credentialId,
+    credentialKey(publicKey),
+  ]);
+  const attestation = cbor(
+    new Map<string, unknown>([
+      ["fmt", "none"],
+      ["attStmt", new Map()],
+      ["authData", authData],
+    ]),
+  );
+  const id = credentialId.toString("base64url");
+  return {
+    id,
+    rawId: id,
+    type: "public-key" as const,
+    clientExtensionResults: {},
+    response: {
+      attestationObject: attestation.toString("base64url"),
+      clientDataJSON: client.toString("base64url"),
+      transports: ["internal" as const],
+    },
+  };
+}
 
 function request(
   body: unknown = {},
@@ -277,13 +400,20 @@ describe("step-up and auth workload hardening", () => {
   });
 
   it("does not let a stalled login body occupy credential admission", async () => {
-    const { store, kernel } = await fixture(["legacy"]);
+    const { store, kernel } = await fixture(["password"]);
+    const passwordHash = await hashPassword("correct test password");
+    await store.update((state) => {
+      state.password = {
+        hash: passwordHash,
+        changedAt: Date.now(),
+      };
+    });
     const stalled = pendingRequest({}, "POST", "192.0.2.20");
     const stalledRes = response();
     const blocked = handlePasswordLogin(
       stalled as any,
       stalledRes,
-      new URL("/api/auth/legacy/login", config.origin),
+      new URL("/api/auth/password/login", config.origin),
       kernel,
       store,
       config.origin,
@@ -292,13 +422,13 @@ describe("step-up and auth workload hardening", () => {
     const valid = response();
     await handlePasswordLogin(
       request(
-        { password: "legacy-secret" },
+        { password: "correct test password" },
         {},
         "POST",
-        "192.0.2.21",
+        "192.0.2.20",
       ),
       valid,
-      new URL("/api/auth/legacy/login", config.origin),
+      new URL("/api/auth/password/login", config.origin),
       kernel,
       store,
       config.origin,
@@ -307,6 +437,92 @@ describe("step-up and auth workload hardening", () => {
     stalled.destroy(new Error("test complete"));
     await blocked;
     expect(stalledRes.status).toBe(400);
+  });
+
+  it("allows one in-flight password attempt per peer without blocking another peer", async () => {
+    const { store, kernel } = await fixture(["password"]);
+    const passwordHash = await hashPassword("correct test password");
+    await store.update((state) => {
+      state.password = {
+        hash: passwordHash,
+        changedAt: Date.now(),
+      };
+    });
+    const url = new URL("/api/auth/password/login", config.origin);
+    const first = response();
+    const firstAttempt = handlePasswordLogin(
+      request({ password: "wrong password" }, {}, "POST", "192.0.2.60"),
+      first,
+      url,
+      kernel,
+      store,
+      config.origin,
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const samePeer = response();
+    const distinctPeer = response();
+    await Promise.all([
+      handlePasswordLogin(
+        request({ password: "another wrong password" }, {}, "POST", "192.0.2.60"),
+        samePeer,
+        url,
+        kernel,
+        store,
+        config.origin,
+      ),
+      handlePasswordLogin(
+        request({ password: "wrong password" }, {}, "POST", "192.0.2.61"),
+        distinctPeer,
+        url,
+        kernel,
+        store,
+        config.origin,
+      ),
+      firstAttempt,
+    ]);
+    expect(first.status).toBe(401);
+    expect(samePeer.status).toBe(429);
+    expect(samePeer.headers["retry-after"]).toBe("2");
+    expect(distinctPeer.status).toBe(401);
+  });
+
+  it("maps store overload to retryable failure without consuming password cooldown", async () => {
+    const { store, kernel } = await fixture(["password"]);
+    const passwordHash = await hashPassword("correct test password");
+    await store.update((state) => {
+      state.password = {
+        hash: passwordHash,
+        changedAt: Date.now(),
+      };
+    });
+    const establish = vi
+      .spyOn(kernel, "establishSession")
+      .mockRejectedValueOnce(new AuthStoreBusyError());
+    const url = new URL("/api/auth/password/login", config.origin);
+    const busy = response();
+    await handlePasswordLogin(
+      request({ password: "correct test password" }, {}, "POST", "192.0.2.62"),
+      busy,
+      url,
+      kernel,
+      store,
+      config.origin,
+    );
+    expect(busy.status).toBe(503);
+    expect(busy.headers["retry-after"]).toBe("2");
+
+    establish.mockRestore();
+    const retry = response();
+    await handlePasswordLogin(
+      request({ password: "correct test password" }, {}, "POST", "192.0.2.62"),
+      retry,
+      url,
+      kernel,
+      store,
+      config.origin,
+    );
+    expect(retry.status).toBe(200);
   });
 
   it("keeps rotation available when the bounded login work queue is full", async () => {
@@ -425,6 +641,113 @@ describe("step-up and auth workload hardening", () => {
     );
     expect(verify.status).toBe(401);
     expect(saturated.status).toBe(429);
+  });
+
+  it("accepts signed passkey ceremonies after a peer change and keeps them single-use", async () => {
+    const keys = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const credentialId = Buffer.from("peer-change-credential");
+
+    const login = await fixture(["passkey"]);
+    await login.store.update((state) => {
+      state.credentials.push({
+        id: credentialId.toString("base64url"),
+        publicKey: credentialKey(keys.publicKey).toString("base64url"),
+        counter: 0,
+        name: "Test passkey",
+        createdAt: Date.now(),
+      });
+    });
+    const loginOptions = response();
+    await handlePasskeyRoute(
+      request({}, {}, "POST", "192.0.2.70"),
+      loginOptions,
+      new URL("/api/auth/passkey/options", config.origin),
+      login.kernel,
+      login.store,
+      config,
+    );
+    const assertion = authenticationResponse(
+      JSON.parse(loginOptions.text).challenge,
+      credentialId.toString("base64url"),
+      keys.privateKey,
+    );
+    const loginVerify = response();
+    await handlePasskeyRoute(
+      request(assertion, {}, "POST", "198.51.100.70"),
+      loginVerify,
+      new URL("/api/auth/passkey/verify", config.origin),
+      login.kernel,
+      login.store,
+      config,
+    );
+    expect(loginVerify.status).toBe(200);
+    const loginReplay = response();
+    await handlePasskeyRoute(
+      request(assertion, {}, "POST", "203.0.113.70"),
+      loginReplay,
+      new URL("/api/auth/passkey/verify", config.origin),
+      login.kernel,
+      login.store,
+      config,
+    );
+    expect(loginReplay.status).toBe(400);
+
+    const bootstrap = await fixture(["passkey"]);
+    await bootstrap.store.update((state) => {
+      state.bootstrap = {
+        hash: hashSecret("setup-secret"),
+        expiresAt: Date.now() + 60_000,
+      };
+    });
+    const bootstrapOptions = response();
+    await handlePasskeyRoute(
+      request(
+        { token: "setup-secret", name: "Changed peer" },
+        {},
+        "POST",
+        "192.0.2.71",
+      ),
+      bootstrapOptions,
+      new URL("/api/auth/bootstrap/options", config.origin),
+      bootstrap.kernel,
+      bootstrap.store,
+      config,
+    );
+    const registration = registrationResponse(
+      JSON.parse(bootstrapOptions.text).challenge,
+      Buffer.from("bootstrap-peer-change"),
+      keys.publicKey,
+    );
+    const bootstrapVerify = response();
+    await handlePasskeyRoute(
+      request(
+        { response: registration, name: "Changed peer" },
+        {},
+        "POST",
+        "198.51.100.71",
+      ),
+      bootstrapVerify,
+      new URL("/api/auth/bootstrap/verify", config.origin),
+      bootstrap.kernel,
+      bootstrap.store,
+      config,
+    );
+    expect(bootstrapVerify.status).toBe(200);
+    const bootstrapReplay = response();
+    await handlePasskeyRoute(
+      request(
+        { response: registration, name: "Changed peer" },
+        {},
+        "POST",
+        "203.0.113.71",
+      ),
+      bootstrapReplay,
+      new URL("/api/auth/bootstrap/verify", config.origin),
+      bootstrap.kernel,
+      bootstrap.store,
+      config,
+    );
+    expect(bootstrapReplay.status).toBe(400);
   });
 
   it("skips auth-store rewrites for unauthenticated logout and bounds backlog", async () => {

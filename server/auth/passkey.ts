@@ -74,7 +74,7 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
     const response = await body(req) as AuthenticationResponseJSON; const challenge = clientChallenge(response);
     if (!challenge) { json(res, 400, { ok: false, error: "Malformed authenticator response" }); return true; }
     const pending = challenges.get(challenge);
-    if (!pending || pending.peer !== `${store.path}:${loginPeer(req)}` || pending.kind !== "login" || pending.expiresAt < Date.now() || !challenges.delete(pending.challenge)) { json(res, 400, { ok: false, error: "Expired challenge" }); return true; }
+    if (!pending || pending.kind !== "login" || pending.expiresAt < Date.now() || !challenges.delete(pending.challenge)) { json(res, 400, { ok: false, error: "Expired challenge" }); return true; }
     const state = await store.read(); const record = state.credentials.find(c => c.id === response.id && !c.revokedAt); if (!record) { json(res, 401, { ok: false, error: "Unknown credential" }); return true; }
     const credential: WebAuthnCredential = { id: record.id, publicKey: bytes(record.publicKey), counter: record.counter, transports: record.transports as AuthenticatorTransport[] | undefined };
     const result = await verifyAuthenticationResponse({ response, expectedChallenge: pending.challenge, expectedOrigin: config.origin, expectedRPID: config.rpID, credential, requireUserVerification: true });
@@ -96,7 +96,7 @@ export async function handlePasskeyRoute(req: IncomingMessage, res: ServerRespon
     const input = await body(req) as { response: RegistrationResponseJSON; name?: string }; const challenge = clientChallenge(input.response);
     if (!challenge) { json(res, 400, { ok: false, error: "Malformed authenticator response" }); return true; }
     const pending = challenges.get(challenge);
-    if (!pending || pending.peer !== `${store.path}:${loginPeer(req)}` || pending.kind !== "register" || pending.expiresAt < Date.now() || !pending.bootstrapHash || !challenges.delete(pending.challenge)) { json(res, 400, { ok: false, error: "Expired challenge" }); return true; }
+    if (!pending || pending.kind !== "register" || pending.expiresAt < Date.now() || !pending.bootstrapHash || !challenges.delete(pending.challenge)) { json(res, 400, { ok: false, error: "Expired challenge" }); return true; }
     const result = await verifyRegistrationResponse({ response: input.response, expectedChallenge: pending.challenge, expectedOrigin: config.origin, expectedRPID: config.rpID, requireUserVerification: true });
     if (!result.verified || !result.registrationInfo) { json(res, 401, { ok: false, error: "Verification failed" }); return true; }
     const c = result.registrationInfo.credential;

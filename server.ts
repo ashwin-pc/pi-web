@@ -1539,7 +1539,6 @@ if (isDev) {
 startEventLoopTelemetry();
 
 extensionHttpServer = server;
-server.requestTimeout = 60_000;
 server.headersTimeout = 30_000;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);

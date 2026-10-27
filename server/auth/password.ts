@@ -7,6 +7,7 @@ import {
   hashPassword,
   hashSecret,
   isLoopback,
+  AuthStoreBusyError,
   PasswordWorkUnavailableError,
   verifyPassword,
   type AuthKernel,
@@ -15,7 +16,7 @@ import {
 
 const attempts = new Map<
   string,
-  { count: number; resetAt: number; nextAt: number }
+  { count: number; resetAt: number; nextAt: number; inFlight: boolean }
 >();
 const ATTEMPTS_CAPACITY = 4096;
 export function loginPeer(req: IncomingMessage) {
@@ -35,28 +36,49 @@ const send = (res: ServerResponse, status: number, value: unknown) => {
   });
   res.end(JSON.stringify(value));
 };
-function allow(req: IncomingMessage, store: AuthStore) {
+function reserveAttempt(req: IncomingMessage, store: AuthStore) {
   const now = Date.now();
   for (const [id, rate] of attempts)
-    if (rate.resetAt <= now) attempts.delete(id);
+    if (!rate.inFlight && rate.resetAt <= now) attempts.delete(id);
   const id = `${store.path}:${loginPeer(req)}`;
   const existing = attempts.get(id);
   if (existing) {
     attempts.delete(id);
     attempts.set(id, existing);
-    return now >= existing.nextAt;
+    if (existing.inFlight || now < existing.nextAt) return undefined;
+    existing.inFlight = true;
+    return id;
   }
   if (attempts.size >= ATTEMPTS_CAPACITY) {
-    const oldest = attempts.keys().next().value;
-    if (oldest !== undefined) attempts.delete(oldest);
+    const oldestIdle = [...attempts].find(([, rate]) => !rate.inFlight)?.[0];
+    if (oldestIdle === undefined) return undefined;
+    attempts.delete(oldestIdle);
   }
   const rate = {
     count: 0,
     resetAt: now + 60_000,
     nextAt: 0,
+    inFlight: true,
   };
   attempts.set(id, rate);
-  return true;
+  return id;
+}
+function finishAttempt(
+  id: string,
+  outcome: "success" | "wrong-password" | "other",
+) {
+  const rate = attempts.get(id);
+  if (!rate) return;
+  if (outcome === "success") {
+    attempts.delete(id);
+    return;
+  }
+  rate.inFlight = false;
+  if (outcome === "wrong-password") {
+    rate.count++;
+    rate.nextAt =
+      Date.now() + Math.min(2000, 100 * 2 ** Math.min(rate.count - 1, 5));
+  }
 }
 export function passwordLoginPage(
   res: ServerResponse,
@@ -103,11 +125,13 @@ export async function handlePasswordLogin(
     });
     return true;
   }
-  if (!allow(req, store)) {
+  const attemptId = method === "password" ? reserveAttempt(req, store) : "";
+  if (method === "password" && !attemptId) {
     res.setHeader("retry-after", "2");
     send(res, 429, { error: "Too many attempts. Try again later." });
     return true;
   }
+  let outcome: "success" | "wrong-password" | "other" = "other";
   try {
     const state = await store.read();
     let passwordHash = state.password?.hash;
@@ -159,6 +183,7 @@ export async function handlePasswordLogin(
         !state.password ||
         !(await verifyPassword(body.password, state.password.hash))
       ) {
+        outcome = "wrong-password";
         send(res, 401, { error: "Invalid credentials" });
         return true;
       }
@@ -183,6 +208,7 @@ export async function handlePasswordLogin(
       }
       await kernel.establishSession(res, result.identity, method, req);
       send(res, 200, { ok: true });
+      outcome = "success";
       return true;
     }
     await kernel.establishSession(
@@ -194,25 +220,19 @@ export async function handlePasswordLogin(
       { passwordHash },
     );
     send(res, 200, { ok: true });
+    outcome = "success";
     return true;
   } catch (error) {
-    const busy = error instanceof PasswordWorkUnavailableError;
+    const busy =
+      error instanceof PasswordWorkUnavailableError ||
+      error instanceof AuthStoreBusyError;
     if (busy) res.setHeader("retry-after", "2");
     send(res, busy ? 503 : 400, {
       error: error instanceof Error ? error.message : "Invalid request",
     });
     return true;
   } finally {
-    const id = `${store.path}:${loginPeer(req)}`;
-    if (res.statusCode < 400) attempts.delete(id);
-    else if (res.statusCode === 401) {
-      const rate = attempts.get(id);
-      if (rate) {
-        rate.count++;
-        rate.nextAt =
-          Date.now() + Math.min(2000, 100 * 2 ** Math.min(rate.count - 1, 5));
-      }
-    }
+    if (attemptId) finishAttempt(attemptId, outcome);
   }
 }
 export async function validatedPasswordHash(password: unknown) {
