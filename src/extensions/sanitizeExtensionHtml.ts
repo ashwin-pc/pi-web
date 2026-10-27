@@ -26,7 +26,7 @@ export function sanitizeExtensionHtml(html: string): DocumentFragment {
   const fragment = DOMPurify.sanitize(template.innerHTML, {
     RETURN_DOM_FRAGMENT: true,
     USE_PROFILES: { html: true, svg: true, svgFilters: true },
-    ADD_ATTR: ["target"],
+    ADD_ATTR: ["autofocus", "target"],
     FORBID_TAGS: ["iframe", "frame", "object", "embed", "portal"],
     FORBID_ATTR: ["srcdoc"],
   });

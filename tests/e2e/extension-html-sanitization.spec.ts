@@ -13,7 +13,7 @@ test.beforeEach(async ({ page }) => {
 const contributionHtml = (sink: string, action: string) => `
   <style>.safe-${sink} { color: rgb(180, 190, 200); }</style>
   <form class="safe-${sink}" data-web-action="${action}" action="https://example.invalid/escape">
-    <label>${sink} value <input name="value" value="${sink}-value" aria-label="${sink} value"></label>
+    <label>${sink} value <input name="value" value="${sink}-value" aria-label="${sink} value"${sink === "panel" ? " autofocus" : ""}></label>
     <button type="submit" data-web-action="${action}" data-web-payload='{"sink":"${sink}"}'>Run ${sink}</button>
   </form>
   <button type="button" class="${sink}-event-marker" onclick="window.extensionEventMarkers.push('${sink}')">Event marker</button>
@@ -86,6 +86,9 @@ test("sanitizes every privileged extension HTML sink without breaking contributi
   await page.locator(".actionLauncherToggle").click();
   await page.locator(".actionLauncherItem", { hasText: "Security test" }).click();
   const panel = page.locator("#webExtensionPanel");
+  const panelInput = panel.getByRole("textbox", { name: "panel value" });
+  await expect(panelInput).toHaveAttribute("autofocus", "");
+  await expect(panelInput).toBeFocused();
   await assertSafeMarkup(panel, "panel");
   await panel.getByRole("button", { name: "Run panel" }).click();
   await expect.poll(() => invocations.some((input) =>
