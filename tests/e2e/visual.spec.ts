@@ -82,7 +82,7 @@ async function prepareWebsiteWorkStory(page: import("@playwright/test").Page, pr
       ok: true, sessionId: "website-launch", cwd: "/workspace/launch-plan", model: marketingModel, thinkingLevel: "medium", thinkingLevels: ["off", "low", "medium", "high"],
     } });
   });
-  await page.route("**/api/artifacts/launch-brief.html", (route) => route.fulfill({
+  await page.route(/\/api\/(?:artifacts\/|session-artifacts\/[^/]+\/)launch-brief\.html(?:\?.*)?$/, (route) => route.fulfill({
     contentType: "text/html; charset=utf-8",
     body: `<!doctype html><style>*{box-sizing:border-box}body{margin:0;min-height:100vh;padding:28px;background:#0d1015;color:#f6f2e8;font:15px system-ui}.brief{max-width:760px;margin:auto}.eyebrow{color:#e2b15f;font-size:11px;font-weight:750;letter-spacing:.16em;text-transform:uppercase}h1{margin:8px 0 6px;font-size:34px;line-height:1.05}p{margin:0;color:#aeb4bf;line-height:1.5}.signal{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:24px 0}.card{min-height:112px;padding:15px;border:1px solid #343a45;border-radius:14px;background:#161a21}.card strong{display:block;margin-bottom:9px;color:#e2b15f;font-size:24px}.card span{color:#c8cdd5;font-size:12px;line-height:1.4}.direction{padding:17px;border-left:3px solid #e2b15f;border-radius:4px 14px 14px 4px;background:#191a1c}.direction b{display:block;margin-bottom:5px}@media(max-width:520px){body{padding:20px}.signal{grid-template-columns:1fr 1fr}.signal .card:last-child{grid-column:1/-1}h1{font-size:29px}}</style><main class="brief"><div class="eyebrow">Spring launch · research brief</div><h1>Make every handoff feel effortless.</h1><p>A launch direction grounded in 14 customer conversations and six market notes.</p><section class="signal"><div class="card"><strong>11/14</strong><span>called team handoffs their biggest source of delay</span></div><div class="card"><strong>3×</strong><span>more confidence when progress stayed visible</span></div><div class="card"><strong>1</strong><span>clear promise across the launch story</span></div></section><section class="direction"><b>Recommended direction</b><p>Lead with faster handoffs. Prove it with customer evidence. End with one simple next step.</p></section></main>`,
   }));
@@ -182,6 +182,7 @@ async function prepareRecommendedAddons(page: import("@playwright/test").Page, p
   await expect(page.locator('#headerActions .webHeaderActionButton[title="Session recap preview"]')).toBeVisible();
   await expect(page.locator('.webFooterEntry[data-footer-key="local-git-footer"]')).toContainText("main");
   await page.addStyleTag({ content: "*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}.messageTimestamp{visibility:hidden!important}" });
+  return activeSessionId;
 }
 
 async function mockConversationTreeApi(page: import("@playwright/test").Page) {
@@ -527,7 +528,7 @@ test.describe("visual regression", () => {
     test.skip(testInfo.project.name === "tablet", "Website captures use desktop and mobile");
     const project = testInfo.project.name;
     for (const scene of ["artifact-reference", "notepad", "github", "recap", "git-footer"] as const) {
-      await prepareRecommendedAddons(page, project);
+      const sessionId = await prepareRecommendedAddons(page, project);
       if (scene === "notepad") await openLauncherAction(page, "Notepad");
       if (scene === "github") {
         await mockGitApi(page); await openLauncherAction(page, "Session details"); await page.locator("#sessionInfoGit").click(); await page.locator(".gitExtensionTab", { hasText: "GitHub" }).click();
@@ -556,6 +557,15 @@ test.describe("visual regression", () => {
         const failed = page.getByRole("button", { name: "Failed" });
         if (await failed.count()) throw new Error(`Artifact reference failed: ${await failed.getAttribute("title")}`);
         await expect(result).toContainText("Markdown link");
+        const scopedPrefix = `/api/session-artifacts/${encodeURIComponent(sessionId)}/`;
+        await expect(result).toContainText(`${scopedPrefix}preview.html`);
+        // Assert real provenance first, then normalize the randomized session ID
+        // so this visual fixture measures the reference layout, not UUID length.
+        await result.evaluate((element, prefix) => {
+          const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+          let text: Node | null;
+          while ((text = walker.nextNode())) text.textContent = text.textContent?.replaceAll(prefix, "/api/session-artifacts/s/") || "";
+        }, scopedPrefix);
       }
       if (scene === "artifact-reference") {
         await page.locator("#modelSettingsButton").click();
