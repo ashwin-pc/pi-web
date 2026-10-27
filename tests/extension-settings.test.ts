@@ -120,7 +120,7 @@ describe("extension settings validation", () => {
     expect(tooMany.errors.map((error) => error.path)).toContain("categories");
   });
 
-  it("skips patterns for values rejected by declared or absolute scalar bounds", () => {
+  it("skips patterns for values rejected by a declared scalar bound", () => {
     let patternReads = 0;
     const field = {
       key: "value", type: "text", label: "Value", maxLength: 4,
@@ -137,12 +137,32 @@ describe("extension settings validation", () => {
     expect(declared.errors).toContainEqual({ path: "value", message: "Value must be ≤ 4 chars" });
     expect(declared.values.value).toBe("aaaaa!");
     expect(patternReads).toBe(0);
+  });
 
-    delete field.maxLength;
-    const absolute = validateSettingsValues(boundedSchema, { value: "a".repeat(8 * 1024 + 1) });
-    expect(absolute.errors).toContainEqual({ path: "value", message: "Value must be ≤ 8192 chars" });
-    expect(absolute.values.value).toBe("a".repeat(8 * 1024));
-    expect(patternReads).toBe(0);
+  it("preserves values allowed by declared bounds and the owner persistence budget", () => {
+    const declaredSchema: SettingsSchema = {
+      id: "demo-ext.long-declared",
+      title: "Long declared value",
+      schemaVersion: 1,
+      fields: [{ key: "value", type: "text", label: "Value", maxLength: 20_000 }],
+    };
+    const declaredValue = "a".repeat(10_000);
+    expect(validateSettingsValues(declaredSchema, { value: declaredValue })).toEqual({
+      values: { value: declaredValue },
+      errors: [],
+    });
+
+    const uncappedSchema: SettingsSchema = {
+      id: "demo-ext.long-uncapped",
+      title: "Long uncapped value",
+      schemaVersion: 1,
+      fields: [{ key: "value", type: "textarea", label: "Value" }],
+    };
+    const uncappedValue = "b".repeat(32_000);
+    expect(validateSettingsValues(uncappedSchema, { value: uncappedValue })).toEqual({
+      values: { value: uncappedValue },
+      errors: [],
+    });
   });
 
   it("checks patterns normally for inputs within scalar bounds", () => {
@@ -159,7 +179,7 @@ describe("extension settings validation", () => {
     });
   });
 
-  it("bounds list work before coercing rows while preserving declared-limit compatibility", () => {
+  it("preserves uncapped lists and skips row patterns after a declared list bound fails", () => {
     let patternReads = 0;
     const listSchema: SettingsSchema = {
       id: "demo-ext.bounded-list",
@@ -173,13 +193,14 @@ describe("extension settings validation", () => {
         }],
       }],
     };
-    const input = Array.from({ length: 1025 }, () => ({ value: "ok" }));
-    const absolute = validateSettingsValues(listSchema, { rows: input });
-    expect(absolute.errors).toContainEqual({ path: "rows", message: "Rows allows at most 1024" });
-    expect((absolute.values.rows as unknown[])).toHaveLength(1024);
-    expect(patternReads).toBe(0);
+    const input = Array.from({ length: 1025 }, () => ({ value: "ooo" }));
+    const uncapped = validateSettingsValues(listSchema, { rows: input });
+    expect(uncapped.errors).toEqual([]);
+    expect((uncapped.values.rows as unknown[])).toHaveLength(1025);
+    expect(patternReads).toBe(1025);
 
     listSchema.fields[0].maxItems = 2;
+    patternReads = 0;
     const declared = validateSettingsValues(listSchema, { rows: input.slice(0, 3) });
     expect(declared.errors).toContainEqual({ path: "rows", message: "Rows allows at most 2" });
     expect((declared.values.rows as unknown[])).toHaveLength(3);

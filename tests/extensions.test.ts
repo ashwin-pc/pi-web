@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   discoverExtensionEntryPaths,
-  MAX_EXTENSION_DISCOVERY_OBJECTS,
   resolveBundledExtensionPaths,
+  resolvePiWebExtensionPaths,
 } from "../server/extensions.js";
 import { createWebUiBridge } from "../server/extensions/webUi.js";
 import { SessionSettlementTracker } from "../server/session/settlement.js";
@@ -23,6 +23,7 @@ async function makeTempDir() {
 
 afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  vi.unstubAllEnvs();
 });
 
 describe("bundled extension path discovery", () => {
@@ -61,39 +62,43 @@ describe("bundled extension path discovery", () => {
     expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "src", "main.ts")]);
   });
 
-  it("rejects manifest paths and symlinks that escape the extension root", async () => {
+  it("preserves documented global symlink installs outside the discovery root", async () => {
     const root = await makeTempDir();
-    const extensionsDir = join(root, "extensions");
-    const packageDir = join(extensionsDir, "bundle");
-    const outsideDir = join(root, "outside");
-    await mkdir(packageDir, { recursive: true });
-    await mkdir(outsideDir, { recursive: true });
-    await writeFile(join(outsideDir, "outside.ts"), "export default () => {};\n");
-    await writeFile(join(packageDir, "inside.ts"), "export default () => {};\n");
-    await symlink(join(outsideDir, "outside.ts"), join(packageDir, "linked.ts"));
-    await symlink(join(outsideDir, "outside.ts"), join(extensionsDir, "outside-link.ts"));
-    await writeFile(join(packageDir, "package.json"), JSON.stringify({
-      pi: { extensions: ["./inside.ts", "../../outside/outside.ts", "./linked.ts", join(outsideDir, "outside.ts")] },
-    }));
+    const extensionsDir = join(root, "web-home", "extensions");
+    const checkoutExtension = join(root, "checkout", "example.ts");
+    await mkdir(extensionsDir, { recursive: true });
+    await mkdir(join(checkoutExtension, ".."), { recursive: true });
+    await writeFile(checkoutExtension, "export default () => {};\n");
+    await symlink(checkoutExtension, join(extensionsDir, "example.ts"));
+    vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
 
-    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "inside.ts")]);
+    expect(resolvePiWebExtensionPaths(join(root, "project"))).toEqual([join(extensionsDir, "example.ts")]);
   });
 
-  it("allows manifest entries and symlinks that remain inside the extension root", async () => {
+  it("allows sibling, absolute, and ..foo manifest entries inside the extension root", async () => {
     const root = await makeTempDir();
-    const extensionsDir = join(root, "extensions");
+    const cwd = join(root, "project");
+    const extensionsDir = join(cwd, ".pi", "web", "extensions");
     const packageDir = join(extensionsDir, "bundle");
     const sharedDir = join(extensionsDir, "shared");
     await mkdir(packageDir, { recursive: true });
     await mkdir(sharedDir, { recursive: true });
     await writeFile(join(sharedDir, "main.ts"), "export default () => {};\n");
-    await symlink(join(sharedDir, "main.ts"), join(packageDir, "linked.ts"));
-    await writeFile(join(packageDir, "package.json"), JSON.stringify({ pi: { extensions: ["./linked.ts"] } }));
+    await writeFile(join(sharedDir, "absolute.ts"), "export default () => {};\n");
+    await writeFile(join(extensionsDir, "..foo.ts"), "export default () => {};\n");
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({
+      pi: { extensions: ["../shared/main.ts", join(sharedDir, "absolute.ts"), "../..foo.ts"] },
+    }));
+    vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
 
-    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "linked.ts")]);
+    expect(resolvePiWebExtensionPaths(cwd)).toEqual([
+      join(sharedDir, "main.ts"),
+      join(sharedDir, "absolute.ts"),
+      join(extensionsDir, "..foo.ts"),
+    ]);
   });
 
-  it("uses real directory identity to terminate manifest and symlink cycles", async () => {
+  it("uses real directory identity to terminate manifest and symlink cycles (N33)", async () => {
     const root = await makeTempDir();
     const extensionsDir = join(root, "extensions");
     const packageDir = join(extensionsDir, "bundle");
@@ -105,15 +110,37 @@ describe("bundled extension path discovery", () => {
     expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(packageDir, "entry.ts")]);
   });
 
-  it("bounds traversal by visited filesystem objects, including ignored entries", async () => {
+  it("does not truncate discovery after 1024 filesystem objects", async () => {
     const root = await makeTempDir();
     const extensionsDir = join(root, "extensions");
     await mkdir(extensionsDir, { recursive: true });
-    await Promise.all(Array.from({ length: MAX_EXTENSION_DISCOVERY_OBJECTS }, (_, i) =>
+    await Promise.all(Array.from({ length: 1024 }, (_, i) =>
       writeFile(join(extensionsDir, `a-${String(i).padStart(4, "0")}.txt`), "ignored\n")));
     await writeFile(join(extensionsDir, "z-after-limit.ts"), "export default () => {};\n");
 
-    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([]);
+    expect(discoverExtensionEntryPaths(extensionsDir)).toEqual([join(extensionsDir, "z-after-limit.ts")]);
+  });
+
+  it("logs and skips workspace extension entries that escape the workspace root", async () => {
+    const root = await makeTempDir();
+    const cwd = join(root, "project");
+    const extensionsDir = join(cwd, ".pi", "web", "extensions");
+    const packageDir = join(extensionsDir, "bundle");
+    const outsideExtension = join(root, "outside.ts");
+    await mkdir(packageDir, { recursive: true });
+    await writeFile(outsideExtension, "export default () => {};\n");
+    await symlink(outsideExtension, join(extensionsDir, "outside-link.ts"));
+    await writeFile(join(packageDir, "package.json"), JSON.stringify({
+      pi: { extensions: [outsideExtension] },
+    }));
+    vi.stubEnv("PI_WEB_HOME", join(root, "web-home"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    expect(resolvePiWebExtensionPaths(cwd)).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${join(extensionsDir, "outside-link.ts")}"`));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`root "${extensionsDir}"`));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`"${outsideExtension}"`));
+    warn.mockRestore();
   });
 
   it("does not add bundled extensions while running from the pi-web app directory", async () => {

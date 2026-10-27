@@ -11,9 +11,6 @@
 
 import type { JsonObject } from "./settings.js";
 
-const ABSOLUTE_SCALAR_MAX_LENGTH = 8 * 1024;
-const ABSOLUTE_LIST_MAX_ITEMS = 1024;
-
 export type FieldType = "toggle" | "text" | "textarea" | "number" | "select" | "list";
 
 export type SelectOption = { value: string; label?: string };
@@ -143,24 +140,22 @@ function coerceScalar(
       const s = typeof raw === "string" ? raw : raw === undefined || raw === null ? "" : String(raw);
       const trimmed = field.type === "select" ? s.trim() : s;
       const declaredOverLimit = field.maxLength !== undefined && trimmed.length > field.maxLength;
-      const absoluteOverLimit = trimmed.length > ABSOLUTE_SCALAR_MAX_LENGTH;
       if (field.required && !trimmed.trim()) errors.push({ path, message: `${field.label} is required` });
       if (field.minLength !== undefined && trimmed.length < field.minLength) {
         errors.push({ path, message: `${field.label} must be ≥ ${field.minLength} chars` });
       }
       if (declaredOverLimit) {
         errors.push({ path, message: `${field.label} must be ≤ ${field.maxLength} chars` });
-      } else if (absoluteOverLimit) {
-        errors.push({ path, message: `${field.label} must be ≤ ${ABSOLUTE_SCALAR_MAX_LENGTH} chars` });
       }
-      if (!skipPattern && !declaredOverLimit && !absoluteOverLimit && field.pattern && trimmed) {
+      const pattern = !skipPattern && !declaredOverLimit ? field.pattern : undefined;
+      if (pattern && trimmed) {
         try {
-          if (!new RegExp(field.pattern).test(trimmed)) errors.push({ path, message: `${field.label} is invalid` });
+          if (!new RegExp(pattern).test(trimmed)) errors.push({ path, message: `${field.label} is invalid` });
         } catch {
           /* invalid pattern in descriptor — ignore */
         }
       }
-      return absoluteOverLimit ? trimmed.slice(0, ABSOLUTE_SCALAR_MAX_LENGTH) : trimmed;
+      return trimmed;
     }
     default:
       return raw;
@@ -255,16 +250,12 @@ function coerceList(
   }
   const arr = Array.isArray(raw) ? raw : [];
   const declaredOverLimit = field.maxItems !== undefined && arr.length > field.maxItems;
-  const absoluteOverLimit = arr.length > ABSOLUTE_LIST_MAX_ITEMS;
   if (declaredOverLimit) {
     errors.push({ path, message: `${field.label} allows at most ${field.maxItems}` });
-  } else if (absoluteOverLimit) {
-    errors.push({ path, message: `${field.label} allows at most ${ABSOLUTE_LIST_MAX_ITEMS}` });
   }
-  const bounded = absoluteOverLimit ? arr.slice(0, ABSOLUTE_LIST_MAX_ITEMS) : arr;
-  const skipRowPatterns = skipPatterns || declaredOverLimit || absoluteOverLimit;
+  const skipRowPatterns = skipPatterns || declaredOverLimit;
   const itemFields = field.itemFields ?? [];
-  const rows: JsonObject[] = bounded.map((rawRow, i) => {
+  const rows: JsonObject[] = arr.map((rawRow, i) => {
     const row: JsonObject = {};
     if (!isRecord(rawRow)) {
       errors.push({ path: `${path}[${i}]`, message: `${field.label} item must be an object` });

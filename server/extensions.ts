@@ -1,6 +1,6 @@
 import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { resolveWebHomePath } from "./shared/webHome.js";
 
 type BundledExtensionPathOptions = {
@@ -9,15 +9,13 @@ type BundledExtensionPathOptions = {
   bundledExtensionsDir: string;
 };
 
+type DiscoveryPolicy = "trusted" | "workspace-contained";
+
 type DiscoveryContext = {
   root: string;
   seenDirs: Set<string>;
-  visitedObjects: number;
-  truncated: boolean;
+  policy: DiscoveryPolicy;
 };
-
-const MAX_DISCOVERY_DEPTH = 32;
-export const MAX_EXTENSION_DISCOVERY_OBJECTS = 1024;
 
 function isExtensionFile(name: string) {
   return name.endsWith(".ts") || name.endsWith(".js");
@@ -25,25 +23,18 @@ function isExtensionFile(name: string) {
 
 function isContained(root: string, path: string) {
   const fromRoot = relative(root, path);
-  return fromRoot === "" || (!fromRoot.startsWith("..") && !isAbsolute(fromRoot));
+  return fromRoot === "" || (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`) && !isAbsolute(fromRoot));
 }
 
-function realpathWithinRoot(path: string, context: DiscoveryContext) {
+function realpathForDiscovery(path: string, context: DiscoveryContext) {
   try {
     const realPath = realpathSync(path);
-    return isContained(context.root, realPath) ? realPath : undefined;
+    if (context.policy === "trusted" || isContained(context.root, realPath)) return realPath;
+    console.warn(`pi-web: skipped workspace extension "${path}" because it resolves outside root "${context.root}"`);
+    return undefined;
   } catch {
     return undefined;
   }
-}
-
-function visitObject(context: DiscoveryContext) {
-  if (context.visitedObjects >= MAX_EXTENSION_DISCOVERY_OBJECTS) {
-    context.truncated = true;
-    return false;
-  }
-  context.visitedObjects += 1;
-  return true;
 }
 
 function dedupePaths(paths: string[]) {
@@ -57,14 +48,14 @@ function dedupePaths(paths: string[]) {
   });
 }
 
-function containedExistingPath(path: string, context: DiscoveryContext) {
-  if (!existsSync(path) || !visitObject(context)) return undefined;
-  return realpathWithinRoot(path, context);
+function existingPath(path: string, context: DiscoveryContext) {
+  if (!existsSync(path)) return undefined;
+  return realpathForDiscovery(path, context);
 }
 
-function readManifestExtensionEntries(dir: string, context: DiscoveryContext, depth: number) {
+function readManifestExtensionEntries(dir: string, context: DiscoveryContext) {
   const packageJsonPath = join(dir, "package.json");
-  if (!containedExistingPath(packageJsonPath, context)) return [];
+  if (!existingPath(packageJsonPath, context)) return [];
 
   try {
     const pkg = JSON.parse(readFileSync(packageJsonPath, "utf-8")) as { pi?: { extensions?: unknown } };
@@ -72,15 +63,14 @@ function readManifestExtensionEntries(dir: string, context: DiscoveryContext, de
 
     const entries: string[] = [];
     for (const entry of pkg.pi.extensions) {
-      if (context.truncated) break;
-      if (typeof entry !== "string" || isAbsolute(entry)) continue;
+      if (typeof entry !== "string") continue;
       const entryPath = resolve(dir, entry);
-      if (!isContained(resolve(dir), entryPath) || !containedExistingPath(entryPath, context)) continue;
+      if (!existingPath(entryPath, context)) continue;
 
       try {
         const stats = statSync(entryPath);
         if (stats.isFile()) entries.push(entryPath);
-        else if (stats.isDirectory()) entries.push(...discoverExtensionEntryPathsInternal(entryPath, context, depth + 1));
+        else if (stats.isDirectory()) entries.push(...discoverExtensionEntryPathsInternal(entryPath, context));
       } catch {
         // Ignore invalid manifest entries.
       }
@@ -91,37 +81,33 @@ function readManifestExtensionEntries(dir: string, context: DiscoveryContext, de
   }
 }
 
-function resolveExtensionEntries(dir: string, context: DiscoveryContext, depth: number) {
-  const manifestEntries = readManifestExtensionEntries(dir, context, depth);
+function resolveExtensionEntries(dir: string, context: DiscoveryContext) {
+  const manifestEntries = readManifestExtensionEntries(dir, context);
   if (manifestEntries.length > 0) return manifestEntries;
-  if (context.truncated) return [];
 
   for (const indexName of ["index.ts", "index.js"]) {
     const indexPath = join(dir, indexName);
-    if (containedExistingPath(indexPath, context)) return [indexPath];
-    if (context.truncated) return [];
+    if (existingPath(indexPath, context)) return [indexPath];
   }
   return null;
 }
 
-function discoverExtensionEntryPathsInternal(dir: string, context: DiscoveryContext, depth: number): string[] {
-  if (context.truncated || depth > MAX_DISCOVERY_DEPTH) return [];
-  const realDir = realpathWithinRoot(dir, context);
+function discoverExtensionEntryPathsInternal(dir: string, context: DiscoveryContext): string[] {
+  const realDir = realpathForDiscovery(dir, context);
   if (!realDir || context.seenDirs.has(realDir)) return [];
   context.seenDirs.add(realDir);
 
-  const rootEntries = resolveExtensionEntries(dir, context, depth);
+  const rootEntries = resolveExtensionEntries(dir, context);
   if (rootEntries) return dedupePaths(rootEntries);
 
   const discovered: string[] = [];
   try {
     const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (!visitObject(context)) break;
       if (entry.name.startsWith(".") || entry.name === "node_modules") continue;
 
       const entryPath = join(dir, entry.name);
-      if (!realpathWithinRoot(entryPath, context)) continue;
+      if (!realpathForDiscovery(entryPath, context)) continue;
       let isFile = entry.isFile();
       let isDirectory = entry.isDirectory();
 
@@ -141,7 +127,7 @@ function discoverExtensionEntryPathsInternal(dir: string, context: DiscoveryCont
       }
 
       if (isDirectory) {
-        const nestedEntries = resolveExtensionEntries(entryPath, context, depth + 1);
+        const nestedEntries = resolveExtensionEntries(entryPath, context);
         if (nestedEntries) discovered.push(...nestedEntries);
       }
     }
@@ -152,7 +138,11 @@ function discoverExtensionEntryPathsInternal(dir: string, context: DiscoveryCont
   return dedupePaths(discovered);
 }
 
-export function discoverExtensionEntryPaths(dir: string, seenDirs = new Set<string>()): string[] {
+function discoverExtensionEntryPathsWithPolicy(
+  dir: string,
+  seenDirs = new Set<string>(),
+  policy: DiscoveryPolicy = "trusted",
+): string[] {
   if (!existsSync(dir)) return [];
   let root: string;
   try { root = realpathSync(dir); } catch { return []; }
@@ -162,14 +152,17 @@ export function discoverExtensionEntryPaths(dir: string, seenDirs = new Set<stri
   return discoverExtensionEntryPathsInternal(dir, {
     root,
     seenDirs,
-    visitedObjects: 1,
-    truncated: false,
-  }, 0);
+    policy,
+  });
+}
+
+export function discoverExtensionEntryPaths(dir: string, seenDirs = new Set<string>()): string[] {
+  return discoverExtensionEntryPathsWithPolicy(dir, seenDirs);
 }
 
 export function resolvePiWebExtensionPaths(cwd: string) {
   return dedupePaths([
-    ...discoverExtensionEntryPaths(join(cwd, ".pi", "web", "extensions")),
+    ...discoverExtensionEntryPathsWithPolicy(join(cwd, ".pi", "web", "extensions"), new Set(), "workspace-contained"),
     ...discoverExtensionEntryPaths(resolveWebHomePath("extensions", join(homedir(), ".pi", "web", "extensions"))),
   ]);
 }

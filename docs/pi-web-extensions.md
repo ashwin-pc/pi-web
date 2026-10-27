@@ -61,6 +61,8 @@ pi-web-only extensions are loaded from:
 | `~/.pi/web/extensions/*.ts` | User-global, pi-web only |
 | `~/.pi/web/extensions/*/index.ts` | User-global directory extension |
 
+Workspace entries must resolve within the workspace's whole `.pi/web/extensions` directory. Package manifests may reference sibling or absolute paths that remain within that root. Escaping entries are skipped with a warning. User-global installs are trusted sources and may remain symlinked to checkouts outside `~/.pi/web/extensions`.
+
 These are separate from regular pi extension locations on purpose. A pi-web extension can use HTML and browser-specific APIs without promising that the same UI works in the terminal TUI.
 
 ## Contribution API
@@ -539,11 +541,11 @@ rm ~/.pi/web/extensions/github-repo-panel.ts
 
 The repo includes a complete pi-web extension example at [`examples/pi-web-extensions/git-footer.ts`](../examples/pi-web-extensions/git-footer.ts). It renders the current branch, live dirty/clean state, and compact tracked-upstream indicators (`↑N` ahead / `↓N` behind, or `✓` when synchronized). The upstream name and full explanation live in accessible tooltips; clean/dirty state uses a colored dot with change counts. Comparisons use the last fetched local refs only: the footer never fetches or contacts a remote. One bounded Git status command provides all the data, with a one-second per-working-directory cache and shared in-flight requests across sessions. If comparison times out, subsequent refreshes skip ahead/behind counting for 30 seconds (`⇅?`) so branch and dirty state can still update without repeatedly walking history. It refreshes periodically and around turns, bash commands, and compaction events.
 
-Install it for one project from a checkout of this repository. Use a symlink so the installed extension stays in sync with the example source:
+Install it for one project from a checkout of this repository:
 
 ```sh
 mkdir -p .pi/web/extensions
-ln -s "$(pwd)/examples/pi-web-extensions/git-footer.ts" .pi/web/extensions/git-footer.ts
+cp examples/pi-web-extensions/git-footer.ts .pi/web/extensions/git-footer.ts
 ```
 
 Or install it for all pi-web projects:
@@ -553,7 +555,7 @@ mkdir -p ~/.pi/web/extensions
 ln -s "$(pwd)/examples/pi-web-extensions/git-footer.ts" ~/.pi/web/extensions/git-footer.ts
 ```
 
-These commands assume your current directory is the pi-web repository root. Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
+These commands assume your current directory is the pi-web repository root. Workspace extension entries must resolve within that workspace's `.pi/web/extensions` directory; replace older workspace symlinks to outside checkouts with a copy (or keep the source itself beneath that directory). Global `~/.pi/web/extensions` installs continue to support symlinks to trusted checkouts. Reload pi-web resources with `/reload`, or restart pi-web if you are adding the extension while sessions are already live.
 
 ## Example: multi-agent session orchestration
 
