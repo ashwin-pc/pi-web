@@ -11,11 +11,12 @@ import { createMockHarness } from "./server/mock.js";
 import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
 import { HttpError } from "./server/shared/httpError.js";
+import { readBytes } from "./server/shared/requestBody.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
 import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
-import { createSessionUiStateStore, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "./server/sessionUiState.js";
-import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError } from "./server/settings.js";
+import { createSessionUiStateStore, SessionUiStateBoundsError, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError, sessionUiStateLimits } from "./server/sessionUiState.js";
+import { ExtensionRevisionConflictError, ExtensionSettingsBoundsError, SettingsFieldBoundsError, settingsFieldLimits } from "./server/settings.js";
 import { defaultSettingsValues, validateSettingsValues } from "./server/extensionSettings.js";
 import { findArtifactFile, isValidArtifactPath } from "./server/shared/artifacts.js";
 import { normalizeSubmittedAttachments, resolveAttachmentFile, storeAttachment } from "./server/shared/attachments.js";
@@ -124,24 +125,12 @@ function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
 }
 
-async function readBytes(req: IncomingMessage, maxBytes = 30_000_000, onChunk?: (bytes: number) => void): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.from(chunk);
-    bytes += buffer.length;
-    onChunk?.(buffer.length);
-    if (bytes > maxBytes) throw new HttpError("Request body is too large", 413);
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
 const jsonBodies = new WeakMap<IncomingMessage, Promise<unknown>>();
-function readBody(req: IncomingMessage): Promise<unknown> {
+function readBody(req: IncomingMessage, maxBytes?: number): Promise<unknown> {
   let body = jsonBodies.get(req);
   if (!body) {
-    body = readBytes(req, hasExtensionCredential(req) ? 1_000_000 : 40_000_000).then(bytes => {
+    const defaultMax = hasExtensionCredential(req) ? 1_000_000 : 40_000_000;
+    body = readBytes(req, Math.min(maxBytes ?? defaultMax, defaultMax)).then(bytes => {
       const text = bytes.toString("utf-8");
       return text ? JSON.parse(text) : {};
     });
@@ -555,7 +544,8 @@ function withAccessLog(
 ) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const start = performance.now();
-    const startBytes = req.socket.bytesWritten; // counts everything, headers included
+    const socket = req.socket;
+    const startBytes = socket.bytesWritten; // counts everything, headers included
     const method = req.method || "GET";
     let pathname = "(malformed)";
     let logged = false;
@@ -567,7 +557,7 @@ function withAccessLog(
         pathname,
         res.statusCode,
         performance.now() - start,
-        Math.max(0, req.socket.bytesWritten - startBytes),
+        Math.max(0, socket.bytesWritten - startBytes),
         aborted,
         extensionHttp.caller(req),
       );
@@ -1071,12 +1061,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
         try {
-          const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+          const sessionUiState = await sessionUiStateStore.patch(await readBody(req, sessionUiStateLimits.maxBytes));
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, sessionUiState });
         } catch (error) {
           if (error instanceof SessionUiStateConflictError) return sendJson(res, 409, { ok: false, error: error.message, revision: error.revision });
           if (error instanceof SessionUiStatePreconditionError) return sendJson(res, error.status, { ok: false, error: error.message });
+          if (error instanceof SessionUiStateBoundsError) return sendJson(res, error.status, { ok: false, error: error.message });
           if (error instanceof SessionUiStateUnavailableError) return sendJson(res, 503, { ok: false, error: error.message });
           throw error;
         }
@@ -1084,7 +1075,11 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "POST" && (url.pathname === "/api/session-ui-state/read" || url.pathname === "/api/session-ui-state/unread")) {
         const body = await readBody(req) as { sessionId?: unknown };
-        const sessionId = typeof body.sessionId === "string" && body.sessionId.trim() ? body.sessionId.trim() : session.sessionId;
+        const requestedSessionId = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+        if (requestedSessionId.length > sessionUiStateLimits.maxSessionIdLength) {
+          return sendJson(res, 400, { ok: false, error: "sessionId is too long" });
+        }
+        const sessionId = requestedSessionId || session.sessionId;
         const sessionUiState = url.pathname.endsWith("/unread")
           ? await sessionUiStateStore.markUnread(sessionId)
           : await sessionUiStateStore.markRead(sessionId);
@@ -1166,17 +1161,22 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
-        const patch = await readBody(req);
-        const settings = await withAvatarMutation(async () => {
-          const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
-          // A stale settings form must not resurrect a reclaimed generation.
-          // Serialize the reference check with imports/reset and settings writes.
-          if (avatar?.type === "custom" && avatar.assetId !== undefined && (typeof avatar.assetId !== "string" || !await readAvatar(settingsStore.file, avatar.assetId) || !await readAvatar(settingsStore.file, avatar.assetId, "icon")))
-            throw new HttpError("Custom avatar package is unavailable; import it again before saving", 400);
-          return settingsStore.patch(patch);
-        });
-        broadcast({ type: "settings_updated", settings });
-        return sendJson(res, 200, { ok: true, settings });
+        try {
+          const patch = await readBody(req, settingsFieldLimits.maxPatchBytes);
+          const settings = await withAvatarMutation(async () => {
+            const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
+            // A stale settings form must not resurrect a reclaimed generation.
+            // Serialize the reference check with imports/reset and settings writes.
+            if (avatar?.type === "custom" && avatar.assetId !== undefined && (typeof avatar.assetId !== "string" || !await readAvatar(settingsStore.file, avatar.assetId) || !await readAvatar(settingsStore.file, avatar.assetId, "icon")))
+              throw new HttpError("Custom avatar package is unavailable; import it again before saving", 400);
+            return settingsStore.patch(patch);
+          });
+          broadcast({ type: "settings_updated", settings });
+          return sendJson(res, 200, { ok: true, settings });
+        } catch (error) {
+          if (error instanceof SettingsFieldBoundsError) return sendJson(res, 413, { ok: false, error: error.message });
+          throw error;
+        }
       }
 
       if (method === "GET" && url.pathname === "/api/extensions/status") {
@@ -1457,7 +1457,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionUiStateUnavailableError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
+    const status = error instanceof SessionUiStateUnavailableError ? 503
+      : error instanceof SessionUiStateBoundsError ? error.status
+      : error instanceof SessionServiceError || error instanceof HttpError ? error.status
+      : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));

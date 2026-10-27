@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { defaultAppIdentity, isAvatarAssetId, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
+import { readUtf8FileBounded } from "./shared/boundedFile.js";
 
 export type PiWebModelSetting = {
   provider: string;
@@ -30,6 +31,14 @@ export const extensionSettingsLimits = {
   maxBytesPerOwner: 64 * 1024,
 } as const;
 
+export const settingsFieldLimits = {
+  maxPatchBytes: 256 * 1024,
+  maxFileBytes: 4 * 1024 * 1024,
+  thinkingLevel: 32,
+  modelProvider: 64,
+  modelId: 128,
+} as const;
+
 /** Namespaced owner id: `<extensionName>.<schemaId>` (at least one dot). */
 const ownerIdPattern = /^[a-zA-Z0-9_-]+(?:\.[a-zA-Z0-9_-]+)+$/;
 export function isValidExtensionOwnerId(id: unknown): id is string {
@@ -40,6 +49,13 @@ export class ExtensionSettingsBoundsError extends Error {
   constructor(public readonly ownerId: string, message: string) {
     super(message);
     this.name = "ExtensionSettingsBoundsError";
+  }
+}
+
+export class SettingsFieldBoundsError extends Error {
+  constructor(readonly field: string, readonly maxLength: number) {
+    super(`${field} is too long (max ${maxLength} characters)`);
+    this.name = "SettingsFieldBoundsError";
   }
 }
 
@@ -128,7 +144,7 @@ export const defaultPiWebSettings: PiWebSettings = {
 };
 
 function cloneSettings(value: PiWebSettings): PiWebSettings {
-  return JSON.parse(JSON.stringify(value)) as PiWebSettings;
+  return structuredClone(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -268,7 +284,14 @@ function normalizeModel(value: unknown) {
   if (!isRecord(value)) return undefined;
   const provider = typeof value.provider === "string" ? value.provider.trim() : "";
   const id = typeof value.id === "string" ? value.id.trim() : "";
-  return provider && id ? { provider, id } : undefined;
+  return provider && provider.length <= settingsFieldLimits.modelProvider &&
+    id && id.length <= settingsFieldLimits.modelId ? { provider, id } : undefined;
+}
+
+function assertSettingsString(value: unknown, field: string, maxLength: number) {
+  if (typeof value === "string" && value.trim().length > maxLength) {
+    throw new SettingsFieldBoundsError(field, maxLength);
+  }
 }
 
 export function normalizeSessionBucketColor(value: unknown): SessionMarkerColorId | undefined {
@@ -339,7 +362,8 @@ export function normalizeSettings(value: unknown): PiWebSettings {
   const defaults = isRecord(value.defaults) ? value.defaults : undefined;
   const model = normalizeModel(defaults?.model);
   if (model) settings.defaults.model = model;
-  if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim()) {
+  if (typeof defaults?.thinkingLevel === "string" && defaults.thinkingLevel.trim() &&
+    defaults.thinkingLevel.trim().length <= settingsFieldLimits.thinkingLevel) {
     settings.defaults.thinkingLevel = defaults.thinkingLevel.trim();
   }
   const sessionBucketColor = normalizeSessionBucketColor(defaults?.sessionBucketColor);
@@ -386,11 +410,16 @@ export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWe
 
   if (isRecord(patch.defaults)) {
     if ("model" in patch.defaults) {
+      if (isRecord(patch.defaults.model)) {
+        assertSettingsString(patch.defaults.model.provider, "defaults.model.provider", settingsFieldLimits.modelProvider);
+        assertSettingsString(patch.defaults.model.id, "defaults.model.id", settingsFieldLimits.modelId);
+      }
       const model = normalizeModel(patch.defaults.model);
       if (model) next.defaults.model = model;
       else delete next.defaults.model;
     }
     if ("thinkingLevel" in patch.defaults) {
+      assertSettingsString(patch.defaults.thinkingLevel, "defaults.thinkingLevel", settingsFieldLimits.thinkingLevel);
       if (typeof patch.defaults.thinkingLevel === "string" && patch.defaults.thinkingLevel.trim()) {
         next.defaults.thinkingLevel = patch.defaults.thinkingLevel.trim();
       } else {
@@ -424,7 +453,7 @@ export function createSettingsStore(file: string) {
   async function readUnlocked() {
     if (cached) return cloneSettings(cached);
     try {
-      cached = normalizeSettings(JSON.parse(await readFile(file, "utf-8")));
+      cached = normalizeSettings(JSON.parse(await readUtf8FileBounded(file, settingsFieldLimits.maxFileBytes)));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         console.warn(`Could not read pi-web settings at ${file}:`, error);

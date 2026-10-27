@@ -60,6 +60,34 @@ async function jsonRequest(baseUrl: string, path: string, method: string, body: 
   return { status: response.status, body: await response.json() };
 }
 
+function chunkedJsonRequest(port: number, path: string, method: string, body: unknown): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      host: "127.0.0.1",
+      port,
+      path,
+      method,
+      headers: {
+        "content-type": "application/json",
+        "transfer-encoding": "chunked",
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({
+        status: res.statusCode || 0,
+        body: JSON.parse(Buffer.concat(chunks).toString()),
+      }));
+    });
+    req.on("error", reject);
+    const serialized = JSON.stringify(body);
+    for (let offset = 0; offset < serialized.length; offset += 32 * 1024) {
+      req.write(serialized.slice(offset, offset + 32 * 1024));
+    }
+    req.end();
+  });
+}
+
 function rawRequest(port: number, path: string): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest({ host: "127.0.0.1", port, path, method: "PATCH" }, (res) => {
@@ -159,6 +187,31 @@ export default function settingsTest(pi) {
   it("rejects a malformed percent-encoded owner id", async () => {
     const result = await rawRequest(port, "/api/settings/extensions/%E0%A4%A");
     expect(result).toEqual({ status: 400, body: { ok: false, error: "malformed owner id" } });
+  });
+
+  it("bounds generic settings bodies and fields while preserving the previous settings", async () => {
+    const before = await (await fetch(`${baseUrl}/api/settings`)).json();
+    const beforeUi = await (await fetch(`${baseUrl}/api/session-ui-state`)).json();
+    const longField = await jsonRequest(baseUrl, "/api/settings", "PATCH", {
+      defaults: { thinkingLevel: "x".repeat(33) },
+    });
+    expect(longField).toMatchObject({ status: 413, body: { ok: false, error: expect.stringContaining("defaults.thinkingLevel") } });
+
+    const largeBody = await chunkedJsonRequest(port, "/api/settings", "PATCH", {
+      padding: "x".repeat(256 * 1024),
+    });
+    expect(largeBody).toMatchObject({ status: 413, body: { ok: false, error: "Request body is too large" } });
+    expect(await (await fetch(`${baseUrl}/api/settings`)).json()).toEqual(before);
+
+    const largeUiBody = await chunkedJsonRequest(port, "/api/session-ui-state", "PATCH", {
+      padding: "x".repeat(2 * 1024 * 1024),
+    });
+    expect(largeUiBody).toMatchObject({ status: 413, body: { ok: false, error: "Request body is too large" } });
+    expect(await (await fetch(`${baseUrl}/api/session-ui-state`)).json()).toEqual(beforeUi);
+
+    const identity = await fetch(`${baseUrl}/identity/config.json`);
+    expect(identity.status).toBe(200);
+    expect(child.exitCode).toBeNull();
   });
 });
 

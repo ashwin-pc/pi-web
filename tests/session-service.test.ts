@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,6 +12,9 @@ import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 import { PiSessionHandle } from "../server/session/piHandle.js";
+
+const MAX_SAVED_TRANSCRIPT_BYTES = 128 * 1024 * 1024;
+const MAX_SAVED_TRANSCRIPT_LINE_BYTES = 1024 * 1024;
 
 describe("owned Pi runtime handle", () => {
   it.each([false, true])("publishes disposal before reentrant cleanup (shutdown=%s)", async (shutdown) => {
@@ -190,6 +193,7 @@ type FixtureServiceOptions = {
   defaultsFor?: LocalSessionServiceDependencies["sessionConfig"]["defaultsFor"];
   openError?: Error;
   clientCount?: number | (() => number);
+  beforeCreate?: (input: Parameters<LocalSessionFactory["create"]>[0]) => Promise<void>;
 };
 
 async function fixtureService(options: FixtureServiceOptions = {}) {
@@ -201,6 +205,7 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
     isMock: options.isMock,
     async create(input) {
       if (input.path && options.openError) throw options.openError;
+      await options.beforeCreate?.(input);
       creates.push({ cwd: input.cwd, path: input.path, reason: input.sessionStartEvent?.reason, previous: input.sessionStartEvent?.previousSessionFile });
       const id = input.path ? input.path.split("/").at(-1)?.replace(/\.jsonl$/, "") || "opened" : creates.length === 1 ? "current" : `factory-${creates.length}`;
       const value = fixtureSession(input.cwd, id, input.path);
@@ -565,6 +570,40 @@ describe("LocalSessionService contract", () => {
     expect((await service.list([extraCwd])).map((info) => info.id)).toEqual(["duplicate", "duplicate"]);
   });
 
+  it("bounds, validates, storage-deduplicates, and concurrency-limits optional session roots", async () => {
+    const listed: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { service, cwd } = await fixtureService({
+      list: async (listedCwd) => {
+        listed.push(listedCwd);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await gate;
+        active -= 1;
+        return [];
+      },
+    });
+    const extras = [
+      join(cwd, "same-path"),
+      join(cwd, "same:path"),
+      ...Array.from({ length: 8 }, (_, index) => join(cwd, `extra-${index}`)),
+    ];
+    await Promise.all(extras.map((path) => mkdir(path)));
+    const request = service.list(extras);
+    await vi.waitFor(() => expect(maxActive).toBe(4));
+    release();
+    await request;
+    expect(maxActive).toBe(4);
+    expect(listed).toHaveLength(8); // global cwd + seven unique stores from the first eight extras
+    expect(listed.filter((path) => path === extras[0] || path === extras[1])).toHaveLength(1);
+    expect(listed).not.toContain(extras[8]);
+    expect(listed).not.toContain(extras[9]);
+    await service.disposeAll();
+  });
+
   it("keeps authoritative renamed and cleared names after live-session disposal", async () => {
     const modified = new Date("2026-01-02T00:00:00Z");
     const { service, initial, cwd } = await fixtureService({
@@ -807,6 +846,80 @@ describe("LocalSessionService contract", () => {
 });
 
 describe("LocalSessionService standalone lifecycle", () => {
+  it("reuses one runtime, bounds concurrent distinct openings, and rejects the excess before allocation", async () => {
+    const ids = Array.from({ length: 5 }, (_, index) => `cold-${index}`);
+    const unblock: Array<() => void> = [];
+    const opened: string[] = [];
+    const { service, cwd, creates } = await fixtureService({
+      list: async () => ids.map((id) => ({
+        id, path: join(cwd, `${id}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
+      })),
+      beforeCreate: async (input) => {
+        if (!input.path) return;
+        opened.push(input.path);
+        await new Promise<void>((resolve) => unblock.push(resolve));
+      },
+    });
+    const requests = [
+      service.open(ids[0]),
+      service.open(ids[0]),
+      service.open(ids[1]),
+      service.open(ids[2]),
+      service.open(ids[3]),
+    ];
+    await vi.waitFor(() => expect(opened).toHaveLength(4));
+    await expect(service.open(ids[4])).rejects.toMatchObject({ status: 503 });
+    expect(opened).toHaveLength(4);
+    unblock.forEach((resolve) => resolve());
+    await Promise.all(requests);
+    expect(creates.filter((entry) => entry.path?.endsWith(`${ids[0]}.jsonl`))).toHaveLength(1);
+    await service.open(ids[0]);
+    expect(creates).toHaveLength(5); // initial runtime plus four distinct cold runtimes
+    await service.disposeAll();
+  });
+
+  it("rejects admission at the resident cap when every runtime is protected, viewed, or busy", async () => {
+    const coldId = "over-cap";
+    const { service, initial, cwd, creates } = await fixtureService({
+      list: async () => [{
+        id: coldId, path: join(cwd, `${coldId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
+      }],
+    });
+    const admitted = [];
+    for (let index = 0; index < 15; index += 1) admitted.push(await service.create(undefined));
+    for (const [index, state] of admitted.entries()) {
+      if (index < 7) service.acquireViewer(state.sessionId, `viewer-${index}`);
+      else service.sessionForPath(state.sessionFile)!.isStreaming = true;
+    }
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    await expect(service.open(coldId)).rejects.toMatchObject({ status: 503 });
+    expect(creates).toHaveLength(16);
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    await service.disposeAll();
+  });
+
+  it("evicts only an idle runtime before admitting a replacement at the resident cap", async () => {
+    const coldId = "replacement";
+    const { service, initial, cwd } = await fixtureService({
+      list: async () => [{
+        id: coldId, path: join(cwd, `${coldId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
+      }],
+    });
+    const admitted = [];
+    for (let index = 0; index < 15; index += 1) admitted.push(await service.create(undefined));
+    const idle = admitted[0];
+    for (const [index, state] of admitted.slice(1).entries()) service.acquireViewer(state.sessionId, `kept-${index}`);
+
+    await expect(service.open(coldId)).resolves.toMatchObject({ sessionId: coldId });
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(idle.sessionId)).toBeUndefined();
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    for (const state of admitted.slice(1)) expect(service.sessionForId(state.sessionId)).toBeDefined();
+    await service.disposeAll();
+  });
+
   it("keeps agent_end running and uses agent_settled as the idle boundary", async () => {
     const { service, fixture, initial } = await fixtureService();
     const activity = new SessionActivity(
@@ -1048,6 +1161,29 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(tail.entries.map((entry) => entry.entryId)).toEqual(["root", "old", "active", ...Array.from({ length: 197 }, (_, index) => `tail-${index}`)]);
     expect(creates).toHaveLength(1);
     expect(await readFile(coldPath, "utf8")).toBe(original);
+  });
+
+  it("rejects oversized cold transcript files and JSONL records without allocating a runtime", async () => {
+    let coldPath = "";
+    const { service, cwd, creates } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "bounded-cold", path: coldPath, cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      }] : [],
+    });
+    coldPath = join(cwd, "bounded-cold.jsonl");
+    await writeFile(coldPath, `${JSON.stringify({ type: "session", id: "bounded-cold", cwd })}\n`);
+    await truncate(coldPath, MAX_SAVED_TRANSCRIPT_BYTES + 1);
+    await expect(service.readSession({ sessionId: "bounded-cold" }, 20)).rejects.toMatchObject({ status: 413 });
+    expect(creates).toHaveLength(1);
+
+    const oversizedRecord = JSON.stringify({
+      type: "message", id: "large", parentId: null,
+      message: { role: "assistant", content: "x".repeat(MAX_SAVED_TRANSCRIPT_LINE_BYTES) },
+    });
+    await writeFile(coldPath, `${JSON.stringify({ type: "session", id: "bounded-cold", cwd })}\n${oversizedRecord}\n`);
+    await expect(service.readSession({ sessionId: "bounded-cold" }, 20)).rejects.toMatchObject({ status: 413 });
+    expect(creates).toHaveLength(1);
+    await service.disposeAll();
   });
 
   it("captures operation paths and clears both registration and current paths on shutdown", async () => {

@@ -1,10 +1,19 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createSessionUiStateStore, defaultSessionUiState, SessionUiStateConflictError, SessionUiStatePreconditionError, SessionUiStateUnavailableError } from "../server/sessionUiState.js";
+import {
+  createSessionUiStateStore,
+  defaultSessionUiState,
+  SessionUiStateConflictError,
+  SessionUiStatePreconditionError,
+  SessionUiStateUnavailableError,
+} from "../server/sessionUiState.js";
 
 const since = "2025-01-01T00:00:00.000Z";
+const MAX_UI_STATE_BYTES = 2 * 1024 * 1024;
+const MAX_UI_STATE_ENTRIES = 4096;
+const MAX_UI_STATE_NOTE_LENGTH = 8 * 1024;
 const lanes = (count: number) => Array.from({ length: count }, (_, index) => ({ sessionId: `session-${index}`, lane: "pinned" as const, since }));
 const unreadStates = (count: number) => Array.from({ length: count }, (_, index) => ({ sessionId: `session-${index}`, unreadAt: since, updatedAt: since }));
 
@@ -13,6 +22,65 @@ afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { 
 async function tempFile() { const dir = await mkdtemp(join(tmpdir(), "pi-web-session-ui-")); dirs.push(dir); return join(dir, "state.json"); }
 
 describe("session UI state store", () => {
+  it("preserves 2,352 session origins while rejecting excess collections without changing stored state", async () => {
+    const file = await tempFile();
+    const store = createSessionUiStateStore(file);
+    const origins = Array.from({ length: 2352 }, (_, index) => ({
+      sessionId: `worker-${index}`,
+      originSessionId: `parent-${index}`,
+      kind: "spawn",
+      updatedAt: since,
+    }));
+    const saved = await store.patch({ expectedRevision: 0, initialize: true, sessionOrigins: origins });
+    expect(saved.sessionOrigins).toHaveLength(2352);
+    const primary = await readFile(file, "utf8");
+
+    const excessive = Array.from({ length: MAX_UI_STATE_ENTRIES + 1 }, (_, index) => ({
+      sessionId: `excess-${index}`,
+      originSessionId: `parent-${index}`,
+      kind: "spawn",
+      updatedAt: since,
+    }));
+    await expect(store.patch({ expectedRevision: saved.revision, sessionOrigins: excessive }))
+      .rejects.toMatchObject({ name: "SessionUiStateBoundsError", status: 413 });
+    expect(await readFile(file, "utf8")).toBe(primary);
+    expect((await store.read()).sessionOrigins).toEqual(origins);
+  });
+
+  it("rejects overlong UI strings and oversized serialized state without truncating prior values", async () => {
+    const file = await tempFile();
+    const store = createSessionUiStateStore(file);
+    const saved = await store.patch({
+      expectedRevision: 0,
+      initialize: true,
+      sessionNotes: [{ sessionId: "kept", note: "original", updatedAt: since }],
+    });
+    const primary = await readFile(file, "utf8");
+    await expect(store.patch({
+      expectedRevision: saved.revision,
+      sessionNotes: [{ sessionId: "kept", note: "x".repeat(MAX_UI_STATE_NOTE_LENGTH + 1), updatedAt: since }],
+    })).rejects.toMatchObject({ name: "SessionUiStateBoundsError", status: 413 });
+    await expect(store.patch({
+      expectedRevision: saved.revision,
+      sessionNotes: Array.from({ length: 300 }, (_, index) => ({
+        sessionId: `note-${index}`,
+        note: "x".repeat(MAX_UI_STATE_NOTE_LENGTH),
+        updatedAt: since,
+      })),
+    })).rejects.toMatchObject({ name: "SessionUiStateBoundsError", status: 413 });
+    expect(await readFile(file, "utf8")).toBe(primary);
+    expect((await store.read()).sessionNotes).toEqual(saved.sessionNotes);
+  });
+
+  it("refuses an oversized legacy primary through a bounded read and leaves it untouched", async () => {
+    const file = await tempFile();
+    await writeFile(file, JSON.stringify({ version: 3, revision: 9, initialized: true, lanes: [] }));
+    await truncate(file, MAX_UI_STATE_BYTES + 1);
+    const before = await stat(file);
+    await expect(createSessionUiStateStore(file).read()).rejects.toBeInstanceOf(SessionUiStateUnavailableError);
+    expect((await stat(file)).size).toBe(before.size);
+  });
+
   it("never overwrites an unsupported future-version file", async () => {
     const file = await tempFile();
     const future = { ...defaultSessionUiState, version: 4, futureMetadata: { keep: true } };
