@@ -1,12 +1,18 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
+import {
+  canonicalPeerAddress,
+  stampSupervisorPeer,
+  stripSupervisorPeerHeaders,
+} from "./server/auth/supervisorPeer.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 
@@ -16,6 +22,7 @@ const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
 const token = process.env.PI_WEB_TOKEN || "";
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
+const supervisorSecret = randomBytes(32).toString("base64url");
 
 let child: ChildProcess | undefined;
 let childStarting = false;
@@ -48,12 +55,15 @@ function startChild(): void {
   childGeneration += 1;
   const generation = childGeneration;
 
+  const devMode = process.env.PI_WEB_DEV === "1";
+  if (devMode) console.warn("[supervisor] development mode explicitly enabled");
   const env = {
     ...process.env,
     HOST: childHost,
     PORT: String(childPort),
-    PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
+    PI_WEB_DEV: devMode ? "1" : "0",
     PI_WEB_SUPERVISED: "1",
+    PI_WEB_SUPERVISOR_SECRET: supervisorSecret,
     PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
   };
 
@@ -147,7 +157,18 @@ const supervisor = createServer(async (req, res) => {
 function sanitizeProxyHeaders(req: IncomingMessage) {
   const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
-  if (!trustedProxyPeer(req)) delete req.headers["x-forwarded-for"];
+  const trustedForwarder = trustedProxyPeer(req);
+  const forwarded = req.headers["x-forwarded-for"];
+  const peer = trustedForwarder && typeof forwarded === "string"
+    ? canonicalPeerAddress(forwarded.trim())
+    : canonicalPeerAddress(req.socket.remoteAddress);
+  stripSupervisorPeerHeaders(req.headers);
+  if (peer) {
+    req.headers["x-forwarded-for"] = peer;
+    stampSupervisorPeer(req, peer, supervisorSecret);
+  } else {
+    delete req.headers["x-forwarded-for"];
+  }
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
 }

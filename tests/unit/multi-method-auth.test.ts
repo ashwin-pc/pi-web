@@ -24,6 +24,7 @@ import {
   passwordLoginPage,
 } from "../../server/auth/password.js";
 import { handleSecurityRoute } from "../../server/auth/security.js";
+import { handlePasskeyRoute } from "../../server/auth/passkey.js";
 
 async function fixture() {
   const store = new AuthStore(
@@ -390,6 +391,37 @@ describe("multi-method human authentication", () => {
       store,
     );
     expect(res.status).toBe(403);
+  });
+  it("enforces passkey bootstrap loopback for every configured origin", async () => {
+    const { store, kernel } = await fixture();
+    const remote = req({}, {}, "GET");
+    remote.socket.remoteAddress = "192.0.2.1";
+    const denied = response();
+    const publicConfig = {
+      ...config,
+      origin: "https://public.example.invalid",
+      rpID: "public.example.invalid",
+    };
+    await handlePasskeyRoute(
+      remote,
+      denied,
+      new URL("/api/auth/passkey-bootstrap?token=synthetic", publicConfig.origin),
+      kernel,
+      store,
+      publicConfig,
+    );
+    expect(denied.status).toBe(403);
+
+    const local = response();
+    await handlePasskeyRoute(
+      req({}, {}, "GET"),
+      local,
+      new URL("/api/auth/passkey-bootstrap?token=synthetic", publicConfig.origin),
+      kernel,
+      store,
+      publicConfig,
+    );
+    expect(local.status).toBe(200);
   });
   it("translates legacy configuration into independent policy and methods", () => {
     expect(resolveAuthConfig({ PI_WEB_AUTH_MODE: "none" })).toMatchObject({

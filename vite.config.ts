@@ -70,8 +70,11 @@ export default defineConfig((env) => ({
     // Runtime uploads and generated artifacts live below .pi. Watching those
     // files makes Vite reload the page as soon as an attachment is persisted.
     watch: { ignored: ["**/.pi/**"] },
-    // Dev server is protected by PI_WEB_TOKEN and commonly accessed via
-    // Tailscale MagicDNS names like http://studio:8787.
+    fs: {
+      strict: true,
+      deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/.pi/**"],
+    },
+    // The embedded middleware and HMR upgrade are authenticated by server.ts.
     allowedHosts: true,
   },
 }));

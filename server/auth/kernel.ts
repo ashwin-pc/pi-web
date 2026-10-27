@@ -5,6 +5,7 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 import type { AccessPolicy, HumanAuthMethod } from "./config.js";
+import { effectivePeerAddress, isLoopbackPeer } from "./supervisorPeer.js";
 import {
   mkdir,
   open,
@@ -463,7 +464,7 @@ export class AuthKernel {
     const raw = randomBytes(32).toString("base64url"),
       now = Date.now();
     const device = req?.headers["user-agent"]?.slice(0, 200),
-      ip = req?.socket?.remoteAddress;
+      ip = req ? effectivePeerAddress(req) : undefined;
     if (!method) {
       const prefix = identity.id.split(":")[0];
       if (["legacy", "passkey", "password", "external"].includes(prefix))
@@ -533,8 +534,7 @@ export class AuthKernel {
 }
 
 export function isLoopback(req: IncomingMessage) {
-  const ip = req.socket.remoteAddress || "";
-  return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
+  return isLoopbackPeer(effectivePeerAddress(req));
 }
 export function randomSecret() {
   return randomBytes(32).toString("base64url");
