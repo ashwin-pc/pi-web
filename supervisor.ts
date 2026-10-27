@@ -184,6 +184,14 @@ const tunnelSupervisor = createServer((req, res) => {
   markTunnelRequest(req);
   void handleRequest(req, res);
 });
+const acceptedSockets = new Set<net.Socket>();
+
+for (const server of [supervisor, tunnelSupervisor]) {
+  server.on("connection", (socket) => {
+    acceptedSockets.add(socket);
+    socket.once("close", () => acceptedSockets.delete(socket));
+  });
+}
 
 supervisor.on("upgrade", (req, socket, head) => {
   if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
@@ -249,7 +257,7 @@ tunnelSupervisor.on("clientError", (_error, socket) => {
 let tunnelSocketIdentity: Awaited<ReturnType<typeof listenOnTunnelSocket>> | undefined;
 async function shutdown(): Promise<void> {
   console.log("[supervisor] shutting down");
-  await Promise.all([
+  const listenerClosures = [
     new Promise<void>((resolve) => {
       if (!supervisor.listening) return resolve();
       supervisor.close(() => resolve());
@@ -257,8 +265,10 @@ async function shutdown(): Promise<void> {
     tunnelSocketIdentity
       ? closeTunnelSocket(tunnelSupervisor, tunnelSocketPath, tunnelSocketIdentity)
       : Promise.resolve(),
-    stopChild(),
-  ]);
+  ];
+  await stopChild();
+  for (const socket of acceptedSockets) socket.destroy();
+  await Promise.all(listenerClosures);
   process.exit(0);
 }
 
