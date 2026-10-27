@@ -70,9 +70,12 @@ async function main() {
     PI_WEB_MOCK: args.includes('--mock') ? '1' : '0', PI_WEB_AUTH_POLICY: 'authenticated',
   });
   // Mint a stored API token; never pass it as PI_WEB_TOKEN to the server.
-  const output = await run(process.execPath, ['--import', 'tsx', 'server/auth/cli.ts', 'token-create', '--name', `instance-${name}`], { cwd, env });
+  const output = await run(process.execPath, ['--import', 'tsx', 'server/auth/cli.ts', 'token-create', '--name', `instance-${name}-health`], { cwd, env });
   const token = output.match(/API token \(shown once\): (\S+)/)?.[1];
   if (!token) throw new Error('Token creation did not return a token');
+  const enrollment = await run(process.execPath, ['--import', 'tsx', 'server/auth/cli.ts', 'bootstrap'], { cwd, env });
+  const setupUrl = enrollment.match(/https?:\/\/\S+/)?.[0];
+  if (!setupUrl) throw new Error('Bootstrap did not return a setup URL');
   const unset = [...new Set(['PI_WEB_TOKEN', ...Object.keys(process.env).filter(key => key.startsWith('PI_WEB_'))])];
   // tmux's server may predate this launcher; clear its inherited variables too.
   const tmuxEnv = await run('tmux', ['show-environment', '-g']).catch(() => '');
@@ -101,6 +104,6 @@ async function main() {
     if (started) await run('tmux', ['kill-session', '-t', target]).catch(() => {});
     throw error;
   }
-  console.log(`Instance: ${name}\nURL: http://localhost:${port}\nToken: ${token}\nStop: npm run instance -- ${name} --stop`);
+  console.log(`Instance: ${name}\nURL: http://localhost:${port}\nSetup: ${setupUrl}\nStop: npm run instance -- ${name} --stop`);
 }
 main().catch(error => { console.error(error.message); process.exitCode = 1; });

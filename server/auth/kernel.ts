@@ -16,7 +16,7 @@ import {
 import { dirname } from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
-export type AuthMode = "none" | "legacy" | "passkey" | "external";
+export type AuthMode = "none" | "passkey" | "external";
 export type Identity = { id: string; displayName?: string };
 export type CredentialRecord = {
   id: string;
@@ -280,7 +280,7 @@ function cookies(req: IncomingMessage) {
   }
   return result;
 }
-export type AuthVia = "session" | "token" | "legacy" | "external" | "open" | "extension";
+export type AuthVia = "session" | "token" | "external" | "open" | "extension";
 export type GateResult =
   | { ok: true; identity: Identity; via: AuthVia; sessionHash?: string }
   | { ok: false; status?: 401 | 403 };
@@ -295,6 +295,10 @@ export class AuthKernel {
   async refreshConfig() {
     const state = await this.store.read();
     if (state.config) {
+      if ((state.config.methods as string[]).includes("legacy"))
+        throw new Error(
+          "Saved authentication settings still enable removed legacy token authentication. Run `pi-web auth recover` to migrate the store and create a one-time password/passkey setup URL.",
+        );
       this.policy = state.config.policy;
       this.methods = new Set(state.config.methods);
     }
@@ -304,9 +308,7 @@ export class AuthKernel {
       ? !!state.password
       : method === "passkey"
         ? state.credentials.some((c) => !c.revokedAt)
-        : method === "legacy"
-          ? !!this.legacyToken
-          : !!this.trustedHeader;
+        : !!this.trustedHeader;
   }
   async readyMethods() {
     const state = await this.store.read();
@@ -349,7 +351,6 @@ export class AuthKernel {
   constructor(
     readonly mode: AuthMode,
     readonly store: AuthStore,
-    readonly legacyToken = "",
     readonly secureCookie = true,
     readonly trustedHeader = "",
     policy?: AccessPolicy,
@@ -387,7 +388,7 @@ export class AuthKernel {
     }
     const state = await this.store.read();
     // Credential and policy decisions use one snapshot, never a stale refresh
-    // that could restore legacy authority during concurrent method retirement.
+    // that could restore retired authority during concurrent configuration changes.
     const methods = new Set(state.config?.methods || this.methods);
     const policy = state.config?.policy || this.policy;
     const now = Date.now();
@@ -418,14 +419,6 @@ export class AuthKernel {
       return { ok: false };
     }
     const auth = req.headers.authorization || "";
-    if (methods.has("legacy") && this.legacyToken) {
-      const query =
-        new URL(req.url || "/", "http://localhost").searchParams.get("token") ||
-        "";
-      const supplied = auth.startsWith("Bearer ") ? auth.slice(7) : query;
-      if (safeEqual(supplied, this.legacyToken))
-        return { ok: true, identity: { id: "legacy:token" }, via: "legacy" };
-    }
     if (methods.has("external") && this.trustedHeader) {
       const value = req.headers[this.trustedHeader.toLowerCase()];
       const user = (Array.isArray(value) ? value[0] : value)?.trim();
@@ -466,7 +459,7 @@ export class AuthKernel {
       ip = req?.socket?.remoteAddress;
     if (!method) {
       const prefix = identity.id.split(":")[0];
-      if (["legacy", "passkey", "password", "external"].includes(prefix))
+      if (["passkey", "password", "external"].includes(prefix))
         method = prefix as HumanAuthMethod;
     }
     await this.store.update((s) => {

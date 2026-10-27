@@ -11,23 +11,24 @@ function response() { const headers = new Map<string, string>(); return { status
 async function store() { return new AuthStore(join(await mkdtemp(join(tmpdir(), "pi-web-auth-")), "auth.json")); }
 
 describe("auth kernel", () => {
-  it("preserves legacy behavior only in explicit legacy mode", async () => {
-    const s = await store(); const k = new AuthKernel("legacy", s, "secret", false);
-    expect((await k.gate(req({ authorization: "Bearer secret" }))).ok).toBe(true);
-    expect((await k.gate(req({}, "/?token=secret"))).ok).toBe(true);
-    expect((await k.gate(req({ authorization: "Bearer wrong" }))).ok).toBe(false);
-    expect((await new AuthKernel("passkey", s, "secret", false).gate(req({ authorization: "Bearer secret" }))).ok).toBe(false);
+  it("never accepts query or arbitrary bearer credentials", async () => {
+    const s = await store();
+    // Reflect.construct keeps this regression runnable against the old constructor:
+    // base accepts the query in legacy mode; the remediated kernel rejects it.
+    const k = Reflect.construct(AuthKernel, ["legacy", s, "secret", false]) as AuthKernel;
+    expect((await k.gate(req({}, "/?token=secret"))).ok).toBe(false);
+    expect((await k.gate(req({ authorization: "Bearer secret" }))).ok).toBe(false);
   });
 
   it("attributes external requests using a configured trusted header and fails closed when absent", async () => {
-    const s = await store(); const k = new AuthKernel("external", s, "", false, "Tailscale-User-Login");
+    const s = await store(); const k = new AuthKernel("external", s, false, "Tailscale-User-Login");
     expect(await k.gate(req({ "tailscale-user-login": "alice@example.com" }))).toMatchObject({ ok: true, identity: { id: "external:alice@example.com", displayName: "alice@example.com" } });
     expect((await k.gate(req())).ok).toBe(false);
     expect((await new AuthKernel("external", s).gate(req())).ok).toBe(false);
   });
 
   it.each(["external", "none"] as const)("lets %s identities read security inventory but denies mutations", async mode => {
-    const s = await store(); const k = new AuthKernel(mode, s, "", false, "x-verified-user"); const gated = await k.gate(req({ "x-verified-user": "owner" }));
+    const s = await store(); const k = new AuthKernel(mode, s, false, "x-verified-user"); const gated = await k.gate(req({ "x-verified-user": "owner" }));
     expect(gated.ok).toBe(true);
     if (!gated.ok) return;
 
@@ -61,16 +62,16 @@ describe("auth kernel", () => {
   });
 
   it("persists opaque hashed sessions and authenticates their cookie", async () => {
-    const s = await store(); const k = new AuthKernel("passkey", s, "", false), res = response();
+    const s = await store(); const k = new AuthKernel("passkey", s, false), res = response();
     await k.establishSession(res, { id: "passkey:owner" });
     const cookie = res.headers.get("set-cookie")!; const raw = /pi_web_session=([^;]+)/.exec(cookie)![1];
     expect(await k.gate(req({ cookie: `pi_web_session=${raw}` }))).toMatchObject({ ok: true, via: "session", sessionHash: hashSecret(raw) });
     expect(await readFile(s.path, "utf8")).not.toContain(raw);
   });
 
-  it("accepts legacy session cookies and ignores malformed cookies", async () => {
-    const s = await store(); const k = new AuthKernel("legacy", s, "secret", false), res = response();
-    await k.establishSession(res, { id: "legacy:token" });
+  it("accepts existing session cookies and ignores malformed cookies", async () => {
+    const s = await store(); const k = new AuthKernel("passkey", s, false), res = response();
+    await k.establishSession(res, { id: "owner" });
     const raw = /pi_web_session=([^;]+)/.exec(res.headers.get("set-cookie")!)![1];
     expect(await k.gate(req({ cookie: `bad=%; pi_web_session=${raw}` }))).toMatchObject({ ok: true, via: "session" });
   });

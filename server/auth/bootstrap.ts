@@ -11,7 +11,6 @@ export async function initializeAuth(
   if (
     explicitlyConfigured ||
     state.config ||
-    kernel.legacyToken ||
     state.password ||
     state.credentials.length ||
     state.sessions.length ||
