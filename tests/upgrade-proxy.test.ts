@@ -82,6 +82,24 @@ describe("bounded supervisor upgrade proxy", () => {
     expect(connections).toBe(0);
   });
 
+  it("supports request-aware path admission without widening unrelated upgrades", async () => {
+    let connections = 0;
+    const upstreamPort = await listen(net.createServer(() => { connections += 1; }));
+    const proxy = createServer();
+    proxy.on("upgrade", createUpgradeProxy({
+      ...proxyOptions(upstreamPort),
+      expectedPath: (req, url) => url.pathname === "/ws"
+        || (url.pathname === "/" && req.headers["sec-websocket-protocol"] === "vite-hmr"),
+    }));
+    const proxyPort = await listen(proxy);
+
+    const unrelatedPath = await upgradeRequest(proxyPort, "/other?token=fake");
+    await waitForClose(unrelatedPath.socket);
+    const unrelatedProtocol = await upgradeRequest(proxyPort, "/");
+    await waitForClose(unrelatedProtocol.socket);
+    expect(connections).toBe(0);
+  });
+
   it("flushes and force-closes rejected clients even when they keep sending", async () => {
     let connections = 0;
     const upstreamPort = await listen(net.createServer(() => { connections += 1; }));

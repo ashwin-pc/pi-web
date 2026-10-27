@@ -8,7 +8,7 @@ const RESPONSE_FLUSH_TIMEOUT_MS = 1_000;
 export interface UpgradeProxyOptions {
   host: string;
   port: number;
-  expectedPath: string;
+  expectedPath: string | ((req: IncomingMessage, url: URL) => boolean);
   handshakeTimeoutMs: number;
   maxPending: number;
   maxPendingPerPeer: number;
@@ -56,7 +56,16 @@ export function createUpgradeProxy(options: UpgradeProxyOptions) {
       endHttp(socket, 400, "Bad Request");
       return;
     }
-    if (url.pathname !== options.expectedPath) {
+    let expectedPath: boolean;
+    try {
+      expectedPath = typeof options.expectedPath === "string"
+        ? url.pathname === options.expectedPath
+        : options.expectedPath(req, url);
+    } catch {
+      endHttp(socket, 400, "Bad Request");
+      return;
+    }
+    if (!expectedPath) {
       socket.destroy();
       return;
     }

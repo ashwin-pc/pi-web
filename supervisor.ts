@@ -17,6 +17,8 @@ const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
 const token = process.env.PI_WEB_TOKEN || "";
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
 const upgradeHandshakeMs = 10_000;
+const childDevMode = process.env.PI_WEB_DEV || "1";
+const isChildDev = childDevMode === "1" || process.env.NODE_ENV === "development";
 
 let child: ChildProcess | undefined;
 let childStarting = false;
@@ -53,7 +55,7 @@ function startChild(): void {
     ...process.env,
     HOST: childHost,
     PORT: String(childPort),
-    PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
+    PI_WEB_DEV: childDevMode,
     PI_WEB_SUPERVISED: "1",
     PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
   };
@@ -167,7 +169,8 @@ function sanitizeProxyHeaders(req: IncomingMessage) {
 supervisor.on("upgrade", createUpgradeProxy({
   host: childHost,
   port: childPort,
-  expectedPath: "/ws",
+  expectedPath: (req, url) => url.pathname === "/ws"
+    || (isChildDev && url.pathname === "/" && req.headers["sec-websocket-protocol"] === "vite-hmr"),
   handshakeTimeoutMs: upgradeHandshakeMs,
   maxPending: 32,
   maxPendingPerPeer: 8,

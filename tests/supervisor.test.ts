@@ -83,6 +83,22 @@ async function expectWebSocketHello(url: string, origin: string): Promise<void> 
   });
 }
 
+async function expectWebSocketOpen(url: string, protocol: string, origin: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const ws = new WebSocket(url, protocol, { origin });
+    const timeout = setTimeout(() => {
+      ws.terminate();
+      reject(new Error("Timed out waiting for supervisor WebSocket open"));
+    }, 5_000);
+    ws.once("open", () => {
+      clearTimeout(timeout);
+      ws.close();
+      resolve();
+    });
+    ws.once("error", reject);
+  });
+}
+
 async function stopSupervisor(supervisor: ChildProcess) {
   if (supervisor.exitCode !== null || supervisor.signalCode !== null) return;
   supervisor.kill("SIGTERM");
@@ -237,6 +253,82 @@ describe("pi-web supervisor", () => {
     expect(response).toBe("");
     expect((await status(publicPort, supervisor)).childPid).toBeTypeOf("number");
   }, 15_000);
+
+  it("denies forged Vite HMR upgrades when the child is in production mode", async () => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const publicOrigin = `http://127.0.0.1:${publicPort}`;
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: {
+        ...isolatedAuthEnv(),
+        NODE_ENV: "test",
+        HOST: "127.0.0.1",
+        PORT: String(publicPort),
+        PI_WEB_CHILD_PORT: String(childPort),
+        PI_WEB_AUTH_ORIGIN: publicOrigin,
+        PI_WEB_DEV: "0",
+        PI_WEB_MOCK: "1",
+        PI_WEB_NO_SESSION: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    await status(publicPort, supervisor);
+
+    const response = await rawExchange(
+      publicPort,
+      `GET /?token=fake HTTP/1.1\r\nHost: 127.0.0.1:${publicPort}\r\nOrigin: ${publicOrigin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: vite-hmr\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: c3ludGhldGljLWhtcg==\r\n\r\n`,
+    );
+    expect(response).toBe("");
+    expect((await status(publicPort, supervisor)).childPid).toBeTypeOf("number");
+  }, 15_000);
+
+  it("proxies only real root-path Vite HMR upgrades in development mode", async () => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const publicOrigin = `http://127.0.0.1:${publicPort}`;
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: {
+        ...isolatedAuthEnv(),
+        NODE_ENV: "test",
+        HOST: "127.0.0.1",
+        PORT: String(publicPort),
+        PI_WEB_CHILD_PORT: String(childPort),
+        PI_WEB_AUTH_ORIGIN: publicOrigin,
+        PI_WEB_DEV: "1",
+        PI_WEB_MOCK: "1",
+        PI_WEB_NO_SESSION: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    await status(publicPort, supervisor);
+    const viteClient = await waitFor(async () => {
+      const response = await fetch(`${publicOrigin}/@vite/client`);
+      return response.ok ? response.text() : undefined;
+    }, supervisor);
+    const viteToken = /const wsToken = "([^"]+)"/.exec(viteClient)?.[1];
+    expect(viteToken).toBeTruthy();
+
+    const unrelatedPath = await rawExchange(
+      publicPort,
+      `GET /unrelated?token=${viteToken} HTTP/1.1\r\nHost: 127.0.0.1:${publicPort}\r\nOrigin: ${publicOrigin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: vite-hmr\r\n\r\n`,
+    );
+    expect(unrelatedPath).toBe("");
+    const unrelatedProtocol = await rawExchange(
+      publicPort,
+      `GET /?token=${viteToken} HTTP/1.1\r\nHost: 127.0.0.1:${publicPort}\r\nOrigin: ${publicOrigin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: not-vite\r\n\r\n`,
+    );
+    expect(unrelatedProtocol).toBe("");
+
+    await expectWebSocketOpen(
+      `ws://127.0.0.1:${publicPort}/?token=${encodeURIComponent(viteToken!)}`,
+      "vite-hmr",
+      publicOrigin,
+    );
+  }, 20_000);
 
   it("returns 400 for malformed authority and stays alive", async () => {
     const publicPort = await freePort();
