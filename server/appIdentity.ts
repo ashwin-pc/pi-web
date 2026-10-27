@@ -24,7 +24,7 @@ export function validPng(png: Buffer): boolean {
   while (offset + 12 <= png.length) {
     const length = png.readUInt32BE(offset);
     if (length > png.length - offset - 12) return false;
-    const type = png.toString("ascii", offset + 4, offset + 8);
+    const type = png.toString("latin1", offset + 4, offset + 8);
     const body = png.subarray(offset + 8, offset + 8 + length);
     // Use the same native, bounded CRC path as animation validation. Package
     // roundtrips validate these assets repeatedly; JS bit loops starve CI I/O.
@@ -47,14 +47,15 @@ export function validPng(png: Buffer): boolean {
     const width = png.readUInt32BE(16), height = png.readUInt32BE(20);
     if (width < 1 || height < 1 || width > 2048 || height > 2048) return false;
     const channels = png[25] === 6 ? 4 : 3;
-    const decoded = inflateSync(Buffer.concat(imageData), { maxOutputLength: 2048 * 2048 * 4 + 2048 });
     const stride = width * channels;
-    if (decoded.length !== height * (stride + 1)) return false;
+    const expected = height * (stride + 1);
+    const decoded = inflateSync(Buffer.concat(imageData), { maxOutputLength: expected });
+    if (decoded.length !== expected) return false;
     for (let row = 0; row < height; row++) if (decoded[row * (stride + 1)] > 4) return false;
     return true;
   } catch { return false; }
 }
-export async function receiveAvatar(req: IncomingMessage, settingsFile: string): Promise<string> {
+export async function readAvatarBody(req: IncomingMessage): Promise<Buffer> {
   if (req.headers["content-type"]?.split(";")[0].trim().toLowerCase() !== "image/png") throw new Error("Expected image/png");
   if (Number(req.headers["content-length"]) > maxAvatarBytes) throw new Error("Avatar exceeds 2 MB");
   const chunks: Buffer[] = [];
@@ -64,13 +65,18 @@ export async function receiveAvatar(req: IncomingMessage, settingsFile: string):
     if (size > maxAvatarBytes) throw new Error("Avatar exceeds 2 MB");
     chunks.push(chunk);
   }
-  const png = Buffer.concat(chunks);
-  if (png.length < 24 || !png.subarray(0, 8).equals(signature) || png.toString("ascii", 12, 16) !== "IHDR") throw new Error("Invalid PNG");
+  return Buffer.concat(chunks);
+}
+export async function storeAvatar(png: Buffer, settingsFile: string): Promise<string> {
+  if (png.length < 24 || !png.subarray(0, 8).equals(signature) || png.toString("latin1", 12, 16) !== "IHDR") throw new Error("Invalid PNG");
   const width = png.readUInt32BE(16);
   const height = png.readUInt32BE(20);
   if (width < 1 || height < 1 || width > 2048 || height > 2048) throw new Error("Avatar dimensions must be between 1 and 2048 pixels");
   if (!validPng(png)) throw new Error("Invalid PNG");
-  return createAvatarGeneration(settingsFile, { still: png, icon: png });
+  return persistAvatarGeneration(settingsFile, { still: png, icon: png });
+}
+export async function receiveAvatar(req: IncomingMessage, settingsFile: string): Promise<string> {
+  return storeAvatar(await readAvatarBody(req), settingsFile);
 }
 export function avatarDirectory(settingsFile: string): string {
   return join(dirname(settingsFile), "pi-web-avatars", createHash("sha256").update(resolve(settingsFile)).digest("hex"));
@@ -116,7 +122,8 @@ export function serializeAvatarPackage(assets: AvatarAssets): string {
   parseAvatarPackage(value);
   return JSON.stringify(value, null, 2) + "\n";
 }
-export async function receiveAvatarPackage(req: IncomingMessage, settingsFile: string): Promise<string> {
+export type AvatarPackageBody = { bytes: Buffer; isZip: boolean };
+export async function readAvatarPackageBody(req: IncomingMessage): Promise<AvatarPackageBody> {
   const type = req.headers["content-type"]?.split(";")[0].trim().toLowerCase();
   const isZip = type === "application/zip";
   if (!isZip && !["application/json", "application/vnd.pi-web-avatar+json"].includes(type ?? "")) throw new Error("Expected application/zip or application/json");
@@ -124,13 +131,20 @@ export async function receiveAvatarPackage(req: IncomingMessage, settingsFile: s
   if (Number(req.headers["content-length"]) > limit) throw new Error("Avatar package too large");
   const chunks: Buffer[] = []; let size = 0;
   for await (const chunk of req) { size += chunk.length; if (size > limit) throw new Error("Avatar package too large"); chunks.push(chunk); }
-  const bytes = Buffer.concat(chunks);
-  const assets = isZip ? await parseAvatarZip(bytes) : parseAvatarPackage(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
-  return createAvatarGeneration(settingsFile, assets);
+  return { bytes: Buffer.concat(chunks), isZip };
+}
+export async function storeAvatarPackage(body: AvatarPackageBody, settingsFile: string): Promise<string> {
+  const assets = body.isZip ? await parseAvatarZip(body.bytes) : parseAvatarPackage(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body.bytes)));
+  return persistAvatarGeneration(settingsFile, assets);
+}
+export async function receiveAvatarPackage(req: IncomingMessage, settingsFile: string): Promise<string> {
+  return storeAvatarPackage(await readAvatarPackageBody(req), settingsFile);
 }
 
 export async function createAvatarGeneration(settingsFile: string, assets: AvatarAssets): Promise<string> {
-  assets = validateAvatarAssets(assets);
+  return persistAvatarGeneration(settingsFile, validateAvatarAssets(assets));
+}
+async function persistAvatarGeneration(settingsFile: string, assets: AvatarAssets): Promise<string> {
   const id = randomUUID(); const dir = join(avatarDirectory(settingsFile), id);
   try { await mkdir(dir, { recursive: true }); await writeFile(join(dir, "still.png"), assets.still); await writeFile(join(dir, "icon.png"), assets.icon); if (assets.fab) await writeFile(join(dir, "fab.png"), assets.fab); if (assets.newSession) await writeFile(join(dir, "new-session.apng"), assets.newSession); if (assets.label) await writeFile(join(dir, "label.json"), JSON.stringify(assets.label)); return id; }
   catch (error) { await rm(dir, { recursive: true, force: true }); throw error; }
@@ -178,7 +192,7 @@ export function identityManifest(settings: PiWebSettings, selectedIcon?: Buffer)
   const icon = `/identity/icon.png?v=${settings.identity.revision}`;
   // Stored generation assets were validated before publication. Manifest reads
   // need only bounded IHDR dimensions, never another synchronous decompression.
-  const hasHeader = selectedIcon && selectedIcon.length >= 33 && selectedIcon.subarray(0, 8).equals(signature) && selectedIcon.readUInt32BE(8) === 13 && selectedIcon.toString("ascii", 12, 16) === "IHDR";
+  const hasHeader = selectedIcon && selectedIcon.length >= 33 && selectedIcon.subarray(0, 8).equals(signature) && selectedIcon.readUInt32BE(8) === 13 && selectedIcon.toString("latin1", 12, 16) === "IHDR";
   const width = hasHeader ? selectedIcon.readUInt32BE(16) : 0;
   const height = hasHeader ? selectedIcon.readUInt32BE(20) : 0;
   const sizes = width >= 1 && height >= 1 && width <= 2048 && height <= 2048 ? `${width}x${height}` : "512x512";
