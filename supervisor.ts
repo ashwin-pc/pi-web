@@ -1,13 +1,27 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
 import { join } from "node:path";
+import type { Duplex } from "node:stream";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
+import {
+  canonicalPeerAddress,
+  isLocalTunnelRequest,
+  markTunnelRequest,
+  stampSupervisorPeer,
+  stampSupervisorTunnel,
+  stripSupervisorPeerHeaders,
+} from "./server/auth/supervisorPeer.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
+import {
+  closeTunnelSocket,
+  listenOnTunnelSocket,
+} from "./server/tunnelSocket.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 
 const publicHost = process.env.HOST || "127.0.0.1";
@@ -16,6 +30,8 @@ const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
 const token = process.env.PI_WEB_TOKEN || "";
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
+const tunnelSocketPath = process.env.PI_WEB_TUNNEL_SOCKET || "";
+const supervisorSecret = randomBytes(32).toString("base64url");
 
 let child: ChildProcess | undefined;
 let childStarting = false;
@@ -54,6 +70,7 @@ function startChild(): void {
     PORT: String(childPort),
     PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
     PI_WEB_SUPERVISED: "1",
+    PI_WEB_SUPERVISOR_SECRET: supervisorSecret,
     PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
   };
 
@@ -116,7 +133,8 @@ function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Err
   socket.destroy?.(error);
 }
 
-const supervisor = createServer(async (req, res) => {
+async function handleRequest(req: IncomingMessage, res: ServerResponse) {
+  sanitizeProxyHeaders(req, isLocalTunnelRequest(req));
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
@@ -139,25 +157,58 @@ const supervisor = createServer(async (req, res) => {
     });
   }
 
-  trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`);
-  sanitizeProxyHeaders(req);
   proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
-});
+}
 
-function sanitizeProxyHeaders(req: IncomingMessage) {
+function sanitizeProxyHeaders(req: IncomingMessage, tunnel: boolean) {
   const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
   if (!trustedProxyPeer(req)) delete req.headers["x-forwarded-for"];
+  if (tunnelSocketPath) {
+    stripSupervisorPeerHeaders(req.headers);
+    const trustedHeader = (process.env.PI_WEB_AUTH_TRUSTED_HEADER || "").toLowerCase();
+    if (tunnel) {
+      stampSupervisorTunnel(req, supervisorSecret);
+    } else {
+      if (trustedHeader) delete req.headers[trustedHeader];
+      const peer = canonicalPeerAddress(req.socket.remoteAddress);
+      if (peer) stampSupervisorPeer(req, peer, supervisorSecret);
+    }
+  }
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
 }
+
+const supervisor = createServer(handleRequest);
+const tunnelSupervisor = createServer((req, res) => {
+  markTunnelRequest(req);
+  void handleRequest(req, res);
+});
 
 supervisor.on("upgrade", (req, socket, head) => {
   if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
     socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
     return;
   }
-  sanitizeProxyHeaders(req);
+  sanitizeProxyHeaders(req, false);
+  proxyUpgrade(req, socket, head);
+});
+
+tunnelSupervisor.on("upgrade", (req, socket, head) => {
+  markTunnelRequest(req);
+  if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
+    socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
+    return;
+  }
+  sanitizeProxyHeaders(req, true);
+  proxyUpgrade(req, socket, head);
+});
+
+function proxyUpgrade(
+  req: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+): void {
   const upstream = net.connect(childPort, childHost);
   let closed = false;
 
@@ -186,25 +237,67 @@ supervisor.on("upgrade", (req, socket, head) => {
     if (head.length) upstream.write(head);
     socket.pipe(upstream).pipe(socket);
   });
-});
+}
 
 supervisor.on("clientError", (_error, socket) => {
   socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
 });
+tunnelSupervisor.on("clientError", (_error, socket) => {
+  socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
+});
 
-function shutdown(): void {
+let tunnelSocketIdentity: Awaited<ReturnType<typeof listenOnTunnelSocket>> | undefined;
+async function shutdown(): Promise<void> {
   console.log("[supervisor] shutting down");
-  supervisor.close();
-  void stopChild().finally(() => process.exit(0));
+  await Promise.all([
+    new Promise<void>((resolve) => {
+      if (!supervisor.listening) return resolve();
+      supervisor.close(() => resolve());
+    }),
+    tunnelSocketIdentity
+      ? closeTunnelSocket(tunnelSupervisor, tunnelSocketPath, tunnelSocketIdentity)
+      : Promise.resolve(),
+    stopChild(),
+  ]);
+  process.exit(0);
 }
 
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
-process.on("SIGHUP", shutdown); // tmux kill-session must also stop the child.
+process.on("SIGINT", () => void shutdown());
+process.on("SIGTERM", () => void shutdown());
+process.on("SIGHUP", () => void shutdown()); // tmux kill-session must also stop the child.
 
-startChild();
-supervisor.listen(publicPort, publicHost, () => {
+async function listenTcp(): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => {
+      supervisor.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      supervisor.off("error", onError);
+      resolve();
+    };
+    supervisor.once("error", onError);
+    supervisor.once("listening", onListening);
+    supervisor.listen(publicPort, publicHost);
+  });
+}
+
+async function start(): Promise<void> {
+  if (tunnelSocketPath)
+    tunnelSocketIdentity = await listenOnTunnelSocket(tunnelSupervisor, tunnelSocketPath);
+  await listenTcp();
+  startChild();
   console.log(`[supervisor] listening on http://${publicHost}:${publicPort}`);
+  if (tunnelSocketPath)
+    console.log(`[supervisor] trusted tunnel socket ${tunnelSocketPath}`);
   console.log(`[supervisor] child target http://${childHost}:${childPort}`);
   console.log("[supervisor] restart/status endpoints use canonical persistent auth policy");
+}
+
+void start().catch(async (error) => {
+  console.error(`[supervisor] startup failed: ${error instanceof Error ? error.message : String(error)}`);
+  if (tunnelSocketIdentity)
+    await closeTunnelSocket(tunnelSupervisor, tunnelSocketPath, tunnelSocketIdentity).catch(() => undefined);
+  await stopChild();
+  process.exit(1);
 });

@@ -26,6 +26,48 @@ describe("auth kernel", () => {
     expect((await new AuthKernel("external", s).gate(req())).ok).toBe(false);
   });
 
+  it("requires authenticated supervisor tunnel provenance only when the socket is enabled", async () => {
+    const previous = {
+      socket: process.env.PI_WEB_TUNNEL_SOCKET,
+      supervised: process.env.PI_WEB_SUPERVISED,
+      secret: process.env.PI_WEB_SUPERVISOR_SECRET,
+    };
+    process.env.PI_WEB_TUNNEL_SOCKET = "/private/pi-web.sock";
+    process.env.PI_WEB_SUPERVISED = "1";
+    process.env.PI_WEB_SUPERVISOR_SECRET = "real-supervisor-secret";
+    try {
+      const s = await store();
+      const k = new AuthKernel("external", s, "", false, "x-verified-user");
+      const direct = {
+        headers: { "x-verified-user": "attacker", "x-pi-web-tunnel": "1", "x-pi-web-supervisor-secret": "guessed" },
+        url: "/",
+        socket: { remoteAddress: "127.0.0.1" },
+      } as any;
+      expect((await k.gate(direct)).ok).toBe(false);
+
+      const supervised = {
+        headers: { "x-verified-user": "owner", "x-pi-web-tunnel": "1", "x-pi-web-supervisor-secret": "real-supervisor-secret" },
+        url: "/",
+        socket: { remoteAddress: "::ffff:127.0.0.1" },
+      } as any;
+      expect(await k.gate(supervised)).toMatchObject({
+        ok: true,
+        via: "external",
+        identity: { id: "external:owner" },
+      });
+
+      const reserved = new AuthKernel("external", s, "", false, "x-pi-web-tunnel");
+      expect((await reserved.gate(supervised)).ok).toBe(false);
+    } finally {
+      if (previous.socket === undefined) delete process.env.PI_WEB_TUNNEL_SOCKET;
+      else process.env.PI_WEB_TUNNEL_SOCKET = previous.socket;
+      if (previous.supervised === undefined) delete process.env.PI_WEB_SUPERVISED;
+      else process.env.PI_WEB_SUPERVISED = previous.supervised;
+      if (previous.secret === undefined) delete process.env.PI_WEB_SUPERVISOR_SECRET;
+      else process.env.PI_WEB_SUPERVISOR_SECRET = previous.secret;
+    }
+  });
+
   it.each(["external", "none"] as const)("lets %s identities read security inventory but denies mutations", async mode => {
     const s = await store(); const k = new AuthKernel(mode, s, "", false, "x-verified-user"); const gated = await k.gate(req({ "x-verified-user": "owner" }));
     expect(gated.ok).toBe(true);
