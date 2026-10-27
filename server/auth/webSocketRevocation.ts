@@ -63,7 +63,7 @@ export class WebSocketRevocation {
   enroll(socket: WebSocket, ticket: WsTicket): void {
     this.sockets.set(socket, {
       ticket,
-      ...(!ticket.sessionHash && ticket.via !== "token"
+      ...(ticket.via === "external" || ticket.via === "extension"
         ? { absoluteExpiry: Date.now() + UNBACKED_SOCKET_LIFETIME_MS }
         : {}),
     });

@@ -368,15 +368,6 @@ export class AuthKernel {
     });
     await this.refreshConfig();
   }
-  async setPolicy(policy: AccessPolicy) {
-    await this.store.update((state) => {
-      state.config = {
-        policy,
-        methods: state.config?.methods || [...this.methods],
-      };
-    });
-    await this.refreshConfig();
-  }
   async revokeSession(req: IncomingMessage) {
     const raw = cookies(req)[SESSION_COOKIE];
     if (raw)

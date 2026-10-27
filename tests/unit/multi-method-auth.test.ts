@@ -394,6 +394,17 @@ describe("multi-method human authentication", () => {
   it("translates legacy configuration into independent policy and methods", () => {
     expect(resolveAuthConfig({ PI_WEB_AUTH_MODE: "none" })).toMatchObject({
       policy: "open",
+      explicitOpenPolicy: false,
+      methods: [],
+    });
+    expect(
+      resolveAuthConfig({
+        PI_WEB_AUTH_MODE: "none",
+        PI_WEB_AUTH_POLICY: "open",
+      }),
+    ).toMatchObject({
+      policy: "open",
+      explicitOpenPolicy: true,
       methods: [],
     });
     expect(
@@ -444,8 +455,6 @@ describe("multi-method human authentication", () => {
       methods: ["legacy", "password"],
     });
     expect(kernel.policy).toBe("authenticated");
-    await kernel.setPolicy("authenticated");
-    expect((await store.read()).config?.policy).toBe("authenticated");
   });
   it("persists authenticated policy on first enrollment unless policy was explicitly changed", async () => {
     const store = new AuthStore(
@@ -461,37 +470,30 @@ describe("multi-method human authentication", () => {
     });
     expect(kernel.policy).toBe("authenticated");
 
-    const deliberateOpenStore = new AuthStore(
-      join(await mkdtemp(join(tmpdir(), "pi-deliberate-open-")), "auth.json"),
-    );
-    const deliberateOpen = new AuthKernel("none", deliberateOpenStore, "", false);
-    await deliberateOpen.setPolicy("open");
-    await deliberateOpen.configure(["password"]);
-    expect((await deliberateOpenStore.read()).config).toEqual({
-      policy: "open",
-      methods: ["password"],
-    });
-    expect(deliberateOpen.policy).toBe("open");
-
     const explicitOpenStore = new AuthStore(
       join(await mkdtemp(join(tmpdir(), "pi-explicit-open-")), "auth.json"),
     );
+    const explicitOpenConfig = resolveAuthConfig({
+      PI_WEB_AUTH_MODE: "none",
+      PI_WEB_AUTH_POLICY: "open",
+    });
     const explicitOpen = new AuthKernel(
-      "none",
+      explicitOpenConfig.legacyMode,
       explicitOpenStore,
       "",
       false,
       "",
-      "open",
-      [],
+      explicitOpenConfig.policy,
+      explicitOpenConfig.methods,
       undefined,
-      true,
+      explicitOpenConfig.explicitOpenPolicy,
     );
     await explicitOpen.configure(["password"]);
     expect((await explicitOpenStore.read()).config).toEqual({
       policy: "open",
       methods: ["password"],
     });
+    expect(explicitOpen.policy).toBe("open");
   });
   it("warns when an explicitly open policy advertises login methods", async () => {
     const store = new AuthStore(

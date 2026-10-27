@@ -105,17 +105,54 @@ describe("WebSocket revocation", () => {
     },
   );
 
-  it("applies an absolute lifetime to extension-authenticated sockets", async () => {
+  it.each(["external", "extension"] as const)(
+    "applies an absolute lifetime to %s-authenticated sockets",
+    async (via) => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-10-27T00:00:00.000Z"));
+        const { store, revocation } = await fixture();
+        const socket = new TestSocket();
+        revocation.enroll(socket as unknown as WebSocket, ticket(via));
+
+        vi.setSystemTime(Date.now() + 30 * 60_000);
+        await store.update(() => undefined);
+        expect(socket.close).toHaveBeenCalledWith(1008, "Browser session revoked");
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("does not impose an absolute lifetime on fully rechecked open-policy sockets", async () => {
     vi.useFakeTimers();
     try {
       vi.setSystemTime(new Date("2026-10-27T00:00:00.000Z"));
-      const { store, revocation } = await fixture();
+      const store = new AuthStore(
+        join(await mkdtemp(join(tmpdir(), "pi-ws-open-")), "auth.json"),
+      );
+      await store.update((state) => {
+        state.config = { policy: "open", methods: [] };
+      });
+      const kernel = new AuthKernel(
+        "none",
+        store,
+        "",
+        false,
+        "",
+        "open",
+        [],
+        undefined,
+        true,
+      );
+      const revocation = new WebSocketRevocation(store, kernel);
       const socket = new TestSocket();
-      revocation.enroll(socket as unknown as WebSocket, ticket("extension"));
+      revocation.enroll(socket as unknown as WebSocket, ticket("open"));
 
       vi.setSystemTime(Date.now() + 30 * 60_000);
       await store.update(() => undefined);
-      expect(socket.close).toHaveBeenCalledWith(1008, "Browser session revoked");
+      expect(socket.close).not.toHaveBeenCalled();
+      expect(await revocation.validForUpgrade(ticket("open"))).toBe(true);
     } finally {
       vi.useRealTimers();
     }

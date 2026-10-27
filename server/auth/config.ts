@@ -4,6 +4,7 @@ export type AccessPolicy = "open" | "authenticated";
 export type HumanAuthMethod = "passkey" | "password" | "legacy" | "external";
 export type AuthConfig = {
   policy: AccessPolicy;
+  explicitOpenPolicy: boolean;
   methods: HumanAuthMethod[];
   legacyMode: AuthMode;
   trustedHeader: string;
@@ -44,6 +45,7 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv): AuthConfig {
     policy:
       (explicitPolicy as AccessPolicy | undefined) ||
       (configured.length || mode !== "none" ? "authenticated" : "open"),
+    explicitOpenPolicy: explicitPolicy === "open",
     methods: [
       ...new Set(
         (configured.length ? configured : translated) as HumanAuthMethod[],

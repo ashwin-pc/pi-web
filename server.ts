@@ -54,13 +54,13 @@ const port = Number(process.env.PORT || 8787);
 const token = process.env.PI_WEB_TOKEN || "";
 const authConfig = resolveAuthConfig(process.env);
 const authMode = authConfig.legacyMode;
-const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
+const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || process.env.PI_WEB_AUTH_INTERNAL_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
 const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
-const authKernel = new AuthKernel(authMode, authStore, token, secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), process.env.PI_WEB_AUTH_POLICY === "open");
+const authKernel = new AuthKernel(authMode, authStore, token, secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));

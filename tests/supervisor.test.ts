@@ -71,6 +71,56 @@ afterEach(async () => {
 });
 
 describe("pi-web supervisor", () => {
+  it.each([
+    {
+      label: "defaults omitted public origins to Secure cookies",
+      configuredOrigin: undefined,
+      secure: true,
+    },
+    {
+      label: "permits non-Secure cookies for explicit HTTP loopback origins",
+      configuredOrigin: "loopback",
+      secure: false,
+    },
+  ])("$label", async ({ configuredOrigin, secure }) => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const authEnv = isolatedAuthEnv();
+    const explicitOrigin = configuredOrigin === "loopback"
+      ? `http://localhost:${publicPort}`
+      : undefined;
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: {
+        ...authEnv,
+        HOST: "127.0.0.1",
+        PORT: String(publicPort),
+        PI_WEB_CHILD_PORT: String(childPort),
+        PI_WEB_AUTH_MODE: "external",
+        PI_WEB_AUTH_POLICY: "authenticated",
+        PI_WEB_AUTH_METHODS: "external",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+        ...(explicitOrigin ? { PI_WEB_AUTH_ORIGIN: explicitOrigin } : {}),
+        PI_WEB_TOKEN: "",
+        PI_WEB_MOCK: "1",
+        PI_WEB_NO_SESSION: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+
+    const response = await waitFor(async () => {
+      const candidate = await fetch(`http://127.0.0.1:${publicPort}/api/state`, {
+        headers: { "x-amzn-tunnel-user": "synthetic-owner", "x-pi-web-client-id": "cookie-regression" },
+      });
+      return candidate.ok ? candidate : undefined;
+    }, supervisor);
+    const setCookie = response.headers.get("set-cookie") || "";
+    expect(setCookie).toContain("pi_web_session=");
+    if (secure) expect(setCookie).toMatch(/;\s*Secure(?:;|$)/i);
+    else expect(setCookie).not.toMatch(/;\s*Secure(?:;|$)/i);
+  }, 20_000);
+
   it("preserves the synthetic deployment auth contract through the supervisor", async () => {
     const publicPort = await freePort();
     const childPort = await freePort();
