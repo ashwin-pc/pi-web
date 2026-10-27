@@ -31,7 +31,6 @@ const defaultProtocolPolicies = new Map([
   ["protocol.ssh.allow", "always"],
 ]);
 const remoteHelperIdentifier = /^[A-Za-z][A-Za-z0-9+.-]*$/;
-const remoteCommands = new Set(["clone", "fetch", "ls-remote", "pull", "push"]);
 
 function parseGitConfig(output: string): GitConfigEntry[] {
   const fields = output.split("\0");
@@ -46,14 +45,6 @@ function parseGitConfig(output: string): GitConfigEntry[] {
   return entries;
 }
 
-function explicitRemoteHelper(value: string) {
-  const helperSeparator = value.indexOf("::");
-  if (helperSeparator <= 0) return undefined;
-  const urlSeparator = value.indexOf("://");
-  if (urlSeparator >= 0 && urlSeparator < helperSeparator) return undefined;
-  return value.slice(0, helperSeparator);
-}
-
 function assertSafeRemoteHelper(identifier: string) {
   if (!remoteHelperIdentifier.test(identifier)) {
     throw new Error(`Unsafe Git remote helper identifier: ${JSON.stringify(identifier)}`);
@@ -64,15 +55,6 @@ function assertSafeRemoteConfig(entries: GitConfigEntry[]) {
   for (const entry of entries) {
     const normalized = entry.key.toLowerCase();
     if (/^remote\..+\.vcs$/.test(normalized)) assertSafeRemoteHelper(entry.value);
-    if (/^remote\..+\.(?:url|pushurl)$/.test(normalized)) {
-      const helper = explicitRemoteHelper(entry.value);
-      if (helper !== undefined) assertSafeRemoteHelper(helper);
-    }
-    if ((entry.scope === "local" || entry.scope === "worktree") && normalized.startsWith("url.") && normalized.endsWith(".insteadof")) {
-      const replacement = entry.key.slice(4, -".insteadof".length);
-      const helper = explicitRemoteHelper(replacement);
-      if (helper !== undefined) assertSafeRemoteHelper(helper);
-    }
   }
 }
 
@@ -98,6 +80,15 @@ export function gitConfigHardeningArgs(entries: GitConfigEntry[]): string[] {
   };
   // Default repository hooks are executable even without an explicit config key.
   resetToTrusted("core.hookspath", "/dev/null");
+  // Commands inspect only the selected repository. Forward display policy as
+  // config too, because pull/rebase/autostash can spawn status and diff commands
+  // that do not inherit command-line flags from the parent Git process.
+  args.push(
+    "-c", "submodule.recurse=false",
+    "-c", "diff.ignoreSubmodules=dirty",
+    "-c", "status.submoduleSummary=false",
+    "-c", "diff.submodule=short",
+  );
   for (const [key, fallback] of executableConfigDefaults) {
     if (repositoryKeys.has(key)) resetToTrusted(repositoryKeys.get(key)!, fallback);
   }
@@ -138,20 +129,18 @@ async function gitArgs(args: string[], cwd: string) {
     maxBuffer: 10 * 1024 * 1024,
   });
   const [command, ...commandArgs] = args;
-  if (remoteCommands.has(command)) {
-    for (const arg of commandArgs) {
-      const helper = explicitRemoteHelper(arg);
-      if (helper !== undefined) assertSafeRemoteHelper(helper);
-    }
-  }
   const displayHardening = ["diff", "show", "log"].includes(command) ? ["--no-ext-diff", "--no-textconv"] : [];
   const signatureHardening = ["show", "log"].includes(command) ? ["--no-show-signature"] : [];
+  const submoduleDisplayPolicy = ["status", "diff"].includes(command) ? ["--ignore-submodules=dirty"] : [];
+  const submoduleNetworkPolicy = ["fetch", "pull"].includes(command) ? ["--no-recurse-submodules"] : [];
   return [
     ...gitConfigHardeningArgs(parseGitConfig(stdout)),
     "--no-optional-locks",
     command,
     ...displayHardening,
     ...signatureHardening,
+    ...submoduleDisplayPolicy,
+    ...submoduleNetworkPolicy,
     ...commandArgs,
   ];
 }

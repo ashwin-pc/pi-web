@@ -198,6 +198,12 @@ describe("shared Git helpers", () => {
     expect(args.join("\0")).not.toContain("remote.origin.vcs=");
 
     const defaults = gitConfigHardeningArgs([]);
+    expect(defaults).toEqual(expect.arrayContaining([
+      "-c", "submodule.recurse=false",
+      "-c", "diff.ignoreSubmodules=dirty",
+      "-c", "status.submoduleSummary=false",
+      "-c", "diff.submodule=short",
+    ]));
     expect(defaults.join("\0")).not.toContain("core.sshcommand=");
     expect(defaults.join("\0")).not.toContain("core.askpass=");
     expect(defaults.join("\0")).not.toContain("core.gitproxy=");
@@ -209,8 +215,8 @@ describe("shared Git helpers", () => {
     expect(trustedProtocol).toEqual(expect.arrayContaining(["-c", "protocol.example.allow=always"]));
 
     expect(() => gitConfigHardeningArgs([
-      { scope: "local", key: "remote.ipv6.url", value: "https://[::1]/repo.git" },
-      { scope: "local", key: "remote.local.url", value: "../repo.git" },
+      { scope: "local", key: "remote.ipv6.url", value: "git@[::1]:repo.git" },
+      { scope: "local", key: "remote.local.url", value: "../repos/with::separator.git" },
       { scope: "local", key: "url.https://[::1]/mirror/.insteadOf", value: "mirror:" },
       { scope: "local", key: "remote.codecommit.vcs", value: "codecommit" },
       { scope: "local", key: "remote.persistent.vcs", value: "persistent-https" },
@@ -413,24 +419,15 @@ exec git-upload-pack ${JSON.stringify(remote)}
     await expect(access(marker)).rejects.toThrow();
   });
 
-  it("rejects unsafe helper URL and rewrite identifiers before the helper can run", async () => {
+  it("inspects repositories with scp-style IPv6 and local double-colon remote paths", async () => {
     const cwd = await makeRepo();
-    const helperDirectory = join(cwd, "git-remote-example");
-    const helper = join(cwd, "fixture-helper");
-    const marker = join(cwd, "unsafe-url-helper-executed");
-    await mkdir(helperDirectory);
-    await writeFile(helper, `#!/bin/sh\nprintf executed > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+    const localRemote = await tempDir("pi-web-shared-git-local::remote-");
+    runGit(localRemote, "init", "--bare");
+    runGit(cwd, "remote", "add", "ipv6", "git@[::1]:repo.git");
+    runGit(cwd, "remote", "add", "local", localRemote);
 
-    await expect(withIsolatedGitConfig(() => git(["ls-remote", "example/../fixture-helper::ignored"], 15_000, cwd))).rejects.toThrow("Unsafe Git remote helper identifier");
-    await expect(access(marker)).rejects.toThrow();
-
-    runGit(cwd, "config", "remote.unsafe.url", "example/../fixture-helper::ignored");
-    await expect(withIsolatedGitConfig(() => git(["ls-remote", "unsafe"], 15_000, cwd))).rejects.toThrow("Unsafe Git remote helper identifier");
-    await expect(access(marker)).rejects.toThrow();
-
-    runGit(cwd, "config", "url.example/../fixture-helper::.insteadOf", "fixture:");
-    await expect(withIsolatedGitConfig(() => git(["ls-remote", "fixture:ignored"], 15_000, cwd))).rejects.toThrow("Unsafe Git remote helper identifier");
-    await expect(access(marker)).rejects.toThrow();
+    await expect(withIsolatedGitConfig(() => gitStatus(cwd))).resolves.toMatchObject({ ok: true, isRepo: true });
+    await expect(withIsolatedGitConfig(() => gitLog(cwd))).resolves.toMatchObject({ ok: true, isRepo: true });
   });
 
   it("does not run repository signature or alternate-ref programs", async () => {
