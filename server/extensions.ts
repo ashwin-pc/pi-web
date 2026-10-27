@@ -110,11 +110,22 @@ export function discoverExtensionEntryPaths(dir: string, seenDirs = new Set<stri
   return dedupePaths(discovered);
 }
 
-export function resolvePiWebExtensionPaths(cwd: string) {
-  return dedupePaths([
-    ...discoverExtensionEntryPaths(join(cwd, ".pi", "web", "extensions")),
-    ...discoverExtensionEntryPaths(resolveWebHomePath("extensions", join(homedir(), ".pi", "web", "extensions"))),
-  ]);
+export function resolveWorkspacePiWebExtensionPaths(cwd: string) {
+  return discoverExtensionEntryPaths(join(cwd, ".pi", "web", "extensions"));
+}
+
+export function resolveGlobalPiWebExtensionPaths() {
+  return discoverExtensionEntryPaths(
+    resolveWebHomePath("extensions", join(homedir(), ".pi", "web", "extensions")),
+  );
+}
+
+/**
+ * Safe default for pi-web callers: only globally installed web extensions.
+ * Workspace sources require an explicit trust-aware provider.
+ */
+export function resolvePiWebExtensionPaths(_cwd: string) {
+  return resolveGlobalPiWebExtensionPaths();
 }
 
 export function resolveBundledExtensionPaths(options: BundledExtensionPathOptions) {

@@ -28,6 +28,7 @@ export type ExtensionLoadStatus = {
 
 export type ResilientResourceLoaderOptions = {
   loaderOptions: LoaderOptions;
+  resolveAdditionalExtensionPaths?: () => string[];
   loadTimeoutMs?: number;
   fetchTimeoutMs?: number;
   createLoader?: LoaderFactory;
@@ -123,7 +124,9 @@ export class ResilientResourceLoader implements ResourceLoader {
   private readonly loadTimeoutMs: number;
   private readonly fetchTimeoutMs: number;
   private readonly primaryOptions: LoaderOptions;
+  private readonly resolveAdditionalExtensionPaths?: () => string[];
   private readonly fallbackOptions: LoaderOptions;
+  private activePrimaryPathsKey = "";
   private readonly extendedResources: Array<Parameters<ResourceLoader["extendResources"]>[0]> = [];
   private attempt = 0;
   private reloadPromise?: Promise<void>;
@@ -135,6 +138,7 @@ export class ResilientResourceLoader implements ResourceLoader {
     this.loadTimeoutMs = positiveMs(options.loadTimeoutMs, 8_000);
     this.fetchTimeoutMs = positiveMs(options.fetchTimeoutMs, 3_000);
     this.primaryOptions = options.loaderOptions;
+    this.resolveAdditionalExtensionPaths = options.resolveAdditionalExtensionPaths;
     this.fallbackOptions = {
       ...options.loaderOptions,
       additionalExtensionPaths: [],
@@ -226,12 +230,21 @@ export class ResilientResourceLoader implements ResourceLoader {
     };
     this.log.info(`[extensions] load started cwd=${this.primaryOptions.cwd} attempt=${attempt} timeoutMs=${this.loadTimeoutMs} fetchTimeoutMs=${this.fetchTimeoutMs}`);
 
+    const additionalExtensionPaths = this.resolveAdditionalExtensionPaths?.()
+      ?? this.primaryOptions.additionalExtensionPaths
+      ?? [];
+    const primaryOptions = { ...this.primaryOptions, additionalExtensionPaths };
+    const primaryPathsKey = JSON.stringify(additionalExtensionPaths);
+
     // Reuse the successful primary loader on reload. DefaultResourceLoader only
     // clears pi's process-global extension factory cache after that same loader
     // has loaded once; replacing it with a fresh instance here made every
-    // pi-web /reload silently reuse stale extension source.
-    const candidate = this.activeIsPrimary ? this.active : this.createLoader(this.primaryOptions);
-    if (!this.activeIsPrimary) {
+    // pi-web /reload silently reuse stale extension source. A trust-list change
+    // deliberately creates a new loader so newly allowed or revoked paths take
+    // effect on this reload.
+    const reusePrimary = this.activeIsPrimary && this.activePrimaryPathsKey === primaryPathsKey;
+    const candidate = reusePrimary ? this.active : this.createLoader(primaryOptions);
+    if (!reusePrimary) {
       for (const paths of this.extendedResources) candidate.extendResources(paths);
     }
     try {
@@ -246,6 +259,7 @@ export class ResilientResourceLoader implements ResourceLoader {
       const result = candidate.getExtensions();
       this.active = candidate;
       this.activeIsPrimary = true;
+      this.activePrimaryPathsKey = primaryPathsKey;
       const durationMs = Date.now() - started;
       this.status = {
         state: result.errors.length > 0 ? "degraded" : "ready",

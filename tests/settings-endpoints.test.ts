@@ -2,7 +2,7 @@ import { isolatedAuthEnv } from "./auth-isolation.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -104,7 +104,12 @@ export default function settingsTest(pi) {
 
     port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
-    child = startServer(port, workspace, join(workspace, "settings.json"), false);
+    const settingsFile = join(workspace, "settings.json");
+    await writeFile(settingsFile, JSON.stringify({
+      version: 1,
+      trustedExtensionWorkspaces: [await realpath(workspace)],
+    }));
+    child = startServer(port, workspace, settingsFile, false);
     await waitForServer(baseUrl);
   }, 20_000);
 

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { dirname, isAbsolute } from "node:path";
 import { defaultAppIdentity, isAvatarAssetId, isAvatarPresetId, type AppIdentity } from "./shared/appIdentity.js";
 
 export type PiWebModelSetting = {
@@ -91,6 +91,8 @@ export type PiWebSettings = {
    * live `activeSchemas` registry, not here.
    */
   extensions?: Record<string, StoredExtensionSettings>;
+  /** Real workspace paths whose project-local pi-web extensions the owner trusts. */
+  trustedExtensionWorkspaces?: string[];
 };
 
 export type PiWebSettingsPatch = Partial<{
@@ -126,6 +128,16 @@ export const defaultPiWebSettings: PiWebSettings = {
   },
   defaults: {},
 };
+
+const maxTrustedExtensionWorkspaces = 128;
+
+function normalizeTrustedExtensionWorkspaces(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const paths = [...new Set(value.filter((path): path is string =>
+    typeof path === "string" && path.length > 0 && path.length <= 4096 && isAbsolute(path),
+  ))].slice(0, maxTrustedExtensionWorkspaces);
+  return paths.length ? paths : undefined;
+}
 
 function cloneSettings(value: PiWebSettings): PiWebSettings {
   return JSON.parse(JSON.stringify(value)) as PiWebSettings;
@@ -349,8 +361,27 @@ export function normalizeSettings(value: unknown): PiWebSettings {
 
   const extensions = normalizeExtensionSettings(value.extensions);
   if (extensions) settings.extensions = extensions;
+  const trustedExtensionWorkspaces = normalizeTrustedExtensionWorkspaces(value.trustedExtensionWorkspaces);
+  if (trustedExtensionWorkspaces) settings.trustedExtensionWorkspaces = trustedExtensionWorkspaces;
 
   return settings;
+}
+
+export function applyWorkspaceExtensionTrust(
+  current: PiWebSettings,
+  workspace: string,
+  trusted: boolean,
+): PiWebSettings {
+  if (!isAbsolute(workspace) || workspace.length > 4096) throw new Error("Workspace trust requires an absolute real path");
+  const next = cloneSettings(current);
+  const paths = new Set(next.trustedExtensionWorkspaces ?? []);
+  if (trusted) paths.add(workspace);
+  else paths.delete(workspace);
+  if (paths.size > maxTrustedExtensionWorkspaces) throw new Error(`Too many trusted extension workspaces (max ${maxTrustedExtensionWorkspaces})`);
+  const values = [...paths];
+  if (values.length) next.trustedExtensionWorkspaces = values;
+  else delete next.trustedExtensionWorkspaces;
+  return normalizeSettings(next);
 }
 
 export function applySettingsPatch(current: PiWebSettings, patch: unknown): PiWebSettings {
@@ -456,7 +487,7 @@ export function createSettingsStore(file: string) {
     return enqueue(async () => writeUnlocked(applySettingsPatch(await readUnlocked(), value)));
   }
 
-  return { file, read, write, patch, patchExtension, resetExtension };
+  return { file, read, write, patch, patchExtension, resetExtension, setWorkspaceExtensionTrust };
 
   /**
    * Persist already-validated `values` for one extension owner. Field-level
@@ -478,5 +509,11 @@ export function createSettingsStore(file: string) {
   /** Drop one owner's stored record (reset to unconfigured). */
   function resetExtension(ownerId: string, expectedRevision: number) {
     return enqueue(async () => writeUnlocked(resetExtensionValues(await readUnlocked(), ownerId, expectedRevision)));
+  }
+
+  function setWorkspaceExtensionTrust(workspace: string, trusted: boolean): Promise<PiWebSettings> {
+    return enqueue(async () => writeUnlocked(
+      applyWorkspaceExtensionTrust(await readUnlocked(), workspace, trusted),
+    ));
   }
 }

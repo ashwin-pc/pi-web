@@ -68,8 +68,10 @@ describe("PiSessionFactory resource lifecycle", () => {
     expect(result.modelFallbackMessage).toBe("fallback");
     expect(value.loaderFor(result.session)).toBe(input.resourceLoader);
     expect(loaderState.reload).toHaveBeenCalledTimes(1);
-    const options = loaderState.options[0].loaderOptions;
-    expect(options.additionalExtensionPaths).toEqual([join(cwd, "extension.ts")]);
+    const loaderOptions = loaderState.options[0];
+    const options = loaderOptions.loaderOptions;
+    expect(options.additionalExtensionPaths).toEqual([]);
+    expect(loaderOptions.resolveAdditionalExtensionPaths()).toEqual([join(cwd, "extension.ts")]);
     const prompt = options.appendSystemPromptOverride(["existing"]).join("\n");
     expect(prompt).toContain("existing");
     expect(prompt).toContain("pi-web UI context");

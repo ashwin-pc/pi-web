@@ -63,6 +63,17 @@
         </button>
       </div>
 
+      <section id="workspaceExtensionTrustNotice" class="workspaceTrustNotice" role="region" aria-labelledby="workspaceExtensionTrustTitle" hidden>
+        <h2 id="workspaceExtensionTrustTitle">Trust this workspace’s extensions?</h2>
+        <p>These project-local extensions can run code in the pi-web server process. Review the list before loading them.</p>
+        <ul id="workspaceExtensionTrustList"></ul>
+        <p id="workspaceExtensionTrustStatus" aria-live="polite"></p>
+        <div class="workspaceTrustActions">
+          <button id="workspaceExtensionDismissButton" type="button">Not now</button>
+          <button id="workspaceExtensionTrustButton" type="button">Trust and load</button>
+        </div>
+      </section>
+
       <aside id="filesPanel" class="filesPanel" aria-label="Workspace files" data-mobile-view="tree" hidden>
         <div class="filesPanelHeader">
           <button id="fileBackButton" class="fileHeaderBackButton" type="button" aria-label="Back to files" title="Back to files">‹</button>
@@ -495,6 +506,7 @@
                 <p>Configure settings contributed by extensions.</p>
               </header>
 
+              <section id="workspaceExtensionTrustSettings" class="workspaceExtensionTrustSettings" aria-label="Workspace extension trust"></section>
               <div id="extensionSettingsContainer" class="extensionSettings"></div>
             </section>
             <section id="settingsPageExtensionHealth" class="settingsPage" data-settings-page="extension-health" aria-labelledby="settingsPageExtensionHealthTitle" hidden><header class="settingsPageHeader"><span>System</span><h3 id="settingsPageExtensionHealthTitle" class="settingsPageTitle" tabindex="-1">Extension health</h3><p>Review runtime failures and retry extension loading.</p></header>

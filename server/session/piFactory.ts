@@ -90,10 +90,11 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
     const loader = new ResilientResourceLoader({
       loadTimeoutMs: envMs("PI_WEB_EXTENSION_LOAD_TIMEOUT_MS", 8_000),
       fetchTimeoutMs: envMs("PI_WEB_EXTENSION_FETCH_TIMEOUT_MS", 3_000),
+      resolveAdditionalExtensionPaths: () => this.options.additionalExtensionPaths(resolvedCwd),
       loaderOptions: {
         cwd: resolvedCwd,
         agentDir: getAgentDir(),
-        additionalExtensionPaths: this.options.additionalExtensionPaths(resolvedCwd),
+        additionalExtensionPaths: [],
         appendSystemPromptOverride: (base) => [...base, webUiContext].filter(Boolean),
       },
     });

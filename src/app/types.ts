@@ -127,6 +127,7 @@ export type PiWebSettings = {
     pinNewSessions?: boolean;
   };
   extensions?: Record<string, StoredExtensionSettings>;
+  trustedExtensionWorkspaces?: string[];
 };
 
 // --- Extension-contributed settings (generic platform), client mirror ---

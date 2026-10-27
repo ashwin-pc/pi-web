@@ -8,8 +8,10 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
-import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
+import { resolveBundledExtensionPaths, resolveGlobalPiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { WorkspaceExtensionTrust } from "./server/extensions/workspaceTrust.js";
+import { handleWorkspaceExtensionTrustRoute } from "./server/extensions/workspaceTrustRoute.js";
 import { HttpError } from "./server/shared/httpError.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
 import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
@@ -65,6 +67,7 @@ const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI
 if (setupLink) console.log(`First-install setup (single use, expires in 10 minutes): ${setupLink}`);
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
+let workspaceExtensionTrust: WorkspaceExtensionTrust;
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
 const mockMode = process.env.PI_WEB_MOCK === "1";
@@ -406,7 +409,8 @@ const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, se
 function additionalExtensionPaths(cwd = piCwd) {
   return [
     ...resolveBundledExtensionPaths({ piCwd: cwd, appDir, bundledExtensionsDir }),
-    ...resolvePiWebExtensionPaths(cwd),
+    ...resolveGlobalPiWebExtensionPaths(),
+    ...(workspaceExtensionTrust?.extensionPaths(cwd) ?? []),
   ];
 }
 
@@ -506,6 +510,8 @@ sessionService = new LocalSessionService({
   clientCount: () => realtimeHub.clientCount,
 });
 const settingsStore = sessionService.settingsStore;
+workspaceExtensionTrust = new WorkspaceExtensionTrust(settingsStore);
+await workspaceExtensionTrust.initialize();
 // Serialize avatar uploads, settings patches, and explicit reset cleanup.
 // Otherwise an identity patch could race the revision check and unlink.
 let avatarMutation: Promise<unknown> = Promise.resolve();
@@ -658,6 +664,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
+      if (await handleWorkspaceExtensionTrustRoute(req, res, url, auth, {
+        trust: workspaceExtensionTrust,
+        sessions: sessionService,
+        readBody,
+        settings: () => settingsStore.read(),
+        broadcast,
+      })) return;
       if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {

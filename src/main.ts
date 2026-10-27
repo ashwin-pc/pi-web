@@ -50,6 +50,7 @@ import { createActiveWorkerDock, type ActiveWorkerDockController } from "./compo
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
+import { createWorkspaceTrust, type WorkspaceTrustController } from "./extensions/workspaceTrust.js";
 import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/artifactPreviews.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
@@ -106,6 +107,7 @@ function handleSessionUiStateWarning(warning: string) {
   showPreferencesWarning(warning);
 }
 let settings: SettingsController;
+let workspaceTrust: WorkspaceTrustController;
 let systemInfo: SystemInfoController;
 let sessionInfo: SessionInfoController;
 let statusBar: StatusBar;
@@ -623,12 +625,13 @@ async function refreshState() {
   syncActiveSessionIdHistoryState(state.currentSessionId);
   const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
   refreshSettlementDependencies(dependencySessionId);
-  const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
+  const [settingsResult, modelsResult, messagesResult, workspaceTrustResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
     refreshMessages(),
+    workspaceTrust.refresh(state.currentSessionId),
   ]);
-  for (const result of [settingsResult, modelsResult, messagesResult]) {
+  for (const result of [settingsResult, modelsResult, messagesResult, workspaceTrustResult]) {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
@@ -687,6 +690,10 @@ settings = createSettings({
     messages.reconcileActivity();
     if (state.initialSyncComplete) void refreshMessages().catch(showSystemError);
   },
+});
+workspaceTrust = createWorkspaceTrust({
+  api,
+  getSessionId: () => state.currentSessionId,
 });
 
 const systemInfoInline = document.querySelector<HTMLElement>("#systemInfoInline");
