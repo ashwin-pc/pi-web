@@ -95,7 +95,10 @@ async function expectWebSocketOpen(url: string, protocol: string, origin: string
       ws.close();
       resolve();
     });
-    ws.once("error", reject);
+    ws.once("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
   });
 }
 
@@ -254,7 +257,7 @@ describe("pi-web supervisor", () => {
     expect((await status(publicPort, supervisor)).childPid).toBeTypeOf("number");
   }, 15_000);
 
-  it("denies forged Vite HMR upgrades when the child is in production mode", async () => {
+  it("denies forged Vite upgrades when the child is in production mode", async () => {
     const publicPort = await freePort();
     const childPort = await freePort();
     const publicOrigin = `http://127.0.0.1:${publicPort}`;
@@ -276,15 +279,17 @@ describe("pi-web supervisor", () => {
     supervisors.add(supervisor);
     await status(publicPort, supervisor);
 
-    const response = await rawExchange(
-      publicPort,
-      `GET /?token=fake HTTP/1.1\r\nHost: 127.0.0.1:${publicPort}\r\nOrigin: ${publicOrigin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: vite-hmr\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: c3ludGhldGljLWhtcg==\r\n\r\n`,
-    );
-    expect(response).toBe("");
+    for (const protocol of ["vite-hmr", "vite-ping"]) {
+      const response = await rawExchange(
+        publicPort,
+        `GET /?token=fake HTTP/1.1\r\nHost: 127.0.0.1:${publicPort}\r\nOrigin: ${publicOrigin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: ${protocol}\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: c3ludGhldGljLWhtcg==\r\n\r\n`,
+      );
+      expect(response).toBe("");
+    }
     expect((await status(publicPort, supervisor)).childPid).toBeTypeOf("number");
   }, 15_000);
 
-  it("proxies only real root-path Vite HMR upgrades in development mode", async () => {
+  it("proxies only exact root-path Vite upgrades across a supervised development restart", async () => {
     const publicPort = await freePort();
     const childPort = await freePort();
     const publicOrigin = `http://127.0.0.1:${publicPort}`;
@@ -297,6 +302,8 @@ describe("pi-web supervisor", () => {
         PORT: String(publicPort),
         PI_WEB_CHILD_PORT: String(childPort),
         PI_WEB_AUTH_ORIGIN: publicOrigin,
+        PI_WEB_AUTH_MODE: "legacy",
+        PI_WEB_TOKEN: token,
         PI_WEB_DEV: "1",
         PI_WEB_MOCK: "1",
         PI_WEB_NO_SESSION: "1",
@@ -304,7 +311,7 @@ describe("pi-web supervisor", () => {
       stdio: ["ignore", "pipe", "pipe"],
     });
     supervisors.add(supervisor);
-    await status(publicPort, supervisor);
+    const initial = await status(publicPort, supervisor);
     const viteClient = await waitFor(async () => {
       const response = await fetch(`${publicOrigin}/@vite/client`);
       return response.ok ? response.text() : undefined;
@@ -323,12 +330,46 @@ describe("pi-web supervisor", () => {
     );
     expect(unrelatedProtocol).toBe("");
 
+    const oldSocketUrl = `ws://127.0.0.1:${publicPort}/?token=${encodeURIComponent(viteToken!)}`;
+    await waitFor(async () => {
+      await expectWebSocketOpen(oldSocketUrl, "vite-ping", publicOrigin);
+      return true;
+    }, supervisor);
     await expectWebSocketOpen(
-      `ws://127.0.0.1:${publicPort}/?token=${encodeURIComponent(viteToken!)}`,
+      oldSocketUrl,
       "vite-hmr",
       publicOrigin,
     );
-  }, 20_000);
+
+    const restartResponse = await fetch(`${publicOrigin}/api/restart`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(restartResponse.status).toBe(202);
+    const restarted = await waitFor(async () => {
+      const current = await status(publicPort, supervisor);
+      return current.childGeneration > initial.childGeneration && current.childPid !== initial.childPid
+        ? current
+        : undefined;
+    }, supervisor);
+    expect(restarted.childGeneration).toBe(initial.childGeneration + 1);
+
+    await waitFor(async () => {
+      await expectWebSocketOpen(oldSocketUrl, "vite-ping", publicOrigin);
+      return true;
+    }, supervisor);
+    const restartedViteClient = await waitFor(async () => {
+      const response = await fetch(`${publicOrigin}/@vite/client`);
+      return response.ok ? response.text() : undefined;
+    }, supervisor);
+    const restartedViteToken = /const wsToken = "([^"]+)"/.exec(restartedViteClient)?.[1];
+    expect(restartedViteToken).toBeTruthy();
+    await expectWebSocketOpen(
+      `ws://127.0.0.1:${publicPort}/?token=${encodeURIComponent(restartedViteToken!)}`,
+      "vite-hmr",
+      publicOrigin,
+    );
+  }, 30_000);
 
   it("returns 400 for malformed authority and stays alive", async () => {
     const publicPort = await freePort();

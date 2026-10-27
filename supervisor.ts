@@ -170,7 +170,10 @@ supervisor.on("upgrade", createUpgradeProxy({
   host: childHost,
   port: childPort,
   expectedPath: (req, url) => url.pathname === "/ws"
-    || (isChildDev && url.pathname === "/" && req.headers["sec-websocket-protocol"] === "vite-hmr"),
+    || (isChildDev
+      && url.pathname === "/"
+      && (req.headers["sec-websocket-protocol"] === "vite-hmr"
+        || req.headers["sec-websocket-protocol"] === "vite-ping")),
   handshakeTimeoutMs: upgradeHandshakeMs,
   maxPending: 32,
   maxPendingPerPeer: 8,
