@@ -1,10 +1,77 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+
+type GitConfigEntry = { scope: string; key: string; value: string };
+const trustedConfigScopes = new Set(["system", "global"]);
+const executableConfigKeys = ["core.fsmonitor", "core.hookspath", "core.sshcommand", "core.askpass", "core.gitproxy"];
+
+function parseGitConfig(output: string): GitConfigEntry[] {
+  const fields = output.split("\0");
+  const entries: GitConfigEntry[] = [];
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const scope = fields[index] || "";
+    const separator = fields[index + 1].indexOf("\n");
+    const key = separator < 0 ? fields[index + 1] : fields[index + 1].slice(0, separator);
+    const value = separator < 0 ? "" : fields[index + 1].slice(separator + 1);
+    if (scope && key) entries.push({ scope, key, value });
+  }
+  return entries;
+}
+
+export function gitConfigHardeningArgs(entries: GitConfigEntry[]): string[] {
+  const trusted = entries.filter((entry) => trustedConfigScopes.has(entry.scope));
+  const repository = entries.filter((entry) => entry.scope === "local" || entry.scope === "worktree");
+  const args: string[] = [];
+  const resetToTrusted = (key: string, fallback = "") => {
+    args.push("-c", `${key}=${fallback}`);
+    for (const entry of trusted) if (entry.key.toLowerCase() === key.toLowerCase()) args.push("-c", `${entry.key}=${entry.value}`);
+  };
+  for (const key of executableConfigKeys) resetToTrusted(key, key === "core.hookspath" ? "/dev/null" : "");
+  for (const key of new Set(repository.map((entry) => entry.key).filter((key) => {
+    const normalized = key.toLowerCase();
+    return normalized === "credential.helper" ||
+      /^credential\..+\.helper$/.test(normalized) ||
+      /^filter\..+\.(?:clean|smudge|process)$/.test(normalized) ||
+      /^merge\..+\.driver$/.test(normalized) ||
+      /^protocol\..+\.allow$/.test(normalized) ||
+      /^remote\..+\.(?:proxy|uploadpack|receivepack|vcs)$/.test(normalized);
+  }))) resetToTrusted(key, key.toLowerCase().startsWith("protocol.") ? "never" : "");
+  args.push(
+    "-c", "protocol.allow=never",
+    "-c", "protocol.file.allow=always",
+    "-c", "protocol.git.allow=always",
+    "-c", "protocol.http.allow=always",
+    "-c", "protocol.https.allow=always",
+    "-c", "protocol.ssh.allow=always",
+  );
+  return args;
+}
+
+async function gitArgs(args: string[], cwd: string) {
+  const { stdout } = await execFileAsync("git", ["config", "--null", "--show-scope", "--list"], {
+    cwd,
+    timeout: 15_000,
+    maxBuffer: 10 * 1024 * 1024,
+  });
+  const [command, ...commandArgs] = args;
+  const displayHardening = ["diff", "show", "log"].includes(command) ? ["--no-ext-diff", "--no-textconv"] : [];
+  return [
+    ...gitConfigHardeningArgs(parseGitConfig(stdout)),
+    "--no-optional-locks",
+    command,
+    ...displayHardening,
+    ...commandArgs,
+  ];
+}
+
+function gitEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_TERMINAL_PROMPT: "0" };
+}
 
 export interface GitFileStatus {
   path: string;
@@ -16,19 +83,25 @@ export interface GitFileStatus {
 }
 
 export async function git(args: string[], timeout = 15_000, cwd = process.cwd()) {
-  return execFileAsync("git", args, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 });
+  return execFileAsync("git", await gitArgs(args, cwd), { cwd, timeout, maxBuffer: 10 * 1024 * 1024, env: gitEnv() });
 }
 
 export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.cwd()) {
   return new Promise<Buffer>((resolvePromise, reject) => {
-    execFile("git", args, { cwd, timeout, maxBuffer: 50 * 1024 * 1024, encoding: "buffer" }, (error, stdout) => {
+    gitArgs(args, cwd).then((hardenedArgs) => execFile("git", hardenedArgs, {
+      cwd,
+      timeout,
+      maxBuffer: 50 * 1024 * 1024,
+      encoding: "buffer",
+      env: gitEnv(),
+    }, (error, stdout) => {
       if (error) {
         (error as Error & { stdout?: Buffer }).stdout = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
         reject(error);
         return;
       }
       resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
-    });
+    }), reject);
   });
 }
 
@@ -142,9 +215,18 @@ export async function readGitImage(options: { cwd: string; path: string; oldPath
   const resolved = resolve(options.cwd, filePath);
   const rel = relative(options.cwd, resolved);
   if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Image path is outside the repository");
-  const info = await stat(resolved);
+  const linkInfo = await lstat(resolved).catch(() => undefined);
+  if (!linkInfo) throw new Error("Image not found");
+  if (linkInfo.isSymbolicLink()) throw new Error("Image path is outside the repository");
+  const rootReal = await realpath(options.cwd);
+  const targetReal = await realpath(resolved);
+  const realRel = relative(rootReal, targetReal);
+  if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
+    throw new Error("Image path is outside the repository");
+  }
+  const info = await stat(targetReal);
   if (!info.isFile()) throw new Error("Image not found");
-  return { file: resolved, displayPath };
+  return { file: targetReal, displayPath };
 }
 
 export async function gitCwdFromRepoParam(repo: string | null, baseCwd: string) {

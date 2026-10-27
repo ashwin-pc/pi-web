@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,7 +14,9 @@ import {
 } from "../server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "../server/shared/fsList.js";
 import {
+  git,
   gitCommitDetails,
+  gitConfigHardeningArgs,
   gitCwdFromRepoParam,
   gitDiff,
   gitLog,
@@ -106,6 +108,88 @@ describe("shared artifact helpers", () => {
 });
 
 describe("shared Git helpers", () => {
+  it("keeps trusted authentication commands while replacing repository-controlled commands", () => {
+    const args = gitConfigHardeningArgs([
+      { scope: "global", key: "credential.helper", value: "!trusted-helper" },
+      { scope: "global", key: "core.sshcommand", value: "trusted-ssh" },
+      { scope: "local", key: "credential.helper", value: "!repo-helper" },
+      { scope: "local", key: "core.sshcommand", value: "repo-ssh" },
+      { scope: "local", key: "filter.repo.process", value: "repo-filter" },
+      { scope: "local", key: "merge.repo.driver", value: "repo-merge" },
+      { scope: "local", key: "protocol.ext.allow", value: "always" },
+      { scope: "local", key: "remote.origin.proxy", value: "repo-proxy" },
+    ]);
+    expect(args).toEqual(expect.arrayContaining([
+      "-c", "credential.helper=",
+      "-c", "credential.helper=!trusted-helper",
+      "-c", "core.sshcommand=",
+      "-c", "core.sshcommand=trusted-ssh",
+      "-c", "filter.repo.process=",
+      "-c", "merge.repo.driver=",
+      "-c", "protocol.ext.allow=never",
+      "-c", "remote.origin.proxy=",
+    ]));
+    expect(args.join("\0")).not.toContain("repo-helper");
+    expect(args.join("\0")).not.toContain("repo-ssh");
+    expect(args.join("\0")).not.toContain("repo-filter");
+    expect(args.join("\0")).not.toContain("repo-merge");
+    expect(args.join("\0")).not.toContain("repo-proxy");
+  });
+
+  it("keeps a trusted global credential helper usable without running the repository helper", async () => {
+    const cwd = await tempDir("pi-web-shared-git-credentials-");
+    const trustedHelper = join(cwd, "trusted-helper.cjs");
+    const repositoryHelper = join(cwd, "repository-helper.cjs");
+    const repositoryMarker = join(cwd, "repository-helper-executed");
+    await writeFile(trustedHelper, 'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("username=trusted\\npassword=secret\\n"));\n');
+    await writeFile(repositoryHelper, `require("node:fs").writeFileSync(${JSON.stringify(repositoryMarker)}, "executed");\n`);
+    const args = gitConfigHardeningArgs([
+      { scope: "global", key: "credential.helper", value: `!${JSON.stringify(process.execPath)} ${JSON.stringify(trustedHelper)}` },
+      { scope: "local", key: "credential.helper", value: `!${JSON.stringify(process.execPath)} ${JSON.stringify(repositoryHelper)}` },
+    ]);
+    const output = execFileSync("git", [...args, "credential", "fill"], {
+      cwd,
+      encoding: "utf8",
+      input: "protocol=https\nhost=example.test\n\n",
+    });
+
+    expect(output).toContain("username=trusted");
+    expect(output).toContain("password=secret");
+    await expect(access(repositoryMarker)).rejects.toThrow();
+  });
+
+  it("does not execute repository-configured fsmonitor, filter, hook, or external diff commands", async () => {
+    const cwd = await makeRepo();
+    const fsmonitorMarker = join(cwd, "fsmonitor-executed");
+    const filterMarker = join(cwd, "filter-executed");
+    const hookMarker = join(cwd, "hook-executed");
+    const diffMarker = join(cwd, "external-diff-executed");
+    const fsmonitor = join(cwd, "fsmonitor.cjs");
+    const filter = join(cwd, "filter.cjs");
+    const hook = join(cwd, ".git", "hooks", "post-merge");
+    const externalDiff = join(cwd, "external-diff.cjs");
+    await writeFile(fsmonitor, `require("node:fs").writeFileSync(${JSON.stringify(fsmonitorMarker)}, "executed");\n`);
+    await writeFile(filter, `require("node:fs").writeFileSync(${JSON.stringify(filterMarker)}, "executed"); process.stdin.pipe(process.stdout);\n`);
+    await writeFile(hook, `#!/bin/sh\nprintf executed > ${JSON.stringify(hookMarker)}\n`, { mode: 0o755 });
+    await writeFile(externalDiff, `require("node:fs").writeFileSync(${JSON.stringify(diffMarker)}, "executed");\n`);
+    runGit(cwd, "config", "core.fsmonitor", `"${process.execPath}" "${fsmonitor}"`);
+    runGit(cwd, "config", "filter.repo.clean", `"${process.execPath}" "${filter}"`);
+    runGit(cwd, "config", "diff.external", `"${process.execPath}" "${externalDiff}"`);
+    await writeFile(join(cwd, ".gitattributes"), "tracked.txt filter=repo\n");
+    await writeFile(join(cwd, "tracked.txt"), "second\n");
+
+    await expect(gitStatus(cwd)).resolves.toMatchObject({ ok: true, isRepo: true });
+    await expect(gitDiff({ cwd, path: "tracked.txt", staged: false })).resolves.toMatchObject({
+      ok: true,
+      diff: expect.stringContaining("+second"),
+    });
+    await expect(git(["hook", "run", "post-merge"], 15_000, cwd)).rejects.toThrow();
+    await expect(access(fsmonitorMarker)).rejects.toThrow();
+    await expect(access(filterMarker)).rejects.toThrow();
+    await expect(access(hookMarker)).rejects.toThrow();
+    await expect(access(diffMarker)).rejects.toThrow();
+  });
+
   it("covers status, diff, history, images, repository discovery, and sync", async () => {
     const cwd = await makeRepo();
     const initialHash = runGit(cwd, "rev-parse", "HEAD");
@@ -134,7 +218,7 @@ describe("shared Git helpers", () => {
     const beforeImage = await readGitImage({ cwd, path: "image.png", version: "before", staged: false });
     const afterImage = await readGitImage({ cwd, path: "image.png", version: "after", staged: false });
     expect(beforeImage?.data).toEqual(Buffer.from([1, 2, 3]));
-    expect(afterImage).toMatchObject({ file: join(cwd, "image.png"), displayPath: "image.png" });
+    expect(afterImage).toMatchObject({ file: await realpath(join(cwd, "image.png")), displayPath: "image.png" });
     expect(await readGitImage({ cwd, path: "tracked.txt", version: "after", staged: false })).toBeUndefined();
 
     const child = join(cwd, "child");
@@ -158,4 +242,17 @@ describe("shared Git helpers", () => {
     runGit(cwd, "push", "-u", "origin", "main");
     await expect(gitSync(cwd)).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
   }, 15_000);
+
+  it("rejects image symlinks, parent-symlink escapes, and non-files", async () => {
+    const cwd = await makeRepo();
+    const outside = await tempDir("pi-web-shared-git-outside-");
+    await writeFile(join(outside, "secret.png"), "outside");
+    await symlink(join(outside, "secret.png"), join(cwd, "leaf.png"));
+    await symlink(outside, join(cwd, "linked"));
+    await mkdir(join(cwd, "directory.png"));
+
+    await expect(readGitImage({ cwd, path: "leaf.png", version: "after", staged: false })).rejects.toThrow("outside the repository");
+    await expect(readGitImage({ cwd, path: "linked/secret.png", version: "after", staged: false })).rejects.toThrow("outside the repository");
+    await expect(readGitImage({ cwd, path: "directory.png", version: "after", staged: false })).rejects.toThrow("Image not found");
+  });
 });
