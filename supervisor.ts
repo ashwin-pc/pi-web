@@ -1,6 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import net from "node:net";
 import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
@@ -8,6 +7,7 @@ import { resolveAuthConfig } from "./server/auth/config.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
+import { createUpgradeProxy } from "./server/shared/upgradeProxy.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 
 const publicHost = process.env.HOST || "127.0.0.1";
@@ -16,6 +16,7 @@ const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
 const token = process.env.PI_WEB_TOKEN || "";
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
+const upgradeHandshakeMs = 10_000;
 
 let child: ChildProcess | undefined;
 let childStarting = false;
@@ -112,36 +113,47 @@ async function restartChild(): Promise<void> {
   startChild();
 }
 
-function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Error) => void }, error?: Error): void {
-  socket.destroy?.(error);
-}
-
 const supervisor = createServer(async (req, res) => {
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+  try {
+    let url: URL;
+    try {
+      url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    } catch {
+      res.statusCode = 400;
+      res.end("Bad Request");
+      return;
+    }
 
-  if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
-    if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
-    if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) return sendJson(res, 403, { ok: false, error: originFailureHint });
-    if (!await isAuthorized(req, true)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
-    sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
-    void restartChild();
-    return;
+    if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
+      if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
+      if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) return sendJson(res, 403, { ok: false, error: originFailureHint });
+      if (!await isAuthorized(req, true)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+      sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
+      void restartChild();
+      return;
+    }
+
+    if (url.pathname === "/__supervisor/status") {
+      if (!await isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+      return sendJson(res, 200, {
+        ok: true,
+        childPid: child?.pid,
+        childGeneration,
+        childHost,
+        childPort,
+      });
+    }
+
+    trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`);
+    sanitizeProxyHeaders(req);
+    proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
+  } catch (error) {
+    if (!res.headersSent && !res.destroyed) {
+      sendJson(res, 500, { ok: false, error: "Supervisor request failed" });
+    } else if (!res.destroyed) {
+      res.destroy(error instanceof Error ? error : undefined);
+    }
   }
-
-  if (url.pathname === "/__supervisor/status") {
-    if (!await isAuthorized(req)) return sendJson(res, 401, { ok: false, error: "Unauthorized" });
-    return sendJson(res, 200, {
-      ok: true,
-      childPid: child?.pid,
-      childGeneration,
-      childHost,
-      childPort,
-    });
-  }
-
-  trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`);
-  sanitizeProxyHeaders(req);
-  proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
 });
 
 function sanitizeProxyHeaders(req: IncomingMessage) {
@@ -152,41 +164,17 @@ function sanitizeProxyHeaders(req: IncomingMessage) {
   delete req.headers["x-forwarded-host"];
 }
 
-supervisor.on("upgrade", (req, socket, head) => {
-  if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
-    socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
-    return;
-  }
-  sanitizeProxyHeaders(req);
-  const upstream = net.connect(childPort, childHost);
-  let closed = false;
-
-  const closeBoth = (error?: Error) => {
-    if (closed) return;
-    closed = true;
-    destroyQuietly(socket, error);
-    destroyQuietly(upstream, error);
-  };
-
-  socket.on("error", (error) => closeBoth(error));
-  upstream.on("error", (error) => closeBoth(error));
-  socket.on("close", () => closeBoth());
-  upstream.on("close", () => closeBoth());
-
-  upstream.on("connect", () => {
-    upstream.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`);
-    for (const [name, value] of Object.entries(req.headers)) {
-      if (Array.isArray(value)) {
-        for (const item of value) upstream.write(`${name}: ${item}\r\n`);
-      } else if (value !== undefined) {
-        upstream.write(`${name}: ${value}\r\n`);
-      }
-    }
-    upstream.write("\r\n");
-    if (head.length) upstream.write(head);
-    socket.pipe(upstream).pipe(socket);
-  });
-});
+supervisor.on("upgrade", createUpgradeProxy({
+  host: childHost,
+  port: childPort,
+  expectedPath: "/ws",
+  handshakeTimeoutMs: upgradeHandshakeMs,
+  maxPending: 32,
+  maxPendingPerPeer: 8,
+  accept: (req) => trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`),
+  prepare: sanitizeProxyHeaders,
+  rejectionBody: originFailureHint,
+}));
 
 supervisor.on("clientError", (_error, socket) => {
   socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
