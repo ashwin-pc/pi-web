@@ -40,7 +40,7 @@ const base = import.meta.env.BASE_URL;
       <article id="provider"><span>02</span><div><h2>Open pi and sign in</h2><pre><code>pi
 /login</code></pre><p>Complete provider login inside <code>pi</code>, then exit it. Authentication belongs to the harness, not pi-web.</p></div></article>
       <article id="start"><span>03</span><div><h2>Start pi-web in your workspace</h2><InstallCommand compact /><p>Run it from the folder where work should happen, or set <code>PI_WEB_CWD=/path/to/workspace</code>.</p></div></article>
-      <article id="open"><span>04</span><div><h2>Set up sign-in and open the workspace</h2><pre><code>pi-web auth bootstrap</code></pre><p>Open the single-use URL printed in the terminal and create a password or passkey.</p></div></article>
+      <article id="open"><span>04</span><div><h2>Set up sign-in and open the workspace</h2><pre><code>npx -y @ashwin-pc/pi-web@latest auth bootstrap</code></pre><p>Open the single-use URL printed when pi-web starts and create a password or passkey. Use this command if you need a fresh setup link.</p></div></article>
     </div>
     <p class="setup-boundary">There is no hosted account or relay in this setup. As additional harnesses arrive, the boundary stays the same: install and sign in to the harness locally first, then let pi-web work through it.</p>
   </Section>
