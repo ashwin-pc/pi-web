@@ -6,12 +6,13 @@ test("collapsed tool cards defer detail rendering and authenticated images until
     stdin: { contents: `import hljs from 'highlight.js/lib/common';
       import { createToolCards } from './src/tools/toolCards.ts';
       const counts = { highlight: 0, auto: 0, fetch: 0 };
+      const requests = [];
       const highlight = hljs.highlight.bind(hljs);
       hljs.highlight = (...args) => { counts.highlight++; return highlight(...args); };
       const auto = hljs.highlightAuto.bind(hljs);
       hljs.highlightAuto = (...args) => { counts.auto++; return auto(...args); };
-      globalThis.fetch = async () => { counts.fetch++; return new Response(new Blob(['image'])); };
-      globalThis.toolFixture = { createToolCards, counts };`, resolveDir: process.cwd() },
+      globalThis.fetch = async (input) => { counts.fetch++; requests.push(String(input)); return new Response(new Blob(['image'])); };
+      globalThis.toolFixture = { createToolCards, counts, requests };`, resolveDir: process.cwd() },
     bundle: true, write: false, format: "iife", platform: "browser",
   });
   await page.setContent('<div id="messages"></div>');
@@ -20,13 +21,16 @@ test("collapsed tool cards defer detail rendering and authenticated images until
     const fixture = (window as typeof window & { toolFixture: {
       createToolCards: typeof import("../../src/tools/toolCards.js").createToolCards;
       counts: { highlight: number; auto: number; fetch: number };
+      requests: string[];
     } }).toolFixture;
     document.documentElement.dataset.density = "compact";
     const messages = document.querySelector<HTMLDivElement>("#messages")!;
-    const tools = fixture.createToolCards(messages, () => {}, () => ({ Authorization: "Bearer fixture" }));
-    tools.addToolHistoryCard("write", false, { content: [{ type: "text", text: "saved" }, { type: "image", imageUrl: "/api/messages/image?imageId=fixture" }] }, { path: "sample.ts", content: "const answer = 42;\nconsole.log(answer);" });
+    let activeSession = "producer-session";
+    const tools = fixture.createToolCards(messages, () => {}, () => ({ Authorization: "Bearer fixture" }), undefined, () => {}, () => activeSession);
+    tools.addToolHistoryCard("write", false, { content: [{ type: "text", text: "saved" }, { type: "image", imageUrl: "/api/artifacts/nested/output%20final.png" }] }, { path: "sample.ts", content: "const answer = 42;\nconsole.log(answer);" });
     const card = messages.lastElementChild as HTMLDivElement;
     const collapsed = { ...fixture.counts, children: card.children.length };
+    activeSession = "different-session";
     const toggle = card.querySelector<HTMLButtonElement>(".toolCardExpandToggle")!;
     toggle.click();
     const expanded = { ...fixture.counts, args: card.querySelectorAll(".toolCardArgs").length, images: card.querySelectorAll("img").length, body: card.querySelector(".toolCardBody")?.textContent };
@@ -70,11 +74,12 @@ test("collapsed tool cards defer detail rendering and authenticated images until
     tools.addRuntimeErrorCard({ title: "Runtime error", technicalDetails: "Visible runtime details" });
     const runtime = messages.lastElementChild?.querySelector(".toolCardBody")?.textContent;
     tools.clearActiveToolCards();
-    return { collapsed, expanded, repeated, bounded, restored, partial, completed, comfortable, errorHidden, errorExpanded, runtime };
+    return { collapsed, expanded, repeated, bounded, restored, partial, completed, comfortable, errorHidden, errorExpanded, runtime, requests: fixture.requests };
   });
   expect(result.collapsed).toEqual({ highlight: 0, auto: 0, fetch: 0, children: 1 });
   expect(result.expanded).toEqual({ highlight: 1, auto: 0, fetch: 1, args: 1, images: 1, body: "saved\n[image]" });
   expect(result.repeated).toEqual({ highlight: 1, auto: 0, fetch: 1 });
+  expect(result.requests).toEqual(["/api/session-artifacts/producer-session/nested/output%20final.png"]);
   expect(result.bounded.highlight).toBe(1);
   expect(result.bounded.auto).toBe(0);
   expect(result.bounded.scripts).toBe(0);
