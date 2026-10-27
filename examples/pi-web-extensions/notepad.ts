@@ -288,7 +288,7 @@ function entrySessionRefs(entries: NotepadEntry[]) {
   return [...seen.values()].slice(0, 8);
 }
 
-// --- Panel (trusted extension HTML rendered by core pi-web) ---
+// --- Panel (extension HTML sanitized and rendered by core pi-web) ---
 
 function escapeHtml(value: string) {
   return value.replace(/[&<>"']/g, (character) => ({
