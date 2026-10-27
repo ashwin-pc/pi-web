@@ -2,10 +2,12 @@ import { loginPageHeaders, renderLoginPage, type LoginPresentation } from "./log
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { trustedProxyPeer } from "./proxy.js";
+import { readJsonBody } from "./requestBody.js";
 import {
   hashPassword,
   hashSecret,
   isLoopback,
+  PasswordWorkUnavailableError,
   verifyPassword,
   type AuthKernel,
   type AuthStore,
@@ -15,6 +17,7 @@ const attempts = new Map<
   string,
   { count: number; resetAt: number; nextAt: number }
 >();
+const ATTEMPTS_CAPACITY = 4096;
 export function loginPeer(req: IncomingMessage) {
   const peer = req.socket.remoteAddress || "unknown";
   const forwarded = req.headers["x-forwarded-for"];
@@ -25,7 +28,6 @@ export function loginPeer(req: IncomingMessage) {
     ? forwarded.trim()
     : peer;
 }
-let active = 0;
 const send = (res: ServerResponse, status: number, value: unknown) => {
   res.writeHead(status, {
     "content-type": "application/json",
@@ -33,29 +35,28 @@ const send = (res: ServerResponse, status: number, value: unknown) => {
   });
   res.end(JSON.stringify(value));
 };
-async function input(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of req) {
-    size += chunk.length;
-    if (size > 16_384) throw new Error("Body too large");
-    chunks.push(chunk);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString() || "{}");
-}
 function allow(req: IncomingMessage, store: AuthStore) {
   const now = Date.now();
   for (const [id, rate] of attempts)
     if (rate.resetAt <= now) attempts.delete(id);
   const id = `${store.path}:${loginPeer(req)}`;
-  if ((!attempts.has(id) && attempts.size >= 4096) || active >= 1) return false;
-  const rate = attempts.get(id) || {
+  const existing = attempts.get(id);
+  if (existing) {
+    attempts.delete(id);
+    attempts.set(id, existing);
+    return now >= existing.nextAt;
+  }
+  if (attempts.size >= ATTEMPTS_CAPACITY) {
+    const oldest = attempts.keys().next().value;
+    if (oldest !== undefined) attempts.delete(oldest);
+  }
+  const rate = {
     count: 0,
     resetAt: now + 60_000,
     nextAt: 0,
   };
   attempts.set(id, rate);
-  return now >= rate.nextAt;
+  return true;
 }
 export function passwordLoginPage(
   res: ServerResponse,
@@ -89,14 +90,25 @@ export async function handlePasswordLogin(
     send(res, 403, { error: "Method disabled" });
     return true;
   }
+  let body: Record<string, unknown>;
+  try {
+    body = (await readJsonBody(req, {
+      maxBytes: 16_384,
+      idleTimeoutMs: 5_000,
+      totalTimeoutMs: 10_000,
+    })) as Record<string, unknown>;
+  } catch (error) {
+    send(res, 400, {
+      error: error instanceof Error ? error.message : "Invalid request",
+    });
+    return true;
+  }
   if (!allow(req, store)) {
     res.setHeader("retry-after", "2");
     send(res, 429, { error: "Too many attempts. Try again later." });
     return true;
   }
-  active++;
   try {
-    const body = await input(req);
     const state = await store.read();
     let passwordHash = state.password?.hash;
     if (setup) {
@@ -184,7 +196,9 @@ export async function handlePasswordLogin(
     send(res, 200, { ok: true });
     return true;
   } catch (error) {
-    send(res, 400, {
+    const busy = error instanceof PasswordWorkUnavailableError;
+    if (busy) res.setHeader("retry-after", "2");
+    send(res, busy ? 503 : 400, {
       error: error instanceof Error ? error.message : "Invalid request",
     });
     return true;
@@ -199,7 +213,6 @@ export async function handlePasswordLogin(
           Date.now() + Math.min(2000, 100 * 2 ** Math.min(rate.count - 1, 5));
       }
     }
-    active--;
   }
 }
 export async function validatedPasswordHash(password: unknown) {

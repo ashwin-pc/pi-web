@@ -7,6 +7,7 @@ import {
 } from "@simplewebauthn/server";
 import {
   hashSecret,
+  PasswordWorkUnavailableError,
   randomSecret,
   type AuthKernel,
   type AuthStore,
@@ -15,6 +16,7 @@ import {
 import type { PasskeyConfig } from "./passkey.js";
 import type { HumanAuthMethod } from "./config.js";
 import { changePassword } from "./password.js";
+import { readJsonBody } from "./requestBody.js";
 
 const DAY = 86_400_000;
 const registrations = new Map<
@@ -29,16 +31,12 @@ function send(res: ServerResponse, status: number, value: unknown) {
   });
   res.end(text);
 }
-async function input(req: IncomingMessage) {
-  const chunks: Buffer[] = [];
-  let n = 0;
-  for await (const chunk of req) {
-    n += chunk.length;
-    if (n > 1_000_000) throw new Error("Body too large");
-    chunks.push(chunk);
-  }
-  return JSON.parse(Buffer.concat(chunks).toString() || "{}");
-}
+const input = (req: IncomingMessage) =>
+  readJsonBody(req, {
+    maxBytes: 1_000_000,
+    idleTimeoutMs: 10_000,
+    totalTimeoutMs: 15_000,
+  });
 function challengeOf(response: unknown) {
   try {
     const encoded = (response as any)?.response?.clientDataJSON;
@@ -124,7 +122,8 @@ export async function handleSecurityRoute(
       (url.pathname === "/api/auth/sessions" ||
         (url.pathname.startsWith("/api/auth/sessions/") &&
           ![auth.sessionHash, auth.sessionHash && hashSecret(auth.sessionHash)].includes(url.pathname.slice("/api/auth/sessions/".length))) ||
-        url.pathname.startsWith("/api/auth/passkeys/"))) ||
+        url.pathname.startsWith("/api/auth/passkeys/") ||
+        url.pathname.startsWith("/api/auth/tokens/"))) ||
     (req.method === "POST" &&
       ["/api/auth/tokens", "/api/auth/device-grants", "/api/auth/passkeys/options", "/api/auth/passkeys/verify"].includes(
         url.pathname,
@@ -146,13 +145,25 @@ export async function handleSecurityRoute(
       return true;
     }
   }
-  const updateSecurity: AuthStore["update"] = (mutator) => store.update(async (live) => {
-    if (destructive && !live.sessions.some((s) =>
-      s.hash === auth.sessionHash && !s.revokedAt && s.expiresAt > Date.now() &&
-      !!s.authenticatedAt && s.authenticatedAt >= Date.now() - 5 * 60_000))
-      throw new Error("Recent sign-in required; session changed during request");
-    await mutator(live);
-  });
+  const updateSecurity: AuthStore["update"] = (mutator) =>
+    store.update(async (live) => {
+      const transactionNow = Date.now();
+      if (
+        destructive &&
+        !live.sessions.some(
+          (s) =>
+            s.hash === auth.sessionHash &&
+            !s.revokedAt &&
+            s.expiresAt > transactionNow &&
+            !!s.authenticatedAt &&
+            s.authenticatedAt >= transactionNow - 5 * 60_000,
+        )
+      )
+        throw new Error(
+          "Recent sign-in required; session changed during request",
+        );
+      return mutator(live);
+    });
   const requireSession = () => {
     if (auth.via === "session") return true;
     send(res, 403, { ok: false, error: "A browser session is required" });
@@ -265,21 +276,38 @@ export async function handleSecurityRoute(
       send(res, 400, { error: "No legacy token configured" });
       return true;
     }
-    const retiring = [...kernel.methods].some((m) => !methods.includes(m));
-    const usable = methods.filter((m) => kernel.methodReady(m, state));
-    if (usable.length !== methods.length) {
-      send(res, 409, {
-        error: "Enroll credentials before enabling a sign-in method",
-      });
+    const nextMethods = [...new Set(methods)];
+    let conflict: string | undefined;
+    await updateSecurity((live) => {
+      const currentMethods = live.config?.methods || [...kernel.methods];
+      const retiring = currentMethods.some(
+        (method) => !nextMethods.includes(method),
+      );
+      const usable = nextMethods.filter((method) =>
+        kernel.methodReady(method, live),
+      );
+      if (usable.length !== nextMethods.length) {
+        conflict = "Enroll credentials before enabling a sign-in method";
+        return false;
+      }
+      if (
+        retiring &&
+        !usable.some((method) => live.verifiedMethods?.includes(method))
+      ) {
+        conflict =
+          "Enroll and verify a replacement login before retiring a method";
+        return false;
+      }
+      live.config = {
+        policy: live.config?.policy || kernel.policy,
+        methods: nextMethods,
+      };
+    });
+    if (conflict) {
+      send(res, 409, { error: conflict });
       return true;
     }
-    if (retiring && !usable.some((m) => state.verifiedMethods?.includes(m))) {
-      send(res, 409, {
-        error: "Enroll and verify a replacement login before retiring a method",
-      });
-      return true;
-    }
-    await kernel.configure([...new Set(methods)]);
+    await kernel.refreshConfig();
     send(res, 200, { ok: true });
     return true;
   }
@@ -293,7 +321,9 @@ export async function handleSecurityRoute(
       ]);
       send(res, 200, { ok: true });
     } catch (error) {
-      send(res, 400, {
+      const busy = error instanceof PasswordWorkUnavailableError;
+      if (busy) res.setHeader("retry-after", "2");
+      send(res, busy ? 503 : 400, {
         ok: false,
         error: error instanceof Error ? error.message : "Invalid password",
       });

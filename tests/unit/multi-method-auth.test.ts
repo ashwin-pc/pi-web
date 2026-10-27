@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, utimes } from "node:fs/promises";
+import { mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -198,17 +198,29 @@ describe("multi-method human authentication", () => {
     warn.mockClear(); await kernel.startupDiagnostics(warn);
     expect(warn.mock.calls[0][0]).toContain("store-only methods=[legacy]");
   });
-  it("recovers dead PID locks but never steals a live lock by age", async () => {
+  it("fails closed on a crashed-writer lock and never reaps a replacement", async () => {
     const { store } = await fixture();
     await writeFile(`${store.path}.lock`, JSON.stringify({ pid: 2147483647 }));
+    const replacement = setTimeout(
+      () =>
+        void writeFile(
+          `${store.path}.lock`,
+          JSON.stringify({ pid: process.pid }),
+        ),
+      100,
+    );
+    await expect(store.update(() => undefined)).rejects.toThrow(
+      "Auth store is locked",
+    );
+    clearTimeout(replacement);
+    expect(JSON.parse(await readFile(`${store.path}.lock`, "utf8")).pid).toBe(
+      process.pid,
+    );
+    await unlink(`${store.path}.lock`);
     await store.update((s) => {
       s.verifiedMethods = ["legacy"];
     });
-    await writeFile(`${store.path}.lock`, JSON.stringify({ pid: process.pid }));
-    await utimes(`${store.path}.lock`, new Date(0), new Date(0));
-    await expect(store.update(() => {})).rejects.toThrow(
-      "Auth store is locked",
-    );
+    expect((await store.read()).verifiedMethods).toEqual(["legacy"]);
   }, 10_000);
   it("isolates listener failures from committed writes and other listeners", async () => {
     const { store } = await fixture();
@@ -423,17 +435,17 @@ describe("multi-method human authentication", () => {
     expect(state.password?.hash).toBe("retired-password-hash");
     expect(state.bootstrap?.usedAt).toBeUndefined();
   });
-  it("bounds concurrent password work to one memory allocation", async () => {
+  it("serializes concurrent password work without rejecting a bounded waiter", async () => {
     const outcomes = await Promise.allSettled([
       hashPassword("first secure password"),
       hashPassword("second secure password"),
     ]);
-    expect(outcomes.filter((o) => o.status === "fulfilled")).toHaveLength(1);
-    expect(outcomes.filter((o) => o.status === "rejected")).toHaveLength(1);
-    const success = outcomes.find(
-      (o) => o.status === "fulfilled",
-    ) as PromiseFulfilledResult<string>;
-    expect(success.value).toMatch(/^scrypt\$32768\$8\$1\$/);
+    expect(outcomes.every((outcome) => outcome.status === "fulfilled")).toBe(
+      true,
+    );
+    for (const outcome of outcomes)
+      if (outcome.status === "fulfilled")
+        expect(outcome.value).toMatch(/^scrypt\$32768\$8\$1\$/);
   });
   it("hashes salted passwords with scrypt and rejects incorrect passwords", async () => {
     const a = await hashPassword("a secure test password"),
