@@ -13,7 +13,7 @@ vi.mock("node:zlib", async importOriginal => {
 });
 
 import { crc32, deflateSync } from "node:zlib";
-import { validPng } from "../server/appIdentity.js";
+import { validateAvatarAssets, validPng } from "../server/appIdentity.js";
 import { validAvatarAnimation } from "../server/avatarAnimation.js";
 
 const signature = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
@@ -90,6 +90,13 @@ describe("avatar image decode limits", () => {
     inflateLimits.length = 0;
     expect(validAvatarAnimation(apng(31))).toBe(true);
     expect(inflateLimits).toHaveLength(31);
+  });
+
+  it("discloses the cumulative decoded-frame budget when rejecting an APNG", () => {
+    const still = png(1, 1, Buffer.alloc(5));
+    expect(() => validateAvatarAssets({ still, icon: still, newSession: apng(32) })).toThrow(
+      "at most 32 MiB of cumulative decoded frames, including a separate default poster, which permits at most 31 full-size 512×512 RGBA frames; these are separate ceilings, so not all combinations are accepted",
+    );
   });
 
   it("rejects high-bit chunk aliases but accepts legitimate ancillary chunks", () => {

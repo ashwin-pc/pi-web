@@ -1,5 +1,5 @@
 import { validAvatarAnimation } from "./avatarAnimation.js";
-import { maxAvatarAnimationBytes } from "./shared/appIdentity.js";
+import { maxAvatarAnimationBytes, maxAvatarAnimationDecodedBytes } from "./shared/appIdentity.js";
 import { decodeAvatarZip, encodeAvatarZip } from "./avatarZip.js";
 import { createHash, randomUUID } from "node:crypto";
 import { crc32, inflateSync } from "node:zlib";
@@ -102,7 +102,9 @@ export type AvatarAssets = { still: Buffer; icon: Buffer; fab?: Buffer; newSessi
 export function validateAvatarAssets(assets: AvatarAssets): AvatarAssets {
   for (const png of [assets.still, assets.icon, ...(assets.fab ? [assets.fab] : [])]) if (png.length > maxAvatarBytes || !validPng(png)) throw new Error("Invalid static PNG asset");
   if (assets.label !== undefined && (typeof assets.label !== "string" || !assets.label.trim() || assets.label.length > 80 || /[\x00-\x1f\x7f<>]/.test(assets.label))) throw new Error("Invalid avatar label");
-  if (assets.newSession && !validAvatarAnimation(assets.newSession)) throw new Error("Invalid single-play RGBA APNG (maximum 512×512, 240 frames, 15 seconds, 8 MB)");
+  const decodedMiB = maxAvatarAnimationDecodedBytes / (1024 * 1024);
+  const maxFullSizeFrames = Math.floor(maxAvatarAnimationDecodedBytes / ((512 * 4 + 1) * 512));
+  if (assets.newSession && !validAvatarAnimation(assets.newSession)) throw new Error(`Invalid single-play RGBA APNG (maximum 512×512, 240 frames, 15 seconds, 8 MB; at most ${decodedMiB} MiB of cumulative decoded frames, including a separate default poster, which permits at most ${maxFullSizeFrames} full-size 512×512 RGBA frames; these are separate ceilings, so not all combinations are accepted)`);
   return { still: assets.still, icon: assets.icon, ...(assets.fab ? { fab: assets.fab } : {}), ...(assets.newSession ? { newSession: assets.newSession } : {}), ...(assets.label !== undefined ? { label: assets.label.trim() } : {}) };
 }
 export async function parseAvatarZip(bytes: Buffer): Promise<AvatarAssets> {
