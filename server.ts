@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { mkdir, writeFile, unlink, rm } from "node:fs/promises";
 import { avatarDirectory, commitAvatarGeneration, exportAvatarPackage, exportAvatarZip, identityManifest, publicIdentityAssets, readAvatar, receiveAvatar, receiveAvatarPackage } from "./server/appIdentity.js";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
@@ -39,7 +39,13 @@ import { initializeAuth } from "./server/auth/bootstrap.js";
 import { handlePasskeyRoute } from "./server/auth/passkey.js";
 import { handlePasswordLogin, passwordLoginPage } from "./server/auth/password.js";
 import { handlePublicDeviceGrant, handleSecurityRoute } from "./server/auth/security.js";
+import { attachmentBodyLimit, controlJsonBodyLimit, createJsonBodyReader, largeJsonBodyLimit, ordinaryJsonBodyLimit, pipeReadStream, promptJsonBodyLimit, readBytes } from "./server/httpTransport.js";
 
+const jsonBodyReader = createJsonBodyReader((req, requestedLimit) =>
+  hasExtensionCredential(req) ? Math.min(ordinaryJsonBodyLimit, requestedLimit) : requestedLimit);
+function readBody(req: IncomingMessage, maxBytes = controlJsonBodyLimit): Promise<unknown> {
+  return jsonBodyReader(req, maxBytes);
+}
 
 const appDir = resolve(fileURLToPath(new URL(".", import.meta.url)));
 const agentDir = getAgentDir();
@@ -57,7 +63,10 @@ const authOrigin = authUrl.origin;
 const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
-const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
+const extensionHttp = new ExtensionHttpRegistry({
+  origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null),
+  readBody: (req) => readBody(req, ordinaryJsonBodyLimit),
+});
 const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
@@ -114,40 +123,8 @@ function sendJson(res: ServerResponse, status: number, value: unknown) {
   res.end(body);
 }
 
-function pipeReadStream(res: ServerResponse, file: string, range?: { start: number; end: number }) {
-  const stream = createReadStream(file, range);
-  res.on("close", () => stream.destroy());
-  stream.pipe(res);
-}
-
 function unauthorized(res: ServerResponse) {
   sendJson(res, 401, { ok: false, error: "Unauthorized" });
-}
-
-async function readBytes(req: IncomingMessage, maxBytes = 30_000_000, onChunk?: (bytes: number) => void): Promise<Buffer> {
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.from(chunk);
-    bytes += buffer.length;
-    onChunk?.(buffer.length);
-    if (bytes > maxBytes) throw new HttpError("Request body is too large", 413);
-    chunks.push(buffer);
-  }
-  return Buffer.concat(chunks);
-}
-
-const jsonBodies = new WeakMap<IncomingMessage, Promise<unknown>>();
-function readBody(req: IncomingMessage): Promise<unknown> {
-  let body = jsonBodies.get(req);
-  if (!body) {
-    body = readBytes(req, hasExtensionCredential(req) ? 1_000_000 : 40_000_000).then(bytes => {
-      const text = bytes.toString("utf-8");
-      return text ? JSON.parse(text) : {};
-    });
-    jsonBodies.set(req, body);
-  }
-  return body;
 }
 
 async function serveArtifact(req: IncomingMessage, res: ServerResponse, sessionScoped = false) {
@@ -215,7 +192,7 @@ function serveStatic(req: IncomingMessage, res: ServerResponse) {
   const file = resolve(staticDir, reqPath);
   const relPath = relative(staticDir, file);
 
-  if (relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(file)) {
+  if (relPath.startsWith("..") || isAbsolute(relPath) || !existsSync(file) || !statSync(file).isFile()) {
     sendJson(res, 404, { ok: false, error: "Not found" });
     return;
   }
@@ -684,7 +661,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/state") {
-        const body = await readBody(req);
+        const body = await readBody(req, ordinaryJsonBodyLimit);
         mockStateOverrides = body && typeof body === "object" && !Array.isArray(body) ? body as Record<string, unknown> : {};
         const state = currentState();
         broadcast({ type: "state_changed", ...state });
@@ -692,7 +669,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (mockMode && method === "POST" && url.pathname === "/api/mock/event") {
-        const body = await readBody(req);
+        const body = await readBody(req, ordinaryJsonBodyLimit);
         if (!body || typeof body !== "object" || Array.isArray(body) || typeof (body as any).type !== "string") {
           return sendJson(res, 400, { ok: false, error: "Mock event requires a type" });
         }
@@ -755,7 +732,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PUT" && url.pathname === "/api/files/write") {
-        const body = await readBody(req) as { sessionId?: unknown; path?: unknown; content?: unknown; expectedRevision?: unknown };
+        const body = await readBody(req, largeJsonBodyLimit) as { sessionId?: unknown; path?: unknown; content?: unknown; expectedRevision?: unknown };
         try {
           const cwd = await requestCwdFromSessionId(typeof body.sessionId === "string" ? body.sessionId : null);
           return sendJson(res, 200, await writeWorkspaceFile(cwd, body.path, body.content, body.expectedRevision));
@@ -914,7 +891,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/web-contributions/invoke") {
-        const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
+        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown } & Record<string, unknown>;
         const controller = new AbortController();
         const abort = () => controller.abort();
         req.once("aborted", abort);
@@ -951,7 +928,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/web-artifact-action/invoke") {
-        const body = await readBody(req) as { sessionId?: unknown } & Record<string, unknown>;
+        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown } & Record<string, unknown>;
         try {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeArtifactAction(resolveSessionId(body.sessionId), body) });
         } catch (error) {
@@ -962,7 +939,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/web-git-tab/invoke") {
-        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
+        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; repo?: unknown };
         try {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokeGitTab(resolveSessionId(body.sessionId), body) });
         } catch (error) {
@@ -973,7 +950,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/web-panel/invoke") {
-        const body = await readBody(req) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; fields?: unknown };
+        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown; key?: unknown; action?: unknown; payload?: unknown; fields?: unknown };
         try {
           return sendJson(res, 200, { ok: true, ...await sessionService.invokePanel(resolveSessionId(body.sessionId), body) });
         } catch (error) {
@@ -1000,7 +977,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/session/tree/navigate") {
-        const body = await readBody(req) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
+        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown; targetId?: unknown; summarize?: unknown; customInstructions?: unknown; replaceInstructions?: unknown; label?: unknown };
         const requestedSessionId = resolveSessionId(body.sessionId);
         await sessionService.require(requestedSessionId);
         const targetId = String(body.targetId || "").trim();
@@ -1071,7 +1048,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
       if (method === "PATCH" && url.pathname === "/api/session-ui-state") {
         try {
-          const sessionUiState = await sessionUiStateStore.patch(await readBody(req));
+          const sessionUiState = await sessionUiStateStore.patch(await readBody(req, ordinaryJsonBodyLimit));
           broadcast({ type: "session_ui_state_changed", sessionUiState });
           return sendJson(res, 200, { ok: true, sessionUiState });
         } catch (error) {
@@ -1166,7 +1143,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "PATCH" && url.pathname === "/api/settings") {
-        const patch = await readBody(req);
+        const patch = await readBody(req, ordinaryJsonBodyLimit);
         const settings = await withAvatarMutation(async () => {
           const avatar = (patch as { identity?: { avatar?: { type?: unknown; assetId?: unknown } } } | null)?.identity?.avatar;
           // A stale settings form must not resurrect a reclaimed generation.
@@ -1225,7 +1202,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
         if (method === "PATCH" && !isReset) {
           if (!entry) return sendJson(res, 409, { ok: false, error: "extension not loaded" });
-          const body = await readBody(req) as { values?: unknown; expectedRevision?: unknown };
+          const body = await readBody(req, ordinaryJsonBodyLimit) as { values?: unknown; expectedRevision?: unknown };
           if (typeof body?.expectedRevision !== "number" || !Number.isInteger(body.expectedRevision) || body.expectedRevision < 0) {
             return sendJson(res, 400, { ok: false, error: "expectedRevision must be a non-negative integer" });
           }
@@ -1298,14 +1275,14 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
 
       if (method === "POST" && url.pathname === "/api/shell") {
-        const body = await readBody(req) as { sessionId?: unknown; command?: unknown; excludeFromContext?: unknown };
+        const body = await readBody(req, ordinaryJsonBodyLimit) as { sessionId?: unknown; command?: unknown; excludeFromContext?: unknown };
         const command = String(body.command || "").trim();
         if (!command) return sendJson(res, 400, { ok: false, error: "command is required" });
         return sendJson(res, 200, { ok: true, ...await sessionService.executeShell(resolveSessionId(body.sessionId), command, Boolean(body.excludeFromContext)) });
       }
 
       if (method === "POST" && url.pathname === "/api/interactions/respond") {
-        const body = await readBody(req) as { id?: unknown } & Record<string, unknown>;
+        const body = await readBody(req, ordinaryJsonBodyLimit) as { id?: unknown } & Record<string, unknown>;
         const id = String(body.id || "").trim();
         if (!id) return sendJson(res, 400, { ok: false, error: "id is required" });
         const response = { ...body, id } as InteractionResponseDto;
@@ -1337,13 +1314,13 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         const name = url.searchParams.get("name") || "attachment";
         const requestedMediaType = url.searchParams.get("mediaType") || "";
         const mediaType = requestedMediaType && requestedMediaType.length <= 160 ? requestedMediaType : "application/octet-stream";
-        const bytes = await readBytes(req);
+        const bytes = await readBytes(req, attachmentBodyLimit);
         const attachment = await storeAttachment(sessionService.cwdForSession(target), { name, mediaType, bytes });
         return sendJson(res, 201, { ok: true, attachment });
       }
 
       if (method === "POST" && url.pathname === "/api/prompt") {
-        const body = await readBody(req) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
+        const body = await readBody(req, promptJsonBodyLimit) as { sessionId?: unknown; clientMessageId?: unknown; message?: unknown; mode?: unknown; attachments?: unknown; images?: unknown };
         const message = String(body.message || "").trim();
         const target = await sessionService.require(resolveSessionId(body.sessionId));
         const attachments = normalizeSubmittedAttachments(sessionService.cwdForSession(target), body.attachments);
@@ -1462,13 +1439,15 @@ const server = createServer(withAccessLog(async (req, res, url) => {
   }
 }));
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: ordinaryJsonBodyLimit });
 const browserSockets = new Map<import("ws").WebSocket, string>();
 const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) => { const active = new Set([...state.sessions.filter(s => !s.revokedAt && s.expiresAt > Date.now()).map(s => s.hash), ...state.apiTokens.filter(t => !t.revokedAt && t.expiresAt > Date.now()).map(t => `token:${t.id}`)]); for (const [socket, hash] of browserSockets) if (!active.has(hash)) socket.close(1008, "Browser session revoked"); };
 authStore.listeners.add(enforceBrowserSessions);
 const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
 authSessionSweep.unref();
 server.on("upgrade", (req, socket, head) => {
+  const destroyOnError = () => socket.destroy();
+  socket.on("error", destroyOnError);
   let url: URL;
   try {
     url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -1478,7 +1457,16 @@ server.on("upgrade", (req, socket, head) => {
     socket.destroy();
     return;
   }
-  if (url.pathname !== "/ws") return;
+  if (url.pathname !== "/ws") {
+    const protocols = String(req.headers["sec-websocket-protocol"] || "").split(",").map((value) => value.trim());
+    if (isDev && protocols.includes("vite-hmr")) {
+      // Vite owns its explicitly identified development HMR upgrade.
+      socket.off("error", destroyOnError);
+    } else {
+      socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    }
+    return;
+  }
 
   void (async () => {
     const ticket = authKernel.redeemWsTicket(url.searchParams.get("ticket") || "") || (mockMode && authKernel.policy === "open" ? { identity: { id: "mock" }, sessionHash: undefined } : undefined);
@@ -1488,6 +1476,7 @@ server.on("upgrade", (req, socket, head) => {
     if (!identity) { socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); socket.destroy(); return; }
     if (!trustedOrigin(req, authOrigin)) { socket.write(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`); socket.destroy(); return; }
     (req as IncomingMessage & { authIdentity?: typeof identity }).authIdentity = identity;
+    socket.off("error", destroyOnError);
     wss.handleUpgrade(req, socket, head, (ws) => { if (ticket?.sessionHash || identity.id.startsWith("token:")) { browserSockets.set(ws, ticket?.sessionHash || identity.id); ws.on("close", () => browserSockets.delete(ws)); } wss.emit("connection", ws, req, url); });
   })().catch(() => socket.destroy());
 });

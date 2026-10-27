@@ -1,7 +1,8 @@
+import { randomBytes } from "node:crypto";
 import type { WebSocket } from "ws";
 import type { SessionActivity } from "./session/activity.js";
 
-type RealtimeSocket = WebSocket & { missedPongs?: number };
+type RealtimeSocket = WebSocket & { missedPongs?: number; outstandingPing?: Buffer };
 export type RealtimeEnvelope = Record<string, unknown> & { seq: number };
 
 export class RealtimeHub {
@@ -15,6 +16,7 @@ export class RealtimeHub {
     private readonly onBroadcast: (value: unknown) => void,
     private readonly maxEventLogSize = 1000,
     private readonly onClientCountChanged?: (count: number) => void,
+    private readonly maxBufferedBytes = 1_048_576,
   ) {
     if (heartbeatMs > 0) {
       const timer = setInterval(() => this.checkHeartbeats(), heartbeatMs);
@@ -40,7 +42,7 @@ export class RealtimeHub {
   broadcast(value: unknown): void {
     const data = JSON.stringify(this.record(value));
     for (const client of this.clients) {
-      if (client.readyState === client.OPEN) client.send(data);
+      this.send(client, data);
     }
     this.onBroadcast(value);
   }
@@ -48,7 +50,16 @@ export class RealtimeHub {
   attach(ws: WebSocket, lastSeq: number): number {
     const client = ws as RealtimeSocket;
     client.missedPongs = 0;
-    client.on("pong", () => { client.missedPongs = 0; });
+    client.on("error", (error) => {
+      console.warn("realtime socket error", error);
+      client.terminate();
+    });
+    client.on("pong", (data) => {
+      if (!client.outstandingPing || !Buffer.from(data).equals(client.outstandingPing)) return;
+      client.outstandingPing = undefined;
+      client.missedPongs = 0;
+    });
+    client.on("close", () => this.deleteClient(client));
     this.clients.add(client);
     this.onClientCountChanged?.(this.clients.size);
 
@@ -56,15 +67,34 @@ export class RealtimeHub {
     const oldestSeq = this.eventLog[0]?.seq || this.nextSeq;
     if (Number.isFinite(lastSeq) && lastSeq > 0) {
       if (lastSeq > latestSeq || lastSeq < oldestSeq - 1) {
-        client.send(JSON.stringify({ type: "sync_required", latestSeq }));
+        this.send(client, JSON.stringify({ type: "sync_required", latestSeq }));
       } else {
         for (const event of this.eventLog) {
-          if (event.seq > lastSeq) client.send(JSON.stringify({ ...event, replay: true }));
+          if (event.seq > lastSeq && !this.send(client, JSON.stringify({ ...event, replay: true }))) break;
         }
       }
     }
-    client.on("close", () => this.deleteClient(client));
     return latestSeq;
+  }
+
+  private send(client: RealtimeSocket, data: string): boolean {
+    if (client.readyState !== client.OPEN) return false;
+    // Check the existing queue, not the next frame size: one legitimate large
+    // event may be sent to an otherwise healthy client, but no more work is
+    // queued once that client's backlog has crossed the bound.
+    if (client.bufferedAmount > this.maxBufferedBytes) {
+      client.terminate();
+      this.deleteClient(client);
+      return false;
+    }
+    try {
+      client.send(data);
+      return true;
+    } catch {
+      client.terminate();
+      this.deleteClient(client);
+      return false;
+    }
   }
 
   private deleteClient(client: RealtimeSocket): void {
@@ -78,13 +108,22 @@ export class RealtimeHub {
         continue;
       }
       if (client.readyState !== client.OPEN) continue;
-      const missedPongs = client.missedPongs || 0;
-      if (missedPongs >= this.maxMissedHeartbeats) {
-        client.terminate();
+      if (client.outstandingPing) {
+        client.missedPongs = (client.missedPongs || 0) + 1;
+        if (client.missedPongs >= this.maxMissedHeartbeats) {
+          client.terminate();
+          this.deleteClient(client);
+        }
         continue;
       }
-      client.missedPongs = missedPongs + 1;
-      try { client.ping(); } catch { client.terminate(); }
+      client.missedPongs = 0;
+      client.outstandingPing = randomBytes(16);
+      try {
+        client.ping(client.outstandingPing);
+      } catch {
+        client.terminate();
+        this.deleteClient(client);
+      }
     }
   }
 }

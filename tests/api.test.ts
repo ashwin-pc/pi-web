@@ -1434,10 +1434,10 @@ describe("Live session lifecycle", () => {
     let acknowledgedPings = 0;
     const ws = new WebSocket(`ws://127.0.0.1:${new URL(baseUrl).port}/ws?sessionId=mock-older&clientId=heartbeat-test`, { autoPong: false });
     const closed = new Promise<void>((resolve) => ws.once("close", resolve));
-    ws.on("ping", () => {
+    ws.on("ping", (data) => {
       if (!replyToPings) return;
       acknowledgedPings += 1;
-      ws.pong();
+      ws.pong(data);
     });
     try {
       await new Promise<void>((resolve, reject) => {
