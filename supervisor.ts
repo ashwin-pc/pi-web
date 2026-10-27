@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import net from "node:net";
 import { join } from "node:path";
@@ -8,6 +9,7 @@ import { resolveAuthConfig } from "./server/auth/config.js";
 import { browserMutationFailure } from "./server/auth/admission.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
+import { stampSupervisorOrigin, stripSupervisorOriginHeaders } from "./server/auth/supervisorOrigin.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 
@@ -17,6 +19,7 @@ const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
 const token = process.env.PI_WEB_TOKEN || "";
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
+const supervisorSecret = randomBytes(32).toString("base64url");
 
 let child: ChildProcess | undefined;
 let childStarting = false;
@@ -56,6 +59,7 @@ function startChild(): void {
     PORT: String(childPort),
     PI_WEB_DEV: process.env.PI_WEB_DEV || "1",
     PI_WEB_SUPERVISED: "1",
+    PI_WEB_SUPERVISOR_SECRET: supervisorSecret,
     PI_WEB_AUTH_ORIGIN: process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`,
   };
 
@@ -119,6 +123,7 @@ function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Err
 }
 
 const supervisor = createServer(async (req, res) => {
+  stripSupervisorOriginHeaders(req.headers);
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
@@ -141,25 +146,29 @@ const supervisor = createServer(async (req, res) => {
     });
   }
 
-  sanitizeProxyHeaders(req);
+  const originValidated = trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`);
+  sanitizeProxyHeaders(req, originValidated);
   proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
 });
 
-function sanitizeProxyHeaders(req: IncomingMessage) {
+function sanitizeProxyHeaders(req: IncomingMessage, originValidated: boolean) {
   const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
   if (!trustedProxyPeer(req)) delete req.headers["x-forwarded-for"];
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
+  stripSupervisorOriginHeaders(req.headers);
+  if (originValidated) stampSupervisorOrigin(req, supervisorSecret);
 }
 
 supervisor.on("upgrade", (req, socket, head) => {
+  stripSupervisorOriginHeaders(req.headers);
   const configuredOrigin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`;
   if (!trustedOrigin(req, configuredOrigin)) {
     socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
     return;
   }
-  sanitizeProxyHeaders(req);
+  sanitizeProxyHeaders(req, true);
   const upstream = net.connect(childPort, childHost);
   let closed = false;
 

@@ -82,6 +82,37 @@ function rawStatus(port: number, host: string, authorization: string): Promise<n
   });
 }
 
+function rawRequest(
+  port: number,
+  options: {
+    method?: string;
+    path: string;
+    headers: Record<string, string>;
+    localAddress?: string;
+  },
+): Promise<{ status: number; headers: import("node:http").IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      host: "127.0.0.1",
+      port,
+      method: options.method,
+      path: options.path,
+      headers: options.headers,
+      localAddress: options.localAddress,
+    }, response => {
+      const chunks: Buffer[] = [];
+      response.on("data", chunk => chunks.push(Buffer.from(chunk)));
+      response.once("end", () => resolve({
+        status: response.statusCode || 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks).toString(),
+      }));
+    });
+    request.once("error", reject);
+    request.end();
+  });
+}
+
 afterEach(async () => {
   await Promise.all(Array.from(supervisors, async (supervisor) => {
     supervisors.delete(supervisor);
@@ -293,5 +324,111 @@ describe("pi-web supervisor", () => {
       return current.childGeneration > beforeRestart.childGeneration ? current : undefined;
     }, supervisor);
     expect(afterRestart.childPid).not.toBe(beforeRestart.childPid);
+  }, 30_000);
+
+  it("carries a trusted proxy's validated local-origin decision only across the supervised child hop", async () => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const configuredOrigin = `http://localhost:${publicPort}`;
+    const publicAuthority = "public.example.test";
+    const publicOrigin = `https://${publicAuthority}`;
+    const trustedPeer = "127.0.0.2";
+    const authEnv = isolatedAuthEnv();
+    const machineSecret = "synthetic-proxy-machine";
+    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
+    await store.update(s => {
+      s.config = { policy: "authenticated", methods: ["external"] };
+      s.apiTokens.push({ id: "machine", name: "machine", hash: hashSecret(machineSecret), createdAt: Date.now(), expiresAt: Date.now() + 60_000 });
+    });
+    const env = {
+      ...authEnv,
+      HOST: "127.0.0.1",
+      PORT: String(publicPort),
+      PI_WEB_CHILD_PORT: String(childPort),
+      PI_WEB_AUTH_MODE: "external",
+      PI_WEB_AUTH_METHODS: "external",
+      PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
+      PI_WEB_AUTH_ORIGIN: configuredOrigin,
+      PI_WEB_AUTH_PROXY_PEERS: trustedPeer,
+      PI_WEB_MOCK: "1",
+      PI_WEB_DEV: "0",
+      NODE_ENV: "test",
+    };
+    delete env.PI_WEB_TOKEN;
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    const output: string[] = [];
+    supervisor.stdout?.on("data", data => output.push(String(data)));
+    supervisor.stderr?.on("data", data => output.push(String(data)));
+
+    await status(publicPort, supervisor, machineSecret).catch(error => {
+      throw new Error(`${String(error)}\n${output.join("")}`);
+    });
+    const external = await waitFor(async () => {
+      const response = await rawRequest(publicPort, {
+        path: "/api/state",
+        localAddress: trustedPeer,
+        headers: {
+          host: "internal.example.test",
+          "x-forwarded-host": publicAuthority,
+          "x-amzn-tunnel-user": "owner@example.test",
+          "x-pi-web-client-id": "browser-client",
+        },
+      });
+      return response.status === 502 ? undefined : response;
+    }, supervisor);
+    expect(external.status, output.join("")).toBe(200);
+    const setCookie = external.headers["set-cookie"];
+    const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)?.split(";")[0];
+    expect(cookie).toContain("pi_web_session=");
+
+    const browserHeaders = {
+      host: "internal.example.test",
+      cookie: cookie!,
+      origin: publicOrigin,
+      "x-forwarded-host": publicAuthority,
+      "x-pi-web-client-id": "browser-client",
+    };
+    const ticketResponse = await rawRequest(publicPort, {
+      method: "POST",
+      path: "/api/ws-ticket",
+      localAddress: trustedPeer,
+      headers: browserHeaders,
+    });
+    expect(ticketResponse.status, ticketResponse.body).toBe(201);
+    const { ticket } = JSON.parse(ticketResponse.body) as { ticket: string };
+    const socket = new WebSocket(`ws://127.0.0.1:${publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
+      origin: publicOrigin,
+      localAddress: trustedPeer,
+      headers: {
+        host: "internal.example.test",
+        "x-forwarded-host": publicAuthority,
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      socket.once("message", data => {
+        expect(JSON.parse(String(data)).type).toBe("hello");
+        resolve();
+      });
+      socket.once("error", reject);
+    });
+    socket.close();
+    await new Promise<void>(resolve => socket.once("close", () => resolve()));
+
+    const forged = await rawRequest(publicPort, {
+      method: "POST",
+      path: "/api/ws-ticket",
+      headers: {
+        ...browserHeaders,
+        host: publicAuthority,
+        "x-pi-web-supervisor-origin": "1",
+        "x-pi-web-supervisor-secret": "caller-controlled",
+      },
+    });
+    expect(forged.status, forged.body).toBe(403);
   }, 30_000);
 });

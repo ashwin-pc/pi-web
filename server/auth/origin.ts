@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import { forwardedHost } from "./proxy.js";
+import { authenticatedSupervisorOrigin } from "./supervisorOrigin.js";
 
 export const originFailureHint = "Origin does not match the configured public origin. Set PI_WEB_AUTH_ORIGIN to the exact public origin or configure trusted proxy peers for a local HTTP origin.";
 let warned = false;
@@ -27,6 +28,7 @@ function trustedProxyOrigin(req: IncomingMessage, origin: URL, configured: URL):
 
 /** Shared by public auth, cookie mutations, WebSockets and supervisor. */
 export function trustedOrigin(req: IncomingMessage, configuredOrigin: string): boolean {
+  if (authenticatedSupervisorOrigin(req)) return true;
   const origin = req.headers.origin;
   if (!origin) {
     const fetchSite = req.headers["sec-fetch-site"];
