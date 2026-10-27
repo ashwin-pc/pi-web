@@ -198,6 +198,62 @@ describe("bundled extension path discovery", () => {
     })).rejects.toThrow("does not match this artifact");
   });
 
+  it("rejects malformed artifact paths before invoking extension renderers", async () => {
+    let ui: any;
+    let actionInvocations = 0;
+    let previewInvocations = 0;
+    const bridge = createWebUiBridge({
+      emit: () => undefined, clientCount: () => 1, withWorkLease: (_session: any, _label: string, operation: () => Promise<any>) => operation(),
+      createNewSession: async () => ({}), sessionCwd: () => process.cwd(), state: () => ({}),
+    });
+    const session = {
+      sessionId: "session", sessionFile: "/tmp/session.jsonl", agent: { waitForIdle: async () => undefined },
+      bindExtensions: async (options: any) => { ui = options.uiContext; },
+    };
+    await bridge.bind(session);
+    ui.web.setArtifactAction("inspect", {
+      title: "Inspect",
+      invoke: () => { actionInvocations++; return { message: "inspected" }; },
+    });
+    ui.web.setArtifactPreview("inspect", {
+      title: "Inspect",
+      render: () => { previewInvocations++; return { html: "<p>previewed</p>" }; },
+    });
+
+    const invalid = [
+      { name: "part.gcode", path: "/api/artifacts/../part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/%2e%2e/part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/nested%2Fdir/part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/nested%5Cdir/part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/%00/part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/nested//part.gcode" },
+      { name: "part.gcode", path: "/api/artifacts/%E0%A4%A/part.gcode" },
+      { name: "part.gcode?download=1", path: "/api/artifacts/part.gcode?download=1" },
+      { name: "part.gcode#preview", path: "/api/artifacts/part.gcode#preview" },
+      { name: "part.gcode", path: "/api/session-artifacts/other/prints/part.gcode" },
+    ];
+    for (const context of invalid) {
+      await expect(bridge.invokeContribution(session, {
+        slot: "artifact-action", key: "inspect", event: { context: { ...context, kind: "file" } },
+      })).rejects.toThrow("Invalid artifact context");
+      await expect(bridge.invokeContribution(session, {
+        slot: "artifact-preview", key: "inspect", event: { context: { ...context, kind: "file" } },
+      })).rejects.toThrow("Invalid artifact context");
+    }
+    expect(actionInvocations).toBe(0);
+    expect(previewInvocations).toBe(0);
+
+    const valid = { name: "设计 part.gcode", path: "/api/session-artifacts/session/prints/%E8%AE%BE%E8%AE%A1%20part.gcode", kind: "file" };
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-action", key: "inspect", event: { context: valid },
+    })).resolves.toMatchObject({ message: "inspected" });
+    await expect(bridge.invokeContribution(session, {
+      slot: "artifact-preview", key: "inspect", event: { context: valid },
+    })).resolves.toMatchObject({ html: "<p>previewed</p>" });
+    expect(actionInvocations).toBe(1);
+    expect(previewInvocations).toBe(1);
+  });
+
   it("keeps legacy surfaces isolated over one contribution registry", async () => {
     let ui: any;
     const emitted: any[] = [];
