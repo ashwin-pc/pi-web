@@ -854,7 +854,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "POST" && url.pathname === "/api/push/subscribe") {
         try {
           const body = await readBody(req, 16_384) as { installationId?: unknown; subscription?: unknown };
-          return sendJson(res, 200, { ok: true, ...await pushNotifications.subscribe(auth.identity.id, body.installationId, body.subscription) });
+          return sendJson(res, 200, { ok: true, ...await pushNotifications.subscribe(body.installationId, body.subscription) });
         } catch (error) {
           const status = error instanceof HttpError ? error.status : 400;
           return sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -864,7 +864,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "DELETE" && url.pathname === "/api/push/subscribe") {
         try {
           const body = await readBody(req, 16_384) as { installationId?: unknown; endpoint?: unknown };
-          await pushNotifications.unsubscribe(auth.identity.id, body.installationId, body.endpoint);
+          await pushNotifications.unsubscribe(body.installationId, body.endpoint);
           return sendJson(res, 200, { ok: true });
         } catch (error) {
           const status = error instanceof HttpError ? error.status : 400;

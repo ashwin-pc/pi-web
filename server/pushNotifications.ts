@@ -6,11 +6,9 @@ import webPush, { type PushSubscription } from "web-push";
 const MAX_ENDPOINT_LENGTH = 2048;
 const MAX_KEY_LENGTH = 256;
 const MAX_INSTALLATION_ID_LENGTH = 160;
-const MAX_IDENTITY_ID_LENGTH = 256;
 
 export const PUSH_SUBSCRIPTION_LIMITS = {
   total: 256,
-  perIdentity: 16,
   notifyConcurrency: 8,
 } as const;
 
@@ -28,7 +26,6 @@ function allowedEndpointHost(hostname: string) {
 
 type StoredSubscription = {
   id: string;
-  identityId: string;
   installationId: string;
   subscription: PushSubscription;
   createdAt: string;
@@ -55,17 +52,12 @@ type SendNotification = (
 
 export type PushNotificationServiceOptions = {
   maxSubscriptions?: number;
-  maxSubscriptionsPerIdentity?: number;
   notifyConcurrency?: number;
   sendNotification?: SendNotification;
 };
 
 function subscriptionId(endpoint: string) {
   return createHash("sha256").update(endpoint).digest("hex").slice(0, 24);
-}
-
-function normalizeIdentity(value: unknown) {
-  return typeof value === "string" ? value.trim().slice(0, MAX_IDENTITY_ID_LENGTH) : "";
 }
 
 function normalizedSubscription(value: unknown): PushSubscription | undefined {
@@ -96,7 +88,6 @@ function normalizeState(raw: Partial<PushState>): PushState {
     if (!subscription || !installationId) return [];
     return [{
       id: subscriptionId(subscription.endpoint),
-      identityId: normalizeIdentity(record.identityId),
       installationId,
       subscription,
       createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
@@ -123,7 +114,6 @@ export function createPushNotificationService(
   options: PushNotificationServiceOptions = {},
 ) {
   const maxSubscriptions = options.maxSubscriptions ?? PUSH_SUBSCRIPTION_LIMITS.total;
-  const maxSubscriptionsPerIdentity = options.maxSubscriptionsPerIdentity ?? PUSH_SUBSCRIPTION_LIMITS.perIdentity;
   const notifyConcurrency = options.notifyConcurrency ?? PUSH_SUBSCRIPTION_LIMITS.notifyConcurrency;
   const sendNotification = options.sendNotification ?? ((...args) => webPush.sendNotification(...args));
   let cached: PushState | undefined;
@@ -203,27 +193,19 @@ export function createPushNotificationService(
     return (await state()).vapid.publicKey;
   }
 
-  async function subscribe(identityIdValue: unknown, installationIdValue: unknown, value: unknown) {
-    const identityId = normalizeIdentity(identityIdValue);
+  async function subscribe(installationIdValue: unknown, value: unknown) {
     const installationId = typeof installationIdValue === "string" ? installationIdValue.trim().slice(0, MAX_INSTALLATION_ID_LENGTH) : "";
     const subscription = normalizedSubscription(value);
-    if (!identityId) throw new Error("An authenticated identity is required");
     if (!installationId || !subscription) throw new Error("A valid installationId and supported push subscription are required");
     return serialize(async () => {
       const current = await mutationState();
       const now = new Date().toISOString();
       const id = subscriptionId(subscription.endpoint);
       const existing = current.subscriptions.find((item) => item.id === id);
-      if (existing?.identityId && existing.identityId !== identityId) throw new Error("Push subscription belongs to another identity");
-      const replacingInstallation = current.subscriptions.find((item) => item.identityId === identityId && item.installationId === installationId);
-      const replacesOwnedRecord = existing?.identityId === identityId || Boolean(replacingInstallation);
-      const isGlobalReplacement = Boolean(existing || replacingInstallation);
-      const ownedCount = current.subscriptions.filter((item) => item.identityId === identityId).length;
-      if (!replacesOwnedRecord && ownedCount >= maxSubscriptionsPerIdentity) throw new Error("Push subscription limit reached for this identity");
-      if (!isGlobalReplacement && current.subscriptions.length >= maxSubscriptions) throw new Error("Push subscription limit reached");
+      const replacingInstallation = current.subscriptions.find((item) => item.installationId === installationId);
+      if (!existing && !replacingInstallation && current.subscriptions.length >= maxSubscriptions) throw new Error("Push subscription limit reached");
       const record: StoredSubscription = {
         id,
-        identityId,
         installationId,
         subscription,
         createdAt: existing?.createdAt || replacingInstallation?.createdAt || now,
@@ -232,29 +214,20 @@ export function createPushNotificationService(
       const subscriptions = [
         record,
         ...current.subscriptions.filter((item) =>
-          item.id !== id && !(item.identityId === identityId && item.installationId === installationId)),
+          item.id !== id && item.installationId !== installationId),
       ];
       await persist({ ...current, subscriptions });
       return { id };
     });
   }
 
-  async function unsubscribe(identityIdValue: unknown, installationIdValue: unknown, endpointValue?: unknown) {
-    const identityId = normalizeIdentity(identityIdValue);
+  async function unsubscribe(installationIdValue: unknown, endpointValue?: unknown) {
     const installationId = typeof installationIdValue === "string" ? installationIdValue.trim() : "";
     const endpoint = typeof endpointValue === "string" ? endpointValue.trim() : "";
-    if (!identityId) throw new Error("An authenticated identity is required");
     if (!installationId && !endpoint) throw new Error("installationId or endpoint is required");
     return serialize(async () => {
       const current = await mutationState();
       const subscriptions = current.subscriptions.filter((item) => {
-        const owned = item.identityId === identityId;
-        const legacyExactMatch = !item.identityId
-          && Boolean(installationId)
-          && Boolean(endpoint)
-          && item.installationId === installationId
-          && item.subscription.endpoint === endpoint;
-        if (!owned && !legacyExactMatch) return true;
         if (installationId && item.installationId !== installationId) return true;
         if (endpoint && item.subscription.endpoint !== endpoint) return true;
         return false;
@@ -264,24 +237,28 @@ export function createPushNotificationService(
   }
 
   async function notifyRunCompleted(notification: RunCompletedNotification) {
-    const current = await state();
-    if (current.subscriptions.length === 0) return;
-    const payload = JSON.stringify({ type: "run-complete", ...notification });
-    const expired = new Set<string>();
-    await mapWithConcurrency(current.subscriptions, notifyConcurrency, async (item) => {
-      try {
-        await sendNotification(item.subscription, payload, { TTL: 60 * 60, urgency: "normal" });
-      } catch (error: any) {
-        if (error?.statusCode === 404 || error?.statusCode === 410) expired.add(item.id);
-        else console.warn("Could not send pi-web completion notification:", error instanceof Error ? error.message : error);
-      }
-    });
-    if (expired.size > 0) {
-      await serialize(async () => {
-        const latest = await mutationState();
-        const subscriptions = latest.subscriptions.filter((item) => !expired.has(item.id));
-        if (subscriptions.length !== latest.subscriptions.length) await persist({ ...latest, subscriptions });
+    try {
+      const current = await state();
+      if (current.subscriptions.length === 0) return;
+      const payload = JSON.stringify({ type: "run-complete", ...notification });
+      const expired = new Set<string>();
+      await mapWithConcurrency(current.subscriptions, notifyConcurrency, async (item) => {
+        try {
+          await sendNotification(item.subscription, payload, { TTL: 60 * 60, urgency: "normal" });
+        } catch (error: any) {
+          if (error?.statusCode === 404 || error?.statusCode === 410) expired.add(item.id);
+          else console.warn("Could not send pi-web completion notification:", error instanceof Error ? error.message : error);
+        }
       });
+      if (expired.size > 0) {
+        await serialize(async () => {
+          const latest = await mutationState();
+          const subscriptions = latest.subscriptions.filter((item) => !expired.has(item.id));
+          if (subscriptions.length !== latest.subscriptions.length) await persist({ ...latest, subscriptions });
+        });
+      }
+    } catch (error) {
+      console.warn("Could not send pi-web completion notification:", error instanceof Error ? error.message : error);
     }
   }
 
