@@ -222,6 +222,27 @@ export function initArtifactBrowser(options: {
       : `/api/artifacts/${encoded}`;
   }
 
+  function htmlPreviewDocument(source: string, url: string) {
+    const href = new URL(url, window.location.href).href.replace(/[&"<>]/g, (character) => ({
+      "&": "&amp;", '"': "&quot;", "<": "&lt;", ">": "&gt;",
+    })[character]!);
+    const base = `<base href="${href}">`;
+    const head = /<head(?:\s[^>]*)?>/i.exec(source);
+    if (head?.index !== undefined) {
+      const offset = head.index + head[0].length;
+      return `${source.slice(0, offset)}${base}${source.slice(offset)}`;
+    }
+    const doctype = /^\s*<!doctype[^>]*>/i.exec(source);
+    const offset = doctype?.[0].length || 0;
+    return `${source.slice(0, offset)}${base}${source.slice(offset)}`;
+  }
+
+  async function fetchArtifactHtml(url: string) {
+    const response = await fetch(url, { headers: apiHeaders(), credentials: "same-origin" });
+    if (!response.ok) throw new Error(`Preview failed (${response.status})`);
+    return htmlPreviewDocument(await response.text(), url);
+  }
+
   function clearDeferredPreviews() {
     deferredObserver?.disconnect();
     deferredObserver = undefined;
@@ -307,7 +328,11 @@ export function initArtifactBrowser(options: {
     }
     if (kind === "html") {
       const frame = document.createElement("iframe"); frame.title = `Thumbnail of ${entry.name}`; frame.tabIndex = -1; frame.inert = true; frame.loading = "lazy"; frame.setAttribute("aria-hidden", "true"); frame.setAttribute("sandbox", "allow-scripts"); host.append(frame);
-      deferPreview(frame, () => { frame.src = url; });
+      deferPreview(frame, () => {
+        void fetchArtifactHtml(url).then((html) => {
+          if (generation === loadGeneration && frame.isConnected) frame.srcdoc = html;
+        }).catch(() => undefined);
+      });
       return;
     }
     if (kind === "markdown") {
@@ -439,7 +464,13 @@ export function initArtifactBrowser(options: {
     }
     if (kind === "html") {
       previewBody.className = "artifactBrowserPreviewBody artifactBrowserPreviewBody--html"; previewBody.textContent = "";
-      const frame = document.createElement("iframe"); frame.src = url; frame.title = `Interactive preview of ${entry.name}`; frame.setAttribute("sandbox", "allow-scripts"); previewBody.append(frame); return;
+      const frame = document.createElement("iframe"); frame.title = `Interactive preview of ${entry.name}`; frame.setAttribute("sandbox", "allow-scripts"); previewBody.append(frame);
+      void fetchArtifactHtml(url).then((html) => {
+        if (generation === previewGeneration && activeEntry?.path === entry.path) frame.srcdoc = html;
+      }).catch((error) => {
+        if (generation === previewGeneration) renderPreviewError(error instanceof Error ? error.message : String(error));
+      });
+      return;
     }
     if (kind === "video" || kind === "audio") {
       previewBody.className = `artifactBrowserPreviewBody artifactBrowserPreviewBody--${kind}`; previewBody.textContent = "";

@@ -184,9 +184,13 @@ test("large artifact preview renders interactive HTML, Markdown, and video", asy
   const thumbnail = page.locator(`.artifactGalleryCard[data-artifact-path="${artifactRoot}/concept.html"] iframe`);
   await expect(thumbnail).toHaveAttribute("inert", "");
   await expect(thumbnail).toHaveAttribute("aria-hidden", "true");
+  await expect(thumbnail).toHaveAttribute("srcdoc", /interactive/);
+  await expect(thumbnail).not.toHaveAttribute("src");
   await page.getByRole("button", { name: "Preview concept.html" }).click();
   const htmlFrame = page.locator("#artifactBrowserPreviewBody iframe");
   await expect(htmlFrame).toHaveAttribute("sandbox", "allow-scripts");
+  await expect(htmlFrame).toHaveAttribute("srcdoc", /interactive/);
+  await expect(htmlFrame).not.toHaveAttribute("src");
   await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveText("Ready");
   await htmlFrame.contentFrame().locator("#interactive").click();
   await expect(htmlFrame.contentFrame().locator("#interactive")).toHaveText("Clicked");
