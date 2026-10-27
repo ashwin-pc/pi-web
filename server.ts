@@ -1458,9 +1458,10 @@ server.on("upgrade", (req, socket, head) => {
     return;
   }
   if (url.pathname !== "/ws") {
-    const protocols = String(req.headers["sec-websocket-protocol"] || "").split(",").map((value) => value.trim());
-    if (isDev && protocols.includes("vite-hmr")) {
-      // Vite owns its explicitly identified development HMR upgrade.
+    const protocol = req.headers["sec-websocket-protocol"];
+    if (isDev && url.pathname === "/" && (protocol === "vite-hmr" || protocol === "vite-ping")) {
+      // Vite owns its exact root development upgrades: the HMR stream and
+      // the restart probe that tells a disconnected client when to reload.
       socket.off("error", destroyOnError);
     } else {
       socket.end("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");

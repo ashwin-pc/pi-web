@@ -5,6 +5,8 @@ import type { SessionActivity } from "./session/activity.js";
 type RealtimeSocket = WebSocket & { missedPongs?: number; outstandingPing?: Buffer };
 export type RealtimeEnvelope = Record<string, unknown> & { seq: number };
 
+export const DEFAULT_REALTIME_BACKLOG_BYTES = 16 * 1024 * 1024;
+
 export class RealtimeHub {
   private readonly clients = new Set<RealtimeSocket>();
   private readonly eventLog: RealtimeEnvelope[] = [];
@@ -16,7 +18,9 @@ export class RealtimeHub {
     private readonly onBroadcast: (value: unknown) => void,
     private readonly maxEventLogSize = 1000,
     private readonly onClientCountChanged?: (count: number) => void,
-    private readonly maxBufferedBytes = 1_048_576,
+    // This one bound limits both a connected client's queued transport data
+    // and the replay assembled for a reconnecting client.
+    private readonly maxBufferedBytes = DEFAULT_REALTIME_BACKLOG_BYTES,
   ) {
     if (heartbeatMs > 0) {
       const timer = setInterval(() => this.checkHeartbeats(), heartbeatMs);

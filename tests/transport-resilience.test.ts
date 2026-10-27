@@ -28,7 +28,7 @@ async function freePort() {
   return address.port;
 }
 
-async function startServer() {
+async function startServer(dev = false) {
   const port = await freePort();
   const cwd = await mkdtemp(join(tmpdir(), "pi-web-transport-"));
   tempDirs.push(cwd);
@@ -36,7 +36,8 @@ async function startServer() {
     env: {
       ...isolatedAuthEnv(),
       PI_WEB_MOCK: "1",
-      PI_WEB_DEV: "0",
+      PI_WEB_DEV: dev ? "1" : "0",
+      NODE_ENV: "test",
       PI_WEB_TOKEN: "",
       PI_WEB_CWD: cwd,
       HOST: "127.0.0.1",
@@ -56,7 +57,7 @@ async function startServer() {
   throw new Error("test server did not start");
 }
 
-function rawUpgrade(port: number, path: string) {
+function rawUpgrade(port: number, path: string, protocol?: string) {
   const socket = createConnection(port, "127.0.0.1");
   socket.write([
     `GET ${path} HTTP/1.1`,
@@ -65,6 +66,7 @@ function rawUpgrade(port: number, path: string) {
     "Upgrade: websocket",
     "Sec-WebSocket-Version: 13",
     "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+    ...(protocol ? [`Sec-WebSocket-Protocol: ${protocol}`] : []),
     "",
     "",
   ].join("\r\n"));
@@ -82,8 +84,16 @@ async function firstResponse(socket: ReturnType<typeof rawUpgrade>, timeoutMs = 
   });
 }
 
+function viteClientToken(source: string): string {
+  const match = source.match(/\bconst wsToken = ("(?:[^"\\]|\\.)*");/);
+  if (!match) throw new Error("Vite client did not contain a WebSocket token");
+  const token = JSON.parse(match[1]) as unknown;
+  if (typeof token !== "string" || !token) throw new Error("Vite client contained an invalid WebSocket token");
+  return token;
+}
+
 describe("server transport resilience", () => {
-  it("keeps a healthy reconnect open when an 8MB missed event requires resync", async () => {
+  it("replays a healthy 8MB missed event within the default budget", async () => {
     const server = createHttpServer();
     const sockets = new WebSocketServer({ server });
     const hub = new RealtimeHub(0, 1, () => {});
@@ -102,8 +112,18 @@ describe("server transport resilience", () => {
 
     const reconnect = new WebSocket(`ws://127.0.0.1:${address.port}/?lastSeq=1`);
     try {
-      const [recovery] = await once(reconnect, "message");
-      expect(JSON.parse(String(recovery))).toEqual({ type: "sync_required", latestSeq: 3 });
+      const replayed = await new Promise<Record<string, unknown>[]>((resolve, reject) => {
+        const messages: Record<string, unknown>[] = [];
+        reconnect.on("message", (data) => {
+          messages.push(JSON.parse(String(data)) as Record<string, unknown>);
+          if (messages.length === 2) resolve(messages);
+        });
+        reconnect.once("error", reject);
+      });
+      expect(replayed).toEqual([
+        expect.objectContaining({ type: "large", seq: 2, replay: true }),
+        expect.objectContaining({ type: "next", seq: 3, replay: true }),
+      ]);
       expect(reconnect.readyState).toBe(WebSocket.OPEN);
 
       const liveMessage = once(reconnect, "message");
@@ -115,6 +135,42 @@ describe("server transport resilience", () => {
       reconnect.close();
       sockets.close();
       server.close();
+    }
+  });
+
+  it.each(["vite-hmr", "vite-ping"])("admits Vite's %s protocol on the root development route", async (protocol) => {
+    const { baseUrl } = await startServer(true);
+    const clientResponse = await fetch(`${baseUrl}/@vite/client`);
+    expect(clientResponse.status).toBe(200);
+    const token = viteClientToken(await clientResponse.text());
+    const url = new URL(baseUrl);
+    const socket = new WebSocket(`ws://${url.host}/?token=${encodeURIComponent(token)}`, protocol, { origin: baseUrl });
+    try {
+      await once(socket, "open");
+    } finally {
+      socket.close();
+    }
+  });
+
+  it("rejects unrelated development upgrade routes and protocols", async () => {
+    const { port } = await startServer(true);
+    for (const [path, protocol] of [["/not-vite", "vite-hmr"], ["/", "unrelated"]]) {
+      const socket = rawUpgrade(port, path, protocol);
+      try {
+        expect(await firstResponse(socket)).toContain("404 Not Found");
+      } finally {
+        socket.destroy();
+      }
+    }
+  });
+
+  it.each(["vite-hmr", "vite-ping"])("rejects Vite's %s protocol in production", async (protocol) => {
+    const { port } = await startServer();
+    const socket = rawUpgrade(port, "/", protocol);
+    try {
+      expect(await firstResponse(socket)).toContain("404 Not Found");
+    } finally {
+      socket.destroy();
     }
   });
 

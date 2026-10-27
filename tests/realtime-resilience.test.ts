@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { RealtimeHub } from "../server/realtime.js";
+import { DEFAULT_REALTIME_BACKLOG_BYTES, RealtimeHub } from "../server/realtime.js";
 
 class FakeSocket extends EventEmitter {
   readonly OPEN = 1;
@@ -54,6 +54,41 @@ describe("RealtimeHub transport resilience", () => {
     hub.broadcast({ type: "next" });
     expect(fake.terminate).toHaveBeenCalledOnce();
     expect(fake.send).toHaveBeenCalledOnce();
+  });
+
+  it("keeps realistic state and cumulative tool bursts within the default backlog", () => {
+    const ws = socket();
+    const fake = ws as unknown as FakeSocket;
+    const hub = new RealtimeHub(0, 1, () => {});
+    hub.attach(ws, 0);
+
+    for (let index = 0; index < 3; index++) {
+      hub.broadcast({
+        type: "session_ui_state_changed",
+        sessionId: `session-${index}`,
+        state: "s".repeat(700 * 1024),
+      });
+    }
+    for (let index = 0; index < 24; index++) {
+      hub.broadcast({
+        type: "agent_event",
+        event: {
+          type: "tool_execution_update",
+          toolCallId: "tool-call",
+          partialResult: "t".repeat(32 * 1024),
+        },
+      });
+    }
+
+    expect(fake.send).toHaveBeenCalledTimes(27);
+    expect(fake.bufferedAmount).toBeGreaterThan(1024 * 1024);
+    expect(fake.bufferedAmount).toBeLessThan(DEFAULT_REALTIME_BACKLOG_BYTES);
+    expect(fake.terminate).not.toHaveBeenCalled();
+
+    fake.bufferedAmount = DEFAULT_REALTIME_BACKLOG_BYTES + 1;
+    hub.broadcast({ type: "next" });
+    expect(fake.terminate).toHaveBeenCalledOnce();
+    expect(fake.send).toHaveBeenCalledTimes(27);
   });
 
   it("only accepts the pong for the currently outstanding server ping", () => {
