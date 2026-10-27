@@ -3,8 +3,10 @@ import { createServer } from "node:http";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createServer as createViteServer, type ViteDevServer } from "vite";
 import WebSocket from "ws";
 import { afterEach, describe, expect, it } from "vitest";
+import { AuthenticatedViteUpgrades, serveAuthenticatedViteRequest } from "../server/auth/devAccess.js";
 import { AuthStore, hashSecret } from "../server/auth/kernel.js";
 import { isolatedAuthEnv } from "./auth-isolation.js";
 
@@ -171,6 +173,71 @@ async function expectHmrOpen(url: string, origin: string, headers: Record<string
 }
 
 describe("supervisor authentication boundary", () => {
+  it("keeps installed Vite HMR authenticated across an in-process Vite restart", async () => {
+    const publicPort = await freePort();
+    const origin = `http://127.0.0.1:${publicPort}`;
+    const cookie = "pi_web_session=synthetic";
+    const authKernel = {
+      refreshConfig: async () => undefined,
+      gate: async (req: { headers: { cookie?: string } }) => req.headers.cookie === cookie
+        ? { ok: true, identity: { id: "session:owner" }, via: "session" }
+        : { ok: false },
+    } as any;
+    const viteHmrServer = createServer();
+    const viteUpgrades = new AuthenticatedViteUpgrades(authKernel, origin, viteHmrServer);
+    let vite: ViteDevServer | undefined;
+    const publicServer = createServer((req, res) => {
+      if (!vite) {
+        res.writeHead(503).end();
+        return;
+      }
+      const pathname = new URL(req.url || "/", origin).pathname;
+      void serveAuthenticatedViteRequest(vite, authKernel, "/does-not-exist", req, res, pathname);
+    });
+    publicServer.on("upgrade", (req, socket, head) => viteUpgrades.handle(req, socket, head));
+
+    await new Promise<void>((resolve, reject) => {
+      publicServer.once("error", reject);
+      publicServer.listen(publicPort, "127.0.0.1", resolve);
+    });
+    try {
+      vite = await createViteServer({
+        appType: "spa",
+        configFile: false,
+        // This fixture exercises HMR ownership, not application dependency scanning.
+        optimizeDeps: { noDiscovery: true, include: [] },
+        server: {
+          allowedHosts: true,
+          middlewareMode: true,
+          watch: null,
+          hmr: { server: viteHmrServer },
+        },
+      });
+
+      const initialHmr = await viteHmrUrl(origin, cookie);
+      await expectHmrOpen(initialHmr, origin, { cookie });
+
+      await vite.restart();
+      expect(publicServer.listenerCount("upgrade")).toBe(1);
+      expect(viteHmrServer.listenerCount("upgrade")).toBe(1);
+
+      const replacementHmr = await viteHmrUrl(origin, cookie);
+      await expectHmrRejection(replacementHmr, origin, {}, 401);
+      await expectHmrRejection(
+        replacementHmr,
+        "https://hostile.example.invalid",
+        { cookie },
+        403,
+      );
+      await expectHmrOpen(replacementHmr, origin, { cookie });
+    } finally {
+      await Promise.all([
+        vite?.close(),
+        new Promise<void>((resolve, reject) => publicServer.close((error) => error ? reject(error) : resolve())),
+      ]);
+    }
+  }, 30_000);
+
   it("preserves legitimate deployment flows while enforcing the authenticated outer peer", async () => {
     const setupToken = "synthetic-bootstrap-token";
     const instance = await startSupervisor({

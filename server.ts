@@ -1469,7 +1469,10 @@ const enforceBrowserSessions = (state: Awaited<ReturnType<AuthStore["read"]>>) =
 authStore.listeners.add(enforceBrowserSessions);
 const authSessionSweep = setInterval(() => { if (browserSockets.size) void authStore.read().then(enforceBrowserSessions).catch(() => { for (const socket of browserSockets.keys()) socket.close(1011, "Session validation unavailable"); }); }, 15_000);
 authSessionSweep.unref();
-const viteUpgrades = new AuthenticatedViteUpgrades(authKernel, authOrigin);
+// Vite owns this non-listening server and may replace its upgrade listener on
+// restart. The public server always keeps the stable authenticated listener.
+const viteHmrServer = createServer();
+const viteUpgrades = new AuthenticatedViteUpgrades(authKernel, authOrigin, viteHmrServer);
 const applicationUpgradeListener = (req: IncomingMessage, socket: import("node:net").Socket, head: Buffer) => {
   let url: URL;
   try {
@@ -1533,10 +1536,9 @@ if (isDev) {
     appType: "spa",
     server: {
       middlewareMode: true,
-      hmr: { server },
+      hmr: { server: viteHmrServer },
     },
   });
-  viteUpgrades.capture(server, applicationUpgradeListener);
 }
 
 startEventLoopTelemetry();

@@ -66,19 +66,23 @@ describe("authenticated Vite access", () => {
     },
   );
 
-  it("checks the configured origin inside the child Vite HMR upgrade route", async () => {
+  it("keeps replacement Vite HMR listeners behind the authenticated upgrade route", async () => {
     const gate = vi.fn(async () => ({
       ok: true,
       identity: { id: "external:owner" },
       via: "session",
     }));
-    const upgrades = new AuthenticatedViteUpgrades({ gate } as any, "https://pi.example.invalid");
-    const server = new EventEmitter();
+    const publicServer = new EventEmitter();
+    const viteHmrServer = new EventEmitter();
+    const upgrades = new AuthenticatedViteUpgrades(
+      { gate } as any,
+      "https://pi.example.invalid",
+      viteHmrServer as any,
+    );
     const applicationListener = vi.fn();
-    const viteListener = vi.fn();
-    server.on("upgrade", applicationListener);
-    server.on("upgrade", viteListener);
-    upgrades.capture(server as any, applicationListener);
+    const startupViteListener = vi.fn();
+    publicServer.on("upgrade", applicationListener);
+    viteHmrServer.on("upgrade", startupViteListener);
 
     const hostileSocket = {
       end: vi.fn(),
@@ -97,7 +101,7 @@ describe("authenticated Vite access", () => {
     );
     expect(hostileSocket.end).toHaveBeenCalledWith(expect.stringContaining("403 Forbidden"));
     expect(gate).not.toHaveBeenCalled();
-    expect(viteListener).not.toHaveBeenCalled();
+    expect(startupViteListener).not.toHaveBeenCalled();
 
     const ownOriginSocket = {
       end: vi.fn(),
@@ -111,11 +115,35 @@ describe("authenticated Vite access", () => {
       cookie: "pi_web_session=synthetic",
     });
     upgrades.handle(ownOriginRequest, ownOriginSocket as any, Buffer.alloc(0));
-    await vi.waitFor(() => expect(viteListener).toHaveBeenCalledWith(
+    await vi.waitFor(() => expect(startupViteListener).toHaveBeenCalledWith(
       ownOriginRequest,
       ownOriginSocket,
       expect.any(Buffer),
     ));
     expect(ownOriginSocket.resume).toHaveBeenCalledOnce();
+
+    const replacementViteListener = vi.fn();
+    viteHmrServer.on("upgrade", replacementViteListener);
+    viteHmrServer.off("upgrade", startupViteListener);
+    expect(publicServer.listeners("upgrade")).toEqual([applicationListener]);
+
+    const reconnectSocket = {
+      end: vi.fn(),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      destroy: vi.fn(),
+    };
+    const reconnectRequest = request({
+      host: "pi.example.invalid",
+      origin: "https://pi.example.invalid",
+      cookie: "pi_web_session=synthetic",
+    });
+    upgrades.handle(reconnectRequest, reconnectSocket as any, Buffer.alloc(0));
+    await vi.waitFor(() => expect(replacementViteListener).toHaveBeenCalledWith(
+      reconnectRequest,
+      reconnectSocket,
+      expect.any(Buffer),
+    ));
+    expect(startupViteListener).toHaveBeenCalledOnce();
   });
 });

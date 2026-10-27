@@ -6,8 +6,6 @@ import type { ViteDevServer } from "vite";
 import type { AuthKernel } from "./kernel.js";
 import { originFailureHint, trustedOrigin } from "./origin.js";
 
-type UpgradeListener = (req: IncomingMessage, socket: Socket, head: Buffer) => void;
-
 export function isDevPublicAsset(publicDir: string, pathname: string): boolean {
   let decoded: string;
   try {
@@ -64,21 +62,14 @@ export async function serveAuthenticatedViteRequest(
 }
 
 export class AuthenticatedViteUpgrades {
-  private listeners: UpgradeListener[] = [];
-
   constructor(
     private readonly authKernel: AuthKernel,
     private readonly configuredOrigin: string,
+    private readonly viteHmrServer: Server,
   ) {}
 
-  capture(server: Server, applicationListener: UpgradeListener): void {
-    this.listeners = (server.listeners("upgrade") as UpgradeListener[])
-      .filter((listener) => listener !== applicationListener);
-    for (const listener of this.listeners) server.removeListener("upgrade", listener);
-  }
-
   handle(req: IncomingMessage, socket: Socket, head: Buffer): void {
-    if (!this.listeners.length) {
+    if (!this.viteHmrServer.listenerCount("upgrade")) {
       socket.destroy();
       return;
     }
@@ -93,7 +84,7 @@ export class AuthenticatedViteUpgrades {
         return;
       }
       socket.resume();
-      for (const listener of this.listeners) listener(req, socket, head);
+      if (!this.viteHmrServer.emit("upgrade", req, socket, head)) socket.destroy();
     }).catch(() => socket.destroy());
   }
 }
