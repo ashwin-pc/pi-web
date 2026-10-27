@@ -449,7 +449,7 @@ export function createSecuritySettings({ container, api, setStatus }: Options) {
     if (state.policy === "authenticated") {
       const grants = section(
         "Add device",
-        "Create a cancellable, single-use link valid for two minutes.",
+        "Create a cancellable, single-use link valid for two minutes. It never shares your sign-in credentials.",
       );
       const output = document.createElement("div");
       output.className = "deviceGrantOutput";
