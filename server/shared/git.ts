@@ -10,17 +10,19 @@ type GitConfigEntry = { scope: string; key: string; value: string };
 const trustedConfigScopes = new Set(["system", "global"]);
 // Keep these defaults and the dynamic patterns below complete for executable
 // configuration reachable through this module's status/log/diff/show/fetch/pull commands.
-const executableConfigDefaults = new Map([
+const unconditionalExecutableConfigDefaults = new Map([
   ["core.fsmonitor", "false"],
-  ["core.sshcommand", "ssh"],
-  ["core.askpass", "true"],
   ["core.gitproxy", "none"],
-  ["core.alternaterefscommand", "true"],
+  ["core.alternateRefsCommand", "true"],
   ["gpg.program", "gpg"],
   ["gpg.openpgp.program", "gpg"],
   ["gpg.x509.program", "gpgsm"],
   ["gpg.ssh.program", "ssh-keygen"],
-  ["gpg.ssh.defaultkeycommand", "true"],
+  ["gpg.ssh.defaultKeyCommand", "true"],
+]);
+const conditionalExecutableConfigDefaults = new Map([
+  ["core.sshCommand", "ssh"],
+  ["core.askPass", "true"],
 ]);
 const defaultProtocolPolicies = new Map([
   ["protocol.allow", "user"],
@@ -58,7 +60,15 @@ function assertSafeRemoteConfig(entries: GitConfigEntry[]) {
   }
 }
 
-export function gitConfigHardeningArgs(entries: GitConfigEntry[]): string[] {
+function submoduleName(key: string, variablePattern: string) {
+  return key.match(new RegExp(`^submodule\\.(.+)\\.${variablePattern}$`, "i"))?.[1];
+}
+
+function submoduleNamesFromKeys(keys: Iterable<string>, variablePattern = "[^.]+") {
+  return new Set(Array.from(keys, (key) => submoduleName(key, variablePattern)).filter((name): name is string => Boolean(name)));
+}
+
+export function gitConfigHardeningArgs(entries: GitConfigEntry[], fileSubmoduleNames: Iterable<string> = []): string[] {
   assertSafeRemoteConfig(entries);
   const trusted = entries.filter((entry) => trustedConfigScopes.has(entry.scope));
   const repository = entries.filter((entry) => entry.scope === "local" || entry.scope === "worktree");
@@ -85,12 +95,20 @@ export function gitConfigHardeningArgs(entries: GitConfigEntry[]): string[] {
   // that do not inherit command-line flags from the parent Git process.
   args.push(
     "-c", "submodule.recurse=false",
+    "-c", "fetch.recurseSubmodules=false",
     "-c", "diff.ignoreSubmodules=dirty",
     "-c", "status.submoduleSummary=false",
     "-c", "diff.submodule=short",
   );
-  for (const [key, fallback] of executableConfigDefaults) {
-    if (repositoryKeys.has(key)) resetToTrusted(repositoryKeys.get(key)!, fallback);
+  for (const name of new Set([...submoduleNamesFromKeys(entries.map((entry) => entry.key)), ...fileSubmoduleNames])) {
+    args.push("-c", `submodule.${name}.ignore=dirty`);
+  }
+  for (const [key, fallback] of unconditionalExecutableConfigDefaults) {
+    resetToTrusted(key, fallback);
+  }
+  for (const [key, fallback] of conditionalExecutableConfigDefaults) {
+    const repositoryKey = repositoryKeys.get(key.toLowerCase());
+    if (repositoryKey) resetToTrusted(repositoryKey, fallback);
   }
   const neutralizedFilters = new Set<string>();
   for (const key of new Set(repository.map((entry) => entry.key).filter((key) => {
@@ -122,19 +140,67 @@ export function gitConfigHardeningArgs(entries: GitConfigEntry[]): string[] {
   return args;
 }
 
+async function gitmodulesSubmoduleNames(cwd: string) {
+  if (!existsSync(join(cwd, ".gitmodules"))) return new Set<string>();
+  try {
+    const { stdout } = await execFileAsync("git", [
+      "config", "-f", ".gitmodules", "--null", "--name-only", "--get-regexp", "^submodule\\..*\\.path$",
+    ], {
+      cwd,
+      timeout: 15_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return submoduleNamesFromKeys(stdout.split("\0").filter(Boolean), "path");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException & { code?: number }).code === 1) return new Set<string>();
+    throw error;
+  }
+}
+
+export function fetchedGitmodulesConfigArgs(baseHardeningArgs: string[]) {
+  return [
+    ...baseHardeningArgs,
+    "--no-optional-locks",
+    "config", "--blob=FETCH_HEAD:.gitmodules", "--null", "--name-only", "--get-regexp", "^submodule\\..*\\.path$",
+  ];
+}
+
+async function fetchedGitmodulesSubmoduleNames(cwd: string, baseHardeningArgs: string[]) {
+  try {
+    const { stdout } = await execFileAsync("git", fetchedGitmodulesConfigArgs(baseHardeningArgs), {
+      cwd,
+      timeout: 15_000,
+      maxBuffer: 10 * 1024 * 1024,
+    });
+    return submoduleNamesFromKeys(stdout.split("\0").filter(Boolean), "path");
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException & { code?: number }).code;
+    if (code === 1 || code === 128) return new Set<string>();
+    throw error;
+  }
+}
+
 async function gitArgs(args: string[], cwd: string) {
-  const { stdout } = await execFileAsync("git", ["config", "--null", "--show-scope", "--list"], {
-    cwd,
-    timeout: 15_000,
-    maxBuffer: 10 * 1024 * 1024,
-  });
   const [command, ...commandArgs] = args;
+  const [{ stdout }, fileSubmoduleNames] = await Promise.all([
+    execFileAsync("git", ["config", "--null", "--show-scope", "--list"], {
+      cwd,
+      timeout: 15_000,
+      maxBuffer: 10 * 1024 * 1024,
+    }),
+    gitmodulesSubmoduleNames(cwd),
+  ]);
+  const configEntries = parseGitConfig(stdout);
+  const baseHardeningArgs = gitConfigHardeningArgs(configEntries, fileSubmoduleNames);
+  const fetchedSubmoduleNames = command === "pull"
+    ? await fetchedGitmodulesSubmoduleNames(cwd, baseHardeningArgs)
+    : new Set<string>();
   const displayHardening = ["diff", "show", "log"].includes(command) ? ["--no-ext-diff", "--no-textconv"] : [];
   const signatureHardening = ["show", "log"].includes(command) ? ["--no-show-signature"] : [];
   const submoduleDisplayPolicy = ["status", "diff"].includes(command) ? ["--ignore-submodules=dirty"] : [];
   const submoduleNetworkPolicy = ["fetch", "pull"].includes(command) ? ["--no-recurse-submodules"] : [];
   return [
-    ...gitConfigHardeningArgs(parseGitConfig(stdout)),
+    ...gitConfigHardeningArgs(configEntries, new Set([...fileSubmoduleNames, ...fetchedSubmoduleNames])),
     "--no-optional-locks",
     command,
     ...displayHardening,

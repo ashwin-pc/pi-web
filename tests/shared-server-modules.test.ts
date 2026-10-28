@@ -14,6 +14,7 @@ import {
 } from "../server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "../server/shared/fsList.js";
 import {
+  fetchedGitmodulesConfigArgs,
   git,
   gitCommitDetails,
   gitConfigHardeningArgs,
@@ -160,7 +161,8 @@ describe("shared Git helpers", () => {
       { scope: "local", key: "protocol.ext.allow", value: "always" },
       { scope: "local", key: "remote.origin.proxy", value: "repo-proxy" },
       { scope: "local", key: "remote.origin.vcs", value: "example" },
-    ]);
+      { scope: "local", key: "submodule.child.with space.url", value: "../child" },
+    ], ["committed.child with space"]);
     expect(args).toEqual(expect.arrayContaining([
       "-c", "credential.helper=",
       "-c", "credential.helper=!trusted-helper",
@@ -182,6 +184,8 @@ describe("shared Git helpers", () => {
       "-c", "protocol.allow=user",
       "-c", "protocol.ext.allow=never",
       "-c", "remote.origin.proxy=",
+      "-c", "submodule.child.with space.ignore=dirty",
+      "-c", "submodule.committed.child with space.ignore=dirty",
     ]));
     expect(args.join("\0")).not.toContain("repo-helper");
     expect(args.join("\0")).not.toContain("repo-ssh");
@@ -200,13 +204,23 @@ describe("shared Git helpers", () => {
     const defaults = gitConfigHardeningArgs([]);
     expect(defaults).toEqual(expect.arrayContaining([
       "-c", "submodule.recurse=false",
+      "-c", "fetch.recurseSubmodules=false",
       "-c", "diff.ignoreSubmodules=dirty",
       "-c", "status.submoduleSummary=false",
       "-c", "diff.submodule=short",
     ]));
     expect(defaults.join("\0")).not.toContain("core.sshcommand=");
     expect(defaults.join("\0")).not.toContain("core.askpass=");
-    expect(defaults.join("\0")).not.toContain("core.gitproxy=");
+    expect(defaults).toEqual(expect.arrayContaining([
+      "-c", "core.fsmonitor=false",
+      "-c", "core.gitproxy=none",
+      "-c", "core.alternateRefsCommand=true",
+      "-c", "gpg.program=gpg",
+      "-c", "gpg.openpgp.program=gpg",
+      "-c", "gpg.x509.program=gpgsm",
+      "-c", "gpg.ssh.program=ssh-keygen",
+      "-c", "gpg.ssh.defaultKeyCommand=true",
+    ]));
 
     const trustedProtocol = gitConfigHardeningArgs([
       { scope: "global", key: "protocol.allow", value: "always" },
@@ -226,6 +240,32 @@ describe("shared Git helpers", () => {
     expect(() => gitConfigHardeningArgs([
       { scope: "local", key: "remote.control.vcs", value: "example\nhelper" },
     ])).toThrow("Unsafe Git remote helper identifier");
+  });
+
+  it("hardens the fetched .gitmodules metadata read before Git can lazily fetch its blob", () => {
+    const baseHardeningArgs = gitConfigHardeningArgs([
+      { scope: "global", key: "core.sshcommand", value: "trusted-ssh" },
+      { scope: "local", key: "core.sshcommand", value: "repository-ssh" },
+      { scope: "local", key: "credential.helper", value: "!repository-helper" },
+      { scope: "local", key: "submodule.current.ignore", value: "none" },
+    ], ["current"]);
+
+    const args = fetchedGitmodulesConfigArgs(baseHardeningArgs);
+    expect(args.slice(0, baseHardeningArgs.length)).toEqual(baseHardeningArgs);
+    expect(args).toEqual(expect.arrayContaining([
+      "-c", "core.sshcommand=ssh",
+      "-c", "core.sshcommand=trusted-ssh",
+      "-c", "credential.helper=",
+      "-c", "submodule.current.ignore=dirty",
+      "-c", "submodule.recurse=false",
+      "-c", "fetch.recurseSubmodules=false",
+    ]));
+    expect(args.slice(baseHardeningArgs.length)).toEqual([
+      "--no-optional-locks",
+      "config", "--blob=FETCH_HEAD:.gitmodules", "--null", "--name-only", "--get-regexp", "^submodule\\..*\\.path$",
+    ]);
+    expect(args.join("\0")).not.toContain("repository-ssh");
+    expect(args.join("\0")).not.toContain("repository-helper");
   });
 
   it("keeps a trusted global credential helper usable without running the repository helper", async () => {

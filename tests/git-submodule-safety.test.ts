@@ -34,13 +34,14 @@ async function makeSubmoduleFixture() {
   const root = await tempDir("pi-web-git-submodule-");
   const childSource = join(root, "child-source");
   const parent = join(root, "parent");
+  const submoduleName = "child.module with space";
   await makeRepo(childSource);
   await commitFile(childSource, "tracked.txt", "child one\n", "child initial");
   await makeRepo(parent);
   await commitFile(parent, "parent.txt", "parent one\n", "parent initial");
-  runGit(parent, "-c", "protocol.file.allow=always", "submodule", "add", childSource, "child");
+  runGit(parent, "-c", "protocol.file.allow=always", "submodule", "add", "--name", submoduleName, childSource, "child");
   runGit(parent, "commit", "-m", "add child");
-  return { root, parent, child: join(parent, "child") };
+  return { root, parent, child: join(parent, "child"), submoduleName };
 }
 
 async function withPathPrefix<T>(path: string, callback: () => Promise<T>) {
@@ -137,50 +138,62 @@ describe("Git submodule command isolation", () => {
     });
   });
 
-  it("syncs an advancing parent without inspecting a dirty child", async () => {
-    const { root, parent, child } = await makeSubmoduleFixture();
-    const parentRemote = join(root, "parent.git");
-    const updater = join(root, "updater");
-    const fsmonitorMarker = join(root, "child-sync-fsmonitor-executed");
-    const filterMarker = join(root, "child-sync-filter-executed");
-    const fsmonitor = join(root, "child-sync-fsmonitor.cjs");
-    const filter = join(root, "child-sync-filter.cjs");
-    runGit(root, "init", "--bare", "-b", "main", parentRemote);
-    runGit(parent, "remote", "add", "origin", parentRemote);
-    runGit(parent, "push", "-u", "origin", "main");
-    runGit(root, "clone", parentRemote, updater);
-    runGit(updater, "config", "user.name", "Pi Web Tests");
-    runGit(updater, "config", "user.email", "pi-web@example.test");
-    await commitFile(updater, "remote.txt", "remote advance\n", "remote advance");
-    runGit(updater, "push", "origin", "main");
+  it.each([".gitmodules", ".git/config"] as const)(
+    "syncs an advancing dirty parent without inspecting a dirty child when ignore=none is in %s",
+    async (ignoreSource) => {
+      const { root, parent, child, submoduleName } = await makeSubmoduleFixture();
+      const parentRemote = join(root, "parent.git");
+      const updater = join(root, "updater");
+      const fsmonitorMarker = join(root, "child-sync-fsmonitor-executed");
+      const filterMarker = join(root, "child-sync-filter-executed");
+      const fsmonitor = join(root, "child-sync-fsmonitor.cjs");
+      const filter = join(root, "child-sync-filter.cjs");
+      if (ignoreSource === ".gitmodules") {
+        runGit(parent, "config", "-f", ".gitmodules", `submodule.${submoduleName}.ignore`, "none");
+        runGit(parent, "add", ".gitmodules");
+        runGit(parent, "commit", "-m", "require dirty child inspection");
+      }
+      runGit(root, "init", "--bare", "-b", "main", parentRemote);
+      runGit(parent, "remote", "add", "origin", parentRemote);
+      runGit(parent, "push", "-u", "origin", "main");
+      if (ignoreSource === ".git/config") {
+        runGit(parent, "config", `submodule.${submoduleName}.ignore`, "none");
+      }
+      runGit(root, "clone", parentRemote, updater);
+      runGit(updater, "config", "user.name", "Pi Web Tests");
+      runGit(updater, "config", "user.email", "pi-web@example.test");
+      await commitFile(updater, "remote.txt", "remote advance\n", "remote advance");
+      runGit(updater, "push", "origin", "main");
 
-    runGit(parent, "config", "fetch.recurseSubmodules", "true");
-    runGit(parent, "config", "submodule.recurse", "true");
-    runGit(parent, "config", "diff.ignoreSubmodules", "none");
-    runGit(parent, "config", "status.submoduleSummary", "true");
-    runGit(parent, "config", "diff.submodule", "log");
-    await writeFile(fsmonitor, `require("node:fs").writeFileSync(${JSON.stringify(fsmonitorMarker)}, "executed");\n`);
-    await writeFile(filter, `require("node:fs").writeFileSync(${JSON.stringify(filterMarker)}, "executed"); process.stdin.pipe(process.stdout);\n`);
-    runGit(child, "config", "core.fsmonitor", `"${process.execPath}" "${fsmonitor}"`);
-    runGit(child, "config", "filter.repo.clean", `"${process.execPath}" "${filter}"`);
-    runGit(child, "config", "filter.repo.required", "true");
-    await writeFile(join(child, ".gitattributes"), "tracked.txt filter=repo\n");
-    await writeFile(join(child, "tracked.txt"), "dirty child\n");
-    await writeFile(join(parent, "parent.txt"), "preserved parent change\n");
+      runGit(parent, "config", "fetch.recurseSubmodules", "true");
+      runGit(parent, "config", "submodule.recurse", "true");
+      runGit(parent, "config", "diff.ignoreSubmodules", "none");
+      runGit(parent, "config", "status.submoduleSummary", "true");
+      runGit(parent, "config", "diff.submodule", "log");
+      await writeFile(fsmonitor, `require("node:fs").writeFileSync(${JSON.stringify(fsmonitorMarker)}, "executed");\n`);
+      await writeFile(filter, `require("node:fs").writeFileSync(${JSON.stringify(filterMarker)}, "executed"); process.stdin.pipe(process.stdout);\n`);
+      runGit(child, "config", "core.fsmonitor", `"${process.execPath}" "${fsmonitor}"`);
+      runGit(child, "config", "filter.repo.clean", `"${process.execPath}" "${filter}"`);
+      runGit(child, "config", "filter.repo.required", "true");
+      await writeFile(join(child, ".gitattributes"), "tracked.txt filter=repo\n");
+      await writeFile(join(child, "tracked.txt"), "dirty child\n");
+      await writeFile(join(parent, "parent.txt"), "preserved parent change\n");
 
-    await expect(gitSync(parent)).resolves.toMatchObject({
-      ok: true,
-      status: {
-        isRepo: true,
-        branch: "main",
-        files: expect.arrayContaining([
-          expect.objectContaining({ path: "parent.txt", label: "modified" }),
-        ]),
-      },
-    });
-    await expect(access(join(parent, "remote.txt"))).resolves.toBeUndefined();
-    await expect(readFile(join(parent, "parent.txt"), "utf8")).resolves.toBe("preserved parent change\n");
-    await expect(access(fsmonitorMarker)).rejects.toThrow();
-    await expect(access(filterMarker)).rejects.toThrow();
-  });
+      await expect(gitSync(parent)).resolves.toMatchObject({
+        ok: true,
+        status: {
+          isRepo: true,
+          branch: "main",
+          files: expect.arrayContaining([
+            expect.objectContaining({ path: "parent.txt", label: "modified" }),
+          ]),
+        },
+      });
+      await expect(access(join(parent, "remote.txt"))).resolves.toBeUndefined();
+      await expect(readFile(join(parent, "parent.txt"), "utf8")).resolves.toBe("preserved parent change\n");
+      await expect(readFile(join(child, "tracked.txt"), "utf8")).resolves.toBe("dirty child\n");
+      await expect(access(fsmonitorMarker)).rejects.toThrow();
+      await expect(access(filterMarker)).rejects.toThrow();
+    },
+  );
 });
