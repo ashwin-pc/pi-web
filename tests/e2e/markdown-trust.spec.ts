@@ -179,7 +179,7 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
     messages: [{
       role: "assistant",
       isError: false,
-      text: `${"Maintained preview context. ".repeat(80)}\n\n[Linked HTML](/api/artifacts/consent.html)\n\n[Custom HTML](/api/artifacts/consent.gcode)`,
+      text: `${"Maintained preview context. ".repeat(160)}\n\n[Linked HTML](/api/artifacts/consent.html)\n\n[Custom HTML](/api/artifacts/consent.gcode)`,
     }],
   } }));
   await page.request.post("/api/mock/state", { data: {
@@ -210,8 +210,9 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
   await linked.getByRole("button", { name: "Run preview" }).click();
   const linkedFrame = linked.locator("iframe");
   const assistant = linked.locator("xpath=ancestor::div[contains(@class,'message') and contains(@class,'assistant')]");
+  const responseToggle = assistant.locator(":scope > .messageToggle");
   await expect(assistant).not.toHaveClass(/collapsed/);
-  await expect(assistant.locator(":scope > .messageToggle")).toBeDisabled();
+  await expect(responseToggle).toBeEnabled();
   await expect(linkedFrame).toHaveAttribute("sandbox", "allow-scripts");
   await expect(linkedFrame).not.toHaveAttribute("sandbox", /allow-same-origin/);
   await expect(linkedFrame.contentFrame().locator("#linked-status")).toHaveText("linked ran");
@@ -220,6 +221,52 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
   await expect(custom.locator("iframe")).toHaveCount(0);
   const messages = page.locator(".messages");
   const composer = page.locator(".composer");
+  await linkedFrame.contentFrame().locator("#linked-status").evaluate((element) => {
+    element.textContent = "state preserved";
+  });
+  await responseToggle.click();
+  await expect(assistant).toHaveClass(/collapsed/);
+  await expect(linkedFrame).toHaveCount(1);
+  await expect(responseToggle).toBeVisible();
+  await expect(responseToggle).toHaveText("Show more");
+  await testInfo.attach("artifact-collapsed", { body: await page.screenshot({ path: testInfo.outputPath("artifact-collapsed.png") }), contentType: "image/png" });
+  await responseToggle.click();
+  await expect(assistant).not.toHaveClass(/collapsed/);
+  await expect(linkedFrame).toHaveCount(1);
+  await expect(linkedFrame.contentFrame().locator("#linked-status")).toHaveText("state preserved");
+
+  await messages.evaluate((element) => {
+    element.scrollTop = 0;
+    element.dispatchEvent(new Event("scroll"));
+  });
+  await expect.poll(() => linked.evaluate((element) => {
+    const preview = element.getBoundingClientRect();
+    const scroller = element.closest<HTMLElement>(".messages")!.getBoundingClientRect();
+    return preview.top >= scroller.bottom;
+  })).toBe(true);
+  const jumpToLatest = page.getByRole("button", { name: "Jump to latest message" });
+  await expect(jumpToLatest).toBeVisible();
+  await page.locator("#prompt").fill("Keep this draft while reviewing the running preview.");
+  const launcherToggle = page.locator(".actionLauncherToggle");
+  await launcherToggle.click();
+  await expect(page.locator(".actionLauncher")).toHaveClass(/open/);
+  await expect(jumpToLatest).toBeVisible();
+  await expect(linkedFrame.contentFrame().locator("#linked-status")).toHaveText("state preserved");
+  await launcherToggle.click();
+  await expect(page.locator(".actionLauncher")).not.toHaveClass(/open/);
+  await expect(page.locator("#actionLauncherMenu")).toBeHidden();
+  await expect(jumpToLatest).toBeVisible();
+  const jumpBox = await jumpToLatest.boundingBox();
+  const chatBox = await page.locator(".app").boundingBox();
+  expect(jumpBox).not.toBeNull();
+  expect(chatBox).not.toBeNull();
+  expect(jumpBox!.x).toBeGreaterThanOrEqual(chatBox!.x + 15);
+  expect(jumpBox!.x).toBeLessThanOrEqual(chatBox!.x + 17);
+  await testInfo.attach("artifact-navigation", { body: await page.screenshot({ path: testInfo.outputPath("artifact-navigation.png") }), contentType: "image/png" });
+  await jumpToLatest.click();
+  await expect.poll(() => messages.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(48);
+  await expect(linkedFrame.contentFrame().locator("#linked-status")).toHaveText("state preserved");
+
   const expectActiveControlsReachable = async (preview: typeof linked) => {
     const geometry = await preview.evaluate((element) => {
       const scroller = element.closest<HTMLElement>(".messages")!.getBoundingClientRect();
@@ -251,7 +298,7 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
   await linked.getByRole("button", { name: "Show interactive preview" }).click();
   await linked.getByRole("button", { name: "Stop preview" }).click();
   await expect(linkedFrame).toHaveCount(0);
-  await expect(assistant.locator(":scope > .messageToggle")).toBeEnabled();
+  await expect(responseToggle).toBeEnabled();
   await linked.getByRole("button", { name: "Run preview" }).click();
   await expect(linked.locator("iframe").contentFrame().locator("#linked-status")).toHaveText("linked ran");
 

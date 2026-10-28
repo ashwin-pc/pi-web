@@ -86,12 +86,6 @@
     margin-right: var(--app-layout-right-width);
   }
 
-  body.appPanelOpen .jumpToLatestButton,
-  body.sessionDrawerOpen .jumpToLatestButton,
-  body.appRightPanelOpen .jumpToLatestButton {
-    left: calc(var(--app-layout-left-width) + (100vw - var(--app-layout-left-width) - var(--app-layout-right-width)) / 2);
-  }
-
   .appPanelBackdrop,
   .appRightPanelBackdrop,
   .sessionBackdrop,

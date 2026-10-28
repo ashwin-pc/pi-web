@@ -565,20 +565,6 @@ function renderArtifactActions(card: HTMLElement, name: string, path: string, ki
 
 function setArtifactFrameInteraction(card: HTMLElement, interactive: boolean) {
   card.classList.toggle("artifactPreview--interactive", interactive);
-  const message = card.closest<HTMLElement>(".message.assistant");
-  const messageToggle = message?.querySelector<HTMLButtonElement>(":scope > .messageToggle");
-  const hasActivePreview = Boolean(message?.querySelector(".artifactPreview--interactive"));
-  if (hasActivePreview) {
-    message?.classList.remove("collapsed");
-    if (messageToggle) {
-      messageToggle.textContent = "Show less";
-      messageToggle.disabled = true;
-      messageToggle.title = "Stop the active preview before collapsing this response";
-    }
-  } else if (messageToggle) {
-    messageToggle.disabled = false;
-    messageToggle.removeAttribute("title");
-  }
 }
 
 function attachArtifactDisclosure(card: HTMLElement, header: HTMLElement, content: HTMLElement) {

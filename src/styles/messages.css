@@ -558,6 +558,7 @@ body.artifactPreviewDocument {
 .artifactPreviewFrame {
   display: block;
   width: 100%;
+  /* Leave room for the artifact and preview headers plus conversation gutters. */
   height: min(70vh, 720px, max(96px, calc(100cqh - 102px)));
   border: 0;
   background: #fff;
@@ -566,6 +567,7 @@ body.artifactPreviewDocument {
 .artifactPreview--html .htmlPreview { margin: 0; overflow: clip; border: 0; border-radius: 0; box-shadow: none; }
 .artifactPreview--html .htmlPreviewHeader {
   position: sticky;
+  /* Sit directly below the 29px artifact header. */
   top: 29px;
   z-index: 2;
 }
@@ -854,10 +856,9 @@ body.artifactPreviewDocument {
 .citationQuoteLink { display: inline-flex; align-items: center; gap: 4px; }
 .jumpToLatestButton {
   position: fixed;
-  left: 50%;
+  left: calc(var(--app-layout-left-width, 0px) + 16px);
   bottom: var(--jump-to-latest-bottom, 116px);
   z-index: 20;
-  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -891,7 +892,6 @@ body.artifactPreviewDocument {
     color-mix(in srgb, var(--panel) 96%, transparent));
 }
 .jumpToLatestButton[hidden] { display: none; }
-body:has(.artifactPreview--interactive) .jumpToLatestButton { visibility: hidden; }
 .message.system.compaction {
   align-self: stretch;
   background: rgba(250, 204, 21, .08);

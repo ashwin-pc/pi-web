@@ -823,8 +823,7 @@ export function createMessageList(options: {
     for (const message of prose) {
       if (!message.classList.contains("collapsible") || message.dataset.collapsePreference) continue;
       const latest = Boolean(latestResponseKey && message.dataset.assistantResponseKey === latestResponseKey);
-      const hasActivePreview = Boolean(message.querySelector(".artifactPreview--interactive"));
-      message.classList.toggle("collapsed", !latest && !hasActivePreview);
+      message.classList.toggle("collapsed", !latest);
       const toggle = message.querySelector<HTMLButtonElement>(".messageToggle");
       if (toggle) toggle.textContent = message.classList.contains("collapsed") ? "Show more" : "Show less";
       if (latest && !bulkRendering) {
@@ -846,7 +845,6 @@ export function createMessageList(options: {
     toggle.className = "messageToggle";
     toggle.textContent = div.classList.contains("collapsed") ? "Show more" : "Show less";
     toggle.addEventListener("click", () => {
-      if (!div.classList.contains("collapsed") && div.querySelector(".artifactPreview--interactive")) return;
       const collapsed = div.classList.toggle("collapsed");
       div.dataset.collapsePreference = collapsed ? "collapsed" : "expanded";
       const text = assistantMessageText.get(div) || "";
