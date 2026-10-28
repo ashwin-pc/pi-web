@@ -6,3 +6,6 @@ Viewports:
 - Desktop: 1440 × 900
 - Inner fold: 884 × 787 at DPR 2.5
 - Cover fold: 412 × 960 at DPR 2.625
+
+States:
+- First-open trust notice and Preferences → Extensions trusted-workspace list.
