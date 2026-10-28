@@ -69,6 +69,12 @@ import { createSessionInfo, type SessionInfoController } from "./sessionInfo/ses
 import { createToolCards } from "./tools/toolCards.js";
 import { createConversationTree, type ConversationTreeController } from "./tree/conversationTree.js";
 
+try {
+  localStorage.removeItem("pi-web-token");
+} catch {
+  // Storage can be unavailable under privacy policies; legacy credentials still must never be read.
+}
+
 initAppHeightSync();
 initSwAutoReload();
 
@@ -603,9 +609,8 @@ async function refreshState() {
         const value = await challenge.json() as { mode?: string; url?: string };
         if (value.mode === "redirect" && value.url) { location.assign(value.url); return; }
       }
-    } catch { /* legacy servers have no challenge endpoint */ }
-    elements.tokenOverlay.hidden = false;
-    elements.tokenInput.focus();
+    } catch { /* fall through to the canonical login route */ }
+    location.assign("/api/auth/login");
     return;
   }
   if (!res.ok) throw new Error(await res.text());
@@ -825,7 +830,6 @@ systemInfo.init();
 const hasBlockingShortcutOverlay = () => Boolean(document.fullscreenElement
   || document.querySelector('dialog[open], [aria-modal="true"]:not([hidden]), .folderPickerBackdrop'));
 const canCyclePinnedSessions = () => sessions.focusedLaneSessionCount() > 1
-  && elements.tokenOverlay.hidden
   && !elements.formEl.classList.contains("expanded")
   && !hasBlockingShortcutOverlay();
 let shortcutHelp: ShortcutHelpController;
@@ -837,7 +841,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "global",
     mod: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden,
     run: () => sessions.setSessionDrawerOpen(elements.sessionDrawer.hidden),
   },
   {
@@ -848,7 +851,7 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    when: () => Boolean(state.currentSessionId),
     run: () => sessions.toggleCurrentSessionPin(),
   },
   {
@@ -859,7 +862,7 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    when: () => Boolean(state.currentSessionId),
     run: () => sessions.moveCurrentSessionToLane("parked"),
   },
   {
@@ -870,7 +873,7 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden && Boolean(state.currentSessionId),
+    when: () => Boolean(state.currentSessionId),
     run: () => sessions.moveCurrentSessionToLane("bookmarks"),
   },
   {
@@ -901,7 +904,6 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden,
     run: () => sessions.startNewSession(),
   },
   {
@@ -911,7 +913,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "global",
     mod: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden,
     run: () => shortcutHelp.toggle(),
   },
   {
@@ -919,8 +920,7 @@ const keyboardShortcuts: Shortcut[] = [
     key: ".",
     description: "Focus composer",
     scope: "global",
-    when: () => elements.tokenOverlay.hidden
-      && document.activeElement !== elements.promptEl
+    when: () => document.activeElement !== elements.promptEl
       && !hasBlockingShortcutOverlay(),
     run: () => elements.promptEl.focus(),
   },
@@ -931,7 +931,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "composer",
     mod: true,
     allowInEditable: true,
-    when: () => elements.tokenOverlay.hidden,
     run: () => elements.formEl.requestSubmit(),
   },
   {
@@ -942,8 +941,7 @@ const keyboardShortcuts: Shortcut[] = [
     allowInEditable: true,
     when: () => {
       const runtime = sessionRuntime(state);
-      return elements.tokenOverlay.hidden
-        && elements.slashCommandsEl.hidden
+      return elements.slashCommandsEl.hidden
         && (runtime.isStreaming || runtime.isRetrying);
     },
     run: () => composer.stopStreaming(),
@@ -953,7 +951,6 @@ shortcutHelp = createShortcutHelp(keyboardShortcuts);
 initKeyboardShortcuts(keyboardShortcuts, {
   getScopes: () => {
     const scopes: string[] = [];
-    if (!elements.tokenOverlay.hidden) scopes.push("token");
     if (!elements.settingsPanel.hidden) scopes.push("settings");
     if (!elements.modelSettingsPopover.hidden) scopes.push("modelSettings");
     if (conversationTree.isOpen()) scopes.push("conversationTree");

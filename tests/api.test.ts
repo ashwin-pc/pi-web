@@ -8,6 +8,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { request as httpRequest } from "node:http";
 import WebSocket from "ws";
+import { AuthStore } from "../server/auth/kernel.js";
+import { mintStoredApiToken } from "./auth-fixture.js";
 
 function rawGet(port: number, path: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
@@ -1051,35 +1053,41 @@ describe("artifact serving", () => {
     expect(Buffer.from(body).toString()).toBe("LEGACY");
   });
 
-  it("protects artifacts with the same gate when a token is configured", async () => {
+  it("protects artifacts and diagnostics with the same stored API-token gate", async () => {
     const port = await freePort();
+    const authEnv = isolatedAuthEnv();
+    const minted = await mintStoredApiToken(new AuthStore(authEnv.PI_WEB_AUTH_STORE!), "artifact gate");
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "secret", PI_WEB_CWD: process.cwd() },
+      env: {
+        ...authEnv,
+        PI_WEB_MOCK: "1",
+        PI_WEB_DEV: "0",
+        HOST: "127.0.0.1",
+        PORT: String(port),
+        PI_WEB_AUTH_POLICY: "authenticated",
+        PI_WEB_CWD: process.cwd(),
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const tokenBaseUrl = `http://127.0.0.1:${port}`;
     try {
-      const tokenBaseUrl = `http://127.0.0.1:${port}`;
-      const deadline = Date.now() + 60_000;
-      while (Date.now() < deadline) {
-        try { if ((await fetch(`${tokenBaseUrl}/api/state`)).status === 401) break; } catch { /* retry */ }
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+      await waitForCondition(async () =>
+        fetch(`${tokenBaseUrl}/api/state`).then(response => response.status === 401).catch(() => false),
+      15_000);
       expect((await fetch(`${tokenBaseUrl}/api/artifacts/test.png`)).status).toBe(401);
-      const artifactRes = await fetch(`${tokenBaseUrl}/api/artifacts/test.png`, { headers: { authorization: "Bearer secret" } });
-      expect(artifactRes.status).toBe(200);
-      // normal API routes, including diagnostics, still require the token
-      const apiRes = await fetch(`${tokenBaseUrl}/api/state`);
-      expect(apiRes.status).toBe(401);
+      expect((await fetch(`${tokenBaseUrl}/api/artifacts/test.png`, {
+        headers: { authorization: `Bearer ${minted.secret}` },
+      })).status).toBe(200);
       expect((await fetch(`${tokenBaseUrl}/api/session/lifecycle`)).status).toBe(401);
-      expect((await fetch(`${tokenBaseUrl}/api/messages/image?sessionId=mock-current&imageId=0.0.${"a".repeat(64)}`)).status).toBe(401);
-      expect((await fetch(`${tokenBaseUrl}/api/messages?sessionId=mock-current`)).status).toBe(401);
-      const diagnostics = await fetch(`${tokenBaseUrl}/api/session/lifecycle`, { headers: { authorization: "Bearer secret" } });
+      const diagnostics = await fetch(`${tokenBaseUrl}/api/session/lifecycle`, {
+        headers: { authorization: `Bearer ${minted.secret}` },
+      });
       expect(diagnostics.status).toBe(200);
       expect(await diagnostics.json()).toMatchObject({ ok: true, liveSessions: expect.any(Array) });
     } finally {
       tokenChild.kill();
     }
-  }, 70_000);
+  }, 25_000);
 
   it("returns 404 for missing artifacts", async () => {
     const res = await fetch(`${baseUrl}/api/artifacts/does-not-exist.png`);
@@ -1119,34 +1127,10 @@ describe("additional API coverage", () => {
     child?.kill();
   });
 
-  it("state includes tokenRequired field", async () => {
+  it("state omits retired legacy-token metadata", async () => {
     const state = await (await fetch(`${baseUrl}/api/state`)).json();
-    expect(state).toHaveProperty("tokenRequired");
-    expect(state.tokenRequired).toBe(false);
+    expect(state).not.toHaveProperty("tokenRequired");
   });
-
-  it("state includes tokenRequired:true when token is configured", async () => {
-    const port = await freePort();
-    const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "mytoken" },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    try {
-      const u = `http://127.0.0.1:${port}`;
-      const deadline = Date.now() + 15_000;
-      while (Date.now() < deadline) {
-        try {
-          const r = await fetch(`${u}/api/state`, { headers: { authorization: "Bearer mytoken" } });
-          if (r.ok) break;
-        } catch { /* retry */ }
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      const state = await (await fetch(`${u}/api/state`, { headers: { authorization: "Bearer mytoken" } })).json();
-      expect(state.tokenRequired).toBe(true);
-    } finally {
-      tokenChild.kill();
-    }
-  }, 25_000);
 
   it("aborts the current session via POST /api/abort", async () => {
     // Start a slow prompt so the session is streaming
@@ -1479,46 +1463,52 @@ describe("Live session lifecycle", () => {
 });
 
 describe("WebSocket authentication", () => {
-  it("rejects WebSocket upgrade without a valid token when token is configured", async () => {
+  it("requires a stored API token and accepts its Bearer exchange without an Origin header", async () => {
     const port = await freePort();
+    const authEnv = isolatedAuthEnv();
+    const minted = await mintStoredApiToken(new AuthStore(authEnv.PI_WEB_AUTH_STORE!), "websocket");
     const tokenChild = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
-      env: { ...isolatedAuthEnv(), PI_WEB_MOCK: "1", PI_WEB_DEV: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "secret" },
+      env: {
+        ...authEnv,
+        PI_WEB_MOCK: "1",
+        PI_WEB_DEV: "0",
+        HOST: "127.0.0.1",
+        PORT: String(port),
+        PI_WEB_AUTH_POLICY: "authenticated",
+      },
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const base = `http://127.0.0.1:${port}`;
     try {
-      // Wait for the server to be ready by polling the artifact endpoint (no auth)
-      const deadline = Date.now() + 15_000;
-      while (Date.now() < deadline) {
-        try {
-          await fetch(`http://127.0.0.1:${port}/api/artifacts/nonexistent`);
-          break;
-        } catch { /* retry */ }
-        await new Promise((r) => setTimeout(r, 100));
-      }
+      await waitForCondition(async () =>
+        fetch(`${base}/api/state`).then(response => response.status === 401).catch(() => false),
+      15_000);
+      await expect(new Promise<void>((resolve, reject) => {
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
+        ws.on("unexpected-response", (_request, response) => {
+          expect(response.statusCode).toBe(401);
+          ws.terminate();
+          resolve();
+        });
+        ws.on("open", () => {
+          ws.terminate();
+          reject(new Error("WebSocket should have been rejected"));
+        });
+        ws.on("error", reject);
+      })).resolves.toBeUndefined();
 
-      // Attempt WS without token — expect 401
-      await expect(
-        new Promise<void>((_resolve, reject) => {
-          const ws = new WebSocket(`ws://127.0.0.1:${port}/ws`);
-          ws.on("unexpected-response", (_req, res) => {
-            expect(res.statusCode).toBe(401);
-            ws.terminate();
-            _resolve();
-          });
-          ws.on("open", () => { ws.terminate(); reject(new Error("WS should have been rejected")); });
-          ws.on("error", (err) => reject(err));
-        })
-      ).resolves.toBeUndefined();
-
-      // Mint a single-use ticket with the token, then expect a hello message.
-      const ticketResponse = await fetch(`http://127.0.0.1:${port}/api/ws-ticket`, { method: "POST", headers: { authorization: "Bearer secret" } });
+      const ticketResponse = await fetch(`${base}/api/ws-ticket`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${minted.secret}` },
+      });
       expect(ticketResponse.status).toBe(201);
       const { ticket } = await ticketResponse.json() as { ticket: string };
       await new Promise<void>((resolve, reject) => {
-        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${encodeURIComponent(ticket)}`);
-        ws.on("message", (data) => {
-          const msg = JSON.parse(String(data));
-          expect(msg.type).toBe("hello");
+        const ws = new WebSocket(`ws://127.0.0.1:${port}/ws?ticket=${encodeURIComponent(ticket)}`, {
+          origin: base,
+        });
+        ws.on("message", data => {
+          expect(JSON.parse(String(data)).type).toBe("hello");
           ws.close();
           resolve();
         });

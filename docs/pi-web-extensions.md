@@ -425,7 +425,7 @@ Storage notes:
 
 `ctx.ui.web.createApiClient({ name, scopes, sessionIds? })` gives trusted server-side
 extensions scoped access to pi-web's existing HTTP API. Core supplies and renews
-short-lived credentials; do not copy browser cookies or read `PI_WEB_TOKEN`.
+short-lived credentials; do not copy browser cookies or environment credentials.
 The client is not exposed in browser contribution descriptors. Its default targets
 are the calling agent session and sessions created by the client; cross-session
 access must be explicit. See [Scoped extension HTTP](extension-http.md) for the

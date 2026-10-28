@@ -14,22 +14,6 @@
     <link rel="stylesheet" href="/new-chat-animation.css" />
   </head>
   <body>
-    <div id="tokenOverlay" class="tokenOverlay" hidden>
-      <form id="tokenForm" class="tokenForm">
-        <label for="tokenInput">Enter PI_WEB_TOKEN to continue</label>
-        <p class="tokenHint">Paste a token, open a token link, or scan a token QR code.</p>
-        <input id="tokenInput" type="password" placeholder="Token" autocomplete="current-password" />
-        <div class="tokenActions">
-          <button type="submit" class="primaryAction">Connect</button>
-          <button id="tokenScanButton" type="button">Scan QR</button>
-        </div>
-        <div id="tokenScanPanel" class="tokenScanPanel" hidden>
-          <video id="tokenScanVideo" autoplay playsinline muted></video>
-          <span id="tokenScanStatus" class="tokenScanStatus" aria-live="polite"></span>
-          <button id="tokenScanStopButton" type="button">Stop camera</button>
-        </div>
-      </form>
-    </div>
     <main class="app">
       <div id="statusBar" class="statusBar">
         <button id="sessionButton" class="iconButton statusBarButton" type="button" aria-label="Sessions" title="Sessions">

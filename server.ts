@@ -49,16 +49,15 @@ const staticDir = distDir;
 const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "development";
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
-const token = process.env.PI_WEB_TOKEN || "";
-const authConfig = resolveAuthConfig(process.env);
-const authMode = authConfig.legacyMode;
+const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
+const authConfig = resolveAuthConfig(process.env, (await authStore.read()).config);
+const authMode = authConfig.mode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
-const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
-const authKernel = new AuthKernel(authMode, authStore, token, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
+const authKernel = new AuthKernel(authMode, authStore, authUrl.protocol === "https:", authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req));
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
@@ -637,7 +636,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (method === "POST" && url.pathname.startsWith("/api/auth/") && !trustedOrigin(req, authOrigin)) return sendJson(res, 403, { error: originFailureHint });
       if (await handlePublicDeviceGrant(req, res, url, authKernel, authStore, passkeyConfig)) return;
       if (method === "GET" && ["/api/auth/login", "/api/auth/challenge", "/api/auth/bootstrap"].includes(url.pathname)) {
-        if (url.pathname.endsWith("challenge")) return sendJson(res, 200, !req.headers.cookie?.includes("pi_web_session=") && authKernel.methods.size === 1 && authKernel.methods.has("legacy") ? { mode: "token" } : { mode: "redirect", url: "/api/auth/login" });
+        if (url.pathname.endsWith("challenge")) return sendJson(res, 200, { mode: "redirect", url: "/api/auth/login" });
         passwordLoginPage(res, url.pathname.endsWith("bootstrap") ? ["password", "passkey"] : await authKernel.readyMethods(), url.pathname.endsWith("bootstrap") ? url.searchParams.get("token") || "" : undefined, await loginPresentation()); return;
       }
       if (await handlePasswordLogin(req, res, url, authKernel, authStore, authOrigin)) return;
@@ -650,7 +649,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       }
       const auth = extensionAuth || await authKernel.gate(req);
       if (!auth.ok) return unauthorized(res);
-      if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
+      if (auth.via === "external" && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
       const intentFailure = requestIntentFailure(req, url, auth.via, authOrigin);
@@ -888,7 +887,6 @@ const server = createServer(withAccessLog(async (req, res, url) => {
           // Candidate validation only needs the session snapshot. Keep the full
           // response as the default for existing API consumers and bootstrap.
           ...(url.searchParams.get("includeSessionUiState") === "false" ? {} : await readOptionalSessionUiState()),
-          tokenRequired: authKernel.methods.has("legacy") && Boolean(token),
         });
       }
 
@@ -1538,6 +1536,6 @@ server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
   console.log(isDev ? "Mode: development (Vite HMR enabled)" : "Mode: production");
-  console.log(`Auth: ${authMode}${authMode === "legacy" && token ? " (bearer token required)" : ""}`);
+  console.log(`Auth policy: ${authKernel.policy}; methods: ${[...authKernel.methods].join(", ") || "none configured"}`);
   if (authMode === "passkey") console.log(`Passkey origin: ${authOrigin}`);
 });
