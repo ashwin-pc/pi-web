@@ -8,8 +8,10 @@ import { fileURLToPath } from "node:url";
 import { WebSocketServer, type WebSocket } from "ws";
 import { getAgentDir, ModelRuntime } from "@earendil-works/pi-coding-agent";
 import { createMockHarness } from "./server/mock.js";
-import { resolveBundledExtensionPaths, resolvePiWebExtensionPaths } from "./server/extensions.js";
+import { resolveBundledExtensionPaths, resolveGlobalPiWebExtensionPaths } from "./server/extensions.js";
 import { CaptureUploadLimiter } from "./server/extensions/captureStore.js";
+import { WorkspaceExtensionTrust } from "./server/extensions/workspaceTrust.js";
+import { handleWorkspaceExtensionTrustRoute } from "./server/extensions/workspaceTrustRoute.js";
 import { HttpError } from "./server/shared/httpError.js";
 import { sendNegotiatedJson } from "./server/shared/jsonResponse.js";
 import { referenceTranscriptImages } from "./server/session/transcriptImages.js";
@@ -66,6 +68,8 @@ let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
+const bundledExtensionPaths = resolveBundledExtensionPaths({ bundledExtensionsDir });
+const workspaceExtensionTrust = new WorkspaceExtensionTrust(agentDir, bundledExtensionPaths);
 const mockMode = process.env.PI_WEB_MOCK === "1";
 const systemInfoSnapshot = createSystemInfoProvider({
   appDir,
@@ -402,10 +406,11 @@ const mockHarness = createMockHarness({
 });
 const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled } = mockHarness;
 
-function additionalExtensionPaths(cwd = piCwd) {
+function additionalExtensionPaths(cwd = piCwd, projectTrusted?: boolean) {
   return [
-    ...resolveBundledExtensionPaths({ piCwd: cwd, appDir, bundledExtensionsDir }),
-    ...resolvePiWebExtensionPaths(cwd),
+    ...bundledExtensionPaths,
+    ...resolveGlobalPiWebExtensionPaths(),
+    ...(workspaceExtensionTrust?.extensionPaths(cwd, projectTrusted) ?? []),
   ];
 }
 
@@ -656,6 +661,12 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (intentFailure) return sendJson(res, 403, { ok: false, error: intentFailure });
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
+      if (await handleWorkspaceExtensionTrustRoute(req, res, url, auth, {
+        trust: workspaceExtensionTrust,
+        sessions: sessionService,
+        readBody,
+        broadcast,
+      })) return;
       if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
 
       if (method === "GET" && url.pathname.startsWith("/api/session-artifacts/")) {

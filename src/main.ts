@@ -50,6 +50,7 @@ import { createActiveWorkerDock, type ActiveWorkerDockController } from "./compo
 import { createWebHeaderActions } from "./extensions/webHeaderActions.js";
 import { renderWebFooters } from "./extensions/webFooter.js";
 import { createWebPanels, type WebPanelsController } from "./extensions/webPanels.js";
+import { createWorkspaceTrust, type WorkspaceTrustController } from "./extensions/workspaceTrust.js";
 import { configureArtifactPreviews, setArtifactPreviews } from "./extensions/artifactPreviews.js";
 import { initGitPanel, type GitPanelController } from "./git/panel.js";
 import { initFilesPanel, type FilesPanelController } from "./files/panel.js";
@@ -112,6 +113,7 @@ function handleSessionUiStateWarning(warning: string) {
   showPreferencesWarning(warning);
 }
 let settings: SettingsController;
+let workspaceTrust: WorkspaceTrustController;
 let systemInfo: SystemInfoController;
 let sessionInfo: SessionInfoController;
 let statusBar: StatusBar;
@@ -484,6 +486,7 @@ function restoreComposerSession(sessionId: string) {
 }
 
 function activateSession(sessionId: string) {
+  workspaceTrust?.activate(sessionId);
   restoreComposerSession(sessionId);
   selectSession(state, sessionId);
   renderActiveSession();
@@ -510,6 +513,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
   if (activatesSession) {
+    workspaceTrust?.activate(view.id);
     restoreComposerSession(view.id);
     selectSession(state, view.id);
   }
@@ -628,12 +632,13 @@ async function refreshState() {
   syncActiveSessionIdHistoryState(state.currentSessionId);
   const dependencySessionId = requestedSessionId || (typeof data.sessionId === "string" ? data.sessionId : "");
   refreshSettlementDependencies(dependencySessionId);
-  const [settingsResult, modelsResult, messagesResult] = await Promise.allSettled([
+  const [settingsResult, modelsResult, messagesResult, workspaceTrustResult] = await Promise.allSettled([
     settings.refreshSettings(),
     modelSettings.refreshModels(),
     refreshMessages(),
+    workspaceTrust.refresh(state.currentSessionId),
   ]);
-  for (const result of [settingsResult, modelsResult, messagesResult]) {
+  for (const result of [settingsResult, modelsResult, messagesResult, workspaceTrustResult]) {
     if (result.status === "rejected") messages.addMessage("system", result.reason instanceof Error ? result.reason.message : String(result.reason), "error");
   }
   state.initialSyncComplete = messagesResult.status === "fulfilled";
@@ -693,6 +698,9 @@ settings = createSettings({
     if (state.initialSyncComplete) void refreshMessages().catch(showSystemError);
   },
 });
+workspaceTrust = createWorkspaceTrust({
+  api,
+});
 
 const systemInfoInline = document.querySelector<HTMLElement>("#systemInfoInline");
 if (!systemInfoInline) throw new Error("Missing inline system information container");
@@ -721,6 +729,7 @@ sessions = createSessions({
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
   onUiStateUnavailable: handleSessionUiStateWarning,
   onDerivedSessionStateChanged: () => {
+    workspaceTrust.settle(state.currentSessionId);
     // Rehydrate inactive pinned parents too. Realtime dependency declarations
     // are not replayed after a browser reconnect, while pinned indicators must
     // remain correct without opening each parent first.
