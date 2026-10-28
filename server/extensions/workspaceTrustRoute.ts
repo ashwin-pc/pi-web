@@ -14,8 +14,6 @@ type RouteDependencies = {
   trust: WorkspaceExtensionTrust;
   sessions: SessionAccess;
   readBody(req: IncomingMessage): Promise<unknown>;
-  settings(): Promise<unknown>;
-  broadcast(value: unknown): void;
 };
 
 function send(res: ServerResponse, status: number, value: unknown) {
@@ -32,6 +30,12 @@ function sessionIdFrom(value: unknown): string | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const sessionId = (value as Record<string, unknown>).sessionId;
   return typeof sessionId === "string" && sessionId.trim() ? sessionId.trim() : undefined;
+}
+
+function workspaceFrom(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const workspace = (value as Record<string, unknown>).workspace;
+  return typeof workspace === "string" && workspace ? workspace : undefined;
 }
 
 export async function handleWorkspaceExtensionTrustRoute(
@@ -61,21 +65,30 @@ export async function handleWorkspaceExtensionTrustRoute(
       send(res, 400, { ok: false, error: "sessionId is required" });
       return true;
     }
+    const displayedWorkspace = workspaceFrom(body);
+    if (!displayedWorkspace) {
+      send(res, 400, { ok: false, error: "workspace is required" });
+      return true;
+    }
     const session = await deps.sessions.require(sessionId) as {
       isStreaming?: boolean;
       isCompacting?: boolean;
     };
+    const cwd = deps.sessions.cwdForSession(session);
+    const current = deps.trust.status(cwd);
+    if (current.workspace !== displayedWorkspace) {
+      send(res, 409, { ok: false, error: "Workspace changed. Review its resources before trusting it." });
+      return true;
+    }
     if (session.isStreaming || session.isCompacting) {
       send(res, 409, {
         ok: false,
-        error: `Wait for the current ${session.isStreaming ? "response" : "compaction"} to finish before loading workspace extensions.`,
+        error: `Wait for the current ${session.isStreaming ? "response" : "compaction"} to finish before loading workspace resources.`,
       });
       return true;
     }
-    const status = await deps.trust.trust(deps.sessions.cwdForSession(session));
+    const status = await deps.trust.trust(current.workspace);
     const reloadStatus = await deps.sessions.reloadExtensions(sessionId);
-    const settings = await deps.settings();
-    deps.broadcast({ type: "settings_updated", settings });
     send(res, 200, { ok: true, ...status, reloadStatus });
     return true;
   }
@@ -89,8 +102,6 @@ export async function handleWorkspaceExtensionTrustRoute(
       return true;
     }
     await deps.trust.revoke(workspace);
-    const settings = await deps.settings();
-    deps.broadcast({ type: "settings_updated", settings });
     send(res, 200, {
       ok: true,
       trustedWorkspaces: deps.trust.trustedWorkspaces(),

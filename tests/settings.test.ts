@@ -1,11 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import {
   applyExtensionValues,
   applySettingsPatch,
-  applyWorkspaceExtensionTrust,
   createSettingsStore,
   ExtensionRevisionConflictError,
   ExtensionSettingsBoundsError,
@@ -100,24 +99,6 @@ describe("pi-web settings", () => {
     const reloaded = createSettingsStore(file);
     expect((await reloaded.read()).composer.queueMode).toBe("followUp");
     expect((await reloaded.read()).appearance.density).toBe("minimal");
-  });
-
-  it("persists workspace extension trust only through its dedicated mutation", async () => {
-    const base = normalizeSettings({});
-    const injectedPath = resolve("injected-workspace");
-    const workspacePath = resolve("trusted-workspace");
-    expect(applySettingsPatch(base, {
-      trustedExtensionWorkspaces: [injectedPath],
-    })).toEqual(base);
-
-    const trusted = applyWorkspaceExtensionTrust(base, workspacePath, true);
-    expect(trusted.trustedExtensionWorkspaces).toEqual([workspacePath]);
-    expect(applyWorkspaceExtensionTrust(trusted, workspacePath, false).trustedExtensionWorkspaces).toBeUndefined();
-
-    const store = createSettingsStore(await tempFile());
-    await store.setWorkspaceExtensionTrust(workspacePath, true);
-    await store.patch({ appearance: { density: "compact" } });
-    expect((await store.read()).trustedExtensionWorkspaces).toEqual([workspacePath]);
   });
 });
 

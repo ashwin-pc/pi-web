@@ -2,11 +2,12 @@ import { isolatedAuthEnv } from "./auth-isolation.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 
 async function freePort() {
   const server = createServer();
@@ -32,7 +33,7 @@ async function waitForServer(baseUrl: string) {
   throw new Error(`Server did not start: ${baseUrl}`);
 }
 
-function startServer(port: number, cwd: string, settingsFile: string, mock: boolean) {
+function startServer(port: number, cwd: string, settingsFile: string, agentDir: string, mock: boolean) {
   const child = spawn(process.execPath, ["--import", "tsx", "server.ts"], {
     env: {
       ...isolatedAuthEnv(),
@@ -42,6 +43,7 @@ function startServer(port: number, cwd: string, settingsFile: string, mock: bool
       PORT: String(port),
       PI_WEB_TOKEN: "",
       PI_WEB_CWD: cwd,
+      PI_CODING_AGENT_DIR: agentDir,
       PI_WEB_SETTINGS_FILE: settingsFile,
       PI_WEB_SESSION_UI_STATE_FILE: join(cwd, "session-ui-state.json"),
     },
@@ -105,11 +107,9 @@ export default function settingsTest(pi) {
     port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
     const settingsFile = join(workspace, "settings.json");
-    await writeFile(settingsFile, JSON.stringify({
-      version: 1,
-      trustedExtensionWorkspaces: [await realpath(workspace)],
-    }));
-    child = startServer(port, workspace, settingsFile, false);
+    const agentDir = join(workspace, "agent");
+    new ProjectTrustStore(agentDir).set(workspace, true);
+    child = startServer(port, workspace, settingsFile, agentDir, false);
     await waitForServer(baseUrl);
   }, 20_000);
 
@@ -183,7 +183,7 @@ describe("extension settings reset HTTP endpoint without a live schema", () => {
     }));
     const port = await freePort();
     baseUrl = `http://127.0.0.1:${port}`;
-    child = startServer(port, workspace, settingsFile, true);
+    child = startServer(port, workspace, settingsFile, join(workspace, "agent"), true);
     await waitForServer(baseUrl);
   }, 20_000);
 

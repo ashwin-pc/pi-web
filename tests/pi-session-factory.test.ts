@@ -72,6 +72,9 @@ describe("PiSessionFactory resource lifecycle", () => {
     const options = loaderOptions.loaderOptions;
     expect(options.additionalExtensionPaths).toEqual([]);
     expect(loaderOptions.resolveAdditionalExtensionPaths()).toEqual([join(cwd, "extension.ts")]);
+    expect(await loaderOptions.resolveProjectTrust()).toBe(true);
+    expect(options.settingsManager).toBe(input.settingsManager);
+    expect(options.settingsManager.isProjectTrusted()).toBe(false);
     const prompt = options.appendSystemPromptOverride(["existing"]).join("\n");
     expect(prompt).toContain("existing");
     expect(prompt).toContain("pi-web UI context");

@@ -5,7 +5,7 @@ import { ResilientResourceLoader } from "../server/extensions/resilientLoader.js
 function fakeLoader(options: {
   extensions?: string[];
   errors?: Array<{ path: string; error: string }>;
-  reload?: () => Promise<void>;
+  reload?: ResourceLoader["reload"];
 } = {}): ResourceLoader {
   const extensionNames = options.extensions || [];
   return {
@@ -119,5 +119,28 @@ describe("ResilientResourceLoader", () => {
       extensionCount: 1,
       errors: [{ path: "/agent/extensions/models.ts", error: "provider timed out" }],
     });
+  });
+
+  it("passes the explicit project-trust resolver to both primary and fallback reloads", async () => {
+    const decisions: boolean[] = [];
+    let factoryCalls = 0;
+    const reload = async (options?: Parameters<ResourceLoader["reload"]>[0]) => {
+      decisions.push(await options!.resolveProjectTrust!({ extensionsResult: {} as any }));
+      if (factoryCalls === 2) throw new Error("primary failed");
+    };
+    const loader = new ResilientResourceLoader({
+      loaderOptions: { cwd: "/project", agentDir: "/agent" },
+      resolveProjectTrust: () => false,
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      createLoader: () => {
+        factoryCalls += 1;
+        return fakeLoader({ reload });
+      },
+    });
+
+    await loader.reload();
+
+    expect(loader.getStatus().state).toBe("degraded");
+    expect(decisions).toEqual([false, false]);
   });
 });

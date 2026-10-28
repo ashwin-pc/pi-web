@@ -63,12 +63,21 @@ pi-web-only extensions are loaded from:
 
 These are separate from regular pi extension locations on purpose. A pi-web extension can use HTML and browser-specific APIs without promising that the same UI works in the terminal TUI.
 
-Project-local pi-web extensions require workspace trust before pi-web imports
-them. When entries are present under `.pi/web/extensions`, pi-web shows a
-nonblocking notice with the discovered entry paths. Choose **Trust and load**
-only after reviewing the workspace; the decision is stored against the
-workspace's resolved filesystem path, so symlink aliases share one decision.
-Choose **Not now** to keep using the workspace without loading those extensions.
+Project-local resources require workspace trust before pi-web loads them. This
+single decision covers `.pi/web/extensions`, regular `.pi/extensions`, project
+settings, and packages declared by `.pi/settings.json`. When protected
+resources are present, pi-web shows a nonblocking notice listing discovered
+extension entries and package declarations. Choose **Trust and load** only
+after reviewing both the displayed resolved workspace path and the listed
+resources; approval is bound to that exact session and canonical path. Choose
+**Not now** to continue without loading protected project resources.
+
+pi-web uses pi's native project-trust store under the configured agent
+directory (`trust.json`), so saved CLI decisions and pi-web decisions are
+shared. Paths are canonicalized, so symlink aliases share one decision. The CLI
+can save a decision for a parent directory; pi-web offers only the exact
+workspace approval action.
+
 Trust and revocation require an authenticated browser owner session; API tokens,
 extension-scoped clients, and direct open/legacy/external requests cannot change
 workspace trust. Legacy and external browser sign-in establish the existing
@@ -77,9 +86,11 @@ available. An intentionally unauthenticated instance must configure and use a
 browser sign-in method before it can grant workspace extension trust.
 
 Workspace trust can be revoked from **Preferences → Extensions**. Revocation
-takes effect the next time a session loads extensions. User-global extensions
-under `~/.pi/web/extensions`, bundled pi-web extensions, and regular pi
-extensions keep their existing trust behavior.
+takes effect the next time a session loads extensions. Revocation saves an
+explicit denial for that path so an inherited trusted-parent decision cannot
+immediately re-enable it. User-global extensions under
+`~/.pi/web/extensions`, user-global pi resources, and bundled pi-web extensions
+remain trusted.
 
 ## Contribution API
 

@@ -4,9 +4,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAgentSession, getAgentDir, SessionManager, type ModelRuntime, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, getAgentDir, SessionManager, SettingsManager, type ModelRuntime, type SessionStartEvent } from "@earendil-works/pi-coding-agent";
 import type { PiWebSession, PiWebSessionInfo } from "../types.js";
 import { ResilientResourceLoader } from "../extensions/resilientLoader.js";
+import { WorkspaceExtensionTrust } from "../extensions/workspaceTrust.js";
 import { createShallowLister, shallowSessionCwd } from "./shallowList.js";
 import { createSessionsReadTools } from "./referenceTools.js";
 
@@ -76,6 +77,9 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
     const resolvedCwd = this.options.sessionCwd(manager);
     this.options.rememberCwd(resolvedCwd);
     await this.ensureStorage(resolvedCwd);
+    const agentDir = getAgentDir();
+    const projectTrust = new WorkspaceExtensionTrust(agentDir);
+    const settingsManager = SettingsManager.create(resolvedCwd, agentDir, { projectTrusted: false });
     const contextPath = fileURLToPath(new URL("../../contexts/web-ui.md", import.meta.url));
     const appDir = dirname(dirname(contextPath));
     const extensionAuthoringContext = [
@@ -91,9 +95,11 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
       loadTimeoutMs: envMs("PI_WEB_EXTENSION_LOAD_TIMEOUT_MS", 8_000),
       fetchTimeoutMs: envMs("PI_WEB_EXTENSION_FETCH_TIMEOUT_MS", 3_000),
       resolveAdditionalExtensionPaths: () => this.options.additionalExtensionPaths(resolvedCwd),
+      resolveProjectTrust: () => projectTrust.isTrusted(resolvedCwd),
       loaderOptions: {
         cwd: resolvedCwd,
-        agentDir: getAgentDir(),
+        agentDir,
+        settingsManager,
         additionalExtensionPaths: [],
         appendSystemPromptOverride: (base) => [...base, webUiContext].filter(Boolean),
       },
@@ -103,6 +109,7 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
       cwd: resolvedCwd,
       sessionManager: manager,
       modelRuntime: this.options.modelRuntime,
+      settingsManager,
       resourceLoader: loader,
       customTools: createSessionsReadTools(this.options.readSession),
       sessionStartEvent,

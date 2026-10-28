@@ -11,6 +11,10 @@ async function mockWorkspaceTrust(page: Page): Promise<TrustState> {
   await page.route("**/api/extensions/workspace-trust**", async (route) => {
     const method = route.request().method();
     if (method === "POST") {
+      expect(route.request().postDataJSON()).toEqual({
+        sessionId: "mock-current",
+        workspace: "/workspaces/demo",
+      });
       state.trusted = true;
       state.trustedWorkspaces = ["/workspaces/demo"];
     } else if (method === "DELETE") {
@@ -22,9 +26,9 @@ async function mockWorkspaceTrust(page: Page): Promise<TrustState> {
         ok: true,
         workspace: "/workspaces/demo",
         trusted: state.trusted,
-        extensions: [
-          { path: ".pi/web/extensions/notes.ts" },
-          { path: ".pi/web/extensions/dashboard/index.ts" },
+        resources: [
+          { kind: "extension", path: ".pi/web/extensions/notes.ts" },
+          { kind: "package", path: "npm:@example/dashboard" },
         ],
         trustedWorkspaces: state.trustedWorkspaces,
         ...(method === "POST" ? { reloadStatus: { state: "ready" } } : {}),
@@ -45,11 +49,12 @@ test("workspace extension notice supports review, dismiss, trust, and Settings r
 
   const notice = page.locator("#workspaceExtensionTrustNotice");
   await expect(notice).toBeVisible();
-  await expect(notice.getByRole("heading", { name: "Trust this workspace’s extensions?" })).toBeVisible();
+  await expect(notice.getByRole("heading", { name: "Trust this workspace’s resources?" })).toBeVisible();
   await expect(page.locator("#workspaceExtensionTrustList code")).toHaveText([
-    ".pi/web/extensions/notes.ts",
-    ".pi/web/extensions/dashboard/index.ts",
+    "Extension: .pi/web/extensions/notes.ts",
+    "Project package: npm:@example/dashboard",
   ]);
+  await expect(page.locator("#workspaceExtensionTrustWorkspace")).toHaveText("/workspaces/demo");
 
   await notice.getByRole("button", { name: "Not now" }).click();
   await expect(notice).toBeHidden();
@@ -65,11 +70,70 @@ test("workspace extension notice supports review, dismiss, trust, and Settings r
   const trustSettings = page.locator("#workspaceExtensionTrustSettings");
   await expect(trustSettings.getByText("/workspaces/demo", { exact: true })).toBeVisible();
   await trustSettings.getByRole("button", { name: "Revoke workspace extension trust for /workspaces/demo" }).click();
-  await expect(trustSettings).toContainText("No workspace extensions are trusted.");
-  await expect(trustSettings).toContainText("Existing sessions change on their next extension load.");
+  await expect(trustSettings).toContainText("No workspaces are trusted.");
+  await expect(trustSettings).toContainText("Existing sessions change on their next resource load.");
 
   await page.reload();
   await expect(notice).toBeVisible();
+});
+
+test("switching sessions hides stale consent and only trusts the newly reviewed workspace", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name !== "desktop");
+  const posts: unknown[] = [];
+  let releaseOlderStatus!: () => void;
+  let markOlderStatusRequested!: () => void;
+  const olderStatusGate = new Promise<void>((resolve) => { releaseOlderStatus = resolve; });
+  const olderStatusRequested = new Promise<void>((resolve) => { markOlderStatusRequested = resolve; });
+
+  await page.route("**/api/extensions/workspace-trust**", async (route) => {
+    const request = route.request();
+    const method = request.method();
+    const url = new URL(request.url());
+    const sessionId = url.searchParams.get("sessionId");
+    if (method === "POST") posts.push(request.postDataJSON());
+    if (method === "GET" && sessionId === "mock-older") {
+      markOlderStatusRequested();
+      await olderStatusGate;
+    }
+    const older = sessionId === "mock-older"
+      || (method === "POST" && request.postDataJSON().sessionId === "mock-older");
+    const workspace = older ? "/workspaces/older-realpath" : "/workspaces/current-realpath";
+    await route.fulfill({
+      json: {
+        ok: true,
+        workspace,
+        trusted: method === "POST",
+        resources: [{ kind: "extension", path: older ? ".pi/web/extensions/older.ts" : ".pi/web/extensions/current.ts" }],
+        trustedWorkspaces: method === "POST" ? [workspace] : [],
+        ...(method === "POST" ? { reloadStatus: { state: "ready" } } : {}),
+      },
+    });
+  });
+
+  await page.goto("/");
+  const notice = page.locator("#workspaceExtensionTrustNotice");
+  await expect(notice).toBeVisible();
+  await expect(page.locator("#workspaceExtensionTrustList code")).toHaveText("Extension: .pi/web/extensions/current.ts");
+
+  await page.locator("#sessionButton").click();
+  const drawer = page.locator("#sessionDrawer");
+  await drawer.getByText("Older mock session").click();
+  await olderStatusRequested;
+  await expect(notice).toBeHidden();
+  await expect(page.locator("#workspaceExtensionTrustButton")).toBeDisabled();
+  await page.locator("#workspaceExtensionTrustButton").evaluate((button: HTMLButtonElement) => button.click());
+  expect(posts).toEqual([]);
+
+  releaseOlderStatus();
+  await expect(notice).toBeVisible();
+  await expect(page.locator("#workspaceExtensionTrustWorkspace")).toHaveText("/workspaces/older-realpath");
+  await expect(page.locator("#workspaceExtensionTrustList code")).toHaveText("Extension: .pi/web/extensions/older.ts");
+  await notice.getByRole("button", { name: "Trust and load" }).click();
+  await expect(notice).toBeHidden();
+  expect(posts).toEqual([{
+    sessionId: "mock-older",
+    workspace: "/workspaces/older-realpath",
+  }]);
 });
 
 test("workspace extension notice stays contained with reachable touch controls", async ({ page }, testInfo) => {

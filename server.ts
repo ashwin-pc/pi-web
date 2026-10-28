@@ -67,9 +67,10 @@ const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI
 if (setupLink) console.log(`First-install setup (single use, expires in 10 minutes): ${setupLink}`);
 let piCwd = resolve(process.env.PI_WEB_CWD || process.cwd());
 const knownCwds = new Set<string>([piCwd]);
-let workspaceExtensionTrust: WorkspaceExtensionTrust;
 
 const bundledExtensionsDir = join(appDir, ".pi", "extensions");
+const bundledExtensionPaths = resolveBundledExtensionPaths({ bundledExtensionsDir });
+const workspaceExtensionTrust = new WorkspaceExtensionTrust(agentDir, bundledExtensionPaths);
 const mockMode = process.env.PI_WEB_MOCK === "1";
 const systemInfoSnapshot = createSystemInfoProvider({
   appDir,
@@ -408,7 +409,7 @@ const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, se
 
 function additionalExtensionPaths(cwd = piCwd) {
   return [
-    ...resolveBundledExtensionPaths({ piCwd: cwd, appDir, bundledExtensionsDir }),
+    ...bundledExtensionPaths,
     ...resolveGlobalPiWebExtensionPaths(),
     ...(workspaceExtensionTrust?.extensionPaths(cwd) ?? []),
   ];
@@ -510,8 +511,6 @@ sessionService = new LocalSessionService({
   clientCount: () => realtimeHub.clientCount,
 });
 const settingsStore = sessionService.settingsStore;
-workspaceExtensionTrust = new WorkspaceExtensionTrust(settingsStore);
-await workspaceExtensionTrust.initialize();
 // Serialize avatar uploads, settings patches, and explicit reset cleanup.
 // Otherwise an identity patch could race the revision check and unlink.
 let avatarMutation: Promise<unknown> = Promise.resolve();
@@ -668,8 +667,6 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         trust: workspaceExtensionTrust,
         sessions: sessionService,
         readBody,
-        settings: () => settingsStore.read(),
-        broadcast,
       })) return;
       if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
 

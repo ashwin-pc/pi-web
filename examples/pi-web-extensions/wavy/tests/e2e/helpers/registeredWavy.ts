@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createServer } from "node:net";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 
 const SCORE = `X:1\nT:Registered fixture\nM:4/4\nL:1/8\nQ:1/4=100\nV:Lead\nK:C\n[V:Lead] C2 D2 \\\nE2 F2|G4 E4|`;
 
@@ -86,6 +87,8 @@ export async function startRegisteredWavyServer(port?: number): Promise<Register
     `pi.sendMessage({customType:"wavy-registered-fixture",content:"[Registered Wavy fixture](/api/artifacts/fixtures/registered.wavy)",display:true});` +
     `});}\n`;
   await writeFile(join(extensionDir, "registered-wavy.ts"), extension, { mode: 0o600 });
+  const agentDir = join(root, "agent");
+  new ProjectTrustStore(agentDir).set(workspace, true);
 
   const token = randomBytes(24).toString("hex");
   const origin = `http://127.0.0.1:${port}`;
@@ -93,7 +96,7 @@ export async function startRegisteredWavyServer(port?: number): Promise<Register
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (key.startsWith("PI_WEB_AUTH_") || key === "PI_WEB_TOKEN") env[key] = "";
   Object.assign(env, {
-    HOME: join(root, "home"), PI_CODING_AGENT_DIR: join(root, "agent"), NODE_ENV: "test",
+    HOME: join(root, "home"), PI_CODING_AGENT_DIR: agentDir, NODE_ENV: "test",
     PI_WEB_DEV: "0", PI_WEB_MOCK: "0", HOST: "127.0.0.1", PORT: String(port), PI_WEB_CWD: workspace,
     PI_WEB_SETTINGS_FILE: join(root, "settings.json"), PI_WEB_SESSION_UI_STATE_FILE: join(root, "session-ui.json"),
     PI_WEB_AUTH_STORE: join(root, "auth.json"), PI_WEB_AUTH_MODE: "legacy", PI_WEB_AUTH_ORIGIN: origin,

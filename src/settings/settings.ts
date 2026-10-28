@@ -80,10 +80,6 @@ function normalizeSettings(value: unknown): PiWebSettings {
 
   // Carry the extension-settings blob through verbatim (server owns validation).
   if (isRecord(value.extensions)) settings.extensions = value.extensions as PiWebSettings["extensions"];
-  if (Array.isArray(value.trustedExtensionWorkspaces)) {
-    settings.trustedExtensionWorkspaces = value.trustedExtensionWorkspaces
-      .filter((path): path is string => typeof path === "string");
-  }
 
   return settings;
 }

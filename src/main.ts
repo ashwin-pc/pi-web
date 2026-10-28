@@ -480,6 +480,7 @@ function restoreComposerSession(sessionId: string) {
 }
 
 function activateSession(sessionId: string) {
+  workspaceTrust?.activate(sessionId);
   restoreComposerSession(sessionId);
   selectSession(state, sessionId);
   renderActiveSession();
@@ -506,6 +507,7 @@ function applySessionSnapshot(value: unknown, options: ApplySessionSnapshotOptio
 
   const activatesSession = Boolean(options.activate || !state.currentSessionId);
   if (activatesSession) {
+    workspaceTrust?.activate(view.id);
     restoreComposerSession(view.id);
     selectSession(state, view.id);
   }
@@ -693,7 +695,6 @@ settings = createSettings({
 });
 workspaceTrust = createWorkspaceTrust({
   api,
-  getSessionId: () => state.currentSessionId,
 });
 
 const systemInfoInline = document.querySelector<HTMLElement>("#systemInfoInline");
@@ -723,6 +724,7 @@ sessions = createSessions({
   refreshSessionTitle: () => statusBar.refreshSessionTitle(),
   onUiStateUnavailable: handleSessionUiStateWarning,
   onDerivedSessionStateChanged: () => {
+    workspaceTrust.settle(state.currentSessionId);
     // Rehydrate inactive pinned parents too. Realtime dependency declarations
     // are not replayed after a browser reconnect, while pinned indicators must
     // remain correct without opening each parent first.

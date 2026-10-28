@@ -29,6 +29,7 @@ export type ExtensionLoadStatus = {
 export type ResilientResourceLoaderOptions = {
   loaderOptions: LoaderOptions;
   resolveAdditionalExtensionPaths?: () => string[];
+  resolveProjectTrust?: () => boolean | Promise<boolean>;
   loadTimeoutMs?: number;
   fetchTimeoutMs?: number;
   createLoader?: LoaderFactory;
@@ -125,6 +126,7 @@ export class ResilientResourceLoader implements ResourceLoader {
   private readonly fetchTimeoutMs: number;
   private readonly primaryOptions: LoaderOptions;
   private readonly resolveAdditionalExtensionPaths?: () => string[];
+  private readonly resolveProjectTrust?: () => boolean | Promise<boolean>;
   private readonly fallbackOptions: LoaderOptions;
   private activePrimaryPathsKey = "";
   private readonly extendedResources: Array<Parameters<ResourceLoader["extendResources"]>[0]> = [];
@@ -139,6 +141,7 @@ export class ResilientResourceLoader implements ResourceLoader {
     this.fetchTimeoutMs = positiveMs(options.fetchTimeoutMs, 3_000);
     this.primaryOptions = options.loaderOptions;
     this.resolveAdditionalExtensionPaths = options.resolveAdditionalExtensionPaths;
+    this.resolveProjectTrust = options.resolveProjectTrust;
     this.fallbackOptions = {
       ...options.loaderOptions,
       additionalExtensionPaths: [],
@@ -248,10 +251,13 @@ export class ResilientResourceLoader implements ResourceLoader {
       for (const paths of this.extendedResources) candidate.extendResources(paths);
     }
     try {
+      const reloadOptions = this.resolveProjectTrust
+        ? { ...options, resolveProjectTrust: async () => this.resolveProjectTrust!() }
+        : options;
       await withTimeout(
         extensionFetchContext.run(
           { timeoutMs: this.fetchTimeoutMs, log: this.log },
-          () => candidate.reload(options),
+          () => candidate.reload(reloadOptions),
         ),
         this.loadTimeoutMs,
         `Extension loading timed out after ${this.loadTimeoutMs}ms`,
@@ -285,7 +291,10 @@ export class ResilientResourceLoader implements ResourceLoader {
       const fallback = this.createLoader(this.fallbackOptions);
       for (const paths of this.extendedResources) fallback.extendResources(paths);
       try {
-        await fallback.reload(options);
+        const fallbackOptions = this.resolveProjectTrust
+          ? { ...options, resolveProjectTrust: async () => this.resolveProjectTrust!() }
+          : options;
+        await fallback.reload(fallbackOptions);
         this.active = fallback;
         this.activeIsPrimary = false;
       } catch (fallbackError) {

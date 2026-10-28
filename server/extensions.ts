@@ -4,8 +4,6 @@ import { join, resolve } from "node:path";
 import { resolveWebHomePath } from "./shared/webHome.js";
 
 type BundledExtensionPathOptions = {
-  piCwd: string;
-  appDir: string;
   bundledExtensionsDir: string;
 };
 
@@ -120,22 +118,10 @@ export function resolveGlobalPiWebExtensionPaths() {
   );
 }
 
-/**
- * Safe default for pi-web callers: only globally installed web extensions.
- * Workspace sources require an explicit trust-aware provider.
- */
-export function resolvePiWebExtensionPaths(_cwd: string) {
-  return resolveGlobalPiWebExtensionPaths();
-}
-
 export function resolveBundledExtensionPaths(options: BundledExtensionPathOptions) {
-  // When developing pi-web from this repo, the same directory is already loaded
-  // by pi as the project-local .pi/extensions path. For other PI_WEB_CWD values
-  // and packaged installs, add pi-web's bundled extensions explicitly.
-  if (resolve(options.piCwd) === resolve(options.appDir) || !existsSync(options.bundledExtensionsDir)) return [];
+  if (!existsSync(options.bundledExtensionsDir)) return [];
 
-  // DefaultResourceLoader resolves additionalExtensionPaths as package sources.
-  // Passing the extensions directory itself can produce the directory as a single
-  // extension path, so expand it to concrete entry files before handing it to pi.
+  // Product-bundled extensions are explicit trusted sources, independent of the
+  // active workspace's project-trust decision.
   return discoverExtensionEntryPaths(options.bundledExtensionsDir);
 }
