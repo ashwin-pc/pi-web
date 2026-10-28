@@ -10,6 +10,7 @@ import {
   type GitConfigEntry,
   type GitExecution,
 } from "./gitExecution.js";
+import { assertSyncFilesystemBoundary } from "./gitSyncBoundary.js";
 
 const execFileAsync = promisify(execFile);
 export { gitConfigEnv, gitConfigHardeningOverrides };
@@ -321,44 +322,39 @@ export async function gitSync(cwd: string) {
   const execution = await loadGitExecution(cwd);
   assertSyncConfigSafe(execution.entries);
   const { stdout: rootOut } = await runGitExecution(execution, ["rev-parse", "--show-toplevel"], cwd);
-  const root = rootOut.trim();
+  const root = await realpath(rootOut.trim());
   const { stdout: branchOut } = await runGitExecution(execution, ["branch", "--show-current"], root);
   const branch = branchOut.trim();
   if (!branch) throw new Error("Cannot sync detached HEAD");
 
-  const [indexBefore, headBefore] = await Promise.all([
+  const [{ stdout: commonDirOut }, indexBefore, headCommit] = await Promise.all([
+    runGitExecution(execution, ["rev-parse", "--git-common-dir"], root),
     runGitExecution(execution, ["ls-files", "--stage", "-z"], root),
-    runGitExecution(execution, ["ls-tree", "-r", "-z", "HEAD"], root),
+    runGitExecution(execution, ["rev-parse", "--verify", "-q", "HEAD^{commit}"], root)
+      .then(({ stdout }) => stdout.trim())
+      .catch((error: unknown) => {
+        if ((error as Error & { code?: string | number }).code === 1) return "";
+        throw error;
+      }),
   ]);
   assertNoGitlinks(indexBefore.stdout, "the index", "tree");
-  assertNoGitlinks(headBefore.stdout, "HEAD", "tree");
+  if (headCommit) {
+    const { stdout: headTree } = await runGitExecution(execution, ["ls-tree", "-r", "-z", headCommit], root);
+    assertNoGitlinks(headTree, "HEAD", "tree");
+  }
+  const commonDir = resolve(root, commonDirOut.trim());
+  await assertSyncFilesystemBoundary(root, commonDir);
 
-  const targetRef = `refs/remotes/origin/${branch}`;
-  const fetchResult = await runGitExecution(
+  const fetchResult = await runGitExecution(execution, ["fetch", "--prune", "origin"], root, 60_000);
+  const pullResult = await runGitExecution(
     execution,
-    ["fetch", "--prune", "origin", `+refs/heads/${branch}:${targetRef}`],
+    ["pull", "--rebase", "--autostash", "origin", branch],
     root,
-    60_000,
+    120_000,
   );
-  const { stdout: targetOut } = await runGitExecution(execution, ["rev-parse", "--verify", `${targetRef}^{commit}`], root);
-  const target = targetOut.trim();
-  if (!/^[a-f0-9]{40,64}$/i.test(target)) throw new Error("Sync refused: fetched branch did not resolve to one commit");
-
-  const [indexResult, headResult, targetResult, replayResult] = await Promise.all([
-    runGitExecution(execution, ["ls-files", "--stage", "-z"], root),
-    runGitExecution(execution, ["ls-tree", "-r", "-z", "HEAD"], root),
-    runGitExecution(execution, ["ls-tree", "-r", "-z", target], root),
-    runGitExecution(execution, ["log", "--no-color", "--format=", "--raw", "--no-renames", "-z", `${target}..HEAD`], root),
-  ]);
-  assertNoGitlinks(indexResult.stdout, "the index", "tree");
-  assertNoGitlinks(headResult.stdout, "HEAD", "tree");
-  assertNoGitlinks(targetResult.stdout, "the fetched target", "tree");
-  assertNoGitlinks(replayResult.stdout, "local commits that would be replayed", "raw");
-
-  const rebaseResult = await runGitExecution(execution, ["rebase", "--autostash", target], root, 120_000);
   return {
     ok: true as const,
-    output: `${fetchResult.stdout}${fetchResult.stderr}${rebaseResult.stdout}${rebaseResult.stderr}`,
+    output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`,
     status: await gitStatus(root),
   };
 }

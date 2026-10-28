@@ -157,7 +157,7 @@ A shared diff viewer supports side-by-side or stacked layouts with intraline hig
 
 ### Git status, graph, and commit diffs
 
-The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with a pinned fetch + rebase. The panel inspects the selected repository without recursively executing Git inside its submodule worktrees; dirty submodule worktrees are ignored while changed gitlink commits remain visible. An initialized submodule can still be selected as a repository and inspected directly with the same hardening. Sync intentionally refuses repositories with repository-scoped filter drivers or submodule gitlinks in the index, current/fetched trees, or local commits to replay; preserve local changes and sync those checkouts outside pi-web.
+The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with fetch/prune followed by pull/rebase/autostash. The panel inspects the selected repository without recursively executing Git inside its submodule worktrees; dirty submodule worktrees are ignored while changed gitlink commits remain visible. An initialized submodule can still be selected as a repository and inspected directly with the same hardening. Before Sync changes refs or files, it intentionally refuses repository-scoped filter drivers, current submodule gitlinks, cached or nested Git repositories, directory symlinks, and checkouts it cannot completely inspect. This coarse boundary keeps native pull behavior without allowing a later-fetched gitlink to activate existing child configuration; preserve local changes and sync those checkouts outside pi-web.
 
 ### Self-aware pi context
 

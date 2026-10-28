@@ -644,6 +644,7 @@ signed fixture
     expect(repos.repos.map((repo) => repo.path)).toEqual([".", "child"]);
     expect(await gitCwdFromRepoParam("child", cwd)).toBe(child);
     await expect(gitCwdFromRepoParam("../outside", cwd)).rejects.toThrow("outside the workspace");
+    await rm(child, { recursive: true });
 
     const remote = await tempDir("pi-web-shared-git-remote-");
     runGit(remote, "init", "--bare");
