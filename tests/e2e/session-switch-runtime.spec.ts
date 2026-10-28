@@ -17,7 +17,10 @@ async function switchToOlder(page: Page) {
 async function promptCurrentInBackground(page: Page, message: string) {
   await page.evaluate(async (promptMessage) => {
     const token = document.querySelector<HTMLInputElement>("#tokenInput")?.value || "";
-    const headers: Record<string, string> = { "content-type": "application/json" };
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "x-pi-web-client-id": "background-prompt-test",
+    };
     if (token) headers.authorization = `Bearer ${token}`;
     const openRes = await fetch("/api/sessions/open", {
       method: "POST",
