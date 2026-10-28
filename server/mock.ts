@@ -565,7 +565,8 @@ export function createMockHarness(options: MockSessionOptions) {
         appendMockMessage({ role: "bashExecution", command, ...result, excludeFromContext: Boolean(options?.excludeFromContext), timestamp: new Date().toISOString() });
         return result;
       },
-      prompt: async (message: string, promptOptions?: { images?: unknown[]; streamingBehavior?: string }) => {
+      prompt: async (message: string, promptOptions?: { images?: unknown[]; streamingBehavior?: string; preflightResult?: (success: boolean) => void }) => {
+        promptOptions?.preflightResult?.(true);
         if (mockSession.isStreaming && promptOptions?.streamingBehavior) {
           (promptOptions.streamingBehavior === "followUp" ? followUpQueue : steeringQueue).push(message);
           broadcastQueueUpdate();

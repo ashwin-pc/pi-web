@@ -58,6 +58,31 @@ describe("scoped extension HTTP credentials", () => {
     expect((await h.registry.authenticate(request(h.auth, "/api/prompt?unknown=x", "POST"))).ok).toBe(false);
   });
 
+  it("permits dispatch-scoped history reads with exactly one validated selector", async () => {
+    const h = harness();
+    const dispatchId = "12345678-1234-1234-1234-123456789abc";
+    const path = `/api/session/history?dispatchId=${dispatchId}`;
+    await h.client.request("GET", path);
+    expect((await h.registry.authenticate(request(h.auth, `${path}&sessionId=parent`))).ok).toBe(true);
+    expect((await h.registry.authenticate(request(h.auth, `${path}&sessionId=other`))).ok).toBe(false);
+    for (const query of ["", "?dispatchId=invalid", `?dispatchId=${dispatchId}&dispatchId=${dispatchId}`, `?dispatchId=${dispatchId}&unknown=x`]) {
+      await expect(h.client.request("GET", `/api/session/history${query}`)).rejects.toThrow();
+    }
+    const writeOnly = h.registry.createClient({}, "parent", () => true, { name: "writer", scopes: ["sessions.write"] });
+    await expect(writeOnly.request("GET", path)).rejects.toThrow("scope");
+  });
+
+  it("permits completion delivery only with write scope and an authorized target", async () => {
+    const h = harness();
+    await h.client.request("POST", "/api/session/completion", { body: { deliveryId: "completion-1", message: { customType: "wakeup", content: "Done", display: true } } });
+    expect((await h.registry.authenticate(request(h.auth, "/api/session/completion", "POST"))).ok).toBe(true);
+    h.body.sessionId = "other";
+    expect(await h.registry.authenticate(request(h.auth, "/api/session/completion", "POST"))).toEqual({ ok: false, status: 403 });
+    await expect(h.client.request("POST", "/api/session/completion?unknown=x")).rejects.toThrow();
+    const readOnly = h.registry.createClient({}, "parent", () => true, { name: "reader", scopes: ["sessions.read"] });
+    await expect(readOnly.request("POST", "/api/session/completion")).rejects.toThrow("scope");
+  });
+
   it("checks IPv4, IPv6 and mapped socket peers without trusting forwarding headers", async () => {
     const h = harness();
     await h.client.request("GET", "/api/state");
@@ -184,6 +209,27 @@ describe("scoped extension HTTP credentials", () => {
     await writeOnly.request("POST", "/api/prompt");
     expect(await h.registry.authenticate(request(h.auth, `/api/messages/image?sessionId=parent&imageId=${imageId}`))).toEqual({ ok: false, status: 403 });
     await expect(writeOnly.request("GET", `/api/messages/image?imageId=${imageId}`)).rejects.toThrow("scope");
+  });
+
+  it("permits read-only prompt validation only for authorized session targets", async () => {
+    const h = harness();
+    const path = "/api/prompt/validate";
+    const reader = h.registry.createClient({}, "parent", () => true, { name: "validation", scopes: ["sessions.read"] });
+    await reader.request("POST", path, { body: { message: "literal", dispatchId: "12345678-1234-1234-1234-123456789abc" } });
+    expect((await h.registry.authenticate(request(h.auth, path, "POST"))).ok).toBe(true);
+    await expect(reader.request("POST", path, { body: { sessionId: "other" } })).rejects.toThrow("targets");
+    h.body.sessionId = "other";
+    expect((await h.registry.authenticate(request(h.auth, path, "POST"))).ok).toBe(false);
+    h.body.sessionId = "parent";
+    for (const invalid of [`${path}?sessionId=parent`, `${path}?extra=1`]) {
+      await expect(reader.request("POST", invalid)).rejects.toThrow();
+      expect((await h.registry.authenticate(request(h.auth, invalid, "POST"))).ok).toBe(false);
+    }
+    const writer = h.registry.createClient({}, "parent", () => true, { name: "writer", scopes: ["sessions.write"] });
+    await expect(writer.request("POST", path)).rejects.toThrow("scope");
+    await expect(reader.request("POST", "/api/prompt")).rejects.toThrow("scope");
+    await expect(reader.request("GET", "/api/commands?sessionId=parent")).rejects.toThrow("scope");
+    expect((await h.registry.authenticate(request(h.auth, "/api/commands?sessionId=parent"))).ok).toBe(false);
   });
 
   it("adds created sessions only after server-authorized creation and supports explicit all-session tools", async () => {

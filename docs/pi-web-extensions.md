@@ -573,6 +573,32 @@ Worker models are chosen from user-authored **categories** (name + "when to use"
 prose + a model) configured through the Settings API above; the concrete model
 mapping stays private to the config and the spawn tool resolves it fail-closed.
 
+Tracked follow-ups through `sessions_prompt` must be natural-language messages.
+Registered SDK slash commands, templates, and skills are rejected before aborting
+a worker or replacing its watch. Every tracked follow-up calls the read-only
+`POST /api/prompt/validate` with literal text and an ephemeral dispatch UUID;
+failed or malformed validation leaves the old assignment untouched. The extension
+does not parse commands or command metadata. Core owns the single SDK matcher,
+excluding browser-only commands. Path-led tasks such as `/src/foo.ts fails, fix it`
+and unknown slash literals follow normal SDK handling, unchanged. Arguments are
+never modified. Validation is not admission: the actual send revalidates the current
+registry, using the same UUID, and a definitive rejection restores the prior watch. A slash-prefixed `sessions_spawn` task is literal
+text inside the worker instruction wrapper, not an executed command. Ordinary
+tracked prompts carry a `[pi-web-dispatch:<uuid>]` watermark visible to the model
+and in the worker transcript. Admission alone is not task completion: the watcher
+requires the actual user-entry watermark before attributing later replies.
+
+The extension's durable journal in `~/.pi/agent/orchestrator-state/` (override with
+`PI_WEB_ORCHESTRATOR_STATE_DIR`) owns dispatch intents and immutable pending wakeup
+batches. It re-arms on reload/restart and retains the same delivery ID and payload
+until the host returns a saved receipt. A legacy session-file ledger remains a
+fallback, not the authoritative pending-payload store. A renewed task has a new
+watch ID, so a delayed older batch cannot resolve it. Parent tree navigation does
+not quarantine workers: wakeups are delivered into whichever parent branch is
+active. Existing journal anchors are ignored during recovery, without changing
+pending message payloads. Worker result attribution still uses the worker's active
+history, never an older reply from another branch.
+
 pi-web renders the orchestration state generically: spawned sessions are
 indented under their parent in the session drawer, a waiting indicator shows
 while a session's workers run, wakeups render as notification cards, and both the

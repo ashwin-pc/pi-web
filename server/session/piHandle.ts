@@ -1,5 +1,14 @@
+import { AgentSession } from "@earendil-works/pi-coding-agent";
 import type { PiWebSession } from "../types.js";
+import { CompletionDeferredError, type CompletionInput, type CompletionMessage } from "./completionOutbox.js";
+import { CompletionNotAdmittedError, piCompletionProbe } from "./piCompletionProbe.js";
 import { projectMessages, projectSessionState } from "./projection.js";
+import { captureOriginalAgentPrompt } from "./sdkIdentityAudit.js";
+
+// Capture before extensions load. Optional audit failure disables only proof of
+// non-admission, not startup or ordinary/custom message delivery.
+const originalSdkSend = AgentSession.prototype.sendCustomMessage;
+const originalAgentPrompt = await captureOriginalAgentPrompt();
 
 /** Pi-only operational slice isolated from the PR145 PiSessionHandle draft.
  * The host still owns identity, admission, work/viewer leases and the web bridge.
@@ -13,12 +22,32 @@ export class PiSessionHandle {
 
   constructor(private readonly raw: PiWebSession) {}
 
+  get runtimeKey(): object { return this.raw; }
+  get sessionId(): string { return this.raw.sessionId; }
+  completionProbe(input: CompletionInput) { return piCompletionProbe(this.raw, input); }
+
   state(cwd: string) { return projectSessionState(this.raw, cwd); }
   messages() { return projectMessages(this.raw); }
   prompt(text: string, options?: Parameters<PiWebSession["prompt"]>[1]) {
     return this.raw.prompt(text, options);
   }
-  interrupt() { return this.raw.abort(); }
+  interrupt() {
+    this.raw.abortBash?.();
+    return this.raw.abort();
+  }
+
+  async sendCompletion(message: CompletionMessage) {
+    if (!this.raw.sendCustomMessage || this.lifetime !== "open") throw new CompletionDeferredError("Custom message delivery is unavailable");
+    // Audited SDK sendCustomMessage: steer/followUp and settled deferral enqueue
+    // synchronously and FULFILL. Only the immediate triggerTurn path awaits a
+    // run and rejects. Both invoked public methods must still be genuine: a
+    // replacement agent.prompt can enqueue then reject with no visible history.
+    // Rejection still requires disk/history/idle verification in our probe;
+    // absence alone never proves custom-queue absence.
+    const audited = originalAgentPrompt !== undefined && this.raw instanceof AgentSession && this.raw.sendCustomMessage === originalSdkSend && this.raw.agent.prompt === originalAgentPrompt && !this.raw.isStreaming;
+    try { await this.raw.sendCustomMessage(message, { triggerTurn: true, deliverAs: "steer" }); }
+    catch (error) { if (audited) throw new CompletionNotAdmittedError(error); throw error; }
+  }
 
   subscribe(listener: (event: unknown) => void): () => void {
     if (this.lifetime !== "open") throw new Error("Pi runtime is closing or disposed");
@@ -61,6 +90,10 @@ export class PiSessionHandle {
   }
 
   private async disposeOnce(reason: string) {
+    // dispose() only signals abort/disconnect in the SDK. An in-flight
+    // message_end hook can still append afterwards. Settle it before a new raw
+    // runtime is allowed to replay durable completions into the same file.
+    await this.interrupt();
     const runner = this.raw.extensionRunner as (PiWebSession["extensionRunner"] & {
       hasHandlers?(name: string): boolean;
       emit?(event: { type: "session_shutdown"; reason: "quit" }): Promise<unknown>;

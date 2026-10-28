@@ -1,6 +1,27 @@
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type, type Static } from "typebox";
+import { entryMessage, simplifyMessage, textFromContent } from "./projection.js";
+import type { MessageDto } from "./dto.js";
 import { isSessionReferenceId, parseSessionReference, sessionReferenceHref, type SessionReference } from "../shared/sessionReference.js";
+
+/** Uncompacted active lineage from a consumed dispatch; not a disk-flush receipt. */
+export function dispatchHistory(branch: unknown[], dispatchId: string): MessageDto[] {
+  const marker = `[pi-web-dispatch:${dispatchId}]`;
+  const start = branch.findIndex(entry => {
+    const message = entryMessage(entry);
+    return message?.role === "user" && textFromContent(message.content).includes(marker);
+  });
+  if (start < 0) return [];
+  return branch.slice(start).flatMap(entry => {
+    const message = entryMessage(entry);
+    if (!message) return [];
+    // Historic image indices differ from compacted /api/messages indices.
+    const content = Array.isArray(message.content) ? message.content.map((part: any) => part?.type === "image" ? { type: "image", mimeType: part.mimeType, omitted: true } : part) : message.content;
+    const { id, parentId } = entry as { id?: string; parentId?: string };
+    const projected = simplifyMessage({ ...message, content }, { entryId: id, parentEntryId: parentId });
+    return projected ? [projected] : [];
+  });
+}
 
 const parameters = Type.Object({
   id: Type.String({ description: "Session ID or canonical pi-web session URL. A URL with entryId reads that exact saved entry." }),

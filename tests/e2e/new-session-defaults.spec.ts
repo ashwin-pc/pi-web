@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { openLauncherAction } from "./helpers/actionLauncher.js";
 import { seedSessionUiState } from "./helpers/sessionUiState.js";
+import { shouldCloseSessionDrawerAfterSwitch } from "./helpers/sessionDrawer.js";
 
 async function activeSessionId(page: Page) {
   const tab = page.locator(".sessionBarTab.active");
@@ -21,6 +22,29 @@ async function createNewSession(page: Page) {
   await clickHeaderNew(page);
   await created;
   await expect.poll(() => activeSessionId(page)).not.toBe(before);
+  return activeSessionId(page);
+}
+
+/** Complete setup before testing another New action or opening the drawer again. */
+async function createSettledSetupSession(page: Page) {
+  const before = await activeSessionId(page);
+  const drawer = page.locator("#sessionDrawer");
+  const wasOpen = await drawer.isVisible();
+  if (!wasOpen) await page.locator("#sessionButton").click();
+  await expect(drawer).toBeVisible();
+  const newButton = page.locator("#sessionNewButton");
+  const created = page.waitForResponse((response) => response.url().endsWith("/api/sessions/new") && response.request().method() === "POST" && response.ok());
+  await newButton.click();
+  await created;
+  await expect.poll(() => activeSessionId(page)).not.toBe(before);
+  // Unlike optimistic tab activation, re-enabling awaits the entire creation
+  // promise, including hydration and the compact drawer's deferred close.
+  await expect(newButton).toBeEnabled();
+  if (await shouldCloseSessionDrawerAfterSwitch(page)) await expect(drawer).toBeHidden();
+  if (wasOpen && !await drawer.isVisible()) await page.locator("#sessionButton").click();
+  else if (!wasOpen && await drawer.isVisible()) await page.locator("#sessionCloseButton").click();
+  if (wasOpen) await expect(drawer).toBeVisible();
+  else await expect(drawer).toBeHidden();
   return activeSessionId(page);
 }
 
@@ -80,7 +104,7 @@ test.afterEach(async ({ page }) => {
 test.describe("new-session defaults", () => {
   test("validates a cached blank without downloading the session list, and rejects stale emptiness", async ({ page }) => {
     await setPinNewSessions(page, true);
-    const emptyId = await createNewSession(page);
+    const emptyId = await createSettledSetupSession(page);
     // No corpus discovery should be required, even when a cached blank gained
     // content externally before its next realtime/list update.
     await page.route("**/api/sessions**", async (route) => {
@@ -473,7 +497,7 @@ test.describe("new-session defaults", () => {
 
   test("does not create a replacement when opening a reusable tab fails", async ({ page }) => {
     await setPinNewSessions(page, true);
-    const reusableId = await createNewSession(page);
+    const reusableId = await createSettledSetupSession(page);
     await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
     await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
     await expect.poll(() => activeSessionId(page)).toBe("mock-current");
@@ -507,7 +531,7 @@ test.describe("new-session defaults", () => {
 
   test("keeps the current transcript when reusable-tab open has a transport failure", async ({ page }) => {
     await setPinNewSessions(page, true);
-    const reusableId = await createNewSession(page);
+    const reusableId = await createSettledSetupSession(page);
     await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
     await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
     const originalUser = await page.locator(".message.user").first().textContent();
@@ -536,7 +560,7 @@ test.describe("new-session defaults", () => {
 
   test("restores local history and the viewer lease after accepted open hydration fails", async ({ page }) => {
     await setPinNewSessions(page, true);
-    const reusableId = await createNewSession(page);
+    const reusableId = await createSettledSetupSession(page);
     await page.locator("#sessionButton").evaluate((button: HTMLButtonElement) => button.click());
     await page.locator('.sessionItem[data-session-id="mock-current"] .sessionItemNavBtn').click();
     await expect(page.locator("#messages")).toContainText("Can you add image attachments?");
