@@ -2,7 +2,7 @@ import { isolatedAuthEnv } from "./auth-isolation.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:http";
 import { writeFile } from "node:fs/promises";
-import { AuthStore } from "../server/auth/kernel.js";
+import { AuthStore, hashSecret } from "../server/auth/kernel.js";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { mintStoredApiToken } from "./auth-fixture.js";
@@ -181,14 +181,22 @@ describe("pi-web supervisor", () => {
         PI_WEB_AUTH_ORIGIN: "https://owner.example",
         PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
         PI_WEB_AUTH_PROXY_PEERS: "127.0.0.1",
+        PI_WEB_TOKEN: "stale-removed-secret",
         PI_WEB_MOCK: "1",
         PI_WEB_NO_SESSION: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
     supervisors.add(supervisor);
+    let output = "";
+    supervisor.stdout?.on("data", chunk => { output += chunk; });
+    supervisor.stderr?.on("data", chunk => { output += chunk; });
     await status(publicPort, supervisor, token.secret);
     await apiReady(publicPort, supervisor, token.secret);
+    await waitFor(
+      async () => output.includes("PI_WEB_TOKEN is ignored") ? true : undefined,
+      supervisor,
+    );
     const base = `http://127.0.0.1:${publicPort}`;
     const browserHeaders = {
       origin: "https://owner.example",
@@ -205,6 +213,14 @@ describe("pi-web supervisor", () => {
       headers: { authorization: `Bearer ${token.secret}` },
     });
     expect(bearer.status).toBe(200);
+    expect(
+      (await fetch(`${base}/api/state`, {
+        headers: { authorization: "Bearer stale-removed-secret" },
+      })).status,
+    ).toBe(401);
+    expect(
+      (await fetch(`${base}/api/state?token=stale-removed-secret`)).status,
+    ).toBe(401);
 
     const wrongOrigin = await fetch(`${base}/api/restart`, {
       method: "POST",

@@ -76,6 +76,35 @@ describe("auth kernel", () => {
     expect(await k.gate(req({ cookie: `bad=%; pi_web_session=${raw}` }))).toMatchObject({ ok: true, via: "session" });
   });
 
+  it("rejects retired legacy sessions by method or identity without denying supported sessions", async () => {
+    const s = await store(); const now = Date.now();
+    await s.update(state => {
+      state.config = { policy: "authenticated", methods: ["password", "passkey", "external"] };
+      state.sessions.push(
+        { hash: hashSecret("legacy-method"), identity: { id: "owner" }, method: "legacy" as never, createdAt: now, lastSeenAt: now, expiresAt: now + 10_000 },
+        { hash: hashSecret("legacy-identity"), identity: { id: "legacy:token" }, method: "grant", createdAt: now, lastSeenAt: now, expiresAt: now + 10_000 },
+        { hash: hashSecret("supported"), identity: { id: "password:owner" }, method: "password", createdAt: now, lastSeenAt: now, expiresAt: now + 10_000 },
+      );
+      state.deviceGrants = [{
+        id: "legacy-grant",
+        hash: hashSecret("legacy-grant"),
+        createdAt: now,
+        expiresAt: now + 10_000,
+        createdBy: { id: "owner" },
+        createdBySessionHash: hashSecret("legacy-method"),
+      }];
+    });
+    const k = new AuthKernel("passkey", s, false);
+    expect((await k.gate(req({ cookie: "pi_web_session=legacy-method" }))).ok).toBe(false);
+    expect((await k.gate(req({ cookie: "pi_web_session=legacy-identity" }))).ok).toBe(false);
+    expect((await k.gate(req({ cookie: "pi_web_session=supported" }))).ok).toBe(true);
+    await expect(
+      k.establishSession(response(), { id: "owner" }, "grant", undefined, false, {
+        grantHash: hashSecret("legacy-grant"),
+      }),
+    ).rejects.toThrow("Invalid or expired device grant");
+  });
+
   it("prunes expired and revoked sessions on update", async () => {
     const s = await store(); const now = Date.now();
     await s.update(x => x.sessions.push(

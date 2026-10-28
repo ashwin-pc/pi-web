@@ -72,7 +72,8 @@ async function main() {
   // Mint a stored API token; never pass it as PI_WEB_TOKEN to the server.
   const output = await run(process.execPath, ['--import', 'tsx', 'server/auth/cli.ts', 'token-create', '--name', `instance-${name}-health`], { cwd, env });
   const token = output.match(/API token \(shown once\): (\S+)/)?.[1];
-  if (!token) throw new Error('Token creation did not return a token');
+  const tokenId = output.match(/ID: (\S+)/)?.[1];
+  if (!token || !tokenId) throw new Error('Token creation did not return a token and ID');
   const enrollment = await run(process.execPath, ['--import', 'tsx', 'server/auth/cli.ts', 'bootstrap'], { cwd, env });
   const setupUrl = enrollment.match(/https?:\/\/\S+/)?.[0];
   if (!setupUrl) throw new Error('Bootstrap did not return a setup URL');
@@ -100,6 +101,7 @@ async function main() {
       await new Promise(done => setTimeout(done, 200));
     }
     if (!ready) throw new Error(`Instance did not become ready; inspect ${join(root, 'server.log')}`);
+    await run(process.execPath, ['--import', 'tsx', 'server/auth/cli.ts', 'token-revoke', tokenId], { cwd, env });
   } catch (error) {
     if (started) await run('tmux', ['kill-session', '-t', target]).catch(() => {});
     throw error;

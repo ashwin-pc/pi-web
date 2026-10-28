@@ -51,6 +51,7 @@ describe("isolated instance launcher", () => {
       expect(stdout).toMatch(/Setup: http:\/\/localhost:\d+\/api\/auth\/bootstrap\?token=/);
       const store = JSON.parse(await readFile(join(root, ".pi/web-instances/regression/web/web/auth.json"), "utf8"));
       expect(store.apiTokens).toHaveLength(1);
+      expect(store.apiTokens[0].revokedAt).toBeTypeOf("number");
       const command = await readFile(join(root, "command"), "utf8");
       expect(command).toContain("unset"); expect(command).toContain("PI_WEB_TOKEN");
       expect(command).not.toContain("PI_WEB_TOKEN="); expect(command).not.toContain("inherited-secret");
@@ -83,7 +84,8 @@ describe("isolated instance launcher", () => {
     await writeFile(join(repo, "server/auth/cli.ts"), `
 const command = process.argv[2];
 if (command === "bootstrap") console.log("Enrollment URL:\\nhttp://localhost:" + process.env.PORT + "/api/auth/bootstrap?token=setup_test");
-else if (command === "token-create") console.log("API token (shown once): piw_test");
+else if (command === "token-create") console.log("API token (shown once): piw_test\\nID: test-id");
+else if (command === "token-revoke") console.log("Revoked.");
 else process.exitCode = 2;
 `);
     await exec("git", ["init", repo]);

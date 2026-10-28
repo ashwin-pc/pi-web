@@ -75,6 +75,13 @@ export type AuthState = {
   deviceGrants?: DeviceGrantRecord[];
 };
 
+export function isLegacySession(
+  session: Pick<SessionRecord, "method" | "identity">,
+) {
+  return (session.method as string | undefined) === "legacy" ||
+    session.identity.id === "legacy:token";
+}
+
 const EMPTY: AuthState = {
   version: 1,
   credentials: [],
@@ -398,7 +405,8 @@ export class AuthKernel {
         (s) =>
           safeEqual(s.hash, hashSecret(raw)) &&
           !s.revokedAt &&
-          s.expiresAt > now,
+          s.expiresAt > now &&
+          !isLegacySession(s),
       );
       if (record) {
         if (now - record.lastSeenAt > 300_000)
@@ -484,7 +492,7 @@ export class AuthKernel {
         throw new Error("Passkey revoked; sign in again");
       if (method === "grant" && credential?.grantHash) {
         const grant = s.deviceGrants?.find(g => g.hash === credential?.grantHash && !g.usedAt && !g.cancelledAt && g.expiresAt > now);
-        if (!grant || !s.sessions.some(session => session.hash === grant.createdBySessionHash && !session.revokedAt && session.expiresAt > now))
+        if (!grant || !s.sessions.some(session => session.hash === grant.createdBySessionHash && !session.revokedAt && session.expiresAt > now && !isLegacySession(session)))
           throw new Error("Invalid or expired device grant");
         grant.usedAt = now;
         identity = grant.createdBy;

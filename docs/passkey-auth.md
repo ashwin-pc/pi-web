@@ -26,12 +26,14 @@ Use HTTPS for remote access and set the exact public origin, including the publi
 
 ### Migrate a legacy installation
 
-Legacy token authentication, `PI_WEB_AUTH_MODE=legacy`, the `legacy` method, `PI_WEB_TOKEN`, token query URLs, and browser token storage are removed. Startup fails closed when environment or saved store configuration still enables them.
+Legacy token authentication, `PI_WEB_AUTH_MODE=legacy`, the `legacy` method, token query URLs, and browser token storage are removed. Startup fails closed when environment or saved store configuration still enables them. A leftover `PI_WEB_TOKEN` is ignored with a warning only when a valid saved canonical configuration already proves legacy authentication was retired; it never authorizes a request and should still be unset.
 
 1. Unset `PI_WEB_TOKEN` and remove `legacy` from `PI_WEB_AUTH_MODE` or `PI_WEB_AUTH_METHODS`.
 2. Run `pi-web auth recover`. This removes the retired saved method and prints a single-use password/passkey setup URL.
 3. Open that URL, enroll a password or passkey, and verify normal sign-in at `/api/auth/login`.
 4. Create named, expiring `piw_` API tokens for automation. Never place credentials in URLs.
+
+Recovery signs out every legacy-origin browser session, including sessions added through its device grants, and cancels pending grants minted by those sessions. Supported password, passkey, and external browser sessions and named API tokens are preserved.
 
 ## First installation and terminal recovery
 

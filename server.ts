@@ -49,11 +49,11 @@ const staticDir = distDir;
 const isDev = process.env.PI_WEB_DEV === "1" || process.env.NODE_ENV === "development";
 const host = process.env.HOST || "127.0.0.1";
 const port = Number(process.env.PORT || 8787);
-const authConfig = resolveAuthConfig(process.env);
+const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
+const authConfig = resolveAuthConfig(process.env, (await authStore.read()).config);
 const authMode = authConfig.mode;
 const authUrl = new URL(process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${port}`);
 const authOrigin = authUrl.origin;
-const authStore = new AuthStore(resolveWebHomePath("web/auth.json", join(agentDir, "web", "auth.json"), process.env.PI_WEB_AUTH_STORE));
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });

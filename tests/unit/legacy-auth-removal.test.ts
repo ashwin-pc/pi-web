@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { legacyAuthMigration, resolveAuthConfig } from "../../server/auth/config.js";
 import { AuthKernel, AuthStore } from "../../server/auth/kernel.js";
 
@@ -20,6 +20,37 @@ describe("removed legacy token authentication", () => {
       policy: "authenticated",
       methods: [],
     });
+  });
+
+  it("ignores a stale token only when valid saved canonical settings prove retirement", () => {
+    const warn = vi.fn();
+    expect(
+      resolveAuthConfig(
+        { PI_WEB_TOKEN: "stale" },
+        { policy: "authenticated", methods: ["password", "passkey"] },
+        warn,
+      ),
+    ).toMatchObject({
+      policy: "authenticated",
+      methods: [],
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("ignored"));
+    for (const saved of [
+      { policy: "authenticated", methods: ["legacy"] },
+      { policy: "invalid", methods: ["password"] },
+      { policy: "authenticated", methods: ["password", "password"] },
+    ]) {
+      expect(() =>
+        resolveAuthConfig({ PI_WEB_TOKEN: "stale" }, saved, warn),
+      ).toThrow(legacyAuthMigration);
+    }
+    expect(() =>
+      resolveAuthConfig(
+        { PI_WEB_AUTH_MODE: "legacy", PI_WEB_TOKEN: "stale" },
+        { policy: "authenticated", methods: ["password"] },
+        warn,
+      ),
+    ).toThrow(legacyAuthMigration);
   });
 
   it("fails closed on saved legacy settings with recovery guidance", async () => {

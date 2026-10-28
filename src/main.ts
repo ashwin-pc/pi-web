@@ -841,7 +841,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "global",
     mod: true,
     allowInEditable: true,
-    when: () => true,
     run: () => sessions.setSessionDrawerOpen(elements.sessionDrawer.hidden),
   },
   {
@@ -905,7 +904,6 @@ const keyboardShortcuts: Shortcut[] = [
     mod: true,
     shift: true,
     allowInEditable: true,
-    when: () => true,
     run: () => sessions.startNewSession(),
   },
   {
@@ -915,7 +913,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "global",
     mod: true,
     allowInEditable: true,
-    when: () => true,
     run: () => shortcutHelp.toggle(),
   },
   {
@@ -934,7 +931,6 @@ const keyboardShortcuts: Shortcut[] = [
     scope: "composer",
     mod: true,
     allowInEditable: true,
-    when: () => true,
     run: () => elements.formEl.requestSubmit(),
   },
   {

@@ -406,9 +406,69 @@ describe("multi-method human authentication", () => {
   });
   it("recovery removes saved legacy authority and creates a usable single-use bootstrap", async () => {
     const { store } = await fixture();
+    const now = Date.now();
     await store.update((s) => {
       s.config = { policy: "authenticated", methods: ["legacy"] } as never;
       s.verifiedMethods = ["legacy"] as never;
+      s.sessions.push(
+        {
+          hash: hashSecret("legacy-method"),
+          identity: { id: "owner" },
+          method: "legacy" as never,
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: now + 60_000,
+        },
+        {
+          hash: hashSecret("legacy-grant-descendant"),
+          identity: { id: "legacy:token" },
+          method: "grant",
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: now + 60_000,
+        },
+        ...(["password", "passkey", "external"] as const).map((method) => ({
+          hash: hashSecret(`supported-${method}`),
+          identity: { id: `${method}:owner` },
+          method,
+          createdAt: now,
+          lastSeenAt: now,
+          expiresAt: now + 60_000,
+        })),
+      );
+      s.deviceGrants = [
+        {
+          id: "legacy-method-grant",
+          hash: "legacy-method-grant-hash",
+          createdAt: now,
+          expiresAt: now + 60_000,
+          createdBy: { id: "owner" },
+          createdBySessionHash: hashSecret("legacy-method"),
+        },
+        {
+          id: "legacy-identity-grant",
+          hash: "legacy-identity-grant-hash",
+          createdAt: now,
+          expiresAt: now + 60_000,
+          createdBy: { id: "legacy:token" },
+          createdBySessionHash: hashSecret("legacy-grant-descendant"),
+        },
+        {
+          id: "supported-grant",
+          hash: "supported-grant-hash",
+          createdAt: now,
+          expiresAt: now + 60_000,
+          createdBy: { id: "password:owner" },
+          createdBySessionHash: hashSecret("supported-password"),
+        },
+      ];
+      s.apiTokens.push({
+        id: "automation",
+        name: "Automation",
+        hash: hashSecret("piw_automation"),
+        createdAt: now,
+        expiresAt: now + 60_000,
+      });
     });
     const outputPath = `${store.path}.recover-output`;
     const output = openSync(outputPath, "w");
@@ -433,10 +493,46 @@ describe("multi-method human authentication", () => {
     expect(state.config?.methods).toEqual([]);
     expect(state.verifiedMethods).toEqual([]);
     expect(state.bootstrap?.usedAt).toBeUndefined();
+    expect(
+      state.sessions
+        .filter(
+          (session) =>
+            (session.method as string) === "legacy" ||
+            session.identity.id === "legacy:token",
+        )
+        .every((session) => session.revokedAt),
+    ).toBe(true);
+    expect(
+      state.sessions
+        .filter((session) => session.identity.id.endsWith(":owner"))
+        .every((session) => !session.revokedAt),
+    ).toBe(true);
+    expect(
+      state.deviceGrants
+        ?.filter((grant) => grant.id.startsWith("legacy-"))
+        .every((grant) => grant.cancelledAt),
+    ).toBe(true);
+    expect(
+      state.deviceGrants?.find((grant) => grant.id === "supported-grant")
+        ?.cancelledAt,
+    ).toBeUndefined();
+    expect(state.apiTokens[0].revokedAt).toBeUndefined();
     const link = String(stdout).match(/https?:\/\/\S+/)?.[0];
     expect(link).toBeTruthy();
     const kernel = new AuthKernel("passkey", store, false);
     await kernel.refreshConfig();
+    for (const method of ["password", "passkey", "external"]) {
+      expect(
+        (await kernel.gate(
+          req({}, { cookie: `pi_web_session=supported-${method}` }),
+        )).ok,
+      ).toBe(true);
+    }
+    expect(
+      (await kernel.gate(
+        req({}, { authorization: "Bearer piw_automation" }),
+      )).ok,
+    ).toBe(true);
     const setup = response();
     await handlePasswordLogin(
       req({
