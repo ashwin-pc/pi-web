@@ -117,7 +117,7 @@ test("switching sessions hides stale consent and only trusts the newly reviewed 
 
   await page.locator("#sessionButton").click();
   const drawer = page.locator("#sessionDrawer");
-  await drawer.getByText("Older mock session").click();
+  await drawer.locator('.sessionItem[data-session-id="mock-older"] .sessionItemNavBtn').click();
   await olderStatusRequested;
   await expect(notice).toBeHidden();
   await expect(page.locator("#workspaceExtensionTrustButton")).toBeDisabled();
