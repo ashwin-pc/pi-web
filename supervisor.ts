@@ -10,10 +10,8 @@ import { resolveAuthConfig } from "./server/auth/config.js";
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
-  canonicalPeerAddress,
   isLocalTunnelRequest,
   markTunnelRequest,
-  stampSupervisorPeer,
   stampSupervisorTunnel,
   stripSupervisorPeerHeaders,
 } from "./server/auth/supervisorPeer.js";
@@ -171,8 +169,6 @@ function sanitizeProxyHeaders(req: IncomingMessage, tunnel: boolean) {
       stampSupervisorTunnel(req, supervisorSecret);
     } else {
       if (trustedHeader) delete req.headers[trustedHeader];
-      const peer = canonicalPeerAddress(req.socket.remoteAddress);
-      if (peer) stampSupervisorPeer(req, peer, supervisorSecret);
     }
   }
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
@@ -193,24 +189,25 @@ for (const server of [supervisor, tunnelSupervisor]) {
   });
 }
 
-supervisor.on("upgrade", (req, socket, head) => {
+function handleUpgrade(
+  req: IncomingMessage,
+  socket: Duplex,
+  head: Buffer,
+  tunnel: boolean,
+): void {
+  if (tunnel) markTunnelRequest(req);
   if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
     socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
     return;
   }
-  sanitizeProxyHeaders(req, false);
+  sanitizeProxyHeaders(req, tunnel);
   proxyUpgrade(req, socket, head);
-});
+}
 
-tunnelSupervisor.on("upgrade", (req, socket, head) => {
-  markTunnelRequest(req);
-  if (!trustedOrigin(req, process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`)) {
-    socket.end(`HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ${Buffer.byteLength(originFailureHint)}\r\n\r\n${originFailureHint}`);
-    return;
-  }
-  sanitizeProxyHeaders(req, true);
-  proxyUpgrade(req, socket, head);
-});
+supervisor.on("upgrade", (req, socket, head) =>
+  handleUpgrade(req, socket, head, false));
+tunnelSupervisor.on("upgrade", (req, socket, head) =>
+  handleUpgrade(req, socket, head, true));
 
 function proxyUpgrade(
   req: IncomingMessage,

@@ -1,32 +1,27 @@
 import { timingSafeEqual } from "node:crypto";
 import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
-import { isIP } from "node:net";
+import { canonicalIP } from "./proxy.js";
 
-export const SUPERVISOR_PEER_HEADER = "x-pi-web-peer";
 export const SUPERVISOR_SECRET_HEADER = "x-pi-web-supervisor-secret";
 export const SUPERVISOR_TUNNEL_HEADER = "x-pi-web-tunnel";
 
+const supervisedChild = process.env.PI_WEB_SUPERVISED === "1";
+const supervisorSecret = process.env.PI_WEB_SUPERVISOR_SECRET;
+const tunnelSocketEnabled = !!process.env.PI_WEB_TUNNEL_SOCKET;
+if (supervisedChild) {
+  delete process.env.PI_WEB_SUPERVISOR_SECRET;
+  delete process.env.PI_WEB_TUNNEL_SOCKET;
+}
+
 const tunnelRequests = new WeakSet<IncomingMessage>();
 const reservedHeaders = new Set([
-  SUPERVISOR_PEER_HEADER,
+  "x-pi-web-peer",
   SUPERVISOR_SECRET_HEADER,
   SUPERVISOR_TUNNEL_HEADER,
 ]);
 
-export function canonicalPeerAddress(value: string | undefined): string | undefined {
-  if (!value || !isIP(value) || value.includes("%")) return undefined;
-  if (isIP(value) === 4) return value;
-  const normalized = new URL(`http://[${value}]/`).hostname.slice(1, -1);
-  const mapped = /^::ffff:([0-9a-f]+):([0-9a-f]+)$/.exec(normalized);
-  if (!mapped) return normalized;
-  const a = parseInt(mapped[1], 16);
-  const b = parseInt(mapped[2], 16);
-  return `${a >> 8}.${a & 255}.${b >> 8}.${b & 255}`;
-}
-
-export function isLoopbackPeer(address: string | undefined): boolean {
-  const canonical = canonicalPeerAddress(address);
-  return canonical === "::1" || !!canonical?.startsWith("127.");
+export function tunnelSocketIdentityEnabled(): boolean {
+  return tunnelSocketEnabled;
 }
 
 export function isReservedSupervisorHeader(value: string): boolean {
@@ -35,16 +30,6 @@ export function isReservedSupervisorHeader(value: string): boolean {
 
 export function stripSupervisorPeerHeaders(headers: IncomingHttpHeaders): void {
   for (const header of reservedHeaders) delete headers[header];
-}
-
-export function stampSupervisorPeer(
-  req: Pick<IncomingMessage, "headers">,
-  peer: string,
-  secret: string,
-): void {
-  stripSupervisorPeerHeaders(req.headers);
-  req.headers[SUPERVISOR_PEER_HEADER] = peer;
-  req.headers[SUPERVISOR_SECRET_HEADER] = secret;
 }
 
 export function stampSupervisorTunnel(
@@ -67,15 +52,15 @@ export function isLocalTunnelRequest(req: IncomingMessage): boolean {
 function authenticatedSupervisorRequest(
   req: Pick<IncomingMessage, "headers" | "socket">,
 ): boolean {
-  const secret = process.env.PI_WEB_SUPERVISOR_SECRET;
   const provided = req.headers[SUPERVISOR_SECRET_HEADER];
+  const peer = canonicalIP(req.socket?.remoteAddress || "");
   if (
-    process.env.PI_WEB_SUPERVISED !== "1" ||
-    !secret ||
+    !supervisedChild ||
+    !supervisorSecret ||
     typeof provided !== "string" ||
-    !isLoopbackPeer(req.socket?.remoteAddress)
+    (peer !== "::1" && !peer?.startsWith("127."))
   ) return false;
-  const expectedBytes = Buffer.from(secret);
+  const expectedBytes = Buffer.from(supervisorSecret);
   const providedBytes = Buffer.from(provided);
   return providedBytes.length === expectedBytes.length &&
     timingSafeEqual(providedBytes, expectedBytes);
@@ -87,14 +72,4 @@ export function authenticatedTunnelRequest(
   return isLocalTunnelRequest(req as IncomingMessage) ||
     (authenticatedSupervisorRequest(req) &&
       req.headers[SUPERVISOR_TUNNEL_HEADER] === "1");
-}
-
-export function effectivePeerAddress(
-  req: Pick<IncomingMessage, "headers" | "socket">,
-): string | undefined {
-  if (authenticatedSupervisorRequest(req)) {
-    const peer = req.headers[SUPERVISOR_PEER_HEADER];
-    if (typeof peer === "string") return canonicalPeerAddress(peer.trim());
-  }
-  return canonicalPeerAddress(req.socket?.remoteAddress);
 }

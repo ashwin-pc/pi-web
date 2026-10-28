@@ -1,3 +1,4 @@
+import "./server/auth/supervisorPeer.js";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createReadStream, existsSync, statSync } from "node:fs";
 import { mkdir, writeFile, unlink, rm } from "node:fs/promises";

@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
 
 /** Exact IP peers only: normalize IPv6 spelling and IPv4-mapped sockets. */
-function canonicalIP(value: string): string | undefined {
+export function canonicalIP(value: string): string | undefined {
   if (!isIP(value) || value.includes("%")) return undefined;
   if (isIP(value) === 4) return value;
   const normalized = new URL(`http://[${value}]/`).hostname.slice(1, -1);

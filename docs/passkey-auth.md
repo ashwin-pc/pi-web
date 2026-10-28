@@ -106,10 +106,13 @@ TCP continues to accept browser cookies and API Bearer tokens. The supervisor
 strips external identity and its private provenance headers from TCP traffic,
 and a directly reached child rejects both a raw identity header and forged
 provenance. The supervisor and child share a new random secret for each
-supervisor launch; it is passed only to that child. Restart and status use
-process-local socket provenance rather than trusting inbound marker headers.
-WebSocket upgrades through the Unix socket preserve the same identity and
-retain the existing Origin validation.
+supervisor launch. The child captures it during module startup and immediately
+deletes it from its environment before sessions, tools, or extensions can spawn,
+so subprocesses do not inherit it. The child also consumes and clears the tunnel
+socket setting so nested scripts do not try to bind the operator's live socket.
+Restart and status use process-local socket provenance rather than trusting
+inbound marker headers. WebSocket upgrades through the Unix socket preserve the
+same identity and retain the existing Origin validation.
 
 Startup fails closed if the parent is not private, the path is occupied by a
 file or live socket, the socket cannot be created, or its mode/owner cannot be

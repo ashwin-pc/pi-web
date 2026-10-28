@@ -2,7 +2,7 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AuthKernel, AuthStore, hashSecret } from "../../server/auth/kernel.js";
 import { handleSecurityRoute } from "../../server/auth/security.js";
 
@@ -36,8 +36,10 @@ describe("auth kernel", () => {
     process.env.PI_WEB_SUPERVISED = "1";
     process.env.PI_WEB_SUPERVISOR_SECRET = "real-supervisor-secret";
     try {
+      vi.resetModules();
+      const { AuthKernel: StartupAuthKernel } = await import("../../server/auth/kernel.js");
       const s = await store();
-      const k = new AuthKernel("external", s, "", false, "x-verified-user");
+      const k = new StartupAuthKernel("external", s, "", false, "x-verified-user");
       const direct = {
         headers: { "x-verified-user": "attacker", "x-pi-web-tunnel": "1", "x-pi-web-supervisor-secret": "guessed" },
         url: "/",
@@ -56,7 +58,7 @@ describe("auth kernel", () => {
         identity: { id: "external:owner" },
       });
 
-      const reserved = new AuthKernel("external", s, "", false, "x-pi-web-tunnel");
+      const reserved = new StartupAuthKernel("external", s, "", false, "x-pi-web-tunnel");
       expect((await reserved.gate(supervised)).ok).toBe(false);
     } finally {
       if (previous.socket === undefined) delete process.env.PI_WEB_TUNNEL_SOCKET;

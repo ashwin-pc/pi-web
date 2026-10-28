@@ -18,6 +18,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   authenticatedTunnelRequest,
   isReservedSupervisorHeader,
+  tunnelSocketIdentityEnabled,
 } from "./supervisorPeer.js";
 
 export type AuthMode = "none" | "legacy" | "passkey" | "external";
@@ -430,11 +431,10 @@ export class AuthKernel {
       if (safeEqual(supplied, this.legacyToken))
         return { ok: true, identity: { id: "legacy:token" }, via: "legacy" };
     }
-    const tunnelSocketEnabled = !!process.env.PI_WEB_TUNNEL_SOCKET;
     if (
       methods.has("external") &&
       this.trustedHeader &&
-      (!tunnelSocketEnabled ||
+      (!tunnelSocketIdentityEnabled() ||
         (!isReservedSupervisorHeader(this.trustedHeader) &&
           authenticatedTunnelRequest(req)))
     ) {
