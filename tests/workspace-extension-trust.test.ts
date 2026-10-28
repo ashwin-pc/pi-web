@@ -73,14 +73,33 @@ describe("workspace extension trust", () => {
   it("keeps explicitly bundled extensions out of the workspace consent inventory", async () => {
     const root = await tempRoot();
     const workspace = join(root, "workspace");
+    const workspaceAlias = join(root, "workspace-alias");
     const agentDir = join(root, "agent");
     const bundled = join(workspace, ".pi", "extensions", "bundled.js");
     await mkdir(join(bundled, ".."), { recursive: true });
     await writeFile(bundled, "export default function () {}\n");
+    await symlink(workspace, workspaceAlias, "dir");
 
-    const trust = new WorkspaceExtensionTrust(agentDir, [bundled]);
+    const trust = new WorkspaceExtensionTrust(
+      agentDir,
+      [join(workspaceAlias, ".pi", "extensions", "bundled.js")],
+    );
     expect(trust.isTrusted(workspace)).toBe(false);
     expect(trust.status(workspace).resources).toEqual([]);
+  });
+
+  it("shows workspace extensions when an explicitly trusted source path is missing", async () => {
+    const root = await tempRoot();
+    const workspace = join(root, "workspace");
+    const agentDir = join(root, "agent");
+    const regular = join(workspace, ".pi", "extensions", "regular.js");
+    await mkdir(join(regular, ".."), { recursive: true });
+    await writeFile(regular, "export default function () {}\n");
+
+    const trust = new WorkspaceExtensionTrust(agentDir, [join(root, "missing.js")]);
+    expect(trust.status(workspace).resources).toEqual([
+      { kind: "extension", path: ".pi/extensions/regular.js" },
+    ]);
   });
 
   it("blocks all project code while global extensions remain available", async () => {

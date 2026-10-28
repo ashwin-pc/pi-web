@@ -25,6 +25,14 @@ export function realWorkspacePath(cwd: string): string {
   return realpathSync.native(cwd);
 }
 
+function canonicalExtensionPath(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return resolve(path);
+  }
+}
+
 function projectSettingsResources(workspace: string): WorkspaceTrustResource[] {
   const settingsPath = join(workspace, ".pi", "settings.json");
   if (!existsSync(settingsPath)) return [];
@@ -64,7 +72,7 @@ function projectResources(workspace: string, trustedExtensionPaths: ReadonlySet<
   const regularExtensionsDir = join(workspace, ".pi", "extensions");
   const discoveredRegularExtensions = discoverExtensionEntryPaths(regularExtensionsDir);
   const regularExtensions = discoveredRegularExtensions
-    .filter((path) => !trustedExtensionPaths.has(resolve(path)));
+    .filter((path) => !trustedExtensionPaths.has(canonicalExtensionPath(path)));
   const resources: WorkspaceTrustResource[] = [
     ...regularExtensions,
     ...resolveWorkspacePiWebExtensionPaths(workspace),
@@ -116,7 +124,7 @@ export class WorkspaceExtensionTrust {
 
   constructor(private readonly agentDir: string, trustedExtensionPaths: string[] = []) {
     this.store = new ProjectTrustStore(agentDir);
-    this.trustedExtensionPaths = new Set(trustedExtensionPaths.map((path) => resolve(path)));
+    this.trustedExtensionPaths = new Set(trustedExtensionPaths.map(canonicalExtensionPath));
   }
 
   requiresTrust(cwd: string): boolean {
