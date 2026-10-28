@@ -683,7 +683,7 @@ signed fixture
     await expect(gitSync(nested)).resolves.toMatchObject({
       ok: true,
       status: {
-        root: cwd,
+        root: await realpath(cwd),
         files: expect.arrayContaining([expect.objectContaining({ path: "tracked.txt", label: "modified" })]),
       },
     });
