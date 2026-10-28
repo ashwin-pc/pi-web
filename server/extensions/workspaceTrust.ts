@@ -3,6 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import {
   hasTrustRequiringProjectResources,
   ProjectTrustStore,
+  SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import {
   discoverExtensionEntryPaths,
@@ -17,6 +18,7 @@ export type WorkspaceTrustResource = {
 export type WorkspaceExtensionTrustStatus = {
   workspace: string;
   trusted: boolean;
+  desiredTrusted: boolean;
   resources: WorkspaceTrustResource[];
   trustedWorkspaces: string[];
 };
@@ -133,31 +135,61 @@ export class WorkspaceExtensionTrust {
       || resolveWorkspacePiWebExtensionPaths(workspace).length > 0;
   }
 
-  isTrusted(cwd: string): boolean {
+  private decision(
+    cwd: string,
+    settingsManager?: Pick<SettingsManager, "getDefaultProjectTrust">,
+  ): { trusted: boolean; inherited: boolean; defaulted: boolean } {
     const workspace = realWorkspacePath(cwd);
-    return !this.requiresTrust(workspace) || this.store.get(workspace) === true;
+    const saved = this.store.getEntry(workspace);
+    if (saved) {
+      return {
+        trusted: saved.decision,
+        inherited: saved.path !== workspace,
+        defaulted: false,
+      };
+    }
+    if (!this.requiresTrust(workspace)) {
+      return { trusted: true, inherited: false, defaulted: false };
+    }
+    // project_trust handlers need a future SDK hook that runs before explicit
+    // pi-web paths are selected. Loading those paths first would execute
+    // untrusted web code before a handler could decide.
+    const defaultProjectTrust = (settingsManager
+      ?? SettingsManager.create(workspace, this.agentDir, { projectTrusted: false }))
+      .getDefaultProjectTrust();
+    return {
+      trusted: defaultProjectTrust === "always",
+      inherited: false,
+      defaulted: true,
+    };
+  }
+
+  isTrusted(cwd: string, settingsManager?: Pick<SettingsManager, "getDefaultProjectTrust">): boolean {
+    return this.decision(cwd, settingsManager).trusted;
   }
 
   trustedWorkspaces(): string[] {
     return readTrustedWorkspacePaths(this.agentDir);
   }
 
-  extensionPaths(cwd: string): string[] {
+  extensionPaths(cwd: string, trusted = this.isTrusted(cwd)): string[] {
     const workspace = realWorkspacePath(cwd);
-    return this.isTrusted(workspace) ? resolveWorkspacePiWebExtensionPaths(workspace) : [];
+    return trusted ? resolveWorkspacePiWebExtensionPaths(workspace) : [];
   }
 
   status(cwd: string): WorkspaceExtensionTrustStatus {
     const workspace = realWorkspacePath(cwd);
-    const trusted = this.isTrusted(workspace);
+    const decision = this.decision(workspace);
+    const trusted = decision.trusted;
     const trustedWorkspaces = this.trustedWorkspaces();
-    if (trusted && this.requiresTrust(workspace) && !trustedWorkspaces.includes(workspace)) {
+    if (trusted && (decision.inherited || decision.defaulted) && !trustedWorkspaces.includes(workspace)) {
       trustedWorkspaces.push(workspace);
       trustedWorkspaces.sort();
     }
     return {
       workspace,
       trusted,
+      desiredTrusted: trusted,
       resources: projectResources(workspace, this.trustedExtensionPaths),
       trustedWorkspaces,
     };

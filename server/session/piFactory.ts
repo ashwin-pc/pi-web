@@ -47,7 +47,7 @@ const execFileAsync = promisify(execFile);
 type ProductionFactoryOptions = {
   noSession: boolean;
   modelRuntime: ModelRuntime;
-  additionalExtensionPaths(cwd: string): string[];
+  additionalExtensionPaths(cwd: string, projectTrusted?: boolean): string[];
   sessionCwd(manager: SessionManager): string;
   rememberCwd(cwd: string): void;
   readSession: Parameters<typeof createSessionsReadTools>[0];
@@ -78,8 +78,8 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
     this.options.rememberCwd(resolvedCwd);
     await this.ensureStorage(resolvedCwd);
     const agentDir = getAgentDir();
-    const projectTrust = new WorkspaceExtensionTrust(agentDir);
     const settingsManager = SettingsManager.create(resolvedCwd, agentDir, { projectTrusted: false });
+    const projectTrust = new WorkspaceExtensionTrust(agentDir);
     const contextPath = fileURLToPath(new URL("../../contexts/web-ui.md", import.meta.url));
     const appDir = dirname(dirname(contextPath));
     const extensionAuthoringContext = [
@@ -94,8 +94,8 @@ export class PiSessionFactory implements LocalSessionFactory<LocalSessionInfo> {
     const loader = new ResilientResourceLoader({
       loadTimeoutMs: envMs("PI_WEB_EXTENSION_LOAD_TIMEOUT_MS", 8_000),
       fetchTimeoutMs: envMs("PI_WEB_EXTENSION_FETCH_TIMEOUT_MS", 3_000),
-      resolveAdditionalExtensionPaths: () => this.options.additionalExtensionPaths(resolvedCwd),
-      resolveProjectTrust: () => projectTrust.isTrusted(resolvedCwd),
+      resolveAdditionalExtensionPaths: (trusted) => this.options.additionalExtensionPaths(resolvedCwd, trusted),
+      resolveProjectTrust: () => projectTrust.isTrusted(resolvedCwd, settingsManager),
       loaderOptions: {
         cwd: resolvedCwd,
         agentDir,

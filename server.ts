@@ -407,11 +407,11 @@ const mockHarness = createMockHarness({
 });
 const { mockSessions, createMockSession, resetMockSessions, getMockLifecycle, setWebsiteWorkflowExtensionEnabled, setRecommendedAddonsExtensionEnabled } = mockHarness;
 
-function additionalExtensionPaths(cwd = piCwd) {
+function additionalExtensionPaths(cwd = piCwd, projectTrusted?: boolean) {
   return [
     ...bundledExtensionPaths,
     ...resolveGlobalPiWebExtensionPaths(),
-    ...(workspaceExtensionTrust?.extensionPaths(cwd) ?? []),
+    ...(workspaceExtensionTrust?.extensionPaths(cwd, projectTrusted) ?? []),
   ];
 }
 
@@ -667,6 +667,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
         trust: workspaceExtensionTrust,
         sessions: sessionService,
         readBody,
+        broadcast,
       })) return;
       if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });
 

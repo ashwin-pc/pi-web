@@ -76,7 +76,21 @@ pi-web uses pi's native project-trust store under the configured agent
 directory (`trust.json`), so saved CLI decisions and pi-web decisions are
 shared. Paths are canonicalized, so symlink aliases share one decision. The CLI
 can save a decision for a parent directory; pi-web offers only the exact
-workspace approval action.
+workspace approval action. A saved decision applies before pi's global
+`defaultProjectTrust` fallback, so a saved denial overrides global `"always"`
+and a saved grant overrides global `"never"`.
+
+The global `defaultProjectTrust` values are `"ask"` (the default), `"always"`,
+and `"never"`. Configure that global pi setting through pi; pi-web does not add
+a separate preference. `"always"` makes a protected current workspace appear
+in **Preferences → Extensions** so it can be explicitly revoked, but does not
+save a per-workspace grant unless the owner chooses **Trust and load**.
+
+Extension-provided `project_trust` handlers are a scoped follow-up. The current
+public SDK does not expose a safe hook that resolves those handlers before
+pi-web must select explicit `.pi/web/extensions` paths. pi-web therefore honors
+native saved decisions and the global fallback without claiming the complete
+handler chain.
 
 Trust and revocation require an authenticated browser owner session; API tokens,
 extension-scoped clients, and direct open/legacy/external requests cannot change
@@ -86,9 +100,14 @@ available. An intentionally unauthenticated instance must configure and use a
 browser sign-in method before it can grant workspace extension trust.
 
 Workspace trust can be revoked from **Preferences → Extensions**. Revocation
-takes effect the next time a session loads extensions. Revocation saves an
-explicit denial for that path so an inherited trusted-parent decision cannot
-immediately re-enable it. User-global extensions under
+saves an explicit denial for that path so an inherited trusted-parent or global
+`"always"` decision cannot immediately re-enable it. Each live session keeps
+the trust state from its last completed resource load. Granting or revoking in
+one session does not interrupt or automatically reload other sessions; they
+show a pending notice with an explicit **Reload** action. A pending grant notice
+loads the newly trusted resources, while a pending revoke notice unloads them.
+Reload stays disabled with an explanation while that session is responding or
+compacting, then becomes available when it settles. User-global extensions under
 `~/.pi/web/extensions`, user-global pi resources, and bundled pi-web extensions
 remain trusted.
 

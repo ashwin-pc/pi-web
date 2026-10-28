@@ -121,6 +121,43 @@ describe("ResilientResourceLoader", () => {
     });
   });
 
+  it("keeps a trust transition pending until a clean primary reload", async () => {
+    let trusted = false;
+    let factoryCalls = 0;
+    const errors = [{ path: "/project/.pi/extensions/failing.ts", error: "failed" }];
+    const loader = new ResilientResourceLoader({
+      loaderOptions: { cwd: "/project", agentDir: "/agent" },
+      resolveProjectTrust: () => trusted,
+      resolveAdditionalExtensionPaths: (value) => [String(value)],
+      log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      createLoader: () => {
+        factoryCalls += 1;
+        return fakeLoader(factoryCalls === 3
+          ? { errors }
+          : {});
+      },
+    });
+
+    await loader.reload();
+    expect(loader.getAppliedProjectTrust()).toBe(false);
+
+    trusted = true;
+    await loader.reload();
+
+    expect(loader.getStatus().state).toBe("degraded");
+    expect(loader.getAppliedProjectTrust()).toBe(true);
+    expect(loader.isProjectTrustReloadPending()).toBe(true);
+
+    await loader.reload();
+    expect(loader.getStatus().state).toBe("degraded");
+    expect(loader.isProjectTrustReloadPending()).toBe(true);
+
+    errors.splice(0);
+    await loader.reload();
+    expect(loader.getStatus().state).toBe("ready");
+    expect(loader.isProjectTrustReloadPending()).toBe(false);
+  });
+
   it("passes the explicit project-trust resolver to both primary and fallback reloads", async () => {
     const decisions: boolean[] = [];
     let factoryCalls = 0;

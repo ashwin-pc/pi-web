@@ -7,6 +7,7 @@ type Authorized = Extract<GateResult, { ok: true }>;
 type SessionAccess = {
   require(sessionId?: string): Promise<object>;
   cwdForSession(session: object): string;
+  workspaceTrustState(session: object): { appliedTrusted?: boolean; reloadPending?: boolean; busy: boolean };
   reloadExtensions(sessionId: string): Promise<unknown>;
 };
 
@@ -14,6 +15,7 @@ type RouteDependencies = {
   trust: WorkspaceExtensionTrust;
   sessions: SessionAccess;
   readBody(req: IncomingMessage): Promise<unknown>;
+  broadcast(value: unknown): void;
 };
 
 function send(res: ServerResponse, status: number, value: unknown) {
@@ -38,6 +40,19 @@ function workspaceFrom(value: unknown): string | undefined {
   return typeof workspace === "string" && workspace ? workspace : undefined;
 }
 
+function statusFor(deps: RouteDependencies, session: object) {
+  const desired = deps.trust.status(deps.sessions.cwdForSession(session));
+  const sessionState = deps.sessions.workspaceTrustState(session);
+  return {
+    ...desired,
+    appliedTrusted: sessionState.appliedTrusted ?? null,
+    pendingReload: sessionState.reloadPending === true
+      || (sessionState.appliedTrusted !== undefined
+        && sessionState.appliedTrusted !== desired.desiredTrusted),
+    busy: sessionState.busy,
+  };
+}
+
 export async function handleWorkspaceExtensionTrustRoute(
   req: IncomingMessage,
   res: ServerResponse,
@@ -49,7 +64,7 @@ export async function handleWorkspaceExtensionTrustRoute(
 
   if (req.method === "GET") {
     const session = await deps.sessions.require(url.searchParams.get("sessionId") || undefined);
-    send(res, 200, { ok: true, ...deps.trust.status(deps.sessions.cwdForSession(session)) });
+    send(res, 200, { ok: true, ...statusFor(deps, session) });
     return true;
   }
 
@@ -87,9 +102,10 @@ export async function handleWorkspaceExtensionTrustRoute(
       });
       return true;
     }
-    const status = await deps.trust.trust(current.workspace);
+    await deps.trust.trust(current.workspace);
+    deps.broadcast({ type: "workspace_trust_changed", workspace: current.workspace });
     const reloadStatus = await deps.sessions.reloadExtensions(sessionId);
-    send(res, 200, { ok: true, ...status, reloadStatus });
+    send(res, 200, { ok: true, ...statusFor(deps, session), reloadStatus });
     return true;
   }
 
@@ -101,9 +117,25 @@ export async function handleWorkspaceExtensionTrustRoute(
       send(res, 400, { ok: false, error: "workspace is required" });
       return true;
     }
+    const sessionId = sessionIdFrom(body);
+    const session = sessionId ? await deps.sessions.require(sessionId) : undefined;
     await deps.trust.revoke(workspace);
+    deps.broadcast({ type: "workspace_trust_changed", workspace });
+    const currentStatus = session
+      && deps.trust.status(deps.sessions.cwdForSession(session)).workspace === workspace
+      ? statusFor(deps, session)
+      : undefined;
     send(res, 200, {
       ok: true,
+      ...(currentStatus ?? {
+        workspace,
+        trusted: false,
+        desiredTrusted: false,
+        appliedTrusted: null,
+        pendingReload: false,
+        busy: false,
+        resources: [],
+      }),
       trustedWorkspaces: deps.trust.trustedWorkspaces(),
     });
     return true;

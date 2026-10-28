@@ -28,7 +28,7 @@ export type ExtensionLoadStatus = {
 
 export type ResilientResourceLoaderOptions = {
   loaderOptions: LoaderOptions;
-  resolveAdditionalExtensionPaths?: () => string[];
+  resolveAdditionalExtensionPaths?: (projectTrusted?: boolean) => string[];
   resolveProjectTrust?: () => boolean | Promise<boolean>;
   loadTimeoutMs?: number;
   fetchTimeoutMs?: number;
@@ -125,10 +125,12 @@ export class ResilientResourceLoader implements ResourceLoader {
   private readonly loadTimeoutMs: number;
   private readonly fetchTimeoutMs: number;
   private readonly primaryOptions: LoaderOptions;
-  private readonly resolveAdditionalExtensionPaths?: () => string[];
+  private readonly resolveAdditionalExtensionPaths?: (projectTrusted?: boolean) => string[];
   private readonly resolveProjectTrust?: () => boolean | Promise<boolean>;
   private readonly fallbackOptions: LoaderOptions;
   private activePrimaryPathsKey = "";
+  private appliedProjectTrust?: boolean;
+  private projectTrustReloadPending = false;
   private readonly extendedResources: Array<Parameters<ResourceLoader["extendResources"]>[0]> = [];
   private attempt = 0;
   private reloadPromise?: Promise<void>;
@@ -166,6 +168,14 @@ export class ResilientResourceLoader implements ResourceLoader {
       ...this.status,
       errors: this.status.errors.map((error) => ({ ...error })),
     };
+  }
+
+  getAppliedProjectTrust(): boolean | undefined {
+    return this.appliedProjectTrust;
+  }
+
+  isProjectTrustReloadPending(): boolean {
+    return this.projectTrustReloadPending;
   }
 
   getExtensions() {
@@ -233,7 +243,11 @@ export class ResilientResourceLoader implements ResourceLoader {
     };
     this.log.info(`[extensions] load started cwd=${this.primaryOptions.cwd} attempt=${attempt} timeoutMs=${this.loadTimeoutMs} fetchTimeoutMs=${this.fetchTimeoutMs}`);
 
-    const additionalExtensionPaths = this.resolveAdditionalExtensionPaths?.()
+    await this.primaryOptions.settingsManager?.reload();
+    const projectTrusted = this.resolveProjectTrust
+      ? await this.resolveProjectTrust()
+      : undefined;
+    const additionalExtensionPaths = this.resolveAdditionalExtensionPaths?.(projectTrusted)
       ?? this.primaryOptions.additionalExtensionPaths
       ?? [];
     const primaryOptions = { ...this.primaryOptions, additionalExtensionPaths };
@@ -251,8 +265,8 @@ export class ResilientResourceLoader implements ResourceLoader {
       for (const paths of this.extendedResources) candidate.extendResources(paths);
     }
     try {
-      const reloadOptions = this.resolveProjectTrust
-        ? { ...options, resolveProjectTrust: async () => this.resolveProjectTrust!() }
+      const reloadOptions = projectTrusted !== undefined
+        ? { ...options, resolveProjectTrust: async () => projectTrusted }
         : options;
       await withTimeout(
         extensionFetchContext.run(
@@ -282,6 +296,13 @@ export class ResilientResourceLoader implements ResourceLoader {
           ? `Loaded ${result.extensions.length} extensions with ${result.errors.length} error${result.errors.length === 1 ? "" : "s"}.`
           : `Loaded ${result.extensions.length} extension${result.extensions.length === 1 ? "" : "s"}.`,
       };
+      if (projectTrusted !== undefined) {
+        const changed = this.appliedProjectTrust !== undefined
+          && this.appliedProjectTrust !== projectTrusted;
+        this.appliedProjectTrust = projectTrusted;
+        this.projectTrustReloadPending = result.errors.length > 0
+          && (this.projectTrustReloadPending || changed);
+      }
       this.log.info(`[extensions] load ${this.status.state} cwd=${this.primaryOptions.cwd} attempt=${attempt} durationMs=${durationMs} extensions=${result.extensions.length} errors=${result.errors.length}`);
       for (const error of result.errors) this.log.error(`[extensions] failed path=${error.path}: ${error.error}`);
       return;
@@ -291,12 +312,14 @@ export class ResilientResourceLoader implements ResourceLoader {
       const fallback = this.createLoader(this.fallbackOptions);
       for (const paths of this.extendedResources) fallback.extendResources(paths);
       try {
-        const fallbackOptions = this.resolveProjectTrust
-          ? { ...options, resolveProjectTrust: async () => this.resolveProjectTrust!() }
+        const fallbackOptions = projectTrusted !== undefined
+          ? { ...options, resolveProjectTrust: async () => projectTrusted }
           : options;
         await fallback.reload(fallbackOptions);
         this.active = fallback;
         this.activeIsPrimary = false;
+        this.projectTrustReloadPending = this.projectTrustReloadPending
+          || (this.appliedProjectTrust !== undefined && this.appliedProjectTrust !== projectTrusted);
       } catch (fallbackError) {
         this.log.error(`[extensions] extension-free fallback failed cwd=${this.primaryOptions.cwd}: ${errorMessage(fallbackError)}`);
         throw fallbackError;

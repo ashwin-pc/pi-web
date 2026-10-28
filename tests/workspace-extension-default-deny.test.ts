@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { PiSessionFactory } from "../server/session/piFactory.js";
 
 vi.mock("@earendil-works/pi-coding-agent", async (original) => ({
@@ -27,7 +28,7 @@ export default function () {}
 }
 
 describe("PiSessionFactory project trust default", () => {
-  it("loads an explicit global extension without executing project extensions or packages", async () => {
+  async function loadWithPolicy(defaultProjectTrust?: "ask" | "always" | "never", saved?: boolean) {
     const root = await mkdtemp(join(tmpdir(), "pi-web-project-default-deny-"));
     roots.push(root);
     const workspace = join(root, "workspace");
@@ -51,6 +52,11 @@ describe("PiSessionFactory project trust default", () => {
       packages: ["../local-package"],
     }));
     await writeFile(globalExtension, extensionSource(marker, "global"));
+    if (defaultProjectTrust) {
+      await mkdir(agentDir, { recursive: true });
+      await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust }));
+    }
+    if (saved !== undefined) new ProjectTrustStore(agentDir).set(workspace, saved);
     vi.stubEnv("PI_CODING_AGENT_DIR", agentDir);
 
     const factory = new PiSessionFactory({
@@ -64,9 +70,19 @@ describe("PiSessionFactory project trust default", () => {
     await factory.create({ cwd: workspace });
 
     expect(existsSync(marker)).toBe(true);
-    const executed = await readFile(marker, "utf8");
+    return readFile(marker, "utf8");
+  }
+
+  it.each([
+    ["default ask", undefined, undefined, false],
+    ["global never", "never", undefined, false],
+    ["global always", "always", undefined, true],
+    ["saved deny over global always", "always", false, false],
+    ["saved grant over global never", "never", true, true],
+  ] as const)("loads resources according to %s", async (_label, policy, saved, projectLoaded) => {
+    const executed = await loadWithPolicy(policy, saved);
     expect(executed).toContain("global");
-    expect(executed).not.toContain("workspace");
-    expect(executed).not.toContain("package");
+    expect(executed.includes("workspace")).toBe(projectLoaded);
+    expect(executed.includes("package")).toBe(projectLoaded);
   });
 });

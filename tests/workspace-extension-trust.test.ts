@@ -57,16 +57,20 @@ async function fixture() {
   vi.stubEnv("PI_WEB_HOME", webHome);
 
   const trust = new WorkspaceExtensionTrust(agentDir);
-  const settingsManager = SettingsManager.create(workspace, agentDir, { projectTrusted: false });
-  const loader = new ResilientResourceLoader({
-    loaderOptions: { cwd: workspace, agentDir, settingsManager, additionalExtensionPaths: [] },
+  const createLoader = () => new ResilientResourceLoader({
+    loaderOptions: {
+      cwd: workspace,
+      agentDir,
+      settingsManager: SettingsManager.create(workspace, agentDir, { projectTrusted: false }),
+      additionalExtensionPaths: [],
+    },
     resolveProjectTrust: () => trust.isTrusted(workspace),
-    resolveAdditionalExtensionPaths: () => [
+    resolveAdditionalExtensionPaths: (trusted) => [
       ...resolveGlobalPiWebExtensionPaths(),
-      ...trust.extensionPaths(workspace),
+      ...trust.extensionPaths(workspace, trusted),
     ],
   });
-  return { root, workspace, agentDir, marker, packageDir, trust, loader };
+  return { root, workspace, agentDir, marker, packageDir, trust, loader: createLoader(), createLoader };
 }
 
 describe("workspace extension trust", () => {
@@ -172,6 +176,172 @@ describe("workspace extension trust", () => {
     });
     expect(trust.isTrusted(alias)).toBe(false);
   });
+
+  it("projects global always for revocation without saving a workspace grant", async () => {
+    const root = await tempRoot();
+    const workspace = join(root, "workspace");
+    const agentDir = join(root, "agent");
+    await mkdir(join(workspace, ".pi", "extensions"), { recursive: true });
+    await mkdir(agentDir, { recursive: true });
+    await writeFile(join(workspace, ".pi", "extensions", "entry.js"), "export default function () {}\n");
+    const trust = new WorkspaceExtensionTrust(agentDir);
+
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "always" }));
+    expect(trust.isTrusted(workspace)).toBe(true);
+    expect(existsSync(join(agentDir, "trust.json"))).toBe(false);
+    expect(trust.status(workspace).trustedWorkspaces).toEqual([realWorkspacePath(workspace)]);
+
+    trust.revoke(workspace);
+    expect(JSON.parse(await readFile(join(agentDir, "trust.json"), "utf8"))).toEqual({
+      [realWorkspacePath(workspace)]: false,
+    });
+    expect(trust.status(workspace).trustedWorkspaces).toEqual([]);
+
+    await writeFile(join(agentDir, "settings.json"), JSON.stringify({ defaultProjectTrust: "never" }));
+    expect(trust.isTrusted(workspace)).toBe(false);
+  });
+
+  it("honors a saved denial after protected resources disappear", async () => {
+    const root = await tempRoot();
+    const workspace = join(root, "workspace");
+    const agentDir = join(root, "agent");
+    await mkdir(workspace, { recursive: true });
+    new ProjectTrustStore(agentDir).set(workspace, false);
+
+    const trust = new WorkspaceExtensionTrust(agentDir);
+    expect(trust.requiresTrust(workspace)).toBe(false);
+    expect(trust.isTrusted(workspace)).toBe(false);
+    expect(trust.status(workspace)).toMatchObject({
+      desiredTrusted: false,
+      resources: [],
+    });
+  });
+
+  it("keeps applied trust per session until each session explicitly reloads", async () => {
+    const { workspace, marker, trust, loader: loaderA, createLoader } = await fixture();
+    const canonicalWorkspace = realWorkspacePath(workspace);
+    const response = () => ({
+      status: 0,
+      body: "",
+      writeHead(status: number) { this.status = status; },
+      end(value = "") { this.body = value; },
+    }) as any;
+    const loaderB = createLoader();
+    await loaderA.reload();
+    await loaderB.reload();
+    expect(loaderA.getAppliedProjectTrust()).toBe(false);
+    expect(loaderB.getAppliedProjectTrust()).toBe(false);
+
+    const sessions = new Map([
+      ["session-a", { sessionId: "session-a", loader: loaderA, isStreaming: false, isCompacting: false }],
+      ["session-b", { sessionId: "session-b", loader: loaderB, isStreaming: false, isCompacting: false }],
+    ]);
+    let body: unknown;
+    const broadcasts: unknown[] = [];
+    const deps = {
+      trust,
+      sessions: {
+        require: async (sessionId?: string) => sessions.get(sessionId || "session-a")!,
+        cwdForSession: () => workspace,
+        workspaceTrustState: (session: any) => ({
+          appliedTrusted: session.loader.getAppliedProjectTrust(),
+          busy: session.isStreaming || session.isCompacting,
+        }),
+        reloadExtensions: async (sessionId: string) => {
+          const session = sessions.get(sessionId)!;
+          if (session.isStreaming || session.isCompacting) throw new Error("busy");
+          await session.loader.reload();
+          return session.loader.getStatus();
+        },
+      },
+      readBody: async () => body,
+      broadcast: (value: unknown) => broadcasts.push(value),
+    };
+    const auth = { ok: true, via: "session", identity: { id: "owner" }, sessionHash: "owner" } as const;
+
+    await rm(marker, { force: true });
+    body = { sessionId: "session-a", workspace: canonicalWorkspace };
+    const grant = response();
+    await handleWorkspaceExtensionTrustRoute(
+      { method: "POST" } as any,
+      grant,
+      new URL("http://localhost/api/extensions/workspace-trust"),
+      auth,
+      deps,
+    );
+    expect(grant.status).toBe(200);
+    expect(loaderA.getAppliedProjectTrust()).toBe(true);
+    expect(loaderB.getAppliedProjectTrust()).toBe(false);
+    expect(await readFile(marker, "utf8")).toMatch(/regular|web|package/);
+
+    const pendingGrant = response();
+    await handleWorkspaceExtensionTrustRoute(
+      { method: "GET" } as any,
+      pendingGrant,
+      new URL("http://localhost/api/extensions/workspace-trust?sessionId=session-b"),
+      auth,
+      deps,
+    );
+    expect(JSON.parse(pendingGrant.body)).toMatchObject({
+      desiredTrusted: true,
+      appliedTrusted: false,
+      pendingReload: true,
+      busy: false,
+    });
+
+    await deps.sessions.reloadExtensions("session-b");
+    expect(loaderB.getAppliedProjectTrust()).toBe(true);
+
+    body = { workspace: canonicalWorkspace, sessionId: "session-a" };
+    const revoke = response();
+    await handleWorkspaceExtensionTrustRoute(
+      { method: "DELETE" } as any,
+      revoke,
+      new URL("http://localhost/api/extensions/workspace-trust"),
+      auth,
+      deps,
+    );
+    expect(revoke.status).toBe(200);
+    expect(JSON.parse(revoke.body)).toMatchObject({
+      desiredTrusted: false,
+      appliedTrusted: true,
+      pendingReload: true,
+      busy: false,
+    });
+    for (const sessionId of sessions.keys()) {
+      const pendingRevoke = response();
+      await handleWorkspaceExtensionTrustRoute(
+        { method: "GET" } as any,
+        pendingRevoke,
+        new URL(`http://localhost/api/extensions/workspace-trust?sessionId=${sessionId}`),
+        auth,
+        deps,
+      );
+      expect(JSON.parse(pendingRevoke.body)).toMatchObject({
+        desiredTrusted: false,
+        appliedTrusted: true,
+        pendingReload: true,
+      });
+    }
+
+    const sessionB = sessions.get("session-b")!;
+    sessionB.isStreaming = true;
+    await expect(deps.sessions.reloadExtensions("session-b")).rejects.toThrow("busy");
+    expect(loaderB.getAppliedProjectTrust()).toBe(true);
+
+    sessionB.isStreaming = false;
+    await rm(marker, { force: true });
+    await deps.sessions.reloadExtensions("session-b");
+    expect(loaderB.getAppliedProjectTrust()).toBe(false);
+    const afterRevoke = existsSync(marker) ? (await readFile(marker, "utf8")).trim().split("\n") : [];
+    expect(afterRevoke).not.toContain("regular");
+    expect(afterRevoke).not.toContain("web");
+    expect(afterRevoke).not.toContain("package");
+    expect(broadcasts).toEqual([
+      { type: "workspace_trust_changed", workspace: canonicalWorkspace },
+      { type: "workspace_trust_changed", workspace: canonicalWorkspace },
+    ]);
+  });
 });
 
 describe("workspace extension trust route", () => {
@@ -185,17 +355,21 @@ describe("workspace extension trust route", () => {
   }
 
   function dependencies(calls: string[], displayedWorkspace = "/real/workspace") {
+    let trusted = false;
+    let appliedTrusted = false;
     return {
       trust: {
         status: () => ({
           workspace: "/real/workspace",
-          trusted: false,
+          trusted,
+          desiredTrusted: trusted,
           resources: [{ kind: "extension", path: ".pi/extensions/demo.js" }],
-          trustedWorkspaces: [],
+          trustedWorkspaces: trusted ? ["/real/workspace"] : [],
         }),
         trust: () => {
           calls.push("trust");
-          return { workspace: "/real/workspace", trusted: true, resources: [], trustedWorkspaces: ["/real/workspace"] };
+          trusted = true;
+          return { workspace: "/real/workspace", trusted: true, desiredTrusted: true, resources: [], trustedWorkspaces: ["/real/workspace"] };
         },
         revoke: () => { calls.push("revoke"); },
         trustedWorkspaces: () => [],
@@ -203,9 +377,15 @@ describe("workspace extension trust route", () => {
       sessions: {
         require: async () => ({ sessionId: "session" }),
         cwdForSession: () => "/workspace",
-        reloadExtensions: async () => { calls.push("reload"); return { state: "ready" }; },
+        workspaceTrustState: () => ({ appliedTrusted, busy: false }),
+        reloadExtensions: async () => {
+          calls.push("reload");
+          appliedTrusted = trusted;
+          return { state: "ready" };
+        },
       },
       readBody: async () => ({ sessionId: "session", workspace: displayedWorkspace }),
+      broadcast: () => { calls.push("broadcast"); },
     } as any;
   }
 
@@ -246,7 +426,13 @@ describe("workspace extension trust route", () => {
       deps,
     );
     expect(res.status).toBe(200);
-    expect(calls).toEqual(["trust", "reload"]);
+    expect(calls).toEqual(["trust", "broadcast", "reload"]);
+    expect(JSON.parse(res.body)).toMatchObject({
+      desiredTrusted: true,
+      appliedTrusted: true,
+      pendingReload: false,
+      busy: false,
+    });
   });
 
   it("rejects approval when the session workspace no longer matches the displayed canonical path", async () => {

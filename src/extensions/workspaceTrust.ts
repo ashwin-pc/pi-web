@@ -3,8 +3,19 @@ import type { ApiClient } from "../app/api.js";
 type WorkspaceTrustStatus = {
   workspace: string;
   trusted: boolean;
+  desiredTrusted?: boolean;
+  appliedTrusted?: boolean | null;
+  pendingReload?: boolean;
+  busy?: boolean;
   resources: Array<{ kind: "extension" | "package" | "resource"; path: string }>;
   trustedWorkspaces: string[];
+};
+
+type RenderedWorkspaceTrustStatus = WorkspaceTrustStatus & {
+  desiredTrusted: boolean;
+  appliedTrusted: boolean | null;
+  pendingReload: boolean;
+  busy: boolean;
 };
 
 export type WorkspaceTrustController = {
@@ -22,6 +33,8 @@ export function createWorkspaceTrust(options: {
     return element;
   }
   const notice = required<HTMLElement>("#workspaceExtensionTrustNotice");
+  const title = required<HTMLElement>("#workspaceExtensionTrustTitle");
+  const explanation = required<HTMLElement>("#workspaceExtensionTrustExplanation");
   const workspacePath = required<HTMLElement>("#workspaceExtensionTrustWorkspace");
   const list = required<HTMLUListElement>("#workspaceExtensionTrustList");
   const status = required<HTMLElement>("#workspaceExtensionTrustStatus");
@@ -31,7 +44,7 @@ export function createWorkspaceTrust(options: {
 
   const dismissed = new Set<string>();
   let activeSessionId = "";
-  let current: (WorkspaceTrustStatus & { sessionId: string }) | undefined;
+  let current: (RenderedWorkspaceTrustStatus & { sessionId: string }) | undefined;
   let generation = 0;
   let refreshId = 0;
   let needsRefresh = false;
@@ -45,6 +58,16 @@ export function createWorkspaceTrust(options: {
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.error || `Request failed (${response.status})`);
     return data as WorkspaceTrustStatus & { ok: true };
+  }
+
+  function normalize(value: WorkspaceTrustStatus): RenderedWorkspaceTrustStatus {
+    return {
+      ...value,
+      desiredTrusted: value.desiredTrusted ?? value.trusted,
+      appliedTrusted: typeof value.appliedTrusted === "boolean" ? value.appliedTrusted : null,
+      pendingReload: value.pendingReload === true,
+      busy: value.busy === true,
+    };
   }
 
   function renderSettings(value: WorkspaceTrustStatus) {
@@ -80,17 +103,14 @@ export function createWorkspaceTrust(options: {
         revoke.setAttribute("aria-busy", "true");
         void request("/api/extensions/workspace-trust", {
           method: "DELETE",
-          body: JSON.stringify({ workspace }),
+          body: JSON.stringify({ workspace, sessionId: activeSessionId }),
         }).then(async (next) => {
-          if (current?.workspace === workspace) {
-            dismissed.add(workspace);
-            current = { ...current, trusted: false, trustedWorkspaces: next.trustedWorkspaces };
-          } else if (current) {
+          if (current?.workspace !== workspace && current) {
             current = { ...current, trustedWorkspaces: next.trustedWorkspaces };
+            render(current);
           }
-          if (current) render(current);
           await refresh(activeSessionId).catch(() => undefined);
-          const message = "Workspace trust revoked. Existing sessions change on their next resource load.";
+          const message = "Workspace trust revoked. Loaded sessions must be reloaded to unload its resources.";
           status.textContent = message;
           settings.querySelector<HTMLElement>(".workspaceTrustSettingsStatus")!.textContent = message;
         }).catch((error) => {
@@ -108,7 +128,8 @@ export function createWorkspaceTrust(options: {
     settings.append(feedback);
   }
 
-  function render(value: WorkspaceTrustStatus, sessionId = current?.sessionId || activeSessionId) {
+  function render(input: WorkspaceTrustStatus, sessionId = current?.sessionId || activeSessionId) {
+    const value = normalize(input);
     current = { ...value, sessionId };
     workspacePath.textContent = value.workspace;
     list.replaceChildren(...value.resources.map((resource) => {
@@ -118,8 +139,26 @@ export function createWorkspaceTrust(options: {
       item.append(path);
       return item;
     }));
-    status.textContent = "";
-    notice.hidden = value.trusted || value.resources.length === 0 || dismissed.has(value.workspace);
+    const pendingGrant = value.pendingReload && value.desiredTrusted;
+    const pendingRevoke = value.pendingReload && !value.desiredTrusted;
+    title.textContent = pendingGrant
+      ? "Workspace resources are ready to load"
+      : pendingRevoke
+        ? "Workspace resources must be unloaded"
+        : "Trust this workspace’s resources?";
+    explanation.textContent = pendingGrant
+      ? "Workspace resources were trusted. Reload this session to load them."
+      : pendingRevoke
+        ? "Workspace trust was revoked. Reload this session to unload them."
+        : "Workspace settings and resources can execute extensions, install packages, and affect agent behavior. Review them before loading.";
+    trustButton.textContent = value.pendingReload ? "Reload" : "Trust and load";
+    dismissButton.hidden = value.pendingReload;
+    trustButton.disabled = value.busy;
+    status.textContent = value.pendingReload && value.busy
+      ? "Wait for the current response or compaction to finish before reloading."
+      : "";
+    notice.hidden = !value.pendingReload
+      && (value.resources.length === 0 || value.desiredTrusted || dismissed.has(value.workspace));
     renderSettings(value);
   }
 
@@ -134,25 +173,47 @@ export function createWorkspaceTrust(options: {
     if (!consent || consent.sessionId !== activeSessionId || trustButton.disabled) return;
     trustButton.disabled = true;
     trustButton.setAttribute("aria-busy", "true");
-    status.textContent = "Loading workspace resources…";
-    void request("/api/extensions/workspace-trust", {
-      method: "POST",
-      body: JSON.stringify({ sessionId: consent.sessionId, workspace: consent.workspace }),
-    }).then((value) => {
+    status.textContent = consent.pendingReload ? "Reloading workspace resources…" : "Loading workspace resources…";
+    const operation = consent.pendingReload
+      ? request("/api/extensions/reload", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: consent.sessionId }),
+      }).then(() => refresh(consent.sessionId))
+      : request("/api/extensions/workspace-trust", {
+        method: "POST",
+        body: JSON.stringify({ sessionId: consent.sessionId, workspace: consent.workspace }),
+      }).then((value) => {
+        if (requestGeneration !== generation || consent.sessionId !== activeSessionId) return;
+        refreshId += 1;
+        render(value, consent.sessionId);
+      });
+    void operation.then(() => {
       if (requestGeneration !== generation || consent.sessionId !== activeSessionId) return;
-      render(value, consent.sessionId);
-      status.textContent = "Workspace trusted. Resources loaded for this session.";
-    }).catch((error) => {
+      if (current?.pendingReload) {
+        status.textContent = "Resources could not be fully applied. Reload remains required.";
+      } else {
+        status.textContent = consent.pendingReload
+          ? "Workspace resources reloaded for this session."
+          : "Workspace trusted. Resources loaded for this session.";
+      }
+    }).catch(async (error) => {
       if (requestGeneration !== generation || consent.sessionId !== activeSessionId) return;
+      await refresh(consent.sessionId).catch(() => undefined);
       status.textContent = error instanceof Error ? error.message : String(error);
     }).finally(() => {
       if (requestGeneration !== generation || consent.sessionId !== activeSessionId) return;
-      trustButton.disabled = false;
+      trustButton.disabled = current?.busy ?? false;
       trustButton.removeAttribute("aria-busy");
     });
   });
 
   document.addEventListener("pi-web-open-settings", () => {
+    void refresh(activeSessionId).catch(() => undefined);
+  });
+  document.addEventListener("pi-web-workspace-trust-changed", () => {
+    void refresh(activeSessionId).catch(() => undefined);
+  });
+  document.addEventListener("pi-web-extensions-reloaded", () => {
     void refresh(activeSessionId).catch(() => undefined);
   });
 
@@ -170,7 +231,8 @@ export function createWorkspaceTrust(options: {
   }
 
   function settle(sessionId: string) {
-    if (!sessionId || sessionId !== activeSessionId || !needsRefresh) return;
+    if (!sessionId || sessionId !== activeSessionId) return;
+    if (!needsRefresh && !current?.pendingReload && !current?.busy) return;
     void refresh(sessionId).catch(() => undefined);
   }
 
@@ -183,7 +245,6 @@ export function createWorkspaceTrust(options: {
     const value = await request(`/api/extensions/workspace-trust?${params}`);
     if (requestGeneration === generation && requestId === refreshId && sessionId === activeSessionId) {
       render(value, sessionId);
-      trustButton.disabled = false;
     }
   }
 
