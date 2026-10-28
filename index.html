@@ -14,22 +14,6 @@
     <link rel="stylesheet" href="/new-chat-animation.css" />
   </head>
   <body>
-    <div id="tokenOverlay" class="tokenOverlay" hidden>
-      <form id="tokenForm" class="tokenForm">
-        <label for="tokenInput">Enter PI_WEB_TOKEN to continue</label>
-        <p class="tokenHint">Paste a token, open a token link, or scan a token QR code.</p>
-        <input id="tokenInput" type="password" placeholder="Token" autocomplete="current-password" />
-        <div class="tokenActions">
-          <button type="submit" class="primaryAction">Connect</button>
-          <button id="tokenScanButton" type="button">Scan QR</button>
-        </div>
-        <div id="tokenScanPanel" class="tokenScanPanel" hidden>
-          <video id="tokenScanVideo" autoplay playsinline muted></video>
-          <span id="tokenScanStatus" class="tokenScanStatus" aria-live="polite"></span>
-          <button id="tokenScanStopButton" type="button">Stop camera</button>
-        </div>
-      </form>
-    </div>
     <main class="app">
       <div id="statusBar" class="statusBar">
         <button id="sessionButton" class="iconButton statusBarButton" type="button" aria-label="Sessions" title="Sessions">
@@ -62,6 +46,18 @@
           <span data-icon="settings"></span>
         </button>
       </div>
+
+      <section id="workspaceExtensionTrustNotice" class="workspaceTrustNotice" role="region" aria-labelledby="workspaceExtensionTrustTitle" hidden>
+        <h2 id="workspaceExtensionTrustTitle">Trust this workspace’s resources?</h2>
+        <p id="workspaceExtensionTrustExplanation">Workspace settings and resources can execute extensions, install packages, and affect agent behavior. Review them before loading.</p>
+        <p class="workspaceTrustPath">Workspace: <code id="workspaceExtensionTrustWorkspace"></code></p>
+        <ul id="workspaceExtensionTrustList"></ul>
+        <p id="workspaceExtensionTrustStatus" aria-live="polite"></p>
+        <div class="workspaceTrustActions">
+          <button id="workspaceExtensionDismissButton" type="button">Not now</button>
+          <button id="workspaceExtensionTrustButton" type="button">Trust and load</button>
+        </div>
+      </section>
 
       <aside id="filesPanel" class="filesPanel" aria-label="Workspace files" data-mobile-view="tree" hidden>
         <div class="filesPanelHeader">
@@ -495,6 +491,7 @@
                 <p>Configure settings contributed by extensions.</p>
               </header>
 
+              <section id="workspaceExtensionTrustSettings" class="workspaceExtensionTrustSettings" aria-label="Workspace extension trust"></section>
               <div id="extensionSettingsContainer" class="extensionSettings"></div>
             </section>
             <section id="settingsPageExtensionHealth" class="settingsPage" data-settings-page="extension-health" aria-labelledby="settingsPageExtensionHealthTitle" hidden><header class="settingsPageHeader"><span>System</span><h3 id="settingsPageExtensionHealthTitle" class="settingsPageTitle" tabindex="-1">Extension health</h3><p>Review runtime failures and retry extension loading.</p></header>

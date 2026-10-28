@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { resolveWebHomePath } from "../server/shared/webHome.js";
 import { createSettingsStore } from "../server/settings.js";
-import { resolvePiWebExtensionPaths } from "../server/extensions.js";
+import { resolveGlobalPiWebExtensionPaths, resolveWorkspacePiWebExtensionPaths } from "../server/extensions.js";
 import { archivePath, storePath } from "../examples/pi-web-extensions/notepad.js";
 
 afterEach(() => vi.unstubAllEnvs());
@@ -46,7 +46,8 @@ describe("resolveWebHomePath", () => {
       for (const file of [globalExtension, projectExtension]) {
         mkdirSync(join(file, ".."), { recursive: true }); writeFileSync(file, "export default () => {};");
       }
-      expect(resolvePiWebExtensionPaths(join(home, "project"))).toEqual([projectExtension, globalExtension]);
+      expect(resolveWorkspacePiWebExtensionPaths(join(home, "project"))).toEqual([projectExtension]);
+      expect(resolveGlobalPiWebExtensionPaths()).toEqual([globalExtension]);
       const store = createSettingsStore(resolveWebHomePath("pi-web-settings.json", "/legacy/settings.json", process.env.PI_WEB_SETTINGS_FILE));
       await store.patch({ appearance: { density: "compact" } });
       expect(existsSync(join(home, "pi-web-settings.json"))).toBe(true);
