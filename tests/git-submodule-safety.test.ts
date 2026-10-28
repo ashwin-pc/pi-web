@@ -1,9 +1,9 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdtemp, mkdir, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { git, gitDiff, gitStatus, gitSync, listGitRepos } from "../server/shared/git.js";
+import { git, gitDiff, gitStatus, listGitRepos } from "../server/shared/git.js";
 
 const tempDirs: string[] = [];
 
@@ -52,65 +52,6 @@ async function withPathPrefix<T>(path: string, callback: () => Promise<T>) {
     if (original === undefined) delete process.env.PATH;
     else process.env.PATH = original;
   }
-}
-
-async function expectSyncRefusalWithDirtyChild(submoduleName: string, deleteGitmodules: boolean) {
-  const { root, parent, child } = await makeSubmoduleFixture(submoduleName);
-  const parentRemote = join(root, "parent.git");
-  const updater = join(root, "updater");
-  const fsmonitorMarker = join(root, "child-sync-fsmonitor-executed");
-  const filterMarker = join(root, "child-sync-filter-executed");
-  const fsmonitor = join(root, "child-sync-fsmonitor.cjs");
-  const filter = join(root, "child-sync-filter.cjs");
-  const trackedFile = join(child, "tracked.txt");
-
-  await writeFile(join(child, ".gitattributes"), "tracked.txt filter=repo\n");
-  runGit(child, "add", ".gitattributes");
-  runGit(child, "commit", "-m", "filter tracked child file");
-  runGit(parent, "config", "-f", ".gitmodules", `submodule.${submoduleName}.ignore`, "none");
-  runGit(parent, "add", ".gitmodules", "child");
-  runGit(parent, "commit", "-m", "require dirty child inspection");
-  runGit(root, "init", "--bare", "-b", "main", parentRemote);
-  runGit(parent, "remote", "add", "origin", parentRemote);
-  runGit(parent, "push", "-u", "origin", "main");
-  if (deleteGitmodules) {
-    runGit(parent, "config", "--remove-section", `submodule.${submoduleName}`);
-    await rm(join(parent, ".gitmodules"));
-  }
-
-  runGit(root, "clone", parentRemote, updater);
-  runGit(updater, "config", "user.name", "Pi Web Tests");
-  runGit(updater, "config", "user.email", "pi-web@example.test");
-  if (deleteGitmodules) runGit(updater, "rm", ".gitmodules");
-  await commitFile(updater, "remote.txt", "remote advance\n", "remote advance");
-  runGit(updater, "push", "origin", "main");
-
-  runGit(parent, "config", "fetch.recurseSubmodules", "true");
-  runGit(parent, "config", "submodule.recurse", "true");
-  runGit(parent, "config", "diff.ignoreSubmodules", "none");
-  runGit(parent, "config", "status.submoduleSummary", "true");
-  runGit(parent, "config", "diff.submodule", "log");
-  await writeFile(fsmonitor, `require("node:fs").writeFileSync(${JSON.stringify(fsmonitorMarker)}, "executed");\n`);
-  await writeFile(filter, `require("node:fs").writeFileSync(${JSON.stringify(filterMarker)}, "executed"); process.stdin.pipe(process.stdout);\n`);
-  runGit(child, "config", "core.fsmonitor", `"${process.execPath}" "${fsmonitor}"`);
-  runGit(child, "config", "filter.repo.clean", `"${process.execPath}" "${filter}"`);
-  runGit(child, "config", "filter.repo.required", "true");
-  await expect(access(fsmonitorMarker)).rejects.toThrow();
-  await expect(access(filterMarker)).rejects.toThrow();
-
-  const originalStat = await stat(trackedFile);
-  await writeFile(trackedFile, "child two\n");
-  const changedMtime = new Date(Math.max(Date.now() + 2_000, originalStat.mtimeMs + 2_000));
-  await utimes(trackedFile, originalStat.atime, changedMtime);
-  await writeFile(join(parent, "parent.txt"), "preserved parent change\n");
-
-  await expect(gitSync(parent)).rejects.toThrow(/Sync refused: submodule gitlinks are present/);
-  await expect(access(join(parent, "remote.txt"))).rejects.toThrow();
-  await expect(readFile(join(parent, "parent.txt"), "utf8")).resolves.toBe("preserved parent change\n");
-  await expect(readFile(trackedFile, "utf8")).resolves.toBe("child two\n");
-  if (deleteGitmodules) await expect(access(join(parent, ".gitmodules"))).rejects.toThrow();
-  await expect(access(fsmonitorMarker)).rejects.toThrow();
-  await expect(access(filterMarker)).rejects.toThrow();
 }
 
 afterEach(async () => {
@@ -195,13 +136,4 @@ describe("Git submodule command isolation", () => {
       await expect(access(helperMarker)).rejects.toThrow();
     });
   });
-
-  it("refuses sync without touching child or parent edits for a submodule name containing =", async () => {
-    await expectSyncRefusalWithDirtyChild("child=a", false);
-  });
-
-  it("refuses sync without touching edits after worktree and fetched .gitmodules deletion", async () => {
-    await expectSyncRefusalWithDirtyChild("child", true);
-  });
-
 });

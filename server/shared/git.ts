@@ -10,7 +10,6 @@ import {
   type GitConfigEntry,
   type GitExecution,
 } from "./gitExecution.js";
-import { assertSyncFilesystemBoundary } from "./gitSyncBoundary.js";
 
 const execFileAsync = promisify(execFile);
 export { gitConfigEnv, gitConfigHardeningOverrides };
@@ -275,75 +274,13 @@ export async function gitDiff(options: { cwd: string; path: string; staged: bool
   return { ok: true as const, path: filePath, staged: options.staged, diff: stdout };
 }
 
-const syncFilterConfigPattern = /^filter\..+\.(?:clean|smudge|process)$/i;
-
-function assertSyncConfigSafe(entries: GitConfigEntry[]) {
-  const filter = entries.find((entry) =>
-    (entry.scope === "local" || entry.scope === "worktree") && syncFilterConfigPattern.test(entry.key));
-  if (filter) {
-    throw new Error(
-      `Sync refused: repository-scoped filter driver config (${filter.key}) could run during autostash or rebase. ` +
-      "Remove the repository filter command or sync this checkout outside pi-web.",
-    );
-  }
-}
-
-export function assertNoGitlinks(output: string, source: string, format: "tree" | "raw") {
-  let hasGitlink = false;
-  if (format === "tree") {
-    hasGitlink = output.split("\0").some((record) => /^160000[ \t]/.test(record));
-  } else {
-    let expectPath = false;
-    for (const record of output.split("\0")) {
-      if (expectPath) {
-        expectPath = false;
-        continue;
-      }
-      const metadata = record.trimStart();
-      if (!metadata) continue;
-      const modes = metadata.match(/^:(\d{6}) (\d{6}) /);
-      if (!modes) continue;
-      if (modes[1] === "160000" || modes[2] === "160000") {
-        hasGitlink = true;
-        break;
-      }
-      expectPath = true;
-    }
-  }
-  if (hasGitlink) {
-    throw new Error(
-      `Sync refused: submodule gitlinks are present in ${source} and could enter autostash or rebase. ` +
-      "Preserve local changes and sync this repository outside pi-web.",
-    );
-  }
-}
-
 export async function gitSync(cwd: string) {
   const execution = await loadGitExecution(cwd);
-  assertSyncConfigSafe(execution.entries);
   const { stdout: rootOut } = await runGitExecution(execution, ["rev-parse", "--show-toplevel"], cwd);
   const root = await realpath(rootOut.trim());
   const { stdout: branchOut } = await runGitExecution(execution, ["branch", "--show-current"], root);
   const branch = branchOut.trim();
   if (!branch) throw new Error("Cannot sync detached HEAD");
-
-  const [{ stdout: commonDirOut }, indexBefore, headCommit] = await Promise.all([
-    runGitExecution(execution, ["rev-parse", "--git-common-dir"], root),
-    runGitExecution(execution, ["ls-files", "--stage", "-z"], root),
-    runGitExecution(execution, ["rev-parse", "--verify", "-q", "HEAD^{commit}"], root)
-      .then(({ stdout }) => stdout.trim())
-      .catch((error: unknown) => {
-        if ((error as Error & { code?: string | number }).code === 1) return "";
-        throw error;
-      }),
-  ]);
-  assertNoGitlinks(indexBefore.stdout, "the index", "tree");
-  if (headCommit) {
-    const { stdout: headTree } = await runGitExecution(execution, ["ls-tree", "-r", "-z", headCommit], root);
-    assertNoGitlinks(headTree, "HEAD", "tree");
-  }
-  const commonDir = resolve(root, commonDirOut.trim());
-  await assertSyncFilesystemBoundary(root, commonDir);
 
   const fetchResult = await runGitExecution(execution, ["fetch", "--prune", "origin"], root, 60_000);
   const pullResult = await runGitExecution(

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { access, mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,7 +14,6 @@ import {
 } from "../server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "../server/shared/fsList.js";
 import {
-  assertNoGitlinks,
   git,
   gitBuffer,
   gitCommitDetails,
@@ -285,25 +284,6 @@ describe("shared Git helpers", () => {
     expect(env.GIT_CONFIG_VALUE_9).toBeUndefined();
   });
 
-  it("parses only Git mode fields when checking trees and raw history", () => {
-    const hash = "1".repeat(40);
-    expect(() => assertNoGitlinks(
-      `100644 blob ${hash}\tflat 160000 name.txt\0`,
-      "a tree",
-      "tree",
-    )).not.toThrow();
-    expect(() => assertNoGitlinks(
-      `\n:100644 100644 ${hash} ${hash} M\0:160000 160000 path spoof\0`,
-      "raw history",
-      "raw",
-    )).not.toThrow();
-    expect(() => assertNoGitlinks(
-      `:100644 160000 ${hash} ${hash} M\0ordinary-path\0`,
-      "raw history",
-      "raw",
-    )).toThrow(/raw history/);
-  });
-
   it("normalizes inherited parameter and indexed config for text and buffer Git calls", async () => {
     const cwd = await makeRepo();
     await withIsolatedGitConfig(() =>
@@ -390,10 +370,14 @@ describe("shared Git helpers", () => {
     await expect(access(textconvMarker)).rejects.toThrow();
   });
 
-  it("neutralizes a repository filter whose name contains an equals sign", async () => {
+  it("syncs while neutralizing a repository filter whose name contains an equals sign", async () => {
     const cwd = await makeRepo();
+    const remote = await tempDir("pi-web-shared-git-origin-");
     const marker = join(cwd, "equals-filter-executed");
     const filter = join(cwd, "equals-filter.cjs");
+    runGit(remote, "init", "--bare", "-b", "main");
+    runGit(cwd, "remote", "add", "origin", remote);
+    runGit(cwd, "push", "-u", "origin", "main");
     await writeFile(filter, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed"); process.stdin.pipe(process.stdout);\n`);
     runGit(cwd, "config", "filter.a=b.clean", `"${process.execPath}" "${filter}"`);
     runGit(cwd, "config", "filter.a=b.required", "true");
@@ -405,8 +389,9 @@ describe("shared Git helpers", () => {
       isRepo: true,
       files: expect.arrayContaining([expect.objectContaining({ path: "tracked.txt", label: "modified" })]),
     });
-    await expect(gitSync(cwd)).rejects.toThrow(/repository-scoped filter driver config \(filter\.a=b\.clean\)/);
+    await expect(gitSync(cwd)).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
     await expect(access(marker)).rejects.toThrow();
+    await expect(readFile(join(cwd, "tracked.txt"), "utf8")).resolves.toBe("second\n");
   });
 
   it("preserves a trusted global required filter while suppressing the repository filter", async () => {

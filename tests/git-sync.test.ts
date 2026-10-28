@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { gitSync } from "../server/shared/git.js";
-import { assertSyncFilesystemBoundary } from "../server/shared/gitSyncBoundary.js";
 
 const tempDirs: string[] = [];
 
@@ -29,31 +28,6 @@ async function commitFile(cwd: string, path: string, contents: string, message: 
   await writeFile(join(cwd, path), contents);
   runGit(cwd, "add", path);
   runGit(cwd, "commit", "-m", message);
-}
-
-async function makeIncomingGitlinkFixture(path: string) {
-  const root = await tempDir("pi-web-git-sync-boundary-");
-  const seed = join(root, "seed");
-  const parent = join(root, "parent");
-  const updater = join(root, "updater");
-  const remote = join(root, "parent.git");
-  await makeRepo(seed);
-  await commitFile(seed, "tracked.txt", "one\n", "one");
-  runGit(root, "init", "--bare", "-b", "main", remote);
-  runGit(seed, "remote", "add", "origin", remote);
-  runGit(seed, "push", "-u", "origin", "main");
-  runGit(root, "clone", remote, parent);
-  runGit(root, "clone", remote, updater);
-  runGit(parent, "config", "user.name", "Pi Web Tests");
-  runGit(parent, "config", "user.email", "pi-web@example.test");
-  runGit(updater, "config", "user.name", "Pi Web Tests");
-  runGit(updater, "config", "user.email", "pi-web@example.test");
-  const originalRemoteHead = runGit(parent, "rev-parse", "refs/remotes/origin/main");
-  const gitlinkTarget = runGit(updater, "rev-parse", "HEAD");
-  runGit(updater, "update-index", "--add", "--cacheinfo", `160000,${gitlinkTarget},${path}`);
-  runGit(updater, "commit", "-m", "remote gitlink");
-  runGit(updater, "push", "origin", "main");
-  return { root, parent, originalRemoteHead };
 }
 
 afterEach(async () => {
@@ -117,62 +91,50 @@ describe("Git Sync", () => {
     expect(runGit(local, "stash", "list")).toBe("");
   }, 20_000);
 
-  it("refuses an ignored initialized child before a later fetch can introduce its gitlink", async () => {
-    const fixture = await makeIncomingGitlinkFixture("ignored-child");
-    const child = join(fixture.parent, "ignored-child");
-    const nested = join(fixture.parent, "ordinary", "nested");
-    const marker = join(fixture.root, "child-filter-executed");
-    const filter = join(fixture.root, "child-filter.cjs");
-    await makeRepo(child);
-    await commitFile(child, "tracked.txt", "child one\n", "child one");
-    await writeFile(join(fixture.parent, ".git", "info", "exclude"), "ignored-child/\n");
-    await writeFile(filter, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed"); process.stdin.pipe(process.stdout);\n`);
-    runGit(child, "config", "core.fsmonitor", `"${process.execPath}" "${filter}"`);
-    runGit(child, "config", "filter.repo.clean", `"${process.execPath}" "${filter}"`);
-    await mkdir(nested, { recursive: true });
-
-    await expect(gitSync(nested)).rejects.toThrow(/nested Git repository marker/);
-    expect(runGit(fixture.parent, "rev-parse", "refs/remotes/origin/main")).toBe(fixture.originalRemoteHead);
-    await expect(access(marker)).rejects.toThrow();
-    await expect(access(join(fixture.parent, "ignored-child", ".git"))).resolves.toBeUndefined();
-  });
-
-  it("refuses a cached submodule repository before a later fetch can introduce its gitlink", async () => {
-    const fixture = await makeIncomingGitlinkFixture("cached-child");
-    const cached = join(fixture.parent, ".git", "modules", "cached-child");
-    const marker = join(fixture.root, "cached-filter-executed");
-    const filter = join(fixture.root, "cached-filter.cjs");
-    runGit(fixture.parent, "init", "--bare", cached);
-    await writeFile(filter, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed"); process.stdin.pipe(process.stdout);\n`);
-    runGit(cached, "config", "filter.repo.clean", `"${process.execPath}" "${filter}"`);
-
-    await expect(gitSync(fixture.parent)).rejects.toThrow(/cached submodule repositories/);
-    expect(runGit(fixture.parent, "rev-parse", "refs/remotes/origin/main")).toBe(fixture.originalRemoteHead);
-    await expect(access(marker)).rejects.toThrow();
-  });
-
-  it("refuses directory links without traversing outside the checkout", async () => {
-    const root = await tempDir("pi-web-git-sync-link-");
+  it("syncs without scanning ignored nested repositories, cached repositories, or directory links", async () => {
+    const root = await tempDir("pi-web-git-sync-layouts-");
+    const seed = join(root, "seed");
     const parent = join(root, "parent");
+    const updater = join(root, "updater");
+    const remote = join(root, "remote.git");
     const outside = join(root, "outside");
-    await makeRepo(parent);
-    await makeRepo(outside);
-    await commitFile(parent, "tracked.txt", "one\n", "one");
-    await symlink(outside, join(parent, "linked-directory"));
+    await makeRepo(seed);
+    await commitFile(seed, "tracked.txt", "one\n", "one");
+    runGit(root, "init", "--bare", "-b", "main", remote);
+    runGit(seed, "remote", "add", "origin", remote);
+    runGit(seed, "push", "-u", "origin", "main");
+    runGit(root, "clone", remote, parent);
+    runGit(root, "clone", remote, updater);
+    runGit(updater, "config", "user.name", "Pi Web Tests");
+    runGit(updater, "config", "user.email", "pi-web@example.test");
 
-    await expect(gitSync(parent)).rejects.toThrow(/directory link/);
+    const child = join(parent, ".venv", "src", "ignored-child");
+    await mkdir(join(parent, ".venv", "src"), { recursive: true });
+    await makeRepo(child);
+    await commitFile(child, "child.txt", "child\n", "child");
+    await writeFile(join(parent, ".git", "info", "exclude"), ".venv/\nworkspace-link\n");
+    runGit(parent, "init", "--bare", join(parent, ".git", "modules", "cached-child"));
+    await makeRepo(outside);
+    await symlink(outside, join(parent, "workspace-link"));
+
+    await commitFile(updater, "remote.txt", "remote advance\n", "remote advance");
+    runGit(updater, "push", "origin", "main");
+
+    await expect(gitSync(parent)).resolves.toMatchObject({ ok: true, status: { branch: "main" } });
+    await expect(readFile(join(parent, "remote.txt"), "utf8")).resolves.toBe("remote advance\n");
+    await expect(access(join(child, ".git"))).resolves.toBeUndefined();
+    await expect(access(join(parent, ".git", "modules", "cached-child", "HEAD"))).resolves.toBeUndefined();
+    await expect(access(join(parent, "workspace-link"))).resolves.toBeUndefined();
   });
 
-  it("refuses a case-variant nested Gitfile without reading its target", async () => {
-    const root = await tempDir("pi-web-git-sync-case-marker-");
-    const parent = join(root, "parent");
-    const child = join(parent, "child");
-    const commonDir = join(parent, ".git");
-    await mkdir(commonDir, { recursive: true });
-    await mkdir(child);
-    await writeFile(join(child, ".GiT"), "gitdir: ../../outside\n");
+  it("keeps the standard detached-HEAD error", async () => {
+    const root = await tempDir("pi-web-git-sync-detached-");
+    const repo = join(root, "repo");
+    await makeRepo(repo);
+    await commitFile(repo, "tracked.txt", "one\n", "one");
+    runGit(repo, "switch", "--detach");
 
-    await expect(assertSyncFilesystemBoundary(parent, commonDir)).rejects.toThrow(/nested Git repository marker/);
+    await expect(gitSync(repo)).rejects.toThrow("Cannot sync detached HEAD");
   });
 
   it("supports an unborn flat branch through native pull", async () => {
