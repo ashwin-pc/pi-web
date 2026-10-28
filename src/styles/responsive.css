@@ -11,6 +11,11 @@
     margin-left: var(--session-drawer-width);
     margin-right: 0;
   }
+
+  /* Re-centre the jump button over the chat area (not the full viewport) */
+  body.sessionDrawerOpen .jumpToLatestButton {
+    left: calc(50% + var(--session-drawer-width) / 2);
+  }
 }
 
 @media (min-width: 701px) and (max-width: 1100px) {

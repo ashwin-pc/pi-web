@@ -856,9 +856,10 @@ body.artifactPreviewDocument {
 .citationQuoteLink { display: inline-flex; align-items: center; gap: 4px; }
 .jumpToLatestButton {
   position: fixed;
-  left: calc(var(--app-layout-left-width, 0px) + 16px);
+  left: 50%;
   bottom: var(--jump-to-latest-bottom, 116px);
   z-index: 20;
+  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   gap: 6px;

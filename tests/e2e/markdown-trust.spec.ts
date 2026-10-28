@@ -260,11 +260,39 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
   const chatBox = await page.locator(".app").boundingBox();
   expect(jumpBox).not.toBeNull();
   expect(chatBox).not.toBeNull();
-  expect(jumpBox!.x).toBeGreaterThanOrEqual(chatBox!.x + 15);
-  expect(jumpBox!.x).toBeLessThanOrEqual(chatBox!.x + 17);
+  expect(jumpBox!.x + jumpBox!.width / 2).toBeCloseTo(chatBox!.x + chatBox!.width / 2, 1);
   await testInfo.attach("artifact-navigation", { body: await page.screenshot({ path: testInfo.outputPath("artifact-navigation.png") }), contentType: "image/png" });
-  await jumpToLatest.click();
-  await expect.poll(() => messages.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(48);
+
+  if ((page.viewportSize()?.width || 0) >= 701) {
+    await page.locator("#sessionButton").click();
+    const drawer = page.locator("#sessionDrawer");
+    await expect(drawer).toBeVisible();
+    const pushedJumpBox = await jumpToLatest.boundingBox();
+    const pushedChatBox = await page.locator(".app").boundingBox();
+    const drawerBox = await drawer.boundingBox();
+    expect(pushedJumpBox).not.toBeNull();
+    expect(pushedChatBox).not.toBeNull();
+    expect(drawerBox).not.toBeNull();
+    // appLayout uses a full-screen modal below 1025px, including fold screens.
+    // Only docked drawers leave the chat available for interaction.
+    if (drawerBox!.width < page.viewportSize()!.width - 1) {
+      expect(pushedJumpBox!.x).toBeGreaterThanOrEqual(drawerBox!.x + drawerBox!.width);
+      expect(pushedJumpBox!.x + pushedJumpBox!.width / 2).toBeCloseTo(pushedChatBox!.x + pushedChatBox!.width / 2, 1);
+      await jumpToLatest.click();
+      await expect.poll(() => messages.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(48);
+      await drawer.getByRole("button", { name: "Close sessions" }).click();
+    } else {
+      expect(drawerBox!.width).toBeCloseTo(page.viewportSize()!.width, 1);
+      await drawer.getByRole("button", { name: "Close sessions" }).click();
+      await expect(jumpToLatest).toBeVisible();
+      await jumpToLatest.click();
+      await expect.poll(() => messages.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(48);
+    }
+    await expect(drawer).toBeHidden();
+  } else {
+    await jumpToLatest.click();
+    await expect.poll(() => messages.evaluate(element => element.scrollHeight - element.scrollTop - element.clientHeight)).toBeLessThan(48);
+  }
   await expect(linkedFrame.contentFrame().locator("#linked-status")).toHaveText("state preserved");
 
   const expectActiveControlsReachable = async (preview: typeof linked) => {
