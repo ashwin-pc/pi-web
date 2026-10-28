@@ -179,7 +179,7 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
     messages: [{
       role: "assistant",
       isError: false,
-      text: `${"Maintained preview context. ".repeat(160)}\n\n[Linked HTML](/api/artifacts/consent.html)\n\n[Custom HTML](/api/artifacts/consent.gcode)`,
+      text: `<div class="previewScrollContext">${"Maintained preview context. ".repeat(160)}</div>\n\n[Linked HTML](/api/artifacts/consent.html)\n\n[Custom HTML](/api/artifacts/consent.gcode)`,
     }],
   } }));
   await page.request.post("/api/mock/state", { data: {
@@ -194,6 +194,14 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
   } });
 
   await page.goto("/");
+  const messages = page.locator(".messages");
+  const composer = page.locator(".composer");
+  const scrollContext = page.locator(".previewScrollContext");
+  const messagesViewportHeight = await messages.evaluate((element) => element.clientHeight);
+  await scrollContext.evaluate((element, viewportHeight) => {
+    element.style.height = `${Math.ceil(viewportHeight * 2)}px`;
+    element.style.overflow = "hidden";
+  }, messagesViewportHeight);
   const linked = page.locator('.artifactPreview[data-artifact-name="consent.html"]');
   const custom = page.locator('.artifactPreview[data-artifact-name="consent.gcode"]');
   await expect(linked.getByRole("button", { name: "Run preview" })).toBeVisible();
@@ -219,8 +227,6 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
   await expect.poll(() => linkedMarkers).toBe(1);
   expect(customMarkers).toBe(0);
   await expect(custom.locator("iframe")).toHaveCount(0);
-  const messages = page.locator(".messages");
-  const composer = page.locator(".composer");
   await linkedFrame.contentFrame().locator("#linked-status").evaluate((element) => {
     element.textContent = "state preserved";
   });
@@ -235,18 +241,36 @@ test("linked and custom HTML artifacts stay inert until their shared preview con
   await expect(linkedFrame).toHaveCount(1);
   await expect(linkedFrame.contentFrame().locator("#linked-status")).toHaveText("state preserved");
 
-  await messages.evaluate((element) => {
-    element.scrollTop = 0;
-    element.dispatchEvent(new Event("scroll"));
+  await page.locator("#prompt").fill("Keep this draft while reviewing the running preview.");
+  await linked.evaluate((element) => {
+    const scroller = element.closest<HTMLElement>(".messages")!;
+    const scrollerRect = scroller.getBoundingClientRect();
+    const previewRect = element.getBoundingClientRect();
+    const clearance = scrollerRect.height / 2;
+    const previewGap = previewRect.top - scrollerRect.bottom;
+    scroller.scrollTo({ top: scroller.scrollTop + previewGap - clearance });
   });
   await expect.poll(() => linked.evaluate((element) => {
     const preview = element.getBoundingClientRect();
     const scroller = element.closest<HTMLElement>(".messages")!.getBoundingClientRect();
-    return preview.top >= scroller.bottom;
-  })).toBe(true);
+    return preview.top - scroller.bottom;
+  })).toBeGreaterThan(0);
+  const offscreenGeometry = await linked.evaluate((element) => {
+    const preview = element.getBoundingClientRect();
+    const scroller = element.closest<HTMLElement>(".messages")!.getBoundingClientRect();
+    const overlap = Math.max(0, Math.min(preview.bottom, scroller.bottom) - Math.max(preview.top, scroller.top));
+    return {
+      overlap,
+      previewTop: preview.top,
+      previewBottom: preview.bottom,
+      scrollerBottom: scroller.bottom,
+    };
+  });
+  expect(offscreenGeometry.overlap).toBe(0);
+  expect(offscreenGeometry.previewTop).toBeGreaterThan(offscreenGeometry.scrollerBottom);
+  expect(offscreenGeometry.previewBottom).toBeGreaterThan(offscreenGeometry.scrollerBottom);
   const jumpToLatest = page.getByRole("button", { name: "Jump to latest message" });
   await expect(jumpToLatest).toBeVisible();
-  await page.locator("#prompt").fill("Keep this draft while reviewing the running preview.");
   const launcherToggle = page.locator(".actionLauncherToggle");
   await launcherToggle.click();
   await expect(page.locator(".actionLauncher")).toHaveClass(/open/);
