@@ -777,7 +777,6 @@ export class LocalSessionService implements SessionService {
     const value = session as PiWebSession;
     return {
       appliedTrusted: this.productionFactory.loaderFor(value)?.getAppliedProjectTrust(),
-      reloadPending: this.productionFactory.loaderFor(value)?.isProjectTrustReloadPending() ?? false,
       busy: Boolean(value.isStreaming || value.isCompacting),
     };
   }

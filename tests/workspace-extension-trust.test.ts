@@ -70,7 +70,16 @@ async function fixture() {
       ...trust.extensionPaths(workspace, trusted),
     ],
   });
-  return { root, workspace, agentDir, marker, packageDir, trust, loader: createLoader(), createLoader };
+  return {
+    root,
+    workspace,
+    agentDir,
+    marker,
+    packageDir,
+    trust,
+    loader: createLoader(),
+    createLoader,
+  };
 }
 
 describe("workspace extension trust", () => {

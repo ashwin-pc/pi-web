@@ -7,7 +7,7 @@ type Authorized = Extract<GateResult, { ok: true }>;
 type SessionAccess = {
   require(sessionId?: string): Promise<object>;
   cwdForSession(session: object): string;
-  workspaceTrustState(session: object): { appliedTrusted?: boolean; reloadPending?: boolean; busy: boolean };
+  workspaceTrustState(session: object): { appliedTrusted?: boolean; busy: boolean };
   reloadExtensions(sessionId: string): Promise<unknown>;
 };
 
@@ -46,9 +46,8 @@ function statusFor(deps: RouteDependencies, session: object) {
   return {
     ...desired,
     appliedTrusted: sessionState.appliedTrusted ?? null,
-    pendingReload: sessionState.reloadPending === true
-      || (sessionState.appliedTrusted !== undefined
-        && sessionState.appliedTrusted !== desired.desiredTrusted),
+    pendingReload: sessionState.appliedTrusted !== undefined
+      && sessionState.appliedTrusted !== desired.desiredTrusted,
     busy: sessionState.busy,
   };
 }

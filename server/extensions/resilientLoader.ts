@@ -130,7 +130,6 @@ export class ResilientResourceLoader implements ResourceLoader {
   private readonly fallbackOptions: LoaderOptions;
   private activePrimaryPathsKey = "";
   private appliedProjectTrust?: boolean;
-  private projectTrustReloadPending = false;
   private readonly extendedResources: Array<Parameters<ResourceLoader["extendResources"]>[0]> = [];
   private attempt = 0;
   private reloadPromise?: Promise<void>;
@@ -172,10 +171,6 @@ export class ResilientResourceLoader implements ResourceLoader {
 
   getAppliedProjectTrust(): boolean | undefined {
     return this.appliedProjectTrust;
-  }
-
-  isProjectTrustReloadPending(): boolean {
-    return this.projectTrustReloadPending;
   }
 
   getExtensions() {
@@ -297,11 +292,7 @@ export class ResilientResourceLoader implements ResourceLoader {
           : `Loaded ${result.extensions.length} extension${result.extensions.length === 1 ? "" : "s"}.`,
       };
       if (projectTrusted !== undefined) {
-        const changed = this.appliedProjectTrust !== undefined
-          && this.appliedProjectTrust !== projectTrusted;
         this.appliedProjectTrust = projectTrusted;
-        this.projectTrustReloadPending = result.errors.length > 0
-          && (this.projectTrustReloadPending || changed);
       }
       this.log.info(`[extensions] load ${this.status.state} cwd=${this.primaryOptions.cwd} attempt=${attempt} durationMs=${durationMs} extensions=${result.extensions.length} errors=${result.errors.length}`);
       for (const error of result.errors) this.log.error(`[extensions] failed path=${error.path}: ${error.error}`);
@@ -318,8 +309,9 @@ export class ResilientResourceLoader implements ResourceLoader {
         await fallback.reload(fallbackOptions);
         this.active = fallback;
         this.activeIsPrimary = false;
-        this.projectTrustReloadPending = this.projectTrustReloadPending
-          || (this.appliedProjectTrust !== undefined && this.appliedProjectTrust !== projectTrusted);
+        if (projectTrusted !== undefined) {
+          this.appliedProjectTrust = projectTrusted;
+        }
       } catch (fallbackError) {
         this.log.error(`[extensions] extension-free fallback failed cwd=${this.primaryOptions.cwd}: ${errorMessage(fallbackError)}`);
         throw fallbackError;

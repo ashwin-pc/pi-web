@@ -111,7 +111,6 @@ export function createWorkspaceTrust(options: {
           }
           await refresh(activeSessionId).catch(() => undefined);
           const message = "Workspace trust revoked. Loaded sessions must be reloaded to unload its resources.";
-          status.textContent = message;
           settings.querySelector<HTMLElement>(".workspaceTrustSettingsStatus")!.textContent = message;
         }).catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -154,8 +153,8 @@ export function createWorkspaceTrust(options: {
     trustButton.textContent = value.pendingReload ? "Reload" : "Trust and load";
     dismissButton.hidden = value.pendingReload;
     trustButton.disabled = value.busy;
-    status.textContent = value.pendingReload && value.busy
-      ? "Wait for the current response or compaction to finish before reloading."
+    status.textContent = value.busy
+      ? "Wait for the current response or compaction to finish before changing loaded workspace resources."
       : "";
     notice.hidden = !value.pendingReload
       && (value.resources.length === 0 || value.desiredTrusted || dismissed.has(value.workspace));
@@ -190,11 +189,9 @@ export function createWorkspaceTrust(options: {
     void operation.then(() => {
       if (requestGeneration !== generation || consent.sessionId !== activeSessionId) return;
       if (current?.pendingReload) {
-        status.textContent = "Resources could not be fully applied. Reload remains required.";
+        status.textContent = "Workspace trust change has not been applied. Reload remains required.";
       } else {
-        status.textContent = consent.pendingReload
-          ? "Workspace resources reloaded for this session."
-          : "Workspace trusted. Resources loaded for this session.";
+        status.textContent = "Workspace trust change applied for this session.";
       }
     }).catch(async (error) => {
       if (requestGeneration !== generation || consent.sessionId !== activeSessionId) return;

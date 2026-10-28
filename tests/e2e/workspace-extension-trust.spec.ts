@@ -66,7 +66,7 @@ test.beforeEach(async ({ page }) => {
 
 test("workspace extension notice supports review, dismiss, trust, and Settings revoke", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name !== "desktop");
-  await mockWorkspaceTrust(page);
+  const state = await mockWorkspaceTrust(page);
   await page.goto("/");
 
   const notice = page.locator("#workspaceExtensionTrustNotice");
@@ -91,6 +91,7 @@ test("workspace extension notice supports review, dismiss, trust, and Settings r
   await page.locator("#settingsNavExtensions").click();
   const trustSettings = page.locator("#workspaceExtensionTrustSettings");
   await expect(trustSettings.getByText("/workspaces/demo", { exact: true })).toBeVisible();
+  state.busy = true;
   await trustSettings.getByRole("button", { name: "Revoke workspace extension trust for /workspaces/demo" }).click();
   await expect(trustSettings).toContainText("No workspaces are trusted.");
   await expect(trustSettings).toContainText("Loaded sessions must be reloaded");
@@ -99,6 +100,8 @@ test("workspace extension notice supports review, dismiss, trust, and Settings r
   await expect(notice.getByRole("heading", { name: "Workspace resources must be unloaded" })).toBeVisible();
   await expect(notice).toContainText("Workspace trust was revoked. Reload this session to unload them.");
   await expect(notice.getByRole("button", { name: "Reload" })).toBeVisible();
+  await expect(notice.getByRole("button", { name: "Reload" })).toBeDisabled();
+  await expect(notice).toContainText("Wait for the current response or compaction");
 });
 
 test("switching sessions hides stale consent and only trusts the newly reviewed workspace", async ({ page }, testInfo) => {
@@ -221,6 +224,13 @@ test("pending trust changes stay visible, explain busy sessions, and reload expl
   const state = await mockWorkspaceTrust(page);
   await page.goto("/");
   const notice = page.locator("#workspaceExtensionTrustNotice");
+  state.busy = true;
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent("pi-web-workspace-trust-changed")));
+  await expect(notice.getByRole("button", { name: "Trust and load" })).toBeDisabled();
+  await expect(notice).toContainText("Wait for the current response or compaction to finish");
+  state.busy = false;
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent("pi-web-workspace-trust-changed")));
+  await expect(notice.getByRole("button", { name: "Trust and load" })).toBeEnabled();
   await notice.getByRole("button", { name: "Not now" }).click();
 
   state.desiredTrusted = true;

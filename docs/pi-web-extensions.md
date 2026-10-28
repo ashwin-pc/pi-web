@@ -107,7 +107,11 @@ one session does not interrupt or automatically reload other sessions; they
 show a pending notice with an explicit **Reload** action. A pending grant notice
 loads the newly trusted resources, while a pending revoke notice unloads them.
 Reload stays disabled with an explanation while that session is responding or
-compacting, then becomes available when it settles. User-global extensions under
+compacting, then becomes available when it settles. A failed trust-policy reload
+leaves the desired and applied decisions mismatched, so the notice remains
+pending. Unrelated extension load failures remain visible in **Extension
+health** and do not keep a workspace trust notice open after the policy itself
+was applied. User-global extensions under
 `~/.pi/web/extensions`, user-global pi resources, and bundled pi-web extensions
 remain trusted.
 
