@@ -97,7 +97,16 @@ test("authenticated tool-result image previews stay same-origin", async ({ page 
 
   await page.goto(`/?token=${token}`);
 
-  const images = page.locator(".toolCardImage img");
+  const card = page.locator('.toolCard[data-tool-name="read"]');
+  await expect(card).toHaveCount(1);
+  // Compact and minimal density defer images behind visible tool controls.
+  const summary = page.getByRole("button", { name: "Show 1 tool", exact: true });
+  if (await summary.isVisible()) await summary.click();
+  await expect(card).toBeVisible();
+  const details = card.locator(".toolCardExpandToggle");
+  if (await details.isVisible() && await details.getAttribute("aria-expanded") === "false") await details.click();
+
+  const images = card.locator(".toolCardImage img");
   await expect(images).toHaveCount(3);
   await expect(images.nth(0)).toHaveAttribute("alt", "protocol relative (failed to load)");
   await expect(images.nth(1)).toHaveAttribute("alt", "backslash normalized (failed to load)");
