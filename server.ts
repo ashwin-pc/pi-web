@@ -588,6 +588,7 @@ function withAccessLog(
 }
 
 import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { requestIntentFailure } from "./server/auth/requestIntent.js";
 
 async function loginPresentation() {
   const settings = await settingsStore.read();
@@ -652,10 +653,8 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if ((auth.via === "legacy" || auth.via === "external") && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
-      if (auth.via === "session" && !["GET", "HEAD", "OPTIONS"].includes(method)) {
-        const validOrigin = trustedOrigin(req, authOrigin);
-        if (!validOrigin || !req.headers["x-pi-web-client-id"]) return sendJson(res, 403, { ok: false, error: !validOrigin ? originFailureHint : "CSRF validation failed" });
-      }
+      const intentFailure = requestIntentFailure(req, url, auth.via, authOrigin);
+      if (intentFailure) return sendJson(res, 403, { ok: false, error: intentFailure });
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
       if (method === "POST" && url.pathname === "/api/ws-ticket") return sendJson(res, 201, { ticket: authKernel.mintWsTicket(auth.identity, auth.sessionHash), expiresIn: 30 });

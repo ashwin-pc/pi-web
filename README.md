@@ -157,7 +157,9 @@ A shared diff viewer supports side-by-side or stacked layouts with intraline hig
 
 ### Git status, graph, and commit diffs
 
-The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with `fetch` + rebase pull.
+The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with `fetch --prune origin` followed by `pull --rebase --autostash origin <branch>`. The panel inspects the selected repository without recursively executing Git inside its submodule worktrees; dirty submodule worktrees are ignored while changed gitlink commits remain visible. An initialized submodule can still be selected as a repository and inspected directly with the same hardening.
+
+Existing Sync can execute a child repository's clean filter in some submodule layouts. That risk predates this PR. PR #266 implements workspace trust, but does not gate Git Sync. A separate follow-up can use its trust model so untrusted workspaces refuse Sync or neutralize their filters, while trusted workspaces retain normal Sync behavior. PR #258 does not add that integration.
 
 ### Self-aware pi context
 
