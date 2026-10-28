@@ -109,9 +109,11 @@ loads the newly trusted resources, while a pending revoke notice unloads them.
 Reload stays disabled with an explanation while that session is responding or
 compacting, then becomes available when it settles. A failed trust-policy reload
 leaves the desired and applied decisions mismatched, so the notice remains
-pending. Unrelated extension load failures remain visible in **Extension
-health** and do not keep a workspace trust notice open after the policy itself
-was applied. User-global extensions under
+pending. A granted workspace also remains pending when loading falls back to
+the extension-free loader, because no project extensions were applied.
+Unrelated extension load failures remain visible in **Extension health** and
+do not keep a workspace trust notice open after the policy itself was applied.
+User-global extensions under
 `~/.pi/web/extensions`, user-global pi resources, and bundled pi-web extensions
 remain trusted.
 

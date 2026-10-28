@@ -152,7 +152,7 @@ describe("ResilientResourceLoader", () => {
     expect(loader.getAppliedProjectTrust()).toBe(true);
   });
 
-  it("records policy after fallback succeeds and retains it when both reloads fail", async () => {
+  it("keeps grants pending after fallback, clears denied fallback, and preserves prior state when both fail", async () => {
     let trusted = false;
     let factoryCalls = 0;
     const decisions: boolean[] = [];
@@ -167,7 +167,7 @@ describe("ResilientResourceLoader", () => {
       log: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
       createLoader: () => {
         factoryCalls += 1;
-        if (factoryCalls === 3 || factoryCalls === 5 || factoryCalls === 6) {
+        if ([3, 5, 7, 8].includes(factoryCalls)) {
           return fakeLoader({ reload: reload(true) });
         }
         return fakeLoader({ reload: reload(false) });
@@ -180,12 +180,25 @@ describe("ResilientResourceLoader", () => {
     trusted = true;
     await loader.reload();
     expect(loader.getStatus().state).toBe("degraded");
-    expect(loader.getAppliedProjectTrust()).toBe(true);
+    expect({
+      desiredTrusted: trusted,
+      appliedTrusted: loader.getAppliedProjectTrust(),
+      pendingReload: loader.getAppliedProjectTrust() !== trusted,
+    }).toEqual({
+      desiredTrusted: true,
+      appliedTrusted: false,
+      pendingReload: true,
+    });
 
     trusted = false;
+    await loader.reload();
+    expect(loader.getStatus().state).toBe("degraded");
+    expect(loader.getAppliedProjectTrust()).toBe(false);
+
+    trusted = true;
     await expect(loader.reload()).rejects.toThrow("reload failed");
-    expect(loader.getAppliedProjectTrust()).toBe(true);
-    expect(decisions).toEqual([false, true, true, false, false]);
+    expect(loader.getAppliedProjectTrust()).toBe(false);
+    expect(decisions).toEqual([false, true, true, false, false, true, true]);
   });
 
   it("passes the explicit project-trust resolver to both primary and fallback reloads", async () => {

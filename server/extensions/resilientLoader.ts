@@ -129,6 +129,7 @@ export class ResilientResourceLoader implements ResourceLoader {
   private readonly resolveProjectTrust?: () => boolean | Promise<boolean>;
   private readonly fallbackOptions: LoaderOptions;
   private activePrimaryPathsKey = "";
+  /** Whether the last completed load applied project extensions; the extension-free fallback records false. */
   private appliedProjectTrust?: boolean;
   private readonly extendedResources: Array<Parameters<ResourceLoader["extendResources"]>[0]> = [];
   private attempt = 0;
@@ -309,9 +310,7 @@ export class ResilientResourceLoader implements ResourceLoader {
         await fallback.reload(fallbackOptions);
         this.active = fallback;
         this.activeIsPrimary = false;
-        if (projectTrusted !== undefined) {
-          this.appliedProjectTrust = projectTrusted;
-        }
+        this.appliedProjectTrust = false;
       } catch (fallbackError) {
         this.log.error(`[extensions] extension-free fallback failed cwd=${this.primaryOptions.cwd}: ${errorMessage(fallbackError)}`);
         throw fallbackError;
