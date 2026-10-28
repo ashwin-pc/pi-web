@@ -14,10 +14,12 @@ import {
 } from "../server/shared/artifacts.js";
 import { assertDirectory, createDirectory, listDirectories } from "../server/shared/fsList.js";
 import {
-  fetchedGitmodulesConfigArgs,
+  assertNoGitlinks,
   git,
+  gitBuffer,
   gitCommitDetails,
-  gitConfigHardeningArgs,
+  gitConfigEnv,
+  gitConfigHardeningOverrides,
   gitCwdFromRepoParam,
   gitDiff,
   gitLog,
@@ -139,7 +141,7 @@ describe("shared artifact helpers", () => {
 
 describe("shared Git helpers", () => {
   it("keeps trusted authentication commands while replacing repository-controlled commands", () => {
-    const args = gitConfigHardeningArgs([
+    const overrides = gitConfigHardeningOverrides([
       { scope: "global", key: "credential.helper", value: "!trusted-helper" },
       { scope: "global", key: "core.sshcommand", value: "trusted-ssh" },
       { scope: "global", key: "gpg.ssh.defaultKeyCommand", value: "trusted-signing-key-command" },
@@ -161,74 +163,63 @@ describe("shared Git helpers", () => {
       { scope: "local", key: "protocol.ext.allow", value: "always" },
       { scope: "local", key: "remote.origin.proxy", value: "repo-proxy" },
       { scope: "local", key: "remote.origin.vcs", value: "example" },
-      { scope: "local", key: "submodule.child.with space.url", value: "../child" },
-    ], ["committed.child with space"]);
-    expect(args).toEqual(expect.arrayContaining([
-      "-c", "credential.helper=",
-      "-c", "credential.helper=!trusted-helper",
-      "-c", "core.sshcommand=ssh",
-      "-c", "core.sshcommand=trusted-ssh",
-      "-c", "core.askpass=true",
-      "-c", "core.gitproxy=none",
-      "-c", "core.alternateRefsCommand=true",
-      "-c", "gpg.program=gpg",
-      "-c", "gpg.openpgp.program=gpg",
-      "-c", "gpg.x509.program=gpgsm",
-      "-c", "gpg.ssh.program=ssh-keygen",
-      "-c", "gpg.ssh.defaultKeyCommand=true",
-      "-c", "gpg.ssh.defaultKeyCommand=trusted-signing-key-command",
-      "-c", "filter.repo.process=",
-      "-c", "filter.repo.required=false",
-      "-c", "diff.repo.command=false",
-      "-c", "merge.repo.driver=false",
-      "-c", "protocol.allow=user",
-      "-c", "protocol.ext.allow=never",
-      "-c", "remote.origin.proxy=",
-      "-c", "submodule.child.with space.ignore=dirty",
-      "-c", "submodule.committed.child with space.ignore=dirty",
+    ]);
+    expect(overrides).toEqual(expect.arrayContaining([
+      { key: "credential.helper", value: "" },
+      { key: "credential.helper", value: "!trusted-helper" },
+      { key: "core.sshcommand", value: "ssh" },
+      { key: "core.sshcommand", value: "trusted-ssh" },
+      { key: "core.askpass", value: "true" },
+      { key: "core.gitproxy", value: "none" },
+      { key: "core.alternateRefsCommand", value: "true" },
+      { key: "gpg.program", value: "gpg" },
+      { key: "gpg.openpgp.program", value: "gpg" },
+      { key: "gpg.x509.program", value: "gpgsm" },
+      { key: "gpg.ssh.program", value: "ssh-keygen" },
+      { key: "gpg.ssh.defaultKeyCommand", value: "true" },
+      { key: "gpg.ssh.defaultKeyCommand", value: "trusted-signing-key-command" },
+      { key: "filter.repo.process", value: "" },
+      { key: "filter.repo.required", value: "false" },
+      { key: "diff.repo.command", value: "false" },
+      { key: "merge.repo.driver", value: "false" },
+      { key: "protocol.allow", value: "user" },
+      { key: "protocol.ext.allow", value: "never" },
+      { key: "remote.origin.proxy", value: "" },
     ]));
-    expect(args.join("\0")).not.toContain("repo-helper");
-    expect(args.join("\0")).not.toContain("repo-ssh");
-    expect(args.join("\0")).not.toContain("repo-filter");
-    expect(args.join("\0")).not.toContain("repo-merge");
-    expect(args.join("\0")).not.toContain("repo-proxy");
-    expect(args.join("\0")).not.toContain("repo-alternates");
-    expect(args.join("\0")).not.toContain("repo-gpg");
-    expect(args.join("\0")).not.toContain("repo-openpgp");
-    expect(args.join("\0")).not.toContain("repo-x509");
-    expect(args.join("\0")).not.toContain("repo-signing-ssh");
-    expect(args.join("\0")).not.toContain("repo-signing-key-command");
-    expect(args.join("\0")).not.toContain("protocol.allow=never");
-    expect(args.join("\0")).not.toContain("remote.origin.vcs=");
+    const serialized = JSON.stringify(overrides);
+    for (const unsafe of [
+      "repo-helper", "repo-ssh", "repo-filter", "repo-merge", "repo-proxy", "repo-alternates",
+      "repo-gpg", "repo-openpgp", "repo-x509", "repo-signing-ssh", "repo-signing-key-command",
+    ]) expect(serialized).not.toContain(unsafe);
 
-    const defaults = gitConfigHardeningArgs([]);
+    const defaults = gitConfigHardeningOverrides([]);
     expect(defaults).toEqual(expect.arrayContaining([
-      "-c", "submodule.recurse=false",
-      "-c", "fetch.recurseSubmodules=false",
-      "-c", "diff.ignoreSubmodules=dirty",
-      "-c", "status.submoduleSummary=false",
-      "-c", "diff.submodule=short",
+      { key: "submodule.recurse", value: "false" },
+      { key: "fetch.recurseSubmodules", value: "false" },
+      { key: "diff.ignoreSubmodules", value: "dirty" },
+      { key: "status.submoduleSummary", value: "false" },
+      { key: "diff.submodule", value: "short" },
     ]));
-    expect(defaults.join("\0")).not.toContain("core.sshcommand=");
-    expect(defaults.join("\0")).not.toContain("core.askpass=");
+    expect(defaults.map(({ key }) => key.toLowerCase())).not.toContain("core.sshcommand");
+    expect(defaults.map(({ key }) => key.toLowerCase())).not.toContain("core.askpass");
     expect(defaults).toEqual(expect.arrayContaining([
-      "-c", "core.fsmonitor=false",
-      "-c", "core.gitproxy=none",
-      "-c", "core.alternateRefsCommand=true",
-      "-c", "gpg.program=gpg",
-      "-c", "gpg.openpgp.program=gpg",
-      "-c", "gpg.x509.program=gpgsm",
-      "-c", "gpg.ssh.program=ssh-keygen",
-      "-c", "gpg.ssh.defaultKeyCommand=true",
+      { key: "core.fsmonitor", value: "false" },
+      { key: "core.gitproxy", value: "none" },
+      { key: "core.alternateRefsCommand", value: "true" },
+      { key: "gpg.program", value: "gpg" },
+      { key: "gpg.openpgp.program", value: "gpg" },
+      { key: "gpg.x509.program", value: "gpgsm" },
+      { key: "gpg.ssh.program", value: "ssh-keygen" },
+      { key: "gpg.ssh.defaultKeyCommand", value: "true" },
     ]));
 
-    const trustedProtocol = gitConfigHardeningArgs([
+    const trustedProtocol = gitConfigHardeningOverrides([
       { scope: "global", key: "protocol.allow", value: "always" },
       { scope: "local", key: "protocol.example.allow", value: "never" },
     ]);
-    expect(trustedProtocol).toEqual(expect.arrayContaining(["-c", "protocol.example.allow=always"]));
+    expect(trustedProtocol).toContainEqual({ key: "protocol.example.allow", value: "always" });
 
-    expect(() => gitConfigHardeningArgs([
+    expect(() => gitConfigHardeningOverrides([
       { scope: "local", key: "remote.ipv6.url", value: "git@[::1]:repo.git" },
       { scope: "local", key: "remote.local.url", value: "../repos/with::separator.git" },
       { scope: "local", key: "url.https://[::1]/mirror/.insteadOf", value: "mirror:" },
@@ -237,35 +228,100 @@ describe("shared Git helpers", () => {
       { scope: "local", key: "remote.hg.vcs", value: "hg" },
       { scope: "local", key: "remote.s3.vcs", value: "s3" },
     ])).not.toThrow();
-    expect(() => gitConfigHardeningArgs([
+    expect(() => gitConfigHardeningOverrides([
       { scope: "local", key: "remote.control.vcs", value: "example\nhelper" },
     ])).toThrow("Unsafe Git remote helper identifier");
   });
 
-  it("hardens the fetched .gitmodules metadata read before Git can lazily fetch its blob", () => {
-    const baseHardeningArgs = gitConfigHardeningArgs([
-      { scope: "global", key: "core.sshcommand", value: "trusted-ssh" },
-      { scope: "local", key: "core.sshcommand", value: "repository-ssh" },
-      { scope: "local", key: "credential.helper", value: "!repository-helper" },
-      { scope: "local", key: "submodule.current.ignore", value: "none" },
-    ], ["current"]);
-
-    const args = fetchedGitmodulesConfigArgs(baseHardeningArgs);
-    expect(args.slice(0, baseHardeningArgs.length)).toEqual(baseHardeningArgs);
-    expect(args).toEqual(expect.arrayContaining([
-      "-c", "core.sshcommand=ssh",
-      "-c", "core.sshcommand=trusted-ssh",
-      "-c", "credential.helper=",
-      "-c", "submodule.current.ignore=dirty",
-      "-c", "submodule.recurse=false",
-      "-c", "fetch.recurseSubmodules=false",
-    ]));
-    expect(args.slice(baseHardeningArgs.length)).toEqual([
-      "--no-optional-locks",
-      "config", "--blob=FETCH_HEAD:.gitmodules", "--null", "--name-only", "--get-regexp", "^submodule\\..*\\.path$",
+  it("preserves exact filter subsection casing for required overrides", () => {
+    const overrides = gitConfigHardeningOverrides([
+      { scope: "global", key: "filter.foo.required", value: "true" },
+      { scope: "local", key: "filter.Foo.clean", value: "repository-Foo" },
+      { scope: "local", key: "filter.Foo.required", value: "true" },
+      { scope: "local", key: "filter.foo.clean", value: "repository-foo" },
+      { scope: "local", key: "filter.foo.required", value: "true" },
     ]);
-    expect(args.join("\0")).not.toContain("repository-ssh");
-    expect(args.join("\0")).not.toContain("repository-helper");
+
+    expect(overrides).toContainEqual({ key: "filter.Foo.required", value: "false" });
+    expect(overrides).toContainEqual({ key: "filter.foo.required", value: "false" });
+    expect(overrides).toContainEqual({ key: "filter.foo.required", value: "true" });
+    expect(overrides.filter(({ key }) => key === "filter.Foo.required")).toEqual([
+      { key: "filter.Foo.required", value: "false" },
+    ]);
+  });
+
+  it("re-encodes bootstrap command config before hardening and clears inherited namespaces", () => {
+    const env = gitConfigEnv([
+      { key: "filter.a=b.clean", value: "" },
+      { key: "filter.a=b.required", value: "false" },
+    ], {
+      PATH: "/trusted/bin",
+      GIT_CONFIG_PARAMETERS: "'filter.a=b.required=true'",
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "stale",
+      GIT_CONFIG_KEY_1: "filter.a=b.required",
+      GIT_CONFIG_VALUE_1: "true",
+      GIT_CONFIG_KEY_9: "stale.key",
+      GIT_CONFIG_VALUE_9: "stale-value",
+    }, [
+      { key: "user.name", value: "Parameters caller" },
+      { key: "user.email", value: "count@example.test" },
+    ]);
+    expect(env).toMatchObject({
+      PATH: "/trusted/bin",
+      GIT_CONFIG_COUNT: "4",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "Parameters caller",
+      GIT_CONFIG_KEY_1: "user.email",
+      GIT_CONFIG_VALUE_1: "count@example.test",
+      GIT_CONFIG_KEY_2: "filter.a=b.clean",
+      GIT_CONFIG_VALUE_2: "",
+      GIT_CONFIG_KEY_3: "filter.a=b.required",
+      GIT_CONFIG_VALUE_3: "false",
+    });
+    expect(env.GIT_CONFIG_PARAMETERS).toBeUndefined();
+    expect(env.GIT_CONFIG_KEY_9).toBeUndefined();
+    expect(env.GIT_CONFIG_VALUE_9).toBeUndefined();
+  });
+
+  it("parses only Git mode fields when checking trees and raw history", () => {
+    const hash = "1".repeat(40);
+    expect(() => assertNoGitlinks(
+      `100644 blob ${hash}\tflat 160000 name.txt\0`,
+      "a tree",
+      "tree",
+    )).not.toThrow();
+    expect(() => assertNoGitlinks(
+      `\n:100644 100644 ${hash} ${hash} M\0:160000 160000 path spoof\0`,
+      "raw history",
+      "raw",
+    )).not.toThrow();
+    expect(() => assertNoGitlinks(
+      `:100644 160000 ${hash} ${hash} M\0ordinary-path\0`,
+      "raw history",
+      "raw",
+    )).toThrow(/raw history/);
+  });
+
+  it("normalizes inherited parameter and indexed config for text and buffer Git calls", async () => {
+    const cwd = await makeRepo();
+    await withIsolatedGitConfig(() =>
+      withEnv("GIT_CONFIG_PARAMETERS", "'user.name=Parameters Caller' 'core.hooksPath=/parameter-hooks'", () =>
+        withEnv("GIT_CONFIG_COUNT", "2", () =>
+          withEnv("GIT_CONFIG_KEY_0", "user.email", () =>
+            withEnv("GIT_CONFIG_VALUE_0", "count@example.test", () =>
+              withEnv("GIT_CONFIG_KEY_1", "core.fsmonitor", () =>
+                withEnv("GIT_CONFIG_VALUE_1", "parameter-fsmonitor", async () => {
+                  await expect(git(["config", "--get", "user.name"], 15_000, cwd))
+                    .resolves.toMatchObject({ stdout: "Parameters Caller\n" });
+                  await expect(git(["config", "--get", "user.email"], 15_000, cwd))
+                    .resolves.toMatchObject({ stdout: "count@example.test\n" });
+                  await expect(git(["config", "--get", "core.fsmonitor"], 15_000, cwd))
+                    .resolves.toMatchObject({ stdout: "false\n" });
+                  await expect(gitBuffer(["config", "--get", "core.hooksPath"], 15_000, cwd))
+                    .resolves.toEqual(Buffer.from("/dev/null\n"));
+                })))))));
   });
 
   it("keeps a trusted global credential helper usable without running the repository helper", async () => {
@@ -275,14 +331,15 @@ describe("shared Git helpers", () => {
     const repositoryMarker = join(cwd, "repository-helper-executed");
     await writeFile(trustedHelper, 'process.stdin.resume(); process.stdin.on("end", () => process.stdout.write("username=trusted\\npassword=secret\\n"));\n');
     await writeFile(repositoryHelper, `require("node:fs").writeFileSync(${JSON.stringify(repositoryMarker)}, "executed");\n`);
-    const args = gitConfigHardeningArgs([
+    const overrides = gitConfigHardeningOverrides([
       { scope: "global", key: "credential.helper", value: `!${JSON.stringify(process.execPath)} ${JSON.stringify(trustedHelper)}` },
       { scope: "local", key: "credential.helper", value: `!${JSON.stringify(process.execPath)} ${JSON.stringify(repositoryHelper)}` },
     ]);
-    const output = execFileSync("git", [...args, "credential", "fill"], {
+    const output = execFileSync("git", ["credential", "fill"], {
       cwd,
       encoding: "utf8",
       input: "protocol=https\nhost=example.test\n\n",
+      env: gitConfigEnv(overrides),
     });
 
     expect(output).toContain("username=trusted");
@@ -331,6 +388,25 @@ describe("shared Git helpers", () => {
     await expect(access(diffMarker)).rejects.toThrow();
     await expect(access(driverMarker)).rejects.toThrow();
     await expect(access(textconvMarker)).rejects.toThrow();
+  });
+
+  it("neutralizes a repository filter whose name contains an equals sign", async () => {
+    const cwd = await makeRepo();
+    const marker = join(cwd, "equals-filter-executed");
+    const filter = join(cwd, "equals-filter.cjs");
+    await writeFile(filter, `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "executed"); process.stdin.pipe(process.stdout);\n`);
+    runGit(cwd, "config", "filter.a=b.clean", `"${process.execPath}" "${filter}"`);
+    runGit(cwd, "config", "filter.a=b.required", "true");
+    await writeFile(join(cwd, ".gitattributes"), "tracked.txt filter=a=b\n");
+    await writeFile(join(cwd, "tracked.txt"), "second\n");
+
+    await expect(gitStatus(cwd)).resolves.toMatchObject({
+      ok: true,
+      isRepo: true,
+      files: expect.arrayContaining([expect.objectContaining({ path: "tracked.txt", label: "modified" })]),
+    });
+    await expect(gitSync(cwd)).rejects.toThrow(/repository-scoped filter driver config \(filter\.a=b\.clean\)/);
+    await expect(access(marker)).rejects.toThrow();
   });
 
   it("preserves a trusted global required filter while suppressing the repository filter", async () => {
@@ -577,6 +653,44 @@ signed fixture
     runGit(cwd, "push", "-u", "origin", "main");
     await expect(gitSync(cwd)).resolves.toMatchObject({ ok: true, status: { isRepo: true, branch: "main" } });
   }, 15_000);
+
+  it("syncs an advancing flat repository with a dirty parent from a nested directory", async () => {
+    const cwd = await makeRepo();
+    const remote = await tempDir("pi-web-shared-git-flat-remote-");
+    const updater = await tempDir("pi-web-shared-git-flat-updater-");
+    const nested = join(cwd, "nested");
+    const treeSpoof = "flat 160000 name.txt";
+    const rawSpoof = ":160000 160000 path spoof.txt";
+    await writeFile(join(cwd, treeSpoof), "ordinary tracked file\n");
+    runGit(cwd, "add", treeSpoof);
+    runGit(cwd, "commit", "-m", "add mode-like filename");
+    runGit(remote, "init", "--bare", "-b", "main");
+    runGit(cwd, "remote", "add", "origin", remote);
+    runGit(cwd, "push", "-u", "origin", "main");
+    await writeFile(join(cwd, rawSpoof), "ordinary replayed file\n");
+    runGit(cwd, "--literal-pathspecs", "add", rawSpoof);
+    runGit(cwd, "commit", "-m", "add raw-metadata-like filename");
+    runGit(updater, "clone", remote, ".");
+    runGit(updater, "config", "user.name", "Pi Web Tests");
+    runGit(updater, "config", "user.email", "pi-web@example.test");
+    await writeFile(join(updater, "remote.txt"), "remote advance\n");
+    runGit(updater, "add", "remote.txt");
+    runGit(updater, "commit", "-m", "remote advance");
+    runGit(updater, "push", "origin", "main");
+    await mkdir(nested);
+    await writeFile(join(cwd, "tracked.txt"), "preserved local edit\n");
+
+    await expect(gitSync(nested)).resolves.toMatchObject({
+      ok: true,
+      status: {
+        root: cwd,
+        files: expect.arrayContaining([expect.objectContaining({ path: "tracked.txt", label: "modified" })]),
+      },
+    });
+    await expect(access(join(cwd, "remote.txt"))).resolves.toBeUndefined();
+    await expect(access(join(cwd, treeSpoof))).resolves.toBeUndefined();
+    await expect(access(join(cwd, rawSpoof))).resolves.toBeUndefined();
+  });
 
   it("allows contained image symlinks but rejects escapes and non-files", async () => {
     const cwd = await makeRepo();

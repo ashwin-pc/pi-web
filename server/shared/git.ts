@@ -3,217 +3,17 @@ import { existsSync } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import {
+  gitConfigEnv,
+  gitConfigHardeningOverrides,
+  loadGitExecution,
+  type GitConfigEntry,
+  type GitExecution,
+} from "./gitExecution.js";
 
 const execFileAsync = promisify(execFile);
-
-type GitConfigEntry = { scope: string; key: string; value: string };
-const trustedConfigScopes = new Set(["system", "global"]);
-// Keep these defaults and the dynamic patterns below complete for executable
-// configuration reachable through this module's status/log/diff/show/fetch/pull commands.
-const unconditionalExecutableConfigDefaults = new Map([
-  ["core.fsmonitor", "false"],
-  ["core.gitproxy", "none"],
-  ["core.alternateRefsCommand", "true"],
-  ["gpg.program", "gpg"],
-  ["gpg.openpgp.program", "gpg"],
-  ["gpg.x509.program", "gpgsm"],
-  ["gpg.ssh.program", "ssh-keygen"],
-  ["gpg.ssh.defaultKeyCommand", "true"],
-]);
-const conditionalExecutableConfigDefaults = new Map([
-  ["core.sshCommand", "ssh"],
-  ["core.askPass", "true"],
-]);
-const defaultProtocolPolicies = new Map([
-  ["protocol.allow", "user"],
-  ["protocol.ext.allow", "never"],
-  ["protocol.git.allow", "always"],
-  ["protocol.http.allow", "always"],
-  ["protocol.https.allow", "always"],
-  ["protocol.ssh.allow", "always"],
-]);
-const remoteHelperIdentifier = /^[A-Za-z][A-Za-z0-9+.-]*$/;
-
-function parseGitConfig(output: string): GitConfigEntry[] {
-  const fields = output.split("\0");
-  const entries: GitConfigEntry[] = [];
-  for (let index = 0; index + 1 < fields.length; index += 2) {
-    const scope = fields[index] || "";
-    const separator = fields[index + 1].indexOf("\n");
-    const key = separator < 0 ? fields[index + 1] : fields[index + 1].slice(0, separator);
-    const value = separator < 0 ? "" : fields[index + 1].slice(separator + 1);
-    if (scope && key) entries.push({ scope, key, value });
-  }
-  return entries;
-}
-
-function assertSafeRemoteHelper(identifier: string) {
-  if (!remoteHelperIdentifier.test(identifier)) {
-    throw new Error(`Unsafe Git remote helper identifier: ${JSON.stringify(identifier)}`);
-  }
-}
-
-function assertSafeRemoteConfig(entries: GitConfigEntry[]) {
-  for (const entry of entries) {
-    const normalized = entry.key.toLowerCase();
-    if (/^remote\..+\.vcs$/.test(normalized)) assertSafeRemoteHelper(entry.value);
-  }
-}
-
-function submoduleName(key: string, variablePattern: string) {
-  return key.match(new RegExp(`^submodule\\.(.+)\\.${variablePattern}$`, "i"))?.[1];
-}
-
-function submoduleNamesFromKeys(keys: Iterable<string>, variablePattern = "[^.]+") {
-  return new Set(Array.from(keys, (key) => submoduleName(key, variablePattern)).filter((name): name is string => Boolean(name)));
-}
-
-export function gitConfigHardeningArgs(entries: GitConfigEntry[], fileSubmoduleNames: Iterable<string> = []): string[] {
-  assertSafeRemoteConfig(entries);
-  const trusted = entries.filter((entry) => trustedConfigScopes.has(entry.scope));
-  const repository = entries.filter((entry) => entry.scope === "local" || entry.scope === "worktree");
-  const args: string[] = [];
-  const repositoryKeys = new Map(repository.map((entry) => [entry.key.toLowerCase(), entry.key]));
-  const trustedProtocolAllow = trusted.filter((entry) => entry.key.toLowerCase() === "protocol.allow").at(-1)?.value;
-  const resetToTrusted = (key: string, fallback: string) => {
-    args.push("-c", `${key}=${fallback}`);
-    for (const entry of trusted) if (entry.key.toLowerCase() === key.toLowerCase()) args.push("-c", `${entry.key}=${entry.value}`);
-  };
-  const safeFallback = (key: string) => {
-    if (key === "protocol.allow") return "user";
-    if (key.startsWith("protocol.")) return trustedProtocolAllow ?? defaultProtocolPolicies.get(key) ?? "user";
-    if (key.endsWith(".uploadpack")) return "git-upload-pack";
-    if (key.endsWith(".receivepack")) return "git-receive-pack";
-    if (key.endsWith(".proxy")) return "";
-    if (key.startsWith("diff.") || key.startsWith("merge.")) return "false";
-    return "";
-  };
-  // Default repository hooks are executable even without an explicit config key.
-  resetToTrusted("core.hookspath", "/dev/null");
-  // Commands inspect only the selected repository. Forward display policy as
-  // config too, because pull/rebase/autostash can spawn status and diff commands
-  // that do not inherit command-line flags from the parent Git process.
-  args.push(
-    "-c", "submodule.recurse=false",
-    "-c", "fetch.recurseSubmodules=false",
-    "-c", "diff.ignoreSubmodules=dirty",
-    "-c", "status.submoduleSummary=false",
-    "-c", "diff.submodule=short",
-  );
-  for (const name of new Set([...submoduleNamesFromKeys(entries.map((entry) => entry.key)), ...fileSubmoduleNames])) {
-    args.push("-c", `submodule.${name}.ignore=dirty`);
-  }
-  for (const [key, fallback] of unconditionalExecutableConfigDefaults) {
-    resetToTrusted(key, fallback);
-  }
-  for (const [key, fallback] of conditionalExecutableConfigDefaults) {
-    const repositoryKey = repositoryKeys.get(key.toLowerCase());
-    if (repositoryKey) resetToTrusted(repositoryKey, fallback);
-  }
-  const neutralizedFilters = new Set<string>();
-  for (const key of new Set(repository.map((entry) => entry.key).filter((key) => {
-    const normalized = key.toLowerCase();
-    return normalized === "credential.helper" ||
-      /^credential\..+\.helper$/.test(normalized) ||
-      /^filter\..+\.(?:clean|smudge|process)$/.test(normalized) ||
-      normalized === "diff.external" ||
-      /^diff\..+\.(?:command|textconv)$/.test(normalized) ||
-      /^merge\..+\.driver$/.test(normalized) ||
-      normalized === "protocol.allow" ||
-      /^protocol\..+\.allow$/.test(normalized) ||
-      /^remote\..+\.(?:proxy|uploadpack|receivepack)$/.test(normalized);
-  }))) {
-    const normalized = key.toLowerCase();
-    if (normalized.startsWith("filter.")) neutralizedFilters.add(normalized.split(".").slice(0, -1).join("."));
-    resetToTrusted(key, safeFallback(normalized));
-  }
-  for (const filter of neutralizedFilters) {
-    const requiredKey = repositoryKeys.get(`${filter}.required`) ?? `${filter}.required`;
-    resetToTrusted(requiredKey, "false");
-  }
-  if (repositoryKeys.has("protocol.allow") && trustedProtocolAllow === undefined) {
-    for (const [key, fallback] of defaultProtocolPolicies) {
-      if (key === "protocol.allow" || repositoryKeys.has(key)) continue;
-      resetToTrusted(key, fallback);
-    }
-  }
-  return args;
-}
-
-async function gitmodulesSubmoduleNames(cwd: string) {
-  if (!existsSync(join(cwd, ".gitmodules"))) return new Set<string>();
-  try {
-    const { stdout } = await execFileAsync("git", [
-      "config", "-f", ".gitmodules", "--null", "--name-only", "--get-regexp", "^submodule\\..*\\.path$",
-    ], {
-      cwd,
-      timeout: 15_000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    return submoduleNamesFromKeys(stdout.split("\0").filter(Boolean), "path");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException & { code?: number }).code === 1) return new Set<string>();
-    throw error;
-  }
-}
-
-export function fetchedGitmodulesConfigArgs(baseHardeningArgs: string[]) {
-  return [
-    ...baseHardeningArgs,
-    "--no-optional-locks",
-    "config", "--blob=FETCH_HEAD:.gitmodules", "--null", "--name-only", "--get-regexp", "^submodule\\..*\\.path$",
-  ];
-}
-
-async function fetchedGitmodulesSubmoduleNames(cwd: string, baseHardeningArgs: string[]) {
-  try {
-    const { stdout } = await execFileAsync("git", fetchedGitmodulesConfigArgs(baseHardeningArgs), {
-      cwd,
-      timeout: 15_000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
-    return submoduleNamesFromKeys(stdout.split("\0").filter(Boolean), "path");
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException & { code?: number }).code;
-    if (code === 1 || code === 128) return new Set<string>();
-    throw error;
-  }
-}
-
-async function gitArgs(args: string[], cwd: string) {
-  const [command, ...commandArgs] = args;
-  const [{ stdout }, fileSubmoduleNames] = await Promise.all([
-    execFileAsync("git", ["config", "--null", "--show-scope", "--list"], {
-      cwd,
-      timeout: 15_000,
-      maxBuffer: 10 * 1024 * 1024,
-    }),
-    gitmodulesSubmoduleNames(cwd),
-  ]);
-  const configEntries = parseGitConfig(stdout);
-  const baseHardeningArgs = gitConfigHardeningArgs(configEntries, fileSubmoduleNames);
-  const fetchedSubmoduleNames = command === "pull"
-    ? await fetchedGitmodulesSubmoduleNames(cwd, baseHardeningArgs)
-    : new Set<string>();
-  const displayHardening = ["diff", "show", "log"].includes(command) ? ["--no-ext-diff", "--no-textconv"] : [];
-  const signatureHardening = ["show", "log"].includes(command) ? ["--no-show-signature"] : [];
-  const submoduleDisplayPolicy = ["status", "diff"].includes(command) ? ["--ignore-submodules=dirty"] : [];
-  const submoduleNetworkPolicy = ["fetch", "pull"].includes(command) ? ["--no-recurse-submodules"] : [];
-  return [
-    ...gitConfigHardeningArgs(configEntries, new Set([...fileSubmoduleNames, ...fetchedSubmoduleNames])),
-    "--no-optional-locks",
-    command,
-    ...displayHardening,
-    ...signatureHardening,
-    ...submoduleDisplayPolicy,
-    ...submoduleNetworkPolicy,
-    ...commandArgs,
-  ];
-}
-
-function gitEnv(): NodeJS.ProcessEnv {
-  return { ...process.env, GIT_TERMINAL_PROMPT: "0" };
-}
+export { gitConfigEnv, gitConfigHardeningOverrides };
+export type { GitConfigEntry };
 
 export interface GitFileStatus {
   path: string;
@@ -225,17 +25,19 @@ export interface GitFileStatus {
 }
 
 export async function git(args: string[], timeout = 15_000, cwd = process.cwd()) {
-  return execFileAsync("git", await gitArgs(args, cwd), { cwd, timeout, maxBuffer: 10 * 1024 * 1024, env: gitEnv() });
+  const execution = await loadGitExecution(cwd);
+  return execFileAsync("git", execution.args(args), { cwd, timeout, maxBuffer: 10 * 1024 * 1024, env: execution.env });
 }
 
 export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.cwd()) {
+  const execution = await loadGitExecution(cwd);
   return new Promise<Buffer>((resolvePromise, reject) => {
-    gitArgs(args, cwd).then((hardenedArgs) => execFile("git", hardenedArgs, {
+    execFile("git", execution.args(args), {
       cwd,
       timeout,
       maxBuffer: 50 * 1024 * 1024,
       encoding: "buffer",
-      env: gitEnv(),
+      env: execution.env,
     }, (error, stdout) => {
       if (error) {
         (error as Error & { stdout?: Buffer }).stdout = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
@@ -243,8 +45,12 @@ export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.
         return;
       }
       resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
-    }), reject);
+    });
   });
+}
+
+function runGitExecution(execution: GitExecution, args: string[], cwd: string, timeout = 15_000, maxBuffer = 10 * 1024 * 1024) {
+  return execFileAsync("git", execution.args(args), { cwd, timeout, maxBuffer, env: execution.env });
 }
 
 export async function isGitRepo(cwd = process.cwd()) {
@@ -468,11 +274,91 @@ export async function gitDiff(options: { cwd: string; path: string; staged: bool
   return { ok: true as const, path: filePath, staged: options.staged, diff: stdout };
 }
 
+const syncFilterConfigPattern = /^filter\..+\.(?:clean|smudge|process)$/i;
+
+function assertSyncConfigSafe(entries: GitConfigEntry[]) {
+  const filter = entries.find((entry) =>
+    (entry.scope === "local" || entry.scope === "worktree") && syncFilterConfigPattern.test(entry.key));
+  if (filter) {
+    throw new Error(
+      `Sync refused: repository-scoped filter driver config (${filter.key}) could run during autostash or rebase. ` +
+      "Remove the repository filter command or sync this checkout outside pi-web.",
+    );
+  }
+}
+
+export function assertNoGitlinks(output: string, source: string, format: "tree" | "raw") {
+  let hasGitlink = false;
+  if (format === "tree") {
+    hasGitlink = output.split("\0").some((record) => /^160000[ \t]/.test(record));
+  } else {
+    let expectPath = false;
+    for (const record of output.split("\0")) {
+      if (expectPath) {
+        expectPath = false;
+        continue;
+      }
+      const metadata = record.trimStart();
+      if (!metadata) continue;
+      const modes = metadata.match(/^:(\d{6}) (\d{6}) /);
+      if (!modes) continue;
+      if (modes[1] === "160000" || modes[2] === "160000") {
+        hasGitlink = true;
+        break;
+      }
+      expectPath = true;
+    }
+  }
+  if (hasGitlink) {
+    throw new Error(
+      `Sync refused: submodule gitlinks are present in ${source} and could enter autostash or rebase. ` +
+      "Preserve local changes and sync this repository outside pi-web.",
+    );
+  }
+}
+
 export async function gitSync(cwd: string) {
-  const status = await gitStatus(cwd);
-  const branch = status.isRepo ? status.branch : "";
+  const execution = await loadGitExecution(cwd);
+  assertSyncConfigSafe(execution.entries);
+  const { stdout: rootOut } = await runGitExecution(execution, ["rev-parse", "--show-toplevel"], cwd);
+  const root = rootOut.trim();
+  const { stdout: branchOut } = await runGitExecution(execution, ["branch", "--show-current"], root);
+  const branch = branchOut.trim();
   if (!branch) throw new Error("Cannot sync detached HEAD");
-  const fetchResult = await git(["fetch", "--prune", "origin"], 60_000, cwd);
-  const pullResult = await git(["pull", "--rebase", "--autostash", "origin", branch], 120_000, cwd);
-  return { ok: true as const, output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`, status: await gitStatus(cwd) };
+
+  const [indexBefore, headBefore] = await Promise.all([
+    runGitExecution(execution, ["ls-files", "--stage", "-z"], root),
+    runGitExecution(execution, ["ls-tree", "-r", "-z", "HEAD"], root),
+  ]);
+  assertNoGitlinks(indexBefore.stdout, "the index", "tree");
+  assertNoGitlinks(headBefore.stdout, "HEAD", "tree");
+
+  const targetRef = `refs/remotes/origin/${branch}`;
+  const fetchResult = await runGitExecution(
+    execution,
+    ["fetch", "--prune", "origin", `+refs/heads/${branch}:${targetRef}`],
+    root,
+    60_000,
+  );
+  const { stdout: targetOut } = await runGitExecution(execution, ["rev-parse", "--verify", `${targetRef}^{commit}`], root);
+  const target = targetOut.trim();
+  if (!/^[a-f0-9]{40,64}$/i.test(target)) throw new Error("Sync refused: fetched branch did not resolve to one commit");
+
+  const [indexResult, headResult, targetResult, replayResult] = await Promise.all([
+    runGitExecution(execution, ["ls-files", "--stage", "-z"], root),
+    runGitExecution(execution, ["ls-tree", "-r", "-z", "HEAD"], root),
+    runGitExecution(execution, ["ls-tree", "-r", "-z", target], root),
+    runGitExecution(execution, ["log", "--no-color", "--format=", "--raw", "--no-renames", "-z", `${target}..HEAD`], root),
+  ]);
+  assertNoGitlinks(indexResult.stdout, "the index", "tree");
+  assertNoGitlinks(headResult.stdout, "HEAD", "tree");
+  assertNoGitlinks(targetResult.stdout, "the fetched target", "tree");
+  assertNoGitlinks(replayResult.stdout, "local commits that would be replayed", "raw");
+
+  const rebaseResult = await runGitExecution(execution, ["rebase", "--autostash", target], root, 120_000);
+  return {
+    ok: true as const,
+    output: `${fetchResult.stdout}${fetchResult.stderr}${rebaseResult.stdout}${rebaseResult.stderr}`,
+    status: await gitStatus(root),
+  };
 }
