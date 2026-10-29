@@ -420,7 +420,7 @@ describe("compact inactive composer styling", () => {
     expect(css).toContain(".modelSettingsModelName,");
     expect(css).toContain(".modelSettingsCurrent {");
     expect(css).toContain(".modelSettingsCurrentValue {");
-    expect(css).toContain(`${compactSelector} #attachButton,\n${compactSelector} .composerCaptureButton,\n${compactSelector} .composerCaptureCancel,\n${compactSelector} #stopButton {`);
+    expect(css).toContain(`${compactSelector} #attachButton,\n${compactSelector} .composerCaptureButton,\n${compactSelector} .composerCaptureCancel,\n${compactSelector} #stopButton,\n${compactSelector} #primaryButton {`);
     expect(css).not.toContain(`${compactSelector} #stopButton {\n  display: none !important;`);
   });
 
@@ -438,7 +438,7 @@ describe("compact inactive composer styling", () => {
   });
 
   it("hides nonessential inactive controls until focus", () => {
-    expect(css).toContain(`${compactSelector} .expandButton,\n${compactSelector} #queueToggle,\n${compactSelector} #primaryButton {\n  display: none !important;\n}`);
+    expect(css).toContain(`${compactSelector} .expandButton,\n${compactSelector} #queueToggle {\n  display: none !important;\n}`);
   });
 
   it("sets or restores the compact inactive state during composer initialization", () => {
@@ -453,6 +453,7 @@ describe("compact inactive composer styling", () => {
     const compactInteractions = readFileSync(new URL("../src/composer/compactInteractions.ts", import.meta.url), "utf8");
     expect(composer).toContain("bindCompactInactiveAction(elements.attachButton");
     expect(composer).toContain("bindCompactInactiveAction(elements.stopButton");
+    expect(composer).toContain("bindCompactInactiveAction(elements.primaryButton");
     expect(compactInteractions).toContain("target.addEventListener(\"pointerdown\", handlePress)");
     expect(compactInteractions).toContain("target.addEventListener(\"mousedown\", handlePress)");
     expect(compactInteractions).toContain("target.addEventListener(\"touchstart\", handlePress, { passive: false })");

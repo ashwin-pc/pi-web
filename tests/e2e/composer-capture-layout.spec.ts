@@ -137,7 +137,7 @@ test("a 44px CSS chrome contract drives the real resolving handoff and final lay
   expect(first.queueWidthFrames).toContain("0px");
   expect(first.queueWidthFrames).toContain("44px");
   expect(first.queue.width).toBeLessThanOrEqual(2);
-  expect(first.send.width).toBeLessThanOrEqual(2);
+  expect(first.send.width).toBe(38);
 
   await expect(page.locator("#promptForm")).toHaveAttribute("data-capture-phase", "idle");
   await expect(page.locator("#promptForm")).not.toHaveAttribute("data-capture-chrome", /.+/, { timeout: 2_000 });
