@@ -64,6 +64,8 @@ function drawBar(ctx, p) {
     ctx.font = font(px(BAR.TITLE_DEG), 650, SANS);
     let w = wrapWhole(ctx, s.title, cw - 26, 2);
     if (w.cut && s.short) w = wrapWhole(ctx, s.short, cw - 26, 2);
+    // A word longer than the cell is shortened (whole words otherwise), so neighbouring titles never overlap.
+    w = {...w, lines: w.lines.map((ln) => (ctx.measureText(ln).width > cw - 20 ? ellipsize(ctx, ln, cw - 20) : ln))};
     const tc = k === 'idle' ? C.muted : '#f2f2f2', titled = true;
     w.lines.forEach((ln, j) => text(ctx, ln, cx, y + px(4.65) + j * px(1.05), {size: px(BAR.TITLE_DEG), weight: 650, color: tc, align: 'center'}));
     if (cur) fillRR(ctx, cx - cw * 0.3, y + rh - 16, cw * 0.6, 5, 2.5, C.accent);
