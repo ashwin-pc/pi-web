@@ -25,7 +25,6 @@ let context: SupervisorPeerContext = {
   tunnelSocketEnabled: false,
 };
 
-const tunnelRequests = new WeakSet<IncomingMessage>();
 const reservedHeaders = new Set([
   SUPERVISOR_PEER_HEADER,
   SUPERVISOR_ORIGIN_HEADER,
@@ -82,14 +81,6 @@ export function stampSupervisorProvenance(
   req.headers[SUPERVISOR_SECRET_HEADER] = secret;
 }
 
-export function markTunnelRequest(req: IncomingMessage): void {
-  tunnelRequests.add(req);
-}
-
-export function isLocalTunnelRequest(req: IncomingMessage): boolean {
-  return tunnelRequests.has(req);
-}
-
 function authenticatedSupervisorProvenance(
   req: Pick<IncomingMessage, "headers" | "socket">,
 ): SupervisorProvenance | undefined {
@@ -130,8 +121,7 @@ export function authenticatedSupervisorOrigin(
 export function authenticatedTunnelRequest(
   req: Pick<IncomingMessage, "headers" | "socket">,
 ): boolean {
-  return isLocalTunnelRequest(req as IncomingMessage)
-    || authenticatedSupervisorProvenance(req)?.tunnel === true;
+  return authenticatedSupervisorProvenance(req)?.tunnel === true;
 }
 
 export function effectivePeerAddress(

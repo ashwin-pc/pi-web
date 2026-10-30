@@ -10,7 +10,6 @@ import { browserMutationFailure, type MutationAdmissionFailure } from "./server/
 import { createOriginRejectionReporter, trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
-  markTunnelRequest,
   UNKNOWN_SUPERVISOR_PEER,
   resolveSupervisorPeer,
   stampSupervisorProvenance,
@@ -155,7 +154,6 @@ async function handleRequest(
       return;
     }
 
-    if (tunnel) markTunnelRequest(req);
     const originValidated = trustedOrigin(req, childAuthOrigin);
     sanitizeProxyHeaders(req, originValidated, tunnel);
 
@@ -256,7 +254,6 @@ function upgradeProxy(tunnel: boolean) {
     accept: (req) => req.headers.origin === undefined
       || trustedOrigin(req, childAuthOrigin),
     prepare: (req) => {
-      if (tunnel) markTunnelRequest(req);
       const originValidated = trustedOrigin(req, childAuthOrigin);
       sanitizeProxyHeaders(req, originValidated, tunnel);
     },

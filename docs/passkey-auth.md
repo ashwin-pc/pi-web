@@ -111,8 +111,9 @@ supervisor launch. The child captures it during module startup and immediately
 deletes it from its environment before sessions, tools, or extensions can spawn,
 so subprocesses do not inherit it. The child also consumes and clears the tunnel
 socket setting so nested scripts do not try to bind the operator's live socket.
-Restart and status use process-local socket provenance rather than trusting
-inbound marker headers. WebSocket upgrades through the Unix socket preserve the
+Restart and status strip the identity header on TCP before authentication and
+preserve it only on the filesystem-protected socket. The child separately
+requires the secret-signed tunnel bit rather than trusting inbound marker headers. WebSocket upgrades through the Unix socket preserve the
 same identity and retain the existing Origin validation.
 
 Startup fails closed if the parent is not private, the path is occupied by a

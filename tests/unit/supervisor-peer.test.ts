@@ -1,10 +1,9 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
+  authenticatedTunnelRequest,
   effectivePeerAddress,
   initializeSupervisorPeerContext,
-  isLocalTunnelRequest,
-  markTunnelRequest,
   resolveSupervisorPeer,
   stampSupervisorProvenance,
   stripSupervisorProvenanceHeaders,
@@ -45,12 +44,6 @@ describe("authenticated supervisor request provenance", () => {
       secretCleared: true,
       socketCleared: true,
     });
-  });
-
-  it("keeps local tunnel provenance process-local", () => {
-    const tunnel = request("::1");
-    markTunnelRequest(tunnel);
-    expect(isLocalTunnelRequest(tunnel)).toBe(true);
   });
 
   it("canonicalizes peers and resolves only a single trusted forwarded address", () => {
@@ -99,8 +92,21 @@ describe("authenticated supervisor request provenance", () => {
       expect(effectivePeerAddress(tunnel)).toBe("192.0.2.44");
       expect(tunnel.headers["x-pi-web-tunnel"]).toBe("1");
 
+      const missingSecret = request("127.0.0.1");
+      stampSupervisorProvenance(missingSecret, "192.0.2.44", true, true, secret);
+      delete missingSecret.headers["x-pi-web-supervisor-secret"];
+      expect(effectivePeerAddress(missingSecret)).toBe(UNKNOWN_SUPERVISOR_PEER);
+      expect(authenticatedTunnelRequest(missingSecret)).toBe(false);
+
       tunnel.headers["x-pi-web-supervisor-secret"] = "wrong-secret";
       expect(effectivePeerAddress(tunnel)).toBe(UNKNOWN_SUPERVISOR_PEER);
+      expect(isLoopbackAddress(effectivePeerAddress(tunnel))).toBe(false);
+      expect(authenticatedTunnelRequest(tunnel)).toBe(false);
+
+      const unknown = request("127.0.0.1");
+      stampSupervisorProvenance(unknown, UNKNOWN_SUPERVISOR_PEER, true, true, secret);
+      expect(effectivePeerAddress(unknown)).toBe(UNKNOWN_SUPERVISOR_PEER);
+      expect(isLoopbackAddress(effectivePeerAddress(unknown))).toBe(false);
 
       const direct = request("192.0.2.9");
       stampSupervisorProvenance(direct, "127.0.0.1", true, true, secret);
