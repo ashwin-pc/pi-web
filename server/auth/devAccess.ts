@@ -48,7 +48,7 @@ export async function serveAuthenticatedViteRequest(
     if (
       req.method === "GET" &&
       (req.headers.accept || "").includes("text/html") &&
-      (auth.via === "legacy" || auth.via === "external")
+      auth.via === "external"
     ) {
       await authKernel.establishSession(res, auth.identity, auth.via, req);
     }

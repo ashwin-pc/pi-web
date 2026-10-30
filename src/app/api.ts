@@ -17,7 +17,6 @@ export function createApiClient(state: AppState): ApiClient {
     "content-type": "application/json",
     "x-pi-web-client-id": clientId,
     "x-pi-web-viewer-seq": nextViewerSeq(),
-    ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
   });
   const mintTicket = () => fetch("/api/ws-ticket", { method: "POST", headers: headers(), credentials: "same-origin" });
   // Start authentication alongside the other boot requests so realtime does not

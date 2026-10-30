@@ -78,11 +78,11 @@ export async function handlePasswordLogin(
   origin = "http://localhost",
 ) {
   const match =
-    /^\/api\/auth\/(password|legacy|external)\/(login|bootstrap)$/.exec(
+    /^\/api\/auth\/(password|external)\/(login|bootstrap)$/.exec(
       url.pathname,
     );
   if (req.method !== "POST" || !match) return false;
-  const method = match[1] as "password" | "legacy" | "external",
+  const method = match[1] as "password" | "external",
     setup = match[2] === "bootstrap";
   if (
     (!setup && !kernel.methods.has(method)) ||
@@ -157,10 +157,7 @@ export async function handlePasswordLogin(
       const headers = {
         ...req.headers,
         cookie: "",
-        authorization:
-          method === "legacy" && typeof body.password === "string"
-            ? `Bearer ${body.password}`
-            : "",
+        authorization: "",
       };
       const result = await kernel.gate({
         headers,

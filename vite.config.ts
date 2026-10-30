@@ -75,6 +75,8 @@ export default defineConfig((env) => ({
       deny: [".env", ".env.*", "*.{crt,pem}", "**/.git/**", "**/.pi/**"],
     },
     // The embedded middleware and HMR upgrade are authenticated by server.ts.
+    // Dev server is authenticated and commonly accessed via
+    // Tailscale MagicDNS names like http://studio:8787.
     allowedHosts: true,
   },
 }));

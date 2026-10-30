@@ -32,39 +32,36 @@ function response() {
 }
 
 describe("authenticated Vite access", () => {
-  it.each(["legacy", "external"] as const)(
-    "establishes a browser session for credential-backed %s HTML before Vite responds",
-    async (via) => {
-      const req = request({ accept: "text/html" });
-      const res = response();
-      const establishSession = vi.fn(async (target) => {
-        target.setHeader("set-cookie", "pi_web_session=synthetic; HttpOnly");
-      });
-      const kernel = {
-        refreshConfig: vi.fn(),
-        gate: vi.fn(async () => ({
-          ok: true,
-          identity: { id: `${via}:owner` },
-          via,
-        })),
-        establishSession,
-      } as any;
-      const vite = {
-        middlewares: vi.fn((_req, target) => target.end()),
-      } as any;
+  it("establishes a browser session for external-header HTML before Vite responds", async () => {
+    const req = request({ accept: "text/html" });
+    const res = response();
+    const establishSession = vi.fn(async (target) => {
+      target.setHeader("set-cookie", "pi_web_session=synthetic; HttpOnly");
+    });
+    const kernel = {
+      refreshConfig: vi.fn(),
+      gate: vi.fn(async () => ({
+        ok: true,
+        identity: { id: "external:owner" },
+        via: "external",
+      })),
+      establishSession,
+    } as any;
+    const vite = {
+      middlewares: vi.fn((_req, target) => target.end()),
+    } as any;
 
-      await serveAuthenticatedViteRequest(vite, kernel, "/does-not-exist", req, res, "/");
+    await serveAuthenticatedViteRequest(vite, kernel, "/does-not-exist", req, res, "/");
 
-      expect(establishSession).toHaveBeenCalledWith(
-        res,
-        { id: `${via}:owner` },
-        via,
-        req,
-      );
-      expect(res.getHeader("set-cookie")).toContain("HttpOnly");
-      expect(vite.middlewares).toHaveBeenCalledOnce();
-    },
-  );
+    expect(establishSession).toHaveBeenCalledWith(
+      res,
+      { id: "external:owner" },
+      "external",
+      req,
+    );
+    expect(res.getHeader("set-cookie")).toContain("HttpOnly");
+    expect(vite.middlewares).toHaveBeenCalledOnce();
+  });
 
   it("keeps replacement Vite HMR listeners behind the authenticated upgrade route", async () => {
     const gate = vi.fn(async () => ({

@@ -63,10 +63,8 @@ afterEach(async () => {
 async function startSupervisor(options: {
   dev?: boolean;
   host?: string;
-  authMode?: "legacy" | "external";
   authMethods?: string;
   trustedHeader?: string;
-  token?: string;
   configure?: (store: AuthStore) => Promise<void>;
 } = {}) {
   const publicPort = await freePort();
@@ -82,7 +80,7 @@ async function startSupervisor(options: {
     PI_WEB_CHILD_PORT: String(childPort),
     PI_WEB_HOME: home,
     PI_WEB_AUTH_STORE: store.path,
-    PI_WEB_AUTH_MODE: options.authMode || "external",
+    PI_WEB_AUTH_MODE: "external",
     PI_WEB_AUTH_METHODS: options.authMethods ?? "external",
     PI_WEB_AUTH_POLICY: "authenticated",
     PI_WEB_AUTH_TRUSTED_HEADER: options.trustedHeader ?? "x-amzn-tunnel-user",
@@ -91,9 +89,7 @@ async function startSupervisor(options: {
     PI_WEB_MOCK: "1",
     PI_WEB_NO_SESSION: "1",
     ...(options.dev ? { PI_WEB_DEV: "1" } : {}),
-    ...(options.token ? { PI_WEB_TOKEN: options.token } : {}),
   };
-  if (!options.token) delete env.PI_WEB_TOKEN;
   let output = "";
   const supervisorProcess = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
     cwd: projectRoot,
@@ -373,35 +369,7 @@ describe("supervisor authentication boundary", () => {
     await expectHmrOpen(hmrUrl, development.origin, { authorization: "Bearer synthetic-machine-token" });
   }, 30_000);
 
-  it("turns legacy links and ambient external HTML auth into sessions before Vite modules and HMR load", async () => {
-    const legacyToken = "synthetic-legacy-link-token";
-    const legacy = await startSupervisor({
-      dev: true,
-      authMode: "legacy",
-      authMethods: "legacy",
-      trustedHeader: "",
-      token: legacyToken,
-      configure: async (store) => store.update((state) => {
-        state.config = { policy: "authenticated", methods: ["legacy"] };
-        state.apiTokens.push({
-          id: "synthetic-machine",
-          name: "Synthetic machine",
-          hash: hashSecret("synthetic-machine-token"),
-          createdAt: Date.now(),
-          expiresAt: Date.now() + 60_000,
-        });
-      }),
-    });
-    const legacyHtml = await fetch(`${legacy.origin}/?token=${encodeURIComponent(legacyToken)}`, {
-      headers: { accept: "text/html" },
-    });
-    expect(legacyHtml.status).toBe(200);
-    const legacySetCookie = legacyHtml.headers.get("set-cookie")!;
-    expect(legacySetCookie).toContain("HttpOnly");
-    const legacyCookie = legacySetCookie.split(";")[0];
-    const legacyHmr = await viteHmrUrl(legacy.origin, legacyCookie);
-    await expectHmrOpen(legacyHmr, legacy.origin, { cookie: legacyCookie });
-
+  it("turns ambient external HTML auth into a session before Vite modules and HMR load", async () => {
     const external = await startSupervisor({
       dev: true,
       configure: async (store) => store.update((state) => {

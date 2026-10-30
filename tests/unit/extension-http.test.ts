@@ -240,7 +240,7 @@ describe("scoped extension HTTP credentials", () => {
     cleanups.push(() => rm(dir, { recursive: true, force: true }));
     const store = new AuthStore(join(dir, "auth.json"));
     const h = harness();
-    const kernel = new AuthKernel("none", store, "", false, "", "open", [], r => h.registry.authenticate(r));
+    const kernel = new AuthKernel("none", store, false, "", "open", [], r => h.registry.authenticate(r));
     expect(await kernel.gate(request("PiWebExtension invalid"))).toEqual({ ok: false });
     const unsupported = new AuthKernel("none", store);
     await h.client.request("GET", "/api/state");
@@ -248,7 +248,7 @@ describe("scoped extension HTTP credentials", () => {
     const req = request(h.auth);
     req.headers.cookie = "pi_web_session=stale-browser";
     expect((await kernel.gate(req)).ok).toBe(true);
-    const throwing = new AuthKernel("none", store, "", false, "", "open", [], async () => { throw new Error("boom"); });
+    const throwing = new AuthKernel("none", store, false, "", "open", [], async () => { throw new Error("boom"); });
     expect(await throwing.gate(req)).toEqual({ ok: false });
   });
 
@@ -287,7 +287,7 @@ describe("scoped extension HTTP credentials", () => {
     };
     const registry = new ExtensionHttpRegistry({ origin: () => origin, readBody });
     const store = new AuthStore(join(dir, "auth.json"));
-    const kernel = new AuthKernel("passkey", store, "", false, "", "authenticated", [mode], req => registry.authenticate(req));
+    const kernel = new AuthKernel("passkey", store, false, "", "authenticated", [mode], req => registry.authenticate(req));
     let authHeader = "";
     const server = createServer(async (req, res) => {
       const auth = await kernel.gate(req);
