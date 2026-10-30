@@ -21,16 +21,18 @@ function requestHostname(host: string | undefined): string | undefined {
 }
 
 /**
- * Cookies are Secure unless an explicit or request-derived public URL and the
- * listener are both demonstrably loopback HTTP. Forwarding headers are
- * intentionally irrelevant.
+ * An explicit HTTP origin opts into plaintext cookies. Without an origin,
+ * only an unproxied loopback Host on a loopback listener gets that exception.
+ * Forwarding headers are intentionally irrelevant.
  */
 export function secureSessionCookies(
   configuredOrigin: string | undefined,
   listenerHost: string,
+  configuredProxyPeers: string | undefined,
   requestHost?: string,
 ): boolean {
   if (!configuredOrigin) {
+    if (configuredProxyPeers?.trim()) return true;
     const hostname = requestHostname(requestHost);
     return !hostname || !isLoopbackHost(hostname) || !isLoopbackHost(listenerHost);
   }
@@ -40,14 +42,6 @@ export function secureSessionCookies(
   } catch {
     return true;
   }
-  if (publicUrl.protocol === "http:" && !isLoopbackHost(publicUrl.hostname)) {
-    throw new Error(
-      "PI_WEB_AUTH_ORIGIN must use HTTPS for non-loopback access; set it to the exact public https:// origin",
-    );
-  }
-  return !(
-    publicUrl.protocol === "http:" &&
-    isLoopbackHost(publicUrl.hostname) &&
-    isLoopbackHost(listenerHost)
-  );
+  if (publicUrl.protocol === "http:") return false;
+  return true;
 }

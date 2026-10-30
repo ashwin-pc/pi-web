@@ -1537,27 +1537,47 @@ describe("session cookie transport security", () => {
       label: "keeps the default loopback launch usable over plain HTTP",
       declareOrigin: false,
       requestHost: undefined,
+      proxyPeers: undefined,
       secure: false,
     },
     {
       label: "defaults to Secure for a public request Host when the origin is absent",
       declareOrigin: false,
       requestHost: "pi.example.test",
+      proxyPeers: undefined,
+      secure: true,
+    },
+    {
+      label: "stays Secure when a trusted proxy rewrites Host to loopback",
+      declareOrigin: false,
+      requestHost: undefined,
+      proxyPeers: "127.0.0.1",
       secure: true,
     },
     {
       label: "permits non-Secure cookies for an explicitly declared HTTP loopback origin",
       declareOrigin: true,
       requestHost: undefined,
+      proxyPeers: undefined,
       secure: false,
     },
-  ])("$label", async ({ declareOrigin, requestHost, secure }) => {
+    {
+      label: "permits an explicit HTTP hostname without a silent sign-in loop",
+      declareOrigin: "lan",
+      requestHost: "devbox",
+      proxyPeers: undefined,
+      secure: false,
+    },
+  ])("$label", async ({ declareOrigin, requestHost, proxyPeers, secure }) => {
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     const env = isolatedAuthEnv();
     const fixtureHome = env.PI_WEB_HOME!;
     delete env.PI_WEB_AUTH_ORIGIN;
-    if (declareOrigin) env.PI_WEB_AUTH_ORIGIN = origin;
+    if (declareOrigin)
+      env.PI_WEB_AUTH_ORIGIN = declareOrigin === "lan"
+        ? `http://devbox:${port}`
+        : origin;
     const store = new AuthStore(env.PI_WEB_AUTH_STORE!);
     await store.update((state) => {
       state.config = { policy: "authenticated", methods: ["external"] };
@@ -1572,6 +1592,7 @@ describe("session cookie transport security", () => {
         PI_WEB_AUTH_MODE: "external",
         PI_WEB_AUTH_POLICY: "authenticated",
         PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
+        ...(proxyPeers ? { PI_WEB_AUTH_PROXY_PEERS: proxyPeers } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
