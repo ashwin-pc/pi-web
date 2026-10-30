@@ -225,16 +225,24 @@ describe("pi-web supervisor", () => {
 
   it.each([
     {
-      label: "defaults omitted public origins to Secure cookies",
+      label: "keeps the default loopback launch usable over plain HTTP",
       configuredOrigin: undefined,
+      configuredProxyPeers: undefined,
+      secure: false,
+    },
+    {
+      label: "defaults omitted proxy origins to Secure cookies",
+      configuredOrigin: undefined,
+      configuredProxyPeers: "127.0.0.1",
       secure: true,
     },
     {
       label: "permits non-Secure cookies for explicit HTTP loopback origins",
       configuredOrigin: "loopback",
+      configuredProxyPeers: undefined,
       secure: false,
     },
-  ])("$label", async ({ configuredOrigin, secure }) => {
+  ])("$label", async ({ configuredOrigin, configuredProxyPeers, secure }) => {
     const publicPort = await freePort();
     const childPort = await freePort();
     const authEnv = isolatedAuthEnv();
@@ -253,6 +261,7 @@ describe("pi-web supervisor", () => {
         PI_WEB_AUTH_METHODS: "external",
         PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
         ...(explicitOrigin ? { PI_WEB_AUTH_ORIGIN: explicitOrigin } : {}),
+        ...(configuredProxyPeers ? { PI_WEB_AUTH_PROXY_PEERS: configuredProxyPeers } : {}),
         PI_WEB_MOCK: "1",
         PI_WEB_NO_SESSION: "1",
       },

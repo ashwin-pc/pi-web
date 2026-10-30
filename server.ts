@@ -70,7 +70,7 @@ const authOrigin = authUrl.origin;
 // Runtimes can initialize before the HTTP server is constructed or listening.
 let extensionHttpServer: ReturnType<typeof createServer> | undefined;
 const extensionHttp = new ExtensionHttpRegistry({ origin: () => extensionHttpOrigin(extensionHttpServer?.address() ?? null), readBody });
-const authKernel = new AuthKernel(authMode, authStore, secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
+const authKernel = new AuthKernel(authMode, authStore, secureSessionCookies(process.env.PI_WEB_AUTH_ORIGIN, host, process.env.PI_WEB_AUTH_PROXY_PEERS), authConfig.trustedHeader, authConfig.policy, authConfig.methods, (req) => extensionHttp.authenticate(req), authConfig.explicitOpenPolicy);
 const passkeyConfig = { rpID: process.env.PI_WEB_AUTH_RP_ID || authUrl.hostname, rpName: "pi-web", origin: authUrl.origin };
 await authKernel.startupDiagnostics();
 const setupLink = await initializeAuth(authKernel, authOrigin, !!(process.env.PI_WEB_AUTH_MODE || process.env.PI_WEB_AUTH_POLICY || process.env.PI_WEB_AUTH_METHODS));
