@@ -1,9 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import net from "node:net";
+import type { Socket } from "node:net";
 import { join } from "node:path";
-import type { Duplex } from "node:stream";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
@@ -19,6 +18,7 @@ import {
 } from "./server/auth/supervisorPeer.js";
 import { stampSupervisorOrigin, stripSupervisorOriginHeaders } from "./server/auth/supervisorOrigin.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
+import { createUpgradeProxy } from "./server/shared/upgradeProxy.js";
 import {
   closeTunnelSocket,
   listenOnTunnelSocket,
@@ -36,8 +36,9 @@ const supervisorSecret = randomBytes(32).toString("base64url");
 const authStorePath = resolveWebHomePath("web/auth.json", join(getAgentDir(), "web", "auth.json"), process.env.PI_WEB_AUTH_STORE);
 const authStore = new AuthStore(authStorePath);
 const authConfig = resolveAuthConfig(process.env, (await authStore.read()).config);
-
 await new AuthKernel(authConfig.mode, authStore, true, authConfig.trustedHeader, authConfig.policy, authConfig.methods).refreshConfig();
+const upgradeHandshakeMs = 10_000;
+const isChildDev = process.env.PI_WEB_DEV === "1";
 
 let child: ChildProcess | undefined;
 let childStarting = false;
@@ -140,44 +141,55 @@ async function restartChild(): Promise<void> {
   startChild();
 }
 
-function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Error) => void }, error?: Error): void {
-  socket.destroy?.(error);
-}
-
 async function handleRequest(
   req: IncomingMessage,
   res: ServerResponse,
   tunnel: boolean,
-) {
-  if (tunnel) markTunnelRequest(req);
-  const originValidated = trustedOrigin(req, childAuthOrigin);
-  sanitizeProxyHeaders(req, originValidated, tunnel);
-  const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+): Promise<void> {
+  try {
+    let url: URL;
+    try {
+      url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
+    } catch {
+      sendJson(res, 400, { ok: false, error: "Bad Request" });
+      return;
+    }
 
-  if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
-    if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
-    const auth = await authorization(req, true);
-    if (auth !== "allowed") return sendJson(res, auth === "unauthorized" ? 401 : 403, {
-      ok: false,
-      error: auth === "origin" ? originFailureHint : auth === "intent" ? "CSRF validation failed" : "Unauthorized",
-    });
-    sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
-    void restartChild();
-    return;
+    if (tunnel) markTunnelRequest(req);
+    const originValidated = trustedOrigin(req, childAuthOrigin);
+    sanitizeProxyHeaders(req, originValidated, tunnel);
+
+    if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
+      if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
+      const auth = await authorization(req, true);
+      if (auth !== "allowed") return sendJson(res, auth === "unauthorized" ? 401 : 403, {
+        ok: false,
+        error: auth === "origin" ? originFailureHint : auth === "intent" ? "CSRF validation failed" : "Unauthorized",
+      });
+      sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
+      void restartChild();
+      return;
+    }
+
+    if (url.pathname === "/__supervisor/status") {
+      if (await authorization(req) !== "allowed") return sendJson(res, 401, { ok: false, error: "Unauthorized" });
+      return sendJson(res, 200, {
+        ok: true,
+        childPid: child?.pid,
+        childGeneration,
+        childHost,
+        childPort,
+      });
+    }
+
+    proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
+  } catch (error) {
+    if (!res.headersSent && !res.destroyed) {
+      sendJson(res, 500, { ok: false, error: "Supervisor request failed" });
+    } else if (!res.destroyed) {
+      res.destroy(error instanceof Error ? error : undefined);
+    }
   }
-
-  if (url.pathname === "/__supervisor/status") {
-    if (await authorization(req) !== "allowed") return sendJson(res, 401, { ok: false, error: "Unauthorized" });
-    return sendJson(res, 200, {
-      ok: true,
-      childPid: child?.pid,
-      childGeneration,
-      childHost,
-      childPort,
-    });
-  }
-
-  proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
 }
 
 function sanitizeProxyHeaders(
@@ -217,7 +229,7 @@ const supervisor = createServer((req, res) => {
 const tunnelSupervisor = createServer((req, res) => {
   void handleRequest(req, res, true);
 });
-const acceptedSockets = new Set<net.Socket>();
+const acceptedSockets = new Set<Socket>();
 
 for (const server of [supervisor, tunnelSupervisor]) {
   server.on("connection", (socket) => {
@@ -226,57 +238,34 @@ for (const server of [supervisor, tunnelSupervisor]) {
   });
 }
 
-function handleUpgrade(
-  req: IncomingMessage,
-  socket: Duplex,
-  head: Buffer,
-  tunnel: boolean,
-): void {
-  if (tunnel) markTunnelRequest(req);
-  const originValidated = trustedOrigin(req, childAuthOrigin);
-  sanitizeProxyHeaders(req, originValidated, tunnel);
-  proxyUpgrade(req, socket, head);
-}
-
-supervisor.on("upgrade", (req, socket, head) =>
-  handleUpgrade(req, socket, head, false));
-tunnelSupervisor.on("upgrade", (req, socket, head) =>
-  handleUpgrade(req, socket, head, true));
-
-function proxyUpgrade(
-  req: IncomingMessage,
-  socket: Duplex,
-  head: Buffer,
-): void {
-  const upstream = net.connect(childPort, childHost);
-  let closed = false;
-
-  const closeBoth = (error?: Error) => {
-    if (closed) return;
-    closed = true;
-    destroyQuietly(socket, error);
-    destroyQuietly(upstream, error);
-  };
-
-  socket.on("error", (error) => closeBoth(error));
-  upstream.on("error", (error) => closeBoth(error));
-  socket.on("close", () => closeBoth());
-  upstream.on("close", () => closeBoth());
-
-  upstream.on("connect", () => {
-    upstream.write(`${req.method} ${req.url} HTTP/${req.httpVersion}\r\n`);
-    for (const [name, value] of Object.entries(req.headers)) {
-      if (Array.isArray(value)) {
-        for (const item of value) upstream.write(`${name}: ${item}\r\n`);
-      } else if (value !== undefined) {
-        upstream.write(`${name}: ${value}\r\n`);
-      }
-    }
-    upstream.write("\r\n");
-    if (head.length) upstream.write(head);
-    socket.pipe(upstream).pipe(socket);
+function upgradeProxy(tunnel: boolean) {
+  return createUpgradeProxy({
+    host: childHost,
+    port: childPort,
+    expectedPath: (req, url) => url.pathname === "/ws"
+      || (isChildDev
+        && url.pathname === "/"
+        && (req.headers["sec-websocket-protocol"] === "vite-hmr"
+          || req.headers["sec-websocket-protocol"] === "vite-ping")),
+    handshakeTimeoutMs: upgradeHandshakeMs,
+    maxPending: 32,
+    maxPendingPerPeer: 8,
+    // Originless ticket connections are valid for machine credentials. The
+    // child redeems the ticket and applies browser-origin policy by auth class.
+    accept: (req) => req.headers.origin === undefined
+      || trustedOrigin(req, childAuthOrigin),
+    prepare: (req) => {
+      if (tunnel) markTunnelRequest(req);
+      const originValidated = trustedOrigin(req, childAuthOrigin);
+      sanitizeProxyHeaders(req, originValidated, tunnel);
+    },
+    rejectionBody: originFailureHint,
   });
 }
+
+// Separate relay instances keep TCP and trusted Unix pending budgets isolated.
+supervisor.on("upgrade", upgradeProxy(false));
+tunnelSupervisor.on("upgrade", upgradeProxy(true));
 
 supervisor.on("clientError", (_error, socket) => {
   socket.end("HTTP/1.1 400 Bad Request\r\n\r\n");
