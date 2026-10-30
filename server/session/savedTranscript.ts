@@ -1,9 +1,10 @@
 import { createReadStream } from "node:fs";
 import { stat } from "node:fs/promises";
 import type { SessionReadText } from "./referenceTools.js";
+import { sanitizeSavedTranscriptRecord, savedTranscriptRecordLimits } from "./savedTranscriptSanitizer.js";
 
 export const savedTranscriptLimits = {
-  maxLineBytes: 1024 * 1024,
+  maxRecordBytes: savedTranscriptRecordLimits.maxBytes,
 } as const;
 
 export class SavedTranscriptReadError extends Error {
@@ -49,7 +50,7 @@ export async function readSavedTranscript(options: ReadSavedTranscriptOptions): 
     const text = line.toString("utf8").replace(/\r$/, "").trim();
     if (!text) return false;
     let record: unknown;
-    try { record = JSON.parse(text); }
+    try { record = sanitizeSavedTranscriptRecord(JSON.parse(text)); }
     catch { return false; }
     if (!sawHeader) {
       const header = record && typeof record === "object" ? record as Record<string, unknown> : undefined;
@@ -85,7 +86,7 @@ export async function readSavedTranscript(options: ReadSavedTranscriptOptions): 
         const slice = bytes.subarray(offset, end);
         if (!discardingOversizedLine) {
           lineBytes += slice.length;
-          if (lineBytes > savedTranscriptLimits.maxLineBytes) {
+          if (lineBytes > savedTranscriptLimits.maxRecordBytes) {
             fragments = [];
             lineBytes = 0;
             discardingOversizedLine = true;

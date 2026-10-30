@@ -12,8 +12,11 @@ import { pi087Events } from "./fixtures/pi-0.87-events.js";
 import { LocalSessionService, SessionServiceError, type LocalSessionFactory, type LocalSessionServiceDependencies } from "../server/session/service.js";
 import type { PiWebSession } from "../server/types.js";
 import { PiSessionHandle } from "../server/session/piHandle.js";
+import { savedTranscriptRecordLimits } from "../server/session/savedTranscriptSanitizer.js";
+import { createSessionDraftStore } from "../src/drafts/sessionDraftStore.js";
+import { createSessionUiStateStore } from "../server/sessionUiState.js";
 
-const MAX_SAVED_TRANSCRIPT_LINE_BYTES = 1024 * 1024;
+const MIB = 1024 * 1024;
 
 describe("owned Pi runtime handle", () => {
   it.each([false, true])("publishes disposal before reentrant cleanup (shutdown=%s)", async (shutdown) => {
@@ -121,11 +124,12 @@ let fixtureSessionSequence = 0;
 afterEach(async () => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   await Promise.all(tempDirs.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jsonl`)) {
-  const entries: any[] = [
+function fixtureSession(cwd: string, id = "current", path = join(cwd, `${id}.jsonl`), initialEntries?: any[]) {
+  const entries: any[] = initialEntries || [
     { id: "call", parentId: null, type: "message", timestamp: "2026-01-01T00:00:00Z", message: { role: "assistant", content: [{ type: "toolCall", id: "t1", name: "read", arguments: { path: "secret" } }], timestamp: "2026-01-01T00:00:00Z" } },
     { id: "result", parentId: "call", type: "message", timestamp: "2026-01-01T00:00:01Z", message: { role: "toolResult", toolCallId: "t1", toolName: "read", content: [{ type: "text", text: "ok" }], isError: false, timestamp: "2026-01-01T00:00:01Z" } },
   ];
@@ -193,6 +197,7 @@ type FixtureServiceOptions = {
   openError?: Error;
   clientCount?: number | (() => number);
   beforeCreate?: (input: Parameters<LocalSessionFactory["create"]>[0]) => Promise<void>;
+  loadEntriesFromPath?: boolean;
 };
 
 async function fixtureService(options: FixtureServiceOptions = {}) {
@@ -207,7 +212,18 @@ async function fixtureService(options: FixtureServiceOptions = {}) {
       await options.beforeCreate?.(input);
       creates.push({ cwd: input.cwd, path: input.path, reason: input.sessionStartEvent?.reason, previous: input.sessionStartEvent?.previousSessionFile });
       const id = input.path ? input.path.split("/").at(-1)?.replace(/\.jsonl$/, "") || "opened" : creates.length === 1 ? "current" : `factory-${creates.length}`;
-      const value = fixtureSession(input.cwd, id, input.path);
+      let loadedEntries: unknown[] | undefined;
+      if (input.path && options.loadEntriesFromPath) {
+        const source = await readFile(input.path, "utf8").catch(() => "");
+        loadedEntries = source.split("\n").flatMap((line) => {
+          if (!line.trim()) return [];
+          try {
+            const record = JSON.parse(line);
+            return record?.type === "message" ? [record] : [];
+          } catch { return []; }
+        });
+      }
+      const value = fixtureSession(input.cwd, id, input.path, loadedEntries);
       if (options.modelRuntime) value.session.modelRuntime = options.modelRuntime;
       sessions.set(id, value);
       return { session: value.session };
@@ -967,6 +983,82 @@ describe("LocalSessionService standalone lifecycle", () => {
     await service.disposeAll();
   });
 
+  it("evicts only runtime state while durable transcript, browser draft, unread, and session UI state survive reopening", async () => {
+    const listed: Array<{ id: string; path: string; cwd: string; created: Date; modified: Date; messageCount: number }> = [];
+    const { service, initial, cwd, creates } = await fixtureService({ list: async () => listed, loadEntriesFromPath: true });
+    const evictedId = "eviction-target";
+    const evictedPath = join(cwd, `${evictedId}.jsonl`);
+    const mediumRecords = Array.from({ length: 256 }, (_, index) => ({
+      type: "message", id: `message-${index}`, parentId: index ? `message-${index - 1}` : null,
+      message: { role: "assistant", content: `durable transcript message ${index} ${"x".repeat(256)}` },
+    }));
+    const transcript = [
+      JSON.stringify({ type: "session", id: evictedId, cwd }),
+      ...mediumRecords.map((record) => JSON.stringify(record)),
+      "",
+    ].join("\n");
+    await writeFile(evictedPath, transcript);
+    listed.push({
+      id: evictedId, path: evictedPath, cwd, created: new Date(), modified: new Date(), messageCount: mediumRecords.length,
+    });
+    const replacementId = "eviction-replacement";
+    listed.push({
+      id: replacementId, path: join(cwd, `${replacementId}.jsonl`), cwd, created: new Date(), modified: new Date(), messageCount: 0,
+    });
+    await service.open(evictedId);
+    const residentMessages = await service.messages(evictedId);
+    expect(residentMessages.at(-1)).toMatchObject({ entryId: "message-255", text: expect.stringContaining("durable transcript message 255") });
+    const admitted = [];
+    for (let index = 0; index < 14; index += 1) admitted.push(await service.create(undefined));
+    for (const [index, state] of admitted.entries()) service.acquireViewer(state.sessionId, `kept-${index}`);
+
+    class MemoryStorage {
+      private readonly values = new Map<string, string>();
+      getItem(key: string) { return this.values.get(key) ?? null; }
+      setItem(key: string, value: string) { this.values.set(key, value); }
+      removeItem(key: string) { this.values.delete(key); }
+    }
+    vi.stubGlobal("window", {
+      setTimeout: globalThis.setTimeout.bind(globalThis),
+      clearTimeout: globalThis.clearTimeout.bind(globalThis),
+      addEventListener: () => undefined,
+    });
+    const browserStorage = new MemoryStorage();
+    createSessionDraftStore(browserStorage).update(evictedId, { text: "draft survives runtime eviction" }, true);
+    const uiStateFile = join(cwd, "session-ui-state.json");
+    await createSessionUiStateStore(uiStateFile).patch({
+      expectedRevision: 0,
+      initialize: true,
+      lanes: [{ sessionId: evictedId, lane: "parked", cwd, since: "2026-01-01T00:00:00.000Z" }],
+      sessionNotes: [{ sessionId: evictedId, note: "durable UI state", updatedAt: "2026-01-01T00:00:00.000Z" }],
+      sessionUnreadStates: [{ sessionId: evictedId, unreadAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" }],
+    });
+
+    await service.open(replacementId);
+    expect(service.lifecycleSnapshot().liveSessions).toHaveLength(16);
+    expect(service.sessionForId(evictedId)).toBeUndefined();
+    expect(service.sessionForId(initial.sessionId)).toBe(initial);
+    expect(await readFile(evictedPath, "utf8")).toBe(transcript);
+    await expect(service.readSession({ sessionId: evictedId }, 20)).resolves.toMatchObject({
+      entries: expect.arrayContaining([
+        expect.objectContaining({ entryId: "message-255", text: expect.stringContaining("durable transcript message 255") }),
+      ]),
+    });
+    expect(createSessionDraftStore(browserStorage).get(evictedId).text).toBe("draft survives runtime eviction");
+    const reloadedUiState = await createSessionUiStateStore(uiStateFile).read();
+    expect(reloadedUiState.lanes).toContainEqual(expect.objectContaining({ sessionId: evictedId, lane: "parked" }));
+    expect(reloadedUiState.sessionNotes).toContainEqual(expect.objectContaining({ sessionId: evictedId, note: "durable UI state" }));
+    expect(reloadedUiState.sessionUnreadStates).toContainEqual(expect.objectContaining({ sessionId: evictedId }));
+
+    const createsBeforeReopen = creates.length;
+    await expect(service.open(evictedId)).resolves.toMatchObject({ sessionId: evictedId });
+    expect(creates).toHaveLength(createsBeforeReopen + 1);
+    expect(service.sessionForId(evictedId)).toBeDefined();
+    expect(await service.messages(evictedId)).toEqual(residentMessages);
+    expect(await readFile(evictedPath, "utf8")).toBe(transcript);
+    await service.disposeAll();
+  });
+
   it("keeps agent_end running and uses agent_settled as the idle boundary", async () => {
     const { service, fixture, initial } = await fixtureService();
     const activity = new SessionActivity(
@@ -1210,7 +1302,48 @@ describe("LocalSessionService standalone lifecycle", () => {
     expect(await readFile(coldPath, "utf8")).toBe(original);
   });
 
-  it("streams past oversized cold transcript records without allocating a runtime", async () => {
+  it("retains a roughly 4.6 MiB cold tool result while replacing only its oversized inline image", async () => {
+    let coldPath = "";
+    const { service, cwd, creates } = await fixtureService({
+      list: async () => coldPath ? [{
+        id: "image-cold", path: coldPath, cwd, created: new Date(), modified: new Date(), messageCount: 1,
+      }] : [],
+    });
+    coldPath = join(cwd, "image-cold.jsonl");
+    const imageBytes = 4_606_572;
+    const toolResult = JSON.stringify({
+      type: "message", id: "large-tool-result", parentId: null,
+      message: {
+        role: "toolResult", toolCallId: "tool-1", toolName: "inspect_image", isError: false,
+        content: [
+          { type: "text", text: "ordinary tool output survived" },
+          { type: "image", mimeType: "image/png", data: "a".repeat(imageBytes) },
+        ],
+      },
+    });
+    expect(Buffer.byteLength(toolResult)).toBeGreaterThan(imageBytes);
+    expect(Buffer.byteLength(toolResult)).toBeLessThan(savedTranscriptRecordLimits.maxBytes);
+    await writeFile(coldPath, [
+      JSON.stringify({ type: "session", id: "image-cold", cwd }),
+      toolResult,
+      "",
+    ].join("\n"));
+
+    const tail = await service.readSession({ sessionId: "image-cold" }, 20);
+    expect(tail.entries).toEqual([expect.objectContaining({
+      entryId: "large-tool-result",
+      text: expect.stringMatching(/inspect_image: ordinary tool output survived.*omitted saved transcript image\/png base64 image data: 4606572 bytes/s),
+    })]);
+    const exact = await service.readSession({ sessionId: "image-cold", entryId: "large-tool-result" }, 20);
+    expect(exact.entries).toEqual([expect.objectContaining({
+      entryId: "large-tool-result",
+      text: expect.stringMatching(/inspect_image: ordinary tool output survived.*omitted saved transcript image\/png base64 image data: 4606572 bytes/s),
+    })]);
+    expect(creates).toHaveLength(1);
+    await service.disposeAll();
+  });
+
+  it("streams and skips a 64 MiB garbage record with bounded buffering, then returns later cold records", async () => {
     let coldPath = "";
     const { service, cwd, creates } = await fixtureService({
       list: async () => coldPath ? [{
@@ -1218,31 +1351,24 @@ describe("LocalSessionService standalone lifecycle", () => {
       }] : [],
     });
     coldPath = join(cwd, "bounded-cold.jsonl");
-    const oversizedRecord = JSON.stringify({
-      type: "message", id: "large-before", parentId: null,
-      message: { role: "assistant", content: "x".repeat(MAX_SAVED_TRANSCRIPT_LINE_BYTES) },
-    });
-    const target = JSON.stringify({
-      type: "message", id: "target", parentId: null,
-      message: { role: "assistant", content: "small target" },
-    });
-    await writeFile(coldPath, [
-      JSON.stringify({ type: "session", id: "bounded-cold", cwd }),
-      oversizedRecord,
-      target,
-      oversizedRecord.replace("large-before", "large-after"),
-      JSON.stringify({ type: "message", id: "after", parentId: "target", message: { role: "assistant", content: "small after" } }),
-      "",
-    ].join("\n"));
-    await expect(service.readSession({ sessionId: "bounded-cold", entryId: "target" }, 20)).resolves.toMatchObject({
-      entries: [expect.objectContaining({ entryId: "target", text: expect.stringContaining("small target") })],
+    const handle = await open(coldPath, "w");
+    try {
+      await handle.write(`${JSON.stringify({ type: "session", id: "bounded-cold", cwd })}\n`);
+      const garbageChunk = Buffer.alloc(MIB, 0x78);
+      for (let index = 0; index < 64; index += 1) await handle.write(garbageChunk);
+      await handle.write(`\n${JSON.stringify({
+        type: "message", id: "after-garbage", parentId: null,
+        message: { role: "assistant", content: "small record after pathological line" },
+      })}\n`);
+    } finally {
+      await handle.close();
+    }
+    await expect(service.readSession({ sessionId: "bounded-cold", entryId: "after-garbage" }, 20)).resolves.toMatchObject({
+      entries: [expect.objectContaining({ entryId: "after-garbage", text: expect.stringContaining("small record after pathological line") })],
       truncated: true,
     });
     await expect(service.readSession({ sessionId: "bounded-cold" }, 20)).resolves.toMatchObject({
-      entries: [
-        expect.objectContaining({ entryId: "target" }),
-        expect.objectContaining({ entryId: "after" }),
-      ],
+      entries: [expect.objectContaining({ entryId: "after-garbage" })],
       truncated: true,
     });
     expect(creates).toHaveLength(1);
