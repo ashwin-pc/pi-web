@@ -32,7 +32,7 @@ npm run instance -- my-instance --mock
 npm run instance -- my-instance --stop
 ```
 
-`npm run instance -- <name> [--mock] [--worktree]` creates private state folders in `~/.pi/web-instances/<name>/{web,pi}`, chooses a free public/child port pair, and starts `pi-web-<name>` in tmux. It clears inherited `PI_WEB_*` configuration (including `PI_WEB_TOKEN`), mints a stored API token with the auth CLI, waits for an authenticated API response, then prints the URL, token (shown once), and stop command. Use the UI's **Set token** action with that token. Logs are in `~/.pi/web-instances/<name>/server.log`. Duplicate launches fail without stopping the existing session.
+`npm run instance -- <name> [--mock] [--worktree]` creates private state folders in `~/.pi/web-instances/<name>/{web,pi}`, chooses a free public/child port pair, and starts `pi-web-<name>` in tmux. It clears inherited `PI_WEB_*` configuration, mints an internal named API token for its readiness check, and prints a single-use password/passkey setup URL plus the stop command. Logs are in `~/.pi/web-instances/<name>/server.log`. Duplicate launches fail without stopping the existing session.
 
 Without `--mock`, the launcher seeds missing `auth.json` and `models.json` from the current `PI_CODING_AGENT_DIR` (or `~/.pi/agent`); it never overwrites existing instance files or copies settings or sessions. **OAuth caveat:** copied credentials can share rotating refresh tokens with the source install; refreshing in either instance can invalidate the other's login. Use API keys or log in separately in the instance to avoid sharing OAuth credentials. `--mock` skips that copy and uses the mock harness.
 
@@ -157,7 +157,9 @@ A shared diff viewer supports side-by-side or stacked layouts with intraline hig
 
 ### Git status, graph, and commit diffs
 
-The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with `fetch` + rebase pull.
+The Git button in the header opens a responsive Git panel for repo status, commit history, per-file diffs, per-commit diffs, and sync with `fetch --prune origin` followed by `pull --rebase --autostash origin <branch>`. The panel inspects the selected repository without recursively executing Git inside its submodule worktrees; dirty submodule worktrees are ignored while changed gitlink commits remain visible. An initialized submodule can still be selected as a repository and inspected directly with the same hardening.
+
+Existing Sync can execute a child repository's clean filter in some submodule layouts. That risk predates this PR. PR #266 implements workspace trust, but does not gate Git Sync. A separate follow-up can use its trust model so untrusted workspaces refuse Sync or neutralize their filters, while trusted workspaces retain normal Sync behavior. PR #258 does not add that integration.
 
 ### Self-aware pi context
 
@@ -248,16 +250,15 @@ In another terminal:
 tailscale serve --bg http://127.0.0.1:8787
 ```
 
-Open the configured HTTPS origin. On a new installation, follow the single-use setup URL printed by `pi-web`; no legacy token is needed. Existing legacy installations should enroll and verify a replacement in **Settings → Security** before retiring legacy. For exact proxy-header requirements, authentication migration, recovery commands, and alternative methods, follow the [authentication guide](docs/passkey-auth.md).
+Open the configured HTTPS origin. On a new installation, follow the single-use setup URL printed by `pi-web`. Legacy token configuration now fails closed; unset it and run `pi-web auth recover` to migrate saved settings and create a replacement password/passkey setup URL. For exact proxy-header requirements, recovery commands, and alternative methods, follow the [authentication guide](docs/passkey-auth.md).
 
 ## Environment variables
 
 - `HOST` - bind host, default `127.0.0.1`
 - `PORT` - bind port, default `8787`
-- `PI_WEB_TOKEN` - deprecated legacy credential; removable after replacement login is verified
 - `PI_WEB_AUTH_POLICY` - `authenticated` or deliberately `open`
-- `PI_WEB_AUTH_METHODS` - comma-separated `passkey,password,legacy,external`; saved Settings configuration takes precedence after enrollment/configuration
-- `PI_WEB_AUTH_MODE` - compatibility preset translated into the canonical policy/method defaults
+- `PI_WEB_AUTH_METHODS` - comma-separated `passkey,password,external`; saved Settings configuration takes precedence after enrollment/configuration
+- `PI_WEB_AUTH_MODE` - compatibility preset: `none`, `passkey`, or `external`
 - `PI_WEB_AUTH_ORIGIN` - exact public origin for login/WebAuthn/CSRF, including HTTPS and port
 - `PI_WEB_AUTH_RP_ID` - WebAuthn RP ID, defaults to origin hostname
 - `PI_WEB_AUTH_TRUSTED_HEADER` - verified proxy identity header; requires a restricted backend

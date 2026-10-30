@@ -1,23 +1,16 @@
 import type { ApiClient } from "../app/api.js";
 import type { AppElements } from "../app/elements.js";
-import { clearToken, saveToken, sessionUiMutationWarning, writeActiveSessionIdToUrl } from "../app/types.js";
+import { sessionUiMutationWarning, writeActiveSessionIdToUrl } from "../app/types.js";
 import type { AppState, ComposerContextAttachment, FileAttachment, SlashCommand } from "../app/types.js";
 import { activeSessionState, sessionRuntime, type SessionStateController } from "../app/sessionState.js";
 import { iconElement, setIcon } from "../app/icons.js";
 import { focusIfKeyboardFriendly } from "../app/focus.js";
 import { recordDebugEvent } from "../app/debugDiagnostics.js";
 import { openImagePreview } from "../components/imageActions.js";
-import { extractTokenFromScannedText } from "../token/tokenShare.js";
 import { bindCompactInactiveAction } from "./compactInteractions.js";
 import type { QuoteRepliesController, QuoteReplySubmission } from "../quotes/quoteReplies.js";
 import type { SessionDraftStore } from "../drafts/sessionDraftStore.js";
 import { capturedTextInsertion, createComposerCapture, type ComposerCaptureDescriptor } from "./composerCapture.js";
-
-type BarcodeDetectorLike = {
-  detect: (source: HTMLVideoElement) => Promise<Array<{ rawValue?: string }>>;
-};
-
-type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
 
 const restoreFocusStorageKey = "pi-web-composer-restore-focus";
 
@@ -66,9 +59,6 @@ export function createComposer(options: {
   let slashCommands: SlashCommand[] = [];
   let slashCommandsLoadedAt = 0;
   let slashCommandSelectedIndex = 0;
-  let tokenScanStream: MediaStream | undefined;
-  let tokenScanFrame = 0;
-  let tokenScanActive = false;
   let contextAttachments: ComposerContextAttachment[] = [];
   const sessionContextAttachments = new Map<string, ComposerContextAttachment[]>();
   let pendingSteering: string[] = [];
@@ -546,115 +536,6 @@ export function createComposer(options: {
     return Boolean(data.cancelled || (typeof data.exitCode === "number" && data.exitCode !== 0));
   }
 
-  function barcodeDetectorConstructor(): BarcodeDetectorConstructor | undefined {
-    return (window as Window & { BarcodeDetector?: BarcodeDetectorConstructor }).BarcodeDetector;
-  }
-
-  function setTokenScanStatus(message: string) {
-    elements.tokenScanStatus.textContent = message;
-  }
-
-  function stopTokenScanner(hidePanel = true) {
-    tokenScanActive = false;
-    if (tokenScanFrame) cancelAnimationFrame(tokenScanFrame);
-    tokenScanFrame = 0;
-    if (tokenScanStream) {
-      for (const track of tokenScanStream.getTracks()) track.stop();
-      tokenScanStream = undefined;
-    }
-    elements.tokenScanVideo.pause();
-    elements.tokenScanVideo.srcObject = null;
-    if (hidePanel) {
-      elements.tokenScanPanel.hidden = true;
-      setTokenScanStatus("");
-    }
-  }
-
-  function connectWithToken(token: string) {
-    const val = token.trim();
-    if (!val) return;
-    stopTokenScanner();
-    state.token = val;
-    saveToken(state.token);
-    elements.tokenInput.value = val;
-    elements.tokenOverlay.hidden = true;
-    refreshState().catch((error) => addMessage("system", error instanceof Error ? error.message : String(error), "error"));
-  }
-
-  function useScannedToken(text: string) {
-    const scanned = extractTokenFromScannedText(text);
-    if (!scanned?.token.trim()) return false;
-
-    if (scanned.url && (scanned.url.origin !== location.origin || scanned.url.pathname !== location.pathname)) {
-      stopTokenScanner(false);
-      setTokenScanStatus("Opening token link…");
-      location.href = scanned.url.toString();
-      return true;
-    }
-
-    const sessionId = scanned.url?.searchParams.get("sessionId")?.trim();
-    if (sessionId) {
-      sessionState.activate(sessionId);
-      writeActiveSessionIdToUrl(sessionId, "replace");
-    }
-    connectWithToken(scanned.token);
-    return true;
-  }
-
-  async function scanTokenQrLoop(detector: BarcodeDetectorLike) {
-    if (!tokenScanActive) return;
-    try {
-      if (elements.tokenScanVideo.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
-        const barcodes = await detector.detect(elements.tokenScanVideo);
-        const rawValue = barcodes.map((barcode) => barcode.rawValue?.trim()).find(Boolean);
-        if (rawValue) {
-          if (useScannedToken(rawValue)) return;
-          setTokenScanStatus("QR code found, but it did not contain a token.");
-        }
-      }
-    } catch (error) {
-      stopTokenScanner(false);
-      setTokenScanStatus(error instanceof Error ? error.message : String(error));
-      return;
-    }
-    if (tokenScanActive) tokenScanFrame = requestAnimationFrame(() => { void scanTokenQrLoop(detector); });
-  }
-
-  async function startTokenScanner() {
-    elements.tokenScanPanel.hidden = false;
-    setTokenScanStatus("Starting camera…");
-
-    if (!window.isSecureContext) {
-      setTokenScanStatus("Camera access requires HTTPS or localhost.");
-      return;
-    }
-    if (!navigator.mediaDevices?.getUserMedia) {
-      setTokenScanStatus("Camera access is not available in this browser.");
-      return;
-    }
-    const Detector = barcodeDetectorConstructor();
-    if (!Detector) {
-      setTokenScanStatus("QR scanning is not available in this browser yet.");
-      return;
-    }
-
-    stopTokenScanner(false);
-    elements.tokenScanPanel.hidden = false;
-    setTokenScanStatus("Starting camera…");
-    try {
-      const detector = new Detector({ formats: ["qr_code"] });
-      tokenScanStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
-      elements.tokenScanVideo.srcObject = tokenScanStream;
-      await elements.tokenScanVideo.play();
-      tokenScanActive = true;
-      setTokenScanStatus("Point the camera at a pi-web token QR code.");
-      await scanTokenQrLoop(detector);
-    } catch (error) {
-      stopTokenScanner(false);
-      setTokenScanStatus(error instanceof Error ? error.message : String(error));
-    }
-  }
-
   async function runShellEscape(input: string) {
     if (activeSessionState(state)?.capabilities?.bash === false) throw new Error("Shell commands are not supported by this harness.");
     const trimmed = input.trim();
@@ -688,13 +569,7 @@ export function createComposer(options: {
         throw new Error(`Logout failed; your server session may still be active. Retry when connected. ${error instanceof Error ? error.message : ""}`);
       }
       const challenge = await fetch("/api/auth/challenge").then(r => r.json()).catch(() => ({})) as { mode?: string; url?: string };
-      stopTokenScanner();
-      state.token = "";
-      clearToken();
-      if (challenge.mode === "redirect" && challenge.url) { location.assign(challenge.url); return; }
-      elements.tokenInput.value = "";
-      elements.tokenOverlay.hidden = false;
-      elements.tokenInput.focus();
+      location.assign(challenge.url || "/api/auth/login");
       return;
     }
     const res = await fetch("/api/command", {
@@ -972,24 +847,6 @@ export function createComposer(options: {
       state.queueMode = state.queueMode === "steer" ? "followUp" : "steer";
       updateQueueToggle();
       void persistComposerSettings({ queueMode: state.queueMode });
-    });
-
-    elements.tokenForm.addEventListener("submit", (e) => {
-      e.preventDefault();
-      connectWithToken(elements.tokenInput.value);
-    });
-
-    elements.tokenScanButton.addEventListener("click", () => {
-      void startTokenScanner();
-    });
-
-    elements.tokenScanStopButton.addEventListener("click", () => {
-      stopTokenScanner();
-      elements.tokenScanButton.focus();
-    });
-
-    document.addEventListener("visibilitychange", () => {
-      if (document.hidden) stopTokenScanner();
     });
 
     elements.expandButton.addEventListener("click", () => {

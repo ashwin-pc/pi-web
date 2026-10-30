@@ -1,10 +1,19 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, relative, resolve } from "node:path";
+import { readdir, realpath, stat } from "node:fs/promises";
+import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import {
+  gitConfigEnv,
+  gitConfigHardeningOverrides,
+  loadGitExecution,
+  type GitConfigEntry,
+  type GitExecution,
+} from "./gitExecution.js";
 
 const execFileAsync = promisify(execFile);
+export { gitConfigEnv, gitConfigHardeningOverrides };
+export type { GitConfigEntry };
 
 export interface GitFileStatus {
   path: string;
@@ -16,12 +25,20 @@ export interface GitFileStatus {
 }
 
 export async function git(args: string[], timeout = 15_000, cwd = process.cwd()) {
-  return execFileAsync("git", args, { cwd, timeout, maxBuffer: 10 * 1024 * 1024 });
+  const execution = await loadGitExecution(cwd);
+  return execFileAsync("git", execution.args(args), { cwd, timeout, maxBuffer: 10 * 1024 * 1024, env: execution.env });
 }
 
 export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.cwd()) {
+  const execution = await loadGitExecution(cwd);
   return new Promise<Buffer>((resolvePromise, reject) => {
-    execFile("git", args, { cwd, timeout, maxBuffer: 50 * 1024 * 1024, encoding: "buffer" }, (error, stdout) => {
+    execFile("git", execution.args(args), {
+      cwd,
+      timeout,
+      maxBuffer: 50 * 1024 * 1024,
+      encoding: "buffer",
+      env: execution.env,
+    }, (error, stdout) => {
       if (error) {
         (error as Error & { stdout?: Buffer }).stdout = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
         reject(error);
@@ -30,6 +47,10 @@ export async function gitBuffer(args: string[], timeout = 15_000, cwd = process.
       resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
     });
   });
+}
+
+function runGitExecution(execution: GitExecution, args: string[], cwd: string, timeout = 15_000, maxBuffer = 10 * 1024 * 1024) {
+  return execFileAsync("git", execution.args(args), { cwd, timeout, maxBuffer, env: execution.env });
 }
 
 export async function isGitRepo(cwd = process.cwd()) {
@@ -142,9 +163,16 @@ export async function readGitImage(options: { cwd: string; path: string; oldPath
   const resolved = resolve(options.cwd, filePath);
   const rel = relative(options.cwd, resolved);
   if (rel.startsWith("..") || isAbsolute(rel)) throw new Error("Image path is outside the repository");
-  const info = await stat(resolved);
+  const rootReal = await realpath(options.cwd);
+  const targetReal = await realpath(resolved).catch(() => undefined);
+  if (!targetReal) throw new Error("Image not found");
+  const realRel = relative(rootReal, targetReal);
+  if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) {
+    throw new Error("Image path is outside the repository");
+  }
+  const info = await stat(targetReal);
   if (!info.isFile()) throw new Error("Image not found");
-  return { file: resolved, displayPath };
+  return { file: targetReal, displayPath };
 }
 
 export async function gitCwdFromRepoParam(repo: string | null, baseCwd: string) {
@@ -247,10 +275,23 @@ export async function gitDiff(options: { cwd: string; path: string; staged: bool
 }
 
 export async function gitSync(cwd: string) {
-  const status = await gitStatus(cwd);
-  const branch = status.isRepo ? status.branch : "";
+  const execution = await loadGitExecution(cwd);
+  const { stdout: rootOut } = await runGitExecution(execution, ["rev-parse", "--show-toplevel"], cwd);
+  const root = await realpath(rootOut.trim());
+  const { stdout: branchOut } = await runGitExecution(execution, ["branch", "--show-current"], root);
+  const branch = branchOut.trim();
   if (!branch) throw new Error("Cannot sync detached HEAD");
-  const fetchResult = await git(["fetch", "--prune", "origin"], 60_000, cwd);
-  const pullResult = await git(["pull", "--rebase", "--autostash", "origin", branch], 120_000, cwd);
-  return { ok: true as const, output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`, status: await gitStatus(cwd) };
+
+  const fetchResult = await runGitExecution(execution, ["fetch", "--prune", "origin"], root, 60_000);
+  const pullResult = await runGitExecution(
+    execution,
+    ["pull", "--rebase", "--autostash", "origin", branch],
+    root,
+    120_000,
+  );
+  return {
+    ok: true as const,
+    output: `${fetchResult.stdout}${fetchResult.stderr}${pullResult.stdout}${pullResult.stderr}`,
+    status: await gitStatus(root),
+  };
 }

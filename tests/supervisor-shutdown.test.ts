@@ -5,10 +5,11 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { AuthStore } from "../server/auth/kernel.js";
 import { isolatedAuthEnv } from "./auth-isolation.js";
+import { mintStoredApiToken } from "./auth-fixture.js";
 
 const projectRoot = new URL("..", import.meta.url).pathname;
-const token = "supervisor-shutdown-test-token";
 const processes = new Set<ChildProcess>();
 const childPids = new Set<number>();
 const clients = new Set<net.Socket>();
@@ -32,6 +33,7 @@ async function freePort(): Promise<number> {
 async function waitForStatus(
   supervisor: ChildProcess,
   publicPort: number,
+  token: string,
 ): Promise<{ childPid: number }> {
   const deadline = Date.now() + 10_000;
   while (Date.now() < deadline) {
@@ -97,6 +99,10 @@ async function startSupervisor(withTunnel: boolean) {
   const childPort = await freePort();
   const authEnv = isolatedAuthEnv();
   temporaryDirectories.add(authEnv.PI_WEB_HOME!);
+  const token = await mintStoredApiToken(
+    new AuthStore(authEnv.PI_WEB_AUTH_STORE!),
+    "supervisor shutdown",
+  );
   let socketPath: string | undefined;
   if (withTunnel) {
     const parent = await mkdtemp(join(tmpdir(), "pi-web-shutdown-test-"));
@@ -111,8 +117,7 @@ async function startSupervisor(withTunnel: boolean) {
       HOST: "127.0.0.1",
       PORT: String(publicPort),
       PI_WEB_CHILD_PORT: String(childPort),
-      PI_WEB_AUTH_MODE: "legacy",
-      PI_WEB_TOKEN: token,
+      PI_WEB_AUTH_MODE: "passkey",
       PI_WEB_MOCK: "1",
       PI_WEB_NO_SESSION: "1",
       ...(socketPath ? { PI_WEB_TUNNEL_SOCKET: socketPath } : {}),
@@ -120,7 +125,7 @@ async function startSupervisor(withTunnel: boolean) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   processes.add(supervisor);
-  const { childPid } = await waitForStatus(supervisor, publicPort);
+  const { childPid } = await waitForStatus(supervisor, publicPort, token.secret);
   childPids.add(childPid);
   return { supervisor, childPid, publicPort, socketPath };
 }

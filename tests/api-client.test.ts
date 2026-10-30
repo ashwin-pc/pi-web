@@ -15,7 +15,9 @@ describe("API viewer sequencing", () => {
     const first = client.headers();
     const second = client.headers();
     expect(first["x-pi-web-client-id"]).toBe(client.clientId);
-    expect(first.authorization).toBe("Bearer secret-token");
+    expect(bootHeaders).not.toHaveProperty("authorization");
+    expect(first).not.toHaveProperty("authorization");
+    expect(second).not.toHaveProperty("authorization");
     expect(Number(second["x-pi-web-viewer-seq"])).toBe(Number(first["x-pi-web-viewer-seq"]) + 1);
     expect(Number(first["x-pi-web-viewer-seq"])).toBe(Number(bootHeaders?.["x-pi-web-viewer-seq"]) + 1);
     state.currentSessionId = "B";
@@ -29,5 +31,6 @@ describe("API viewer sequencing", () => {
     expect(Number(reconnect.searchParams.get("viewerSeq"))).toBeGreaterThan(Number(url.searchParams.get("viewerSeq")));
     expect(reconnect.searchParams.get("clientId")).toBe(client.clientId);
     expect(Number(client.headers()["x-pi-web-viewer-seq"])).toBeGreaterThan(Number(reconnect.searchParams.get("viewerSeq")));
+    for (const [, init] of fetchMock.mock.calls) expect(init.headers).not.toHaveProperty("authorization");
   });
 });

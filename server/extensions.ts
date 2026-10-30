@@ -4,8 +4,6 @@ import { join, resolve } from "node:path";
 import { resolveWebHomePath } from "./shared/webHome.js";
 
 type BundledExtensionPathOptions = {
-  piCwd: string;
-  appDir: string;
   bundledExtensionsDir: string;
 };
 
@@ -110,21 +108,20 @@ export function discoverExtensionEntryPaths(dir: string, seenDirs = new Set<stri
   return dedupePaths(discovered);
 }
 
-export function resolvePiWebExtensionPaths(cwd: string) {
-  return dedupePaths([
-    ...discoverExtensionEntryPaths(join(cwd, ".pi", "web", "extensions")),
-    ...discoverExtensionEntryPaths(resolveWebHomePath("extensions", join(homedir(), ".pi", "web", "extensions"))),
-  ]);
+export function resolveWorkspacePiWebExtensionPaths(cwd: string) {
+  return discoverExtensionEntryPaths(join(cwd, ".pi", "web", "extensions"));
+}
+
+export function resolveGlobalPiWebExtensionPaths() {
+  return discoverExtensionEntryPaths(
+    resolveWebHomePath("extensions", join(homedir(), ".pi", "web", "extensions")),
+  );
 }
 
 export function resolveBundledExtensionPaths(options: BundledExtensionPathOptions) {
-  // When developing pi-web from this repo, the same directory is already loaded
-  // by pi as the project-local .pi/extensions path. For other PI_WEB_CWD values
-  // and packaged installs, add pi-web's bundled extensions explicitly.
-  if (resolve(options.piCwd) === resolve(options.appDir) || !existsSync(options.bundledExtensionsDir)) return [];
+  if (!existsSync(options.bundledExtensionsDir)) return [];
 
-  // DefaultResourceLoader resolves additionalExtensionPaths as package sources.
-  // Passing the extensions directory itself can produce the directory as a single
-  // extension path, so expand it to concrete entry files before handing it to pi.
+  // Product-bundled extensions are explicit trusted sources, independent of the
+  // active workspace's project-trust decision.
   return discoverExtensionEntryPaths(options.bundledExtensionsDir);
 }
