@@ -7,7 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { browserMutationFailure, type MutationAdmissionFailure } from "./server/auth/admission.js";
-import { createOriginRejectionReporter, trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { createOriginRejectionReporter, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
   UNKNOWN_SUPERVISOR_PEER,
@@ -167,12 +167,11 @@ const supervisor = createServer(async (req, res) => {
     });
   }
 
-  const originValidated = trustedOrigin(req, childAuthOrigin);
-  sanitizeProxyHeaders(req, originValidated);
+  sanitizeProxyHeaders(req);
   proxyHttpRequest(req, res, { host: childHost, port: childPort, preserveHost: true });
 });
 
-function sanitizeProxyHeaders(req: IncomingMessage, originValidated: boolean) {
+function sanitizeProxyHeaders(req: IncomingMessage) {
   stripSupervisorProvenanceHeaders(req.headers);
   const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
@@ -190,13 +189,12 @@ function sanitizeProxyHeaders(req: IncomingMessage, originValidated: boolean) {
   }
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
-  stampSupervisorProvenance(req, peer, originValidated, supervisorSecret);
+  stampSupervisorProvenance(req, peer, supervisorSecret);
 }
 
 supervisor.on("upgrade", (req, socket, head) => {
   stripSupervisorProvenanceHeaders(req.headers);
-  const originValidated = trustedOrigin(req, childAuthOrigin);
-  sanitizeProxyHeaders(req, originValidated);
+  sanitizeProxyHeaders(req);
   const upstream = net.connect(childPort, childHost);
   let closed = false;
 

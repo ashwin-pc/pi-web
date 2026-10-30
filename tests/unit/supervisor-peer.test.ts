@@ -49,7 +49,7 @@ describe("authenticated supervisor peer context", () => {
       const req = request("127.0.0.1");
       req.headers["x-pi-web-peer"] = "127.0.0.1";
       req.headers["x-pi-web-supervisor-secret"] = "caller-controlled";
-      stampSupervisorProvenance(req, "192.0.2.44", false, secret);
+      stampSupervisorProvenance(req, "192.0.2.44", secret);
       expect(effectivePeerAddress(req)).toBe("192.0.2.44");
 
       req.headers["x-pi-web-peer"] = "127.0.0.1";
@@ -60,14 +60,14 @@ describe("authenticated supervisor peer context", () => {
       expect(effectivePeerAddress(req)).toBe(UNKNOWN_SUPERVISOR_PEER);
 
       const direct = request("192.0.2.9");
-      stampSupervisorProvenance(direct, "127.0.0.1", false, secret);
+      stampSupervisorProvenance(direct, "127.0.0.1", secret);
       expect(effectivePeerAddress(direct)).toBe(UNKNOWN_SUPERVISOR_PEER);
 
       expect(effectivePeerAddress(request("127.0.0.1"))).toBe("127.0.0.1");
       expect(effectivePeerAddress(request())).toBe(UNKNOWN_SUPERVISOR_PEER);
 
       const unknown = request("127.0.0.1");
-      stampSupervisorProvenance(unknown, UNKNOWN_SUPERVISOR_PEER, false, secret);
+      stampSupervisorProvenance(unknown, UNKNOWN_SUPERVISOR_PEER, secret);
       expect(effectivePeerAddress(unknown)).toBe(UNKNOWN_SUPERVISOR_PEER);
       expect(isLoopbackAddress(effectivePeerAddress(unknown))).toBe(false);
 

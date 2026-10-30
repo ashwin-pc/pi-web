@@ -3,7 +3,6 @@ import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { canonicalIP, isLoopbackAddress } from "./ip.js";
 
 export const SUPERVISOR_PEER_HEADER = "x-pi-web-peer";
-export const SUPERVISOR_ORIGIN_HEADER = "x-pi-web-supervisor-origin";
 export const SUPERVISOR_SECRET_HEADER = "x-pi-web-supervisor-secret";
 export const UNKNOWN_SUPERVISOR_PEER = "unknown";
 
@@ -14,7 +13,6 @@ type SupervisorPeerContext = {
 
 type SupervisorProvenance = {
   peer: string;
-  originValidated: boolean;
 };
 
 let context: SupervisorPeerContext = { supervised: false };
@@ -41,7 +39,6 @@ export function resolveSupervisorPeer(
 
 export function stripSupervisorProvenanceHeaders(headers: IncomingHttpHeaders): void {
   delete headers[SUPERVISOR_PEER_HEADER];
-  delete headers[SUPERVISOR_ORIGIN_HEADER];
   delete headers[SUPERVISOR_SECRET_HEADER];
 }
 
@@ -49,12 +46,10 @@ export function stripSupervisorProvenanceHeaders(headers: IncomingHttpHeaders): 
 export function stampSupervisorProvenance(
   req: Pick<IncomingMessage, "headers">,
   peer: string,
-  originValidated: boolean,
   secret: string,
 ): void {
   stripSupervisorProvenanceHeaders(req.headers);
   req.headers[SUPERVISOR_PEER_HEADER] = peer;
-  if (originValidated) req.headers[SUPERVISOR_ORIGIN_HEADER] = "1";
   req.headers[SUPERVISOR_SECRET_HEADER] = secret;
 }
 
@@ -64,10 +59,8 @@ function authenticatedSupervisorProvenance(
   const secret = context.secret;
   if (!context.supervised || !secret || !isLoopbackAddress(req.socket?.remoteAddress)) return undefined;
   const rawPeer = req.headers[SUPERVISOR_PEER_HEADER];
-  const rawOrigin = req.headers[SUPERVISOR_ORIGIN_HEADER];
   const provided = req.headers[SUPERVISOR_SECRET_HEADER];
   if (typeof rawPeer !== "string" || typeof provided !== "string") return undefined;
-  if (rawOrigin !== undefined && rawOrigin !== "1") return undefined;
   const value = rawPeer.trim();
   const peer = value === UNKNOWN_SUPERVISOR_PEER
     ? UNKNOWN_SUPERVISOR_PEER
@@ -77,13 +70,7 @@ function authenticatedSupervisorProvenance(
   if (!peer || providedBytes.length !== expectedBytes.length || !timingSafeEqual(providedBytes, expectedBytes)) {
     return undefined;
   }
-  return { peer, originValidated: rawOrigin === "1" };
-}
-
-export function authenticatedSupervisorOrigin(
-  req: Pick<IncomingMessage, "headers" | "socket">,
-): boolean {
-  return authenticatedSupervisorProvenance(req)?.originValidated === true;
+  return { peer };
 }
 
 export function effectivePeerAddress(
@@ -93,7 +80,6 @@ export function effectivePeerAddress(
   if (context.supervised) {
     if (!socketPeer) return UNKNOWN_SUPERVISOR_PEER;
     const hasStamp = req.headers[SUPERVISOR_PEER_HEADER] !== undefined
-      || req.headers[SUPERVISOR_ORIGIN_HEADER] !== undefined
       || req.headers[SUPERVISOR_SECRET_HEADER] !== undefined;
     if (!hasStamp) return socketPeer;
     return authenticatedSupervisorProvenance(req)?.peer || UNKNOWN_SUPERVISOR_PEER;
