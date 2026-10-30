@@ -208,6 +208,7 @@ homeBtn.addEventListener('click', () => { closeSheet(); if (S.reading) UI.closeR
 moreBtn.addEventListener('click', () => { if (touch.sheet === 'more') closeSheet(); else openMore(); });
 function flash(b) { b.classList.remove('flash'); void b.offsetWidth; b.classList.add('flash'); }
 const avatarBtns = new Map();
+const dockVertical = () => window.matchMedia('(orientation: landscape) and (max-height: 500px)').matches; // the cover screen held sideways
 function avatarBtn(id) {
   let b = avatarBtns.get(id);
   if (b) return b;
@@ -215,9 +216,18 @@ function avatarBtn(id) {
   b.setAttribute('role', 'listitem');
   // Long-press: the session's card. A tap opens it (or, for the one already open, shows its card).
   let timer = 0, sx = 0, sy = 0, fired = false;
-  b.addEventListener('pointerdown', (e) => { fired = false; sx = e.clientX; sy = e.clientY; clearTimeout(timer); timer = setTimeout(() => { fired = true; navigator.vibrate?.(12); openCard(id); tlog('long-press', {sid: id}); }, LONG_MS); });
-  b.addEventListener('pointermove', (e) => { if (Math.hypot(e.clientX - sx, e.clientY - sy) > SLOP) clearTimeout(timer); });
-  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) b.addEventListener(ev, () => clearTimeout(timer));
+  // Round 3: swipe an avatar up (out of the dock) to open it beside the one you read; it follows the finger.
+  let up = 0, down = false;
+  b.addEventListener('pointerdown', (e) => { b.setPointerCapture?.(e.pointerId); fired = false; down = true; up = 0; sx = e.clientX; sy = e.clientY; clearTimeout(timer); timer = setTimeout(() => { fired = true; navigator.vibrate?.(12); openCard(id); tlog('long-press', {sid: id}); }, LONG_MS); });
+  b.addEventListener('pointermove', (e) => {
+    if (Math.hypot(e.clientX - sx, e.clientY - sy) > SLOP) clearTimeout(timer);
+    if (!down || dockVertical()) return;
+    const dy = e.clientY - sy;
+    if (dy < -SLOP && Math.abs(dy) > Math.abs(e.clientX - sx) * 1.5) { up = -dy; b.style.transform = `translateY(${Math.max(dy, -70)}px)`; b.classList.toggle('lift', up > 40); }
+  });
+  const release = (go) => { clearTimeout(timer); down = false; b.style.transform = ''; b.classList.remove('lift'); if (go && up > 40) { fired = true; closeSheet(); if (!S.reading) UIB.choose(S.currentId === id ? S.pinned.find((x) => x !== id) || id : S.currentId); UIB.beside(id); navigator.vibrate?.(10); tlog('dock:beside', {sid: id}); } up = 0; };
+  b.addEventListener('pointerup', () => release(true));
+  for (const ev of ['pointercancel', 'pointerleave']) b.addEventListener(ev, () => release(false));
   b.addEventListener('contextmenu', (e) => e.preventDefault());
   b.addEventListener('click', (e) => {
     if (fired) { e.preventDefault(); fired = false; return; }
