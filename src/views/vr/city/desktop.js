@@ -132,6 +132,7 @@ window.addEventListener('blur', () => desk.keys.clear());
 window.addEventListener('keydown', (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   const c = S.composer;
+  if (c.focused && document.activeElement === UI.composerInput) return; // the textarea types (app.js)
   if (c.focused) {
     if (e.key === 'Escape') { c.focused = false; composer.invalidate(); return; }
     if (e.key === 'Enter') { e.preventDefault(); UI.send(); return; }

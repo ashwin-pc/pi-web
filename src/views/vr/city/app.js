@@ -11,7 +11,7 @@ import * as N from './city-nav.js';
 import {Bar, UIB, PAGE, pages} from './bar.js';
 import {BarPops} from './bar-pops.js';
 import {PanelBatch} from './panel-batch.js';
-import {readers, sets, setFor, VIEW_PX} from './reader.js';
+import {readers, sets, setFor, VIEW_PX, prefetch} from './reader.js';
 import {A, world, uiRoot, renderer, scene, camera, nowMs, animMs, clamp, easeOut, applyStatus, READER_POS, RH, DEG, FOCUS} from './core.js';
 import {restPos, setAnchor, faceRoom, context} from './focus.js';
 import {rail} from './artifacts.js';
@@ -19,7 +19,7 @@ import {head} from './input.js';
 
 const UI = V.UI;
 export const city = new City({scene, parent: uiRoot});
-N.setHome(city.L); N.set(N.homeView()); N.apply(city.root);
+N.setHome(city.L); N.set(N.startView(city.L)); N.apply(city.root);
 export const comfort = N.buildComfort(camera);
 export const bar = new Bar(uiRoot);
 export const pops = new BarPops(bar);
@@ -159,14 +159,12 @@ UI.closeReader = closeReader;
 
 let prefetchQ = [];
 function prefetchAround(id) { const i = S.pinned.indexOf(id), n = S.pinned.length; prefetchQ = [0, 1, -1, 2].map((d) => S.pinned[mod(i + d, n)]).filter((sid) => sid && !(sid === A.active.sid && S.reading)); }
+/** pi-web: the neighbours' landing screens are rastered by reader.js's tileStep, within its per-frame budget; this
+ * only lays them out (one per frame) and names them. */
 export function prefetchStep() {
-  for (const sid of prefetchQ) {
-    const set = setFor(sid);
-    const t = set.turns.find((x) => x.panel.dirty);
-    if (t) { t.panel.update(true); renderer.initTexture(t.panel.tex); return; }
-    prefetchQ = prefetchQ.filter((x) => x !== sid);
-    return;
-  }
+  const sid = prefetchQ.find((x) => !sets.has(x) || sets.get(x).stale);
+  if (sid) setFor(sid);
+  prefetch.sids = prefetchQ.filter((x) => sets.has(x));
 }
 
 // ------------------------------------------------------------------ flying to places (only when asked)
@@ -196,27 +194,60 @@ UI.goHome = goHome; UI.flyCurrent = () => flyToSession(S.currentId);
 
 // ------------------------------------------------------------------ composer, dictation, settings
 UI.toLatest = () => { A.active.to(A.active.maxScroll, 300); A.active.newOutput = false; };
-UI.toggleChip = (sid, msg) => { const set = sets.get(sid); if (!set) return; set.expanded.has(msg) ? set.expanded.delete(msg) : set.expanded.add(msg); set.build(); for (const t of set.turns) t.panel.update(true); set.reader?.strip.invalidate(); };
+UI.toggleChip = (sid, msg) => { const set = sets.get(sid); if (!set) return; set.expanded.has(msg) ? set.expanded.delete(msg) : set.expanded.add(msg); set.build(); set.reader?.attachClip(set); set.reader?.strip.invalidate(); };
 UI.setReduceMotion = (v) => { S.reduceMotion = v; bar.invalidate(); emit('motion'); };
-UI.focusComposer = () => { S.composer.focused = true; if (renderer.xr.isPresenting && !S.composer.text) UI.toggleDictation(); composer.invalidate(); };
-// Dictation uses the browser's speech recognition where it exists; elsewhere the composer takes typed text (desktop).
+// pi-web (usability round 1): typing goes through a real (hidden) textarea, so the Quest Browser's system keyboard
+// opens over the immersive session when the composer is selected (XRSession.isSystemKeyboardSupported); a desktop
+// keyboard types into it too. Dictation is only the mic's job, and only where the browser can recognise speech.
+const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+UI.dictationAvailable = !!SpeechRec;
+const input = document.createElement('textarea');
+input.id = 'vrComposerInput';
+input.setAttribute('aria-label', 'Reply to the current session');
+input.autocomplete = 'off'; input.spellcheck = true; input.enterKeyHint = 'send';
+Object.assign(input.style, {position: 'fixed', left: '0', bottom: '0', width: '2px', height: '2px', opacity: '0', border: '0', padding: '0', resize: 'none', zIndex: '-1'});
+(host.el || document.body).append(input);
+UI.composerInput = input;
+input.addEventListener('input', () => { S.composer.text = input.value; S.composer.note = ''; composer.invalidate(); });
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); UI.send(); }
+  else if (e.key === 'Escape') { e.preventDefault(); UI.blurComposer(); }
+  e.stopPropagation(); // the City's own keys (WASD, arrows) stay out of your reply
+});
+input.addEventListener('blur', () => { if (S.composer.focused && !S.composer.dictating) { S.composer.focused = false; composer.invalidate(); } });
+UI.focusComposer = () => {
+  const c = S.composer;
+  c.focused = true; c.note = '';
+  input.value = c.text;
+  try { input.focus({preventScroll: true}); } catch { input.focus(); }
+  const xs = renderer.xr.getSession?.();
+  UI.keyboardHint = xs && xs.isSystemKeyboardSupported === false ? 'Type on a connected keyboard, or use the mic' : 'Type your reply…';
+  composer.invalidate();
+};
+UI.blurComposer = () => { S.composer.focused = false; input.blur(); composer.invalidate(); };
 let recognition = null;
 UI.toggleDictation = () => {
   const c = S.composer;
   if (c.dictating) { recognition?.stop(); c.dictating = false; composer.invalidate(); return; }
-  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!Recognition) { c.focused = true; c.unavailable = true; composer.invalidate(); return; }
-  recognition = new Recognition();
+  if (!SpeechRec) { c.focused = true; c.note = "Dictation isn't available in this browser: select the box to type."; composer.invalidate(); return; }
+  recognition = new SpeechRec();
   recognition.interimResults = true; recognition.continuous = false;
   const base = c.text ? `${c.text} ` : '';
-  recognition.onresult = (e) => { c.text = base + [...e.results].map((r) => r[0].transcript).join(''); composer.invalidate(); };
+  recognition.onresult = (e) => { c.text = base + [...e.results].map((r) => r[0].transcript).join(''); input.value = c.text; composer.invalidate(); };
   recognition.onend = () => { c.dictating = false; composer.invalidate(); };
-  recognition.onerror = () => { c.dictating = false; composer.invalidate(); };
+  recognition.onerror = (e) => { c.dictating = false; c.note = `Dictation stopped (${e.error || 'error'}).`; composer.invalidate(); };
   c.dictating = true; c.focused = true;
-  try { recognition.start(); } catch { c.dictating = false; }
+  try { recognition.start(); } catch { c.dictating = false; c.note = "Dictation couldn't start."; }
   composer.invalidate();
 };
-UI.send = () => { if (S.composer.dictating) { recognition?.stop(); S.composer.dictating = false; } A.active.follow = true; if (!sendPrompt()) return false; S.composer.focused = false; composer.invalidate(); return true; };
+UI.send = () => {
+  if (S.composer.dictating) { recognition?.stop(); S.composer.dictating = false; }
+  S.composer.text = input.value || S.composer.text;
+  A.active.follow = true;
+  if (!sendPrompt()) return false;
+  input.value = ''; S.composer.focused = false; input.blur(); composer.invalidate();
+  return true;
+};
 
 // ------------------------------------------------------------------ state -> view
 on((topic, detail) => {
