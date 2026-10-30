@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthKernel, AuthStore, hashSecret, type AuthVia } from "../server/auth/kernel.js";
 import { createOriginRejectionReporter, originFailureHint, unconfiguredOriginWarning } from "../server/auth/origin.js";
-import { requestIntentFailure } from "../server/auth/requestIntent.js";
+import { browserMutationFailure } from "../server/auth/admission.js";
 
 const origin = "https://pi.example.test";
 const tempDirs: string[] = [];
@@ -16,7 +16,12 @@ function message(headers: IncomingMessage["headers"] = {}) {
 
 function request(via: AuthVia, headers: IncomingMessage["headers"] = {}, path = "/api/git/status?fetch=1") {
   const req = message(headers);
-  return requestIntentFailure(req, new URL(path, origin), via, origin);
+  const failure = browserMutationFailure(req, via, origin, false, new URL(path, origin));
+  return failure === "origin"
+    ? originFailureHint
+    : failure === "intent"
+      ? "CSRF validation failed"
+      : undefined;
 }
 
 afterEach(async () => {
@@ -89,7 +94,7 @@ describe("request intent gate", () => {
     for (const entry of cases) {
       const auth = await entry.kernel.gate(entry.req);
       expect(auth).toMatchObject({ ok: true, via: entry.via });
-      if (auth.ok) expect(requestIntentFailure(entry.req, new URL(entry.req.url!, origin), auth.via, origin)).toBeUndefined();
+      if (auth.ok) expect(browserMutationFailure(entry.req, auth.via, origin, false, new URL(entry.req.url!, origin))).toBeUndefined();
     }
     expect(await authenticated.gate(message({
       authorization: "Bearer proxy-credential",

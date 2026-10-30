@@ -7,7 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { browserMutationFailure, type MutationAdmissionFailure } from "./server/auth/admission.js";
-import { createOriginRejectionReporter, trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { createOriginRejectionReporter, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
   UNKNOWN_SUPERVISOR_PEER,
@@ -154,8 +154,7 @@ async function handleRequest(
       return;
     }
 
-    const originValidated = trustedOrigin(req, childAuthOrigin);
-    sanitizeProxyHeaders(req, originValidated, tunnel);
+    sanitizeProxyHeaders(req, tunnel);
 
     if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
       if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
@@ -195,13 +194,12 @@ async function handleRequest(
 
 function sanitizeProxyHeaders(
   req: IncomingMessage,
-  originValidated: boolean,
   tunnel: boolean,
 ) {
   stripSupervisorProvenanceHeaders(req.headers);
-  const authority = forwardedHost(req);
+  const trustedForwarder = tunnel || trustedProxyPeer(req);
+  const authority = forwardedHost(req, undefined, trustedForwarder);
   if (authority) req.headers.host = authority;
-  const trustedForwarder = trustedProxyPeer(req);
   const forwarded = req.headers["x-forwarded-for"];
   const peer = resolveSupervisorPeer(
     req.socket.remoteAddress,
@@ -219,7 +217,7 @@ function sanitizeProxyHeaders(
   }
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
-  stampSupervisorProvenance(req, peer, tunnel, originValidated, supervisorSecret);
+  stampSupervisorProvenance(req, peer, tunnel, supervisorSecret);
 }
 
 const supervisor = createServer((req, res) => {
@@ -254,8 +252,7 @@ function upgradeProxy(tunnel: boolean) {
     accept: (req) => req.headers.origin === undefined
       || trustedOrigin(req, childAuthOrigin),
     prepare: (req) => {
-      const originValidated = trustedOrigin(req, childAuthOrigin);
-      sanitizeProxyHeaders(req, originValidated, tunnel);
+      sanitizeProxyHeaders(req, tunnel);
     },
     rejectionBody: originFailureHint,
   });

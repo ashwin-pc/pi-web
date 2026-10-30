@@ -3,7 +3,6 @@ import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { canonicalIP, isLoopbackAddress } from "./ip.js";
 
 export const SUPERVISOR_PEER_HEADER = "x-pi-web-peer";
-export const SUPERVISOR_ORIGIN_HEADER = "x-pi-web-supervisor-origin";
 export const SUPERVISOR_SECRET_HEADER = "x-pi-web-supervisor-secret";
 export const SUPERVISOR_TUNNEL_HEADER = "x-pi-web-tunnel";
 export const UNKNOWN_SUPERVISOR_PEER = "unknown";
@@ -17,7 +16,6 @@ type SupervisorPeerContext = {
 type SupervisorProvenance = {
   peer: string;
   tunnel: boolean;
-  originValidated: boolean;
 };
 
 let context: SupervisorPeerContext = {
@@ -27,7 +25,6 @@ let context: SupervisorPeerContext = {
 
 const reservedHeaders = new Set([
   SUPERVISOR_PEER_HEADER,
-  SUPERVISOR_ORIGIN_HEADER,
   SUPERVISOR_SECRET_HEADER,
   SUPERVISOR_TUNNEL_HEADER,
 ]);
@@ -56,13 +53,16 @@ export function resolveSupervisorPeer(
   forwarded: string | string[] | undefined,
   trustedForwarder: boolean,
 ): string {
-  if (!trustedForwarder) return canonicalIP(remoteAddress) || UNKNOWN_SUPERVISOR_PEER;
+  if (!trustedForwarder)
+    return canonicalIP(remoteAddress) || UNKNOWN_SUPERVISOR_PEER;
   return typeof forwarded === "string"
     ? canonicalIP(forwarded.trim()) || UNKNOWN_SUPERVISOR_PEER
     : UNKNOWN_SUPERVISOR_PEER;
 }
 
-export function stripSupervisorProvenanceHeaders(headers: IncomingHttpHeaders): void {
+export function stripSupervisorProvenanceHeaders(
+  headers: IncomingHttpHeaders,
+): void {
   for (const header of reservedHeaders) delete headers[header];
 }
 
@@ -71,13 +71,11 @@ export function stampSupervisorProvenance(
   req: Pick<IncomingMessage, "headers">,
   peer: string,
   tunnel: boolean,
-  originValidated: boolean,
   secret: string,
 ): void {
   stripSupervisorProvenanceHeaders(req.headers);
   req.headers[SUPERVISOR_PEER_HEADER] = peer;
   if (tunnel) req.headers[SUPERVISOR_TUNNEL_HEADER] = "1";
-  if (originValidated) req.headers[SUPERVISOR_ORIGIN_HEADER] = "1";
   req.headers[SUPERVISOR_SECRET_HEADER] = secret;
 }
 
@@ -88,34 +86,28 @@ function authenticatedSupervisorProvenance(
   const provided = req.headers[SUPERVISOR_SECRET_HEADER];
   const rawPeer = req.headers[SUPERVISOR_PEER_HEADER];
   const rawTunnel = req.headers[SUPERVISOR_TUNNEL_HEADER];
-  const rawOrigin = req.headers[SUPERVISOR_ORIGIN_HEADER];
   if (
-    !context.supervised
-    || !secret
-    || !isLoopbackAddress(req.socket?.remoteAddress)
-    || typeof provided !== "string"
-    || typeof rawPeer !== "string"
-    || (rawTunnel !== undefined && rawTunnel !== "1")
-    || (rawOrigin !== undefined && rawOrigin !== "1")
-  ) return undefined;
+    !context.supervised ||
+    !secret ||
+    !isLoopbackAddress(req.socket?.remoteAddress) ||
+    typeof provided !== "string" ||
+    typeof rawPeer !== "string" ||
+    (rawTunnel !== undefined && rawTunnel !== "1")
+  )
+    return undefined;
   const expectedBytes = Buffer.from(secret);
   const providedBytes = Buffer.from(provided);
-  if (providedBytes.length !== expectedBytes.length || !timingSafeEqual(providedBytes, expectedBytes)) return undefined;
+  if (
+    providedBytes.length !== expectedBytes.length ||
+    !timingSafeEqual(providedBytes, expectedBytes)
+  )
+    return undefined;
   const value = rawPeer.trim();
-  const peer = value === UNKNOWN_SUPERVISOR_PEER
-    ? UNKNOWN_SUPERVISOR_PEER
-    : canonicalIP(value);
-  return peer ? {
-    peer,
-    tunnel: rawTunnel === "1",
-    originValidated: rawOrigin === "1",
-  } : undefined;
-}
-
-export function authenticatedSupervisorOrigin(
-  req: Pick<IncomingMessage, "headers" | "socket">,
-): boolean {
-  return authenticatedSupervisorProvenance(req)?.originValidated === true;
+  const peer =
+    value === UNKNOWN_SUPERVISOR_PEER
+      ? UNKNOWN_SUPERVISOR_PEER
+      : canonicalIP(value);
+  return peer ? { peer, tunnel: rawTunnel === "1" } : undefined;
 }
 
 export function authenticatedTunnelRequest(
@@ -130,7 +122,9 @@ export function effectivePeerAddress(
   const socketPeer = canonicalIP(req.socket?.remoteAddress);
   if (context.supervised) {
     if (!socketPeer) return UNKNOWN_SUPERVISOR_PEER;
-    const hasStamp = [...reservedHeaders].some(header => req.headers[header] !== undefined);
+    const hasStamp = [...reservedHeaders].some(
+      (header) => req.headers[header] !== undefined,
+    );
     if (!hasStamp) return socketPeer;
     return authenticatedSupervisorProvenance(req)?.peer || UNKNOWN_SUPERVISOR_PEER;
   }

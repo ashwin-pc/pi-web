@@ -603,9 +603,8 @@ function withAccessLog(
   };
 }
 
-import { browserMutationFailure, isAmbientBrowserAuth, isIdempotentMethod } from "./server/auth/admission.js";
+import { browserMutationFailure, isAmbientBrowserAuth } from "./server/auth/admission.js";
 import { createOriginRejectionReporter, trustedOrigin, originFailureHint } from "./server/auth/origin.js";
-import { requestIntentFailure } from "./server/auth/requestIntent.js";
 
 async function loginPresentation() {
   const settings = await settingsStore.read();
@@ -687,15 +686,10 @@ const server = createServer(withAccessLog(async (req, res, url) => {
       if (auth.via === "external" && method === "GET" && url.pathname === "/api/state" && req.headers["x-pi-web-client-id"]) {
         await authKernel.establishSession(res, auth.identity, auth.via, req);
       }
-      if (!isIdempotentMethod(method)) {
-        const failure = browserMutationFailure(req, auth.via, authOrigin, mockMode);
-        if (failure) {
-          if (failure === "origin") reportOriginRejection(req);
-          return sendJson(res, 403, { ok: false, error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
-        }
-      } else {
-        const intentFailure = requestIntentFailure(req, url, auth.via, authOrigin);
-        if (intentFailure) return sendJson(res, 403, { ok: false, error: intentFailure });
+      const failure = browserMutationFailure(req, auth.via, authOrigin, mockMode, url);
+      if (failure) {
+        if (failure === "origin") reportOriginRejection(req);
+        return sendJson(res, 403, { ok: false, error: failure === "origin" ? originFailureHint : "CSRF validation failed" });
       }
       if (method === "POST" && url.pathname === "/api/auth/authorize") return sendJson(res, 200, { ok: true });
       if (await handleSecurityRoute(req, res, url, auth, authKernel, authStore, passkeyConfig)) return;
