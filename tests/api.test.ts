@@ -1536,22 +1536,22 @@ describe("session cookie transport security", () => {
     {
       label: "keeps the default loopback launch usable over plain HTTP",
       declareOrigin: false,
-      proxyPeers: undefined,
+      requestHost: undefined,
       secure: false,
     },
     {
-      label: "defaults to Secure behind a configured proxy when the origin is absent",
+      label: "defaults to Secure for a public request Host when the origin is absent",
       declareOrigin: false,
-      proxyPeers: "127.0.0.1",
+      requestHost: "pi.example.test",
       secure: true,
     },
     {
       label: "permits non-Secure cookies for an explicitly declared HTTP loopback origin",
       declareOrigin: true,
-      proxyPeers: undefined,
+      requestHost: undefined,
       secure: false,
     },
-  ])("$label", async ({ declareOrigin, proxyPeers, secure }) => {
+  ])("$label", async ({ declareOrigin, requestHost, secure }) => {
     const port = await freePort();
     const origin = `http://127.0.0.1:${port}`;
     const env = isolatedAuthEnv();
@@ -1572,11 +1572,11 @@ describe("session cookie transport security", () => {
         PI_WEB_AUTH_MODE: "external",
         PI_WEB_AUTH_POLICY: "authenticated",
         PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
-        ...(proxyPeers ? { PI_WEB_AUTH_PROXY_PEERS: proxyPeers } : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
     const headers = {
+      ...(requestHost ? { host: requestHost } : {}),
       "x-test-user": "cookie-owner",
       "x-pi-web-client-id": "synthetic-cookie-client",
     };

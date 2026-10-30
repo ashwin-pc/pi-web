@@ -7,7 +7,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { browserMutationFailure, type MutationAdmissionFailure } from "./server/auth/admission.js";
-import { trustedOrigin, originFailureHint } from "./server/auth/origin.js";
+import { createOriginRejectionReporter, trustedOrigin, originFailureHint } from "./server/auth/origin.js";
 import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
   markTunnelRequest,
@@ -29,6 +29,7 @@ const publicPort = Number(process.env.PORT || 8787);
 const childHost = process.env.PI_WEB_CHILD_HOST || "127.0.0.1";
 const childPort = Number(process.env.PI_WEB_CHILD_PORT || publicPort + 1);
 const childAuthOrigin = process.env.PI_WEB_AUTH_ORIGIN || `http://localhost:${publicPort}`;
+const reportOriginRejection = createOriginRejectionReporter(process.env.PI_WEB_AUTH_ORIGIN);
 const restartGraceMs = Number(process.env.PI_WEB_RESTART_GRACE_MS || 250);
 const tunnelSocketPath = process.env.PI_WEB_TUNNEL_SOCKET || "";
 const supervisorSecret = randomBytes(32).toString("base64url");
@@ -161,10 +162,13 @@ async function handleRequest(
     if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
       if (req.method !== "POST") return sendJson(res, 405, { ok: false, error: "POST required" });
       const auth = await authorization(req, true);
-      if (auth !== "allowed") return sendJson(res, auth === "unauthorized" ? 401 : 403, {
-        ok: false,
-        error: auth === "origin" ? originFailureHint : auth === "intent" ? "CSRF validation failed" : "Unauthorized",
-      });
+      if (auth !== "allowed") {
+        if (auth === "origin") reportOriginRejection(req);
+        return sendJson(res, auth === "unauthorized" ? 401 : 403, {
+          ok: false,
+          error: auth === "origin" ? originFailureHint : auth === "intent" ? "CSRF validation failed" : "Unauthorized",
+        });
+      }
       sendJson(res, 202, { ok: true, message: "Restarting pi-web child" });
       void restartChild();
       return;

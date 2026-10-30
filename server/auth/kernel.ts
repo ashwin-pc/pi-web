@@ -342,12 +342,13 @@ export class AuthKernel {
         `Auth policy is "open" while login methods are enabled (${[...this.methods].join(", ")}). Requests are not required to authenticate; set PI_WEB_AUTH_POLICY=authenticated or clear the methods.`,
       );
   }
+  configurationPolicy(saved?: AccessPolicy): AccessPolicy {
+    return saved ?? (this.explicitOpenPolicy ? "open" : "authenticated");
+  }
   async configure(methods: HumanAuthMethod[]) {
     await this.store.update((state) => {
       state.config = {
-        policy:
-          state.config?.policy ??
-          (this.explicitOpenPolicy ? "open" : "authenticated"),
+        policy: this.configurationPolicy(state.config?.policy),
         methods,
       };
     });
@@ -385,7 +386,7 @@ export class AuthKernel {
   constructor(
     readonly mode: AuthMode,
     readonly store: AuthStore,
-    readonly secureCookie = true,
+    readonly secureCookie: boolean | ((req?: IncomingMessage) => boolean) = true,
     readonly trustedHeader = "",
     policy?: AccessPolicy,
     methods?: HumanAuthMethod[],
@@ -574,15 +575,21 @@ export class AuthKernel {
         expiresAt: now + 30 * DAY,
       });
     });
+    const secure = typeof this.secureCookie === "function"
+      ? this.secureCookie(req)
+      : this.secureCookie;
     res.setHeader(
       "set-cookie",
-      `${SESSION_COOKIE}=${raw}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${this.secureCookie ? "; Secure" : ""}`,
+      `${SESSION_COOKIE}=${raw}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 86400}${secure ? "; Secure" : ""}`,
     );
   }
-  clearSession(res: ServerResponse) {
+  clearSession(res: ServerResponse, req?: IncomingMessage) {
+    const secure = typeof this.secureCookie === "function"
+      ? this.secureCookie(req)
+      : this.secureCookie;
     res.setHeader(
       "set-cookie",
-      `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${this.secureCookie ? "; Secure" : ""}`,
+      `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? "; Secure" : ""}`,
     );
   }
 }

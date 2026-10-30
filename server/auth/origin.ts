@@ -4,7 +4,21 @@ import { forwardedHost, normalizedAuthority } from "./proxy.js";
 import { authenticatedSupervisorOrigin } from "./supervisorPeer.js";
 
 export const originFailureHint = "Origin does not match the configured public origin. Set PI_WEB_AUTH_ORIGIN to the exact public origin or configure trusted proxy peers for a local HTTP origin.";
+export const unconfiguredOriginWarning = "Rejected a browser request for an undeclared hostname. Set PI_WEB_AUTH_ORIGIN to the exact public https:// origin. One public origin is supported because browser sessions and WebAuthn credentials are bound to one relying-party origin.";
 let warned = false;
+
+export function createOriginRejectionReporter(
+  configuredOrigin: string | undefined,
+  warn: (message: string) => void = console.warn,
+): (req: IncomingMessage) => void {
+  let reported = false;
+  return (_req) => {
+    if (!configuredOrigin && !reported) {
+      reported = true;
+      warn(unconfiguredOriginWarning);
+    }
+  };
+}
 
 function isCanonicalLoopback(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "[::1]";
