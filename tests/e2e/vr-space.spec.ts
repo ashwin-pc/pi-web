@@ -30,7 +30,8 @@ test.describe("VR view: use the space", () => {
     await expect.poll(() => city(page, (vr) => vr.r3().mode)).toBe("focus");
     // Once the open motion has settled: the mock measured 86° × 44° (round 2's panel was 50° × 30°).
     // Usability round 1: the cockpit fits the comfortable head-turn range (about 61° × 45°, was 86° × 44°).
-    await expect.poll(() => city(page, (vr) => vr.focusSize().cockpit.wDeg), { timeout: 5000 }).toBeGreaterThan(55);
+    // (usability round 2: the panel appears only once its text is drawn, so the cockpit may be hidden for a moment)
+    await expect.poll(() => city(page, (vr) => vr.focusSize().cockpit?.wDeg ?? 0), { timeout: 5000 }).toBeGreaterThan(55);
     const size = await city(page, (vr) => vr.focusSize());
     expect(size.cockpit.wDeg).toBeLessThanOrEqual(70);
     expect(size.cockpit.hDeg).toBeGreaterThan(35);
