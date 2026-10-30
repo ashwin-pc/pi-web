@@ -35,6 +35,13 @@ async function pinch(page: Page, c: [number, number], d0: number, d1: number) {
   for (let i = 1; i <= 8; i++) { await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: pts(d0 + (d1 - d0) * i / 8) }); await page.waitForTimeout(25); }
   await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
 }
+async function pan2(page: Page, c: [number, number], d: [number, number]) {
+  const cdp = await page.context().newCDPSession(page);
+  const pts = (k: number) => [{ x: c[0] - 40 + d[0] * k, y: c[1] + d[1] * k, id: 1 }, { x: c[0] + 40 + d[0] * k, y: c[1] + d[1] * k, id: 2 }];
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: pts(0) });
+  for (let i = 1; i <= 8; i++) { await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: pts(i / 8) }); await page.waitForTimeout(30); }
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+}
 async function longPress(page: Page, x: number, y: number, ms = 700) {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
@@ -99,7 +106,8 @@ test.describe("VR view on touch screens (foldable inner and cover screens)", () 
       const before = (await city(page, (c) => c.state())).currentId;
       // Start within the conversation (wide screens show the whole cockpit, so it is narrower there).
       let d = vp.width * 0.3;
-      while (d > 30 && (await city(page, (c, xy) => c.hitAt(xy[0], xy[1]), [cx + d, cy])) !== "reader") d -= vp.width * 0.02;
+      const onConv = (h: string | null) => h === "reader" || String(h).startsWith("turn:") || String(h).startsWith("chip:");
+      while (d > 30 && !onConv(await city(page, (c, xy) => c.hitAt(xy[0], xy[1]), [cx + d, cy]))) d -= vp.width * 0.02;
       await drag(page, [cx + d, cy], [cx - d, cy]);
 
       await expect.poll(async () => (await city(page, (c) => c.state())).currentId).not.toBe(before);
@@ -119,13 +127,20 @@ test.describe("VR view on touch screens (foldable inner and cover screens)", () 
       const z0 = await page.evaluate(() => (window as VrWindow).__desk.zoom);
       await pinch(page, [cx, cy], 80, 220);
       await expect.poll(() => page.evaluate(() => (window as VrWindow).__desk.zoom)).toBeLessThan(z0);
+      // A double tap on the conversation's text resets the zoom (round 3).
+      await page.touchscreen.tap(cx, cy); await page.touchscreen.tap(cx, cy);
+      await expect.poll(() => page.evaluate(() => (window as VrWindow).__desk.zoom)).toBe(1);
+      await pinch(page, [cx, cy], 80, 220);
       await dock.locator("[data-id='bar:more']").tap();
       await expect(page.locator("#vrSheet")).toBeVisible();
       const z1 = await page.evaluate(() => (window as VrWindow).__desk.zoom);
       await page.locator("#vrSheet [data-z='1.18']").tap();
       expect(await page.evaluate(() => (window as VrWindow).__desk.zoom)).toBeGreaterThan(z1);
-      await page.locator("#vrSheet .x").tap();
+      // Look closes the sheet (round 3), so what it turned to can be tapped.
+      await page.locator("#vrSheet [data-l='1']").tap();
       await expect(page.locator("#vrSheet")).toBeHidden();
+      await dock.locator("[data-id='bar:more']").tap();
+      await page.locator("#vrSheet [data-l='0']").tap();
 
       // Long-press an avatar: its card with Open, Beside and Fly to.
       const other = state.pinned[3];
@@ -134,12 +149,29 @@ test.describe("VR view on touch screens (foldable inner and cover screens)", () 
       const ab = (await av.boundingBox())!;
       await longPress(page, ab.x + ab.width / 2, ab.y + ab.height / 2);
       await expect(page.locator("#vrSheet")).toBeVisible();
+      // A downward drag on the card closes it (round 3); long-press again to reopen.
+      const sb = (await page.locator("#vrSheet header").boundingBox())!;
+      await drag(page, [sb.x + 30, sb.y + 20], [sb.x + 30, sb.y + 160], 6, 30);
+      await expect(page.locator("#vrSheet")).toBeHidden();
+      await longPress(page, ab.x + ab.width / 2, ab.y + ab.height / 2);
+      await expect(page.locator("#vrSheet")).toBeVisible();
       for (const a of ["open", "beside", "fly"]) {
         const b = await page.locator(`#vrSheet [data-a='${a}']`).boundingBox();
         expect(b && b.height >= 48).toBe(true);
       }
       await page.locator("#vrSheet [data-a='open']").tap();
       await expect.poll(async () => (await city(page, (c) => c.state())).currentId).toBe(other);
+
+      // Swipe an avatar up out of the dock: it opens beside (round 3). Not on the sideways cover screen (a column dock).
+      if (vp.height > 500) {
+        const third = dock.locator(`[data-id='avatar:${state.pinned[2]}']`);
+        await third.scrollIntoViewIfNeeded();
+        const tb = (await third.boundingBox())!;
+        await drag(page, [tb.x + tb.width / 2, tb.y + tb.height / 2], [tb.x + tb.width / 2, tb.y - 70], 6, 30);
+        await expect.poll(async () => (await city(page, (c) => c.r3())).mode).toBe("pair");
+        await city(page, (c) => c.setLayout("focus"));
+        await page.waitForTimeout(800);
+      }
 
       // Replying: the dock's Reply focuses a real text field, shown above the dock with Send (and the 3D box does too).
       await page.waitForFunction(() => (window as VrWindow).__vrCity.state().panelSettled);
@@ -157,8 +189,16 @@ test.describe("VR view on touch screens (foldable inner and cover screens)", () 
       await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
       await page.waitForTimeout(800);
       const alt0 = (await city(page, (c) => c.state())).nav.altitude;
-      await drag(page, [cx, vp.height * 0.6], [cx, vp.height * 0.3]);
+      await drag(page, [cx, vp.height * 0.55], [cx, vp.height * 0.3]);
       await expect.poll(async () => (await city(page, (c) => c.state())).nav.altitude).toBeGreaterThan(alt0);
+      // A quarter of the screen is about a quarter of the height, never the 80% it was (round 3).
+      expect((await city(page, (c) => c.state())).nav.altitude).toBeLessThan(alt0 * 1.45);
+      // Two fingers pan the city (round 3).
+      const nav0 = (await city(page, (c) => c.state())).nav;
+      await pan2(page, [cx, vp.height * 0.5], [vp.width * 0.25, 0]);
+      await expect.poll(async () => { const n = (await city(page, (c) => c.state())).nav; return Math.hypot(n.x - nav0.x, n.z - nav0.z); }).toBeGreaterThan(5);
+      // Dock names show up to two lines.
+      expect(await dock.locator(".vrAv .t").first().evaluate((e) => getComputedStyle(e).webkitLineClamp)).toBe("2");
       await page.screenshot({ path: testInfo.outputPath(`${vp.name}.png`) });
       await ctx.close();
     });
