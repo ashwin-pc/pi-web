@@ -2,14 +2,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
-  canonicalPeerAddress,
   effectivePeerAddress,
   initializeSupervisorPeerContext,
-  isLoopbackPeer,
   resolveSupervisorPeer,
-  stampSupervisorPeer,
+  stampSupervisorProvenance,
   UNKNOWN_SUPERVISOR_PEER,
 } from "../../server/auth/supervisorPeer.js";
+import { canonicalIP, isLoopbackAddress } from "../../server/auth/ip.js";
 
 function request(remoteAddress?: string, method = "POST", url = "/api/auth/password/bootstrap") {
   return { headers: {}, method, url, socket: { remoteAddress } } as any;
@@ -17,12 +16,12 @@ function request(remoteAddress?: string, method = "POST", url = "/api/auth/passw
 
 describe("authenticated supervisor peer context", () => {
   it("canonicalizes loopback spellings without accepting scoped or malformed addresses", () => {
-    expect(canonicalPeerAddress("::ffff:127.0.0.9")).toBe("127.0.0.9");
-    expect(canonicalPeerAddress("2001:0db8::1")).toBe("2001:db8::1");
-    expect(canonicalPeerAddress("fe80::1%lo0")).toBeUndefined();
-    expect(isLoopbackPeer("127.44.2.1")).toBe(true);
-    expect(isLoopbackPeer("::1")).toBe(true);
-    expect(isLoopbackPeer("192.0.2.1")).toBe(false);
+    expect(canonicalIP("::ffff:127.0.0.9")).toBe("127.0.0.9");
+    expect(canonicalIP("2001:0db8::1")).toBe("2001:db8::1");
+    expect(canonicalIP("fe80::1%lo0")).toBeUndefined();
+    expect(isLoopbackAddress("127.44.2.1")).toBe(true);
+    expect(isLoopbackAddress("::1")).toBe(true);
+    expect(isLoopbackAddress("192.0.2.1")).toBe(false);
   });
 
   it("resolves valid outer peers and stamps unknown for missing, malformed, or chained data", () => {
@@ -50,7 +49,7 @@ describe("authenticated supervisor peer context", () => {
       const req = request("127.0.0.1");
       req.headers["x-pi-web-peer"] = "127.0.0.1";
       req.headers["x-pi-web-supervisor-secret"] = "caller-controlled";
-      stampSupervisorPeer(req, "192.0.2.44", secret);
+      stampSupervisorProvenance(req, "192.0.2.44", false, secret);
       expect(effectivePeerAddress(req)).toBe("192.0.2.44");
 
       req.headers["x-pi-web-peer"] = "127.0.0.1";
@@ -61,23 +60,23 @@ describe("authenticated supervisor peer context", () => {
       expect(effectivePeerAddress(req)).toBe(UNKNOWN_SUPERVISOR_PEER);
 
       const direct = request("192.0.2.9");
-      stampSupervisorPeer(direct, "127.0.0.1", secret);
+      stampSupervisorProvenance(direct, "127.0.0.1", false, secret);
       expect(effectivePeerAddress(direct)).toBe(UNKNOWN_SUPERVISOR_PEER);
 
       expect(effectivePeerAddress(request("127.0.0.1"))).toBe("127.0.0.1");
       expect(effectivePeerAddress(request())).toBe(UNKNOWN_SUPERVISOR_PEER);
 
       const unknown = request("127.0.0.1");
-      stampSupervisorPeer(unknown, UNKNOWN_SUPERVISOR_PEER, secret);
+      stampSupervisorProvenance(unknown, UNKNOWN_SUPERVISOR_PEER, false, secret);
       expect(effectivePeerAddress(unknown)).toBe(UNKNOWN_SUPERVISOR_PEER);
-      expect(isLoopbackPeer(effectivePeerAddress(unknown))).toBe(false);
+      expect(isLoopbackAddress(effectivePeerAddress(unknown))).toBe(false);
 
-      expect(isLoopbackPeer(effectivePeerAddress(request("127.0.0.1")))).toBe(true);
-      expect(isLoopbackPeer(effectivePeerAddress(unknown))).toBe(false);
+      expect(isLoopbackAddress(effectivePeerAddress(request("127.0.0.1")))).toBe(true);
+      expect(isLoopbackAddress(effectivePeerAddress(unknown))).toBe(false);
       const forged = request("127.0.0.1");
       forged.headers["x-pi-web-peer"] = "127.0.0.1";
       forged.headers["x-pi-web-supervisor-secret"] = "wrong-secret";
-      expect(isLoopbackPeer(effectivePeerAddress(forged))).toBe(false);
+      expect(isLoopbackAddress(effectivePeerAddress(forged))).toBe(false);
     } finally {
       initializeSupervisorPeerContext({});
     }

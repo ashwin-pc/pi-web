@@ -1,7 +1,7 @@
 import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
 import { forwardedHost, normalizedAuthority } from "./proxy.js";
-import { authenticatedSupervisorOrigin } from "./supervisorOrigin.js";
+import { authenticatedSupervisorOrigin } from "./supervisorPeer.js";
 
 export const originFailureHint = "Origin does not match the configured public origin. Set PI_WEB_AUTH_ORIGIN to the exact public origin or configure trusted proxy peers for a local HTTP origin.";
 let warned = false;

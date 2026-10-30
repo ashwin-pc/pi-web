@@ -12,10 +12,9 @@ import { forwardedHost, trustedProxyPeer } from "./server/auth/proxy.js";
 import {
   UNKNOWN_SUPERVISOR_PEER,
   resolveSupervisorPeer,
-  stampSupervisorPeer,
-  stripSupervisorPeerHeaders,
+  stampSupervisorProvenance,
+  stripSupervisorProvenanceHeaders,
 } from "./server/auth/supervisorPeer.js";
-import { stampSupervisorOrigin, stripSupervisorOriginHeaders } from "./server/auth/supervisorOrigin.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import { resolveWebHomePath } from "./server/shared/webHome.js";
 
@@ -138,7 +137,7 @@ function destroyQuietly(socket: NodeJS.WritableStream & { destroy?: (error?: Err
 }
 
 const supervisor = createServer(async (req, res) => {
-  stripSupervisorOriginHeaders(req.headers);
+  stripSupervisorProvenanceHeaders(req.headers);
   const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
 
   if (url.pathname === "/api/restart" || url.pathname === "/__supervisor/restart") {
@@ -170,8 +169,7 @@ const supervisor = createServer(async (req, res) => {
 });
 
 function sanitizeProxyHeaders(req: IncomingMessage, originValidated: boolean) {
-  stripSupervisorOriginHeaders(req.headers);
-  stripSupervisorPeerHeaders(req.headers);
+  stripSupervisorProvenanceHeaders(req.headers);
   const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
   const trustedForwarder = trustedProxyPeer(req);
@@ -186,14 +184,13 @@ function sanitizeProxyHeaders(req: IncomingMessage, originValidated: boolean) {
   } else {
     delete req.headers["x-forwarded-for"];
   }
-  stampSupervisorPeer(req, peer, supervisorSecret);
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
-  if (originValidated) stampSupervisorOrigin(req, supervisorSecret);
+  stampSupervisorProvenance(req, peer, originValidated, supervisorSecret);
 }
 
 supervisor.on("upgrade", (req, socket, head) => {
-  stripSupervisorOriginHeaders(req.headers);
+  stripSupervisorProvenanceHeaders(req.headers);
   const originValidated = trustedOrigin(req, childAuthOrigin);
   sanitizeProxyHeaders(req, originValidated);
   const upstream = net.connect(childPort, childHost);
