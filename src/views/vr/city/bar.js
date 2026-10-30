@@ -200,6 +200,9 @@ export class Bar {
       const panelCover = this.panelCap != null && this.elevTarget > this.panelCap + 0.3 && want < this.elevTarget - 1; // a panel opened over it: move now
       // snap: place it now, without the dwell (entering VR, or a test's barSnap).
       if (this.snap || (Math.abs(want - this.elevTarget) > BAR.PITCH_FOLLOW || covering) && (!onBar || panelCover) && (t - this.restAt > 500 || panelCover)) { this.elevTarget = want; this.snap = false; this.pitchLog.push({t: Math.round(animMs()), gaze: +gaze.toFixed(1), to: +want.toFixed(1)}); }
+      // Round 3: while reading never below READ_MIN, even when the bar was already near there (the 12° follow rule kept
+      // a city-view target of −28.2°).
+      if (this.panelCap != null && this.elevTarget < BAR.READ_MIN) this.elevTarget = BAR.READ_MIN;
       const de = this.elevTarget - this.elev;
       this.elev += S.reduceMotion || Math.abs(de) < 0.05 ? de : de * Math.min(1, dt / 0.16);
       if (this.panelCap != null) this.panel.setElev(Math.round(this.elev * 4) / 4, false, true); else this.panel.setElev(0, false);
