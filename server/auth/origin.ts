@@ -1,6 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
-import { forwardedHost, normalizedAuthority } from "./proxy.js";
+import { normalizedAuthority } from "./proxy.js";
 import { authenticatedSupervisorOrigin } from "./supervisorPeer.js";
 
 export const originFailureHint = "Origin does not match the configured public origin. Set PI_WEB_AUTH_ORIGIN to the exact public origin or configure trusted proxy peers for a local HTTP origin.";
@@ -42,11 +42,6 @@ function safeMatchingHost(req: IncomingMessage, origin: URL): boolean {
   return normalizedAuthority(req.headers.host, origin.protocol as "http:" | "https:") === origin.host.toLowerCase();
 }
 
-function trustedProxyOrigin(req: IncomingMessage, origin: URL, configured: URL): boolean {
-  if (configured.protocol !== "http:" || !isCanonicalLoopback(configured.hostname)) return false;
-  return forwardedHost(req, origin.protocol as "http:" | "https:") === origin.host.toLowerCase();
-}
-
 /** Shared by public auth, cookie mutations, WebSockets and supervisor. */
 export function trustedOrigin(req: IncomingMessage, configuredOrigin: string): boolean {
   if (authenticatedSupervisorOrigin(req)) return true;
@@ -62,8 +57,7 @@ export function trustedOrigin(req: IncomingMessage, configuredOrigin: string): b
     const configured = new URL(configuredOrigin);
     valid = parsed.origin === configured.origin
       || localLoopbackAlias(parsed, configured)
-      || safeMatchingHost(req, parsed)
-      || trustedProxyOrigin(req, parsed, configured);
+      || safeMatchingHost(req, parsed);
   } catch { /* Reject malformed origins. */ }
   if (!valid && req.headers["x-forwarded-host"] && req.headers["x-forwarded-host"] !== req.headers.host && !warned) {
     warned = true;
