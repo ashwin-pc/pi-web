@@ -34,7 +34,11 @@ import { createPushNotificationService } from "./server/pushNotifications.js";
 import { LocalSessionService, SessionServiceError } from "./server/session/service.js";
 import { createSystemInfoProvider } from "./server/systemInfo.js";
 import { logRequest, logWebSocket, startEventLoopTelemetry } from "./server/telemetry.js";
-import { AuthKernel, AuthStore } from "./server/auth/kernel.js";
+import {
+  AuthKernel,
+  AuthStore,
+  AuthStoreBusyError,
+} from "./server/auth/kernel.js";
 import { ExtensionHttpRegistry, extensionHttpOrigin, hasExtensionCredential } from "./server/auth/extensionHttp.js";
 import { resolveAuthConfig } from "./server/auth/config.js";
 import { secureSessionCookies } from "./server/auth/cookieSecurity.js";
@@ -1467,7 +1471,7 @@ const server = createServer(withAccessLog(async (req, res, url) => {
 
     serveStatic(req, res);
   } catch (error) {
-    const status = error instanceof SessionUiStateUnavailableError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
+    const status = error instanceof SessionUiStateUnavailableError || error instanceof AuthStoreBusyError ? 503 : error instanceof SessionServiceError || error instanceof HttpError ? error.status : 500;
     sendJson(res, status, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }
 }));
@@ -1540,6 +1544,7 @@ if (isDev) {
 startEventLoopTelemetry();
 
 extensionHttpServer = server;
+server.headersTimeout = 30_000;
 server.listen(port, host, () => {
   console.log(`pi-web listening on http://${host}:${port}`);
   console.log(`Pi cwd: ${piCwd}`);
