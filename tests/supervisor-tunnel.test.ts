@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
 import { AuthStore, hashSecret } from "../server/auth/kernel.js";
+import { closeTunnelSocket, listenOnTunnelSocket } from "../server/tunnelSocket.js";
 import { isolatedAuthEnv } from "./auth-isolation.js";
 
 const projectRoot = new URL("..", import.meta.url).pathname;
@@ -435,6 +436,36 @@ describe("supervisor tunnel socket identity", () => {
       headers: { "x-verified-user": "legacy-owner@example.invalid" },
     })).status).toBe(200);
   }, 20_000);
+
+  it("reclaims a private stale socket after an unclean process exit", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-web-tunnel-stale-"));
+    temporaryDirectories.add(parent);
+    await chmod(parent, 0o700);
+    const socketPath = join(parent, "stale.sock");
+    const stale = spawn(process.execPath, [
+      "-e",
+      `process.umask(0o177); require("node:net").createServer().listen(${JSON.stringify(socketPath)})`,
+    ]);
+    processes.add(stale);
+    await waitFor(async () => {
+      try {
+        return (await lstat(socketPath)).isSocket() || undefined;
+      } catch {
+        return undefined;
+      }
+    }, stale);
+    const exited = new Promise<void>((resolve) => stale.once("exit", () => resolve()));
+    stale.kill("SIGKILL");
+    await exited;
+    processes.delete(stale);
+    expect((await lstat(socketPath)).isSocket()).toBe(true);
+
+    const replacement = createServer();
+    const identity = await listenOnTunnelSocket(replacement, socketPath);
+    expect(replacement.listening).toBe(true);
+    await closeTunnelSocket(replacement, socketPath, identity);
+    await expect(lstat(socketPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
 
   it("refuses pre-existing paths and removes only its own socket on clean shutdown", async () => {
     const authEnv = isolatedAuthEnv();

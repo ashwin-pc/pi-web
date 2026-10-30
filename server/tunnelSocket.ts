@@ -1,5 +1,7 @@
+import type { Stats } from "node:fs";
 import { lstat, unlink } from "node:fs/promises";
 import type { Server } from "node:http";
+import { createConnection } from "node:net";
 import { isAbsolute, dirname } from "node:path";
 
 type SocketIdentity = { dev: number; ino: number };
@@ -13,18 +15,57 @@ async function requirePrivateParent(path: string): Promise<void> {
     throw new Error("PI_WEB_TUNNEL_SOCKET parent must not be accessible by group or other users");
 }
 
+async function reclaimStaleSocket(path: string): Promise<void> {
+  let existing: Stats;
+  try {
+    existing = await lstat(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (!existing.isSocket())
+    throw new Error(`PI_WEB_TUNNEL_SOCKET already exists: ${path}`);
+  if (
+    (existing.mode & 0o077) !== 0 ||
+    (typeof process.getuid === "function" && existing.uid !== process.getuid())
+  )
+    throw new Error("PI_WEB_TUNNEL_SOCKET existing socket is not private and user-owned");
+
+  const active = await new Promise<boolean>((resolve, reject) => {
+    const client = createConnection(path);
+    client.once("connect", () => {
+      client.destroy();
+      resolve(true);
+    });
+    client.once("error", (error: NodeJS.ErrnoException) => {
+      client.destroy();
+      if (error.code === "ECONNREFUSED" || error.code === "ENOENT") resolve(false);
+      else reject(error);
+    });
+  });
+  if (active) throw new Error(`PI_WEB_TUNNEL_SOCKET already exists: ${path}`);
+
+  try {
+    const current = await lstat(path);
+    if (
+      !current.isSocket() ||
+      current.dev !== existing.dev ||
+      current.ino !== existing.ino
+    )
+      throw new Error(`PI_WEB_TUNNEL_SOCKET changed during stale-socket recovery: ${path}`);
+    await unlink(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+}
+
 export async function listenOnTunnelSocket(
   server: Server,
   path: string,
 ): Promise<SocketIdentity> {
   if (!isAbsolute(path)) throw new Error("PI_WEB_TUNNEL_SOCKET must be an absolute path");
   await requirePrivateParent(path);
-  try {
-    await lstat(path);
-    throw new Error(`PI_WEB_TUNNEL_SOCKET already exists: ${path}`);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-  }
+  await reclaimStaleSocket(path);
 
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => {

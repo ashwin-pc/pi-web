@@ -122,9 +122,9 @@ headers. WebSocket upgrades through the Unix socket preserve the same identity a
 
 Startup fails closed if the parent is not private, the path is occupied by a
 file or live socket, the socket cannot be created, or its mode/owner cannot be
-verified. The supervisor never removes an entry it did not create. After a
-crash, verify that no supervisor or tunnel still uses the path, remove the
-stale socket manually, and start again. Clean shutdown removes the socket.
+verified. A private user-owned stale socket is probed, rechecked by device and
+inode, and reclaimed automatically after a crash; a live or replaced entry is
+never removed. Clean shutdown removes the socket.
 Startup environment changes apply only when the supervisor itself is launched
 again. `POST /api/restart` restarts the child only, so it cannot activate
 `PI_WEB_TUNNEL_SOCKET` for an already-running supervisor. Use the deployment's
