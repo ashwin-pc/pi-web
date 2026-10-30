@@ -13,13 +13,18 @@ function isLoopbackHost(hostname: string): boolean {
 
 /**
  * Cookies are Secure unless the declared public URL and listener are both
- * demonstrably loopback HTTP. Forwarding headers are intentionally irrelevant.
+ * demonstrably loopback HTTP. The unspecialized local CLI default is also
+ * loopback HTTP; configuring proxy peers makes an omitted public origin
+ * ambiguous and therefore Secure.
  */
 export function secureSessionCookies(
   configuredOrigin: string | undefined,
   listenerHost: string,
+  configuredProxyPeers: string | undefined,
 ): boolean {
-  if (!configuredOrigin) return true;
+  if (!configuredOrigin) {
+    return !!configuredProxyPeers?.trim() || !isLoopbackHost(listenerHost);
+  }
   let publicUrl: URL;
   try {
     publicUrl = new URL(configuredOrigin);
