@@ -469,14 +469,13 @@ export class AuthKernel {
       const api = state.apiTokens.find(
         (t) => safeEqual(t.hash, hash) && !t.revokedAt && t.expiresAt > now,
       );
-      return api
-        ? {
-            ok: true,
-            identity: { id: `token:${api.id}`, displayName: api.name },
-            via: "token",
-            revocationEpoch,
-          }
-        : { ok: false };
+      if (api)
+        return {
+          ok: true,
+          identity: { id: `token:${api.id}`, displayName: api.name },
+          via: "token",
+          revocationEpoch,
+        };
     }
     if (methods.has("external") && this.trustedHeader) {
       const value = req.headers[this.trustedHeader.toLowerCase()];

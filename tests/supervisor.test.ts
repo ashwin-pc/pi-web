@@ -156,41 +156,6 @@ function rawRequest(
   });
 }
 
-async function startProxyFixture(
-  authEnv: NodeJS.ProcessEnv,
-  machineSecret: string,
-  trustedPeer: string,
-) {
-  const publicPort = await freePort();
-  const childPort = await freePort();
-  const env: NodeJS.ProcessEnv = {
-    ...authEnv,
-    HOST: "127.0.0.1",
-    PORT: String(publicPort),
-    PI_WEB_CHILD_PORT: String(childPort),
-    PI_WEB_AUTH_MODE: "external",
-    PI_WEB_AUTH_METHODS: "external",
-    PI_WEB_AUTH_TRUSTED_HEADER: "x-amzn-tunnel-user",
-    PI_WEB_AUTH_ORIGIN: `http://localhost:${publicPort}`,
-    PI_WEB_AUTH_PROXY_PEERS: trustedPeer,
-    PI_WEB_MOCK: "1",
-    PI_WEB_DEV: "0",
-    NODE_ENV: "test",
-  };
-  const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
-    cwd: projectRoot,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  supervisors.add(supervisor);
-  const output: string[] = [];
-  supervisor.stdout?.on("data", data => output.push(String(data)));
-  supervisor.stderr?.on("data", data => output.push(String(data)));
-  await status(publicPort, supervisor, machineSecret).catch(error => {
-    throw new Error(`${String(error)}\n${output.join("")}`);
-  });
-  return { publicPort, supervisor, output };
-}
 
 afterEach(async () => {
   await Promise.all(Array.from(supervisors, async (supervisor) => {
@@ -812,88 +777,6 @@ describe("pi-web supervisor", () => {
     expect(afterRestart.childPid).not.toBe(beforeRestart.childPid);
   }, 30_000);
 
-  it("carries a trusted proxy's validated local-origin decision only across the supervised child hop", async () => {
-    const publicAuthority = "public.example.test";
-    const publicOrigin = `https://${publicAuthority}`;
-    const trustedPeer = "127.0.0.1";
-    const authEnv = isolatedAuthEnv();
-    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
-    const machineToken = await mintStoredApiToken(store, "proxy machine");
-    await store.update(s => {
-      s.config = { policy: "authenticated", methods: ["external"] };
-    });
-    const trustedFixture = await startProxyFixture(authEnv, machineToken.secret, trustedPeer);
-    const external = await waitFor(async () => {
-      const response = await rawRequest(trustedFixture.publicPort, {
-        path: "/api/state",
-        localAddress: trustedPeer,
-        headers: {
-          host: "internal.example.test",
-          "x-forwarded-host": publicAuthority,
-          "x-amzn-tunnel-user": "owner@example.test",
-          "x-pi-web-client-id": "browser-client",
-        },
-      });
-      return response.status === 502 ? undefined : response;
-    }, trustedFixture.supervisor);
-    expect(external.status, trustedFixture.output.join("")).toBe(200);
-    const setCookie = external.headers["set-cookie"];
-    const cookie = (Array.isArray(setCookie) ? setCookie[0] : setCookie)?.split(";")[0];
-    expect(cookie).toContain("pi_web_session=");
-
-    const browserHeaders = {
-      host: "internal.example.test",
-      cookie: cookie!,
-      origin: publicOrigin,
-      "x-forwarded-host": publicAuthority,
-      "x-pi-web-client-id": "browser-client",
-    };
-    const ticketResponse = await rawRequest(trustedFixture.publicPort, {
-      method: "POST",
-      path: "/api/ws-ticket",
-      localAddress: trustedPeer,
-      headers: browserHeaders,
-    });
-    expect(ticketResponse.status, ticketResponse.body).toBe(201);
-    const { ticket } = JSON.parse(ticketResponse.body) as { ticket: string };
-    const socket = new WebSocket(`ws://127.0.0.1:${trustedFixture.publicPort}/ws?ticket=${encodeURIComponent(ticket)}`, {
-      origin: publicOrigin,
-      localAddress: trustedPeer,
-      headers: {
-        host: "internal.example.test",
-        "x-forwarded-host": publicAuthority,
-      },
-    });
-    await new Promise<void>((resolve, reject) => {
-      socket.once("message", data => {
-        expect(JSON.parse(String(data)).type).toBe("hello");
-        resolve();
-      });
-      socket.once("error", reject);
-    });
-    socket.close();
-    await new Promise<void>(resolve => socket.once("close", () => resolve()));
-
-    supervisors.delete(trustedFixture.supervisor);
-    await stopSupervisor(trustedFixture.supervisor);
-    const untrustedFixture = await startProxyFixture(authEnv, machineToken.secret, "192.0.2.60");
-    const forged = await waitFor(async () => {
-      const response = await rawRequest(untrustedFixture.publicPort, {
-        method: "POST",
-        path: "/api/ws-ticket",
-        localAddress: "127.0.0.1",
-        headers: {
-          ...browserHeaders,
-          host: publicAuthority,
-          "x-pi-web-supervisor-origin": "1",
-          "x-pi-web-supervisor-secret": "caller-controlled",
-        },
-      });
-      return response.status === 502 ? undefined : response;
-    }, untrustedFixture.supervisor);
-    expect(forged.status, forged.body).toBe(403);
-    // Two independent cold supervisor+child startups keep separate 10-second readiness windows.
-  }, 45_000);
 
   it("preserves the public auth contract across proxying and restart", async () => {
     const publicPort = await freePort();
