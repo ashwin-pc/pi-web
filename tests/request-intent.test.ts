@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthKernel, AuthStore, hashSecret, type AuthVia } from "../server/auth/kernel.js";
-import { originFailureHint } from "../server/auth/origin.js";
+import { createOriginRejectionReporter, originFailureHint, unconfiguredOriginWarning } from "../server/auth/origin.js";
 import { requestIntentFailure } from "../server/auth/requestIntent.js";
 
 const origin = "https://pi.example.test";
@@ -24,6 +24,17 @@ afterEach(async () => {
 });
 
 describe("request intent gate", () => {
+  it("logs one actionable warning when hostname access has no declared origin", () => {
+    const messages: string[] = [];
+    const report = createOriginRejectionReporter(undefined, (value) => messages.push(value));
+    report(message());
+    report(message());
+    expect(messages).toEqual([unconfiguredOriginWarning]);
+
+    createOriginRejectionReporter(origin, (value) => messages.push(value))(message());
+    expect(messages).toHaveLength(1);
+  });
+
   it.each(["session", "external", "open"] as const)("requires same-origin browser intent for %s Git fetches", (via) => {
     expect(request(via, { origin, "sec-fetch-site": "same-origin", "x-pi-web-client-id": "browser" })).toBeUndefined();
     expect(request(via, { origin, "sec-fetch-site": "same-origin" })).toBe("CSRF validation failed");
