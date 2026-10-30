@@ -1,6 +1,7 @@
 import { isolatedAuthEnv } from "./auth-isolation.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, request as httpRequest } from "node:http";
+import { writeFile } from "node:fs/promises";
 import { AuthStore } from "../server/auth/kernel.js";
 import { afterEach, describe, expect, it } from "vitest";
 import WebSocket from "ws";
@@ -71,6 +72,26 @@ async function status(port: number, supervisor: ChildProcess, token: string, hos
   }, supervisor).catch(error => {
     throw new Error(`${String(error)}; last supervisor status: ${last}`);
   });
+}
+
+async function apiReady(port: number, supervisor: ChildProcess, token: string) {
+  return waitFor(async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/api/state`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return response.ok ? true : undefined;
+  }, supervisor);
+}
+
+async function exitOutput(supervisor: ChildProcess) {
+  let output = "";
+  supervisor.stdout?.on("data", chunk => { output += chunk; });
+  supervisor.stderr?.on("data", chunk => { output += chunk; });
+  const code = await new Promise<number | null>((resolve, reject) => {
+    supervisor.once("error", reject);
+    supervisor.once("exit", resolve);
+  });
+  return { code, output };
 }
 
 async function stopSupervisor(supervisor: ChildProcess) {
@@ -436,6 +457,156 @@ describe("pi-web supervisor", () => {
     await new Promise((resolve) => setTimeout(resolve, 1_200));
     expect((await status(publicPort, supervisor, token.secret)).childGeneration).toBe(intentionallyRestarted.childGeneration);
   }, 20_000);
+
+  it("preserves the authenticated deployment contract through the supervisor", async () => {
+    const publicPort = await freePort();
+    const childPort = await freePort();
+    const authEnv = isolatedAuthEnv();
+    const store = new AuthStore(authEnv.PI_WEB_AUTH_STORE!);
+    const token = await mintStoredApiToken(store, "deployment contract");
+    await store.update(state => {
+      state.config = { policy: "authenticated", methods: ["external"] };
+    });
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: {
+        ...authEnv,
+        HOST: "127.0.0.1",
+        PORT: String(publicPort),
+        PI_WEB_CHILD_PORT: String(childPort),
+        PI_WEB_AUTH_MODE: "external",
+        PI_WEB_AUTH_POLICY: "authenticated",
+        PI_WEB_AUTH_ORIGIN: "https://owner.example",
+        PI_WEB_AUTH_TRUSTED_HEADER: "x-test-user",
+        PI_WEB_AUTH_PROXY_PEERS: "127.0.0.1",
+        PI_WEB_TOKEN: "stale-removed-secret",
+        PI_WEB_MOCK: "1",
+        PI_WEB_NO_SESSION: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    let output = "";
+    supervisor.stdout?.on("data", chunk => { output += chunk; });
+    supervisor.stderr?.on("data", chunk => { output += chunk; });
+    await status(publicPort, supervisor, token.secret);
+    await apiReady(publicPort, supervisor, token.secret);
+    await waitFor(
+      async () => output.includes("PI_WEB_TOKEN is ignored") ? true : undefined,
+      supervisor,
+    );
+    const base = `http://127.0.0.1:${publicPort}`;
+    const browserHeaders = {
+      origin: "https://owner.example",
+      "x-forwarded-host": "owner.example",
+      "x-test-user": "owner@example.test",
+      "x-pi-web-client-id": "deployment-contract",
+    };
+
+    const external = await fetch(`${base}/api/state`, { headers: browserHeaders });
+    expect(external.status).toBe(200);
+    const browserCookie = external.headers.get("set-cookie")?.split(";")[0];
+    expect(browserCookie).toMatch(/^pi_web_session=/);
+    const bearer = await fetch(`${base}/api/state`, {
+      headers: { authorization: `Bearer ${token.secret}` },
+    });
+    expect(bearer.status).toBe(200);
+    expect(
+      (await fetch(`${base}/api/state`, {
+        headers: { authorization: "Bearer stale-removed-secret" },
+      })).status,
+    ).toBe(401);
+    expect(
+      (await fetch(`${base}/api/state?token=stale-removed-secret`)).status,
+    ).toBe(401);
+
+    const wrongOrigin = await fetch(`${base}/api/restart`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.secret}`,
+        origin: "https://wrong.example",
+        "x-forwarded-host": "owner.example",
+      },
+    });
+    expect(wrongOrigin.status).toBe(403);
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const ticketResponse = await fetch(`${base}/api/ws-ticket`, {
+        method: "POST",
+        headers: { ...browserHeaders, cookie: browserCookie! },
+      });
+      expect(ticketResponse.status).toBe(201);
+      const { ticket } = await ticketResponse.json() as { ticket: string };
+      await new Promise<void>((resolve, reject) => {
+        const socket = new WebSocket(`ws://127.0.0.1:${publicPort}/ws?ticket=${ticket}`, {
+          origin: "https://owner.example",
+          headers: {
+            cookie: browserCookie!,
+            "x-forwarded-host": "owner.example",
+          },
+        });
+        socket.once("message", data => {
+          expect(JSON.parse(String(data)).type).toBe("hello");
+          socket.close();
+          resolve();
+        });
+        socket.once("error", reject);
+      });
+    }
+
+    const beforeRestart = await status(publicPort, supervisor, token.secret);
+    const restart = await fetch(`${base}/api/restart`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token.secret}`,
+        origin: "https://owner.example",
+        "x-forwarded-host": "owner.example",
+        "x-pi-web-client-id": "deployment-contract",
+      },
+    });
+    expect(restart.status).toBe(202);
+    const afterRestart = await waitFor(async () => {
+      const current = await status(publicPort, supervisor, token.secret);
+      return current.childGeneration > beforeRestart.childGeneration ? current : undefined;
+    }, supervisor);
+    expect(afterRestart.childGeneration).toBe(beforeRestart.childGeneration + 1);
+  }, 20_000);
+
+  it.each([
+    { PI_WEB_TOKEN: "removed-secret" },
+    { PI_WEB_AUTH_MODE: "legacy" },
+  ])("fails startup clearly for explicit legacy authentication", async legacyEnv => {
+    const authEnv = isolatedAuthEnv();
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: { ...authEnv, ...legacyEnv },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    const result = await exitOutput(supervisor);
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("Legacy token authentication has been removed");
+  });
+
+  it("fails startup clearly when the saved store still enables legacy authentication", async () => {
+    const authEnv = isolatedAuthEnv();
+    await writeFile(authEnv.PI_WEB_AUTH_STORE!, JSON.stringify({
+      version: 1,
+      config: { policy: "authenticated", methods: ["legacy"] },
+      credentials: [],
+      sessions: [],
+      apiTokens: [],
+    }));
+    const supervisor = spawn(process.execPath, ["--import", "tsx", "supervisor.ts"], {
+      cwd: projectRoot,
+      env: authEnv,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    supervisors.add(supervisor);
+    const result = await exitOutput(supervisor);
+    expect(result.code).not.toBe(0);
+    expect(result.output).toContain("pi-web auth recover");
+  });
 
   it("preserves the external, machine, browser WebSocket, restart, and public-origin contracts", async () => {
     const publicPort = await freePort();

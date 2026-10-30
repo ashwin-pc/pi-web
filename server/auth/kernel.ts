@@ -8,10 +8,10 @@ import type { AccessPolicy, HumanAuthMethod } from "./config.js";
 import {
   authenticatedTunnelRequest,
   effectivePeerAddress,
-  isLoopbackPeer,
   isReservedSupervisorHeader,
   tunnelSocketIdentityEnabled,
 } from "./supervisorPeer.js";
+import { isLoopbackAddress } from "./ip.js";
 import {
   mkdir,
   readFile,
@@ -588,7 +588,7 @@ export class AuthKernel {
 }
 
 export function isLoopback(req: IncomingMessage) {
-  return isLoopbackPeer(effectivePeerAddress(req));
+  return isLoopbackAddress(effectivePeerAddress(req));
 }
 export function randomSecret() {
   return randomBytes(32).toString("base64url");

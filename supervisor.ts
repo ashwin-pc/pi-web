@@ -14,9 +14,8 @@ import {
   UNKNOWN_SUPERVISOR_PEER,
   resolveSupervisorPeer,
   stampSupervisorProvenance,
-  stripSupervisorPeerHeaders,
+  stripSupervisorProvenanceHeaders,
 } from "./server/auth/supervisorPeer.js";
-import { stampSupervisorOrigin, stripSupervisorOriginHeaders } from "./server/auth/supervisorOrigin.js";
 import { proxyHttpRequest } from "./server/shared/httpProxy.js";
 import { createUpgradeProxy } from "./server/shared/upgradeProxy.js";
 import {
@@ -197,8 +196,7 @@ function sanitizeProxyHeaders(
   originValidated: boolean,
   tunnel: boolean,
 ) {
-  stripSupervisorOriginHeaders(req.headers);
-  stripSupervisorPeerHeaders(req.headers);
+  stripSupervisorProvenanceHeaders(req.headers);
   const authority = forwardedHost(req);
   if (authority) req.headers.host = authority;
   const trustedForwarder = trustedProxyPeer(req);
@@ -217,10 +215,9 @@ function sanitizeProxyHeaders(
     const trustedHeader = (process.env.PI_WEB_AUTH_TRUSTED_HEADER || "").toLowerCase();
     if (trustedHeader) delete req.headers[trustedHeader];
   }
-  stampSupervisorProvenance(req, peer, tunnel, supervisorSecret);
   // Resolve trust at the public socket, never at the supervisor's loopback hop.
   delete req.headers["x-forwarded-host"];
-  if (originValidated) stampSupervisorOrigin(req, supervisorSecret);
+  stampSupervisorProvenance(req, peer, tunnel, originValidated, supervisorSecret);
 }
 
 const supervisor = createServer((req, res) => {

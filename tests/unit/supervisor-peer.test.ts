@@ -1,17 +1,16 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import {
-  canonicalPeerAddress,
   effectivePeerAddress,
   initializeSupervisorPeerContext,
   isLocalTunnelRequest,
-  isLoopbackPeer,
   markTunnelRequest,
   resolveSupervisorPeer,
   stampSupervisorProvenance,
-  stripSupervisorPeerHeaders,
+  stripSupervisorProvenanceHeaders,
   UNKNOWN_SUPERVISOR_PEER,
 } from "../../server/auth/supervisorPeer.js";
+import { canonicalIP, isLoopbackAddress } from "../../server/auth/ip.js";
 
 function request(
   remoteAddress?: string,
@@ -55,12 +54,12 @@ describe("authenticated supervisor request provenance", () => {
   });
 
   it("canonicalizes peers and resolves only a single trusted forwarded address", () => {
-    expect(canonicalPeerAddress("::ffff:127.0.0.9")).toBe("127.0.0.9");
-    expect(canonicalPeerAddress("2001:0db8::1")).toBe("2001:db8::1");
-    expect(canonicalPeerAddress("fe80::1%lo0")).toBeUndefined();
-    expect(isLoopbackPeer("127.44.2.1")).toBe(true);
-    expect(isLoopbackPeer("::1")).toBe(true);
-    expect(isLoopbackPeer("192.0.2.1")).toBe(false);
+    expect(canonicalIP("::ffff:127.0.0.9")).toBe("127.0.0.9");
+    expect(canonicalIP("2001:0db8::1")).toBe("2001:db8::1");
+    expect(canonicalIP("fe80::1%lo0")).toBeUndefined();
+    expect(isLoopbackAddress("127.44.2.1")).toBe(true);
+    expect(isLoopbackAddress("::1")).toBe(true);
+    expect(isLoopbackAddress("192.0.2.1")).toBe(false);
     expect(resolveSupervisorPeer("127.0.0.1", "192.0.2.44", true)).toBe(
       "192.0.2.44",
     );
@@ -94,9 +93,9 @@ describe("authenticated supervisor request provenance", () => {
         "x-pi-web-tunnel": "1",
         authorization: "Bearer retained",
       });
-      stripSupervisorPeerHeaders(tunnel.headers);
+      stripSupervisorProvenanceHeaders(tunnel.headers);
       expect(tunnel.headers).toEqual({ authorization: "Bearer retained" });
-      stampSupervisorProvenance(tunnel, "192.0.2.44", true, secret);
+      stampSupervisorProvenance(tunnel, "192.0.2.44", true, true, secret);
       expect(effectivePeerAddress(tunnel)).toBe("192.0.2.44");
       expect(tunnel.headers["x-pi-web-tunnel"]).toBe("1");
 
@@ -104,7 +103,7 @@ describe("authenticated supervisor request provenance", () => {
       expect(effectivePeerAddress(tunnel)).toBe(UNKNOWN_SUPERVISOR_PEER);
 
       const direct = request("192.0.2.9");
-      stampSupervisorProvenance(direct, "127.0.0.1", true, secret);
+      stampSupervisorProvenance(direct, "127.0.0.1", true, true, secret);
       expect(effectivePeerAddress(direct)).toBe(UNKNOWN_SUPERVISOR_PEER);
 
       expect(effectivePeerAddress(request("127.0.0.1"))).toBe("127.0.0.1");
