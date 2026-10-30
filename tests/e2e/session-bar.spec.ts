@@ -1431,7 +1431,10 @@ test.describe("session quick bar", () => {
 
   async function promptCurrentInBackground(page: import("@playwright/test").Page, message: string) {
     await page.evaluate(async (promptMessage) => {
-      const headers: Record<string, string> = { "content-type": "application/json" };
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+        "x-pi-web-client-id": "background-prompt-test",
+      };
       // Open mock-current session in background then fire a prompt at it.
       const openRes = await fetch("/api/sessions/open", { method: "POST", headers, body: JSON.stringify({ sessionId: "mock-current", cwd: "." }) });
       await openRes.json();

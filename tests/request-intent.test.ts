@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuthKernel, AuthStore, hashSecret, type AuthVia } from "../server/auth/kernel.js";
+import { originFailureHint } from "../server/auth/origin.js";
 import { requestIntentFailure } from "../server/auth/requestIntent.js";
 
 const origin = "https://pi.example.test";
@@ -26,13 +27,13 @@ describe("request intent gate", () => {
   it.each(["session", "external", "open"] as const)("requires same-origin browser intent for %s Git fetches", (via) => {
     expect(request(via, { origin, "sec-fetch-site": "same-origin", "x-pi-web-client-id": "browser" })).toBeUndefined();
     expect(request(via, { origin, "sec-fetch-site": "same-origin" })).toBe("CSRF validation failed");
-    expect(request(via, { "sec-fetch-site": "cross-site", "x-pi-web-client-id": "browser" })).toContain("Origin does not match Host");
-    expect(request(via, { origin: "https://evil.example", "x-pi-web-client-id": "browser" })).toContain("Origin does not match Host");
+    expect(request(via, { "sec-fetch-site": "cross-site", "x-pi-web-client-id": "browser" })).toBe(originFailureHint);
+    expect(request(via, { origin: "https://evil.example", "x-pi-web-client-id": "browser" })).toBe(originFailureHint);
   });
 
   it("preserves non-browser Bearer API-token fetches without Origin or fetch metadata", () => {
     expect(request("token", { authorization: "Bearer synthetic-token" })).toBeUndefined();
-    expect(request("token", { authorization: "Bearer synthetic-token", "sec-fetch-site": "cross-site" })).toContain("Origin does not match Host");
+    expect(request("token", { authorization: "Bearer synthetic-token", "sec-fetch-site": "cross-site" })).toBe(originFailureHint);
   });
 
   it("does not gate read-only Git status requests", () => {
@@ -63,7 +64,7 @@ describe("request intent gate", () => {
         expiresAt: Date.now() + 60_000,
       }],
     }));
-    const authenticated = new AuthKernel("external", new AuthStore(storePath), false, "x-test-user");
+    const authenticated = new AuthKernel("external", new AuthStore(storePath), true, "x-test-user");
     const open = new AuthKernel("none", new AuthStore(join(dir, "open.json")));
     const sameOrigin = { origin, "sec-fetch-site": "same-origin", "x-pi-web-client-id": "browser" };
     const cases = [

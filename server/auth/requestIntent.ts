@@ -8,7 +8,7 @@ function header(req: IncomingMessage, name: string): string {
 }
 
 function isBrowserMetadataPresent(req: IncomingMessage): boolean {
-  return Object.keys(req.headers).some((name) => name.startsWith("sec-fetch-"));
+  return req.headers["sec-fetch-site"] !== undefined;
 }
 
 export function requestIntentFailure(

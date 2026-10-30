@@ -402,7 +402,7 @@ describe("workspace extension trust route", () => {
     const calls: string[] = [];
     const deps = dependencies(calls);
 
-    for (const via of ["token", "extension", "legacy", "external", "open"] as const) {
+    for (const via of ["token", "extension", "external", "open"] as const) {
       const res = response();
       await handleWorkspaceExtensionTrustRoute(
         { method: "POST" } as any,
@@ -413,7 +413,7 @@ describe("workspace extension trust route", () => {
       );
       expect(res.status).toBe(403);
     }
-    for (const via of ["token", "extension", "legacy", "external", "open"] as const) {
+    for (const via of ["token", "extension", "external", "open"] as const) {
       const res = response();
       await handleWorkspaceExtensionTrustRoute(
         { method: "DELETE" } as any,

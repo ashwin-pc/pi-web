@@ -232,7 +232,7 @@ npm start
 
 ## Remote access
 
-pi-web binds to localhost by default. Remote browser login—especially passkeys—needs a secure HTTPS origin. Keep the app on loopback behind a TLS-terminating reverse proxy or secure-networking proxy, set `PI_WEB_AUTH_ORIGIN` to the exact public origin, and restrict direct backend access. Keeping the application listener on loopback also supports the scoped HTTP client used by server-side extensions; a direct non-loopback-only bind does not.
+pi-web binds to localhost by default. Remote browser login—especially passkeys—needs a secure HTTPS origin. Keep the app on loopback behind a TLS-terminating reverse proxy or secure-networking proxy, set `PI_WEB_AUTH_ORIGIN` to the exact public origin, and restrict direct backend access. A loopback listener does not prove that the browser used plaintext HTTP because a TLS-terminating proxy also connects over loopback. Keeping the application listener on loopback also supports the scoped HTTP client used by server-side extensions; a direct non-loopback-only bind does not.
 
 For example, Tailscale Serve can provide HTTPS while Node remains localhost-only:
 
@@ -259,7 +259,7 @@ Open the configured HTTPS origin. On a new installation, follow the random, shor
 - `PI_WEB_AUTH_POLICY` - `authenticated` or deliberately `open`
 - `PI_WEB_AUTH_METHODS` - comma-separated `passkey,password,external`; saved Settings configuration takes precedence after enrollment/configuration
 - `PI_WEB_AUTH_MODE` - compatibility preset: `none`, `passkey`, or `external`
-- `PI_WEB_AUTH_ORIGIN` - exact public origin for login/WebAuthn/CSRF, including HTTPS and port
+- `PI_WEB_AUTH_ORIGIN` - exact public origin for login/WebAuthn/CSRF and cookie security, including scheme and port; plain HTTP local sessions must explicitly set an `http://localhost...`, `http://127.x...`, or `http://[::1]...` origin while listening on loopback
 - `PI_WEB_AUTH_RP_ID` - WebAuthn RP ID, defaults to origin hostname
 - `PI_WEB_AUTH_TRUSTED_HEADER` - verified proxy identity header; requires a restricted backend
 - `PI_WEB_AUTH_STORE` - authentication database path (default `~/.pi/agent/web/auth.json`); independent dev/production instances must use different paths, otherwise policy and revocation changes are shared live

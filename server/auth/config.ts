@@ -4,6 +4,7 @@ export type AccessPolicy = "open" | "authenticated";
 export type HumanAuthMethod = "passkey" | "password" | "external";
 export type AuthConfig = {
   policy: AccessPolicy;
+  explicitOpenPolicy: boolean;
   methods: HumanAuthMethod[];
   mode: AuthMode;
   trustedHeader: string;
@@ -62,6 +63,10 @@ export function resolveAuthConfig(
       throw new Error(`Invalid PI_WEB_AUTH_METHODS entry: ${method}`);
     }
   }
+  if (mode === "none" && configured.length)
+    throw new Error(
+      "Invalid auth configuration: PI_WEB_AUTH_MODE=none cannot be combined with non-empty PI_WEB_AUTH_METHODS",
+    );
   if (env.PI_WEB_TOKEN) {
     if (!isSupportedSavedConfig(savedConfig))
       throw new Error(legacyAuthMigration);
@@ -74,7 +79,8 @@ export function resolveAuthConfig(
   return {
     policy:
       (explicitPolicy as AccessPolicy | undefined) ||
-      (mode === "none" ? "open" : "authenticated"),
+      (configured.length || mode !== "none" ? "authenticated" : "open"),
+    explicitOpenPolicy: explicitPolicy === "open",
     methods: [
       ...new Set(
         (configured.length ? configured : translated) as HumanAuthMethod[],
