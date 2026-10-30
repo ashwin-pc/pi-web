@@ -1,0 +1,26 @@
+ctrl reading: just above the avatar          ray=-                                        changed=nothing
+ctrl reading: just below the avatar          ray=-                                        changed=nothing
+ctrl reading: just left the avatar           ray=avatar:mock-older                        changed=nothing
+ctrl reading: just right the avatar          ray=avatar:mock-df7846c1-aaf2-45ba-9a1c-a495 changed=cur
+ctrl reading: just wellAbove the avatar      ray=pv:open                                  changed=nothing
+ctrl city: just above the avatar             ray=-                                        changed=nothing
+ctrl city: just below the avatar             ray=-                                        changed=nothing
+ctrl city: just left the avatar              ray=avatar:mock-older                        changed=reading,cur
+ctrl city: just right the avatar             ray=context                                  changed=nothing
+ctrl city: just wellAbove the avatar         ray=ctx:turn:0                               changed=nothing
+ctrl city: centre with ray -40 deg           ray=-                                        changed=nothing
+ctrl city: centre with ray -44 deg           ray=avatar:mock-806c67dd-a472-4f21-b591-06fc changed=reading,cur
+ctrl city: centre with ray -46 deg           ray=-                                        changed=nothing
+hand reading: just above the avatar          ray=-                                        changed=nothing
+hand reading: just below the avatar          ray=avatar:mock-806c67dd-a472-4f21-b591-06fc changed=cur
+hand reading: just left the avatar           ray=avatar:mock-older                        changed=cur
+hand reading: just right the avatar          ray=avatar:mock-df7846c1-aaf2-45ba-9a1c-a495 changed=cur
+hand reading: just wellAbove the avatar      ray=pv:open                                  changed=nothing
+hand reading: double pinch just above the avatar ray=-                                        changed=nothing
+hand city: just above the avatar             ray=-                                        changed=nothing
+hand city: just below the avatar             ray=-                                        changed=nothing
+hand city: just left the avatar              ray=avatar:mock-older                        changed=reading,cur
+hand city: just right the avatar             ray=context                                  changed=nothing
+hand city: just wellAbove the avatar         ray=ctx:turn:0                               changed=nothing
+hand city: double pinch just above the avatar ray=ctx:turn:1                               changed=nothing
+SUMMARY: 25 trials; near misses that changed something: 6: ctrl reading: just right the avatar -> cur | ctrl city: just left the avatar -> reading+cur | hand reading: just below the avatar -> cur | hand reading: just left the avatar -> cur | hand reading: just right the avatar -> cur | hand city: just left the avatar -> reading+cur

@@ -1,0 +1,3 @@
+cold {"target":"01a0da9a","frames":268,"blankFrames":0,"worstMs":18,"uploadMB":32.8}
+strip {"ray":"strip","scrollAfter":0,"frames":145,"blankFrames":0,"worstMs":21,"uploadMB":0}
+flicks {"scrollAfter":0,"turnIdx":0,"frames":65,"blankFrames":0,"worstMs":2,"uploadMB":0}

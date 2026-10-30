@@ -1,0 +1,8 @@
+{"mode":"city","target":"01a12c73","ray":"avatar:01a12c73-6e2f","framesToDrawn":13,"msToDrawn":1650,"blankFrames":0,"worstMs":22,"uploadMB":26.1}
+{"mode":"city","target":"01a18468","ray":"avatar:01a18468-b930","framesToDrawn":12,"msToDrawn":2398,"blankFrames":0,"worstMs":16,"uploadMB":28}
+{"mode":"city","target":"01a12c73","ray":"avatar:01a12c73-6e2f","framesToDrawn":12,"msToDrawn":1471,"blankFrames":0,"worstMs":7,"uploadMB":16.1}
+{"mode":"city","target":"01a131e1","ray":"avatar:01a131e1-dfdf","framesToDrawn":12,"msToDrawn":2158,"blankFrames":0,"worstMs":25,"uploadMB":37}
+{"mode":"reading","target":"01a02ae2","ray":"avatar:01a02ae2-927b","framesToDrawn":12,"msToDrawn":1544,"blankFrames":0,"worstMs":17,"uploadMB":17.8}
+{"mode":"reading","target":"01a0da9a","ray":"avatar:01a0da9a-8b3f","framesToDrawn":11,"msToDrawn":1609,"blankFrames":0,"worstMs":13,"uploadMB":21.8}
+{"mode":"reading","target":"01a13831","ray":"avatar:01a13831-abf6","framesToDrawn":10,"msToDrawn":1114,"blankFrames":0,"worstMs":18,"uploadMB":13}
+{"mode":"reading","target":"01a0da9a","ray":"avatar:01a0da9a-8b3f","framesToDrawn":11,"msToDrawn":1447,"blankFrames":0,"worstMs":9,"uploadMB":15.5}

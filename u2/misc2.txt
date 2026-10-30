@@ -1,0 +1,5 @@
+(g) hand double pinch on empty sky while reading: ray [null,null,null] session mock-older -> mock-older changed: false effort ["hand:empty-tap","hand:press","hand:empty-tap"]
+(h) head pitch -3: bar elev -26.87, avatar at pitch -26.8
+(h) head pitch -25: bar elev -27, avatar at pitch -27.0
+(h) head pitch -35: bar elev -27, avatar at pitch -27.0
+(h) head pitch -3: bar elev -27, avatar at pitch -27.0
